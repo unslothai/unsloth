@@ -146,7 +146,13 @@ def test_caller_non_tile_options_keep_tuned_backward(monkeypatch):
 
 @pytest.mark.parametrize(
     "block_size, tuned",
-    [((128, 128), True), ((64, 128), True), ((32, 32), True), ((16, 16), False), ((128, 16), False)],
+    [
+        ((128, 128), True),
+        ((64, 128), True),
+        ((32, 32), True),
+        ((16, 16), False),
+        ((128, 16), False),
+    ],
 )
 def test_tuned_backward_only_when_tiles_divide_the_sparse_blocks(monkeypatch, block_size, tuned):
     # Inductor shrinks its default tiles to fit 16-wide sparse blocks; fixed 32-wide ones cannot.
@@ -158,7 +164,8 @@ def test_tuned_backward_only_when_tiles_divide_the_sparse_blocks(monkeypatch, bl
 @pytest.mark.skipif(
     not __import__("torch").cuda.is_available()
     or __import__("torch").version.hip is not None
-    or tuple(int(x) for x in __import__("torch").__version__.split("+")[0].split(".")[:2]) < (2, 10),
+    or tuple(int(x) for x in __import__("torch").__version__.split("+")[0].split(".")[:2])
+    < (2, 10),
     reason = "needs NVIDIA CUDA and torch >= 2.10 (bwd_ kernel_options)",
 )
 @pytest.mark.parametrize("case", ["block16", "caller_m1_64"])
