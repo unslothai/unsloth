@@ -114,7 +114,7 @@ export function ModelRunActionButton({
       aria-busy={loading}
       disabled={loading}
       onClick={onClick}
-      className="hub-run-action-btn w-28"
+      className="hub-run-action-btn"
     >
       {loading ? (
         <>

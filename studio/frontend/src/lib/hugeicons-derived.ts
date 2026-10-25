@@ -84,7 +84,17 @@ const speechStroke = {
   strokeWidth: "1.5",
 } as const;
 
+// Audio everywhere: ai-speech without its sparkle, the last two bars filled out (5-21, 11-15) into the space it left.
 export const AiSpeechIcon: IconSvgElement = [
+  ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
+  ["path", { d: "M16 5L16 21", ...speechStroke, key: "1" }],
+  ["path", { d: "M20 11L20 15", ...speechStroke, key: "2" }],
+  ["path", { d: "M8 3V21", ...speechStroke, key: "3" }],
+  ["path", { d: "M4 9V15", ...speechStroke, key: "4" }],
+];
+
+// Text to Speech: hugeicons' ai-speech as drawn, sparkle included.
+export const TextToSpeechIcon: IconSvgElement = [
   ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
   ["path", { d: "M16 11L16 19", ...speechStroke, key: "1" }],
   ["path", { d: "M20 11L20 14", ...speechStroke, key: "2" }],
@@ -100,18 +110,24 @@ export const AiSpeechIcon: IconSvgElement = [
   ],
 ];
 
-export const TextToSpeechIcon: IconSvgElement = [
-  ["path", { d: "M13 9L13 17", ...speechStroke, key: "0" }],
-  ["path", { d: "M17 7L17 19", ...speechStroke, key: "1" }],
-  ["path", { d: "M21 11L21 15", ...speechStroke, key: "2" }],
-  ["path", { d: "M9 15V21", ...speechStroke, key: "3" }],
-  ["path", { d: "M5 15V17", ...speechStroke, key: "4" }],
-  [
-    "path",
-    {
-      d: "M7.5 3.5V11M7.5 11H6M7.5 11H9M12 4.5C12 3.67157 11.3284 3 10.5 3H4.5C3.67157 3 3 3.67157 3 4.5",
-      ...speechStroke,
-      key: "5",
-    },
-  ],
-];
+/** `icon` with an accent dot; colours go in `style` because HugeiconsIcon overwrites child stroke attributes. */
+export function withNoticeDot(icon: IconSvgElement): IconSvgElement {
+  return [
+    ...icon,
+    [
+      "circle",
+      {
+        cx: "19",
+        cy: "5",
+        r: "3.75",
+        key: "notice-dot",
+        style: {
+          fill: "var(--primary)",
+          stroke: "var(--icon-dot-ring, var(--sidebar))",
+          strokeWidth: 2.5,
+          paintOrder: "stroke",
+        },
+      },
+    ],
+  ] as unknown as IconSvgElement;
+}

@@ -958,7 +958,7 @@ export function ChatMcpServersDialog({
         {showForm ? (
           <div className="flex flex-col gap-4">
             {view.kind === "create" && (
-              <div className="flex items-center justify-between gap-3 rounded-md border border-dashed px-3 py-2">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed px-3 py-2">
                 <span className="text-xs text-muted-foreground">
                   Import servers from a config file.
                 </span>
@@ -1101,7 +1101,7 @@ export function ChatMcpServersDialog({
             )}
 
             {form.transport === "http" && form.useOauth && (
-              <div className="grid gap-3 rounded-md border p-3">
+              <div className="grid gap-3 rounded-lg border p-3">
                 <div className="grid gap-2">
                   <Label htmlFor="mcp-oauth-client-id">OAuth client ID</Label>
                   <Input
@@ -1213,7 +1213,7 @@ export function ChatMcpServersDialog({
                 {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                 Import config
               </Button>
-              <Button size="sm" onClick={startCreate} disabled={importing}>
+              <Button variant="secondary" size="sm" onClick={startCreate} disabled={importing}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 Add server
               </Button>
@@ -1223,11 +1223,11 @@ export function ChatMcpServersDialog({
                 <Spinner />
               </div>
             ) : servers.filter((server) => !server.builtin_id).length === 0 ? (
-              <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground">
                 No custom MCP servers configured yet.
               </div>
             ) : (
-              <ul className="flex flex-col divide-y rounded-md border">
+              <ul className="flex flex-col divide-y rounded-xl border">
                 {servers.filter((server) => !server.builtin_id).map((server) => (
                   <li
                     key={server.id}

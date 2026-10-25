@@ -332,6 +332,242 @@ def test_tiny_model_segments_at_source_size(tiny_sam3):
     assert torch.is_grad_enabled()
 
 
+def test_instance_masks_are_the_union_split_per_detection(tiny_sam3):
+    """The Detailer's per-detection masks: one plane per instance in ``instances`` order, whose OR at the source
+    size is exactly the union mask; a plain Find keeps none."""
+    import numpy as np
+    from PIL import Image
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    image = Image.new("RGB", (64, 40), (120, 80, 40))
+    plain = segmenter.segment(
+        image, "sofa, pillow:3", threshold = 0.0, allow_gpu = False, path = tiny_sam3
+    )
+    assert plain.instance_logits == []
+    result = segmenter.segment(
+        image,
+        "sofa, pillow:3",
+        threshold = 0.0,
+        allow_gpu = False,
+        path = tiny_sam3,
+        instance_masks = True,
+    )
+    assert len(result.instance_logits) == len(result.instances) == 4
+    assert all(p.device.type == "cpu" and p.ndim == 2 for p in result.instance_logits)
+    import torch
+
+    union = seg.union_mask(torch.stack(result.instance_logits), 40, 64).numpy()
+    png = np.array(Image.open(io.BytesIO(result.mask_png))) > 0
+    assert (union == png).all()
+    assert "instance_logits" not in result.to_json()
+
+
+def test_detailer_budget_moves_only_the_planes_it_keeps(tiny_sam3, monkeypatch):
+    """The Detailer's call (``plane_filter`` + ``max_planes``): the same instances as a plain instance-mask call,
+    bit-identical planes for exactly the detections it keeps (filter first, then the cap, in ``instances`` order),
+    no union mask, and at most ``max_planes`` planes moved off the device."""
+    import torch
+    from PIL import Image
+
+    from core.inference import diffusion_detailer as det
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    image = Image.new("RGB", (64, 40), (120, 80, 40))
+    # A repeat with a larger cap after a smaller one: its extra planes are only picked on the second occurrence.
+    prompt = "pillow:1, sofa:2, pillow:4"
+    full = segmenter.segment(
+        image, prompt, threshold = 0.0, allow_gpu = False, path = tiny_sam3, instance_masks = True
+    )
+    assert len(full.instances) == 7
+    dropped = {full.instances[1].box, full.instances[4].box}
+
+    def keep(box):
+        return box not in dropped
+
+    # What the Detailer kept before: every plane moved, then filtered, then capped.
+    cap = 3
+    before = [p for p in zip(full.instances, full.instance_logits) if keep(p[0].box)][:cap]
+
+    def _no_union(*a, **k):
+        raise AssertionError("the Detailer's call built the union mask")
+
+    monkeypatch.setattr(seg, "union_mask", _no_union)
+    monkeypatch.setattr(seg, "mask_to_png", _no_union)
+    plane_shape = full.instance_logits[0].shape
+    real_float = torch.Tensor.float
+    moved = []
+
+    def _counting_float(self, *a, **k):
+        out = real_float(self, *a, **k)
+        if self.shape == plane_shape:  # a mask plane, not the (N, 4) boxes
+            moved.append(out)
+        return out
+
+    monkeypatch.setattr(torch.Tensor, "float", _counting_float)
+    budgeted = segmenter.segment(
+        image,
+        prompt,
+        threshold = 0.0,
+        allow_gpu = False,
+        path = tiny_sam3,
+        instance_masks = True,
+        plane_filter = keep,
+        max_planes = cap,
+    )
+    monkeypatch.setattr(torch.Tensor, "float", real_float)
+    assert budgeted.mask_png == b""
+    assert budgeted.instances == full.instances and budgeted.concepts == full.concepts
+    assert len(budgeted.instance_logits) == len(budgeted.instances)
+    after = [p for p in zip(budgeted.instances, budgeted.instance_logits) if p[1] is not None]
+    assert len(after) == cap and len(moved) <= cap
+    assert [i for i, _ in after] == [i for i, _ in before]
+    assert all(torch.equal(a, b) for (_, a), (_, b) in zip(after, before))
+    sized = [p for p in zip(budgeted.instances, budgeted.instance_logits) if keep(p[0].box)]
+    assert all(plane is not None for _, plane in sized[:cap])
+    assert det.MAX_DETECTIONS >= cap
+
+
+def _small_model():
+    """Stands in for a loaded Sam3Model: real parameters and a buffer, one of them tied (shared storage)."""
+    import torch
+
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.LayerNorm(8))
+    model.register_buffer("table", torch.arange(16.0))
+    model.register_buffer("tied", model.table)
+    return model
+
+
+def _gpu_loaded(
+    monkeypatch,
+    segmenter,
+    model,
+    path = "/sam3",
+):
+    """``segmenter`` as if ``model`` were loaded on cuda:0 (its tensors stay on the CPU), with the weights plan, the
+    cache release and the device sync faked, and the host buffer pageable (no CUDA on the test host)."""
+    import torch
+
+    plan = seg.WeightsPlan("int8", path, "/sam3/w.safetensors", None, "test")
+    monkeypatch.setattr(seg, "plan_weights", lambda *a, **k: plan)
+    monkeypatch.setattr(seg, "_free_device_cache", lambda device: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    monkeypatch.setenv(seg.ENV_PARK_PIN, "0")
+    segmenter._model, segmenter._tokenizer = model, "tok"
+    segmenter._path, segmenter.device, segmenter._dtype = path, "cuda:0", torch.bfloat16
+    segmenter._weights_key = (plan.model_dir, plan.weights, plan.dequantize)
+    segmenter.precision, segmenter.weights_file = "int8", "w.safetensors"
+    return plan
+
+
+def _weights(model):
+    return {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+
+def test_park_keeps_the_model_in_host_ram_and_the_next_load_reuses_it(monkeypatch):
+    """The render (or the Detailer) parks SAM 3 instead of dropping it: its weight storages are emptied, and the next
+    call on the same card gives the same module its exact bytes back with no second load."""
+    import torch
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    model = _small_model()
+    before = _weights(model)
+    _gpu_loaded(monkeypatch, segmenter, model)
+    loads = []
+    monkeypatch.setattr(segmenter, "_load_weights", lambda *a, **k: loads.append(1))
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained",
+        lambda *a, **k: loads.append("tok"),
+        raising = False,
+    )
+    assert segmenter.release("image generation", wait = True, park = True) is True
+    assert segmenter.parked and not segmenter.loaded and not segmenter.holds_vram()
+    # Every weight storage gave its bytes up (the tied buffer once); the host buffer holds them.
+    assert all(t.untyped_storage().nbytes() == 0 for t in model.state_dict().values())
+    host = segmenter._parked["host"]
+    # One device storage behind every weight, emptied; one host buffer holds them (each slot 256-byte aligned).
+    assert host.storage.nbytes() == 0
+    assert host.total >= sum(v.numel() * v.element_size() for k, v in before.items() if k != "tied")
+    # A render's release while only the parked copy exists keeps it.
+    assert segmenter.release("image generation", wait = True, park = True) is False
+    assert segmenter.parked
+    segmenter._load("/sam3", "cuda:0", torch.bfloat16)
+    assert loads == []
+    assert segmenter._model is model and segmenter.device == "cuda:0" and not segmenter.parked
+    assert (segmenter.precision, segmenter.weights_file) == ("int8", "w.safetensors")
+    after = _weights(model)
+    assert all(torch.equal(before[k], after[k]) for k in before)
+    assert model.tied.data_ptr() == model.table.data_ptr()
+    # The second park reuses the same host buffer (no new allocation) and round-trips the bytes again.
+    buffer = host.buffer
+    segmenter.release("detailer", wait = True, park = True)
+    assert segmenter._parked["host"] is host and host.buffer is buffer
+    assert all(t.untyped_storage().nbytes() == 0 for t in model.state_dict().values())
+    segmenter._load("/sam3", "cuda:0", torch.bfloat16)
+    assert all(torch.equal(before[k], v) for k, v in _weights(model).items())
+    segmenter._cancel_park_timer()
+
+
+def test_a_full_release_or_another_load_drops_the_parked_copy(monkeypatch):
+    import torch
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    _gpu_loaded(monkeypatch, segmenter, _small_model())
+    segmenter.release("detailer", wait = True, park = True)
+    # Training start / a GPU handover: everything goes, the host copy too.
+    assert segmenter.release("training start", wait = True) is True
+    assert not segmenter.parked and not segmenter.loaded and segmenter._host is None
+
+    _gpu_loaded(monkeypatch, segmenter, _small_model())
+    segmenter.release("detailer", wait = True, park = True)
+    fresh = []
+    monkeypatch.setattr(
+        segmenter,
+        "_load_weights",
+        lambda plan, path, device, dtype: (fresh.append(device) or _small_model(), plan),
+    )
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained", lambda *a, **k: "tok", raising = False
+    )
+    # The CPU fallback (fp32) is a different load: the parked GPU copy is dropped and the files are read.
+    segmenter._load("/sam3", "cpu", torch.float32)
+    assert fresh == ["cpu"] and not segmenter.parked
+
+
+def test_park_expires_and_a_cpu_model_is_never_parked(monkeypatch):
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    segmenter.park_seconds = 0.05
+    _gpu_loaded(monkeypatch, segmenter, _small_model())
+    segmenter.release("detailer", wait = True, park = True)
+    deadline = time.time() + 5
+    while segmenter.parked and time.time() < deadline:
+        time.sleep(0.02)
+    assert not segmenter.parked
+
+    model = _small_model()
+    _gpu_loaded(monkeypatch, segmenter, model)
+    segmenter.device = "cpu"
+    assert segmenter.release("detailer", wait = True, park = True) is True
+    assert not segmenter.parked and not segmenter.loaded
+    assert model[0].weight.untyped_storage().nbytes() > 0
+
+
+def test_a_model_that_cannot_park_is_unloaded(monkeypatch):
+    import torch
+
+    class _Opaque(torch.Tensor):
+        """A tensor subclass with no __tensor_flatten__: nothing knows its storages."""
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    model = _small_model()
+    model.register_buffer("odd", torch.zeros(2).as_subclass(_Opaque))
+    _gpu_loaded(monkeypatch, segmenter, model)
+    assert segmenter.release("detailer", wait = True, park = True) is True
+    assert not segmenter.parked and not segmenter.loaded
+    # Nothing was emptied before the refusal.
+    assert model[0].weight.untyped_storage().nbytes() > 0
+
+
 def test_mask_planes_do_not_outlive_their_text(tiny_sam3, monkeypatch):
     import weakref
 
@@ -526,6 +762,41 @@ def test_choose_device_needs_room_on_the_card(monkeypatch):
     if getattr(torch.backends, "mps", None) is not None:
         monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     assert seg.choose_device(True) == ("cpu", torch.float32)
+
+
+def test_choose_device_credits_the_allocator_cache_parking_leaves(monkeypatch):
+    # Reusable CUDA cache counts as free, so the next detection must not fall back to the CPU.
+    import contextlib
+
+    import torch
+
+    from core.inference import diffusion_block_graph as bg
+    from core.inference import diffusion_cuda_graph as cg
+
+    gib = 1024**3
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device", lambda ordinal: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda ordinal: (2 * gib, 24 * gib))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 12 * gib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a: 4 * gib)
+    monkeypatch.setattr(bg, "pool_bytes", lambda device = None: 0)
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 0)
+    monkeypatch.setattr(seg, "_resident_cuda_ordinal", lambda: 1)
+    monkeypatch.setattr(seg, "_other_owner_on", lambda ordinal: None)
+    if getattr(torch.backends, "mps", None) is not None:
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    assert seg._cuda_free_mib(1) == (10 * 1024, 24 * 1024)
+    assert seg.choose_device(True) == ("cuda:1", torch.bfloat16)
+    # A live CUDA graph pool is reserved but not reusable: without it the card really is short.
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 7 * gib)
+    assert seg._cuda_free_mib(1) == (3 * 1024, 24 * 1024)
+    assert seg.choose_device(True) == ("cpu", torch.float32)
+    # The credit never claims more than the card.
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 90 * gib)
+    assert seg._cuda_free_mib(1) == (24 * 1024, 24 * 1024)
 
 
 def test_choose_device_never_shares_a_card_another_owner_holds(monkeypatch):
@@ -1043,14 +1314,17 @@ def test_start_download_uses_the_active_variant(monkeypatch):
 class _Recorder:
     def __init__(self):
         self.calls = []
+        self.parks = []
 
     def release_segmenter(
         self,
         reason,
         wait = False,
         handover = False,
+        park = False,
     ):
         self.calls.append((reason, wait))
+        self.parks.append(park)
         return True
 
 
@@ -1421,6 +1695,8 @@ def test_a_render_releases_the_segmenter_first(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_segment", recorder)
     inference_routes._release_mask_segmenter_for_render()
     assert recorder.calls == [("image generation", True)]
+    # Parked in host RAM for the next Find or Detailer pass, not dropped.
+    assert recorder.parks == [True]
     # Never loaded: nothing is imported.
     monkeypatch.delitem(sys.modules, "core.inference.diffusion_segment")
     inference_routes._release_mask_segmenter_for_render()
