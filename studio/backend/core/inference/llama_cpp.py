@@ -2546,11 +2546,9 @@ def _mcp_image_tokens(backend) -> int:
 
 # mtmd's delimiters around an image's embeddings, as admission allows for them.
 _IMAGE_WRAPPER_TOKENS = 128
-# Qwen-VL projectors fold one (patch * 2)-pixel square into each embedding: 14 px patches on
-# Qwen2/2.5-VL, 16 on Qwen3-VL, so an image costs about (w / s) * (h / s) up to the cap.
+# Qwen-VL merges a 2x2 patch square per embedding: 14 px patches on Qwen2/2.5-VL, 16 on Qwen3-VL.
 _MERGED_PATCH_PX = {"qwen2vl_merger": 28, "qwen2.5vl_merger": 28, "qwen3vl_merger": 32}
-# Fixed-resolution projectors cost the same for every image: Gemma 3 resizes to 896 px and pools
-# to 16 x 16 (258 KV positions measured on Gemma 3 4B against a 4224-token ceiling).
+# Fixed per image: Gemma 3 pools 896 px to 16 x 16 (258 measured on Gemma 3 4B, ceiling 4224).
 _FIXED_IMAGE_TOKENS = {"gemma3": 256}
 
 
