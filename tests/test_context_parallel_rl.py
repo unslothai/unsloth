@@ -716,3 +716,107 @@ def test_grpo_dapo_token_count_follows_the_adopted_completions():
         for p in procs:
             p.join(30)
     assert results == {0: "ok", 1: "ok"}, results
+
+
+def _gather_both_paths(x, weight, group, rank, size):
+    results = {}
+    for fused in (False, True):
+        calls = []
+        original = cp._fused_gather_ok
+        cp._fused_gather_ok = lambda group, fused = fused: fused
+        rs, ag = cp._reduce_scatter, cp._all_gather_into
+
+        def _count(name, fn):
+            def wrapper(*args, **kwargs):
+                calls.append(name)
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        cp._reduce_scatter = _count("reduce_scatter", rs)
+        cp._all_gather_into = _count("all_gather_into_tensor", ag)
+        try:
+            leaf = x.clone().requires_grad_(True)
+            full = cp._GatherSequence.apply(leaf, group, rank, size)
+            # Rank-dependent upstream grad: the reduction must really sum the peers.
+            (full.float() * (weight + rank)).sum().backward()
+        finally:
+            cp._fused_gather_ok, cp._reduce_scatter = original, rs
+            cp._all_gather_into = ag
+        results[fused] = (full.detach(), leaf.grad, calls)
+    return results
+
+
+def _gather_worker(rank, world, init_file, queue):
+    dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = world)
+    try:
+        group = dist.group.WORLD
+        assert cp._fused_gather_ok(group)
+        for dtype in (torch.float32, torch.float16, torch.bfloat16):
+            for shape in ((1, 3, 4), (3, 2, 5), (2, 4, 2, 3)):
+                torch.manual_seed(100 + rank)
+                x = torch.randn(shape).to(dtype)
+                full_shape = (shape[0], shape[1] * world, *shape[2:])
+                torch.manual_seed(7)
+                weight = torch.randn(full_shape)
+                got = _gather_both_paths(x, weight, group, rank, world)
+                (old, old_grad, old_calls), (new, new_grad, new_calls) = got[False], got[True]
+                assert old_calls == [] and new_calls == ["all_gather_into_tensor", "reduce_scatter"]
+                assert new.shape == full_shape and new.dtype == dtype and new.is_contiguous()
+                assert new._base is None
+                assert torch.equal(old, new), (dtype, shape)
+                assert new_grad.shape == shape and new_grad.dtype == dtype
+                assert torch.equal(old_grad, new_grad), (dtype, shape)
+                # And against a closed form: this rank's slice of sum_r (weight + r).
+                local = shape[1]
+                expect = sum((weight + r).to(dtype) for r in range(world)).narrow(
+                    1, rank * local, local
+                )
+                torch.testing.assert_close(new_grad, expect)
+        # A backend without the single-tensor collectives (MPI) keeps the list path.
+        dist_get_backend = dist.get_backend
+        try:
+            dist.get_backend = lambda group = None: "mpi"
+            assert not cp._fused_gather_ok(group)
+            dist.get_backend = lambda group = None: "cpu:gloo,cuda:nccl"
+            assert cp._fused_gather_ok(group)
+        finally:
+            dist.get_backend = dist_get_backend
+        x = torch.randn(2, 3, 4)
+        leaf = x.clone().requires_grad_(True)
+        calls = []
+        ag = cp._all_gather_into
+        cp._all_gather_into = lambda *a, **k: calls.append(1)
+        original = cp._fused_gather_ok
+        cp._fused_gather_ok = lambda group: False
+        try:
+            full = cp._GatherSequence.apply(leaf, group, rank, world)
+            full.sum().backward()
+        finally:
+            cp._all_gather_into, cp._fused_gather_ok = ag, original
+        assert calls == [] and full.shape == (2, 6, 4)
+        assert torch.equal(leaf.grad, torch.full_like(x, float(world)))
+        queue.put((rank, "ok"))
+    except BaseException:  # pragma: no cover - reported to the parent
+        import traceback
+        queue.put((rank, traceback.format_exc()))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_gather_sequence_fused_collectives_match_list_path_bitwise():
+    if "fork" not in mp.get_all_start_methods():
+        pytest.skip("needs fork")
+    ctx = mp.get_context("fork")
+    queue = ctx.Queue()
+    with tempfile.TemporaryDirectory() as tmp:
+        init_file = os.path.join(tmp, "init")
+        procs = [
+            ctx.Process(target = _gather_worker, args = (r, 2, init_file, queue)) for r in range(2)
+        ]
+        for p in procs:
+            p.start()
+        results = dict(queue.get(timeout = 120) for _ in procs)
+        for p in procs:
+            p.join(30)
+    assert results == {0: "ok", 1: "ok"}, results

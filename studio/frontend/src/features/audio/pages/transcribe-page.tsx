@@ -55,7 +55,11 @@ import { transcribeLanguageFor } from "../transcribe-languages";
 import type { TranscriptExportFormat } from "../transcript-export";
 import { formatTimestamp } from "../transcript-model";
 import type { TranscriptProgress } from "../transcript-stream";
-import { GenerateActions, type GenerateBlocker } from "./tts-workspace";
+import {
+  BlockerNote,
+  GenerateActions,
+  type GenerateBlocker,
+} from "./tts-workspace";
 
 // Radix Select cannot hold an empty value, so "detect" travels as this.
 const AUTO = "__auto__";
@@ -479,7 +483,7 @@ export function TranscribeFooter({
       ) : null}
       <div className="flex flex-wrap items-center justify-center gap-2">
         <Button
-          className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className="relative z-10 mx-auto h-10 px-7 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
           variant={running ? "destructive" : "dark"}
@@ -505,13 +509,14 @@ export function TranscribeFooter({
           )}
         </Button>
       </div>
-      {(blocker || notice) && !running ? (
+      {blocker && !running ? (
+        <BlockerNote id="transcribe-blocker" blocker={blocker} />
+      ) : notice && !running ? (
         <p
-          id={blocker ? "transcribe-blocker" : "transcribe-notice"}
+          id="transcribe-notice"
           className="text-center text-ui-11p5 leading-snug text-muted-foreground"
         >
-          {blocker ? blocker.reason : notice}
-          <GenerateActions actions={blocker?.actions} />
+          {notice}
         </p>
       ) : null}
     </div>

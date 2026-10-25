@@ -492,3 +492,62 @@ def test_failed_lookup_encoder_error_is_not_chained(monkeypatch):
     with pytest.raises(RuntimeError) as info:
         pipe.encode_prompt("a cat")
     assert info.value.__context__ is None
+
+
+class WanStubPipeline:
+    """Wan's shape: encode_prompt calls _get_t5_prompt_embeds once per text (prompt, then negative)."""
+
+    def __init__(self):
+        self.t5_calls = []
+        self._execution_device = torch.device("cpu")
+        self.text_encoder = torch.nn.Linear(2, 2)
+
+    def _get_t5_prompt_embeds(
+        self,
+        prompt = None,
+        num_videos_per_prompt = 1,
+        max_sequence_length = 226,
+        device = None,
+        dtype = None,
+    ):
+        self.t5_calls.append(prompt)
+        return torch.full((num_videos_per_prompt, 3), float(sum(map(ord, str(prompt)))))
+
+    def encode_prompt(
+        self,
+        prompt,
+        negative_prompt = None,
+        do_classifier_free_guidance = True,
+        device = None,
+        dtype = None,
+    ):
+        pos = self._get_t5_prompt_embeds(prompt = prompt, device = device, dtype = dtype)
+        neg = self._get_t5_prompt_embeds(prompt = negative_prompt, device = device, dtype = dtype)
+        return pos, neg
+
+
+def test_wan_negative_prompt_is_encoded_once_across_new_prompts():
+    pipe = WanStubPipeline()
+    assert prompt_cache.install(pipe)
+    want = WanStubPipeline()
+    for text in ("a cat", "a dog", "a boat"):
+        got = pipe.encode_prompt(text, negative_prompt = "blurry")
+        ref = want.encode_prompt(text, negative_prompt = "blurry")
+        assert all(torch.equal(a, b) for a, b in zip(got, ref))
+    assert pipe.t5_calls == ["a cat", "blurry", "a dog", "a boat"]
+
+
+def test_wan_per_text_cache_kill_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PROMPT_CACHE_PER_TEXT", "0")
+    pipe = WanStubPipeline()
+    assert prompt_cache.install(pipe)
+    for text in ("a cat", "a dog"):
+        pipe.encode_prompt(text, negative_prompt = "blurry")
+    assert pipe.t5_calls == ["a cat", "blurry", "a dog", "blurry"]
+
+
+def test_per_text_cache_is_wan_only():
+    pipe = _EncodePipe()
+    pipe._get_t5_prompt_embeds = lambda **kw: None
+    assert prompt_cache._per_text_method(pipe) is None
+    assert prompt_cache._per_text_method(WanStubPipeline()) == "_get_t5_prompt_embeds"

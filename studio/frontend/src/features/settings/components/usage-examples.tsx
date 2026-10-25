@@ -35,6 +35,7 @@ import {
   BotIcon,
   Copy01Icon,
   InformationCircleIcon,
+  SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -833,12 +834,13 @@ export function UsageExamples({
 
   return (
     <section className="flex min-w-0 max-w-full flex-col gap-4">
-      <h2 className="settings-heading text-sm font-semibold">
+      <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+        <HugeiconsIcon icon={SourceCodeIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
         {t("settings.apiKeys.usageExamples")}
       </h2>
       {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
       {cloudflareUrl ? (
-        <div className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
+        <div className="flex min-w-0 items-center justify-between gap-2 rounded-full border border-border px-4 py-2">
           <div className="flex shrink-0 items-center gap-1.5">
             <Switch
               size="sm"
@@ -927,10 +929,11 @@ export function UsageExamples({
         onOsChange={setOs}
       />
       <div className="flex min-w-0 flex-col gap-2.5 pt-2">
-        <div className="flex h-5 items-center justify-between gap-3">
-          <span className="text-xs font-medium text-foreground">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+            <HugeiconsIcon icon={BotIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
             {t("settings.apiKeys.codingAgents")}
-          </span>
+          </h2>
           {/* Agents is owner-only (settings-tab-visibility.ts): other accounts would land
               on General, so they get the agent's docs instead. The tab restores its agent
               from this pref when it mounts. */}
@@ -943,7 +946,6 @@ export function UsageExamples({
               }}
               className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <HugeiconsIcon icon={BotIcon} className="size-3.5" />
               {t("settings.apiKeys.openAgentsTab")}
               <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
             </button>
@@ -979,7 +981,7 @@ export function UsageExamples({
               >
                 <SelectTrigger
                   aria-label={t("settings.agents.agent")}
-                  className="w-full rounded-lg"
+                  className="w-full rounded-full"
                 >
                   <SelectValue>
                     <span className="flex min-w-0 items-center gap-2">
@@ -1016,7 +1018,7 @@ export function UsageExamples({
         </div>
         <div className="relative min-w-0">
           <code
-            className="block min-w-0 whitespace-pre-wrap break-all rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
+            className="block min-w-0 whitespace-pre-wrap break-all rounded-3xl border border-border bg-background/70 py-2.5 pr-10 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
             data-reload-snapshot-sensitive={apiKey ? "" : undefined}
           >
             {agentCommand}
@@ -1024,7 +1026,7 @@ export function UsageExamples({
           <button
             type="button"
             onClick={handleCopyAgent}
-            className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="absolute top-1.5 right-2 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             aria-label={t("settings.apiKeys.copySnippet")}
           >
             <HugeiconsIcon

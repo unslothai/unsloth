@@ -536,15 +536,16 @@ jobs:
           done
           pip install -e . --no-deps
 
-      # Ruff version read from .pre-commit-config.yaml so test_formatter_fixed_point.py does not skip.
-      - name: Install the pinned ruff (formatter fixed-point guard)
+      # ruff-unsloth wheels read from .pre-commit-config.yaml so test_formatter_fixed_point.py
+      # does not skip. pip keeps the one whose marker matches this runner and checks its sha256.
+      - name: Install the pinned ruff-unsloth (formatter fixed-point guard)
         run: |
-          pin="$(python -c 'import sys; sys.path.insert(0, "scripts"); import run_ruff_format as r; print(r.pinned_ruff_version(r.CONFIG.read_text(encoding = "utf-8")) or "")')"
-          if [ -z "$pin" ]; then
-            echo "::error::.pre-commit-config.yaml no longer pins a ruff for ruff-format-with-kwargs"
+          python -c 'import sys; sys.path.insert(0, "scripts"); import run_ruff_format as r; print("\n".join(r.pinned_requirements(r.CONFIG.read_text(encoding = "utf-8"))))' > "$RUNNER_TEMP/ruff-unsloth.txt"
+          if [ ! -s "$RUNNER_TEMP/ruff-unsloth.txt" ]; then
+            echo "::error::.pre-commit-config.yaml no longer pins ruff-unsloth for ruff-format-with-kwargs"
             exit 1
           fi
-          pip install "ruff==$pin"
+          pip install -r "$RUNNER_TEMP/ruff-unsloth.txt"
 
       - name: Repo tests (CPU, auto-discovered)
         env:
