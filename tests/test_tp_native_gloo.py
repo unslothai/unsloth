@@ -1136,7 +1136,9 @@ def test_trainer_splits_mixed_optimizer_groups_for_tp_only():
         pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
     for rank, res in enumerate(_spawn("trainer", 2, dp = 1, tp = 2, lora_kwargs = kw)):
         assert res["mixed_groups"] == 0, rank
-        assert "already built the scheduler" in (res["refusals"]["prebuilt_scheduler"] or ""), res["refusals"]
+        assert "already built the scheduler" in (res["refusals"]["prebuilt_scheduler"] or ""), res[
+            "refusals"
+        ]
         assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (
             rank,
             res["losses"],
