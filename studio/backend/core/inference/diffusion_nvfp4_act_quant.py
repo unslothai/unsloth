@@ -120,6 +120,32 @@ def describe() -> dict:
     return dict(_STATE)
 
 
+_CACHE_TAG_PREFIX = "unsloth_nvfp4_act_quant="
+_TAG_ON = "1"
+_TAG_OFF = "0"
+
+
+def _set_compile_cache_tag(tag: str | None) -> None:
+    """Key torch's FX/AOTAutograd caches on the quantiser: the Dynamo graph calls ``to_nvfp4`` by name, so untagged,
+    a graph cached with the patch on is replayed with it off (the kill switch then still runs the kernel) and the
+    reverse. ``None`` removes our tag; other tags are kept. NVFP4 loads always set ``1`` / ``0``: pre-tag caches are
+    untagged and may hold the patched graph, so an untagged "off" could replay the kernel."""
+    try:
+        import torch.compiler.config as _cc
+    except Exception:  # noqa: BLE001 - torch without compiler config: no persistent compile cache to split
+        return
+    current = getattr(_cc, "cache_key_tag", None)
+    if not isinstance(current, str):
+        return
+    parts = [p for p in current.split(";") if p and not p.startswith(_CACHE_TAG_PREFIX)]
+    if tag:
+        parts.append(_CACHE_TAG_PREFIX + tag)
+    try:
+        _cc.cache_key_tag = ";".join(parts)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _build_op():
     """Register ``unsloth_nvfp4::act_quant(x, per_tensor_scale) -> (qdata u8 [M, K/2], scales u8 flat)``."""
     global _OP
@@ -311,10 +337,14 @@ def install_nvfp4_act_quant_patch(logger: Any = None) -> bool:
     """Swap ``NVFP4Tensor.to_nvfp4`` for the one-pass kernel after an on-device bit-identity check. Idempotent."""
     global _ORIGINAL
     if not fast_act_quant_enabled():
-        _STATE["reason"] = f"{FAST_ACT_QUANT_ENV}=0"
+        with _LOCK:
+            _restore_original_locked()
+            _STATE["reason"] = f"{FAST_ACT_QUANT_ENV}=0"
+            _set_compile_cache_tag(_TAG_OFF)
         return False
     with _LOCK:
         if _STATE["installed"]:
+            _set_compile_cache_tag(_TAG_ON)
             return bool(_STATE["verified"])
         try:
             import torch
@@ -322,6 +352,7 @@ def install_nvfp4_act_quant_patch(logger: Any = None) -> bool:
 
             if not torch.cuda.is_available():
                 _STATE["reason"] = "cuda unavailable"
+                _set_compile_cache_tag(_TAG_OFF)
                 return False
             _ORIGINAL = NVFP4Tensor.to_nvfp4
             ok, reason = verify()
@@ -332,6 +363,7 @@ def install_nvfp4_act_quant_patch(logger: Any = None) -> bool:
         if ok:
             NVFP4Tensor.to_nvfp4 = staticmethod(_patched_to_nvfp4)
             _STATE["installed"] = True
+        _set_compile_cache_tag(_TAG_ON if ok else _TAG_OFF)
     if logger is not None:
         try:
             logger.info(
@@ -342,10 +374,21 @@ def install_nvfp4_act_quant_patch(logger: Any = None) -> bool:
     return ok
 
 
+def _restore_original_locked() -> None:
+    if _STATE["installed"] and _ORIGINAL is not None:
+        from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
+        NVFP4Tensor.to_nvfp4 = staticmethod(_ORIGINAL)
+    _STATE["installed"] = False
+    _STATE["verified"] = None
+
+
 def uninstall_nvfp4_act_quant_patch() -> None:
     with _LOCK:
-        if _STATE["installed"] and _ORIGINAL is not None:
-            from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
-            NVFP4Tensor.to_nvfp4 = staticmethod(_ORIGINAL)
-        _STATE["installed"] = False
-        _STATE["verified"] = None
+        _restore_original_locked()
+        _set_compile_cache_tag(None)
+
+
+def reset_compile_cache_tag() -> None:
+    """Per load: a non-NVFP4 load keeps the untagged key instead of inheriting the last NVFP4 load's tag."""
+    with _LOCK:
+        _set_compile_cache_tag(None)

@@ -110,7 +110,7 @@ function NoteRow({
   detail: string;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1">
+    <div className="flex items-center gap-2 rounded-md px-1.5 py-1">
       <span className={ROW_ICON_CLASS}>
         <HugeiconsIcon
           icon={icon}
@@ -145,7 +145,7 @@ function LoadedModelRow({
   const label = loadedModelLabel(entry);
   const target = loadedModelTarget(entry.source, entry.workflows);
   return (
-    <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
+    <div className="flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
       {/* Only the label half is the link: the eject button cannot nest inside it. */}
       <Tooltip>
         <TooltipTrigger asChild={true}>
@@ -407,7 +407,7 @@ export function LoadedModelsIndicator({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[calc(268px*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
+        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[calc(268px*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg p-1 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-2.5 pt-0.5">
             <HugeiconsIcon
               icon={SparkleIcon}

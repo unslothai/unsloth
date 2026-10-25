@@ -146,7 +146,6 @@ export function ChatMemorySection() {
             </span>
             <Button
               variant="outline"
-              className="px-3.5"
               disabled={!dirty || tooLarge || saving}
               onClick={() => void save({ text: draft })}
             >

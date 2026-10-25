@@ -146,7 +146,7 @@ export function ResearchMessage(): ReactElement | null {
   return (
     <div
       className={cn(
-        "rounded-[22px] border border-border/70 bg-card/65 p-4",
+        "rounded-2xl border border-border/70 bg-card/65 p-4",
         needsApproval && "border-amber-500/25 bg-amber-500/[0.035]",
         failed && "border-destructive/25 bg-destructive/[0.025]",
       )}
@@ -154,7 +154,7 @@ export function ResearchMessage(): ReactElement | null {
       <div className="flex items-start gap-3">
         <span
           className={cn(
-            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-[12px] bg-primary/10 text-primary",
+            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-sm bg-primary/10 text-primary",
             failed && "bg-destructive/10 text-destructive",
           )}
         >
@@ -189,7 +189,7 @@ export function ResearchMessage(): ReactElement | null {
           </p>
           <Button
             size="sm"
-            variant={needsApproval ? "default" : "outline"}
+            variant={needsApproval ? "dark" : "outline"}
             className="mt-3"
             onClick={() => openResearchRun(run)}
           >
