@@ -245,3 +245,56 @@ def test_non_blocking_batches_only_for_pinned_cuda_loaders(monkeypatch):
     t, config = trainer()
     assert _unsloth_non_blocking_batches(t) is False and config.non_blocking is False
     assert _unsloth_non_blocking_batches(SimpleNamespace()) is False
+
+
+def _compile_over_segment_counts(dynamic):
+    import torch._dynamo as dynamo
+    from torch._dynamo.utils import counters
+
+    def step(x, lengths):
+        packing.clear_packed_caches()
+        _, cu_seqlens, max_seqlen = packing.get_packed_info_from_kwargs(
+            {"packed_seq_lengths": lengths}, x.device
+        )
+        return x * max_seqlen + cu_seqlens[-1]
+
+    dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(step, backend = "eager", dynamic = dynamic)
+    for n in range(3, 15):
+        lengths = torch.full((n,), 4, dtype = torch.int32)
+        out = compiled(torch.ones(4), lengths)
+        assert torch.equal(out, torch.ones(4) * 4 + 4 * n)
+    graphs = counters["stats"]["unique_graphs"]
+    dynamo.reset()
+    return graphs
+
+
+def test_compiled_dynamic_does_not_specialize_on_segment_count():
+    # 12 segment counts: the tensor path traces a handful of graphs; a host tuple of lengths
+    # would trace one per count and hit the recompile limit.
+    assert _compile_over_segment_counts(dynamic = True) <= 4
+
+
+def test_compiling_takes_tensor_path(monkeypatch):
+    monkeypatch.setattr(packing, "_is_compiling", lambda: True)
+    seq = torch.tensor([3, 5, 2], dtype = torch.int64)
+    lengths, cu, max_seqlen = packing.get_packed_info_from_kwargs(
+        {"packed_seq_lengths": seq}, "cpu"
+    )
+    old = _old_packed_info(seq, "cpu")
+    _same(lengths, old[0])
+    _same(cu, old[1])
+    assert max_seqlen == old[2]
+    # No host tuple recorded: downstream helpers take their own (traceable) route.
+    assert packing._cached_host_lengths(lengths) is None
+
+
+def test_pinned_to_device_falls_back_to_pageable(monkeypatch):
+    t = torch.arange(5, dtype = torch.int32)
+
+    def refuse(self, *args, **kwargs):
+        raise RuntimeError("cudaHostAlloc failed: out of pinned memory")
+
+    monkeypatch.setattr(torch.Tensor, "pin_memory", refuse)
+    _same(packing._pinned_to_device(t, "cpu"), t)
