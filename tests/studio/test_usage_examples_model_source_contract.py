@@ -42,10 +42,17 @@ def test_examples_never_print_a_hardcoded_model_id():
     assert re.search(r'"unsloth/[^"]+"', src) is None
     assert "function useExampleModelName(keylessOnly: boolean): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
-    assert "(model ? buildSnippets(base, key, toolsKey, model, os) : null)" in src
-    assert "if (!snippets) return;" in src
-    assert "{snippets ? (" in src
-    assert 't("settings.apiKeys.usageNoModel")' in src
+    # No servable model: the snippet names an obvious placeholder (#14914) instead of a repo id,
+    # and the note under the pickers says why, so a copied curl cannot silently 404.
+    assert 'const MODEL_PLACEHOLDER = "YOUR_MODEL";' in src
+    assert "buildSnippets(base, key, toolsKey, model ?? MODEL_PLACEHOLDER, os)" in src
+    assert len(re.findall(r"\bbuildSnippets\(", src)) == 2, "one definition, one call site"
+    note = src.find('t("settings.apiKeys.usageNoModel")')
+    assert note != -1
+    gate = src.rfind("{model ? null : (", 0, note)
+    assert (
+        gate != -1 and note - gate < 200
+    ), "the no-model note must render exactly when the example shows the placeholder"
 
     en = EN_TS.read_text(encoding = "utf-8")
     assert "usageNoModel:" in en
@@ -225,7 +232,8 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert "!(useTunnel && cloudflareUrl)" in src
     assert 'keylessBase && !apiKey && keylessScope === "inference"' in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
-    assert "[cloudflareUrl, onSettingsChange]" in section
+    assert "[cloudflareUrl, notify]" in section
+    assert "[onSettingsChange]" in section
     assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]
     assert "disabled on localhost" in section
     assert "read the files and settings in Unsloth" not in section

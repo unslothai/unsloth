@@ -678,9 +678,9 @@ def decode_rope_inplace(Q, K, cos, sin, position_ids):
         return False
     # The kernel indexes positions densely; an int32 last-column slice keeps its row stride.
     rope_ptr = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
+    # No host drain: cross-device copies already order after Q's stream (a drain cost split decode ~40%).
     with torch_gpu_device(Q.device):
         _rope_qk(Q, K, Q, K, cos2, sin2, rope_ptr, True, False, _eager_kernel)
-    _sync_if_split(Q)
     return True
 
 

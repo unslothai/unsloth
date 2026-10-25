@@ -54,7 +54,6 @@ test("the org rule still covers Meta's own upload", () => {
 });
 
 test("an ineligible owner gets nothing from the new stem", () => {
-  // Only RELABELED_OWNERS resolve by repo name; everyone else keeps their avatar.
   assert.equal(
     resolveOwnerProviderLogo("someone-else", "Muse-Glimmer-30B-GGUF"),
     null,

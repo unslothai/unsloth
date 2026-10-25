@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  ChevronDown,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -116,7 +112,7 @@ function LabelTile({
 
   return (
     // Named group: a bare one would also match the scroller and reveal every tile's Remove.
-    <div className="group/tile flex flex-col overflow-hidden rounded-[10px] border border-border transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]">
+    <div className="group/tile flex flex-col overflow-hidden rounded-lg border border-border transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]">
       <div className="relative aspect-square w-full overflow-hidden bg-muted">
         {thumb ? (
           <img src={thumb} alt={record.filename} className="size-full object-cover" />
@@ -271,7 +267,7 @@ export function DatasetLabelingGrid({
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               aria-label="Previous images"
             >
-              <ChevronLeftIcon className="size-3.5" />
+              <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-3.5" />
             </Button>
             <Button
               type="button"
@@ -282,7 +278,7 @@ export function DatasetLabelingGrid({
               onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
               aria-label="Next images"
             >
-              <ChevronRightIcon className="size-3.5" />
+              <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
             </Button>
           </div>
         )}
@@ -326,7 +322,7 @@ export function LabelingGridToggle({
       aria-expanded={open}
     >
       {open ? "Hide captions" : `Review captions (${count} image${count === 1 ? "" : "s"})`}
-      <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+      <HugeiconsIcon icon={ChevronDownStandardIcon} className={cn("size-3.5 transition-transform", open && "rotate-180")} />
     </Button>
   );
 }

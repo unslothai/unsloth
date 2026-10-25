@@ -26,6 +26,11 @@ for _up in _iso.parents:
 # Loaded by path: tests/_shared is put on sys.path only below.
 import os as _os  # noqa: E402
 
+# The suite predates the CPU training backend: a GPU-less runner must keep refusing `import unsloth`
+# (so GPU-path tests skip there, as before) and stubbed-torch tests must not inherit this host's
+# CPU-fallback answer. tests/test_cpu_backend_init.py removes it to exercise the backend itself.
+_os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
+
 _share_path = _iso.parent / "_shared" / "xdist_cpu_share.py"
 if _share_path.is_file():
     _spec = _ilu.spec_from_file_location("xdist_cpu_share", _share_path)

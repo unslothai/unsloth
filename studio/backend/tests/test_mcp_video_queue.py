@@ -197,6 +197,30 @@ def test_the_queue_waits_out_gpu_busy_and_fails_a_refused_video_with_its_reason(
     assert job_c["id"] == "video-2"
 
 
+def test_a_settled_record_drops_its_request_and_caller(monkeypatch):
+    # The body can carry tens of MiB of reference images and the caller its token; a settled record
+    # only answers get_job, so neither may outlive the queue's last use of them.
+    refused = openai_error("Unsupported size 1x1.", 400, param = "size")
+    fake = OneVideoStudio()
+    with open_client(monkeypatch, fake) as http:
+        generate(http, "A")
+        b, c, d = generate(http, "B"), generate(http, "C"), generate(http, "D")
+        assert call_tool(http, "cancel", {"kind": "video", "id": d["id"]})["structuredContent"][
+            "cancelled"
+        ]
+        fake.answers = [refused]
+        fake.finish()
+        job_b = wait_until(http, b["id"], lambda job: job["status"] != "queued")
+        job_c = wait_until(http, c["id"], lambda job: job["status"] != "queued")
+        job_d = get_video(http, d["id"])
+        items = {item.id: item for item in video_queue._items.values()}
+    assert [job_b["status"], job_c["id"], job_d["status"]] == ["failed", "video-2", "cancelled"]
+    assert {items[q["id"]].status for q in (b, c, d)} == {"failed", "submitted", "cancelled"}
+    for q in (b, c, d):
+        item = items[q["id"]]
+        assert (item.body, item.hints, item.caller) == (None, None, None)
+
+
 @pytest.mark.parametrize(
     "answer, text",
     [
