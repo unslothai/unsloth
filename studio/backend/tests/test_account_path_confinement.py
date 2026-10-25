@@ -213,8 +213,6 @@ def test_normal_weight_index_is_clean(tmp_path):
     ids = ["index", "transformers_weights", "module_index", "module_path"],
 )
 def test_a_dotdot_after_a_linked_directory_is_judged_where_it_lands(tmp_path, files):
-    """The kernel follows ``bridge`` before applying ``..``, so the name reads the link target's
-    parent, not the model folder its text points at."""
     from utils.security.file_security import escaping_weight_references
 
     victim = tmp_path / "victim"
@@ -261,8 +259,7 @@ def test_links_that_do_not_change_where_dotdot_lands_still_pass(tmp_path):
     ids = ["index", "transformers_weights", "module_path"],
 )
 def test_a_dotdot_through_a_link_that_stays_in_the_folder_passes(tmp_path, files):
-    """``alias`` points deeper into the same model, so ``alias/../x`` opens ``actual/x``: not
-    where the text says, but still inside the model folder."""
+    # alias/../x opens actual/x: not where the text says, but still inside the model.
     from utils.security.file_security import escaping_weight_references
 
     folder = _write(tmp_path / "m", files)
@@ -281,8 +278,6 @@ def test_a_dotdot_through_a_link_that_stays_in_the_folder_passes(tmp_path, files
 
 @symlinks
 def test_a_hub_cache_snapshot_with_blob_links_passes(tmp_path):
-    """Snapshot files are links into ../../blobs; a ``..`` through a real snapshot subfolder still
-    lands in the snapshot."""
     from utils.security.file_security import escaping_weight_references
 
     repo = tmp_path / "hub" / "models--org--name"
