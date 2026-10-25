@@ -553,7 +553,6 @@ export function createWorldGame(
         }
       }
 
-      // Nearest thing in reach.
       let best: Interactable | null = null;
       let bestD = REACH * T;
       let bx = 0;

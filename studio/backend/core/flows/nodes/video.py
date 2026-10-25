@@ -129,6 +129,7 @@ MAX_CONCAT_FRAMES = 20_000
 def concat_clips(clips: list[bytes]) -> bytes:
     """One H.264 MP4 of the clips back to back, at the first clip's size and frame rate (audio is dropped)."""
     import io
+    from fractions import Fraction
 
     import av
 
@@ -142,7 +143,8 @@ def concat_clips(clips: list[bytes]) -> bytes:
                     raise FlowNodeError("One of the clips has no video track")
                 source = src.streams.video[0]
                 if stream is None:
-                    rate = source.average_rate or 24
+                    rate = Fraction(source.average_rate or 24)
+                    step = 1 / rate
                     stream = dst.add_stream("libx264", rate = rate)
                     # yuv420p needs even sides.
                     stream.width = source.codec_context.width // 2 * 2
@@ -157,7 +159,9 @@ def concat_clips(clips: list[bytes]) -> bytes:
                     frame = frame.reformat(
                         width = stream.width, height = stream.height, format = "yuv420p"
                     )
-                    frame.pts = None
+                    # Frames are numbered across clips at the output rate; None would stamp them all at 0.
+                    frame.pts = frames - 1
+                    frame.time_base = step
                     for packet in stream.encode(frame):
                         dst.mux(packet)
         if stream is not None:

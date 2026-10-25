@@ -88,7 +88,8 @@ class _FakeGraph:
 
 
 class _FakeStream:
-    def __init__(self):
+    def __init__(self, device = None):
+        self.device = device
         self.waited: list = []
 
     def wait_stream(self, other):
@@ -105,6 +106,7 @@ def _build_stub_torch():
         "empty_cache": 0,
         "inference_mode": [],
         "graph_error": None,
+        "capture_streams": [],
     }
     torch._records = records
 
@@ -135,8 +137,15 @@ def _build_stub_torch():
         return _FakeGraph()
 
     @contextlib.contextmanager
-    def _graph(graph, pool = None):
+    def _graph(
+        graph,
+        pool = None,
+        stream = None,
+        capture_error_mode = "global",
+    ):
         records["graphs"].append((graph, pool))
+        records["capture_mode"] = capture_error_mode
+        records["capture_streams"].append(stream)
         yield
 
     @contextlib.contextmanager
@@ -198,9 +207,11 @@ def _clean_module_globals():
     """The shared pool and the live-wrapper set are process-wide, so no test may inherit them."""
     cg._POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
+    cg._CAPTURE_STREAMS.clear()
     yield
     cg._POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
+    cg._CAPTURE_STREAMS.clear()
 
 
 def _t(shape = (1, 4), **kwargs):
@@ -286,6 +297,21 @@ def test_capture_then_replay_uses_one_graph_and_copies_statics(stub_torch):
     assert module.calls == cg.WARMUP_ITERS + 1
     assert stub_torch._records["synchronize"] == 1
     assert stub_torch._records["inference_mode"] == [False]
+
+
+def test_each_card_records_on_its_own_capture_stream(stub_torch):
+    """torch's default capture stream lives on the first card that captured; each card needs its own."""
+    first = _armed()
+    first(_t(device_index = 0), timestep = _t((1,), device_index = 0), return_dict = False)
+    second = _armed()
+    second(_t(device_index = 1), timestep = _t((1,), device_index = 1), return_dict = False)
+    third = _armed()
+    third(_t(device_index = 1), timestep = _t((1,), device_index = 1), return_dict = False)
+    streams = stub_torch._records["capture_streams"]
+    assert [s.device for s in streams] == [0, 1, 1]
+    assert (
+        streams[1] is streams[2]
+    ), "one stream per card: pool blocks are reused only from the recording stream"
 
 
 def test_new_shape_adds_a_second_graph(stub_torch):

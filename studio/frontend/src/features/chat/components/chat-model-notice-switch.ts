@@ -68,6 +68,78 @@ export function chatModelIsResident(
   );
 }
 
+export type LoadedChatModelSlot = {
+  id: string;
+  quant?: string | null;
+  checkpoint?: string;
+};
+
+/** The loaded slot already serving a chat's model, or null. Another quant of the same repo is a different load. */
+export function chatModelLoadedTarget(
+  createdModel: ChatModelSwitchTarget,
+  loadedModels: readonly LoadedChatModelSlot[],
+): ChatModelSwitchTarget | null {
+  for (const slot of loadedModels) {
+    const checkpoint = slot.checkpoint ?? slot.id;
+    // undefined = the slot's quant is still being looked up: wait for it rather than guess.
+    if (
+      slot.quant === undefined ||
+      !sameHfCacheIdentity(checkpoint, createdModel.modelId)
+    ) {
+      continue;
+    }
+    if (createdModel.ggufVariant != null) {
+      if (
+        !slot.quant ||
+        !ggufVariantsMatch(createdModel.ggufVariant, slot.quant)
+      ) {
+        continue;
+      }
+    }
+    return {
+      modelId: checkpoint,
+      ggufVariant: slot.quant ?? createdModel.ggufVariant ?? null,
+    };
+  }
+  return null;
+}
+
+export type ChatModelAutoSwitch = { threadId?: string; settled: boolean };
+
+/** Settles once the open chat is on its model, so a later pick inside it is never undone. */
+export function stepChatModelAutoSwitch(
+  previous: ChatModelAutoSwitch,
+  input: {
+    threadId: string | undefined;
+    active: boolean;
+    resident: boolean;
+    loadedTarget: ChatModelSwitchTarget | null;
+    modelLoading: boolean;
+  },
+): { state: ChatModelAutoSwitch; switchTo: ChatModelSwitchTarget | null } {
+  if (!(input.active && input.threadId)) {
+    return { state: { threadId: undefined, settled: false }, switchTo: null };
+  }
+  const state =
+    previous.threadId === input.threadId
+      ? previous
+      : { threadId: input.threadId, settled: false };
+  if (state.settled) {
+    return { state, switchTo: null };
+  }
+  if (input.resident) {
+    return { state: { ...state, settled: true }, switchTo: null };
+  }
+  if (!input.loadedTarget) {
+    return { state, switchTo: null };
+  }
+  return {
+    state: { ...state, settled: true },
+    // A load already running is a newer pick than the one this chat saved.
+    switchTo: input.modelLoading ? null : input.loadedTarget,
+  };
+}
+
 /** The live picker id Switch Back loads: the exact id, else a row of the same HF cache repo. */
 export function chatModelSelectableId(
   modelId: string,
@@ -159,6 +231,15 @@ export function createChatModelHistoryReader(
       }
       updateSeen = true;
       emit(chatModelSwitchTargetFromThread(thread));
+    },
+    // Another tab's change: no model until a fresh read lands, and no in-flight opening read answers.
+    invalidate(): void {
+      if (disposed) {
+        return;
+      }
+      updateSeen = true;
+      emitted = undefined;
+      onModel(null);
     },
     dispose(): void {
       disposed = true;

@@ -308,7 +308,6 @@ export function WorldPlayer({
   const onInteractRef = useRef(onInteract);
   onInteractRef.current = onInteract;
 
-  // Load art, then boot Phaser (its own chunk).
   useEffect(() => {
     let live = true;
     let handle: WorldGameHandle | null = null;

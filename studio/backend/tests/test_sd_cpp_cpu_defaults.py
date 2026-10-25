@@ -62,12 +62,14 @@ def _host(
     limit = None,
     platform = "linux",
     physical = None,
+    allowed = None,
 ):
     monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
     monkeypatch.setattr(bk.sys, "platform", platform)
     monkeypatch.setattr(bk.os, "cpu_count", lambda: cpus)
     monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda: limit)
     monkeypatch.setattr(bk, "_linux_physical_cores", lambda *a, **k: physical)
+    monkeypatch.setattr(bk, "_allowed_cpus", lambda: cpus if allowed is None else allowed)
 
 
 def test_without_a_quota_the_default_is_unchanged(monkeypatch):
@@ -359,19 +361,29 @@ def test_the_physical_count_is_never_read_off_linux(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "cpus, physical, limit, expected",
+    "cpus, physical, limit, allowed, expected",
     [
-        (32, 16, None, None),  # SMT: sd.cpp's own default is the same count
-        (8, 8, None, 8),  # no SMT: sd.cpp's fallback would run 4
-        (192, 2, None, 2),  # cpuset: sd.cpp ignores the affinity mask
-        (4, 4, None, None),  # sd.cpp keeps every CPU at 4 or fewer
-        (32, 16, 6, 6),  # a tighter quota, as before
+        (32, 16, None, None, None),  # SMT: sd.cpp's own default is the same count
+        (8, 8, None, None, 8),  # no SMT: sd.cpp's fallback would run 4
+        (192, 2, None, 4, 2),  # cpuset: sd.cpp ignores the affinity mask
+        (4, 4, None, None, None),  # sd.cpp keeps every CPU at 4 or fewer
+        (32, 16, 6, None, 6),  # a tighter quota, as before
+        (
+            4,
+            2,
+            None,
+            None,
+            None,
+        ),  # 4 vCPU / 2 cores, nothing restricting: sd.cpp's 4 threads measured faster than 2
+        (2, 1, None, None, None),  # 2 vCPU / 1 core: sd.cpp's 2, not 1
+        (4, 2, 2, None, 2),  # the same host under a 2-CPU quota: the quota still wins
+        (4, 2, None, 3, 2),  # or under a 3-CPU taskset
     ],
 )
 def test_explicit_threads_passes_the_count_when_sd_cpp_would_pick_another(
-    monkeypatch, cpus, physical, limit, expected
+    monkeypatch, cpus, physical, limit, allowed, expected
 ):
-    _host(monkeypatch, cpus = cpus, physical = physical, limit = limit)
+    _host(monkeypatch, cpus = cpus, physical = physical, limit = limit, allowed = allowed)
     monkeypatch.setattr(bk, "_apple_performance_cores", lambda: None)
     assert bk._explicit_threads() == expected
 

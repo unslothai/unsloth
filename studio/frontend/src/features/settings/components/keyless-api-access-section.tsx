@@ -18,7 +18,6 @@ import {
   loadKeylessApiAccess,
   updateKeylessApiAccess,
 } from "@/features/settings/api/keyless-api-access";
-import { cn } from "@/lib/utils";
 import { LaptopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useState } from "react";
@@ -186,7 +185,7 @@ export function KeylessApiAccessSection({
   return (
     <section
       data-settings-label="Keyless API access"
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
@@ -280,11 +279,12 @@ export function KeylessApiAccessSection({
               Cancel
             </Button>
             <Button
+              variant={
+                pending === "full" || pending === "tools"
+                  ? "destructive"
+                  : "dark"
+              }
               disabled={saving}
-              className={cn(
-                (pending === "full" || pending === "tools") &&
-                  "bg-destructive hover:bg-destructive/90 text-destructive-foreground",
-              )}
               onClick={applyPending}
             >
               {pending ? CONFIRM_COPY[pending].action : ""}

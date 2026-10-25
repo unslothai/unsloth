@@ -30,6 +30,24 @@ _BLOCK_FP8 = {
 }
 
 
+@pytest.fixture(autouse = True)
+def _restore_fp8_integration(monkeypatch):
+    # The real fp8 loads below patch Fp8Dequantize process-wide; later test files check the unpatched class.
+    try:
+        import transformers.integrations.finegrained_fp8 as fp8_integration
+    except Exception:
+        return
+    cls = getattr(fp8_integration, "Fp8Dequantize", None)
+    if cls is not None:
+        for name, value in list(vars(cls).items()):
+            if not name.startswith("__"):
+                monkeypatch.setattr(cls, name, value)
+    if hasattr(fp8_integration, "replace_with_fp8_linear"):
+        monkeypatch.setattr(
+            fp8_integration, "replace_with_fp8_linear", fp8_integration.replace_with_fp8_linear
+        )
+
+
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 @pytest.mark.parametrize("as_object", [False, True])
 def test_block_fp8_config_gets_dequantize(as_object):

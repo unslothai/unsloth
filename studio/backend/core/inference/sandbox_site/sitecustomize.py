@@ -305,3 +305,60 @@ try:
     _install()
 except Exception:  # noqa: BLE001 - a broken shim must never break user code
     pass
+
+# Approved host calls keep chat-installed packages importable, including Python started by Terminal.
+# Append only after the normal site setup; no .pth execution or stdlib/installed-package shadowing.
+_host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
+if _host_packages and _host_packages not in sys.path:
+    sys.path.append(_host_packages)
+
+
+# Helper modules the approved script imports by name come from the chat folder, after everything
+# else, so they never shadow anything. Served by a last-resort finder for exactly those names rather
+# than sys.path: site imports `usercustomize` after this file, and a library probing an optional
+# import must not find a module an earlier sandboxed call planted there.
+class _HostWorkdirFinder:
+    _skip = frozenset(("sitecustomize", "usercustomize"))
+
+    def __init__(self, workdir, names):
+        self._workdir = workdir
+        self._names = frozenset(names) - self._skip
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if path is not None or name not in self._names:
+            return None
+        import importlib.machinery
+
+        spec = importlib.machinery.PathFinder.find_spec(name, [self._workdir])
+        if spec is not None and spec.origin and spec.origin.endswith(".py"):
+            # A requested helper's own absolute imports come from the chat folder too, as before.
+            try:
+                import ast
+
+                with open(spec.origin, "rb") as f:
+                    tree = ast.parse(f.read())
+                found = set()
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        found.update(alias.name.split(".")[0] for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                        found.add(node.module.split(".")[0])
+                self._names = self._names | (frozenset(found) - self._skip)
+            except Exception:  # noqa: BLE001 - an unreadable helper just adds nothing
+                pass
+        return spec
+
+
+_host_workdir = os.environ.get("_UNSLOTH_HOST_WORKDIR")
+_host_modules = [n for n in os.environ.get("_UNSLOTH_HOST_WORKDIR_MODULES", "").split(",") if n]
+if (
+    _host_workdir
+    and _host_modules
+    and not any(isinstance(f, _HostWorkdirFinder) for f in sys.meta_path)
+):
+    sys.meta_path.append(_HostWorkdirFinder(_host_workdir, _host_modules))

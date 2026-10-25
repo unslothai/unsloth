@@ -319,3 +319,27 @@ async def test_compare_handler_mean_reads_the_generated_delta_column():
     ctx = Ctx(inputs = {"table": head, "baseline": base}, params = {"key": ["k"], "metric": "delta"})
     out = await load_handlers()["table.compare"](ctx)
     assert out["delta"] == pytest.approx(2.0)
+
+
+@run_async
+async def test_rows_to_dataset_saves_every_row_of_a_big_table(monkeypatch):
+    from core.flows.nodes import data as D
+
+    rows = [{"i": i, "text": "x" * 200} for i in range(3000)]
+    ctx = Ctx()
+    big = await T.finish_table(ctx, T.make_table(rows))
+    stored = ctx.saved[0]
+
+    async def fake_bytes(_ctx, media):
+        return stored, "application/json"
+
+    sent = []
+
+    async def fake_upload(_ctx, rows, name):
+        sent.append(rows)
+        return {"kind": "dataset"}
+
+    monkeypatch.setattr(T, "media_bytes", fake_bytes)
+    monkeypatch.setattr(D, "upload_rows", fake_upload)
+    await load_handlers()["data.rows_to_dataset"](Ctx(inputs = {"rows": big}, params = {"name": "t"}))
+    assert len(sent[0]) == 3000 and sent[0][-1] == {"i": 2999, "text": "x" * 200}
