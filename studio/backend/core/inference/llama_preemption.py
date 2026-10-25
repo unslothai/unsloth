@@ -75,11 +75,12 @@ def parse_server_park_notice(line) -> Optional[tuple]:
 class ServerParkNotices:
     """One stream's own park state, with the aggregate `/metrics` probe behind it."""
 
-    __slots__ = ("_probe", "_parked", "_heard", "_line", "_skip")
+    __slots__ = ("_probe", "_parked", "_heard", "_line", "_skip", "_parked_since")
 
     def __init__(self, probe: Optional[Callable[[], bool]] = None) -> None:
         self._probe = probe
         self._parked: set = set()
+        self._parked_since: Optional[float] = None
         self._heard = False
         self._line = b""
         self._skip = False
@@ -91,9 +92,13 @@ class ServerParkNotices:
         self._heard = True
         kind, index = notice
         if kind == "preempted":
+            if not self._parked:
+                self._parked_since = time.monotonic()
             self._parked.add(index)
         elif kind == "resumed":
             self._parked.discard(index)
+            if not self._parked:
+                self._parked_since = None
 
     def feed(self, data) -> None:
         """Read a piece of this stream's body for its own park notices."""
@@ -135,6 +140,12 @@ class ServerParkNotices:
     @property
     def parked(self) -> bool:
         return bool(self._parked)
+
+    @property
+    def parked_since(self) -> Optional[float]:
+        """When this stream's current park began, by its own notices; None when not parked. The
+        park cap runs from here, not from whichever read deadline noticed the silence."""
+        return self._parked_since
 
     def excuses_silence(self) -> bool:
         """Whether this stream's silence is its own park. Blocks when it falls back to the probe,

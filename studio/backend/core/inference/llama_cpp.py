@@ -41638,6 +41638,10 @@ class LlamaCppBackend:
                         if crossed_at is None:
                             crossed_at = now
                         grace_left = crossed_at + _SERVER_PARK_STALL_CAP_S - now
+                        # Keepalives up to the cap, then silence, must not buy a second cap here.
+                        since = notices.parked_since if notices is not None else None
+                        if since is not None:
+                            grace_left = min(grace_left, since + _SERVER_PARK_STALL_CAP_S - now)
                         if grace_left <= 0:
                             return None
                         parked = notices is not None and notices.excuses_silence()

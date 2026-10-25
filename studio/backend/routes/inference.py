@@ -5246,6 +5246,10 @@ def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[],
                 if crossed_at is None:
                     crossed_at = now
                 grace_left = crossed_at + _RAW_PARK_STALL_CAP_S - now
+                # Keepalives up to the cap, then silence, must not buy a second cap here.
+                since = current["park"].parked_since
+                if since is not None:
+                    grace_left = min(grace_left, since + _RAW_PARK_STALL_CAP_S - now)
                 if grace_left <= 0:
                     raise
                 if not await _probe_off_the_loop(current["park"].excuses_silence):
@@ -5395,6 +5399,9 @@ async def _aiter_llama_stream_items(
         started_at = first_deadline_crossed_at if waiting_first_item else park_since
         if started_at is None:
             started_at = now if waiting_first_item else last_item_at
+        if park_above.parked_since is not None:
+            # The park's own start, so keepalives up to the cap do not buy a second one.
+            started_at = min(started_at, park_above.parked_since)
         if now - started_at >= _RAW_PARK_STALL_CAP_S:
             return False
         if waiting_first_item:
