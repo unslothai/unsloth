@@ -509,7 +509,35 @@ pub fn is_text_attachment_name(path: &Path) -> bool {
     path.file_name()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
-        .is_some_and(|name| TEXT_ATTACHMENT_NAMES.contains(&name.as_str()))
+        .is_some_and(|name| TEXT_ATTACHMENT_NAMES.contains(&without_duplicate_suffix(&name)))
+}
+
+fn without_duplicate_suffix(name: &str) -> &str {
+    let mut rest = name;
+    while let Some(shorter) = strip_counter_suffix(rest).or_else(|| strip_copy_suffix(rest)) {
+        if shorter.is_empty() {
+            break;
+        }
+        rest = shorter;
+    }
+    rest
+}
+
+fn strip_counter_suffix(name: &str) -> Option<&str> {
+    let inner = name.strip_suffix(')')?;
+    let open = inner.rfind('(')?;
+    let digits = &inner[open + 1..];
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| inner[..open].trim_end())
+}
+
+fn strip_copy_suffix(name: &str) -> Option<&str> {
+    let unnumbered = match name.rsplit_once(' ') {
+        Some((head, tail)) if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) => head,
+        _ => name,
+    };
+    let base = unnumbered.strip_suffix(" copy")?;
+    Some(base.strip_suffix(" -").unwrap_or(base).trim_end())
 }
 
 pub fn is_binary_property_list(path: &Path, bytes: &[u8]) -> bool {
@@ -1355,6 +1383,23 @@ mod tests {
             "unsloth-native-policy-{name}-{}-{nanos}-{seq}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn duplicate_download_names_stay_text_attachments() {
+        for name in [
+            "LICENSE(1)",
+            "LICENSE (2)",
+            "README copy",
+            "README copy 2",
+            "Makefile - Copy (3)",
+            ".gitignore (1)",
+        ] {
+            assert!(is_text_attachment_name(Path::new(name)), "{name}");
+        }
+        for name in ["notes(1)", ".env (1)", "copy", "(1)", "LICENSE(x)", "notes.txt(1)"] {
+            assert!(!is_text_attachment_name(Path::new(name)), "{name}");
+        }
     }
 
     #[test]

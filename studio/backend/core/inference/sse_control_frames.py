@@ -39,10 +39,12 @@ _CONTROL_TYPES = frozenset(
         "tool_args",
         "tool_status",
         "tool_model_note",
+        "tool_approved",
         "skill_load",
         "diffusion_frame",
         "reasoning_summary",
         "context_usage",
+        "generation_progress",
     }
 )
 
@@ -53,6 +55,7 @@ _CONTROL_KEYS = (
     "_diffusionFrame",
     "_reasoningDurationMs",
     "_contextUsage",
+    "_generationProgress",
     "_mcp_provenance",
     "quote_cut",
 )

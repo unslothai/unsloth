@@ -3,6 +3,8 @@
 
 "use client";
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Collapsible,
   CollapsibleContent,
@@ -43,7 +45,6 @@ import {
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
-  ChevronDownIcon,
   LoaderIcon,
   WrenchIcon,
   XCircleIcon,
@@ -61,6 +62,7 @@ import {
 import {
   isToolCallCancelled,
   isToolCallRunning,
+  plainBrowserResult,
   toolArgText,
   toolFallbackLabel,
 } from "./tool-arg-text";
@@ -270,7 +272,8 @@ function ToolFallbackTrigger({
           </span>
         )}
       </span>
-      <ChevronDownIcon
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
         data-slot="tool-fallback-trigger-chevron"
         className={cn(
           "aui-tool-fallback-trigger-chevron mr-1 size-3.5 shrink-0 self-center",
@@ -422,7 +425,7 @@ function ToolFallbackResult({
                 src={`data:${img.mimeType};base64,${img.data}`}
                 alt={`Tool result ${i + 1}`}
                 loading="lazy"
-                className="max-w-full rounded border border-border"
+                className="max-w-full rounded-lg border border-border"
               />
             ))}
           </div>
@@ -501,7 +504,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     ? created.text
     : widget?.images?.length
       ? { text: widget.text, images: widget.images }
-      : (widget?.text ?? result);
+      : toolName.startsWith("browser_")
+        ? plainBrowserResult(result)
+        : (widget?.text ?? result);
 
   // Open while it waits on Allow / Deny, so what is being approved is readable.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);

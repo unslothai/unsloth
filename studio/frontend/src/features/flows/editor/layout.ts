@@ -29,7 +29,6 @@ function getWorker(): Worker {
   return worker;
 }
 
-/** Lay the graph out with dagre off the main thread, as one undo step. */
 export async function autoLayout(
   getInternalNode: (id: string) => InternalNode | undefined,
   direction: "LR" | "TB" = "LR",

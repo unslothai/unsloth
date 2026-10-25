@@ -3445,10 +3445,59 @@ def _dequantize_bitsandbytes_for_full_finetuning(
     return True
 
 
+def _compressed_tensors_format(quant_config):
+    if isinstance(quant_config, dict):
+        fmt = quant_config.get("format", None)
+    else:
+        fmt = getattr(quant_config, "format", None)
+        inner = getattr(quant_config, "quantization_config", None)
+        if inner is not None:
+            fmt = getattr(inner, "format", None) or fmt
+    return str(getattr(fmt, "value", fmt) or "unknown format")
+
+
+def _prepare_compressed_tensors_full_finetuning(model):
+    """Full finetuning marks every parameter trainable; integer leftovers of a compressed-tensors checkpoint reject that."""
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if str(getattr(method, "value", method)).lower() != "compressed-tensors":
+        return 0
+    name = getattr(getattr(model, "config", None), "_name_or_path", "") or "this model"
+    fmt = _compressed_tensors_format(quant_config)
+    moved = 0
+    for module_name, module in model.named_modules():
+        for param_name, param in list(module._parameters.items()):
+            if param is None or param.is_floating_point() or param.is_complex():
+                continue
+            full_name = f"{module_name}.{param_name}" if module_name else param_name
+            # A weight still packed to integers was not decompressed and cannot be trained.
+            if param_name in ("weight", "weight_packed"):
+                raise RuntimeError(
+                    f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}) and `{full_name}` "
+                    f"is still stored as {param.dtype}, so full finetuning cannot train it. "
+                    "Use `full_finetuning = False` to train LoRA on top of it, or full finetune "
+                    "the original 16bit model instead."
+                )
+            # Kept by decompress_model (e.g. int64 `weight_shape`) so the module can be recompressed on save:
+            # a persistent buffer keeps the state_dict key but leaves the trainable parameter list.
+            delattr(module, param_name)
+            module.register_buffer(param_name, param.data, persistent = True)
+            moved += 1
+    print(
+        f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}), so full finetuning trains "
+        "its decompressed 16bit weights. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    return moved
+
+
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
     # Routed FP8 / NVFP4 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
     if full_finetuning:
         _decompress_compressed_tensors_model(model)
+        _prepare_compressed_tensors_full_finetuning(model)
         return
     _tag_compressed_tensors_modules(model)
     if _route_compressed_tensors_nvfp4_to_unsloth(model):
@@ -4096,6 +4145,23 @@ def _hub_safetensors_header_dtypes(
     return {k: v.get("dtype") for k, v in header.items() if k != "__metadata__"}
 
 
+def _hub_live_commit(
+    repo_id,
+    revision = None,
+    token = None,
+):
+    """The commit `revision` names on the Hub now, or None when it cannot be resolved (offline,
+    network error). A branch or tag can move past what the cache holds; transformers' online
+    `hf_hub_download` refreshes it, so cache lookups must use the live commit too."""
+    if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision):
+        return revision
+    try:
+        from huggingface_hub import HfApi
+        return HfApi(token = token).model_info(repo_id, revision = revision).sha or None
+    except Exception:
+        return None
+
+
 def _checkpoint_tensor_dtypes(
     model_name,
     token = None,
@@ -4145,24 +4211,23 @@ def _checkpoint_tensor_dtypes(
     try:
         if os.path.isdir(model_name):
             root = os.path.join(model_name, subfolder) if subfolder else model_name
-            for index_file in index_files:
-                index_path = os.path.join(root, index_file)
-                if not os.path.exists(index_path):
+            # transformers' order: a lone file beats an index of the same format, so a stale index
+            # left beside a re-saved model.safetensors must not decide the layout.
+            for filename in (st_single, st_index, bin_single, bin_index):
+                path = os.path.join(root, filename) if filename else None
+                if not path or not os.path.isfile(path):
                     continue
-                weight_map = _index_weight_map(index_path)
-                return _fill_fused_dtypes(
-                    weight_map,
-                    lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
-                )
-            single_path = os.path.join(root, st_single) if st_single else None
-            if single_path and os.path.exists(single_path):
-                return _safetensors_dtypes(single_path)
-            single_path = os.path.join(root, bin_single) if bin_single else None
-            if single_path and os.path.exists(single_path):
+                if filename in index_files:
+                    return _fill_fused_dtypes(
+                        _index_weight_map(path),
+                        lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
+                    )
+                if filename == st_single:
+                    return _safetensors_dtypes(path)
                 try:
-                    return _bin_dtypes(single_path)
+                    return _bin_dtypes(path)
                 except Exception:
-                    raise _UnreadableCheckpointNames(single_path)
+                    raise _UnreadableCheckpointNames(path)
             return None
 
         if not local_files_only and not subfolder and not variant and st_single:
@@ -4180,13 +4245,20 @@ def _checkpoint_tensor_dtypes(
         from huggingface_hub import hf_hub_download
 
         hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
-        for index_file in index_files:
+        if not local_files_only and not _env_says_offline():
+            # Cached files of a moved branch are stale: look them up under the commit it names now
+            # (a miss falls through to the live header read), as transformers' online resolver does.
+            live_commit = _hub_live_commit(model_name, revision, token)
+            if live_commit is not None:
+                hub["revision"] = live_commit
+
+        def _hub_index_dtypes(index_file):
             try:
                 index_path = hf_hub_download(
                     model_name, index_file, local_files_only = local_files_only, **hub
                 )
             except Exception:
-                continue
+                return None
             weight_map = _index_weight_map(index_path)
 
             def _hub_shard_dtypes(shard, names):
@@ -4199,9 +4271,11 @@ def _checkpoint_tensor_dtypes(
                 if local_files_only or not shard.endswith(".safetensors"):
                     return {}
                 remote = f"{subfolder}/{shard}" if subfolder else shard
-                return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                return _hub_safetensors_header_dtypes(model_name, remote, hub["revision"], token)
 
             return _fill_fused_dtypes(weight_map, _hub_shard_dtypes)
+
+        # Same order as transformers: model.safetensors, its index, pytorch_model.bin, its index.
         if st_single:
             try:
                 return _safetensors_dtypes(
@@ -4212,11 +4286,17 @@ def _checkpoint_tensor_dtypes(
             if not local_files_only:
                 remote = f"{subfolder}/{st_single}" if subfolder else st_single
                 try:
-                    return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                    return _hub_safetensors_header_dtypes(
+                        model_name, remote, hub["revision"], token
+                    )
                 except Exception:
                     pass
+        if st_index:
+            found = _hub_index_dtypes(st_index)
+            if found is not None:
+                return found
         if not bin_single:
-            return None
+            return _hub_index_dtypes(bin_index) if bin_index else None
         try:
             cached_bin = hf_hub_download(model_name, bin_single, local_files_only = True, **hub)
         except Exception:
@@ -4231,12 +4311,12 @@ def _checkpoint_tensor_dtypes(
 
             remote = f"{subfolder}/{bin_single}" if subfolder else bin_single
             try:
-                exists = file_exists(model_name, remote, revision = revision, token = token)
+                exists = file_exists(model_name, remote, revision = hub["revision"], token = token)
             except Exception:
                 exists = False
             if exists:
                 raise _UnreadableCheckpointNames(f"{model_name}/{remote}")
-        return None
+        return _hub_index_dtypes(bin_index) if bin_index else None
     except _UnreadableCheckpointNames:
         raise
     except Exception:
@@ -4448,6 +4528,45 @@ def _get_fp8_mode_and_check_settings(
 _ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
 
 
+def _is_tensor_subclass_weight(t):
+    """A wrapper tensor subclass weight such as torchao's Float8Tensor (load_in_fp8). DDP's start-up
+    broadcast flattens every parameter (reshape to [-1]), which Float8Tensor does not implement.
+    torchao.float8's training weights (WeightWithDynamicFloat8CastTensor) implement it and DDP trains
+    them, so they are not counted, as in fsdp2_native's _float8_params."""
+    if type(t).__module__.startswith("torchao.float8"):
+        return False
+    if any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__):
+        return True
+    try:
+        from torch.distributed.tensor import DTensor
+        if isinstance(t, DTensor):
+            return False
+    except Exception:
+        pass
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+        return is_traceable_wrapper_subclass(t)
+    except Exception:
+        return False
+
+
+def _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = False):
+    """Frozen tensor subclass weights (load_in_fp8's Float8Tensor) stay out of DDP: every rank loads and
+    quantizes the same checkpoint, so there is nothing to broadcast, and a frozen weight has no gradient to
+    reduce. A trainable one would need both, which DDP cannot do for it: refused when asked."""
+    frozen, trainable = [], []
+    for name, p in model.named_parameters():
+        if _is_tensor_subclass_weight(p):
+            (trainable if p.requires_grad else frozen).append(name)
+    if trainable and refuse_trainable:
+        raise NotImplementedError(
+            f"Unsloth: DDP cannot train the {type(model.get_parameter(trainable[0])).__name__} weight "
+            f"{trainable[0]} ({len(trainable)} such weights are trainable); it cannot be broadcast or have "
+            "its gradient all-reduced. Train LoRA on the frozen FP8 base (get_peft_model), or load in 16-bit."
+        )
+    return frozen
+
+
 def _exclude_rope_inv_freq_from_ddp(model):
     ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
     for module_name, module in model.named_modules():
@@ -4456,6 +4575,12 @@ def _exclude_rope_inv_freq_from_ddp(model):
                 fqn = f"{module_name}.{buffer_name}" if module_name else buffer_name
                 if fqn not in ignored:
                     ignored.append(fqn)
+    try:
+        for fqn in _frozen_tensor_subclass_names_for_ddp(model):
+            if fqn not in ignored:
+                ignored.append(fqn)
+    except Exception:
+        pass
     if ignored:
         try:
             from torch.nn.parallel import DistributedDataParallel

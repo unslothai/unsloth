@@ -254,7 +254,6 @@ const TABS: TabDef[] = [
     id: "browser",
     labelKey: "browser.settingsTitle",
     icon: InternetIcon,
-    badgeKey: "common.new",
   },
   {
     id: "keyboard-shortcuts",
@@ -508,9 +507,8 @@ export function SettingsDialog() {
             // iPad-portrait widths where a fixed width overflows. Height caps
             // the same way so short viewports don't get a clipped dialog.
             "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
-            // Soft shadow, no outline ring. Pin --radius to the light value so
-            // corner rounding matches in dark mode.
-            "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
+            // Soft shadow, no outline ring.
+            "shadow-border rounded-3xl ring-0",
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
@@ -539,11 +537,18 @@ export function SettingsDialog() {
                 !stacked && "md:max-lg:w-[min(calc(208px*var(--ui-space-scale,1)),50%)]",
               )}
             >
-              <div className="relative mx-1 mt-3 mb-2 shrink-0 group-data-stacked/settings:hidden">
+              {/* Visual only: the dialog's sr-only DialogTitle already names it. */}
+              <p
+                aria-hidden={true}
+                className="shrink-0 px-3 pt-3 pb-3 text-lg font-semibold text-sidebar-foreground group-data-stacked/settings:hidden"
+              >
+                {t("settings.dialog.title")}
+              </p>
+              <div className="relative mx-1 mb-3 shrink-0 group-data-stacked/settings:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
-                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                  className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
                 />
                 <input
                   value={query}
@@ -555,9 +560,9 @@ export function SettingsDialog() {
                     }
                   }}
                   data-type-to-activate="settings-search"
-                  placeholder={t("settings.dialog.searchPlaceholder")}
+                  placeholder={t("common.search")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
+                  className="h-[calc(36px*var(--ui-space-scale,1))] w-full rounded-full border-0 bg-accent pr-8 pl-10 text-ui-14p5 text-foreground outline-none transition-colors placeholder:text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]"
                 />
                 {query && (
                   <button
@@ -610,14 +615,6 @@ export function SettingsDialog() {
                   )}
                 </div>
               ) : null}
-              <p
-                className={cn(
-                  "shrink-0 pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground group-data-stacked/settings:hidden",
-                  results !== null && "hidden",
-                )}
-              >
-                {t("settings.dialog.title")}
-              </p>
               <nav
                 ref={attachRail}
                 onScroll={onRailScroll}

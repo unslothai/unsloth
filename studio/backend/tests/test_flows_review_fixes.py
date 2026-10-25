@@ -821,3 +821,16 @@ def test_streamed_text_hides_thinking_split_across_pieces():
     assert "plan" not in shown and "<th" not in shown
     # A closing tag and the answer in one piece: the answer is shown.
     assert visible_so_far("<think>x</think>Answer") == "Answer"
+
+
+def test_first_json_returns_a_list_of_objects_whole():
+    from core.flows.nodes._common import first_json
+
+    assert first_json('[{"q": "a"}, {"q": "b"}]') == [{"q": "a"}, {"q": "b"}]
+    assert first_json('Here you go:\n```json\n[{"q": "a"}, {"q": "b"}]\n```') == [
+        {"q": "a"},
+        {"q": "b"},
+    ]
+    # An object that comes first is still the answer.
+    assert first_json('{"rows": [1, 2]} and [3]') == {"rows": [1, 2]}
+    assert first_json("no braces [1, 2]") == [1, 2]

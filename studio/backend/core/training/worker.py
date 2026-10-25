@@ -2453,6 +2453,35 @@ def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None
         )
 
 
+def _mlx_vocab_size(model):
+    """Rows of the MLX model's input embedding table (the CUDA path reads get_input_embeddings().num_embeddings), so
+    a pre-tokenized id or label past it is refused before the loss indexes it. None when it cannot be found, which
+    skips only the range check."""
+    for owner in (model, getattr(model, "language_model", None)):
+        if owner is None:
+            continue
+        for embed in (
+            getattr(getattr(owner, "model", None), "embed_tokens", None),
+            getattr(owner, "embed_tokens", None),
+        ):
+            # A LoRA-wrapped embedding keeps the table on its inner module.
+            for layer in (
+                embed,
+                getattr(embed, "embedding", None),
+                getattr(embed, "base_layer", None),
+            ):
+                if layer is None:
+                    continue
+                # QuantizedEmbedding packs its weight, so its row count is the stored num_embeddings.
+                rows = getattr(layer, "num_embeddings", None)
+                shape = getattr(getattr(layer, "weight", None), "shape", None)
+                if rows is None and shape:
+                    rows = shape[0]
+                if isinstance(rows, int) and not isinstance(rows, bool) and rows > 0:
+                    return rows
+    return None
+
+
 def _carry_mlx_chat_template_to_processor(model, tokenizer) -> bool:
     """MLXTrainer saves the loader's processor when it has one, so a text run on a multimodal base checkpoint (Qwen3.5
     Base) saved no template and Chat failed with "chat_template is not set". Give it the template the rows used."""
@@ -3465,6 +3494,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
     dataset_final_format = ""
+    eval_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -3538,6 +3568,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             for message in info.get("run_warnings", []):
                 _send("warning", message = message)
             dataset_final_format = str(info.get("final_format", "") or "").lower()
+            eval_final_format = dataset_final_format
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
                     eval_dataset,
@@ -3552,6 +3583,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
+                    # A separately supplied eval split is detected on its own and may not be pre-tokenized.
+                    eval_final_format = str(ev.get("final_format", "") or "").lower()
                     if hasattr(eval_dataset, "__len__") and len(eval_dataset) == 0:
                         _send(
                             "warning",
@@ -3597,6 +3630,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
         else:
             dataset, eval_dataset = split_result
+            eval_final_format = dataset_final_format
+
+    # zoo's MLX batcher reads input_ids / labels and ignores attention_mask, so masked padding is trimmed here as on
+    # CUDA. MLX truncates to max_seq_length itself. Each split goes by its own format: a separately supplied eval
+    # split can be pre-tokenized while the training split is text, and the reverse.
+    if dataset_final_format == "pretokenized":
+        from utils.datasets.pretokenized import prepare_pretokenized_dataset
+        dataset = prepare_pretokenized_dataset(
+            dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model), mlx = True
+        )
+    if eval_dataset is not None and eval_final_format == "pretokenized":
+        from utils.datasets.pretokenized import prepare_pretokenized_dataset
+        eval_dataset = prepare_pretokenized_dataset(
+            eval_dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model), mlx = True
+        )
 
     requested_max_steps = config.get("max_steps", 0) or 0
     num_epochs = config.get("num_epochs", 3)

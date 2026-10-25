@@ -595,7 +595,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                 : t("settings.data.library.unarchiveAll")}
             </Button>
             <Button
-              variant="ghost"
+              variant="destructive"
               size="sm"
               disabled={busy || (rows.length === 0 && !hasMore)}
               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
@@ -611,7 +611,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       </div>
       <div
         ref={listRef}
-        className="divide-y divide-border/50 rounded-2xl border border-border/60 px-3 sm:px-4"
+        className="divide-y divide-border/50 rounded-xl border border-border/60 px-3 sm:px-4"
       >
         {displayed.map((row) => (
           <div key={row.id} data-archived-id={row.id}>
@@ -664,7 +664,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                     aria-label={t("settings.data.library.unarchiveItem", {
                       title: row.title,
                     })}
-                    className="rounded-xl bg-muted/60 hover:bg-muted"
+                    className="rounded-full bg-muted/60 hover:bg-muted"
                     onClick={() => void run([row], "restore")}
                   >
                     {t("settings.data.library.unarchive")}
