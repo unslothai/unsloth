@@ -3188,6 +3188,17 @@ html[data-chat-font] .aui-root {
 	.dark .sidebar-more-menu[data-slot] {
 		background-color: var(--sidebar) !important;
 	}
+	/* More menu only: pill rows, in a corner of half a row (h-control) plus the p-1 gutter, so the
+	   hover pill nests in it. Out-ranks the shared menu radius above. */
+	.sidebar-more-menu[data-slot] {
+		border-radius: calc(
+			(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px) / 2 + 4px *
+				var(--ui-space-scale, 1)
+		) !important;
+	}
+	.sidebar-more-menu :is([data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-sub-trigger"]) {
+		border-radius: 9999px;
+	}
 
 	/* On <html> so --accent can be reassigned without a cycle. */
 	.dark {
@@ -3547,7 +3558,7 @@ html[data-chat-font] .aui-root {
 				to bottom,
 				transparent,
 				#000 var(--composer-fade-top, 0px),
-				#000 calc(100% - var(--composer-fade-bottom, calc(1.375rem * var(--ui-space-scale, 1)))),
+				#000 calc(100% - var(--composer-fade-bottom, calc(0.625rem * var(--ui-space-scale, 1)))),
 				transparent
 			),
 			linear-gradient(#000, #000);
