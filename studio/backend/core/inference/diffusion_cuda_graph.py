@@ -1013,6 +1013,19 @@ SPEED_GAIN = 0.01
 SPEED_CHECK_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_GRAPH_SPEED_CHECK"
 
 
+# A streamed key whose timed eager steps are already bound by their copies is not recorded at all (_copy_bound).
+COPY_CHECK_ENV = "UNSLOTH_DIFFUSION_STREAMED_GRAPH_COPY_CHECK"
+
+
+def copy_check_enabled() -> bool:
+    return (os.environ.get(COPY_CHECK_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
 def speed_check_enabled() -> bool:
     return (os.environ.get(SPEED_CHECK_ENV) or "").strip().lower() not in (
         "0",
@@ -1507,13 +1520,110 @@ class GraphedForward:
             if safe:
                 start, end = _timing_events()
                 start.record()
-        out = call(*args, **kwargs)
+        pf = copies = None
+        if start is not None and copy_check_enabled():
+            pf = self._streaming_prefetcher()
+            if pf is not None:
+                copies = pf.copy_times = []
+        try:
+            out = call(*args, **kwargs)
+        finally:
+            if pf is not None:
+                timed = pf.__dict__.get("copy_times")
+                pf.copy_times = None
+                if timed is not copies:
+                    copies = None  # a copy went untimed: no copy total for this step
         if start is not None:
             with hold_off_capture() as safe:
                 if safe:
                     end.record()
                     state["eager"].append((start, end))
+                    state.setdefault("copies", []).append(copies)
         return out
+
+    def _streaming_prefetcher(self) -> Any:
+        """The block-offload prefetcher whose copies this step streams, or None (resident, pinned, model offload)."""
+        placement = getattr(self, "placement", None)
+        if placement is None or placement.mode != "group" or not placement.streams():
+            return None
+        try:
+            return placement._prefetcher()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _copy_bound(self, key: Any, state: dict) -> Optional[str]:
+        """Why recording ``key`` cannot pay before it records, from its timed eager steps, or None.
+
+        A block-streamed replay records the same host-to-device copies on the same copy stream, so it cannot run
+        faster than their measured total. When that total already fills the eager step to within SPEED_GAIN, the
+        streamed speed check (_judge_keys) is certain to drop the recording, after a capture that holds a ring and a
+        pool and costs a forward or more. Judged once per key, only before any key of this placement recorded."""
+        if "copy_verdict" in state:
+            return state["copy_verdict"]
+        state["copy_verdict"] = None
+        pairs = list(state.get("copies") or ())
+        if (
+            self.cache
+            or len(pairs) != len(state["eager"])
+            or not pairs
+            or any(not p for p in pairs)
+        ):
+            return None
+        with hold_off_capture() as safe:
+            if not safe:
+                state.pop("copy_verdict", None)  # judged at the next call
+                return None
+            try:
+                # the capture that would follow synchronizes anyway
+                state["eager"][-1][1].synchronize()
+                for copy in pairs:
+                    copy[-1][1].synchronize()
+                eager = min(start.elapsed_time(end) for start, end in state["eager"])
+                copied = min(sum(a.elapsed_time(b) for a, b in copy) for copy in pairs)
+            except Exception:  # noqa: BLE001 - unreadable: record and judge as before
+                return None
+        self.stats["eager_ms"] = round(eager, 3)
+        self.stats["copy_ms"] = round(copied, 3)
+        if eager <= 0 or copied < eager * (1.0 - SPEED_GAIN):
+            if self.logger is not None:
+                self.logger.info(
+                    "diffusion.cuda_graph: %s records: %.1f ms of copies in a %.1f ms eager step",
+                    type(self.module).__name__,
+                    copied,
+                    eager,
+                )
+            return None
+        reason = (
+            f"the eager step is bound by its host-to-device copies on this device ({copied:.1f} ms of copies in a "
+            f"{eager:.1f} ms step), which a streamed recording replays at the same speed"
+        )
+        state["copy_verdict"] = reason
+        return reason
+
+    def _decline_unrecorded(self, key: Any, reason: str) -> None:
+        """Stop recording this placement for the load before anything recorded (the drop _judge_keys would make)."""
+        state = self._judge.get(key)
+        if state is not None:
+            state["verdict"] = reason
+        placement = self.placement
+        placement.decline(reason, recorded = False)
+        if (
+            getattr(self, "fallback", None) is None
+            and getattr(self, "fallback_handle", None) is None
+        ):
+            _retire_stable_placement(placement)
+            # Nothing replays on this placement: its forwards may carry copies across again, as the eager tier does.
+            hold = getattr(placement, "_hold_carry", None)
+            if callable(hold):
+                hold(False)
+        self._slower = reason
+        self._dropped.add(key)
+        self.stats["copy_declines"] = self.stats.get("copy_declines", 0) + 1
+        self.capture_error = {"type": "Refused", "msg": reason}
+        if self.logger is not None:
+            self.logger.info(
+                "diffusion.cuda_graph: %s does not record: %s", type(self.module).__name__, reason
+            )
 
     def _judge_state(self, key: Any) -> dict:
         state = self._judge.get(key)
@@ -1736,6 +1846,11 @@ class GraphedForward:
                 ):
                     # The eager reference for _judge_keys, timed with CUDA events and never waited on.
                     return self._timed_eager(call, args, kwargs, key)
+                if state["verdict"] is None and copy_check_enabled():
+                    bound = self._copy_bound(key, state)
+                    if bound is not None:
+                        self._decline_unrecorded(key, bound)
+                        return self._eager(eager_args, eager_kwargs)
             if self.plan is not None and self.stats["captures"] and key not in self._warmed:
                 # A new prompt length: this real step is the new shape's warm-up; the next one records.
                 self._warmed[key] = None
@@ -2240,9 +2355,14 @@ class OffloadPlacement:
         except Exception:  # noqa: BLE001
             pass
 
-    def decline(self, reason: str) -> bool:
+    def decline(
+        self,
+        reason: str,
+        recorded: bool = True,
+    ) -> bool:
         """No more recording on this placement for the load; hand the slot ring back after the current forward.
-        True when that drop is scheduled (it then also releases the dropped graphs' pool)."""
+        True when that drop is scheduled (it then also releases the dropped graphs' pool). ``recorded=False``: nothing
+        was ever recorded on it, so there is no pool or capture workspace to flush."""
         self._declined = reason
         if not self._slots:
             return False
@@ -2250,7 +2370,10 @@ class OffloadPlacement:
         try:
             pf = self._prefetcher()
             if pf is not None and callable(getattr(pf, "drop_slots_after_forward", None)):
-                pf.drop_slots_after_forward()
+                if recorded:
+                    pf.drop_slots_after_forward()
+                else:
+                    pf.drop_slots_after_forward(flush = False)
                 return True
         except Exception:  # noqa: BLE001
             pass

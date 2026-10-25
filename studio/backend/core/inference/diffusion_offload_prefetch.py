@@ -435,6 +435,7 @@ class GroupPrefetcher:
             from .diffusion_memory import _storage_nbytes
             staged = sum(sum(_storage_nbytes(cpu[t])) for t, p in zip(tensors, pinned) if not p)
             self._bound_staging(staged)
+        timed = self._copy_timer(stream)
         with torch.cuda.stream(stream):
             # made on the copy stream: a block the compute stream freed but has not finished reading is never handed
             # to these copies (the allocator orders reuse per stream)
@@ -460,6 +461,8 @@ class GroupPrefetcher:
         if buffers is not None:
             self.slot_owner[where] = id(group)
             self.stats["slot_fills"] = self.stats.get("slot_fills", 0) + 1
+        if timed is not None:
+            self._copy_timer_end(stream, timed)
         ready = torch.cuda.Event()
         ready.record(stream)
         gid = id(group)
@@ -472,6 +475,43 @@ class GroupPrefetcher:
             self.peak_staged_bytes = max(getattr(self, "peak_staged_bytes", 0), self.staged_bytes)
         self.stats["copies"] += 1
         return True
+
+    def _copy_timer(self, stream: Any) -> Any:
+        """A start event on the copy stream while a speed probe times this forward's copies (``copy_times``)."""
+        times = self.__dict__.get("copy_times")
+        if times is None or getattr(self, "capturing", False):
+            return None
+        try:
+            import torch
+
+            from .diffusion_cuda_graph import hold_off_capture
+            with hold_off_capture() as safe:
+                if not safe:
+                    return None
+                start = torch.cuda.Event(enable_timing = True)
+                start.record(stream)
+                return start
+        except Exception:  # noqa: BLE001 - an untimed copy only leaves the probe without a verdict
+            self.copy_times = None
+            return None
+
+    def _copy_timer_end(self, stream: Any, start: Any) -> None:
+        times = self.__dict__.get("copy_times")
+        if times is None:
+            return
+        try:
+            import torch
+
+            from .diffusion_cuda_graph import hold_off_capture
+            with hold_off_capture() as safe:
+                if not safe:
+                    self.copy_times = None  # one copy missing: no total for this forward
+                    return
+                end = torch.cuda.Event(enable_timing = True)
+                end.record(stream)
+                times.append((start, end))
+        except Exception:  # noqa: BLE001
+            self.copy_times = None
 
     def _staging(self) -> deque:
         # lazy: prefetchers built without __init__ (tests) still stage
@@ -742,8 +782,11 @@ class GroupPrefetcher:
             if where not in self.slot_raw:
                 self._alloc_slot(where)
 
-    def drop_slots_after_forward(self) -> None:
-        """Drop the ring once the current forward ends (``end``), or now between forwards."""
+    def drop_slots_after_forward(self, flush: bool = True) -> None:
+        """Drop the ring once the current forward ends (``end``), or now between forwards. ``flush=False`` when
+        nothing recorded into it: the ring's bytes stay in the allocator's cache for the eager steps that follow."""
+        if not flush:
+            self._drop_slots_unflushed = True
         if self.active:
             self._drop_slots_at_end = True
             return
@@ -758,6 +801,8 @@ class GroupPrefetcher:
                 return
             self._drop_slots_at_end = False
             self.disable_slots()
+            if self.__dict__.pop("_drop_slots_unflushed", False):
+                return
             # The ring's segments go back to the device, not just to the cache, with a declined step graph's
             # recordings (their pool, and the workspace cuBLAS made for their capture stream): acknowledged as flushed.
             flush_now_locked(clear_cublas = True)
