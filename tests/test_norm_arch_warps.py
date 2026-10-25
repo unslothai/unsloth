@@ -6,6 +6,7 @@ outputs as accurate as the default ones against an fp64 reference (forward, froz
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 from unsloth.kernels import layernorm as LN
 from unsloth.kernels import rms_layernorm as RMS
@@ -111,7 +112,7 @@ def _ref(mod, X, W, b, dY):
     return {"y": Y.detach(), "dx": Xd.grad, "dw": Wd.grad, "db": bd.grad}
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize("mod", [RMS, LN], ids = ["rms", "ln"])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids = ["fp16", "bf16"])
 def test_table_warps_match_default_accuracy(mod, dtype, capability, monkeypatch):
