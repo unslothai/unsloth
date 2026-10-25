@@ -352,3 +352,47 @@ def test_a_half_size_stage_unpacks_with_its_own_grid(monkeypatch):
         assert (prev.height, prev.width) == (704, 1280)
     finally:
         prev.finish()
+
+
+def test_moss_image_bchw_latents_use_the_flux2_map():
+    # MOSS-Image denoises FLUX.2's 128 packed channels as [B, 128, h, w], not [B, N, 128] tokens.
+    spec = DP.factors_for("moss-image")
+    assert spec is not None and spec.channels == 128 and spec.patch == 2
+    lat = torch.randn(1, 128, 4, 6)
+    grid = DP.latent_grid(lat, spec, height = 64, width = 96)
+    assert grid is not None and torch.equal(grid, lat[0].permute(1, 2, 0))
+    tokens = lat.flatten(2).transpose(1, 2)
+    assert torch.equal(grid, DP.latent_grid(tokens, spec, 64, 96))
+    w = torch.tensor(spec.weight)
+    b = torch.tensor(spec.bias)
+    assert tuple(DP.project(grid, w, b, spec.patch).shape) == (8, 12, 3)
+    assert DP.latent_grid(torch.randn(1, 32, 4, 6), spec, 64, 96) is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_cuda_preview_publishes_moss_image_bchw_latents(monkeypatch):
+    monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
+    got = []
+    done = threading.Event()
+
+    def publish(url, seq):
+        got.append((url, seq))
+        done.set()
+
+    prev = DP.LatentPreviewer.create(
+        family = "moss-image",
+        requested = None,
+        height = 128,
+        width = 128,
+        device = "cuda",
+        publish = publish,
+        min_interval_s = 0.0,
+    )
+    assert prev is not None
+    try:
+        prev.on_step(torch.randn(1, 128, 8, 8, device = "cuda"), None, final = True)
+        assert not prev.failed
+        assert done.wait(10)
+    finally:
+        prev.finish()
+    assert got and got[0][0].startswith("data:image/jpeg;base64,")

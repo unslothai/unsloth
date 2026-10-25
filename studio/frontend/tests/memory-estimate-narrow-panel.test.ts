@@ -3,11 +3,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ChevronDown } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import * as React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import type * as MemoryEstimateModule from "../src/features/model-picker/components/memory-estimate-row.tsx";
+import * as chevronIcons from "../src/lib/chevron-icons.ts";
 import * as memoryFit from "../src/features/model-picker/model-config/memory-fit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -20,7 +21,8 @@ const { MemoryEstimateRow } = loadWithStubs<typeof MemoryEstimateModule>(
   {
     react: React,
     "react/jsx-runtime": jsxRuntime,
-    "lucide-react": { ChevronDown },
+    "@hugeicons/react": { HugeiconsIcon },
+    "@/lib/chevron-icons": chevronIcons,
     "../model-config/memory-fit": memoryFit,
     "@/components/ui/tooltip": {
       Tooltip: ({ children }: { children: React.ReactNode }) => children,
@@ -59,6 +61,9 @@ const props: Props = {
     layerCount: 27,
     gpuLayers: 12,
     moeOffloadUnmodelled: false,
+    mlxPleOffload: null,
+    mlxExpertOffload: null,
+    mlxOffloadable: [],
   },
   loading: false,
   stale: false,
@@ -124,6 +129,12 @@ test("context checkpoints get their own host RAM row instead of inflating the KV
     /Context checkpoints[\s\S]*?5\.84 GiB[\s\S]*?host RAM, filled as conversations grow/,
   );
   assert.doesNotMatch(render({ expanded: true }), /Context checkpoints/);
+});
+
+test("MLX offload is noted on the Weights line", () => {
+  const html = render({ expanded: true, estimate: { ...props.estimate!, mlxExpertOffload: 0.5 } });
+  assert.match(html, /Weights[\s\S]*?experts\u00a050%\u00a0on\u00a0disk/);
+  assert.doesNotMatch(render({ expanded: true }), /on\u00a0disk/);
 });
 
 test("a shared pool shows the total without a duplicate GPU figure", () => {
