@@ -7,6 +7,7 @@ import {
   BoxIcon,
   MapIcon,
   MapPinIcon,
+  PencilRulerIcon,
   RotateCcwIcon,
   SaveIcon,
   ScrollTextIcon,
@@ -14,7 +15,15 @@ import {
   SparklesIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -31,6 +40,14 @@ import {
 } from "./live-reply";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import { type TileKind, generateMap } from "./procgen";
+import {
+  type EditorState,
+  GlbError,
+  SaveQueue,
+  type WorldEditor,
+  inspectGlb,
+  saveUntilCurrent,
+} from "./props3d";
 import {
   BackgroundQueue,
   type Note,
@@ -63,6 +80,8 @@ import {
   withMind,
 } from "./world-state";
 import { webglAvailable } from "./world3d";
+
+const WorldEditorPanel = lazy(() => import("./world-editor-panel"));
 
 export interface WorldPlayerProps {
   flowId: string;
@@ -97,6 +116,7 @@ async function loadArt(
   api: PlayerApi,
   spec: WorldSpec,
   onProgress: (f: number) => void,
+  models: string[] = [],
 ): Promise<WorldArt> {
   const jobs: [string, MediaValue][] = [];
   for (const [kind, m] of Object.entries(spec.tileset ?? {}))
@@ -106,7 +126,17 @@ async function loadArt(
     if (n.sprite) jobs.push([`sprite:${n.id}`, n.sprite]);
   for (const it of spec.items)
     if (it.sprite) jobs.push([`sprite:${it.id}`, it.sprite]);
-  const art: WorldArt = { tiles: {}, sprites: {} };
+  const art: WorldArt = { tiles: {}, sprites: {}, models: {} };
+  await Promise.all(
+    models.map(async (ref) => {
+      try {
+        const blob = await api.mediaBlob({ kind: "image", ref });
+        if (art.models) art.models[ref] = await blob.arrayBuffer();
+      } catch {
+        // keep the placeholder
+      }
+    }),
+  );
   let done = 0;
   await Promise.all(
     jobs.map(async ([key, media]) => {
@@ -197,6 +227,14 @@ export function WorldPlayer({
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   const [region, setRegion] = useState<string | null>(null);
   const [mount, setMount] = useState(0);
+  const [editor, setEditor] = useState<WorldEditor | null>(null);
+  const [edState, setEdState] = useState<EditorState | null>(null);
+  const [edStatus, setEdStatus] = useState("");
+  const [edError, setEdError] = useState<string | null>(null);
+  const [savedProps, setSavedProps] = useState(() =>
+    JSON.stringify(spec.props3d ?? []),
+  );
+  const editing = editor !== null;
   const can3d = useMemo(() => webglAvailable(), []);
   const [view, setView] = useState<"2d" | "3d">(() =>
     spec.render === "3d" && webglAvailable() ? "3d" : "2d",
@@ -208,7 +246,8 @@ export function WorldPlayer({
     view === "3d" ? spec.view3d?.ambient : null,
   );
   const lockedRef = useRef(true);
-  lockedRef.current = !started || talking !== null || panel === "save";
+  lockedRef.current =
+    !started || talking !== null || panel === "save" || editor !== null;
 
   const toast = useCallback((text: string) => {
     const id = Date.now() + Math.random();
@@ -306,7 +345,20 @@ export function WorldPlayer({
     (async () => {
       try {
         const [art, create] = await Promise.all([
-          loadArt(api, spec, (f) => live && setLoadProgress(f)),
+          loadArt(
+            api,
+            spec,
+            (f) => live && setLoadProgress(f),
+            view === "3d"
+              ? [
+                  ...new Set(
+                    (map.props ?? [])
+                      .map((p) => p.asset?.ref)
+                      .filter((r): r is string => Boolean(r)),
+                  ),
+                ]
+              : [],
+          ),
           view === "3d"
             ? import("./three-world").then((m) => m.createWorld3d)
             : import("./phaser-game").then((m) => m.createWorldGame),
@@ -345,6 +397,8 @@ export function WorldPlayer({
       if (handle) lastTile.current = handle.playerTile();
       handle?.destroy();
       game.current = null;
+      setEditor(null);
+      setEdState(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, spec, map, mount, view]);
@@ -366,6 +420,7 @@ export function WorldPlayer({
         setPanel(null);
         setTalking(null);
         game.current?.faceNpc(null);
+      } else if (editing) {
       } else if (e.key === "i" || e.key === "I")
         setPanel((p) => (p === "inventory" ? null : "inventory"));
       else if (e.key === "q" || e.key === "Q")
@@ -373,7 +428,108 @@ export function WorldPlayer({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [editing]);
+
+  const edDirty = edState
+    ? JSON.stringify(edState.props) !== savedProps
+    : false;
+  const openEditor = useCallback(async () => {
+    const open = game.current?.openEditor;
+    if (!open || !game.current) return;
+    setPanel(null);
+    setEdError(null);
+    try {
+      const ed = await open.call(game.current);
+      setEdState(ed.state());
+      ed.subscribe(() => setEdState(ed.state()));
+      setEdStatus(api.saveWorldProps ? "" : "Changes last until you leave");
+      setEditor(ed);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    }
+  }, [api, toast]);
+  // Saves run one at a time and each writes the props as they are when it starts, so an older save never lands
+  // after a newer one; `lastSaved` is what the server holds.
+  const saves = useRef(new SaveQueue());
+  const lastSaved = useRef(savedProps);
+  const saveScene = useCallback(
+    (): Promise<boolean> =>
+      saves.current.run(async () => {
+        if (!editor || !api.saveWorldProps) return true;
+        const props = editor.state().props;
+        setEdStatus("Saving");
+        setEdError(null);
+        try {
+          await api.saveWorldProps(flowId, props, spec.player_node);
+          lastSaved.current = JSON.stringify(props);
+          setSavedProps(lastSaved.current);
+          setEdState(editor.state());
+          setEdStatus("Saved");
+          return true;
+        } catch (e) {
+          setEdStatus("");
+          setEdError(
+            `Not saved: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          return false;
+        }
+      }),
+    [api, editor, flowId, spec.player_node],
+  );
+  const imports = useRef(new Set<Promise<void>>());
+  const closeEditor = useCallback(async () => {
+    if (!editor) return;
+    while (imports.current.size) await Promise.allSettled([...imports.current]);
+    await saves.current.idle();
+    const current = () => JSON.stringify(editor.state().props);
+    if (!(await saveUntilCurrent(current, lastSaved.current, saveScene)))
+      return;
+    editor.close();
+    setEditor(null);
+    setEdState(null);
+  }, [editor, saveScene]);
+  const importModel = useCallback(
+    async (file: File) => {
+      if (!editor || !api.uploadModel) return;
+      const upload = api.uploadModel;
+      setEdError(null);
+      const run = (async () => {
+        try {
+          const data = await file.arrayBuffer();
+          inspectGlb(data);
+          setEdStatus("Uploading model");
+          const asset = await upload(file, file.name);
+          await editor.addModel(asset, data, file.name.replace(/\.glb$/i, ""));
+          setEdStatus("");
+        } catch (e) {
+          setEdStatus("");
+          setEdError(
+            e instanceof GlbError
+              ? e.message
+              : `Could not import the model: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      })();
+      imports.current.add(run);
+      await run.finally(() => imports.current.delete(run));
+    },
+    [api, editor],
+  );
+  const exportScene = useCallback(async () => {
+    if (!editor) return;
+    try {
+      const blob = await editor.exportGlb();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(spec.title || "world").replace(/[^A-Za-z0-9]+/g, "-").toLowerCase()}.glb`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+    } catch (e) {
+      setEdError(
+        `Export failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }, [editor, spec.title]);
 
   const [draft, setDraft] = useState("");
   const [thinking, setThinking] = useState(false);
@@ -855,8 +1011,8 @@ export function WorldPlayer({
         // biome-ignore lint/a11y/useMediaCaption: background sound with no speech
         <audio
           src={ambientUrl}
-          autoPlay
-          loop
+          autoPlay={true}
+          loop={true}
           data-testid="world-ambient"
           ref={(a) => {
             if (a) a.volume = 0.35;
@@ -941,7 +1097,20 @@ export function WorldPlayer({
                 ) : null}
               </button>
             ))}
-            {can3d ? (
+            {view === "3d" && ready && started && !editor ? (
+              <button
+                type="button"
+                title="Edit the scene: place, move and rotate props"
+                aria-label="Edit scene"
+                data-testid="world-edit-toggle"
+                onClick={() => void openEditor()}
+                className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-white/75 text-xs hover:bg-white/15 hover:text-white"
+              >
+                <PencilRulerIcon className="size-4" />
+                Edit
+              </button>
+            ) : null}
+            {can3d && !editor ? (
               <button
                 type="button"
                 title={view === "3d" ? "Map view" : "3D view"}
@@ -1065,6 +1234,24 @@ export function WorldPlayer({
           </div>
         </Panel>
       ) : null}
+      {editor && edState ? (
+        <Suspense fallback={null}>
+          <WorldEditorPanel
+            editor={editor}
+            state={edState}
+            status={edStatus}
+            error={edError}
+            canSave={Boolean(api.saveWorldProps)}
+            canImport={Boolean(api.uploadModel)}
+            dirty={edDirty}
+            onImport={(f) => void importModel(f)}
+            onExport={() => void exportScene()}
+            onSave={() => void saveScene()}
+            onDone={() => void closeEditor()}
+          />
+        </Suspense>
+      ) : null}
+
       {panel === "save" ? (
         <Panel title="Save / Load" onClose={() => setPanel(null)}>
           <div className="flex flex-col gap-2">

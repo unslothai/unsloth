@@ -303,6 +303,7 @@ def test_the_world_player_fed_by_the_chosen_world_sets_the_view():
     }
     w, _ = resolve_world_report(d, {})
     assert w["render"] == "3d" and w["view3d"]["time_of_day"] == "night"
+    assert w["player_node"] == "play"
 
 
 def test_generator_and_art_handlers():
@@ -347,13 +348,80 @@ def test_npc_node():
     assert out["id"] == "old_tom"
 
 
-def test_the_source_player_wins_over_an_earlier_unrelated_one():
-    doc = {
-        "nodes": [
-            {"id": "other", "type": "world.play", "params": {"view": "2d"}},
-            {"id": "mine", "type": "world.play", "params": {"view": "3d", "time_of_day": "night"}},
-        ],
-        "edges": [],
-    }
-    w = apply_play_view({}, doc, source = "mine")
-    assert w["render"] == "3d" and w["view3d"]["time_of_day"] == "night"
+def test_props3d_are_cleaned_and_old_worlds_get_none():
+    plain = normalize_world(RAW, seed = 1)
+    assert "props3d" not in plain
+    asset = {"kind": "model", "ref": "sha256:" + "a" * 64, "url": "/api/flows/assets/x"}
+    w = normalize_world(
+        {
+            **RAW,
+            "props3d": [
+                {"id": "house-1", "kind": "house", "x": 3.5, "y": 4.5, "rot": 450, "scale": 9},
+                {"id": "house-1", "kind": "tree", "x": 1, "y": 1},  # duplicate id
+                {"id": "lamp-1", "kind": "lamp", "x": -4, "y": 10_000},
+                {"id": "m-1", "kind": "model", "x": 2, "y": 2, "asset": asset, "name": " Boat "},
+                {"id": "m-2", "kind": "model", "x": 2, "y": 2},  # model without a file
+                {"id": "m-3", "kind": "model", "x": 2, "y": 2, "asset": {"ref": "https://x/y.glb"}},
+                {"id": "bad id", "kind": "rock", "x": 1, "y": 1},
+                {"id": "ufo-1", "kind": "ufo", "x": 1, "y": 1},
+                {"id": "nan-1", "kind": "rock", "x": float("nan"), "y": 1},
+            ],
+        },
+        seed = 1,
+    )
+    props = {p["id"]: p for p in w["props3d"]}
+    assert list(props) == ["house-1", "lamp-1", "m-1"]
+    assert props["house-1"] == {
+        "id": "house-1", "kind": "house", "x": 3.5, "y": 4.5, "rot": 90.0, "scale": 5.0, "solid": True,
+    }  # fmt: skip
+    assert props["lamp-1"]["solid"] is False  # lamps are walked past by default
+    assert props["lamp-1"]["x"] == 0.0 and props["lamp-1"]["y"] < w["height"]
+    assert props["m-1"]["asset"] == {
+        "kind": "model", "ref": asset["ref"], "mime": "model/gltf-binary", "url": asset["url"],
+    }  # fmt: skip
+    assert props["m-1"]["name"] == "Boat"
+    WorldSpec.model_validate(w)
+
+
+def test_scenery_saved_on_the_world_player_needs_no_rerun():
+    def doc(params: dict) -> dict:
+        return {
+            "id": "f",
+            "name": "w",
+            "nodes": [
+                {"id": "s", "type": "world.spec", "params": {"world": RAW}, "pos": [0, 0]},
+                {"id": "play", "type": "world.play", "params": params, "pos": [1, 0]},
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "s",
+                    "source_port": "world",
+                    "target": "play",
+                    "target_port": "world",
+                    "kind": "data",
+                },
+            ],
+        }
+
+    w, _ = resolve_world_report(doc({}), {})
+    assert "props3d" not in w
+    crate = {"id": "crate-1", "kind": "crate", "x": 5.5, "y": 6.5}
+    w, _ = resolve_world_report(doc({"props3d": [crate, {"kind": "nope"}]}), {})
+    assert w["props3d"] == [{**crate, "rot": 0.0, "scale": 1.0, "solid": True}]
+    w, _ = resolve_world_report(
+        {
+            **doc({"props3d": []}),
+            "nodes": [
+                {
+                    "id": "s",
+                    "type": "world.spec",
+                    "params": {"world": {**RAW, "props3d": [crate]}},
+                    "pos": [0, 0],
+                },
+                {"id": "play", "type": "world.play", "params": {"props3d": []}, "pos": [1, 0]},
+            ],
+        },
+        {},
+    )
+    assert w.get("props3d") == []
