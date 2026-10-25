@@ -4367,8 +4367,7 @@ export function ImagesPage({
           : a;
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       let advanced = downloadSnapshot ?? withPicked(currentLoadAdvanced(repoId, familyOverrideRequired));
-      // A retired FLUX.3 copy loads from disk when complete, else the backend redirects it to its base: plan it so an
-      // incomplete one stages the base's files first.
+      // Only the backend knows if a retired FLUX.3 copy is complete: plan it so an incomplete one stages its base.
       const retiredSnapshot = isRetiredCopySnapshot({ repoId, displayRepoId: opts.displayRepoId });
       if (retiredSnapshot) source = "hub";
       // The retry's override rides the same snapshot, so its plan and its load both carry it.

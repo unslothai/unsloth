@@ -32,8 +32,7 @@ function retiredSnapshotRepo(path: string): string {
   return match ? `unsloth/${match[1].toLowerCase()}` : "";
 }
 
-/** A retired copy pick (its id, or a snapshot of it): only the backend knows if it is complete on disk, so it is
- * planned like a Hub pick and the backend redirects it to the base it copies when it is not. */
+/** A retired copy pick (its id or a snapshot): the backend loads it from disk when complete, else through its base. */
 export function isRetiredCopySnapshot(pick: { repoId: string; displayRepoId?: string }): boolean {
   return Boolean(retiredCopyOf(pick));
 }
