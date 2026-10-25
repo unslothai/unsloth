@@ -1094,6 +1094,47 @@ class TestEstimate:
         assert b.lookup_table_on_disk is bool(extras)
         assert b.lookup_table_bytes == FLASH_NEXT_TABLE
 
+    @pytest.mark.parametrize(
+        "extras, on_disk",
+        [
+            ([], False),
+            (["--parallel", "1"], False),
+            (["-c", "0"], True),
+            (["--parallel", "8"], True),
+        ],
+        ids = ["none", "same_parallel", "ctx_zero", "larger_parallel"],
+    )
+    def test_a_pass_through_that_reprices_the_cache_keeps_the_table_streamed(
+        self, breakdown, monkeypatch, extras, on_disk
+    ):
+        """The launch's resident verdict abstains on these (r17), so the estimate does too."""
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 256 * 1024)
+        )
+        assert breakdown(llama_extra_args = extras).lookup_table_on_disk is on_disk
+
+    @pytest.mark.parametrize("cpu_build", [False, True])
+    def test_a_cpu_child_proves_residency_against_ram_alone(
+        self, breakdown, monkeypatch, cpu_build
+    ):
+        """66 GiB RAM holds Flash-Next's table beside a 24 GiB card's share, not the whole load."""
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 66 * 1024)
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_binary_ships_no_gpu_backend",
+            staticmethod(lambda *a, **k: cpu_build),
+        )
+        assert breakdown().lookup_table_on_disk is cpu_build
+        assert breakdown(llama_extra_args = ["--device", "none"]).lookup_table_on_disk is True
+
     def test_a_cpu_pinned_projector_is_charged_to_ram_in_the_residency_proof(
         self, breakdown, monkeypatch
     ):

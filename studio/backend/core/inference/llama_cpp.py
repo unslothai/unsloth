@@ -31808,6 +31808,9 @@ class LlamaCppBackend:
                                 or not _fit_load_mode_kwargs["model_size"]
                                 or effective_ctx <= 0
                                 or _pass_through_reprices_cache(_fit_extras, n_parallel)
+                                # A CPU child cannot use the cards this fit credits.
+                                or self._binary_ships_no_gpu_backend(binary, _fit_env)
+                                or _device_selection_is_cpu(_fit_extras, _fit_env)
                             ):
                                 return None
                             return (

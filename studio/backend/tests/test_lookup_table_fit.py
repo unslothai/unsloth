@@ -870,3 +870,17 @@ def test_the_metal_resident_verdict_abstains_on_the_same_overrides(
     extra_args, n_parallel, reprices
 ):
     assert llama_cpp_module._pass_through_reprices_cache(extra_args, n_parallel) is reprices
+
+
+@pytest.mark.parametrize("cpu_build", [False, True])
+def test_a_cpu_child_keeps_llama_cpps_lazy_default(
+    tmp_path, _moe_cache_host, monkeypatch, cpu_build
+):
+    """The resident verdict credits the cards; a CPU-only build or --device none has none."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_binary_ships_no_gpu_backend", staticmethod(lambda *a, **k: cpu_build)
+    )
+    _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128)
+    assert (_lazy_values(cmd) == ["off"]) is not cpu_build, cmd
+    _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128, extra_args = ["--device", "none"])
+    assert _lazy_values(cmd) == [], cmd

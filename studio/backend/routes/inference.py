@@ -16087,7 +16087,9 @@ def _gguf_memory_breakdown(
             _LAZY_RESIDENT_MARGIN_FRAC,
             _extra_args_set_any_flag,
             _kv_offload_from_args,
+            _device_selection_is_cpu,
             _pass_through_overrides_placement,
+            _pass_through_reprices_cache,
             _prompt_cache_host_bytes,
             _sidecar_adapter_bytes,
             _sidecar_adapter_paths,
@@ -16108,6 +16110,9 @@ def _gguf_memory_breakdown(
             if not _lt_avail or not runtime.kv_estimable:
                 return False  # unsized: the launch keeps llama.cpp's default too
             if _sidecar_adapter_bytes(_lt_extras) is None:
+                return False
+            # A pass-through -c 0 or larger --parallel sizes a cache runtime did not price.
+            if _pass_through_reprices_cache(_lt_extras, n_parallel):
                 return False
             prompt = _prompt_cache_host_bytes(
                 None,
@@ -16163,12 +16168,19 @@ def _gguf_memory_breakdown(
             except Exception:  # noqa: BLE001 -- unread cards: the whole load in RAM
                 rows = []
             pick = sorted(int(i) for i in selected_gpu_ids) if selected_gpu_ids else None
-            if not rows or _pass_through_overrides_placement(
-                _lt_extras,
-                _lt_env,
-                len(pick) if pick is not None else len(rows),
-                is_vulkan_backend = LlamaCppBackend._is_vulkan_backend(),
-                gpu_indices = pick,
+            # A CPU child uses no card: the whole load is RAM.
+            _lt_binary = _lt_backend._find_llama_server_binary()
+            if (
+                not rows
+                or LlamaCppBackend._binary_ships_no_gpu_backend(_lt_binary, _lt_env)
+                or _device_selection_is_cpu(_lt_extras, _lt_env)
+                or _pass_through_overrides_placement(
+                    _lt_extras,
+                    _lt_env,
+                    len(pick) if pick is not None else len(rows),
+                    is_vulkan_backend = LlamaCppBackend._is_vulkan_backend(),
+                    gpu_indices = pick,
+                )
             ):
                 rows, pick = [], None
             return bool(
