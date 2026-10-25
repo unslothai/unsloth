@@ -22,7 +22,13 @@ import type { MediaValue, WorldSpec } from "../../types";
 import { type PlayerApi, mediaObjectUrl } from "../player-api";
 import { PlayerKeyframes } from "../story/backdrop";
 import { useMediaUrl } from "../use-media-url";
-import { type LiveReply, appendReplyDelta } from "./live-reply";
+import {
+  type LiveReply,
+  OFFLINE_NOTE,
+  appendReplyDelta,
+  isNoChatModelError,
+  offlineLine,
+} from "./live-reply";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import { type TileKind, generateMap } from "./procgen";
 import {
@@ -135,6 +141,7 @@ function Panel({
           onClick={onClose}
           className="rounded-full p-1 text-white/60 hover:bg-white/10"
           aria-label="Close"
+          title="Close"
         >
           <XIcon className="size-4" />
         </button>
@@ -399,6 +406,7 @@ export function WorldPlayer({
 
   // Bumped on every load, so a reply to a conversation from before the load is dropped.
   const loads = useRef(0);
+  const offlineNoted = useRef(false);
 
   const summarising = spec.summarise !== false;
   const summaryRun = useRef<AbortController | null>(null);
@@ -742,6 +750,24 @@ export function WorldPlayer({
     } catch (e) {
       if (generation !== loads.current) return;
       setLive(null);
+      const message = e instanceof Error ? e.message : String(e);
+      if (isNoChatModelError(message)) {
+        const npc = npcById.get(npcId);
+        const spoken = (wsRef.current.talks[npcId] ?? []).filter(
+          (t) => t.role === "npc",
+        ).length;
+        setWs((s) =>
+          addTurn(s, npcId, {
+            role: "npc",
+            text: offlineLine(npc?.greeting, spoken),
+          }),
+        );
+        if (!offlineNoted.current) {
+          offlineNoted.current = true;
+          toast(OFFLINE_NOTE);
+        }
+        return;
+      }
       setWs((s) =>
         addTurn(
           s,
@@ -750,7 +776,7 @@ export function WorldPlayer({
           summarising,
         ),
       );
-      toast(e instanceof Error ? e.message : String(e));
+      toast(message);
     } finally {
       // A reply from before a load must not unlock the newer request still in flight.
       if (generation === loads.current) setThinking(false);
@@ -1155,6 +1181,7 @@ export function WorldPlayer({
                   disabled={thinking || !draft.trim()}
                   className="rounded-full bg-white px-4 text-black disabled:opacity-40"
                   aria-label="Send"
+                  title="Send"
                 >
                   <SendIcon className="size-4" />
                 </button>

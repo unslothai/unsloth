@@ -151,6 +151,10 @@ def main() -> int:
 
             open_flow(page, "pipeline")
             page.click('[data-testid="flows-run"]')
+            page.wait_for_selector('[data-testid="flows-download-run"]', timeout = 5_000)
+            page.wait_for_timeout(300)
+            page.screenshot(path = str(SHOTS / "editor_download_before_run.png"))
+            page.click('[data-testid="flows-download-and-run"]')
             page.wait_for_selector('[data-testid="flows-run-drawer"]', timeout = 5_000)
             page.wait_for_function(
                 "() => window.__flowsSmoke.runtime.getState().runStatus === 'completed'",
