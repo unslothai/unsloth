@@ -582,6 +582,7 @@ export function WorldPlayer({
     chat,
   ]);
 
+  const replyRun = useRef<AbortController | null>(null);
   const send = async () => {
     const text = draft.trim();
     if (!text || !talking || thinking) return;
@@ -598,6 +599,8 @@ export function WorldPlayer({
     }
     setThinking(true);
     const generation = loads.current;
+    const run = new AbortController();
+    replyRun.current = run;
     try {
       const res = await api.invoke(
         flowId,
@@ -617,6 +620,7 @@ export function WorldPlayer({
           },
         },
         {
+          signal: run.signal,
           onDelta: (piece) =>
             setLive((l) =>
               appendReplyDelta(l, npcId, generation, loads.current, piece),
@@ -676,6 +680,7 @@ export function WorldPlayer({
     } finally {
       // A reply from before a load must not unlock the newer request still in flight.
       if (generation === loads.current) setThinking(false);
+      if (replyRun.current === run) replyRun.current = null;
     }
   };
 
@@ -712,6 +717,8 @@ export function WorldPlayer({
       return;
     }
     loads.current += 1;
+    replyRun.current?.abort();
+    replyRun.current = null;
     queue.clear();
     busy.current.clear();
     setBackground(null);
