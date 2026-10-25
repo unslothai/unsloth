@@ -801,22 +801,89 @@ def _flex_tuned_bwd_kernel_options(head_dim, device_ok):
     return dict(_FLEX_TUNED_BWD_KERNEL_OPTIONS)
 
 
-def _flex_tuned_bwd_fits(args, kwargs):
-    """Whether the tuned backward tiles can join this call. Not when the caller set its own tiles
-    (a partial set merged with ours can break bwd_BLOCK_N1 % bwd_BLOCK_M1 == 0), nor when the block
-    mask's sparse blocks are not multiples of our tiles (Inductor's defaults shrink to fit those)."""
+def _flex_tuned_bwd_fits(args, kwargs, options = None, caller_prefixes = ("bwd_", "BLOCK_", "num_")):
+    """Whether our tiles (default: the tuned backward ones) can join this call. Not when the caller set
+    its own tiles (a partial set merged with ours can break bwd_BLOCK_N1 % bwd_BLOCK_M1 == 0), nor when
+    the block mask's sparse blocks are not multiples of our tiles (Inductor's defaults shrink to fit)."""
+    if options is None:
+        options = _FLEX_TUNED_BWD_KERNEL_OPTIONS
     requested = kwargs.get("kernel_options") or {}
-    if any(k.startswith(("bwd_", "BLOCK_", "num_")) for k in requested):
+    if any(k.startswith(caller_prefixes) for k in requested):
         return False
     mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
     block_size = getattr(mask, "BLOCK_SIZE", None)
     if block_size is None:
         return True
     try:
-        tiles = [v for k, v in _FLEX_TUNED_BWD_KERNEL_OPTIONS.items() if "_BLOCK_" in k]
+        tiles = [v for k, v in options.items() if "_BLOCK_" in k]
         return all(int(size) % tile == 0 for size in block_size for tile in tiles)
     except Exception:
         return False
+
+
+# sm86 / sm89 cards (A10, RTX 3090 / 4090, A6000, L4, L40S) take Inductor's A100 flex tables, whose
+# default tiles at 128 < head_dim <= 256 need more shared memory per block than their 101376 bytes.
+# Measured on an L4 at Gemma 3 4B shapes: torch 2.10 forward FlexConfig(32, 64, 3 stages) 151552,
+# backward (64, 64, 64, 64, 2 stages) 135680; torch 2.14 retries a smaller forward tile itself, but
+# its backward still needs 114688. The compile fails, so _flex_preferred_fits sends Gemma 3 to eager. These tiles fit (forward 73728 bytes) and were the fastest that
+# compiled on the L4: fwd+bwd 21.2 ms causal B2 x 4096, 10.9 ms with the 1024 sliding window
+# (SDPA: 13.7 ms causal, 70.6 ms with that window as a mask). Passed with "fwd_" / "bwd_" keys,
+# which the templates read from torch 2.10 on.
+_FLEX_SMALL_SMEM_KERNEL_OPTIONS = {
+    "fwd_BLOCK_M": 64,
+    "fwd_BLOCK_N": 64,
+    "fwd_num_stages": 1,
+    "fwd_num_warps": 4,
+    "bwd_BLOCK_M1": 32,
+    "bwd_BLOCK_N1": 32,
+    "bwd_BLOCK_M2": 32,
+    "bwd_BLOCK_N2": 32,
+    "bwd_num_stages": 1,
+    "bwd_num_warps": 4,
+}
+# Smallest shared memory per block the tiles above were measured to fit (sm86 / sm89).
+_FLEX_SMALL_SMEM_MIN_SHARED_MEMORY = 101376
+_FLEX_SMALL_SMEM_CAPABILITY_MAJOR = 8
+_FLEX_SMALL_SMEM_ENV_VAR = "UNSLOTH_FLEX_SMALL_SMEM_TILES"
+
+
+def _flex_small_smem_device_ok():
+    """True when every visible CUDA device is an sm8x card too small for the default head_dim 256
+    flex tiles but large enough for _FLEX_SMALL_SMEM_KERNEL_OPTIONS, with torch >= 2.10.
+
+    Read at model load / wrap time, never inside a compiled region.
+    UNSLOTH_FLEX_SMALL_SMEM_TILES=0 turns it off (Gemma 3 then goes to eager as before)."""
+    if os.environ.get(_FLEX_SMALL_SMEM_ENV_VAR, "").strip() == "0":
+        return False
+    try:
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return False
+        if Version(torch.__version__.split("+")[0]) < Version(_FLEX_TUNED_BWD_MIN_TORCH):
+            return False
+        count = torch.cuda.device_count()
+        if count < 1:
+            return False
+        for index in range(count):
+            if torch.cuda.get_device_capability(index)[0] != _FLEX_SMALL_SMEM_CAPABILITY_MAJOR:
+                return False
+            shared_memory = torch.cuda.get_device_properties(index).shared_memory_per_block_optin
+            if not (
+                _FLEX_SMALL_SMEM_MIN_SHARED_MEMORY
+                <= shared_memory
+                < _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY
+            ):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _flex_small_smem_kernel_options(head_dim, device_ok):
+    """fwd_* / bwd_* kernel_options that fit an sm86 / sm89 card at this head dim, else None."""
+    low, high = _FLEX_TUNED_BWD_HEAD_DIM_RANGE
+    if not device_ok or not isinstance(head_dim, int) or not (low < head_dim <= high):
+        return None
+    return dict(_FLEX_SMALL_SMEM_KERNEL_OPTIONS)
 
 
 def _flex_call_needs_backward(query, key, value):
@@ -948,6 +1015,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         return flex_attention_forward
 
     tuned_bwd_device_ok = _flex_tuned_bwd_device_ok()
+    small_smem_device_ok = _flex_small_smem_device_ok()
 
     @functools.wraps(flex_attention_forward)
     def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
@@ -982,6 +1050,18 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and _flex_tuned_bwd_fits(args, kwargs)
         ):
             kernel_options = _flex_tuned_bwd_kernel_options(query.shape[-1], tuned_bwd_device_ok)
+        if (
+            kernel_options is None
+            and small_smem_device_ok
+            and hasattr(query, "dim")
+            and query.dim() == 4
+            # Short no-grad queries go to flex_decoding, whose own tiles are left alone.
+            and (query.shape[2] >= 128 or _flex_call_needs_backward(query, key, value))
+            and _flex_tuned_bwd_fits(
+                args, kwargs, _FLEX_SMALL_SMEM_KERNEL_OPTIONS, ("fwd_", "bwd_", "BLOCK_", "num_")
+            )
+        ):
+            kernel_options = _flex_small_smem_kernel_options(query.shape[-1], small_smem_device_ok)
         # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
         # padded batch stride (comprehensive_padding) that the backward template ignores, so every
         # batch row after the first reads a shifted LSE and the gradients blow up.
@@ -1408,6 +1488,9 @@ def _flex_preferred_fits(config):
         return True
     try:
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return True
+        # sm86 / sm89 with torch >= 2.10: the flex wrapper passes tiles that fit.
+        if _flex_small_smem_device_ok():
             return True
         return all(
             torch.cuda.get_device_properties(index).shared_memory_per_block_optin
