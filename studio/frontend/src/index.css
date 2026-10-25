@@ -30,6 +30,15 @@
 	}
 }
 
+/* A Settings card's leading icon: a borderless disc a step darker (light) or lighter (dark) than the card. */
+@utility icon-disc {
+	border-radius: 9999px;
+	background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), transparent);
+	&:where(.dark *) {
+		background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), transparent);
+	}
+}
+
 /* A field or value picker's height: a filled Button's (text-sm line, 7px padding each side, 1px
    border), so a field, picker or icon button beside a Button lines up at every UI font size. */
 @utility h-control {
@@ -3521,7 +3530,37 @@ html[data-chat-font] .aui-root {
 		min-height: 100%;
 		max-height: 100% !important;
 		/* Reserved before typing, or the toggle appearing would reflow the text. */
-		padding-right: calc(2.25rem * var(--ui-space-scale, 1));
+		padding-right: calc(2.875rem * var(--ui-space-scale, 1));
+	}
+
+	/* 10px wider than the editor, so the scrollbar sits near the composer's edge; the padding above
+	   grows by as much, so the text stays put. Out-ranks the expanded row's width: 100%. */
+	.unsloth-composer-line .unsloth-composer-editor .unsloth-composer-input {
+		width: calc(100% + 0.625rem * var(--ui-space-scale, 1));
+	}
+
+	/* Fade text cut off at either edge (markComposerScrollEdges sets the flags). The scrollbar strip stays unmasked. */
+	.unsloth-composer-input:is([data-fade-top], [data-fade-bottom]):not(:placeholder-shown) {
+		mask-image:
+			linear-gradient(
+				to bottom,
+				transparent,
+				#000 var(--composer-fade-top, 0px),
+				#000 calc(100% - var(--composer-fade-bottom, 0px)),
+				transparent
+			),
+			linear-gradient(#000, #000);
+		mask-size: calc(100% - 12px) 100%, 12px 100%;
+		mask-position: left top, right top;
+		mask-repeat: no-repeat;
+	}
+
+	.unsloth-composer-input[data-fade-top] {
+		--composer-fade-top: calc(1.5rem * var(--ui-space-scale, 1));
+	}
+
+	.unsloth-composer-input[data-fade-bottom] {
+		--composer-fade-bottom: calc(1.5rem * var(--ui-space-scale, 1));
 	}
 
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact

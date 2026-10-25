@@ -37,6 +37,7 @@ import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -3230,6 +3231,12 @@ export function SharedComposer({
                       event.currentTarget.value.length,
                   );
                 }}
+                onScroll={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onInputCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
                 onCompositionStart={() => {
                   imeSessionOpenRef.current = true;
                   setCompositionState(true);

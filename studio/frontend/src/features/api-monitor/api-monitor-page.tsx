@@ -17,8 +17,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -878,7 +880,11 @@ function QuickStart({
         onClick={openApiSettings}
         className="gap-1.5 rounded-full"
       >
-        <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+        <HugeiconsIcon
+          icon={PlusSignIcon}
+          strokeWidth={1.75}
+          className="size-4"
+        />
         Create an API key and see more examples
       </Button>
     </div>
@@ -887,6 +893,8 @@ function QuickStart({
 
 export function ApiMonitorPage(): ReactElement {
   const signalReady = useAppShellReadySignal();
+  const isMobileShell = useIsMobileShell();
+  const { pinned } = useSidebar();
   const tour = useGuidedTourController({
     id: "api-monitor",
     steps: apiMonitorTourSteps,
@@ -1235,11 +1243,7 @@ export function ApiMonitorPage(): ReactElement {
         onClick={() => setExampleModel(model)}
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
       >
-        <HugeiconsIcon
-          icon={CodeIcon}
-          strokeWidth={1.75}
-          className="size-4"
-        />
+        <HugeiconsIcon icon={CodeIcon} strokeWidth={1.75} className="size-4" />
       </Button>
     </ToolbarTooltip>
   );
@@ -1299,524 +1303,546 @@ export function ApiMonitorPage(): ReactElement {
   );
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 sm:px-10">
-      <GuidedTour {...tour.tourProps} />
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex min-w-0 flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-heading text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
-              API
-            </h1>
-            <span
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-ui-12 font-medium text-foreground",
-                INSET,
-              )}
-            >
-              <span
-                className={cn("size-2 rounded-full", serverStatus.dot)}
-                aria-hidden={true}
-              />
-              {serverStatus.label}
-              {served.length > 1 ? (
-                <span className="text-muted-foreground">
-                  · {served.length} models
-                </span>
-              ) : null}
-            </span>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            Serve your local models to any OpenAI-compatible client and watch
-            each request live.
-          </p>
-        </div>
-        <ToolbarTooltip label="API settings">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={openApiSettings}
-            aria-label="API settings"
-            className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
-          >
-            <HugeiconsIcon
-              icon={Settings02Icon}
-              strokeWidth={1.75}
-              className="size-[calc(18px*var(--ui-space-scale,1))]"
-            />
-          </Button>
-        </ToolbarTooltip>
-      </header>
-
-      {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
-      <section
-        data-tour="api-endpoint"
-        className={cn("flex flex-col", SURFACE)}
+    <>
+      {/* Model picker top left, where Chat, Images, Video and Audio keep theirs. Sticky: the log scrolls under it. */}
+      <div
+        className={cn(
+          "sticky top-0 z-30 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+          isMobileShell
+            ? "pl-12"
+            : pinned
+              ? "pl-2"
+              : isTauri
+                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+        )}
       >
-        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <span
-              className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
-              style={
-                { "--chip-tint": "var(--control-accent)" } as CSSProperties
-              }
+        <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
+          <ApiModelLoadControls
+            runtime={runtime}
+            activeModel={data?.active_model}
+            residencyKey={residencyKey}
+            onSettled={refresh}
+            onUnloadActive={unloadActiveModel}
+            unloading={ejecting}
+            configRequest={configRequest}
+            onConfigRequestAdopted={() => setConfigRequest(null)}
+            onEjectAll={() => void ejectAll()}
+          />
+        </div>
+      </div>
+      <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
+        <GuidedTour {...tour.tourProps} />
+        <header className="flex flex-wrap items-end justify-between gap-4">
+          <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="font-heading text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+                API
+              </h1>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-ui-12 font-medium text-foreground",
+                  INSET,
+                )}
+              >
+                <span
+                  className={cn("size-2 rounded-full", serverStatus.dot)}
+                  aria-hidden={true}
+                />
+                {serverStatus.label}
+                {served.length > 1 ? (
+                  <span className="text-muted-foreground">
+                    · {served.length} models
+                  </span>
+                ) : null}
+              </span>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Serve your local models to any OpenAI-compatible client and watch
+              each request live.
+            </p>
+          </div>
+          <ToolbarTooltip label="API settings">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={openApiSettings}
+              aria-label="API settings"
+              className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
             >
               <HugeiconsIcon
-                icon={ApiIcon}
-                strokeWidth={1.5}
+                icon={Settings02Icon}
+                strokeWidth={1.75}
                 className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
-            </span>
-            <div className="flex min-w-0 flex-col">
-              <span className="text-ui-11 text-muted-foreground">Base URL</span>
-              {/* h-5: at the copy button's 28px the chip sat below the text. */}
-              <div className="group/copy flex h-5 min-w-0 items-center gap-1">
-                <span className="truncate font-mono text-ui-13 text-foreground">
-                  {baseUrl}
-                </span>
-                <CopyButton
-                  value={baseUrl}
-                  label="Copy API base URL"
-                  revealOnHover={true}
-                />
-              </div>
-            </div>
-          </div>
-          <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
-            <ApiModelLoadControls
-              runtime={runtime}
-              activeModel={data?.active_model}
-              residencyKey={residencyKey}
-              onSettled={refresh}
-              onUnloadActive={unloadActiveModel}
-              unloading={ejecting}
-              configRequest={configRequest}
-              onConfigRequestAdopted={() => setConfigRequest(null)}
-              onEjectAll={() => void ejectAll()}
-            >
-              <ToolbarTooltip label={ejectLabel}>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    void (served.length > 1
-                      ? ejectAll()
-                      : ejectServed(served[0]))
-                  }
-                  disabled={ejecting || modelLoading || served.length === 0}
-                  className="gap-1.5 rounded-full"
-                >
-                  <HugeiconsIcon
-                    icon={RemoveCircleIcon}
-                    strokeWidth={1.75}
-                    className={cn("size-4", ejecting && "animate-pulse")}
-                  />
-                  {ejecting
-                    ? "Ejecting"
-                    : served.length > 1
-                      ? "Eject all"
-                      : "Eject"}
-                </Button>
-              </ToolbarTooltip>
-            </ApiModelLoadControls>
-          </div>
-        </div>
-        <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>
-          {served.length > 1 ? (
-            <div className="flex flex-col gap-2">
-              <p className="text-ui-12 text-muted-foreground">
-                {served.length} models answering requests
-              </p>
-              <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
-                {served.map((model) => (
-                  <div key={model.checkpoint} className="contents">
-                    <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
-                      <span
-                        className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                        aria-hidden={true}
-                      />
-                      <span className="ml-1 truncate font-mono text-foreground">
-                        {model.name}
-                      </span>
-                      <CopyButton
-                        value={model.name}
-                        label="Copy model name"
-                        revealOnHover={true}
-                      />
-                    </span>
-                    <span className="flex items-center gap-0.5">
-                      {settingsButton(model)}
-                      {exampleButton(model)}
-                    </span>
-                    <dl className="min-w-0">
-                      {model.active ? contextFact : null}
-                    </dl>
-                    <dl className="min-w-0">
-                      {model.active ? slotsFact : null}
-                    </dl>
-                    <span className="justify-self-end">
-                      <ToolbarTooltip label={`Eject ${model.name}`}>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Eject ${model.name}`}
-                          onClick={() => void ejectServed(model)}
-                          disabled={ejecting || modelLoading}
-                          className="size-7 rounded-full p-0 text-muted-foreground hover:text-foreground"
-                        >
-                          <HugeiconsIcon
-                            icon={RemoveCircleIcon}
-                            strokeWidth={1.75}
-                            className="size-3.5"
-                          />
-                        </Button>
-                      </ToolbarTooltip>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
-              <Fact label="Model" className="max-w-full">
-                {served.length === 1 ? (
-                  <>
-                    {/* Its own reveal group: hovering settings or code must not show Copy. */}
-                    <span className="group/copy flex min-w-0 items-center gap-1">
-                      <span className="truncate font-mono">{served[0].name}</span>
-                      <CopyButton
-                        value={served[0].name}
-                        label="Copy model name"
-                        revealOnHover={true}
-                      />
-                    </span>
-                    {settingsButton(served[0])}
-                    {exampleButton(served[0])}
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">None loaded</span>
-                )}
-              </Fact>
-              {served[0]?.active ? activeFacts : null}
-            </dl>
-          )}
-        </div>
-      </section>
+            </Button>
+          </ToolbarTooltip>
+        </header>
 
-      {error ? <Banner>{error}</Banner> : null}
-      {unloadError ? (
-        <Banner onDismiss={() => setUnloadError(null)}>{unloadError}</Banner>
-      ) : null}
-
-      <section
-        aria-label="Traffic summary"
-        className="elevated-card grid grid-cols-2 gap-px overflow-hidden bg-border/60 sm:grid-cols-3 lg:grid-cols-6 dark:bg-background"
-      >
-        <Stat
-          label="In flight"
-          value={formatCount(modelStats.active)}
-          tone={modelStats.active > 0 ? "active" : "default"}
-          hint={queued > 0 ? `${formatCount(queued)} queued` : undefined}
-        />
-        <Stat
-          label="Requests"
-          value={formatCount(modelStats.total)}
-          hint={loggingDisabled ? "recording off" : "in the recent log"}
-        />
-        <Stat
-          label="Errors"
-          value={formatCount(modelStats.errors)}
-          tone={modelStats.errors > 0 ? "error" : "default"}
-          hint={
-            modelStats.errorRate != null
-              ? `${Math.round(modelStats.errorRate * 100)}% of finished`
-              : undefined
-          }
-        />
-        <Stat
-          label="Avg latency"
-          value={formatDuration(modelStats.avgDurationMs)}
-          hint={
-            modelStats.maxDurationMs != null
-              ? `max ${formatDuration(modelStats.maxDurationMs)}`
-              : undefined
-          }
-        />
-        <Stat
-          label="Generation speed"
-          value={
-            modelStats.tokensPerSecond == null
-              ? "–"
-              : `${modelStats.tokensPerSecond.toFixed(1)} tok/s`
-          }
-          hint="while decoding"
-        />
-        <Stat
-          label="Tokens"
-          value={formatCount(modelStats.totalTokens)}
-          hint={`${formatCount(modelStats.inputTokens)} in · ${formatCount(modelStats.outputTokens)} out`}
-        />
-      </section>
-
-      <section className={cn("flex min-h-0 flex-col overflow-hidden", SURFACE)}>
-        <div
-          className={cn(
-            "flex flex-wrap items-center gap-2 border-b px-4 py-3",
-            DIVIDER,
-          )}
+        {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
+        <section
+          data-tour="api-endpoint"
+          className={cn("flex flex-col", SURFACE)}
         >
-          <div className="relative w-full min-w-0 sm:w-56">
-            <HugeiconsIcon
-              icon={Search01Icon}
-              strokeWidth={1.75}
-              className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground"
-              aria-hidden={true}
-            />
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search requests"
-              aria-label="Search API requests"
-              title="Matches the model, endpoint, prompt, reply or error"
-              className="pl-8"
-            />
-          </div>
-          <nav
-            aria-label="Filter by status"
-            className="-my-2 flex max-w-full gap-1 overflow-x-auto px-1 py-2 [scrollbar-width:none]!"
-          >
-            {STATUS_FILTERS.map((option) => {
-              const active = statusFilter === option.value;
-              const count = statusCounts[option.value];
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-current={active ? "page" : undefined}
-                  onClick={() => setStatusFilter(option.value)}
-                  className={cn(
-                    "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 font-heading text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
-                    active &&
-                      "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
-                  )}
-                >
-                  {option.label}
-                  {option.value !== "all" && count > 0 ? (
-                    <span
-                      className={cn(
-                        "tabular-nums text-muted-foreground",
-                        option.value === "error" &&
-                          "text-red-600 dark:text-red-400",
-                      )}
-                    >
-                      {formatCount(count)}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </nav>
-          {loggedModels.length > 1 ? (
-            <Select value={effectiveModelFilter} onValueChange={setModelFilter}>
-              <SelectTrigger
-                aria-label="Filter by model"
-                className="h-9 max-w-64 rounded-full"
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <span
+                className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
+                style={
+                  { "--chip-tint": "var(--control-accent)" } as CSSProperties
+                }
               >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL_MODELS}>All models</SelectItem>
-                {loggedModels.map((model) => (
-                  <SelectItem key={model} value={model}>
-                    {model}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            {visible.length !== entries.length ? (
-              <span className="mr-1 text-ui-11 tabular-nums text-muted-foreground">
-                {formatCount(visible.length)} of {formatCount(entries.length)}
+                <HugeiconsIcon
+                  icon={ApiIcon}
+                  strokeWidth={1.5}
+                  className="size-[calc(18px*var(--ui-space-scale,1))]"
+                />
               </span>
-            ) : null}
-            <ToolbarTooltip
-              label={paused ? "Resume the live feed" : "Pause the live feed"}
-            >
+              <div className="flex min-w-0 flex-col">
+                <span className="text-ui-11 text-muted-foreground">
+                  Base URL
+                </span>
+                {/* h-5: at the copy button's 28px the chip sat below the text. */}
+                <div className="group/copy flex h-5 min-w-0 items-center gap-1">
+                  <span className="truncate font-mono text-ui-13 text-foreground">
+                    {baseUrl}
+                  </span>
+                  <CopyButton
+                    value={baseUrl}
+                    label="Copy API base URL"
+                    revealOnHover={true}
+                  />
+                </div>
+              </div>
+            </div>
+            <ToolbarTooltip label={ejectLabel}>
               <Button
                 type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={
-                  paused ? "Resume the live feed" : "Pause the live feed"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void (served.length > 1 ? ejectAll() : ejectServed(served[0]))
                 }
-                aria-pressed={paused}
-                onClick={() => setPaused(!paused)}
-                className={cn(
-                  "rounded-full",
-                  paused &&
-                    "bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-500",
-                )}
+                disabled={ejecting || modelLoading || served.length === 0}
+                className="gap-1.5 rounded-full"
               >
                 <HugeiconsIcon
-                  icon={paused ? PlayIcon : PauseIcon}
+                  icon={RemoveCircleIcon}
                   strokeWidth={1.75}
-                  className="size-4"
+                  className={cn("size-4", ejecting && "animate-pulse")}
                 />
-              </Button>
-            </ToolbarTooltip>
-            <ToolbarTooltip label="Refresh">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={refresh}
-                disabled={refreshing}
-                aria-label="Refresh"
-                className="rounded-full"
-              >
-                <HugeiconsIcon
-                  icon={Refresh01Icon}
-                  strokeWidth={1.75}
-                  className={cn("size-4", refreshing && "animate-spin")}
-                />
-              </Button>
-            </ToolbarTooltip>
-            <ToolbarTooltip label="Clear log">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                disabled={entries.length === 0}
-                onClick={() => {
-                  setSelectedId(null);
-                  void clear();
-                }}
-                aria-label="Clear log"
-                className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
-              >
-                <HugeiconsIcon
-                  icon={Delete02Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
+                {ejecting
+                  ? "Ejecting"
+                  : served.length > 1
+                    ? "Eject all"
+                    : "Eject"}
               </Button>
             </ToolbarTooltip>
           </div>
-        </div>
-
-        {!loading && entries.length === 0 ? (
-          <div data-tour="api-log">
-            {loggingDisabled ? (
-              <p className="mx-auto max-w-lg px-6 py-14 text-center text-sm text-muted-foreground">
-                Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set.
-                Requests and model loads still run normally, they are just not
-                listed here. Unset the variable and restart Unsloth to
-                re-enable.
-              </p>
-            ) : (
-              <QuickStart
-                baseUrl={baseUrl}
-                model={
-                  (served.find((m) => m.active) ?? served[0])?.name ?? null
-                }
-              />
-            )}
-          </div>
-        ) : (
-          <div
-            data-tour="api-log"
-            className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 4xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)]"
-          >
-            <div
-              ref={listRef}
-              onKeyDown={onListKeyDown}
-              className={cn(
-                PANE_HEIGHT,
-                DIVIDER,
-                "flex flex-col gap-0.5 border-b p-1.5 lg:border-b-0 lg:border-r",
-              )}
-            >
-              {loading ? (
-                <div className="flex flex-col gap-2 p-1.5">
-                  {[0, 1, 2].map((i) => (
-                    <Skeleton key={i} className="h-16 w-full rounded-md" />
+          <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>
+            {served.length > 1 ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-ui-12 text-muted-foreground">
+                  {served.length} models answering requests
+                </p>
+                <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
+                  {served.map((model) => (
+                    <div key={model.checkpoint} className="contents">
+                      <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
+                        <span
+                          className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                          aria-hidden={true}
+                        />
+                        <span className="ml-1 truncate font-mono text-foreground">
+                          {model.name}
+                        </span>
+                        <CopyButton
+                          value={model.name}
+                          label="Copy model name"
+                          revealOnHover={true}
+                        />
+                      </span>
+                      <span className="flex items-center gap-0.5">
+                        {settingsButton(model)}
+                        {exampleButton(model)}
+                      </span>
+                      <dl className="min-w-0">
+                        {model.active ? contextFact : null}
+                      </dl>
+                      <dl className="min-w-0">
+                        {model.active ? slotsFact : null}
+                      </dl>
+                      <span className="justify-self-end">
+                        <ToolbarTooltip label={`Eject ${model.name}`}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`Eject ${model.name}`}
+                            onClick={() => void ejectServed(model)}
+                            disabled={ejecting || modelLoading}
+                            className="size-7 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                          >
+                            <HugeiconsIcon
+                              icon={RemoveCircleIcon}
+                              strokeWidth={1.75}
+                              className="size-3.5"
+                            />
+                          </Button>
+                        </ToolbarTooltip>
+                      </span>
+                    </div>
                   ))}
                 </div>
-              ) : visible.length === 0 ? (
-                <div className="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-muted-foreground">
-                  No requests match this filter.
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setQuery("");
-                      setStatusFilter("all");
-                      setModelFilter(ALL_MODELS);
-                    }}
-                    className="rounded-full"
-                  >
-                    Clear filters
-                  </Button>
-                </div>
-              ) : (
-                visible.map((entry) => (
-                  <RequestRow
-                    key={entry.id}
-                    entry={entry}
-                    selected={entry.id === selectedId}
-                    onSelect={setSelectedId}
-                    now={now}
-                  />
-                ))
-              )}
-            </div>
+              </div>
+            ) : (
+              <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                <Fact label="Model" className="max-w-full">
+                  {served.length === 1 ? (
+                    <>
+                      {/* Its own reveal group: hovering settings or code must not show Copy. */}
+                      <span className="group/copy flex min-w-0 items-center gap-1">
+                        <span className="truncate font-mono">
+                          {served[0].name}
+                        </span>
+                        <CopyButton
+                          value={served[0].name}
+                          label="Copy model name"
+                          revealOnHover={true}
+                        />
+                      </span>
+                      {settingsButton(served[0])}
+                      {exampleButton(served[0])}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">None loaded</span>
+                  )}
+                </Fact>
+                {served[0]?.active ? activeFacts : null}
+              </dl>
+            )}
+          </div>
+        </section>
 
-            <div className={PANE_HEIGHT}>
-              {selected ? (
-                <RequestDetail
-                  entry={selected}
-                  detail={details[selected.id]}
-                  loading={loadingDetails.has(selected.id)}
-                />
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
-                  <span
+        {error ? <Banner>{error}</Banner> : null}
+        {unloadError ? (
+          <Banner onDismiss={() => setUnloadError(null)}>{unloadError}</Banner>
+        ) : null}
+
+        <section
+          aria-label="Traffic summary"
+          className="elevated-card grid grid-cols-2 gap-px overflow-hidden bg-border/60 sm:grid-cols-3 lg:grid-cols-6 dark:bg-background"
+        >
+          <Stat
+            label="In flight"
+            value={formatCount(modelStats.active)}
+            tone={modelStats.active > 0 ? "active" : "default"}
+            hint={queued > 0 ? `${formatCount(queued)} queued` : undefined}
+          />
+          <Stat
+            label="Requests"
+            value={formatCount(modelStats.total)}
+            hint={loggingDisabled ? "recording off" : "in the recent log"}
+          />
+          <Stat
+            label="Errors"
+            value={formatCount(modelStats.errors)}
+            tone={modelStats.errors > 0 ? "error" : "default"}
+            hint={
+              modelStats.errorRate != null
+                ? `${Math.round(modelStats.errorRate * 100)}% of finished`
+                : undefined
+            }
+          />
+          <Stat
+            label="Avg latency"
+            value={formatDuration(modelStats.avgDurationMs)}
+            hint={
+              modelStats.maxDurationMs != null
+                ? `max ${formatDuration(modelStats.maxDurationMs)}`
+                : undefined
+            }
+          />
+          <Stat
+            label="Generation speed"
+            value={
+              modelStats.tokensPerSecond == null
+                ? "–"
+                : `${modelStats.tokensPerSecond.toFixed(1)} tok/s`
+            }
+            hint="while decoding"
+          />
+          <Stat
+            label="Tokens"
+            value={formatCount(modelStats.totalTokens)}
+            hint={`${formatCount(modelStats.inputTokens)} in · ${formatCount(modelStats.outputTokens)} out`}
+          />
+        </section>
+
+        <section
+          className={cn("flex min-h-0 flex-col overflow-hidden", SURFACE)}
+        >
+          <div
+            className={cn(
+              "flex flex-wrap items-center gap-2 border-b px-4 py-3",
+              DIVIDER,
+            )}
+          >
+            <div className="relative w-full min-w-0 sm:w-56">
+              <HugeiconsIcon
+                icon={Search01Icon}
+                strokeWidth={1.75}
+                className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden={true}
+              />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search requests"
+                aria-label="Search API requests"
+                title="Matches the model, endpoint, prompt, reply or error"
+                className="pl-8"
+              />
+            </div>
+            <nav
+              aria-label="Filter by status"
+              className="-my-2 flex max-w-full gap-1 overflow-x-auto px-1 py-2 [scrollbar-width:none]!"
+            >
+              {STATUS_FILTERS.map((option) => {
+                const active = statusFilter === option.value;
+                const count = statusCounts[option.value];
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => setStatusFilter(option.value)}
                     className={cn(
-                      "flex size-10 items-center justify-center rounded-md text-muted-foreground",
-                      INSET,
+                      "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 font-heading text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
+                      active &&
+                        "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
                     )}
                   >
-                    <HugeiconsIcon
-                      icon={FileSearchIcon}
-                      strokeWidth={1.75}
-                      className="size-5"
-                    />
-                  </span>
-                  <p className="max-w-xs text-sm text-muted-foreground">
-                    Select a request to see its details. Arrow keys move
-                    through the list.
-                  </p>
-                </div>
-              )}
+                    {option.label}
+                    {option.value !== "all" && count > 0 ? (
+                      <span
+                        className={cn(
+                          "tabular-nums text-muted-foreground",
+                          option.value === "error" &&
+                            "text-red-600 dark:text-red-400",
+                        )}
+                      >
+                        {formatCount(count)}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </nav>
+            {loggedModels.length > 1 ? (
+              <Select
+                value={effectiveModelFilter}
+                onValueChange={setModelFilter}
+              >
+                <SelectTrigger
+                  aria-label="Filter by model"
+                  className="h-9 max-w-64 rounded-full"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_MODELS}>All models</SelectItem>
+                  {loggedModels.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              {visible.length !== entries.length ? (
+                <span className="mr-1 text-ui-11 tabular-nums text-muted-foreground">
+                  {formatCount(visible.length)} of {formatCount(entries.length)}
+                </span>
+              ) : null}
+              <ToolbarTooltip
+                label={paused ? "Resume the live feed" : "Pause the live feed"}
+              >
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={
+                    paused ? "Resume the live feed" : "Pause the live feed"
+                  }
+                  aria-pressed={paused}
+                  onClick={() => setPaused(!paused)}
+                  className={cn(
+                    "rounded-full",
+                    paused &&
+                      "bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-500",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={paused ? PlayIcon : PauseIcon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </Button>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Refresh">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={refresh}
+                  disabled={refreshing}
+                  aria-label="Refresh"
+                  className="rounded-full"
+                >
+                  <HugeiconsIcon
+                    icon={Refresh01Icon}
+                    strokeWidth={1.75}
+                    className={cn("size-4", refreshing && "animate-spin")}
+                  />
+                </Button>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Clear log">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  disabled={entries.length === 0}
+                  onClick={() => {
+                    setSelectedId(null);
+                    void clear();
+                  }}
+                  aria-label="Clear log"
+                  className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </Button>
+              </ToolbarTooltip>
             </div>
           </div>
-        )}
-      </section>
 
-      <SavedModelSettingsPanel />
-      <ApiExampleDialog
-        open={exampleModel != null}
-        onOpenChange={(open) => {
-          if (!open) setExampleModel(null);
-        }}
-        baseUrl={baseUrl}
-        model={exampleModel?.name ?? ""}
-        samplingModelId={exampleModel?.checkpoint ?? ""}
-      />
-    </main>
+          {!loading && entries.length === 0 ? (
+            <div data-tour="api-log">
+              {loggingDisabled ? (
+                <p className="mx-auto max-w-lg px-6 py-14 text-center text-sm text-muted-foreground">
+                  Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set.
+                  Requests and model loads still run normally, they are just not
+                  listed here. Unset the variable and restart Unsloth to
+                  re-enable.
+                </p>
+              ) : (
+                <QuickStart
+                  baseUrl={baseUrl}
+                  model={
+                    (served.find((m) => m.active) ?? served[0])?.name ?? null
+                  }
+                />
+              )}
+            </div>
+          ) : (
+            <div
+              data-tour="api-log"
+              className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 4xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)]"
+            >
+              <div
+                ref={listRef}
+                onKeyDown={onListKeyDown}
+                className={cn(
+                  PANE_HEIGHT,
+                  DIVIDER,
+                  "flex flex-col gap-0.5 border-b p-1.5 lg:border-b-0 lg:border-r",
+                )}
+              >
+                {loading ? (
+                  <div className="flex flex-col gap-2 p-1.5">
+                    {[0, 1, 2].map((i) => (
+                      <Skeleton key={i} className="h-16 w-full rounded-md" />
+                    ))}
+                  </div>
+                ) : visible.length === 0 ? (
+                  <div className="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-muted-foreground">
+                    No requests match this filter.
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setQuery("");
+                        setStatusFilter("all");
+                        setModelFilter(ALL_MODELS);
+                      }}
+                      className="rounded-full"
+                    >
+                      Clear filters
+                    </Button>
+                  </div>
+                ) : (
+                  visible.map((entry) => (
+                    <RequestRow
+                      key={entry.id}
+                      entry={entry}
+                      selected={entry.id === selectedId}
+                      onSelect={setSelectedId}
+                      now={now}
+                    />
+                  ))
+                )}
+              </div>
+
+              <div className={PANE_HEIGHT}>
+                {selected ? (
+                  <RequestDetail
+                    entry={selected}
+                    detail={details[selected.id]}
+                    loading={loadingDetails.has(selected.id)}
+                  />
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+                    <span
+                      className={cn(
+                        "flex size-10 items-center justify-center rounded-md text-muted-foreground",
+                        INSET,
+                      )}
+                    >
+                      <HugeiconsIcon
+                        icon={FileSearchIcon}
+                        strokeWidth={1.75}
+                        className="size-5"
+                      />
+                    </span>
+                    <p className="max-w-xs text-sm text-muted-foreground">
+                      Select a request to see its details. Arrow keys move
+                      through the list.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <SavedModelSettingsPanel />
+        <ApiExampleDialog
+          open={exampleModel != null}
+          onOpenChange={(open) => {
+            if (!open) setExampleModel(null);
+          }}
+          baseUrl={baseUrl}
+          model={exampleModel?.name ?? ""}
+          samplingModelId={exampleModel?.checkpoint ?? ""}
+        />
+      </main>
+    </>
   );
 }

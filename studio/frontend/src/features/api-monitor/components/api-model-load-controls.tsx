@@ -37,7 +37,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
   type ReactElement,
-  type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -217,7 +216,6 @@ export function ApiModelLoadControls({
   configRequest = null,
   onConfigRequestAdopted,
   onEjectAll,
-  children,
 }: {
   runtime: ReturnType<typeof useChatModelRuntime>;
   activeModel: string | null | undefined;
@@ -230,7 +228,6 @@ export function ApiModelLoadControls({
   configRequest?: ModelConfigHandoffRequest | null;
   onConfigRequestAdopted?: (requestId: string) => void;
   onEjectAll?: () => void;
-  children?: ReactNode;
 }): ReactElement {
   const { selectModel, loadNpuModel, refresh, ejectModel } = runtime;
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
@@ -439,7 +436,7 @@ export function ApiModelLoadControls({
     publicModelId(runtimeCheckpoint) === effectiveModel;
 
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
       <ModelSelector
         models={models}
         loraModels={loraModels}
@@ -468,12 +465,12 @@ export function ApiModelLoadControls({
           refreshLocalModels();
         }}
         deleteDisabled={modelLoading}
-        variant="outline"
-        size="sm"
+        // Chat's header selector: the page shows it in the same top-left spot.
+        variant="ghost"
         placeholder="Load model"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
-        className="h-control max-w-full rounded-full bg-background px-3.5 sm:max-w-[calc(28rem*var(--ui-space-scale,1))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [&>span:last-child]:ml-1"
+        className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
         // Not leading-none: the truncated label would crop descenders.
         triggerLabelClassName={cn(
           "text-sm leading-5",
@@ -484,14 +481,14 @@ export function ApiModelLoadControls({
       <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
         <Button
           type="button"
-          variant="outline"
+          variant="ghost"
           size="icon"
           aria-label={reloading ? "Reloading" : "Reload"}
           onClick={() => {
             handleReload();
           }}
           disabled={reloadDisabled}
-          className="rounded-full"
+          className="!size-[var(--studio-chat-control-height,34px)] rounded-full text-muted-foreground"
         >
           <HugeiconsIcon
             icon={ReloadIcon}
@@ -500,7 +497,6 @@ export function ApiModelLoadControls({
           />
         </Button>
       </ToolbarTooltip>
-      {children}
       {actionError ? (
         <span
           role="alert"

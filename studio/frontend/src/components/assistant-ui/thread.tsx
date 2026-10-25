@@ -401,6 +401,7 @@ import {
   ReadAloudIcon,
 } from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
+import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -5908,6 +5909,12 @@ const Composer: FC<{
                 dir="auto"
                 {...inputProps}
                 cancelOnEscape={!(declineMounted && declineOwnsEscape)}
+                onScrollCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onInputCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
