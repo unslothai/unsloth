@@ -445,7 +445,6 @@ _LAUNCH_EXPORTS = (
 def apply_unsloth_fsdp2_launch_env():
     """UNSLOTH_FSDP2=1 with WORLD_SIZE > 1: export what `accelerate launch` exports for an FSDP2
     config (explicit FSDP_* values win). Must run before transformers / accelerate read the env."""
-    global _NON_CUDA_EXPORT
     if not unsloth_fsdp2_requested() or _env_world_size() <= 1:
         return False
     if unsloth_fsdp2_native_requested():
@@ -470,6 +469,7 @@ def apply_unsloth_fsdp2_launch_env():
 
 def _export_accelerate_fsdp2_env():
     """What `accelerate launch` exports for an FSDP2 config (explicit FSDP_* values win)."""
+    global _NON_CUDA_EXPORT
     if _env_flag("ACCELERATE_USE_DEEPSPEED"):
         raise RuntimeError(
             "Unsloth: UNSLOTH_FSDP2=1 was set on a DeepSpeed launch. Unset one of them."
