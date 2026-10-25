@@ -206,7 +206,11 @@ def _run_loop(loop, monkeypatch, launcher, answer, code, mode):
         )
         return
     from test_studio_tool_loop import PY, FakeTransport, _DONE, _sse as _studio_sse
-    from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
+    from core.inference.studio_tool_loop import (
+        ToolLoopPolicy,
+        ToolLoopRun,
+        stream_with_studio_tools,
+    )
 
     monkeypatch.setattr(loop_mod, "wait_tool_decision", answer)
     monkeypatch.setattr(loop_mod, "execute_tool", launcher)
@@ -380,7 +384,9 @@ def test_approval_grants_host_access_matches_the_executor(name, arguments, grant
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "terminal runs bash here")
 @pytest.mark.parametrize("api_key", [True, False])
-def test_an_approved_api_key_terminal_call_refuses_when_the_sandbox_is_gone(monkeypatch, tmp_path, api_key):
+def test_an_approved_api_key_terminal_call_refuses_when_the_sandbox_is_gone(
+    monkeypatch, tmp_path, api_key
+):
     """The terminal holds like python: an approved host-path command from an API key never falls back to the host."""
     plans, fallbacks = [], []
     monkeypatch.setattr(tools, "_get_workdir", lambda _sid: str(tmp_path))
