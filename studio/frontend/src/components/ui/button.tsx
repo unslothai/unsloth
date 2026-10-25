@@ -51,7 +51,8 @@ export const buttonVariants = cva(
         hero: "h-auto rounded-full px-5 py-2.5",
       },
     },
-    // Filled: 12px sides, 8px around the label's line at every size; icons add no height.
+    // Filled: 12px sides, 8px around the label's line at every size; icons add no height. A trailing
+    // icon (a dropdown chevron) gets the select trigger's 15px, since its glyph sits inset in its box.
     compoundVariants: [
       {
         variant: [
@@ -65,7 +66,7 @@ export const buttonVariants = cva(
         ],
         size: ["default", "sm", "lg", "hero"],
         class:
-          "h-auto gap-1.5 px-[calc(11px*var(--ui-space-scale,1))] py-[calc(7px*var(--ui-space-scale,1))] has-data-[icon=inline-end]:pr-[calc(11px*var(--ui-space-scale,1))] has-data-[icon=inline-start]:pl-[calc(11px*var(--ui-space-scale,1))] [&_svg]:-my-2",
+          "h-auto gap-1.5 px-[calc(11px*var(--ui-space-scale,1))] py-[calc(7px*var(--ui-space-scale,1))] has-data-[icon=inline-end]:pr-[calc(11px*var(--ui-space-scale,1))] has-data-[icon=inline-start]:pl-[calc(11px*var(--ui-space-scale,1))] has-[>svg:last-child]:px-[calc(14px*var(--ui-space-scale,1))] [&_svg]:-my-2",
       },
     ],
     defaultVariants: {

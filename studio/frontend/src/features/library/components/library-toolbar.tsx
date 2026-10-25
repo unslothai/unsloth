@@ -303,7 +303,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex shrink-0 items-center gap-1.5 rounded-full bg-action px-3 py-2 font-medium text-ui-14 text-background [&_svg]:-my-2 outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex shrink-0 items-center gap-1.5 rounded-full bg-action px-[calc(15px*var(--ui-space-scale,1))] py-2 font-medium text-ui-14 text-background [&_svg]:-my-2 outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
           {t("common.new")}
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} className="size-4" />
