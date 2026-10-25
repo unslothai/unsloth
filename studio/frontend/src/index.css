@@ -30,6 +30,17 @@
 	}
 }
 
+/* A field or value picker's height: a filled Button's (text-sm line, 7px padding each side, 1px
+   border), so a field, picker or icon button beside a Button lines up at every UI font size. */
+@utility h-control {
+	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
+}
+
+@utility size-control {
+	width: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
+	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
+}
+
 @layer components {
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface

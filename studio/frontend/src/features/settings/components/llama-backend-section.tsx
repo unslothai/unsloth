@@ -161,7 +161,7 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
               }
             }}
             title={settings?.resolvedBinary ?? settings?.path ?? undefined}
-            className="h-8 min-w-0 font-mono text-xs"
+            className="min-w-0 font-mono text-xs"
             data-testid="llama-cpp-path-input"
           />
           <Button
@@ -276,7 +276,6 @@ export function LlamaBackendSection() {
             <SelectTrigger
               aria-label={t("settings.resources.llamaBackend.label")}
               className="w-52"
-              size="sm"
               data-testid="llama-backend-select"
             >
               <SelectValue />

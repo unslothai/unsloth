@@ -14,6 +14,9 @@ const twMerge = extendTailwindMerge({
     classGroups: {
       "font-size": [{ text: [isUiToken] }],
       leading: [{ leading: [isUiToken] }],
+      // index.css `h-control` / `size-control`: so a caller's h-8 or size-8 replaces it instead of both applying.
+      h: [{ h: ["control"] }],
+      size: [{ size: ["control"] }],
     },
   },
 });

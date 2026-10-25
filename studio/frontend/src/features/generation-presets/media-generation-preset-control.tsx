@@ -215,14 +215,14 @@ export function MediaGenerationPresetControl({
               placeholder="Preset name"
               maxLength={80}
               autoComplete="off"
-              className="h-9 min-w-0 rounded-full bg-background"
+              className="min-w-0 rounded-full bg-background"
             />
             <Button
               type="button"
               size="sm"
               disabled={!canSave}
               onClick={() => save().catch(() => undefined)}
-              className="h-9 shrink-0 rounded-full px-3"
+              className="shrink-0"
             >
               {saveLabel}
             </Button>
