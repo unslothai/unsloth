@@ -229,6 +229,8 @@ from .diffusion_memory import (
     learned_peak_label,
     CFG_OFF_PART,
     cfg_off_peaks_enabled,
+    TIER_MOVED_ATTR,
+    tier_peaks_enabled,
     without_cfg_off,
     live_vae_saver_tag,
     planned_vae_saver_tag,
@@ -3042,6 +3044,7 @@ def _attention_scaling_known(target: Any, engaged_backend: Optional[str] = None)
 def _start_peak_probe(state: Any) -> Any:
     """Arm the learned-peak measurement for one render (CUDA loads that carry a peak identity), else None."""
     pipe = getattr(state, "pipe", None)
+    _follow_live_graph_mode(state)
     identity = getattr(pipe, "_unsloth_peak_identity", None)
     if identity is None:
         return None
@@ -3115,6 +3118,148 @@ def _graphs_settled_eager(state: Any) -> bool:
     return True
 
 
+def _learned_peak_keys(
+    state: Any,
+    label: str,
+    speed: Optional[str],
+    *,
+    eager_stand_in: bool = True,
+) -> list:
+    """``(label, speed tier)`` keys a learned peak for the live configuration may sit under, most specific first.
+    ``eager_stand_in``: the eager tier's keys also answer for a compiled tier (the whole-module per-request path, which
+    runs the denoiser outside compiled code). Without it only the live key answers, CUDA graph mode included: on
+    FLUX.1-schnell bf16 the renders after a dropped graph peaked 1.1 GiB above the render that captured it."""
+    pipe = getattr(state, "pipe", None)
+    cfg_off = CFG_OFF_PART in str(label).split("|")
+    keys = [(label, speed)]
+    if not eager_stand_in:
+        return keys if speed is not None else []
+    # a deferred compile tier records nothing: its eager peak (not exceeded when compiled) stands in
+    keys.append((label, SPEED_OFF))
+    loaded = getattr(pipe, "_unsloth_peak_identity", None)
+    if isinstance(loaded, tuple) and len(loaded) == 3:
+        loaded_label = str(loaded[1])
+        if cfg_off:
+            loaded_label = f"{without_cfg_off(loaded_label)}|{CFG_OFF_PART}"
+        keys += [(loaded_label, tier) for tier in (loaded[2], SPEED_OFF) if tier is not None]
+    tier_info = getattr(pipe, WHOLE_TIER_ATTR, None)
+    eager_label = tier_info.get("eager_peak_label") if isinstance(tier_info, dict) else None
+    if eager_label:
+        if cfg_off:
+            eager_label = f"{eager_label}|{CFG_OFF_PART}"
+        keys.append((eager_label, SPEED_OFF))
+    return list(dict.fromkeys(keys))
+
+
+def _learned_peak_for_keys(
+    family: Any,
+    keys: Sequence[tuple],
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int,
+    workflow: Optional[str] = None,
+    phase: Optional[str] = None,
+) -> Optional[int]:
+    """The first learned peak (margin included) found under ``keys`` for this request, keyed for ``workflow``."""
+    for key_label, tier in keys:
+        found = measured_image_runtime_mib(
+            family,
+            tier,
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            quant = with_workflow(key_label, workflow),
+            static_seed = False,
+            phase = phase,
+        )
+        if found is not None:
+            return found
+    return None
+
+
+def _follow_live_graph_mode(state: Any) -> None:
+    """A deferred profile's identity follows the CUDA graph mode the session keeps (a graph armed at the engagement,
+    then dropped as not worth its memory): later renders record, and the guard prices, the mode that runs."""
+    pipe = getattr(state, "pipe", None)
+    identity = getattr(pipe, "_unsloth_peak_identity", None)
+    if not getattr(pipe, TIER_MOVED_ATTR, False) or not isinstance(identity, tuple):
+        return
+    if len(identity) != 3 or "|graphs:" not in str(identity[1]):
+        return
+    try:
+        live = with_label_part(str(identity[1]), "graphs", _tier_graph_mode(state))
+        if live != identity[1]:
+            pipe._unsloth_peak_identity = (identity[0], live, identity[2])
+    except Exception:  # noqa: BLE001 - recording is optional
+        pass
+
+
+def _tier_request_peak(
+    state: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int,
+    cfg: Optional[bool],
+    workflow: Optional[str] = None,
+) -> Optional[int]:
+    """Learned peak (margin included) of the tier a deferred profile engaged, for the request guard; None while that
+    tier has no measurement of its own (the first compiled render, a pending background compile, LoRA adapters)."""
+    pipe = getattr(state, "pipe", None)
+    if not getattr(pipe, TIER_MOVED_ATTR, False):
+        return None
+    try:
+        family, label, speed = _live_peak_identity(state)
+    except Exception:  # noqa: BLE001
+        return None
+    if speed is None:
+        return None
+    label = without_cfg_off(str(label))
+    if (
+        cfg is False
+        and getattr(pipe, "_unsloth_peak_expects_cfg", False)
+        and cfg_off_peaks_enabled()
+    ):
+        label = f"{label}|{CFG_OFF_PART}"
+    return _learned_peak_for_keys(
+        family,
+        _learned_peak_keys(state, label, speed, eager_stand_in = False),
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        workflow = workflow,
+    )
+
+
+def _hold_captured_release(state: Any, extra_mib: int) -> int:
+    """At least the release a still-live CUDA graph was captured over: graphs key on weight addresses, so pinning
+    more groups again would re-capture it on the next render. Cleared once no graph is live."""
+    pipe = getattr(state, "pipe", None)
+    held = getattr(pipe, "_unsloth_captured_release_mib", None)
+    if held is None:
+        return extra_mib
+    try:
+        if not cuda_graph.live_graph_count(_peak_device_index(state)):
+            pipe._unsloth_captured_release_mib = None
+            return extra_mib
+    except Exception:  # noqa: BLE001 - unknown: keep the placement the graph was captured over
+        pass
+    return max(int(extra_mib), int(held))
+
+
+def _note_captured_release(state: Any, extra_mib: int, generation_before: Optional[int]) -> None:
+    """Remember the release a render captured a CUDA graph over (``_hold_captured_release``)."""
+    pipe = getattr(state, "pipe", None)
+    if generation_before is None or not getattr(pipe, TIER_MOVED_ATTR, False):
+        return
+    try:
+        if cuda_graph.capture_generation(_peak_device_index(state)) > generation_before:
+            pipe._unsloth_captured_release_mib = int(max(0, extra_mib))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _whole_tier_for_request(
     state: Any,
     *,
@@ -3164,33 +3309,15 @@ def _whole_tier_for_request(
         return None
     if speed is None:
         return None
-    # a deferred compile tier records nothing: its eager peak (not exceeded when compiled) stands in
-    keys = [(label, speed), (label, SPEED_OFF)]
-    loaded = getattr(pipe, "_unsloth_peak_identity", None)
-    if isinstance(loaded, tuple) and len(loaded) == 3:
-        loaded_label = str(loaded[1])
-        if CFG_OFF_PART in str(label).split("|"):
-            loaded_label = f"{without_cfg_off(loaded_label)}|{CFG_OFF_PART}"
-        keys += [(loaded_label, tier) for tier in (loaded[2], SPEED_OFF) if tier is not None]
-    eager_label = tier_info.get("eager_peak_label") if isinstance(tier_info, dict) else None
-    if eager_label:
-        if CFG_OFF_PART in str(label).split("|"):
-            eager_label = f"{eager_label}|{CFG_OFF_PART}"
-        keys.append((eager_label, SPEED_OFF))
-    activation = None
-    for key_label, tier in dict.fromkeys(keys):
-        activation = measured_image_runtime_mib(
-            family,
-            tier,
-            width = width,
-            height = height,
-            batch_size = batch_size,
-            quant = with_workflow(key_label, workflow),
-            static_seed = False,
-            phase = "pre_decode",
-        )
-        if activation is not None:
-            break
+    activation = _learned_peak_for_keys(
+        family,
+        _learned_peak_keys(state, label, speed),
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        workflow = workflow,
+        phase = "pre_decode",
+    )
     if activation is None:
         if logger is not None:
             logger.info(
@@ -3225,7 +3352,9 @@ def _live_peak_identity(state: Any) -> tuple:
     )
     label = with_label_part(label, "vae", live_vae_saver_tag(pipe))
     label = with_label_part(label, "attn", getattr(state, "attention_backend", None) or "native")
-    if "|graphs:" in label:
+    if "|graphs:" in label and getattr(pipe, TIER_MOVED_ATTR, False):
+        label = with_label_part(label, "graphs", _tier_graph_mode(state))
+    elif "|graphs:" in label:
         label = with_label_part(label, "graphs", _live_graph_mode(state))
     speed = getattr(state, "speed_mode", None)
     if "compile_fallback_eager" in tuple(getattr(state, "speed_optims", ()) or ()):
@@ -3270,6 +3399,30 @@ def _live_graph_mode(state: Any) -> str:
         if "cuda_graph" not in optims:
             return "off"
         return _engaged_graph_mode(getattr(state, "pipe", None), {"cuda_graph": True})
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _tier_graph_mode(state: Any) -> str:
+    """The CUDA graph mode a deferred profile's renders run under, stable across its first capture: the armed mode
+    (``_engaged_graph_mode``) until the graphs are captured then dropped, or settle eager, then ``off``. Unlike
+    ``_live_graph_mode`` it does not read ``off`` before the first capture, so the render that captures records."""
+    try:
+        if "cuda_graph" not in tuple(getattr(state, "speed_optims", ()) or ()):
+            return "off"
+        pipe = getattr(state, "pipe", None)
+        handles = tuple(getattr(state, "cuda_graphs", ()) or ()) or tuple(
+            getattr(pipe, "_unsloth_cuda_graphs", ()) or ()
+        )
+        armed = _engaged_graph_mode(pipe, {"cuda_graph": True})
+        if not handles:
+            return "off"
+        totals = cuda_graph.stats(handles)
+        if totals.get("graphs"):
+            return armed
+        if totals.get("captures") or totals.get("poisoned") or _graphs_settled_eager(state):
+            return "off"
+        return armed
     except Exception:  # noqa: BLE001
         return "unknown"
 
@@ -13124,9 +13277,13 @@ class DiffusionBackend:
                 )
             except Exception:  # noqa: BLE001 - recording is optional
                 pass
-            # the reserve was placed for the load's tier: until a reload re-places it, requests size from the flat
+            # the reserve was placed for the load's tier: until this tier records a peak of its own (its first
+            # completed render), or with the kill switch until a reload re-places it, requests size from the flat
             # estimate
-            state.pipe._unsloth_peak_static = True
+            if tier_peaks_enabled():
+                setattr(state.pipe, TIER_MOVED_ATTR, True)
+            else:
+                state.pipe._unsloth_peak_static = True
         # Keep the badge in step with the state it describes: the top-level field moved, so leaving `resolved` on the
         # load-time value would make the panel report an attention backend that is no longer the one running.
         if isinstance(state.resolved, dict) and "attention_backend" in state.resolved:
@@ -13223,6 +13380,8 @@ class DiffusionBackend:
         object.__setattr__(
             state, "cuda_graphs", tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
         )
+        # the renders of this tier record under the graph mode it armed
+        _follow_live_graph_mode(state)
         entry = (state.resolved or {}).get("speed_mode")
         if isinstance(entry, dict):
             entry["value"] = SPEED_DEFAULT
@@ -13883,6 +14042,7 @@ class DiffusionBackend:
                             ),
                         )
                 guard_width = guard_height = guard_target = None
+                guard_release_mib, guard_capture_gen = 0, None
                 guard_batch = 1
                 guard_condition_pixels = 0
 
@@ -13935,6 +14095,7 @@ class DiffusionBackend:
                         and ref_resolution is None
                         and not is_flux3_family(fam)
                     )
+                    _follow_live_graph_mode(state)
                     guard_cfg, extra_mib = split_aware_request_extra(
                         state.pipe,
                         guard_cfg,
@@ -13948,9 +14109,21 @@ class DiffusionBackend:
                             cfg = cfg,
                             unpriced_references = guard_unpriced_refs,
                             workflow = _peak_workflow(fam, workflow),
+                            tier_peak_mib = _tier_request_peak(
+                                state,
+                                width = guard_width,
+                                height = guard_height,
+                                batch_size = guard_batch,
+                                cfg = cfg,
+                                workflow = _peak_workflow(fam, workflow),
+                            ),
                         ),
                         step_cache = auto_step_cache_on,
                     )
+                    if getattr(state.pipe, TIER_MOVED_ATTR, False):
+                        extra_mib = _hold_captured_release(state, extra_mib)
+                        guard_release_mib = extra_mib
+                        guard_capture_gen = cuda_graph.capture_generation(_peak_device_index(state))
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if (
@@ -14469,6 +14642,7 @@ class DiffusionBackend:
                     target = guard_target,
                     workflow = workflow,
                 )
+                _note_captured_release(state, guard_release_mib, guard_capture_gen)
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
