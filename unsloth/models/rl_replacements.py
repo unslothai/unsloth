@@ -5539,6 +5539,10 @@ try:
     from unsloth_zoo.rl_replacements import distillation_chunked_jsd
 except Exception:
     distillation_chunked_jsd = None
+try:
+    from unsloth_zoo.fused_losses.fused_linear import fused_linear_jsd as _unsloth_fused_linear_jsd
+except Exception:
+    _unsloth_fused_linear_jsd = None
 
 
 def _unsloth_gkd_canonical(source):
@@ -5799,17 +5803,21 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
     """TRL's GKD loss without either full logits tensor, or ``None`` to run TRL's own ``compute_loss``."""
     if layout is None:
         return None
-    if distillation_chunked_jsd is None:
+    if distillation_chunked_jsd is None and _unsloth_fused_linear_jsd is None:
         return _unsloth_gkd_note_fallback(self, "unsloth_zoo has no distillation_chunked_jsd")
     if os.environ.get("UNSLOTH_GKD_CHUNKED", "1").lower() in ("0", "false", "no", "off"):
         return _unsloth_gkd_note_fallback(self, "UNSLOTH_GKD_CHUNKED=0")
+    # Read per call like the other fused lm_head routes: UNSLOTH_FUSED_LINEAR=0 restores TRL's dense loss.
+    if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        return _unsloth_gkd_note_fallback(self, "UNSLOTH_FUSED_LINEAR=0")
+    use_fused = _unsloth_fused_linear_jsd is not None
     if getattr(self, "use_liger_gkd_loss", False):
         return _unsloth_gkd_note_fallback(self, "use_liger_gkd_loss")
     if getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
         return _unsloth_gkd_note_fallback(self, "FSDP / DeepSpeed")
     jsd_kwargs = {}
     scaler = getattr(self.accelerator, "scaler", None)
-    if scaler is not None and scaler.is_enabled():
+    if scaler is not None and scaler.is_enabled() and not use_fused:
         if "scaler" not in inspect.signature(distillation_chunked_jsd).parameters:
             return _unsloth_gkd_note_fallback(self, "unsloth_zoo JSD has no GradScaler support")
         jsd_kwargs["scaler"] = scaler
@@ -5919,6 +5927,34 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
     # A dispatched model can return hidden states off its head's device; the zoo's accumulators follow the states.
     student_states = student_states.to(student_head.weight.device)
     teacher_states = teacher_states.to(teacher_head.weight.device)
+    if use_fused:
+        # Both heads one row chunk at a time, student gradient taken in forward (zoo fused_linear).
+        rows = os.environ.get("UNSLOTH_GKD_CHUNK_SIZE", "")
+        loss = _unsloth_fused_linear_jsd(
+            student_states,
+            student_head.weight,
+            teacher_states.detach(),
+            teacher_head.weight.detach(),
+            labels = shifted_labels,
+            beta = float(self.beta),
+            # No TRL release passes a temperature to generalized_jsd_loss (GKDConfig.temperature is for sampling).
+            temperature = 1.0,
+            student_bias = student_head.bias,
+            teacher_bias = None if teacher_head.bias is None else teacher_head.bias.detach(),
+            student_logit_scale = student_scale,
+            student_logit_softcapping = student_softcap,
+            teacher_logit_scale = teacher_scale,
+            teacher_logit_softcapping = teacher_softcap,
+            num_items_in_batch = items,
+            scaling = scaler.get_scale() if scaler is not None and scaler.is_enabled() else None,
+            rows_per_chunk = int(rows) if rows.strip().isdigit() else None,
+        )
+        try:
+            self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
+            self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
+        except Exception:
+            pass
+        return loss
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
         student_states,
         teacher_states.detach(),
@@ -5950,7 +5986,7 @@ def gkd_trainer_compute_loss(function_name, function):
     if function_name != "compute_loss" or "_unsloth_trl_compute_loss" in function:
         return function
     layout = _unsloth_gkd_layout(function)
-    if layout is None or distillation_chunked_jsd is None:
+    if layout is None or (distillation_chunked_jsd is None and _unsloth_fused_linear_jsd is None):
         return function
     renamed, n = re.subn(
         r"\bdef compute_loss\(", "def _unsloth_trl_compute_loss(", function, count = 1
@@ -6008,6 +6044,10 @@ RL_PRE_ITEMS["gkd_trainer"].append(
     "    from unsloth_zoo.rl_replacements import distillation_chunked_jsd\n"
     "except Exception:\n"
     "    distillation_chunked_jsd = None\n"
+    "try:\n"
+    "    from unsloth_zoo.fused_losses.fused_linear import fused_linear_jsd as _unsloth_fused_linear_jsd\n"
+    "except Exception:\n"
+    "    _unsloth_fused_linear_jsd = None\n"
 )
 
 
