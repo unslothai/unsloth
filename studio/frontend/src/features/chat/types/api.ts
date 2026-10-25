@@ -4,8 +4,9 @@
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 import type { ManagedEngineOffer } from "@/features/model-picker";
 import type { CustomReasoningConfig } from "../custom-reasoning";
+import type { CpuFallbackReason } from "../lib/gpu-placement";
 
-export type CpuFallbackReason = "vulkan_startup_crash";
+export type { CpuFallbackReason };
 
 export type MmprojFallbackReason =
   | "cpu_offload"
@@ -493,6 +494,12 @@ export interface InferenceStatusResponse {
   /** Set while the active model is a recovered CPU-only Vulkan load. */
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
+  /** Layers --fit left partly in system memory (MoE experts first); null without --fit. */
+  overflow_layers?: number | null;
+  gpu_weights_mib?: number | null;
+  host_weights_mib?: number | null;
+  /** --moe-cache-mib auto: every routed expert in RAM, this many MiB cached on the GPU. */
+  expert_cache_mib?: number | null;
   offload_overridden?: boolean | null;
   gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;

@@ -240,6 +240,31 @@ def _accessible_render_vendors(vendors) -> set:
     return found
 
 
+def _reachable_intel_arc_render_node() -> bool:
+    """True when this process can open the render node of an Intel Arc itself (PCI class per node), not
+    only some Intel node: beside a UHD iGPU, a container may mount the iGPU's node alone."""
+    import glob
+
+    from utils.hardware.hardware import _intel_pci_device_is_xpu_class
+
+    for node in glob.glob("/dev/dri/renderD*"):
+        if not os.access(node, os.R_OK | os.W_OK):
+            continue
+        device = f"/sys/class/drm/{os.path.basename(node)}/device"
+        try:
+            with open(f"{device}/vendor", encoding = "utf-8") as f:
+                if _RENDER_NODE_VENDORS.get(f.read().strip().lower()) != "intel":
+                    continue
+        except OSError:
+            continue
+        try:
+            if _intel_pci_device_is_xpu_class(device) is True:
+                return True
+        except Exception:  # noqa: BLE001 -- unknown class: not proof the Arc is reachable
+            continue
+    return False
+
+
 def _vulkan_gpu_for_cpu_torch() -> bool:
     """True when torch is CPU-only but the host has a GPU the Vulkan sd.cpp build can render on:
     an AMD card (Vega, RDNA1 and Polaris get no ROCm wheel) or an Intel Arc. Never beside NVIDIA,
@@ -251,7 +276,7 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     # ggml reads this one itself; anything but a list of ordinals selects nothing or throws. Its
     # ordinals index the raw Vulkan list, so it never vouches for which card a mixed host gets.
     vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
-    if vk_mask is not None and not re.fullmatch(r"\s*\d+\s*(,\s*\d+\s*)*", vk_mask):
+    if vk_mask is not None and not re.fullmatch(r"\s*\d+(?:[\s,]+\d+)*[\s,]*", vk_mask):
         return False
     inventory = _physical_inventory()
     if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
@@ -278,12 +303,23 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         reachable = _accessible_render_vendors({d.get("vendor") for d in gpus})
         gpus = [d for d in gpus if d.get("vendor") in reachable]
     masked = _masked_vendors()
-    # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
     if not gpus or any(d.get("vendor") in masked for d in gpus):
         return False
-    if not all(_renders(d) for d in gpus):
-        return False
-    return _hardware_vulkan_driver({d.get("vendor") for d in gpus}) and _vulkan_loader_loads()
+    rendering = [d for d in gpus if _renders(d)]
+    if len(rendering) < len(gpus):
+        # Unpinned sd.cpp takes a discrete GPU before an iGPU (get_default_backend_name); a mask's ordinals may name the iGPU.
+        if vk_mask is not None or not rendering:
+            return False
+        if any(d.get("vendor") != "intel" for d in gpus if not _renders(d)):
+            return False
+        # The vendor-level node check cannot tell an Arc's node from the iGPU's: an unopenable Arc vouches for nothing.
+        if sys.platform != "win32" and not _reachable_intel_arc_render_node():
+            rendering = [d for d in rendering if d.get("vendor") != "intel"]
+            if not rendering:
+                return False
+    # The driver must belong to a card that renders: beside an AMD card, an Intel-only ICD drives just the iGPU.
+    rendering_vendors = {d.get("vendor") for d in rendering}
+    return _hardware_vulkan_driver(rendering_vendors) and _vulkan_loader_loads()
 
 
 # The ICD manifests that drive each vendor's cards (RADV as radeon_icd or radv_icd, AMDVLK /

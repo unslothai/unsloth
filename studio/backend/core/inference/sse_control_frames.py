@@ -44,6 +44,7 @@ _CONTROL_TYPES = frozenset(
         "diffusion_frame",
         "reasoning_summary",
         "context_usage",
+        "generation_progress",
     }
 )
 
@@ -54,6 +55,7 @@ _CONTROL_KEYS = (
     "_diffusionFrame",
     "_reasoningDurationMs",
     "_contextUsage",
+    "_generationProgress",
     "_mcp_provenance",
     "quote_cut",
 )

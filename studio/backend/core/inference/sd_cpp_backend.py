@@ -644,7 +644,7 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
     choice, i.e. today's behaviour."""
     if not binary or ordinal is None:
         return None
-    text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = sd_cpp_device_listing(binary)
     if text is not None:
         for line in text.splitlines():
             name = line.split("\t", 1)[0].strip()
@@ -673,8 +673,21 @@ _CUDA_DEVICE_CC_RE = re.compile(
 )
 
 
-# Last --list-devices answer per binary + (size, mtime_ns); only the capability read reuses it, never the verdict.
+# Last --list-devices answer per binary. The accelerator verdict always re-probes (a load re-vets the listing on purpose).
 _LAST_DEVICE_LISTING: dict = {}
+# What ggml reads to pick or hide devices.
+_DEVICE_LISTING_ENV_VARS: tuple[str, ...] = (
+    "GGML_VK_VISIBLE_DEVICES",
+    "VK_ICD_FILENAMES",
+    "VK_DRIVER_FILES",
+    "VK_ADD_DRIVER_FILES",
+    "VK_LOADER_DRIVERS_SELECT",
+    "VK_LOADER_DRIVERS_DISABLE",
+    "CUDA_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "GPU_DEVICE_ORDINAL",
+)
 
 
 def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
@@ -685,13 +698,49 @@ def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
     return (st.st_size, st.st_mtime_ns)
 
 
+def _hardware_inventory_generation() -> Optional[int]:
+    try:
+        from utils.hardware.hardware import physical_gpu_inventory_generation
+        return physical_gpu_inventory_generation()
+    except Exception:  # noqa: BLE001 -- an identity read must never fail the probe
+        return None
+
+
+def _device_listing_identity(binary: str) -> tuple:
+    return (
+        _binary_stat_identity(binary),
+        tuple(os.environ.get(name) for name in _DEVICE_LISTING_ENV_VARS),
+        _hardware_inventory_generation(),
+    )
+
+
 def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None:
     if not binary:
         return
     if text is None:
-        # Keep the last good listing; readers check (size, mtime_ns), so a changed binary's listing is never served.
+        # An unreadable probe or a timeout is never cached.
         return
-    _LAST_DEVICE_LISTING[binary] = (_binary_stat_identity(binary), text)
+    _LAST_DEVICE_LISTING[binary] = (_device_listing_identity(binary), text)
+
+
+def _cached_device_listing(binary: str, *, require_file: bool = False) -> Optional[str]:
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    if seen is None:
+        return None
+    identity = _device_listing_identity(binary)
+    if require_file and identity[0] is None:
+        return None
+    return seen[1] if seen[0] == identity else None
+
+
+def sd_cpp_device_listing(binary: str) -> Optional[str]:
+    """``binary --list-devices``, reusing the listing already taken of this file under this environment."""
+    text = _cached_device_listing(binary, require_file = True)
+    if text is None:
+        text = _sd_cpp_probe_output(binary, "--list-devices")
+        if _binary_stat_identity(binary) is not None:
+            _remember_device_listing(binary, text)
+    return text
 
 
 def sd_cpp_cuda_compute_capability(
@@ -705,12 +754,9 @@ def sd_cpp_cuda_compute_capability(
     only reads the listing the last accelerator verdict took of this file."""
     if not binary:
         return None
-    text = None
-    seen = _LAST_DEVICE_LISTING.get(binary)
-    if seen is not None and seen[0] == _binary_stat_identity(binary):
-        text = seen[1]
-    elif probe:
-        text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = _cached_device_listing(binary)
+    if text is None and probe:
+        text = sd_cpp_device_listing(binary)
     if text is None or not _CUDA_INIT_RE.search(text):
         return None
     caps = {
@@ -730,8 +776,7 @@ def sd_cpp_cuda_compute_capability(
 def sd_cpp_device_listing_known(binary: Optional[str]) -> bool:
     if not binary:
         return False
-    seen = _LAST_DEVICE_LISTING.get(binary)
-    return seen is not None and seen[0] == _binary_stat_identity(binary)
+    return _cached_device_listing(binary) is not None
 
 
 # Runs when --list-devices timed out (possibly a stalled driver); CUDA calls have no deadline, so bound the wait.
@@ -847,12 +892,9 @@ def sd_cpp_vulkan_device_is_uma(
     memory for such a device sums every heap, the GTT the pinned weights come from included. None when unsure."""
     if not binary:
         return None
-    text = None
-    seen = _LAST_DEVICE_LISTING.get(binary)
-    if seen is not None and seen[0] == _binary_stat_identity(binary):
-        text = seen[1]
-    elif probe:
-        text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = _cached_device_listing(binary)
+    if text is None and probe:
+        text = sd_cpp_device_listing(binary)
     if text is None:
         return None
     uma = {int(m.group(1)): m.group(2) == "1" for m in _VULKAN_DEVICE_UMA_RE.finditer(text)}
@@ -1072,7 +1114,7 @@ def sd_cpp_device_named(
     wanted = _normalized_card_name(card_name)
     if not wanted:
         return None
-    text = listing if listing is not None else _sd_cpp_probe_output(binary, "--list-devices")
+    text = listing if listing is not None else sd_cpp_device_listing(binary)
     if text is None:
         return None
     # Both readings: containment cannot tell `RX 7600` from `RX 7600 XT`, equality cannot see through a driver tag.
@@ -1326,6 +1368,16 @@ def _note_failed_upgrade(accelerator: str) -> None:
 _ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu"}
 
 
+def _vulkan_cpu_rung_applies() -> bool:
+    """Whether ambiguous failures can move the Vulkan build to CPU: only on the CPU-torch host routed to Vulkan. An XPU
+    host (always Vulkan) and a ROCm host on its Vulkan rung leave the GPU only on decisive evidence. Unknown: as before."""
+    try:
+        from utils.hardware.hardware import DeviceType, get_device
+        return get_device() == DeviceType.CPU
+    except Exception:  # noqa: BLE001
+        return True
+
+
 # The sonames the upstream ROCm archive imports and does not ship.
 _ROCM_RUNTIME_SONAMES: tuple[str, ...] = (
     "libamdhip64.so.7",
@@ -1436,12 +1488,9 @@ def sd_cpp_listed_device(
     file (no subprocess)."""
     if not binary:
         return None, None
-    text = None
-    seen = _LAST_DEVICE_LISTING.get(binary)
-    if seen is not None and seen[0] == _binary_stat_identity(binary):
-        text = seen[1]
-    elif probe:
-        text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = _cached_device_listing(binary)
+    if text is None and probe:
+        text = sd_cpp_device_listing(binary)
     if text is None:
         return None, None
     for line in text.splitlines():
@@ -1492,6 +1541,47 @@ _accelerator_runtime_failures: dict[str, dict] = {}
 
 # AMBIGUOUS failures needed to divert a host (a decisive one is enough alone).
 _AMBIGUOUS_FAILURE_STRIKES = 2
+# Rule 2 stopped counting Vulkan device-lost errors: an older Vulkan record keeps only its decisive evidence.
+_FAILURE_RULE = 2
+
+
+def _record_under_current_rule(klass: str, record: Optional[dict]) -> Optional[dict]:
+    if not isinstance(record, dict) or klass != "vulkan":
+        return record
+    if int(record.get("rule", 1) or 1) >= _FAILURE_RULE:
+        return record
+    return _decisive_evidence_only(record)
+
+
+def _decisive_evidence_only(record: Optional[dict]) -> Optional[dict]:
+    """*record* with its ambiguous strikes dropped, or None when nothing decisive is left."""
+    if not isinstance(record, dict):
+        return record
+    proven_cards = {
+        name: {"strikes": 0, "proven": True}
+        for name, entry in (record.get("per_card") or {}).items()
+        if isinstance(entry, dict) and entry.get("proven")
+    }
+    unscoped = _unscoped_evidence(record)
+    # Proof without per-card tallies stays as written: record-wide, and scoped to its ``cards`` when it names any.
+    whole = bool(record.get("proven")) and not isinstance(record.get("per_card"), dict)
+    if not (proven_cards or unscoped["proven"] or whole):
+        return None
+    kept = {
+        "strikes": 0,
+        "proven": True,
+        "fingerprint": record.get("fingerprint") or {},
+        "rule": _FAILURE_RULE,
+    }
+    if record.get("cards"):
+        # A card left in ``cards`` without its own entry would divert on another card's record-wide proof.
+        kept["cards"] = [
+            c for c in record["cards"] if whole or unscoped["proven"] or c in proven_cards
+        ]
+    if proven_cards:
+        kept["per_card"] = proven_cards
+    kept["unscoped"] = {"strikes": 0, "proven": unscoped["proven"]}
+    return kept
 
 
 def _accelerator_class_of(accelerator: Optional[str]) -> str:
@@ -1662,10 +1752,15 @@ def _normalise_failure_record(key: str, value: object) -> Optional[dict]:
     except (TypeError, ValueError):
         strikes = 0
     fingerprint = value.get("fingerprint")
+    try:
+        rule = int(value.get("rule", 1) or 1)
+    except (TypeError, ValueError):
+        rule = 1
     record = {
         "strikes": max(strikes, 0),
         "proven": bool(value.get("proven", False)),
         "fingerprint": fingerprint if isinstance(fingerprint, dict) else {},
+        "rule": rule,
     }
     cards = [str(card).strip() for card in (value.get("cards") or []) if str(card).strip()]
     if cards:
@@ -1778,7 +1873,7 @@ def note_accelerator_runtime_failure(
     fingerprint = dict(fingerprint) if isinstance(fingerprint, dict) else _accelerator_fingerprint()
     records = _stored_accelerator_runtime_failures()
     records.update({k: v for k, v in _accelerator_runtime_failures.items() if k not in records})
-    previous = records.get(klass)
+    previous = _record_under_current_rule(klass, records.get(klass))
     if previous is not None and not _fingerprint_still_applies(
         previous.get("fingerprint"), fingerprint
     ):
@@ -1816,6 +1911,7 @@ def note_accelerator_runtime_failure(
         # The union, for a caller that names no card and for the settings report.
         "proven": bool(proven) or bool((previous or {}).get("proven", False)),
         "fingerprint": fingerprint,
+        "rule": _FAILURE_RULE,
     }
     if cards:
         record["cards"] = cards
@@ -1877,9 +1973,24 @@ def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] =
     if not klass:
         return False
     fingerprint = _accelerator_fingerprint()
-    if _record_diverts(_accelerator_runtime_failures.get(klass), fingerprint, card):
+    if _record_diverts(
+        _applicable_record(klass, _accelerator_runtime_failures.get(klass)), fingerprint, card
+    ):
         return True
-    return _record_diverts(_stored_accelerator_runtime_failures().get(klass), fingerprint, card)
+    return _record_diverts(
+        _applicable_record(klass, _stored_accelerator_runtime_failures().get(klass)),
+        fingerprint,
+        card,
+    )
+
+
+def _applicable_record(klass: str, record: Optional[dict]) -> Optional[dict]:
+    """The evidence in *record* that still counts on this host: old-rule ambiguous Vulkan strikes are
+    dropped, and outside the CPU-torch route only decisive Vulkan evidence diverts."""
+    record = _record_under_current_rule(klass, record)
+    if klass == "vulkan" and not _vulkan_cpu_rung_applies():
+        return _decisive_evidence_only(record)
+    return record
 
 
 def off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> Optional[str]:
@@ -1952,7 +2063,8 @@ def accelerator_runtime_failure_state() -> dict:
                 "fallback": _ACCELERATOR_FALLBACK.get(klass),
                 "strikes": int(record.get("strikes", 0) or 0),
                 "proven": bool(record.get("proven", False)),
-                "diverting": enabled and _record_diverts(record, fingerprint),
+                "diverting": enabled
+                and _record_diverts(_applicable_record(klass, record), fingerprint),
                 "stale": not _fingerprint_still_applies(record.get("fingerprint"), fingerprint),
             }
         )
@@ -1991,8 +2103,7 @@ _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
     "rocm error",
     "rocblas error",
     "memory access fault by gpu node",
-    "errordevicelost",
-    "vk_error_device_lost",
+    # Not VK_ERROR_DEVICE_LOST: the Vulkan spec makes it recoverable by recreating the device (TDR, scheduler reset).
     "errorinitializationfailed",
     "vk_error_initialization_failed",
 )
@@ -2058,6 +2169,34 @@ def output_shows_capacity_failure(text: Optional[str]) -> bool:
         return False
     lowered = str(text).lower()
     return any(marker in lowered for marker in _ACCELERATOR_CAPACITY_FAILURE_MARKERS)
+
+
+# A lost Vulkan device: recoverable by creating a new device, so neither a build strike nor a fatal error.
+_VULKAN_DEVICE_LOST_MARKERS: tuple[str, ...] = ("errordevicelost", "vk_error_device_lost")
+
+
+def output_shows_vulkan_device_lost(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    lowered = str(text).lower()
+    return any(marker in lowered for marker in _VULKAN_DEVICE_LOST_MARKERS)
+
+
+# Appended when a lost Vulkan device repeats and no CPU fallback applies. Must match no failure marker.
+_REPEATED_DEVICE_LOSS_HINT = (
+    "The GPU lost its Vulkan device twice in a row (usually a driver reset during the render). Try Low VRAM "
+    "memory mode, a smaller resolution or a smaller quant, or load the model again to retry on the GPU."
+)
+
+
+def _device_loss_cpu_fallback_applies(state: Any) -> bool:
+    """Whether a repeated Vulkan device loss may move this load to the CPU backend: only the CPU-torch Vulkan
+    route (the one with a CPU rung, as on main), the Vulkan-to-CPU fallback enabled, and no user-picked GPU."""
+    if getattr(state, "device", None) != "vulkan" or getattr(state, "off_torch_device", None):
+        return False
+    if getattr(state, "gpu_explicit", False):
+        return False
+    return fallback_accelerator_for("vulkan") == "cpu" and _vulkan_cpu_rung_applies()
 
 
 def output_shows_accelerator_failure(text: Optional[str]) -> bool:
@@ -2734,6 +2873,8 @@ class _SdState:
     # UNSLOTH_DIFFUSION_SD_CPP_DEVICE placement: its label, and the env every spawn gets to open only that card.
     off_torch_device: Optional[str] = None
     child_env: tuple[tuple[str, str], ...] = ()
+    # The user picked the GPU (a gpu_ids pool or UNSLOTH_DIFFUSION_SD_CPP_DEVICE): never moved to CPU behind their back.
+    gpu_explicit: bool = False
 
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
@@ -3071,6 +3212,9 @@ class SdCppDiffusionBackend:
         # sd-server started for an in-flight load, before it commits to _state; tracked so an unload can stop it
         # mid-startup.
         self._pending_server: Optional[SdCppServer] = None
+        # Server a generation is stopping for a replacement: status() must not reap it as an idle crash, or the
+        # handover reads an unload and kills the healthy replacement.
+        self._replacing_server: Optional[SdCppServer] = None
         self._gen: Optional[_SdGen] = None
         # Set by _resolve_backend when it had to skip an accelerator install because the managed tree was still in
         # use; the load retries it once the tree is free.
@@ -3361,6 +3505,7 @@ class SdCppDiffusionBackend:
         from core.inference.diffusion_engine_router import off_torch_sd_cpp_device
 
         off_torch = off_torch_sd_cpp_device()
+        gpu_explicit = bool(gpu_ids) or off_torch is not None
         if off_torch is not None:
             gpu_ids, gpu_ordinal = None, None
         # Same fallback the diffusers and video backends take: the route ranks the selection and passes the winner,
@@ -3457,6 +3602,7 @@ class SdCppDiffusionBackend:
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 gpu_ordinal = gpu_ordinal,
+                gpu_explicit = gpu_explicit,
                 off_torch = off_torch,
                 _load_token = token,
                 _cancel_event = cancel_event,
@@ -3484,6 +3630,7 @@ class SdCppDiffusionBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        gpu_explicit: bool = False,
         off_torch: Any = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
@@ -3950,6 +4097,7 @@ class SdCppDiffusionBackend:
                     selected_card = self._loading_card,
                     off_torch_device = off_torch.label if off_torch is not None else None,
                     child_env = tuple(sorted((spawn_env or {}).items())),
+                    gpu_explicit = gpu_explicit,
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None
@@ -4890,6 +5038,7 @@ class SdCppDiffusionBackend:
         base_seed = int(seed) & ((1 << 63) - 1)
         images: list = []
         seeds: list[int] = []
+
         # Stage LoRAs into a per-request subdir of the server lora-model-dir (so a prior request's adapters cannot
         # leak in); removed after.
         lora_payload: Optional[list[dict]] = None
@@ -4913,6 +5062,9 @@ class SdCppDiffusionBackend:
         # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
         # ends on time.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
+        # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
+        device_respawned = False
+        device_losses = 0
         hires_payload: Optional[dict] = None
         hires_staged: list[Path] = []
 
@@ -4981,34 +5133,68 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                         total_timeout = max(deadline - time.monotonic(), 1.0),
                     )
-                except RuntimeError as exc:
+                except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
-                    # so restart the model on the CPU backend once and retry this chunk. Any other death propagates.
-                    server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
-                    if server is None:
-                        raise
-                    state = replace(state, server = server)
-                    with self._lock:
-                        if self._state is not None and self._state.server is not None:
-                            self._state = state
-                    if lora_payload is not None:
-                        # The replacement server has its own scratch dir: stage the LoRAs there again.
-                        lora_payload = _stage_loras(server)
-                        if lora_payload is None:
-                            raise RuntimeError(
-                                "The CPU-backend native server has no LoRA directory for the selected LoRAs."
+                    # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
+                    # fresh device: respawn the same build once. Any other death propagates.
+                    exc = first_exc
+                    while True:
+                        moved_to_cpu = False
+                        server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
+                        if server is None and output_shows_vulkan_device_lost(str(exc)):
+                            device_losses += 1
+                            if device_losses >= 2:
+                                server = self._restart_server_on_cpu_backend(
+                                    state, str(exc), cancel, after_device_loss = True
+                                )
+                                if server is None:
+                                    raise RuntimeError(
+                                        f"{exc} {_REPEATED_DEVICE_LOSS_HINT}"
+                                    ) from exc
+                                moved_to_cpu = True
+                            elif not device_respawned:
+                                server = self._respawn_server_after_device_loss(
+                                    state, str(exc), cancel
+                                )
+                                device_respawned = server is not None
+                        if server is None:
+                            raise exc
+                        old_server = state.server
+                        state = replace(state, server = server)
+                        if moved_to_cpu:
+                            # Placement follows the server: the flags the CPU server got, no Vulkan pin.
+                            state = replace(
+                                state,
+                                device = "cpu",
+                                offload_flags = tuple(
+                                    without_device_backend_flags(state.offload_flags)
+                                ),
+                                physical_gpu_id = None,
                             )
-                        payload["lora"] = list(lora_payload)
-                    if hires_plan is not None:
-                        # The replacement server has its own scratch dir: stage the upscaler there again.
-                        hires_payload = _stage_hires(server)
-                        payload["hires"] = dict(hires_payload)
-                    blobs = server.img_gen(
-                        payload,
-                        on_step = self._on_log,
-                        cancel_event = cancel,
-                        total_timeout = max(deadline - time.monotonic(), 1.0),
-                    )
+                        self._hand_over_replacement(state, server, old_server)
+                        # The old server's stop removed its scratch dir, and the staged adapters with it.
+                        if lora_payload is not None:
+                            lora_payload = _stage_loras(server)
+                            if lora_payload is None:
+                                raise RuntimeError(
+                                    "The replacement native server has no LoRA directory for the selected LoRAs."
+                                )
+                            payload["lora"] = list(lora_payload)
+                        if hires_plan is not None:
+                            # The replacement has its own scratch dir: stage the upscaler there again.
+                            hires_payload = _stage_hires(server)
+                            payload["hires"] = dict(hires_payload)
+                        try:
+                            blobs = server.img_gen(
+                                payload,
+                                on_step = self._on_log,
+                                cancel_event = cancel,
+                                total_timeout = max(deadline - time.monotonic(), 1.0),
+                            )
+                            break
+                        except RuntimeError as retry_exc:
+                            exc = retry_exc
+                device_losses = 0
                 # All-or-nothing per chunk; a layered generation decodes layers + 1 images.
                 expected = count * ((layers + 1) if layers else 1)
                 if not cancel.is_set() and len(blobs) != expected:
@@ -5034,8 +5220,117 @@ class SdCppDiffusionBackend:
                     pass
         return images, seeds
 
-    def _restart_server_on_cpu_backend(
+    def _begin_replacement(self, state: _SdState) -> bool:
+        """Mark ``state.server`` as being replaced, under ``_lock``, before the caller stops it, so status() reports
+        the load as still loaded instead of reaping it. False when an unload already took the state: no restart."""
+        with self._lock:
+            if self._state is None or self._state.server is not state.server:
+                return False
+            self._replacing_server = state.server
+            return True
+
+    def _end_replacement(self, old_server: Any) -> None:
+        with self._lock:
+            if self._replacing_server is old_server:
+                self._replacing_server = None
+
+    def _hand_over_replacement(self, state: _SdState, server: SdCppServer, old_server: Any) -> None:
+        """Publish a restarted sd-server into ``_state`` in the same locked step that drops it from
+        ``_pending_server``, so an unload always sees it in one of the two. Only while ``_state`` still holds the
+        server being replaced: when an unload cleared it or a superseding load replaced it, stop the replacement
+        and cancel instead of generating on an untracked process or overwriting the newer load."""
+        with self._lock:
+            if self._pending_server is server:
+                self._pending_server = None
+            if self._replacing_server is old_server:
+                self._replacing_server = None
+            published = self._state is not None and self._state.server is old_server
+            if published:
+                self._state = state
+            else:
+                self._reserve_stop()
+        if not published:
+            self._stop_reserved(server)
+            raise SdCppCancelled("sd-server generation was cancelled.")
+
+    def _start_replacement(
+        self, state: _SdState, server: SdCppServer, cancel: threading.Event, **start_kwargs: Any
+    ) -> Optional[SdCppServer]:
+        """Start a published-as-pending replacement sd-server for this generation; None when it fails.
+
+        The start blocks for the model load (up to its startup timeout) while the caller holds
+        ``_generate_lock``. ``cancel_generate()`` and a superseding load only set ``cancel``, so a watcher stops
+        the pending server when that happens: the readiness wait bails at once and the generation raises
+        ``SdCppCancelled`` instead of loading a replacement nobody wants."""
+        done = threading.Event()
+
+        def _watch() -> None:
+            while not done.is_set():
+                if cancel.wait(0.25):
+                    server.stop()
+                    return
+
+        watcher = threading.Thread(target = _watch, name = "sd-server-replacement-cancel", daemon = True)
+        watcher.start()
+        failed = False
+        try:
+            server.start(state.files, **start_kwargs)
+        except Exception:  # noqa: BLE001 -- the original server error is the more useful one
+            failed = True
+        finally:
+            done.set()
+            watcher.join()
+        if failed or cancel.is_set():
+            with self._lock:
+                if self._pending_server is server:
+                    self._pending_server = None
+            server.stop()
+            self._end_replacement(state.server)
+            if cancel.is_set():
+                raise SdCppCancelled("sd-server generation was cancelled.")
+            return None
+        # Still pending on success: _hand_over_replacement publishes it, so an unload never misses it.
+        return server
+
+    def _respawn_server_after_device_loss(
         self, state: _SdState, error_text: str, cancel: threading.Event
+    ) -> Optional[SdCppServer]:
+        """Restart this checkpoint's sd-server on the same build after a lost Vulkan device; None if that
+        does not apply. The Vulkan spec makes VK_ERROR_DEVICE_LOST recoverable only by creating a new device,
+        which the running server never does, so every later job on it would fail. No build strike: a lost
+        device (a TDR or a scheduler reset) says nothing about whether this build runs here."""
+        if not output_shows_vulkan_device_lost(error_text):
+            return None
+        if state.server is None or cancel.is_set():
+            return None
+        if not self._begin_replacement(state):
+            return None
+        logger.warning(
+            "sd-server lost its Vulkan device; restarting it on the same build. Details: %s",
+            error_text[:300],
+        )
+        state.server.stop()
+        server = SdCppServer(state.server.binary)
+        with self._lock:
+            self._pending_server = server
+        return self._start_replacement(
+            state,
+            server,
+            cancel,
+            vae_format = state.vae_format,
+            offload = state.offload_flags,
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = state.spawn_env(),
+        )
+
+    def _restart_server_on_cpu_backend(
+        self,
+        state: _SdState,
+        error_text: str,
+        cancel: threading.Event,
+        *,
+        after_device_loss: bool = False,
     ) -> Optional[SdCppServer]:
         """Relaunch this checkpoint's sd-server with ``--backend cpu``; None if that does not apply.
 
@@ -5051,8 +5346,15 @@ class SdCppDiffusionBackend:
         (``--offload-to-cpu`` moves parameters, not compute), so the restart runs the same
         checkpoint slower rather than not at all. Done once per load: the second abort, or any other
         cause of death, is surfaced to the caller.
+
+        ``after_device_loss``: the respawned server lost its Vulkan device too (a host whose driver resets the
+        card on every render). Only on the CPU-torch Vulkan route, the one route with a CPU rung, and never for a
+        GPU the user picked. For this load only and nothing is persisted: the next load tries Vulkan again.
         """
-        if not is_ggml_unsupported_op_abort(error_text):
+        if after_device_loss:
+            if not _device_loss_cpu_fallback_applies(state):
+                return None
+        elif not is_ggml_unsupported_op_abort(error_text):
             return None
         if self._cpu_backend_forced or state.device == "cpu":
             return None  # already on CPU: the abort is not a backend-placement problem
@@ -5061,38 +5363,40 @@ class SdCppDiffusionBackend:
         server_binary = find_sd_server_binary()
         if not server_binary:
             return None
-        logger.warning(
-            "sd-server aborted on an op the '%s' backend cannot run; restarting on the CPU "
-            "backend (slower, but it completes). Details: %s",
-            state.device,
-            error_text[:300],
-        )
+        if not self._begin_replacement(state):
+            return None
+        if after_device_loss:
+            logger.warning(
+                "sd-server lost its Vulkan device again after a restart; this model now renders on the CPU "
+                "backend (slower) until it is loaded again, which tries Vulkan first. Details: %s",
+                error_text[:300],
+            )
+        else:
+            logger.warning(
+                "sd-server aborted on an op the '%s' backend cannot run; restarting on the CPU "
+                "backend (slower, but it completes). Details: %s",
+                state.device,
+                error_text[:300],
+            )
         self._cpu_backend_forced = True
         state.server.stop()
         server = SdCppServer(server_binary)
         with self._lock:
             self._pending_server = server
-        try:
-            server.start(
-                state.files,
-                vae_format = state.vae_format,
-                # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec instead of replacing,
-                # and an explicit diffusion=CUDA0 outranks the bare `cpu` default, so leaving the pin on would restart
-                # the server onto the very backend that just aborted.
-                offload = without_device_backend_flags(state.offload_flags),
-                native_speed = state.native_speed,
-                threads = state.threads,
-                env = state.spawn_env(),
-                extra_args = list(CPU_BACKEND_FLAGS),
-            )
-        except Exception:  # noqa: BLE001 -- the original abort is the more useful error
-            server.stop()
-            return None
-        finally:
-            with self._lock:
-                if self._pending_server is server:
-                    self._pending_server = None
-        return server
+        return self._start_replacement(
+            state,
+            server,
+            cancel,
+            vae_format = state.vae_format,
+            # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec instead of replacing,
+            # and an explicit diffusion=CUDA0 outranks the bare `cpu` default, so leaving the pin on would restart
+            # the server onto the very backend that just aborted.
+            offload = without_device_backend_flags(state.offload_flags),
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = state.spawn_env(),
+            extra_args = list(CPU_BACKEND_FLAGS),
+        )
 
     def _generate_oneshot(
         self,
@@ -5317,6 +5621,7 @@ class SdCppDiffusionBackend:
                 self._active_generate_cancel.set()
             state = self._state
             self._state = None
+            self._replacing_server = None
             self._load_token += 1
             self._loading = None
             # Grab a mid-start() uncommitted server too so we can stop it (startup is abortable).
@@ -5350,13 +5655,17 @@ class SdCppDiffusionBackend:
             state is not None
             and state.mode == "server"
             and state.server is not None
+            and state.server is not self._replacing_server
             and not state.server.is_alive()
         ):
-            logger.warning("sd-server exited after load; clearing loaded state")
             with self._lock:
-                if self._state is state:
+                # Re-checked under the lock: a generation stopping it for a replacement marks it first.
+                reap = self._state is state and state.server is not self._replacing_server
+                if reap:
+                    logger.warning("sd-server exited after load; clearing loaded state")
                     self._state = None
-            state = None
+            if reap:
+                state = None
         if state is None:
             return {
                 "loaded": False,

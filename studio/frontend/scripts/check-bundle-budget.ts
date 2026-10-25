@@ -416,9 +416,23 @@ export const BUDGET = {
   // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
   // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
   // Per-account chat preferences (#15025): +338 B raw / +93 B transfer over the line above (Node 22.23.2, 99 chunks).
+  // Live prefill progress, the Generation details setting and the loaded placement readout (#14582): the
+  // stream frame reader, live store slice, reply footer line and timing tooltip rows in the eager chat
+  // chunk, +8,585 B raw / +2,268 B transfer over main (6,932,829 -> 6,941,414 B raw, 2,088,586 ->
+  // 2,090,854 B transfer against 1492952a09, Node 22, 99 chunks). Raised by that on top of #15084 and #15025.
+  // The pinned Run settings footer adds 25 B raw / 49 B transfer to the eager model picker (6,932,829 -> 6,932,854 B
+  // raw, 2,088,616 -> 2,088,665 B transfer against 2c2e04474b, Node 26, unchanged at 99 chunks). Raised by that.
+  // Storage overview in Library and System settings (#15083) adds 360 B raw / 56 B transfer, its strings in the
+  // eager en locale plus 46 B in the settings chunk; the overview itself is a lazy chunk (6,932,829 -> 6,933,189 B
+  // raw, 2,088,616 -> 2,088,672 B transfer against cfc593f0bd, Node 26, unchanged at 99 chunks). Raised by that.
+  // Its "System and Engine" page title adds 11 B raw / 34 B transfer to the eager en locale (6,933,189 -> 6,933,200 B
+  // raw, 2,088,699 -> 2,088,733 B transfer merged with f49cbdf535, Node 26, 99 chunks). Raised by that.
+  // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
+  // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
+  // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
   // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
-  transferBytes: 2_089_018,
-  rawBytes: 6_933_916,
+  transferBytes: 2_096_545,
+  rawBytes: 6_959_179,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

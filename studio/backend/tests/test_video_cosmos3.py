@@ -1105,14 +1105,15 @@ def test_no_cosmos3_gguf_or_loose_file_is_offered_as_video(tmp_path):
         assert comfy_models._offer_loose_checkpoint(tmp_path / name) is offered, name
 
 
-@pytest.mark.parametrize("policy", ["none", "model", "group", "streaming"])
+@pytest.mark.parametrize("policy", ["none", "model", "group", "streaming", "sequential"])
 @pytest.mark.parametrize("speed", ["off", "default"])
-def test_cosmos3_decodes_untiled_when_it_fits_under_every_placement(policy, speed):
+def test_cosmos3_decodes_untiled_when_it_fits_even_at_speed_off(policy, speed):
     gate = video_mod._decodes_untiled_when_fits
+    placed = policy != "sequential"
     for family in ("cosmos3-edge", "cosmos3-nano"):
-        assert gate(family, policy, "cuda", speed) is True
+        assert gate(family, policy, "cuda", speed) is placed
         assert gate(family, policy, "cpu", speed) is False
-    assert gate("wan2.2-ti2v-5b", policy, "cuda", speed) is (policy == "none" and speed != "off")
+    assert gate("wan2.2-ti2v-5b", policy, "cuda", speed) is (placed and speed != "off")
 
 
 def test_generate_decodes_in_seam_safe_strides_and_restores_them(cosmos3_runtime):
