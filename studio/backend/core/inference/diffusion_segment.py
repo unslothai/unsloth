@@ -21,10 +21,11 @@ when it is already downloaded and SAM 3.1 is not. ``UNSLOTH_SAM3_PATH`` points a
 directory instead.
 
 SAM 3.1 also ships pre-quantized detector files (FP8, INT8, INT8-ConvRot; diffusion_segment_quant). On a CUDA card
-``UNSLOTH_SAM3_PRECISION`` (auto / bf16 / fp8 / int8) picks one; auto loads only a file that passed the accuracy gate
-(INT8, the ConvRot build unless ``UNSLOTH_SAM3_INT8_CONVROT=0``). The download fetches that one weights file with the
-configs and tokenizer, and bf16 when the file is not published; the CPU and Apple's MPS run bf16 weights (a quantized
-file that is the only one on disk is dequantized there).
+``UNSLOTH_SAM3_PRECISION`` (auto / bf16 / fp8 / int8) picks one. auto runs bf16, which is faster, while the card has
+room for it, and only when it is short of memory loads a file that passed the accuracy gate (INT8, the ConvRot build
+unless ``UNSLOTH_SAM3_INT8_CONVROT=0``). The download fetches that one weights file with the configs and tokenizer,
+and bf16 when the file is not published; the CPU and Apple's MPS run bf16 weights (a quantized file that is the only
+one on disk is dequantized there).
 
 The model is auxiliary to the image model, like the FLUX.3 prompt upsampler: loaded on the first request, kept for
 a short keep-alive, unloaded right after a call when the accelerator is tight, and dropped whenever the GPU arbiter
@@ -174,6 +175,9 @@ _GPU_NEED_MIB = 4096
 # never denoises next to it. The prompt upsampler's tight rule.
 _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
+# bf16's measured drop in mem_get_info free after a Find (reserve + workspace, above its allocated peak), so the bf16
+# pick is not read as tight by _after_call and unloaded. auto goes 8-bit only if free minus this reads tight.
+_BF16_RESIDENT_MIB = 2560
 
 
 class SegmenterUnavailableError(RuntimeError):
@@ -643,10 +647,12 @@ def plan_weights(
     *,
     variant: Optional[SegmenterVariant] = None,
     use_cache: bool = True,
+    memory_tight: bool = False,
 ) -> WeightsPlan:
-    """The weights a load on ``device`` uses: the precision UNSLOTH_SAM3_PRECISION asks for (auto: the gated order
-    in diffusion_segment_quant) when its file is on disk and the device runs it, else bf16. bf16 with no bf16 file
-    on disk dequantizes a pre-quantized one the selection may load (never one it rejected)."""
+    """The weights a load on ``device`` uses: the precision UNSLOTH_SAM3_PRECISION asks for (auto: bf16, or the gated
+    order in diffusion_segment_quant when ``memory_tight``) when its file is on disk and the device runs it, else
+    bf16. bf16 with no bf16 file on disk dequantizes a pre-quantized one the selection may load (never one it
+    rejected)."""
     from core.inference.diffusion_segment_quant import PRECISION_BF16, resolve_precision
 
     variant = variant or active_variant()
@@ -655,7 +661,9 @@ def plan_weights(
     for artifact, folder in local:
         if _loadable(variant, artifact):
             usable.setdefault(artifact.precision, (artifact, folder))
-    precision, why = resolve_precision(device, dtype, available = tuple(usable))
+    precision, why = resolve_precision(
+        device, dtype, available = tuple(usable), memory_tight = memory_tight
+    )
     if precision != PRECISION_BF16:
         artifact, folder = usable[precision]
         return WeightsPlan(precision, folder, str(Path(folder) / artifact.filename), artifact, why)
@@ -686,7 +694,12 @@ def _host_device() -> str:
     return "cpu"
 
 
-def download_plan(variant: SegmenterVariant, device: Optional[str] = None) -> dict:
+def download_plan(
+    variant: SegmenterVariant,
+    device: Optional[str] = None,
+    *,
+    memory_tight: Optional[bool] = None,
+) -> dict:
     """What a download of ``variant`` fetches on this host: the spec id, the precision it runs, why, and the bytes.
     A pre-quantized file only when the variant publishes them (a pinned or "main" prequant revision) and the host
     would run it; its spec falls back to bf16 when the file is not on the Hub yet."""
@@ -700,7 +713,10 @@ def download_plan(variant: SegmenterVariant, device: Optional[str] = None) -> di
                 _cached_snapshot(prequant_spec_id(variant, artifact)), artifact
             ):
                 offered.setdefault(artifact.precision, artifact)
-    precision, why = resolve_precision(device or _host_device(), available = tuple(offered))
+    device = device or _host_device()
+    if memory_tight is None:
+        memory_tight = auto_memory_tight(device)
+    precision, why = resolve_precision(device, available = tuple(offered), memory_tight = memory_tight)
     if precision == PRECISION_BF16:
         return {
             "spec": variant.id,
@@ -784,7 +800,14 @@ def _precision_summary(
         elif not supported:
             body.update(precision = None, precision_reason = None, weights_file = None)
         elif path is not None:
-            plan = plan_weights(path, _host_device(), variant = variant, use_cache = not override)
+            device = _host_device()
+            plan = plan_weights(
+                path,
+                device,
+                variant = variant,
+                use_cache = not override,
+                memory_tight = auto_memory_tight(device),
+            )
             body.update(
                 precision = plan.precision,
                 precision_reason = plan.reason,
@@ -852,6 +875,24 @@ def vram_is_tight(free_mib: Optional[int], total_mib: Optional[int]) -> bool:
     if total_mib:
         floor = max(floor, int(total_mib * _TIGHT_FREE_FRACTION))
     return free_mib < floor
+
+
+def auto_memory_tight(device: str) -> bool:
+    """The CUDA card ``device`` would read as tight with the bf16 segmenter on it. False off CUDA, when unreadable, and
+    before this process initialised CUDA (never create a context just to plan)."""
+    if not device.startswith("cuda"):
+        return False
+    try:
+        import torch
+        if not torch.cuda.is_initialized():
+            return False
+        ordinal = int(device.split(":", 1)[1]) if ":" in device else torch.cuda.current_device()
+    except Exception:  # noqa: BLE001
+        return False
+    free_mib, total_mib = _cuda_free_mib(ordinal)
+    if free_mib is None:
+        return False
+    return vram_is_tight(free_mib - _BF16_RESIDENT_MIB, total_mib)
 
 
 def _other_owner_on(ordinal: Optional[int]) -> Optional[str]:
@@ -1170,6 +1211,8 @@ class MaskSegmenter:
         self.weights_file: Optional[str] = None
         # Why the last pre-quantized load fell back to bf16, if one did.
         self.last_prequant_failure: Optional[str] = None
+        # Reused while loaded: a reading taken with the model resident would flip auto's choice and reload it.
+        self._memory_tight: Optional[bool] = None
         # Planning reads the Hub cache only for the active variant's own snapshot, not an explicit folder.
         self._use_cache = True
         self._timer: Optional[threading.Timer] = None
@@ -1208,7 +1251,13 @@ class MaskSegmenter:
 
     # -- lifecycle -------------------------------------------------------------------------------------------------
     def _load(self, path: str, device: str, dtype: Any) -> None:
-        plan = plan_weights(path, device, dtype, use_cache = self._use_cache)
+        if self._model is not None and self.device == device and self._memory_tight is not None:
+            memory_tight = self._memory_tight
+        else:
+            memory_tight = auto_memory_tight(device)
+        plan = plan_weights(
+            path, device, dtype, use_cache = self._use_cache, memory_tight = memory_tight
+        )
         key = (plan.model_dir, plan.weights, plan.dequantize)
         if (
             self._model is not None
@@ -1238,6 +1287,7 @@ class MaskSegmenter:
         self._model, self._tokenizer = model, tokenizer
         self._path, self.device, self._dtype = path, device, dtype
         self._weights_key = key
+        self._memory_tight = memory_tight
         self.precision, self.precision_reason = plan.precision, plan.reason
         self.weights_file = (
             os.path.basename(plan.weights) if plan.weights else SEGMENTER_WEIGHTS_FILE
@@ -1484,6 +1534,7 @@ class MaskSegmenter:
         self._weights_key = None
         self.device = None
         self._dtype = None
+        self._memory_tight = None
         self.precision = self.precision_reason = self.weights_file = None
         _free_device_cache(device)
         logger.info("images.segment: unloaded from %s (%s)", device, reason)

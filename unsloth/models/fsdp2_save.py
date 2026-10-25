@@ -11,6 +11,8 @@ __all__ = [
     "fsdp2_units",
     "fsdp2_gathered",
     "fsdp2_gather_active",
+    "mesh_writer_rank",
+    "writes_off_rank0",
     "install_dcp_bnb_state_dict",
     "reduce_unsharded_trainable_grads",
 ]
@@ -71,7 +73,7 @@ def _dist():
     return None
 
 
-_SAVE_COUNTER = [0]
+_SAVE_COUNTER = {}
 
 
 def _save_timeout():
@@ -83,12 +85,70 @@ def _save_timeout():
         return datetime.timedelta(days = 7)
 
 
-def _wait_for_writer(dist, writer):
-    """The other ranks wait for rank 0's write, so no later collective overtakes it. A store key, not
-    a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
-    collective timeout, and NCCL ranks blocked in a barrier would abort before rank 0 arrives."""
-    _SAVE_COUNTER[0] += 1
-    key = f"unsloth_fsdp2_save_{_SAVE_COUNTER[0]}"
+def _unit_mesh(unit):
+    try:
+        group = unit._get_fsdp_state()._fsdp_param_group
+        return group.mesh_info.mesh if group is not None else None
+    except Exception:
+        return None
+
+
+def mesh_writer_rank(model):
+    """Lowest global rank of the model's FSDP2 mesh: a sub-mesh without rank 0 never gathers there."""
+    dist = _dist()
+    if dist is None:
+        return 0
+    DTensor = _dtensor_class()
+    mesh = None
+    if isinstance(model, torch.nn.Module):
+        if DTensor is not None:
+            mesh = next((p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None)
+        if mesh is None:
+            # Unsharded parameters (eval forward, no reshard) carry no mesh; the units still do.
+            mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
+        if mesh is None:
+            mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
+    try:
+        return int(mesh.mesh.min()) if mesh is not None else 0
+    except Exception:
+        return 0
+
+
+@contextlib.contextmanager
+def writes_off_rank0(model, writer_rank):
+    """transformers 5 save_pretrained writes only on global rank 0 (should_save_on_this_rank,
+    transformers/distributed/mixin.py); let a sub-mesh writer write for the block."""
+    patched = []
+    if writer_rank != 0 and isinstance(model, torch.nn.Module):
+        for module in model.modules():
+            if callable(getattr(module, "should_save_on_this_rank", None)) and (
+                "should_save_on_this_rank" not in module.__dict__
+            ):
+                module.should_save_on_this_rank = lambda is_main_process: bool(is_main_process)
+                patched.append(module)
+    try:
+        yield
+    finally:
+        for module in patched:
+            module.__dict__.pop("should_save_on_this_rank", None)
+
+
+def _wait_for_writer(
+    dist,
+    writer,
+    writer_rank = 0,
+):
+    """The other ranks wait for the writer's write, so no later collective overtakes it. A store key,
+    not a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
+    collective timeout, and NCCL ranks blocked in a barrier would abort before the writer arrives.
+    Keyed per writer rank so disjoint sub-meshes do not release each other."""
+    _SAVE_COUNTER[writer_rank] = _SAVE_COUNTER.get(writer_rank, 0) + 1
+    count = _SAVE_COUNTER[writer_rank]
+    key = (
+        f"unsloth_fsdp2_save_{count}"
+        if writer_rank == 0
+        else f"unsloth_fsdp2_save_r{writer_rank}_{count}"
+    )
     try:
         store = dist.distributed_c10d._get_default_store()
     except Exception:
@@ -221,14 +281,15 @@ def fsdp2_gathered(
     if not units or DTensor is None:
         yield None
         return
-    dist = _dist()
-    rank = dist.get_rank() if dist is not None else 0
-    writer = rank == 0
     for unit in units:
         # An eval forward leaves the last block and the lm_head unit gathered; make every
         # parameter a DTensor again so all ranks gather the same list.
         if hasattr(unit, "reshard"):
             unit.reshard()
+    dist = _dist()
+    rank = dist.get_rank() if dist is not None else 0
+    writer_rank = mesh_writer_rank(model)
+    writer = rank == writer_rank
     owners = {}
     for module in model.modules():
         for name, param in module._parameters.items():
@@ -278,7 +339,8 @@ def fsdp2_gathered(
         _ACTIVE.append(writer)
         _STAGED_4BIT.append(staged)
         pushed = True
-        yield writer
+        with writes_off_rank0(model, writer_rank if writer else 0):
+            yield writer
     finally:
         if pushed:
             _ACTIVE.pop()
@@ -289,7 +351,7 @@ def fsdp2_gathered(
                 module._parameters[name] = old
         replaced.clear()
         if dist is not None:
-            _wait_for_writer(dist, writer)
+            _wait_for_writer(dist, writer, writer_rank)
 
 
 def _is_4bit_base(base_layer):
@@ -304,9 +366,11 @@ def offload_all_but_4bit_merge_operands(model):
     """`offload_to_cpu` for a merged 4-bit save: PEFT merges a LoRA layer where its packed 4-bit base
     weight stays (its GPU), so only the adapter weights of those layers stay there too. Everything
     else (embeddings, unquantized towers, LoRA on unquantized layers with their base) goes to the CPU.
+    With `lora_bias = True` the merge adds lora_B's bias into the base bias, so that bias stays too.
     Selected by parameter name, not identity: `fsdp2_gathered` reshards first, and a parameter an eval
     forward left unsharded is a different object from the DTensor the gather then sees."""
     prefixes = []
+    exact = set()
     modules = model.named_modules() if isinstance(model, torch.nn.Module) else ()
     for module_name, module in modules:
         base_layer = getattr(module, "base_layer", None)
@@ -322,8 +386,13 @@ def offload_all_but_4bit_merge_operands(model):
         ):
             if isinstance(getattr(module, attr, None), torch.nn.Module):
                 prefixes.append(f"{prefix}{attr}.")
+        lora_B = getattr(module, "lora_B", None)
+        if isinstance(lora_B, torch.nn.Module) and any(
+            getattr(adapter, "bias", None) is not None for adapter in lora_B.children()
+        ):
+            exact.add(f"{prefix}base_layer.bias")
     prefixes = tuple(prefixes)
-    return lambda name, param: not name.startswith(prefixes)
+    return lambda name, param: not (name in exact or name.startswith(prefixes))
 
 
 _MERGED_4BIT_METHODS = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit")
@@ -625,7 +694,8 @@ def _restore_quant_state(model, state_dict, options):
     """Loading a full DCP state dict: the saved QuantState entries (`_add_quant_state_entries`) are
     copied into each live QuantState in place, so the packed bytes DCP loads are dequantized with the
     scales they were saved with. A saved QuantState that does not fit the live one (other shape,
-    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales. With
+    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales, as
+    does one without its packed weight unless strict=False (DCP keeps the live bytes then). With
     `broadcast_from_rank0` only rank 0 holds the entries and sends them to the others."""
     entries = _linear4bit_entries(model)
     if not entries:
@@ -649,6 +719,8 @@ def _restore_quant_state(model, state_dict, options):
             return
     from bitsandbytes.functional import QuantState
 
+    strict = bool(getattr(options, "strict", True)) if options is not None else True
+    orphans = []
     for prefix, module in entries:
         live = module.weight.quant_state
         head = prefix + "weight."
@@ -686,7 +758,24 @@ def _restore_quant_state(model, state_dict, options):
                         "quantization state is kept."
                     )
             continue
+        if not loads_weight:
+            if strict:
+                raise ValueError(
+                    f"Unsloth: the state dict has the 4-bit quantization state of `{head[:-1]}` but "
+                    "not its packed weight. Load the weight with it, or pass strict=False to keep "
+                    "the model's own weight and quantization state."
+                )
+            orphans.append(head[:-1])
+            continue
         expected = set(live.as_dict(packed = True))
+        saved_nested = any(k.startswith("nested_") for k in saved)
+        if saved_nested != bool(live.nested):
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` (nested "
+                f"{saved_nested}) does not match the model's (nested {bool(live.nested)}). Load it "
+                "into a model quantized with the same bitsandbytes settings "
+                "(bnb_4bit_use_double_quant)."
+            )
         if set(saved) != expected:
             raise ValueError(
                 f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` has entries "
@@ -720,6 +809,27 @@ def _restore_quant_state(model, state_dict, options):
         with torch.no_grad():
             for _, a, b in pairs:
                 b.copy_(a.to(b.device))
+    if orphans and (not broadcast or dist.get_rank() == 0):
+        import warnings
+        warnings.warn(
+            f"Unsloth: skipped the 4-bit quantization state of {', '.join(orphans)}: the state dict "
+            "does not have the packed weight, so the model keeps its own weight and quantization "
+            "state.",
+            stacklevel = 3,
+        )
+
+
+# Every key `QuantState.as_dict(packed = True)` can write, so skipped metadata never reaches DCP.
+_QUANT_STATE_KEYS = frozenset(
+    (
+        "absmax",
+        "quant_map",
+        "nested_absmax",
+        "nested_quant_map",
+        "quant_state.bitsandbytes__nf4",
+        "quant_state.bitsandbytes__fp4",
+    )
+)
 
 
 def _without_quant_state_entries(name, args, kwargs):
@@ -731,7 +841,8 @@ def _without_quant_state_entries(name, args, kwargs):
     drop = set()
     for prefix, module in _linear4bit_entries(model):
         drop.update(
-            prefix + "weight." + key for key in module.weight.quant_state.as_dict(packed = True)
+            prefix + "weight." + key
+            for key in _QUANT_STATE_KEYS.union(module.weight.quant_state.as_dict(packed = True))
         )
     if not drop:
         return args, kwargs
