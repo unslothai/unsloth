@@ -732,6 +732,25 @@ def _case_trainer(rank, world, tmp, dp, tp):
     }
 
 
+def _case_sharded_lora_init(rank, world, tmp, ckpt):
+    """Weight-dependent LoRA init (PiSSA) on sharded_loading slices is refused before any mutation."""
+    from peft import LoraConfig, get_peft_model
+    from torch.distributed.device_mesh import init_device_mesh
+    from transformers import AutoModelForCausalLM
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    out = {}
+    for init in ("pissa", "gaussian"):
+        model = tpn.load_tensor_parallel(
+            ckpt, mesh["tp"], loader = AutoModelForCausalLM.from_pretrained, torch_dtype = torch.float32
+        )
+        config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = init)
+        model = get_peft_model(model, config)
+        out[init] = _raised(lambda: tpn.apply_tensor_parallel(model, mesh["tp"]))
+        out[init + "_tp"] = tpn.is_tensor_parallel(model)
+    return out
+
+
 CASES = {
     "parity": _case_parity,
     "save_subgroup": _case_save_subgroup,
@@ -740,6 +759,7 @@ CASES = {
     "qlora": _case_qlora,
     "qlora_misaligned": _case_qlora_misaligned,
     "sharded_load": _case_sharded_load,
+    "sharded_lora_init": _case_sharded_lora_init,
     "tp_fsdp2": _case_tp_fsdp2,
     "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
     "trainer": _case_trainer,
@@ -1004,6 +1024,16 @@ def test_sharded_loading_matches_full_load(arch, world, overrides):
         assert full_local == sharded_local
 
 
+def test_sharded_loading_refuses_weight_dependent_lora_init():
+    with tempfile.TemporaryDirectory() as ckpt:
+        _save_checkpoint("llama", ckpt, None)
+        results = _spawn("sharded_lora_init", 2, ckpt = ckpt)
+    for res in results:
+        assert "depends on the base weight" in (res["pissa"] or ""), res
+        assert not res["pissa_tp"]
+        assert res["gaussian"] is None and res["gaussian_tp"], res
+
+
 def test_sharded_loading_refuses_quantized_loads():
     from transformers import AutoModelForCausalLM
     for key in ("load_in_4bit", "quantization_config"):
@@ -1024,6 +1054,7 @@ def test_sharded_loading_refuses_quantized_loads():
             True,
             {"bias": "all"},
         ),  # trainable column (Shard) and row (Replicate) biases
+        ("llama", True, {"modules_to_save": ["lm_head"]}),  # a dp-only (1-D) trainable outside the tp regions
     ],
 )
 def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
@@ -1047,9 +1078,13 @@ def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
             res["norms"],
             res["ref_norms"],
         )
-        assert res["native_norms"][0] == pytest.approx(res["ref_norms"][0], rel = 1e-5)
+        # CPU vector_norm sums fp32 squares sequentially: about 3e-5 relative on the 2M-element lm_head copy.
+        native_rel = 1e-4 if "modules_to_save" in (lora_kwargs or {}) else 1e-5
+        assert res["native_norms"][0] == pytest.approx(res["ref_norms"][0], rel = native_rel)
         # FSDP2 shards the LoRA DTensors over dp on top of their tp placement.
-        assert all(len(pl) == 2 for pl in res["placements"].values()), res["placements"]
+        assert all(
+            len(pl) == (1 if "lm_head" in n else 2) for n, pl in res["placements"].items()
+        ), res["placements"]
         assert "the data parallel dimension" not in (res["refusals"]["no_mesh"] or "")
         assert "does not compose with Unsloth tensor parallelism" in (
             res["refusals"]["no_mesh"] or ""

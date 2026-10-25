@@ -1156,6 +1156,8 @@ def apply_tensor_parallel(
             f"Unsloth: {stray[:3]} were sharded by sharded_loading but are not in this tensor parallel plan; "
             "pass the same plan to sharded_loading and apply_tensor_parallel."
         )
+    if tp > 1 and covered and any(_preloaded(p) is not None for p in model.parameters()):
+        _refuse_weight_dependent_lora_init(model)
     chain = _tp_chain(model)
     if config.sync_trainable and tp > 1:
         import torch.distributed as dist
@@ -1375,15 +1377,16 @@ def _clip_over_world(params, max_norm, eps):
             p.grad = g
         if _is_dtensor(g):
             mesh = g.device_mesh
-            if mesh.size() != world:
+            if world % mesh.size():
                 raise ValueError(
-                    f"Unsloth: tp_clip_grad_norm_ got a gradient on {mesh.size()} of {world} ranks; a 2-D "
-                    "mesh must span the world."
+                    f"Unsloth: tp_clip_grad_norm_ got a gradient on {mesh.size()} of {world} ranks."
                 )
             # Replicate dims hold copies; Shard and FSDP2's _StridedShard (not is_shard() on newer torch) split.
+            # A gradient on the dp mesh only (a parameter outside the tp regions, e.g. modules_to_save) is the
+            # same on every tp rank: world / mesh.size() more copies.
             copies = math.prod(
                 mesh.size(i) for i, pl in enumerate(g.placements) if pl.is_replicate()
-            )
+            ) * (world // mesh.size())
             sq = g.to_local().float().square().sum() / copies
         else:
             sq = g.float().square().sum() / world  # the same on every rank
@@ -1523,6 +1526,25 @@ _UNSUPPORTED_LOAD_KWARGS = (
 
 def _preloaded(t):
     return None if t is None else getattr(t, _PRELOADED, None)
+
+
+def _refuse_weight_dependent_lora_init(model):
+    """PiSSA / OLoRA / CorDA / EVA / LoftQ build the factors (and residual) from the weight; on a sharded_loading
+    slice that is this rank's slice only, so the factors come out shard-sized and differ per rank."""
+    configs = {}
+    for level in _tp_chain(model):
+        configs.update(getattr(level, "peft_config", None) or {})
+    bad = {
+        name: cfg.init_lora_weights
+        for name, cfg in configs.items()
+        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian")
+    }
+    if bad:
+        raise ValueError(
+            f"Unsloth: init_lora_weights {bad} depends on the base weight, which sharded_loading holds only as "
+            "this rank's slice; use init_lora_weights = True / 'gaussian', or load the full model (no "
+            "sharded_loading) before get_peft_model and apply_tensor_parallel."
+        )
 
 
 def _check_preloaded(path, proj, weight, base, mesh):
