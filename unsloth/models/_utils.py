@@ -5836,10 +5836,19 @@ def patch_gradient_accumulation_fix(Trainer):
             # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
             _refuse_pipeline_parallel_for_trainer(model)
             tensor_parallel = _tensor_parallel_trainer_pre(model)
-            from ..fsdp2_launch import unsloth_fsdp2_native_requested
+            from .. import fsdp2_launch as _fsdp2_launch
 
             # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
-            native_fsdp2 = unsloth_fsdp2_native_requested()
+            native_fsdp2 = _fsdp2_launch.unsloth_fsdp2_native_requested()
+            if not native_fsdp2 and _fsdp2_launch._NON_CUDA_EXPORT is not None:
+                # UNSLOTH_FSDP2=1 on a non-CUDA install went to accelerate's FSDP2 at import, but a
+                # use_cpu Trainer is MULTI_CPU to accelerate, which drops FSDP: shard natively instead.
+                from .fsdp2_native import native_fsdp2_trainer_init_arguments
+                native_fsdp2 = _fsdp2_launch.reclaim_native_fsdp2_for_cpu_trainer(
+                    native_fsdp2_trainer_init_arguments(_original_trainer_init, args, kwargs)[
+                        "args"
+                    ]
+                )
             if native_fsdp2:
                 from .fsdp2_native import (
                     native_fsdp2_trainer_init_arguments,
