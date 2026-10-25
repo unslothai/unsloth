@@ -5447,7 +5447,10 @@ async def _aiter_llama_stream_items(
         if not await _probe_off_the_loop(park_above.excuses_silence):
             return False
         if waiting_first_item:
-            first_token_deadline = now + _first_token_timeout_s()
+            # Up to the cap from where the excused silence began, not a whole window past it.
+            first_token_deadline = min(
+                now + _first_token_timeout_s(), started_at + _RAW_PARK_STALL_CAP_S
+            )
         else:
             last_item_at = now
         return True

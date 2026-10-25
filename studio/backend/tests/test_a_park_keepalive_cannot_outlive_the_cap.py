@@ -367,8 +367,43 @@ def test_a_probe_excused_deadline_renews_the_configured_window():
         source.index("if not await _probe_off_the_loop(park_above.excuses_silence):") :
     ]
     excused = excused[: excused.index("return True")]
-    assert "first_token_deadline = now + _first_token_timeout_s()" in excused
+    assert "now + _first_token_timeout_s()" in excused
     assert "_DEFAULT_FIRST_TOKEN_TIMEOUT_S" not in excused
+
+
+def test_a_probe_excused_first_token_wait_ends_at_the_park_cap(monkeypatch):
+    """A build without stream notices is excused on the aggregate probe, one first-token window
+    at a time. Each renewal must stop at the cap measured from the first crossing: whole windows
+    ran past it, 1200 s windows under a 1800 s cap ending at 3600 s instead of 3000 s."""
+    import routes.inference as inference
+
+    window, cap = 0.4, 0.5
+    monkeypatch.delenv("UNSLOTH_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT", raising = False)
+    monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", cap)
+    monkeypatch.setattr(inference, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", window)
+    monkeypatch.setattr(inference, "configured_first_token_timeout_s", lambda: window)
+
+    async def relay():
+        async def upstream():
+            await asyncio.sleep(30)
+            yield "never sent"
+
+        async for _ in inference._aiter_llama_stream_items(
+            upstream(),
+            first_token_deadline = time.monotonic() + window,
+            stall_grace = lambda: True,
+        ):
+            pass
+
+    started = time.monotonic()
+    with pytest.raises(httpx.ReadTimeout):
+        asyncio.run(relay())
+    elapsed = time.monotonic() - started
+    assert elapsed < window + cap + 0.15, (
+        f"the excused first-token wait lasted {elapsed:.2f}s, past the {window + cap:.2f}s the "
+        "first window plus the park cap allow"
+    )
+    assert elapsed > window + cap - 0.05, "the park cap was not waited out"
 
 
 class TestAnUnboundedReadGetsNoParkGraceWithoutAPark:
