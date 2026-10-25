@@ -841,9 +841,7 @@ function QuickStart({
   const choices = useApiExampleChoices(baseUrl, "curl");
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
-      <span
-        className="flex size-10 items-center justify-center icon-disc text-muted-foreground"
-      >
+      <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
         <HugeiconsIcon
           icon={ComputerTerminal01Icon}
           strokeWidth={1.75}
@@ -1261,6 +1259,25 @@ export function ApiMonitorPage(): ReactElement {
       </Button>
     </ToolbarTooltip>
   );
+  const ejectButton = (model: ServedModel): ReactElement => (
+    <ToolbarTooltip label={`Eject ${model.name}`}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={`Eject ${model.name}`}
+        onClick={() => void ejectServed(model)}
+        disabled={ejecting || modelLoading}
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+      >
+        <HugeiconsIcon
+          icon={RemoveCircleIcon}
+          strokeWidth={1.75}
+          className="size-3.5"
+        />
+      </Button>
+    </ToolbarTooltip>
+  );
   const exampleButton = (model: ServedModel): ReactElement => (
     <ToolbarTooltip label={`API example for ${model.name}`}>
       <Button
@@ -1517,7 +1534,7 @@ export function ApiMonitorPage(): ReactElement {
                 <p className="text-ui-12 text-muted-foreground">
                   {served.length} models answering requests
                 </p>
-                <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
+                <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
                   {served.map((model) => (
                     <div key={model.checkpoint} className="contents">
                       <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
@@ -1538,6 +1555,7 @@ export function ApiMonitorPage(): ReactElement {
                         {reloadButton(model)}
                         {settingsButton(model)}
                         {exampleButton(model)}
+                        {ejectButton(model)}
                       </span>
                       <dl className="min-w-0">
                         {model.active ? contextFact : null}
@@ -1545,25 +1563,6 @@ export function ApiMonitorPage(): ReactElement {
                       <dl className="min-w-0">
                         {model.active ? slotsFact : null}
                       </dl>
-                      <span className="justify-self-end">
-                        <ToolbarTooltip label={`Eject ${model.name}`}>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            aria-label={`Eject ${model.name}`}
-                            onClick={() => void ejectServed(model)}
-                            disabled={ejecting || modelLoading}
-                            className="size-7 rounded-full p-0 text-muted-foreground hover:text-foreground"
-                          >
-                            <HugeiconsIcon
-                              icon={RemoveCircleIcon}
-                              strokeWidth={1.75}
-                              className="size-3.5"
-                            />
-                          </Button>
-                        </ToolbarTooltip>
-                      </span>
                     </div>
                   ))}
                 </div>
@@ -1587,6 +1586,7 @@ export function ApiMonitorPage(): ReactElement {
                       {reloadButton(served[0])}
                       {settingsButton(served[0])}
                       {exampleButton(served[0])}
+                      {ejectButton(served[0])}
                     </>
                   ) : (
                     <span className="text-muted-foreground">None loaded</span>
@@ -1882,9 +1882,7 @@ export function ApiMonitorPage(): ReactElement {
                   />
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
-                    <span
-                      className="flex size-10 items-center justify-center icon-disc text-muted-foreground"
-                    >
+                    <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
                       <HugeiconsIcon
                         icon={FileSearchIcon}
                         strokeWidth={1.75}

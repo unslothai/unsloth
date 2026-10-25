@@ -45,6 +45,12 @@
 	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
 }
 
+/* A one-line menu row (py-2) rounded up to a whole pixel: a 34.75px row put the last hover pill and the
+   menu's bottom edge between pixels, blurring them. Taller content (a badge) still sets its own height. */
+@utility min-h-menu-row {
+	min-height: round(up, 1lh + 16px * var(--ui-space-scale, 1), 1px);
+}
+
 @utility size-control {
 	width: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
 	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
@@ -3131,6 +3137,14 @@ html[data-chat-font] .aui-root {
 			[role="menuitemradio"]
 		) {
 		margin-block: 2px;
+	}
+
+	/* A label's fractional line (13.75px) would shift every row below it off whole pixels too. Inside
+	   the label, not a margin: the next row's 2px margin collapses with it. */
+	[data-slot="dropdown-menu-label"]::after {
+		content: "";
+		display: block;
+		height: calc(round(up, 1lh, 1px) - 1lh);
 	}
 
 	/* A menu's corner is its 12px row radius plus its gutter, so the hover nests in the corner:
