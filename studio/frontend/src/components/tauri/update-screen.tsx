@@ -170,7 +170,7 @@ export function UpdateScreen({
 
             {isError && (
               <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-                <Button size="hero" onClick={onRetry}>
+                <Button variant="dark" size="hero" onClick={onRetry}>
                   Retry
                 </Button>
                 <Button variant="muted" size="hero" onClick={onSkipRestart}>

@@ -15,7 +15,7 @@ test("the read reports which sources it could not see", () => {
   assert.match(API, /export type LoadedModelsRead = \{/);
   assert.match(API, /unreadable: LoadedModelSource\[\];/);
   assert.match(API, /unreadable\.push\(source\);/);
-  assert.match(API, /return \{ entries, unreadable \};/);
+  assert.match(API, /return \{ entries, unreadable, heldByOther \};/);
 });
 
 test("an unreadable source keeps its settled row", () => {
@@ -29,7 +29,10 @@ test("an unreadable source keeps its settled row", () => {
 });
 
 test("a read that failed outright is evidence about nothing", () => {
-  assert.match(HOOK, /const ALL_SOURCES: LoadedModelSource\[\] = \["chat", "image", "video", "stt"\]/);
+  assert.match(
+    HOOK,
+    /const ALL_SOURCES: LoadedModelSource\[\] = \[\s*"chat",\s*"image",\s*"video",\s*"stt",\s*"embedding",\s*\]/,
+  );
   const refresh = HOOK.slice(
     HOOK.indexOf("void readLoadedModels(polledRef.current)"),
     HOOK.indexOf("}, [track, retireSettled]);"),
