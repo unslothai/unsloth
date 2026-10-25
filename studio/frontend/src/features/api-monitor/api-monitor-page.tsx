@@ -1335,7 +1335,7 @@ export function ApiMonitorPage(): ReactElement {
     }
     const percent = Math.min(100, (used / windowSize) * 100);
     return (
-      <Fact label="In context">
+      <Fact label="Context">
         <ToolbarTooltip label="Tokens the last request held: its prompt and its reply">
           <span className="flex items-center gap-1.5 tabular-nums [--track:rgb(0_0_0_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]">
             <UsageRing
