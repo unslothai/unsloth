@@ -46904,6 +46904,19 @@ class LlamaCppBackend:
                     reason = getattr(preempt_event, "reason", None),
                 )
 
+                # Before either exit: a declined pause leaves this attempt too, for the final pass
+                # or an ended turn, and the card its unfinished call opened must not keep spinning.
+                for _pid, _pname in provisional_started_tool_calls.items():
+                    if _pid not in resolved_provisional_tool_call_ids:
+                        resolved_provisional_tool_call_ids.add(_pid)
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": _pname,
+                            "tool_call_id": _pid,
+                            "result": "",
+                            "provenance": provisional_tool_provenance(_pname),
+                        }
+
                 _preempt_stalled = _preemption.next_stall_count(_preempt_stalled, _pre_charged)
                 if _preemption.resumes_stalled(_preempt_stalled):
                     logger.warning(
@@ -46986,16 +46999,6 @@ class LlamaCppBackend:
                     logger.debug(
                         "preemption policy raised on pause; resuming anyway", exc_info = True
                     )
-                for _pid, _pname in provisional_started_tool_calls.items():
-                    if _pid not in resolved_provisional_tool_call_ids:
-                        resolved_provisional_tool_call_ids.add(_pid)
-                        yield {
-                            "type": "tool_end",
-                            "tool_name": _pname,
-                            "tool_call_id": _pid,
-                            "result": "",
-                            "provenance": provisional_tool_provenance(_pname),
-                        }
                 yield {"type": "preempt", "state": "paused"}
                 if _loop_budget_left(0) == 0:
                     logger.info("Paused with the caller's output cap spent; ending the turn")
