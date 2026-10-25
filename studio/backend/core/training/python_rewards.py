@@ -341,6 +341,17 @@ def _as_turns(values: Any, role: str) -> Any:
     return [[{"role": role, "content": v}] if isinstance(v, str) else v for v in values]
 
 
+def _without_padding(turns: Any) -> Any:
+    # Arrow's None for fields only other rows' messages have; Try it never sees them.
+    if not isinstance(turns, list):
+        return turns
+    from core.training.rl import _drop_nulls
+
+    return [
+        {**_drop_nulls(m), "content": m.get("content")} if isinstance(m, dict) else m for m in turns
+    ]
+
+
 def make_python_reward_funcs(
     specs: list[dict], worker: RewardWorker
 ) -> list[Callable[..., list[Optional[float]]]]:
@@ -356,6 +367,8 @@ def make_python_reward_funcs(
             prefills = kwargs.pop(PREFILL_COLUMN, None)
             if isinstance(turns, list) and isinstance(prompts, list) and len(turns) == len(prompts):
                 prompts = turns
+            if isinstance(prompts, list):
+                prompts = [_without_padding(p) for p in prompts]
             if isinstance(prefills, list) and isinstance(completions, list):
                 completions = [
                     p + c if isinstance(c, str) and isinstance(p, str) else c
