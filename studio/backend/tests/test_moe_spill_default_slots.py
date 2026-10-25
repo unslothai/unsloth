@@ -867,3 +867,40 @@ def test_a_single_sequence_recovery_is_not_recorded_as_the_spill_cut(
     assert _flag(spawned[-1], "--parallel") == "1", spawned[-1]
     assert backend.effective_parallel_slots == 1
     assert not backend._slots_cut_for_drafter
+
+
+def test_a_vulkan_with_no_device_starts_on_cpu_at_the_asked_count(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """The zero-device probe routes a load to --device none after the cut was priced."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    if not hasattr(LlamaCppBackend, "_vulkan_probe_outcome"):
+        pytest.skip("the zero-device CPU route lands with main's #14521")
+    monkeypatch.setattr(
+        LlamaCppBackend, "_vulkan_prebuilt_was_auto_selected", staticmethod(lambda _binary: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_vulkan_probe_outcome", staticmethod(lambda _binary = None: "none")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+    )
+    make = placement._moe_backend
+
+    def staged_cpu_runtime(*args, **kwargs):
+        backend, gguf = make(*args, **kwargs)
+        backend._is_vulkan_backend = lambda _binary = None: True
+        backend._cpu_isolated_binary = lambda _binary: "/fake/llama-server"
+        backend._llama_server_env_for_binary = lambda _binary: {placement._loader_path_var(): ""}
+        return backend, gguf
+
+    monkeypatch.setattr(placement, "_moe_backend", staged_cpu_runtime)
+    # So the drafter can be pinned to the CPU and the route takes the replay.
+    monkeypatch.setitem(_CAPS, "spec_draft_ngl_flag", "--gpu-layers-draft")
+    backend, spawned = _scripted_launch(tmp_path, monkeypatch, outcome = lambda cmd: (None, []))
+
+    (only,) = spawned
+    assert only[only.index("--device") + 1] == "none", only
+    assert _flag(only, "--parallel") == "4", only
+    assert backend.effective_parallel_slots == 4
