@@ -72,7 +72,7 @@ export const ar = {
       cursorDescription: "يعرض مؤشرًا حيث تنقر النماذج وتكتب وتسحب في الصفحة",
       askEveryTime: "السؤال في كل مرة",
       permissionsTitle: "أذونات الوكيل",
-      permissionsDescription: "اختر الإعدادات الافتراضية وأضف استثناءات لمواقع محددة. لا تُملأ حقول كلمات المرور والدفع أبدًا مهما كانت هذه الإعدادات.",
+      permissionsDescription: "عيّن الإعدادات الافتراضية والاستثناءات لكل موقع. لا تُملأ حقول كلمات المرور والدفع أبدًا.",
       site: "الموقع أو النمط",
       sitePlaceholder: "example.com أو *.example.com",
       default: "الافتراضي",
@@ -2755,6 +2755,11 @@ export const ar = {
       showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
       showReplyTimesKeywords:
         "طابع زمني وقت ساعة تاريخ متى انتهى رد رسالة timestamp time clock date reply",
+      showGenerationDetails: "تفاصيل التوليد",
+      showGenerationDetailsDescription:
+        "عرض السرعة وعدد الرموز مباشرةً أثناء بث الرد، ومكان وضع طبقات النموذج المحلي.",
+      showGenerationDetailsKeywords:
+        "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
@@ -2980,6 +2985,9 @@ export const ar = {
         searchAudio: "البحث في المقاطع الصوتية المؤرشفة",
         unarchive: "إلغاء الأرشفة",
         unarchiveAll: "إلغاء أرشفة الكل",
+        unarchiveAllInProject: "إلغاء أرشفة الكل في المشروع",
+        deleteAllInProject: "حذف الكل في المشروع",
+        groupActions: "إجراءات {group}",
         unarchiveResults: "إلغاء أرشفة النتائج",
         deleteResults: "حذف النتائج",
         noChats: "لا توجد محادثات تطابق بحثك.",

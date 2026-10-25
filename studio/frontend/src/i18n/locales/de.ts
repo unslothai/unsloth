@@ -72,7 +72,7 @@ export const de = {
       cursorDescription: "Zeigt einen Zeiger dort, wo Modelle auf der Seite klicken, tippen und ziehen",
       askEveryTime: "Jedes Mal fragen",
       permissionsTitle: "Agent-Berechtigungen",
-      permissionsDescription: "Lege Standardwerte fest und füge Ausnahmen für bestimmte Websites hinzu. Passwort- und Zahlungsfelder werden nie ausgefüllt, egal was hier steht.",
+      permissionsDescription: "Standardwerte und Ausnahmen pro Website festlegen. Passwort- und Zahlungsfelder werden nie ausgefüllt.",
       site: "Website oder Muster",
       sitePlaceholder: "example.com oder *.example.com",
       default: "Standard",
@@ -2796,6 +2796,11 @@ export const de = {
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
+      showGenerationDetails: "Generierungsdetails",
+      showGenerationDetailsDescription:
+        "Tempo und Tokenzahl live anzeigen, während eine Antwort gestreamt wird, und wo die Schichten eines lokalen Modells liegen.",
+      showGenerationDetailsKeywords:
+        "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
@@ -3023,6 +3028,9 @@ export const de = {
         searchAudio: "Archivierte Audiodateien suchen",
         unarchive: "Aus Archiv wiederherstellen",
         unarchiveAll: "Alle wiederherstellen",
+        unarchiveAllInProject: "Alle im Projekt wiederherstellen",
+        deleteAllInProject: "Alle im Projekt löschen",
+        groupActions: "Aktionen für {group}",
         unarchiveResults: "Ergebnisse wiederherstellen",
         deleteResults: "Ergebnisse löschen",
         noChats: "Keine Chats entsprechen deiner Suche.",

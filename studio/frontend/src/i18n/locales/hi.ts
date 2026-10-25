@@ -72,7 +72,7 @@ export const hi = {
       cursorDescription: "पेज पर जहाँ मॉडल क्लिक, टाइप और ड्रैग करते हैं, वहाँ एक पॉइंटर दिखाएँ",
       askEveryTime: "हर बार पूछें",
       permissionsTitle: "एजेंट अनुमतियाँ",
-      permissionsDescription: "डिफ़ॉल्ट चुनें और खास साइटों के लिए अपवाद जोड़ें। पासवर्ड और भुगतान फ़ील्ड कभी नहीं भरे जाते, चाहे यहाँ कुछ भी हो।",
+      permissionsDescription: "डिफ़ॉल्ट और साइट के हिसाब से अपवाद तय करें। पासवर्ड और भुगतान फ़ील्ड कभी नहीं भरे जाते।",
       site: "साइट या पैटर्न",
       sitePlaceholder: "example.com या *.example.com",
       default: "डिफ़ॉल्ट",
@@ -2764,6 +2764,11 @@ export const hi = {
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:
         "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
+      showGenerationDetails: "जनरेशन विवरण",
+      showGenerationDetailsDescription:
+        "जवाब बनते समय लाइव गति और टोकन गिनती दिखाएँ, और लोकल मॉडल की परतें कहाँ रखी गईं।",
+      showGenerationDetailsKeywords:
+        "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
@@ -2988,6 +2993,9 @@ export const hi = {
         searchAudio: "संग्रहीत ऑडियो खोजें",
         unarchive: "संग्रह से निकालें",
         unarchiveAll: "सभी को संग्रह से निकालें",
+        unarchiveAllInProject: "प्रोजेक्ट में सभी को संग्रह से निकालें",
+        deleteAllInProject: "प्रोजेक्ट में सभी हटाएँ",
+        groupActions: "{group} के लिए कार्रवाइयाँ",
         unarchiveResults: "परिणामों को संग्रह से निकालें",
         deleteResults: "परिणाम मिटाएँ",
         noChats: "आपकी खोज से मेल खाती कोई चैट नहीं है।",

@@ -69,7 +69,7 @@ export const en = {
       cursorDescription: "Show a pointer where models click, type and drag on the page",
       askEveryTime: "Ask every time",
       permissionsTitle: "Agent permissions",
-      permissionsDescription: "Choose defaults and add exceptions for specific sites. Password and payment fields are never filled, whatever these say.",
+      permissionsDescription: "Set defaults and per-site exceptions. Password and payment fields are never filled.",
       site: "Site or pattern",
       sitePlaceholder: "example.com or *.example.com",
       default: "Default",
@@ -504,8 +504,8 @@ export const en = {
     dataHelp: "Spread requests across GPUs. Dense models must fit on each GPU; MoE models may share experts.",
     tensorParallel: "Split layer computations across {count} GPUs.",
     inUse: "Unload the model before repairing, restoring or removing its engine.",
-    title: "Inference engines",
-    description: "Optional engines for supported local text and vision models. Select an installed engine in the model's run settings. Experimental.",
+    title: "More engines",
+    description: "Extra engines for GPUs (Beta). They may run models faster, especially for batched inference. Install here, then choose in model's run settings.",
     picker: "Inference engine",
     precision: "Precision",
     precisionAuto: "Model default",
@@ -2813,6 +2813,11 @@ export const en = {
       showReplyTimesDescription: "Show when each reply finished, below the reply.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message",
+      showGenerationDetails: "Generation details",
+      showGenerationDetailsDescription:
+        "Show live prompt and reply speeds with token counts, and where a model's layers loaded.",
+      showGenerationDetailsKeywords:
+        "verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
@@ -3039,6 +3044,9 @@ export const en = {
         searchAudio: "Search archived audio",
         unarchive: "Unarchive",
         unarchiveAll: "Unarchive all",
+        unarchiveAllInProject: "Unarchive all in project",
+        deleteAllInProject: "Delete all in project",
+        groupActions: "Actions for {group}",
         unarchiveResults: "Unarchive results",
         deleteResults: "Delete results",
         noChats: "No chats match your search.",

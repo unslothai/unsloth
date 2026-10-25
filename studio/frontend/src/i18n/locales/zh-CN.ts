@@ -72,7 +72,7 @@ export const zhCN = {
       cursorDescription: "在模型于页面上点击、输入和拖动的位置显示指针",
       askEveryTime: "每次都询问",
       permissionsTitle: "代理权限",
-      permissionsDescription: "选择默认设置，并为特定网站添加例外。无论这里如何设置，都不会填写密码和支付信息字段。",
+      permissionsDescription: "设置默认值和按网站的例外。绝不会填写密码和支付信息字段。",
       site: "网站或模式",
       sitePlaceholder: "example.com 或 *.example.com",
       default: "默认",
@@ -2712,6 +2712,11 @@ export const zhCN = {
       showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
       showReplyTimesKeywords:
         "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
+      showGenerationDetails: "生成详情",
+      showGenerationDetailsDescription:
+        "在回复生成时实时显示速度和 token 数，并显示本地模型各层的放置位置。",
+      showGenerationDetailsKeywords:
+        "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       modelDisclaimer: "显示模型免责声明",
@@ -2932,6 +2937,9 @@ export const zhCN = {
         searchAudio: "搜索已归档的音频",
         unarchive: "取消归档",
         unarchiveAll: "全部取消归档",
+        unarchiveAllInProject: "取消归档项目中的全部内容",
+        deleteAllInProject: "删除项目中的全部内容",
+        groupActions: "{group} 的操作",
         unarchiveResults: "取消归档搜索结果",
         deleteResults: "删除搜索结果",
         noChats: "没有与搜索匹配的聊天。",

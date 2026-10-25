@@ -72,7 +72,7 @@ export const ptBR = {
       cursorDescription: "Mostra um ponteiro onde os modelos clicam, digitam e arrastam na página",
       askEveryTime: "Perguntar toda vez",
       permissionsTitle: "Permissões do agente",
-      permissionsDescription: "Escolha os padrões e adicione exceções para sites específicos. Campos de senha e de pagamento nunca são preenchidos, seja qual for a configuração.",
+      permissionsDescription: "Defina padrões e exceções por site. Campos de senha e de pagamento nunca são preenchidos.",
       site: "Site ou padrão",
       sitePlaceholder: "example.com ou *.example.com",
       default: "Padrão",
@@ -2774,6 +2774,11 @@ export const ptBR = {
       showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
       showReplyTimesKeywords:
         "carimbo de data hora data quando terminou resposta mensagem timestamp time clock date reply",
+      showGenerationDetails: "Detalhes da geração",
+      showGenerationDetailsDescription:
+        "Mostrar ao vivo a velocidade do prompt e da resposta com a contagem de tokens, e onde as camadas de um modelo foram carregadas.",
+      showGenerationDetailsKeywords:
+        "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       modelDisclaimer: "Mostrar aviso do modelo",
@@ -2998,6 +3003,9 @@ export const ptBR = {
         searchAudio: "Buscar áudios arquivados",
         unarchive: "Desarquivar",
         unarchiveAll: "Desarquivar tudo",
+        unarchiveAllInProject: "Desarquivar tudo no projeto",
+        deleteAllInProject: "Excluir tudo no projeto",
+        groupActions: "Ações de {group}",
         unarchiveResults: "Desarquivar resultados",
         deleteResults: "Excluir resultados",
         noChats: "Nenhum chat corresponde à sua busca.",

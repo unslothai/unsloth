@@ -72,7 +72,7 @@ export const ru = {
       cursorDescription: "Показывает указатель там, где модели нажимают, вводят текст и перетаскивают на странице",
       askEveryTime: "Спрашивать каждый раз",
       permissionsTitle: "Разрешения агента",
-      permissionsDescription: "Выберите значения по умолчанию и добавьте исключения для отдельных сайтов. Поля паролей и платежей никогда не заполняются, что бы здесь ни было указано.",
+      permissionsDescription: "Задайте значения по умолчанию и исключения для сайтов. Поля паролей и платежей никогда не заполняются.",
       site: "Сайт или шаблон",
       sitePlaceholder: "example.com или *.example.com",
       default: "По умолчанию",
@@ -2772,6 +2772,11 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
+      showGenerationDetails: "Подробности генерации",
+      showGenerationDetailsDescription:
+        "Показывать скорость и число токенов в реальном времени во время ответа и где размещены слои локальной модели.",
+      showGenerationDetailsKeywords:
+        "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",
@@ -2994,6 +2999,9 @@ export const ru = {
         searchAudio: "Поиск архивного аудио",
         unarchive: "Разархивировать",
         unarchiveAll: "Разархивировать всё",
+        unarchiveAllInProject: "Разархивировать всё в проекте",
+        deleteAllInProject: "Удалить всё в проекте",
+        groupActions: "Действия для {group}",
         unarchiveResults: "Разархивировать результаты",
         deleteResults: "Удалить результаты",
         noChats: "Нет чатов, соответствующих запросу.",

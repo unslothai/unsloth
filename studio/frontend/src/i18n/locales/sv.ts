@@ -70,7 +70,7 @@ export const sv = {
       cursorDescription: "Visar en pekare där modeller klickar, skriver och drar på sidan",
       askEveryTime: "Fråga varje gång",
       permissionsTitle: "Agentbehörigheter",
-      permissionsDescription: "Välj standardvärden och lägg till undantag för vissa webbplatser. Lösenords- och betalningsfält fylls aldrig i, oavsett inställningarna här.",
+      permissionsDescription: "Ange standardvärden och undantag per webbplats. Lösenords- och betalningsfält fylls aldrig i.",
       site: "Webbplats eller mönster",
       sitePlaceholder: "example.com eller *.example.com",
       default: "Standard",
@@ -2954,6 +2954,11 @@ export const sv = {
       showReplyTimesDescription: "Visa under varje svar när det blev klart.",
       showReplyTimesKeywords:
         "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
+      showGenerationDetails: "Genereringsdetaljer",
+      showGenerationDetailsDescription:
+        "Visa hastighet och antal token live medan ett svar strömmas, och var en lokal modells lager placerades.",
+      showGenerationDetailsKeywords:
+        "detaljer hastighet token statistik lager avlastning verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
@@ -3186,6 +3191,9 @@ export const sv = {
         searchAudio: "Sök arkiverat ljud",
         unarchive: "Avarkivera",
         unarchiveAll: "Avarkivera alla",
+        unarchiveAllInProject: "Avarkivera alla i projektet",
+        deleteAllInProject: "Ta bort alla i projektet",
+        groupActions: "Åtgärder för {group}",
         unarchiveResults: "Avarkivera resultat",
         deleteResults: "Ta bort resultat",
         noChats: "Inga chattar matchar din sökning.",

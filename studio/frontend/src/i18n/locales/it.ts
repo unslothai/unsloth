@@ -71,7 +71,7 @@ export const it = {
       cursorDescription: "Mostra un puntatore dove i modelli fanno clic, scrivono e trascinano nella pagina",
       askEveryTime: "Chiedi ogni volta",
       permissionsTitle: "Autorizzazioni dell'agente",
-      permissionsDescription: "Scegli i valori predefiniti e aggiungi eccezioni per siti specifici. I campi di password e pagamento non vengono mai compilati, qualunque cosa indichino queste impostazioni.",
+      permissionsDescription: "Imposta i valori predefiniti e le eccezioni per sito. I campi di password e pagamento non vengono mai compilati.",
       site: "Sito o modello",
       sitePlaceholder: "example.com o *.example.com",
       default: "Predefinito",
@@ -2699,6 +2699,11 @@ export const it = {
       showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
       showReplyTimesKeywords:
         "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
+      showGenerationDetails: "Dettagli generazione",
+      showGenerationDetailsDescription:
+        "Mostra velocità e token in tempo reale mentre una risposta viene generata, e dove sono stati collocati i livelli di un modello locale.",
+      showGenerationDetailsKeywords:
+        "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       modelDisclaimer: "Mostra l'avviso sul modello",
@@ -2924,6 +2929,9 @@ export const it = {
         searchAudio: "Cerca audio archiviati",
         unarchive: "Ripristina",
         unarchiveAll: "Ripristina tutto",
+        unarchiveAllInProject: "Ripristina tutto nel progetto",
+        deleteAllInProject: "Elimina tutto nel progetto",
+        groupActions: "Azioni per {group}",
         unarchiveResults: "Ripristina risultati",
         deleteResults: "Elimina risultati",
         noChats: "Nessuna chat corrisponde alla ricerca.",
