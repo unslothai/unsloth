@@ -458,7 +458,7 @@ export function WorldPlayer({
         setEdStatus("Saving");
         setEdError(null);
         try {
-          await api.saveWorldProps(flowId, props);
+          await api.saveWorldProps(flowId, props, spec.player_node);
           lastSaved.current = JSON.stringify(props);
           setSavedProps(lastSaved.current);
           setEdState(editor.state());
@@ -472,7 +472,7 @@ export function WorldPlayer({
           return false;
         }
       }),
-    [api, editor, flowId],
+    [api, editor, flowId, spec.player_node],
   );
   // Model imports still uploading: Done waits for them, so an imported model is saved rather than lost.
   const imports = useRef(new Set<Promise<void>>());

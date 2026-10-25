@@ -371,3 +371,33 @@ test("scenery saves onto every enabled World Player block, and only there", () =
     null,
   );
 });
+
+test("scenery saves only onto the World Player the world was played with", () => {
+  const doc = {
+    id: "f",
+    name: "F",
+    kind: "world",
+    nodes: [
+      { id: "a", type: "world.play", params: { props3d: [{ id: "keep" }] } },
+      { id: "b", type: "world.play", params: {} },
+    ],
+    edges: [],
+  } as unknown as Doc;
+  const props: Prop[] = [{ id: "n", kind: "crate", x: 1.5, y: 1.5 }];
+  const out = A.withWorldProps(doc, props, "b");
+  assert.ok(out);
+  const byId = Object.fromEntries(out.nodes.map((n) => [n.id, n.params]));
+  assert.deepEqual(byId.b, { props3d: props });
+  assert.deepEqual(
+    byId.a,
+    { props3d: [{ id: "keep" }] },
+    "the other world keeps its scenery",
+  );
+  // An unknown player (a world from before this field) falls back to every enabled player.
+  const all = A.withWorldProps(doc, props, "gone");
+  assert.ok(
+    all?.nodes.every(
+      (n) => (n.params as { props3d?: unknown }).props3d === props,
+    ),
+  );
+});

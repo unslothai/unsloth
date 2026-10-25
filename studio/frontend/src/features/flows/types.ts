@@ -475,6 +475,8 @@ export interface WorldSpec {
   view3d?: World3dView;
   /** Scenery placed with the 3D editor; saved on the World Player block. */
   props3d?: WorldProp3d[];
+  /** The World Player block whose settings this world was played with; scenery is saved back onto it. */
+  player_node?: string;
 }
 
 export type WorldPropKind =

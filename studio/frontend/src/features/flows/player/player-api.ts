@@ -38,14 +38,24 @@ export function rerollTargets(doc: FlowDocument): string[] {
     .map((n) => n.id);
 }
 
-/** `doc` with the 3D editor's props on every enabled World Player block; null when it has none to hold them. */
+/**
+ * `doc` with the 3D editor's props on the World Player the world was played with (`player`), or on every enabled
+ * World Player when that is unknown; null when there is none to hold them.
+ */
 export function withWorldProps(
   doc: FlowDocument,
   props: WorldProp3d[],
+  player?: string,
 ): FlowDocument | null {
+  const target = doc.nodes.some(
+    (n) => n.id === player && n.type === "world.play" && !n.disabled,
+  )
+    ? player
+    : undefined;
   let found = false;
   const nodes = doc.nodes.map((n) => {
     if (n.type !== "world.play" || n.disabled) return n;
+    if (target && n.id !== target) return n;
     found = true;
     return { ...n, params: { ...(n.params ?? {}), props3d: props } };
   });
@@ -135,7 +145,11 @@ export interface PlayerApi {
   ): Promise<void>;
   mediaBlob(media: MediaValue): Promise<Blob>;
   /** Keep the 3D editor's scenery: written to the flow's World Player block, so it needs no rerun. */
-  saveWorldProps?(flowId: string, props: WorldProp3d[]): Promise<void>;
+  saveWorldProps?(
+    flowId: string,
+    props: WorldProp3d[],
+    player?: string,
+  ): Promise<void>;
   /** Store a .glb model as a flow asset (the server checks it again). */
   uploadModel?(file: Blob, name: string): Promise<ModelAsset>;
 }
@@ -302,11 +316,11 @@ export const playerApi: PlayerApi = {
       );
     return res.blob();
   },
-  async saveWorldProps(flowId, props) {
+  async saveWorldProps(flowId, props, player) {
     const rec = await json<{ doc: FlowDocument; updatedAt: number }>(
       await authFetch(`/api/flows/${enc(flowId)}`),
     );
-    const doc = withWorldProps(rec.doc, props);
+    const doc = withWorldProps(rec.doc, props, player);
     if (!doc)
       throw new PlayerApiError(
         "Add a World Player block to the flow to keep scenery",

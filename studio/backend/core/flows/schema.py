@@ -433,6 +433,8 @@ class WorldSpec(_Strict):
     render: Optional[Literal["2d", "3d"]] = None
     view3d: Optional[World3dView] = None
     props3d: Optional[list[WorldProp3d]] = None
+    # The World Player block the world was played with; the 3D editor saves scenery back onto it.
+    player_node: Optional[str] = None
 
 
 # Run events (SSE `data:` payloads; `id:` is `seq`)
