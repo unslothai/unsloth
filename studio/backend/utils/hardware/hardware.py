@@ -437,8 +437,107 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
     return found
 
 
+# The gfx target is the silicon's: kept until re-detection rather than re-running rocminfo (it starts HSA)
+# every 60 s inventory pass. Keyed on the resolved binaries and the masks / overrides the CLIs inherit.
+_GFX_CANDIDATE_ENV = (
+    "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "CUDA_VISIBLE_DEVICES",
+    "GPU_DEVICE_ORDINAL",
+    "HSA_OVERRIDE_GFX_VERSION",
+)
+_gfx_candidates_cache: Optional[tuple[tuple, list[str], float]] = None
+# An empty answer (GPU runtime still coming up) is asked again after this long.
+_GFX_EMPTY_TTL_S = 300.0
+# In the key: a probe started before a forced detection publishes under a key no later read matches.
+_gfx_detect_epoch = 0
+
+
+def _gfx_candidates_key() -> Optional[tuple]:
+    """None when caching is off or gpu_query is unavailable (the no-torch sandbox stub tree)."""
+    try:
+        import shutil
+
+        from . import gpu_query
+
+        if not gpu_query.enabled():
+            return None
+        static_gen = gpu_query._static_gen
+        binaries = (shutil.which("rocminfo"), shutil.which("amd-smi"))
+    except Exception:
+        return None
+    topology = _linux_amd_pci_topology()
+    if topology is None:
+        # An unreadable walk cannot see a swapped card: probe every pass, as before.
+        return None
+    # The runner object, as gpu_query keys it, so a swapped fake never shares an answer.
+    return (
+        subprocess.run,
+        static_gen,
+        binaries,
+        tuple(os.environ.get(name) for name in _GFX_CANDIDATE_ENV),
+        # Per-device overrides (HSA_OVERRIDE_GFX_VERSION_<n>) change what rocminfo reports too.
+        tuple(
+            sorted(
+                (k, v) for k, v in os.environ.items() if k.startswith("HSA_OVERRIDE_GFX_VERSION_")
+            )
+        ),
+        topology,
+        _gfx_detect_epoch,
+    )
+
+
+def _linux_amd_pci_topology(root: str = "/sys/class/drm") -> "tuple | None":
+    """Sorted (PCI address, device id) of every bound AMD card: sees a card swapped beside one that stays,
+    which re-detection misses. () with no DRM class (not Linux), None when the walk is unreadable."""
+    try:
+        entries = os.listdir(root)
+    except FileNotFoundError:
+        return ()
+    except OSError:
+        return None
+    found = []
+    for entry in entries:
+        if not re.fullmatch(r"card\d+", entry):
+            continue
+        device = os.path.join(root, entry, "device")
+        try:
+            with open(os.path.join(device, "vendor"), encoding = "utf-8") as fh:
+                if fh.read().strip().lower() != "0x1002":
+                    continue
+            with open(os.path.join(device, "device"), encoding = "utf-8") as fh:
+                device_id = fh.read().strip().lower()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        found.append((os.path.basename(os.path.realpath(device)), device_id))
+    return tuple(sorted(found))
+
+
 def _linux_amd_gfx_candidates() -> list[str]:
     """gfx targets the ROCm userspace reports for this host, sorted, or []. rocminfo is what studio/setup.sh reads to pick an arch, with amd-smi as its fallback; neither is required to exist, and a host with no ROCm userspace reports nothing, so the caller keeps the card rather than guessing an arch. Bounded and never raises."""
+    global _gfx_candidates_cache
+    key = _gfx_candidates_key()
+    cached = _gfx_candidates_cache
+    if (
+        key is not None
+        and cached is not None
+        and cached[0] == key
+        and (cached[1] or time.monotonic() - cached[2] < _GFX_EMPTY_TTL_S)
+    ):
+        return list(cached[1])
+    found, settled = _probe_linux_amd_gfx_candidates()
+    if key is not None and settled:
+        _gfx_candidates_cache = (key, list(found), time.monotonic())
+    return found
+
+
+def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
+    """(targets, settled); not settled when an existing CLI timed out, could not start or failed."""
+    import shutil
+
+    settled = True
     for command, pattern in (
         (["rocminfo"], r"\bgfx[0-9a-f]+\b"),
         (["amd-smi", "static", "--asic"], r"\bgfx[0-9a-f]+\b"),
@@ -454,14 +553,22 @@ def _linux_amd_gfx_candidates() -> list[str]:
                 check = False,
             )
         except FileNotFoundError:
+            # ENOENT also comes from an executable that exists but cannot start (a missing interpreter).
+            if shutil.which(command[0]) is not None:
+                settled = False
             continue
         except (OSError, subprocess.TimeoutExpired) as e:
             logger.debug("%s could not report a gfx target: %s", command[0], e)
+            settled = False
             continue
         found = {match.group(0).lower() for match in re.finditer(pattern, result.stdout or "")}
         if found:
-            return sorted(found)
-    return []
+            # Used, not kept, after a non-zero exit (maybe partial output) or a failed rocminfo.
+            return sorted(found), settled and result.returncode == 0
+        # Ran and failed (no /dev/kfd access yet, driver loading): not an answer.
+        if result.returncode != 0:
+            settled = False
+    return [], settled
 
 
 def _hidden_console_kwargs() -> Dict[str, Any]:
@@ -1121,7 +1228,7 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
 
 # install_python_stack._LINUX_UNCOVERED_AMD_GFX: the arches the Linux installers leave on CPU torch.
-_LINUX_UNCOVERED_AMD_GFX = _ROCM_SUPPORTED_GFX_WINDOWS_ONLY | {"gfx803"}
+_LINUX_UNCOVERED_AMD_GFX = _ROCM_SUPPORTED_GFX_WINDOWS_ONLY | {"gfx803", "gfx90c"}
 
 # Krackan Point 2 (gfx1153) names overlap the table's gfx1152 row; the Linux installers read them
 # first and leave CPU torch on purpose (install_python_stack._LINUX_KRACKAN2_NAME_RE).
@@ -1551,7 +1658,16 @@ def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
     global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS
+    global _gfx_candidates_cache, _gfx_detect_epoch
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
+    # A forced detection asks the ROCm CLIs again, and an older probe cannot publish.
+    _gfx_detect_epoch += 1
+    _gfx_candidates_cache = None
+    try:
+        from . import amd as _amd
+        _amd.invalidate_hip_id_map()
+    except Exception:
+        pass
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
     CHAT_ONLY_MISMATCH_VENDORS = frozenset()
