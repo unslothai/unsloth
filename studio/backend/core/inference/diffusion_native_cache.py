@@ -454,3 +454,173 @@ def load(
         except Exception:  # noqa: BLE001
             pass
         return None
+
+
+def build_spec(transformer: Any, family: Optional[str]) -> Optional[dict]:
+    """``native_spec`` of an in-memory native build, read from its layers, or None (no native layers, or a mix)."""
+    try:
+        from .diffusion_native_quant import is_native_linear
+
+        schemes, acts = set(), set()
+        for mod in transformer.modules():
+            if is_native_linear(mod):
+                schemes.add(mod.scheme)
+                acts.add(bool(mod.act_int8))
+        if len(schemes) != 1 or len(acts) != 1:
+            return None
+        return native_spec(next(iter(schemes)), family, act_int8 = next(iter(acts)))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class NativePendingWrite:
+    """``save`` on a background thread once the load is published, tracked with the torchao writes so unload and
+    exit wait for it (``diffusion_prequant_cache.finish_background_writes``). It writes the live host tensors the
+    build already holds: no snapshot copy."""
+
+    def __init__(self, run: Any, key: str, logger: Any = None) -> None:
+        import threading
+
+        self._run_fn = run
+        self.key = key
+        self._logger = logger
+        self._cancel = threading.Event()
+        self._finished = threading.Event()
+        self._thread: Optional[Any] = None
+        self.result: Optional[str] = None
+        with _cache._lock:
+            _cache._BACKGROUND.add(self)
+
+    def _check(self) -> None:
+        if self._cancel.is_set():
+            raise RuntimeError("native cache write cancelled")
+
+    def start(self) -> bool:
+        import threading
+
+        with _cache._lock:
+            if self._thread is not None or self._run_fn is None or self._cancel.is_set():
+                return False
+            self._thread = threading.Thread(
+                target = self._run, name = f"native-cache-write-{self.key[:8]}", daemon = True
+            )
+        try:
+            self._thread.start()
+        except Exception:  # noqa: BLE001 - no writer: the next load re-quantizes
+            with _cache._lock:
+                self._thread = None
+            self._close()
+            return False
+        return True
+
+    def _run(self) -> None:
+        try:
+            if self._run_fn is not None:
+                self.result = self._run_fn(self._check)
+        except Exception as exc:  # noqa: BLE001 - a background cache write never surfaces
+            _cache._log(self._logger, "warning", f"native: background save failed: {exc}")
+        finally:
+            self._close()
+
+    def _close(self) -> None:
+        self._run_fn = None
+        with _cache._lock:
+            _cache._BACKGROUND.discard(self)
+        self._finished.set()
+
+    def discard(self) -> None:
+        with _cache._lock:
+            started = self._thread is not None
+            self._cancel.set()
+        if not started:
+            self._close()
+
+    def cancel(self) -> None:
+        self.discard()
+
+    def done(self) -> bool:
+        return self._finished.is_set()
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        return self._finished.wait(timeout)
+
+
+def save_deferred(
+    transformer: Any,
+    fam: Any,
+    *,
+    base_repo: Optional[str],
+    source_base: Optional[str] = None,
+    component: str = "transformer",
+    logger: Any = None,
+    cancel_check: Optional[Any] = None,
+) -> Any:
+    """A ``NativePendingWrite`` for a just-built native denoiser (start it once the load is published), the
+    synchronous ``save`` result when background writes are off, or None. Never raises."""
+    try:
+        if not _cache.enabled():
+            return None
+        spec = build_spec(transformer, getattr(fam, "name", None))
+        if spec is None:
+            _cache._log(logger, "info", f"native {component}: skipped (no single native recipe)")
+            return None
+        recorded_base = str(base_repo or getattr(fam, "base_repo", "") or "")
+        keyed = _key_for(fam, spec, source_base or base_repo, component, base_id = recorded_base)
+        if keyed is None:
+            _cache._log(logger, "info", f"native {component}: skipped (dense source shards not found locally)")
+            return None
+
+        def run(check: Optional[Any] = None) -> Optional[str]:
+            def both() -> None:
+                if check is not None:
+                    check()
+                if cancel_check is not None and check is None:
+                    cancel_check()
+
+            return save(
+                transformer,
+                fam,
+                spec,
+                base_repo = base_repo,
+                source_base = source_base,
+                component = component,
+                logger = logger,
+                cancel_check = both,
+            )
+
+        if not _cache.async_enabled():
+            return run()
+        return NativePendingWrite(run, keyed[0], logger)
+    except Exception as exc:  # noqa: BLE001
+        _cache._log(logger, "warning", f"native {component}: save skipped ({type(exc).__name__}: {exc})")
+        return None
+
+
+def read_for_load(
+    fam: Any,
+    spec: Optional[dict],
+    transformer_cls: Any,
+    *,
+    base_repo: Optional[str],
+    source_base: Optional[str],
+    component: str = "transformer",
+    config_kwargs: Optional[dict] = None,
+    logger: Any = None,
+    cancel_check: Optional[Any] = None,
+) -> Any:
+    """``lookup`` + ``load`` of the cached native ``component``, or None (a miss). Never raises."""
+    if spec is None or transformer_cls is None:
+        return None
+    path = lookup(fam, spec, base_repo = base_repo, source_base = source_base, component = component, logger = logger)
+    if path is None:
+        return None
+    return load(
+        path,
+        transformer_cls,
+        str(source_base or base_repo),
+        component = component,
+        spec = spec,
+        config_kwargs = config_kwargs,
+        logger = logger,
+        cancel_check = cancel_check,
+    )
