@@ -7594,6 +7594,7 @@ const GeneratingStatus: FC = () => {
   );
 };
 
+// Placeholder when stop fires before any visible content (e.g. mid-think).
 const CancelledIndicator: FC = () => {
   const show = useAuiState(
     ({ message }) =>
