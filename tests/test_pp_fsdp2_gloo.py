@@ -34,6 +34,9 @@ ARCHS = {
 }
 N_LAYERS = 6
 STEPS = 3
+# Step-0 grad norm tolerance vs the one-process reference. Gemma3's own fp32 grad norm sits 1.0e-4 from fp64 on one
+# process (Llama 7.8e-7), so any change of summation order (TP splits, CPU ISA) moves it by that much.
+STEP0_NORM_REL = {"llama": 1e-5, "qwen3": 1e-5, "gemma3": 3e-4}
 
 
 def _native():
@@ -424,6 +427,7 @@ def _check(
     results,
     dims,
     n_mb = 2,
+    norm_rel = 1e-5,
 ):
     ref = results[0]["ref"]
     union = set()
@@ -433,7 +437,7 @@ def _check(
             res["losses"],
             ref["losses"],
         )
-        assert res["norms"][0] == pytest.approx(ref["norms"][0], rel = 1e-5), (
+        assert res["norms"][0] == pytest.approx(ref["norms"][0], rel = norm_rel), (
             rank,
             res["norms"],
             ref["norms"],
@@ -501,7 +505,7 @@ def _check(
 @pytest.mark.parametrize("arch", sorted(ARCHS))
 def test_pp2_x_fsdp2_dp2_matches_one_process(arch):
     dims = {"pp": 2, "dp": 2}
-    _check(_spawn("compose", arch = arch, dims = dims), dims)
+    _check(_spawn("compose", arch = arch, dims = dims), dims, norm_rel = STEP0_NORM_REL[arch])
 
 
 def test_pp2_x_fsdp2_dp2_1f1b_sharded_layout_matches_one_process():
@@ -516,7 +520,7 @@ def test_pp2_x_fsdp2_dp2_1f1b_sharded_layout_matches_one_process():
 @pytest.mark.parametrize("arch", sorted(ARCHS))
 def test_pp2_x_tp2_matches_one_process(arch):
     dims = {"pp": 2, "tp": 2}
-    _check(_spawn("compose", arch = arch, dims = dims), dims)
+    _check(_spawn("compose", arch = arch, dims = dims), dims, norm_rel = STEP0_NORM_REL[arch])
 
 
 @pytest.mark.parametrize("other", ["dp", "tp"])
