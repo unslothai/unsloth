@@ -828,3 +828,20 @@ def test_first_json_returns_a_list_of_objects_whole():
     ]
     assert first_json('{"rows": [1, 2]} and [3]') == {"rows": [1, 2]}
     assert first_json("no braces [1, 2]") == [1, 2]
+
+
+@run_async
+async def test_a_baked_chat_answers_the_new_message_not_the_exported_one():
+    from core.flows.nodes import chat
+
+    eng = _engine({**BASE, "chat.input": chat.chat_input, "chat.output": chat.chat_output})
+    d = doc(
+        [node("i", "chat.input"), node("o", "chat.output")],
+        [edge("i", "message", "o", "reply")],
+        baked = {"i": {"message": "exported question", "history": []}},
+    )
+    parsed, _ = parse_document(d)
+    out = await eng.invoke(
+        app = None, flow_id = "f1", doc = parsed, entry = "o", params = {"message": "new question"}
+    )
+    assert out == {"reply": "new question"}
