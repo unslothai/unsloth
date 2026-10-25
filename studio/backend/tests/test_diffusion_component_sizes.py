@@ -1255,12 +1255,14 @@ def test_loaded_role_with_unreadable_size_makes_its_term_unknown(tmp_path, monke
 
 
 def test_no_index_fallback_takes_only_loader_names(tmp_path):
-    for name in (
-        "adapter_model.safetensors",
-        "weights.safetensors",
-        "diffusion_pytorch_model.fp16.safetensors",
-    ):
+    for name in ("adapter_model.safetensors", "weights.safetensors"):
         assert dcs.select_weight_files([name], folder = "transformer") == []
+    # A lone .fp16 twin is read; beside a default it is not.
+    twin = "diffusion_pytorch_model.fp16.safetensors"
+    assert dcs.select_weight_files([twin], folder = "transformer") == [twin]
+    assert dcs.select_weight_files(
+        [twin, "diffusion_pytorch_model.safetensors"], folder = "transformer"
+    ) == ["diffusion_pytorch_model.safetensors"]
     _write_header(tmp_path / "transformer" / "adapter_model.safetensors", {"a": ("BF16", 10)})
     assert dcs.local_component_sizes(tmp_path) is None
     for stem in ("diffusion_pytorch_model", "model", "pytorch_model"):
