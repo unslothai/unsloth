@@ -375,9 +375,8 @@ function useStagedFixPrompt(pendingFixPrompt: string | null, active: boolean): v
   }, [pendingFixPrompt, aui, active]);
 }
 
-/** Lets this chat host the browser panel: links, Browser use, Request edits and Attach.
- *  Project landing never mounts SingleContent, so it has to call this itself (#15046).
- *  `overlay`: the browser covers this chat as a modal, so handing work to the composer closes it first. */
+/** Hosts the browser for this chat. Project landing never mounts SingleContent, so it calls this itself (#15046).
+ *  `overlay`: the browser covers the chat as a modal, so handing work to the composer closes it first. */
 function useBrowserChatHost(active: boolean, overlay = false): void {
   const isMobile = useIsMobile();
   const aui = useAui();

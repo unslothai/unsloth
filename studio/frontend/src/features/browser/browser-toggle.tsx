@@ -27,8 +27,7 @@ function openNewTab(fullView = false) {
 }
 
 /** The chat header's new tab button: a click opens a tab beside the chat, hovering offers full view.
- *  Hidden while that chat's panel is on screen (`hideWhenOpen`); a project overlay is separate, so
- *  leave the button up until the overlay actually shows. */
+ *  Hidden while the panel is open, unless `hideWhenOpen` is false: a project's overlay may not be showing it. */
 export function BrowserToggleButton({
   active = true,
   hideWhenOpen = true,
