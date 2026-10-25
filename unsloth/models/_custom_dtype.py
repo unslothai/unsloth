@@ -158,8 +158,7 @@ def cast_mixed_linear_inputs(model, load_dtype):
         ):
             continue
         weight = getattr(module, "weight", None)
-        # float8 counts as floating point, but FP8 Linear subclasses (transformers FP8Linear,
-        # FbgemmFp8Linear) keep float8 weights and quantize their own input: never cast into float8.
+        # Not is_floating_point(): FP8Linear / FbgemmFp8Linear keep float8 weights and quantize their own input.
         if (
             not isinstance(weight, torch.Tensor)
             or weight.dtype not in _INPUT_CAST_DTYPES
