@@ -481,6 +481,8 @@ export interface WorldSpec {
   new_quests?: boolean;
   /** What villagers may do on their own; absent (every flag off) keeps the world as it was. */
   autonomy?: WorldAutonomy | null;
+  /** Action play in the 3D view (World Player "Gameplay"); absent keeps walking as it was. */
+  action?: WorldAction | null;
   /** Which player draws the world; the top-down map when unset. */
   render?: "2d" | "3d";
   view3d?: World3dView;
@@ -538,6 +540,13 @@ export interface World3dView {
   /** Hill height scale. */
   terrain?: number;
   ambient?: MediaValue;
+}
+
+export interface WorldAction {
+  /** Gravity, jumping, sprint, crouch and collisions with scenery. */
+  movement?: boolean;
+  /** A hitscan weapon, health and ammo; hostile villagers fight back. */
+  shooter?: boolean;
 }
 
 export interface WorldAutonomy {

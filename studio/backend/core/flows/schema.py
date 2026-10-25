@@ -395,6 +395,13 @@ class WorldAutonomy(_Strict):
     enemies: bool = False  # hostile villagers chase and rob (non-lethal)
 
 
+class WorldAction(_Strict):
+    """Action play in the 3D view; every flag off keeps walking as it was."""
+
+    movement: bool = False  # gravity, jumping, sprint, crouch and collisions with scenery
+    shooter: bool = False  # a hitscan weapon, health and ammo; hostile villagers fight back
+
+
 class World3dView(_Strict):
     """How the first-person 3D player draws a world. Every field is optional; the player fills in defaults."""
 
@@ -443,6 +450,7 @@ class WorldSpec(_Strict):
     entry_points: dict[str, str] = Field(default_factory = dict)  # e.g. {"npc_reply": "<node id>"}
     simulation: Optional[WorldSimulation] = None
     autonomy: Optional[WorldAutonomy] = None
+    action: Optional[WorldAction] = None
     # Which player draws the world: the top-down 2D map (default) or the first-person 3D view.
     render: Optional[Literal["2d", "3d"]] = None
     view3d: Optional[World3dView] = None
