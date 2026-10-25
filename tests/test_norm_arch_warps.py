@@ -13,6 +13,8 @@ from unsloth.kernels import utils as U
 from unsloth.kernels.utils import calculate_settings
 
 T4 = (7, 5)
+# Read before any fixture runs: the `capability` fixture sets torch.version.hip to None to reach the CUDA tables.
+IS_HIP = bool(torch.version.hip)
 
 
 def _uncached(mod):
@@ -114,8 +116,9 @@ def _ref(mod, X, W, b, dY):
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids = ["fp16", "bf16"])
 def test_table_warps_match_default_accuracy(mod, dtype, capability, monkeypatch):
     # Run every table entry on this GPU (the capability is faked) against the default warps.
-    if torch.version.hip:
-        pytest.skip("tables are CUDA only")
+    if IS_HIP:
+        # The fixture fakes a CUDA identity, so the dW launch would pass maxnreg, which HIP Triton rejects.
+        monkeypatch.setattr(RMS, "_max_sm_threads", lambda device: 0)
     entries = sorted(set(mod._NUM_WARPS) | set(mod._DW_NUM_WARPS))
     gen = torch.Generator(device = "cuda").manual_seed(3407)
     for cap, n_cols in entries:
