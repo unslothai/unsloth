@@ -63,16 +63,14 @@ def unsloth_fsdp2_native_requested():
     if backend == "" and _env_flag("ACCELERATE_USE_FSDP"):
         return False
     if _non_cuda_accelerate_route() is not None:
-        # Native FSDP2 runs on CUDA / ROCm or the CPU. On an XPU / NPU / HPU / ... install,
-        # UNSLOTH_FSDP2=1 keeps accelerate's FSDP2 wrap, as it did before the native backend existed;
-        # an explicit native request (UNSLOTH_FSDP2=native or UNSLOTH_FSDP2_BACKEND=native) stays
-        # native and is refused when that device is present (refuse_native_backend_conflicts).
+        # Native FSDP2 is CUDA / ROCm / CPU only: an XPU / NPU / ... install keeps accelerate's FSDP2
+        # (pre-native behaviour); an explicit native pick stays native and is refused there.
         return False
     return True
 
 
-# apply_unsloth_fsdp2_launch_env sets these when it exports accelerate's FSDP2 env only because this is
-# a non-CUDA install: {key: value before}, so Trainer setup can hand a CPU Trainer back to native FSDP2.
+# {key: value before} of the accelerate env exported only because this is a non-CUDA install, so a
+# CPU Trainer can be handed back to native FSDP2.
 _NON_CUDA_EXPORT = None
 _CPU_TRAINER = False
 
