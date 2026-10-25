@@ -381,7 +381,6 @@ export function ApiModelLoadControls({
           refreshLocalModels();
         }}
         deleteDisabled={modelLoading}
-        // Chat's header selector: the page shows it in the same top-left spot.
         variant="ghost"
         placeholder="Load model"
         open={selectorOpen && !unloading}

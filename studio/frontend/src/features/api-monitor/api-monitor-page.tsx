@@ -1592,7 +1592,6 @@ export function ApiMonitorPage(): ReactElement {
                       <dl className="min-w-0">
                         {model.active ? slotsFact : null}
                       </dl>
-                      {/* What acts on the model sits at the row's end; the code example stays with its name. */}
                       <span className="flex items-center gap-0.5 justify-self-end">
                         {settingsButton(model)}
                         {reloadButton(model)}
