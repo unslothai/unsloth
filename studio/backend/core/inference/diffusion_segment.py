@@ -170,9 +170,8 @@ _GPU_NEED_MIB = 4096
 # never denoises next to it. The prompt upsampler's tight rule.
 _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
-# What a resident bf16 segmenter takes off mem_get_info's free after a Find (allocator reserve + cuBLAS workspace:
-# 2234 MiB, 2282 dequantized, on an A100; the 1.98 GB allocated peak is too low), so _after_call does not read it
-# as tight and unload it. auto goes 8-bit only if free minus this reads tight.
+# bf16's measured drop in mem_get_info free after a Find (reserve + workspace, above its allocated peak), so the bf16
+# pick is not read as tight by _after_call and unloaded. auto goes 8-bit only if free minus this reads tight.
 _BF16_RESIDENT_MIB = 2560
 
 
