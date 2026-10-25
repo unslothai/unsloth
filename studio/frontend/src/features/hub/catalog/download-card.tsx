@@ -12,6 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -23,7 +24,6 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
-  PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -123,7 +123,8 @@ export function ModelRunActionButton({
         </>
       ) : (
         <>
-          <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
+          {/* The composer's solid play, a size down from the stroked glyph it replaced. */}
+          <QueueResumeIcon className="size-[calc(0.8rem*var(--ui-space-scale,1))]" />
           Run
         </>
       )}
