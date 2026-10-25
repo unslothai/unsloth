@@ -9,6 +9,7 @@ import {
   resolveResidentInitialConfig,
   savedContextPin,
 } from "@/features/model-picker";
+import { loadedPlacementFrom } from "./partial-offload";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
@@ -45,6 +46,7 @@ import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
 import { engineLaunchFieldsFrom } from "./engine-launch-fields";
+import { mlxOffloadStateFrom } from "./mlx-runtime-state";
 import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
@@ -245,6 +247,7 @@ export function applyActiveModelStatusToStore(
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
   const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
+  const incomingMlxOffload = mlxOffloadStateFrom(status);
   const prevState = useChatRuntimeStore.getState();
   // The chat's own level when the model this replaces was running a per-model pin's: the clamp
   // narrows the chat's level to this model's ladder, and a pin is one model's, not the chat's.
@@ -500,6 +503,7 @@ export function applyActiveModelStatusToStore(
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
     mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
+    loadedPlacement: loadedPlacementFrom(status),
     specDrafterKind: status.spec_drafter_kind ?? null,
     // Controls follow the server while clean; loaded baselines always describe
     // the settled resident, including same-model reloads from another client.
@@ -584,6 +588,17 @@ export function applyActiveModelStatusToStore(
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
             loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
+            ...incomingMlxOffload,
+            ...((hydratingExistingModel ||
+              (prevState.mlxPleOffload ?? null) ===
+                (prevState.loadedMlxPleOffloadRequested ?? null)) && {
+              mlxPleOffload: incomingMlxOffload.loadedMlxPleOffloadRequested,
+            }),
+            ...((hydratingExistingModel ||
+              (prevState.mlxExpertOffload ?? null) ===
+                (prevState.loadedMlxExpertOffloadRequested ?? null)) && {
+              mlxExpertOffload: incomingMlxOffload.loadedMlxExpertOffloadRequested,
+            }),
             ...((hydratingExistingModel ||
               (prevState.mlxKvQuant ?? null) ===
                 (prevState.loadedMlxKvQuantRequested ?? null)) && {
@@ -602,6 +617,7 @@ export function applyActiveModelStatusToStore(
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
             loadedMlxInt8PrefillRequested: false,
+            ...incomingMlxOffload,
           })),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&

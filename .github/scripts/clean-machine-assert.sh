@@ -74,7 +74,9 @@ _git_line_remotes() {
 # checkout's .gitmodules names, which is the pinned requirement's own content only there.
 # No record, or any run elsewhere, is a no.
 _ran_in_uv_checkout() { # the traced argument string
-  _ran_under "$1" "${UV_CACHE_DIR%/}/git-v0/checkouts/"
+  # git-v0 up to uv 0.12, git-v1 from 0.13 (the pinned release).
+  _ran_under "$1" "${UV_CACHE_DIR%/}/git-v1/checkouts/" \
+    || _ran_under "$1" "${UV_CACHE_DIR%/}/git-v0/checkouts/"
 }
 
 # Every run of these arguments (at least one) had its working directory under $2.
@@ -106,7 +108,13 @@ _in_checkout_of() { # the traced argument string, a full commit
 # check out a pinned commit from its own cache: nothing that can reach the network (a bare
 # `fetch origin` reads its URL from config) and nothing outside $UV_CACHE_DIR.
 _is_uv_git_cache_op() { # the traced argument string
+  _cache="${UV_CACHE_DIR%/}/git-v1"
+  _is_uv_git_cache_op_in "$1" && return 0
   _cache="${UV_CACHE_DIR%/}/git-v0"
+  _is_uv_git_cache_op_in "$1"
+}
+
+_is_uv_git_cache_op_in() { # the traced argument string; $_cache is the git bucket to check
   case "$1" in
     # uv initialises its database and resolves the pin in its own cache; the same commands
     # anywhere else (the project directory, say) are not uv's.

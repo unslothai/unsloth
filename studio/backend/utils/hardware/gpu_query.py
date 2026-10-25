@@ -122,6 +122,11 @@ def fresh_reads() -> Iterator[None]:
         _fresh_mode.reset(token)
 
 
+def display_cache_allowed() -> bool:
+    """Gate for Studio's other display-only CLI caches (amd-smi, Vulkan probe): same rules as nvidia-smi."""
+    return enabled() and _display_mode.get() is not None and not _fresh_mode.get()
+
+
 def classify(argv: Sequence[str]) -> str:
     args = list(argv[1:])
     if args and args[0] in _STATIC_SUBCOMMANDS:

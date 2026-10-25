@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ordering rules for the early admission release at ``data: [DONE]``.
-
-Freeing the llama-server slot at the sentinel is only correct when two things hold, and on a
-one-slot backend both are load-bearing:
-
-1. The release happens *before* the sentinel reaches the ASGI ``send()``. Starlette's
-   ``stream_response`` suspends the body iterator at its ``yield`` for the whole of
-   ``await send(...)``, and uvicorn's ``send()`` awaits ``flow.drain()`` on a write-paused
-   transport, so a client that stops reading parks the generator there indefinitely. Starlette
-   never ``aclose()``s a body iterator either, so that generator's ``finally`` is left to GC.
-
-2. The sentinel really means "llama-server is done with this request". Two other emitters end
-   in the same bytes: ``_openai_stream_error_sse``, yielded from inside the still-suspended
-   generator's ``except`` block, and the cancel path, which breaks the read loop while the sync
-   generator is still parked on a yield inside ``_open_stream``'s httpx client.
-"""
+"""Release the slot before send() at [DONE], and only for a stream llama-server has finished."""
 
 import asyncio
 import json
@@ -73,11 +58,7 @@ class _CompletingBackend(_OneSlotBackend):
 
 
 class _FailsMidStreamBackend(_OneSlotBackend):
-    """Still decoding when the route's own chunk handling blows up.
-
-    ``gen`` stays parked on its ``yield`` until the stream's ``finally`` closes it, and only
-    that close drops the httpx stream llama-server is writing to.
-    """
+    """gen stays parked on its yield until the finally closes it, which drops the llama-server stream."""
 
     def generate_chat_completion(self, **kwargs):
         try:
@@ -86,7 +67,7 @@ class _FailsMidStreamBackend(_OneSlotBackend):
             yield "abc"
         except GeneratorExit:
             self.closing.set()
-            # Stand in for the time llama-server needs to notice the drop and free its slot.
+            # Simulates llama-server's delay in freeing the slot.
             self.finish_close.wait(10.0)
             self.closed.set()
             raise
@@ -147,13 +128,7 @@ def _request_body() -> bytes:
 
 
 def test_slot_is_free_before_the_done_frame_reaches_send(monkeypatch):
-    """The release must not sit behind ``await send(...)``.
-
-    uvicorn's ``send()`` awaits ``flow.drain()`` on a write-paused socket (h11_impl.py), so a
-    client that stops reading parks the body iterator on its ``yield`` indefinitely. Anything
-    after that ``yield`` is unreachable, and Starlette never ``aclose()``s the iterator, so the
-    outer ``finally`` is left to GC.
-    """
+    """Release must not sit behind await send(); a non-reading client parks the body iterator forever."""
     backend = _CompletingBackend()
     app = _build_app(monkeypatch, backend)
 
@@ -173,7 +148,6 @@ def test_slot_is_free_before_the_done_frame_reaches_send(monkeypatch):
             if message.get("type") != "http.response.body":
                 return
             if message.get("body", b"").decode() == "data: [DONE]\n\n":
-                # Sampled exactly where a stalled client would wedge.
                 slots_at_done.append(_active_slots())
                 finished.set()
 
@@ -193,13 +167,7 @@ def test_slot_is_free_before_the_done_frame_reaches_send(monkeypatch):
 
 
 def test_error_sentinel_keeps_the_slot_until_the_generator_is_closed(monkeypatch):
-    """``_openai_stream_error_sse`` ends in ``data: [DONE]`` but is not a finish.
-
-    It is yielded from inside ``gguf_stream_chunks``'s ``except`` block, so the generator has
-    not yet run its ``finally``: the worker is undrained and ``gen`` is still open with
-    llama-server streaming into it. Freeing the slot there puts two callers on a one-slot
-    backend.
-    """
+    """An error SSE ending in [DONE] is not a finish, so the slot stays held until gen is closed."""
     backend = _FailsMidStreamBackend()
     app = _build_app(monkeypatch, backend)
 
@@ -227,14 +195,13 @@ def test_error_sentinel_keeps_the_slot_until_the_generator_is_closed(monkeypatch
             if message.get("type") != "http.response.body":
                 return
             chunk = message.get("body", b"").decode()
-            # The error form: a payload line plus the sentinel, in one chunk.
             if chunk.endswith("data: [DONE]\n\n") and chunk != "data: [DONE]\n\n":
                 saw_error.set()
 
         task = asyncio.create_task(app(_scope(app, body), receive, send))
         try:
             await wait_for_frame(saw_error, task, what = "the error sentinel")
-            # Wait until cleanup reaches gen.close(), so llama-server still holds the slot.
+            # Wait until cleanup reaches gen.close(), while llama-server still holds the slot.
             for _ in range(500):
                 if backend.closing.is_set():
                     break
@@ -254,13 +221,7 @@ def test_error_sentinel_keeps_the_slot_until_the_generator_is_closed(monkeypatch
 
 
 def test_cancelled_stream_keeps_the_slot_until_the_generator_is_closed(monkeypatch):
-    """A cancelled stream emits the plain sentinel with ``gen`` still open.
-
-    ``cancel_event.is_set()`` breaks the read loop at the top, so the sync generator never
-    reaches StopIteration and stays parked on a ``yield`` inside ``_open_stream``'s httpx
-    client. ``stream_completed`` is set all the same, which also makes the ``finally`` skip
-    ``gen.close()``, so ``data: [DONE]`` here does not mean llama-server is finished.
-    """
+    """A cancelled stream's [DONE] can arrive with gen still open, so the slot must stay held."""
     backend = _CancelledMidStreamBackend()
     app = _build_app(monkeypatch, backend)
 

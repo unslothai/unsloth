@@ -368,8 +368,11 @@ def mxfp8_runtime_reason(target: Any) -> Optional[str]:
         if index not in _MX_PROBE:
             try:
                 with torch.cuda.device(index):
-                    x = torch.randn(128, 64, device = "cuda", dtype = torch.bfloat16)
-                    w = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
+                    # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
+                    # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
+                    gen = torch.Generator().manual_seed(0)
+                    x = torch.randn(128, 64, dtype = torch.bfloat16, generator = gen).to("cuda")
+                    w = torch.randn(32, 64, dtype = torch.bfloat16, generator = gen).to("cuda")
                     wq, wsf = mx_quantize_activation(w)
                     linear = mxfp8_linear_class()(64, 32, codes = wq, tiled_scale = wsf)
                     y = linear(x).float()

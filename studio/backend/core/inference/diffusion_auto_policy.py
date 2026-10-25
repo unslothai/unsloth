@@ -84,6 +84,8 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "qwen-image-2.1": (14.2, 17.5, 1.4),
     "z-image": (12.3, 8.0, 0.2),
     "krea-2": (26.3, 8.9, 0.5),
+    # MOSS-Image: 5.08B DiT + headless Qwen3.5-9B + fp32 FLUX.2 VAE (MOSS-Image-SFT index metadata).
+    "moss-image": (10.2, 15.9, 0.3),
     # Ships fp32 (10.4 + 10.5 + 0.3 GB of shards); bf16-resident is half.
     "lumina-2": (5.2, 5.2, 0.2),
     # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
@@ -584,6 +586,8 @@ def format_generation_for_log(
     """One-line log summary of a generate() result."""
     images = result.get("images") or ()
     size = getattr(images[0], "size", None) if images else None
+    if not isinstance(size, tuple):
+        size = None  # a latent tensor (Hires fix base pass) has no pixel size
     fields = {
         "engine": engine,
         "workflow": result.get("workflow"),
