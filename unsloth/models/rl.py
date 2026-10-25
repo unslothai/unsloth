@@ -2681,6 +2681,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "if full_finetuning:\n"
             "    if bfloat16 and use_fp16: use_fp16 = False\n"
             "    if float16 and use_bf16: use_bf16 = False\n"
+            # XPU keeps an explicit bf16 load in bf16 although the card has no native bf16, so `fp16 = not is_bfloat16_supported()` asks float16: follow the model.
+            "if not force_float32 and bfloat16 and use_fp16 and _unsloth_device_type == 'xpu' and not _bf16_supported():\n"
+            "    print('Unsloth: The model was loaded in bfloat16 on purpose, so training uses bfloat16 mixed precision instead of float16.')\n"
+            "    use_fp16 = False\n"
+            "    use_bf16 = True\n"
+            "    args.fp16 = False\n"
+            "    args.bf16 = True\n"
             "if not force_float32 and (float16 and use_bf16): raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"
             "if not force_float32 and (bfloat16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"
             "if force_float32:\n"
@@ -4609,6 +4616,12 @@ class _ApplyOnInputDevice:
     def __init__(self, function):
         self.function = function
 
+    def __getattr__(self, name):
+        # The wrapped kernel's sentinels and ``forward`` stay visible: the fused head adapter reads them.
+        if name == "function":
+            raise AttributeError(name)
+        return getattr(self.function, name)
+
     def apply(self, hidden, *args):
         device = hidden.device
         backend = getattr(torch, device.type, None) if device.type in ("cuda", "xpu") else None
@@ -4661,6 +4674,209 @@ def patch_trl_fused_lm_head_devices():
             continue
         if getattr(_mod, "add_fused_lm_head", None) is original:
             setattr(_mod, "add_fused_lm_head", add_fused_lm_head)
+
+
+class _UnslothFusedLinearHead:
+    """TRL >= 1.15's ``_ChunkedLogProbFunction`` slot, served by unsloth_zoo's fused linear kernel (no backward
+    recompute for a frozen head, fp32 logits on CUDA). Anything it does not reproduce exactly goes to TRL's kernel."""
+
+    _unsloth_fused_linear = True
+
+    def __init__(self, function):
+        self.function = function
+        # TRL 1.14's kernel (1.1 - 1.13 take no bias and are not wrapped) takes no ``outputs`` and returns ``(log_probs, entropy)``.
+        try:
+            forward = getattr(function, "forward", None)
+            self._legacy = (
+                forward is not None and "outputs" not in inspect.signature(forward).parameters
+            )
+        except (TypeError, ValueError):
+            self._legacy = False
+        module = sys.modules.get(getattr(function, "__module__", None) or "")
+        # TRL tiles the projection as [min(N, TOKEN_CHUNK_SIZE), chunk_size]: chunk_size counts vocab columns.
+        self._token_rows = int(getattr(module, "TOKEN_CHUNK_SIZE", 4096))
+        self._default_chunk = int(
+            getattr(sys.modules.get("trl.trainer.utils"), "_CHUNKED_LOGPROB_CHUNK_SIZE", 32768)
+        )
+        # zoo op v4+ reads entropy_requires_grad=None as "gradient only if one arrives"; older zoos as "none".
+        try:
+            from unsloth_zoo.fused_losses import fused_linear as _fl
+            self._lazy_entropy = int(str(getattr(_fl, "_LP_OP", "")).rsplit("_v", 1)[-1]) >= 4
+        except Exception:
+            self._lazy_entropy = False
+
+    def __getattr__(self, name):
+        # Keep TRL's attributes visible so a later patch pass recognises what it already wrapped.
+        if name == "function":
+            raise AttributeError(name)
+        return getattr(self.function, name)
+
+    def _row_cap(self, hidden, weight, bias, chunk_size, outputs):
+        """``max_rows_per_chunk`` keeping the zoo kernel's logits buffer within TRL's tile for the same call
+        ([min(N, TOKEN_CHUNK_SIZE), chunk_size] in the compute dtype): 0 = no cap, None = TRL serves the call."""
+        # TRL's default tile: keep the zoo budget (lower peak); only an explicitly smaller chunk_size is honoured.
+        if int(chunk_size) >= self._default_chunk:
+            return 0
+        from unsloth_zoo.fused_losses import fused_linear as fl
+
+        N, H = hidden.shape[0], hidden.shape[-1]
+        V = weight.shape[0]
+        device_type = hidden.device.type
+        if torch.is_autocast_enabled(device_type):
+            compute_dtype = torch.get_autocast_dtype(device_type)
+        else:
+            compute_dtype = hidden.dtype
+        budget = min(N, self._token_rows) * int(chunk_size) * compute_dtype.itemsize
+        split_cols = int(getattr(fl, "_SPLIT_COLS", 16384))
+        cols = -(-V // 8) * 8
+        tiled_vocab = device_type == "cuda" and split_cols > 0 and V > 2 * split_cols
+        # Recompute tiles cannot fit a budget below _BWD_TILE_BYTES without being 2-8x slower: TRL serves those
+        # shapes. Decided from shapes alone, so a batch's no-grad and gradient passes pick the same kernel.
+        padded = -(-V // split_cols) * split_cols if tiled_vocab else cols
+        tile_bytes = getattr(fl, "_BWD_TILE_BYTES", 256 * 1024**2)
+        if min(tile_bytes, N * padded * 4) > budget:
+            return None
+        # Chunked forward (no grad, or frozen head without entropy grad): [rows, V] fp32 logits.
+        grad = torch.is_grad_enabled() and (
+            hidden.requires_grad
+            or weight.requires_grad
+            or (bias is not None and bias.requires_grad)
+        )
+        # A lazy entropy (see apply) leaves a frozen head on the chunked forward gradient even when it is returned.
+        head_grad = weight.requires_grad or (bias is not None and bias.requires_grad)
+        tiled = (
+            tiled_vocab
+            and grad
+            and (head_grad or ("entropy" in outputs and not self._lazy_entropy))
+        )
+        if tiled or fl.fused_linear_rows(N, H, V, 4, hidden.device) * cols * 4 <= budget:
+            return 0
+        cap = budget // (cols * 4)
+        return cap if cap >= 1 else None
+
+    def apply(
+        self,
+        hidden,
+        weight,
+        bias,
+        targets,
+        temperature,
+        chunk_size,
+        final_logit_softcapping = None,
+        logit_scale = 1.0,
+        outputs = ("entropy", "log_sum_sq_probs", "mean_logits", "is_top1"),
+        support_ids = None,
+    ):
+        if self._legacy:
+            args = (
+                hidden,
+                weight,
+                bias,
+                targets,
+                temperature,
+                chunk_size,
+                final_logit_softcapping,
+                logit_scale,
+            )
+            outputs = ("log_probs", "entropy")
+        else:
+            args = (
+                hidden,
+                weight,
+                bias,
+                targets,
+                temperature,
+                chunk_size,
+                final_logit_softcapping,
+                logit_scale,
+                outputs,
+            )
+        # support_ids (TRL > 1.16, per-row kept set) and a late UNSLOTH_FUSED_LINEAR=0 go to TRL's kernel.
+        if support_ids is not None:
+            return self.function.apply(*args, support_ids)
+        if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+            return self.function.apply(*args)
+        try:
+            from unsloth_zoo.fused_losses.fused_linear import fused_linear_logprobs
+        except Exception:
+            return self.function.apply(*args)
+        device_type = hidden.device.type
+        if (
+            # 0.0 means "off" to the zoo kernel, a real multiplier to TRL.
+            logit_scale == 0.0
+            # TRL casts the head to the hidden dtype outside autocast (cast_lm_head_to_fp32); the zoo kernel the reverse.
+            or (not torch.is_autocast_enabled(device_type) and hidden.dtype != weight.dtype)
+            # DeepSpeed ZeRO-3 partitions the head again once TRL's gather context exits.
+            or hasattr(weight, "ds_id")
+            or any(
+                name not in ("log_probs", "entropy", "log_sum_sq_probs", "mean_logits", "is_top1")
+                for name in outputs
+            )
+        ):
+            return self.function.apply(*args)
+        row_cap = self._row_cap(hidden, weight, bias, chunk_size, outputs)
+        if row_cap is None:
+            return self.function.apply(*args)
+        want = {
+            name: name in outputs
+            for name in ("entropy", "mean_logits", "log_sum_sq_probs", "is_top1")
+        }
+        result = fused_linear_logprobs(
+            hidden,
+            weight,
+            targets,
+            bias = bias,
+            temperature = temperature,
+            logit_scale_multiply = 0.0 if logit_scale == 1.0 else float(logit_scale),
+            logit_softcapping = float(final_logit_softcapping or 0.0),
+            return_entropy = want["entropy"],
+            # TRL's kernel skips the entropy gradient when none arrives (DPO / KTO log it); None does the same.
+            **({"entropy_requires_grad": None} if self._lazy_entropy else {}),
+            return_mean_logits = want["mean_logits"],
+            return_log_sum_sq_probs = want["log_sum_sq_probs"],
+            return_is_top1 = want["is_top1"],
+            max_rows_per_chunk = row_cap or None,
+        )
+        result = iter(result if isinstance(result, tuple) else (result,))
+        log_probs = next(result)
+        extra = {name: next(result) if flag else None for name, flag in want.items()}
+        if extra["mean_logits"] is not None and temperature != 1.0:
+            # TRL averages the logits after the temperature, the zoo kernel (like logits.mean()) before it.
+            extra["mean_logits"] = extra["mean_logits"] / temperature
+        if self._legacy:
+            return log_probs, extra["entropy"]
+        return (
+            log_probs,
+            extra["entropy"],
+            extra["log_sum_sq_probs"],
+            extra["mean_logits"],
+            extra["is_top1"],
+        )
+
+
+def patch_trl_fused_lm_head_kernel():
+    # UNSLOTH_FUSED_LINEAR=0 keeps TRL's own chunked log-prob kernel.
+    if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        return
+    try:
+        import trl.trainer.utils as _tu
+    except ImportError:
+        return
+    kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
+    if kernel is None or getattr(kernel, "_unsloth_fused_linear", False):
+        return
+    # TRL 1.1 - 1.13's kernel takes no ``bias``: the adapter would shift every argument after ``weight``.
+    forward = getattr(kernel, "forward", None)
+    try:
+        if forward is not None and "bias" not in inspect.signature(forward).parameters:
+            return
+    except (TypeError, ValueError):
+        return
+    try:
+        import unsloth_zoo.fused_losses.fused_linear  # noqa: F401
+    except Exception:
+        return
+    _tu._ChunkedLogProbFunction = _UnslothFusedLinearHead(kernel)
 
 
 def patch_trl_openenv():
@@ -5233,6 +5449,10 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
         patch_trl_fused_lm_head_devices()
     except Exception as e:
         logger.info(f"Unsloth: Could not patch trl add_fused_lm_head for split models: {e}")
+    try:
+        patch_trl_fused_lm_head_kernel()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not route trl's fused lm_head to unsloth_zoo's kernel: {e}")
     # Also before patch_trl_rl_trainers, so the generated trainers import the wrapped helpers.
     try:
         from ._trl_tool_templates import patch_trl_tool_chat_templates

@@ -407,7 +407,8 @@ def derive_tp_plan(
             path = f"{layers_path}.{index}.{child_name}"
             regions.append(_region(path, child, kind, compiled, text, tp_size))
             found += 1
-        replicated += found == 0
+        # A pipeline parallel pass-through (a layer another stage owns) is not a replicated layer.
+        replicated += found == 0 and "_pp_index" not in layer.__dict__
     if not regions:
         raise ValueError(
             "Unsloth: tensor parallelism found no attention / MLP modules to shard in the decoder layers."
@@ -1131,10 +1132,9 @@ def apply_tensor_parallel(
             "load it without tp_plan before apply_tensor_parallel."
         )
     if any(level.__dict__.get("_unsloth_pp") is not None for level in _tp_chain(model)):
-        raise ValueError(
-            "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism "
-            "(apply_pipeline_parallel) in v1."
-        )
+        # pp x tp (torchtitan order): each pipeline stage is tensor parallel over the tp dimension of the
+        # same mesh. Checked before any change.
+        _check_pp_tp_composition(model, tp_mesh)
     tp_plan = derive_tp_plan(model, tp, plan)
     covered = set()
     for region in tp_plan.regions:
@@ -1264,6 +1264,57 @@ def _shard_projection(region, proj, mesh, rank, tp):
     module.forward = types.MethodType(_tp_projection_forward, module)
 
 
+def _check_pp_tp_composition(model, tp_mesh):
+    from .pp_native import check_mesh_composition, pipeline_stage_of
+
+    stage = pipeline_stage_of(model)
+    if stage is None or stage.model is not model:
+        raise ValueError(
+            "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism "
+            "(apply_pipeline_parallel) here: pass the model apply_pipeline_parallel was given."
+        )
+    if stage.dp_mesh is not None:
+        raise ValueError(
+            "Unsloth: apply_tensor_parallel must come before shard_model on a pipeline parallel model "
+            "(pp, then tp inside each stage, then FSDP2 over dp)."
+        )
+    import torch.distributed as dist
+
+    meshes = {"pp": stage.mesh, "tp": tp_mesh}
+    world = dist.get_world_size() if dist.is_initialized() else 1
+    if stage.mesh.size() * tp_mesh.size() == world:
+        try:
+            check_mesh_composition(meshes, "pipeline parallel x tensor parallel")
+        except ValueError as exc:
+            raise ValueError(
+                "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism on these "
+                f"meshes. {exc}"
+            ) from None
+    else:
+        # pp x dp x tp: the dp dimension comes with shard_model; here only orthogonality and divisibility.
+        pp_ranks, tp_ranks = set(stage.mesh.mesh.tolist()), set(tp_mesh.mesh.tolist())
+        if (
+            tp_mesh.ndim != 1
+            or pp_ranks & tp_ranks != {dist.get_rank()}
+            or world % (stage.mesh.size() * tp_mesh.size())
+        ):
+            raise ValueError(
+                "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism on these "
+                f"meshes: the tp mesh (ranks {sorted(tp_ranks)}) must be the tensor parallel dimension of the "
+                f"mesh whose pp dimension (ranks {sorted(pp_ranks)}) apply_pipeline_parallel used: pass "
+                "mesh['tp'] of init_device_mesh(..., (pp, tp)) or (pp, dp, tp)."
+            )
+    return stage
+
+
+def _pp_size(model):
+    for level in _tp_chain(model):
+        info = level.__dict__.get("_unsloth_pp")
+        if info is not None:
+            return int(info.get("size", 1))
+    return 1
+
+
 def check_tp_dp_composition(model, dp_mesh):
     """shard_model(model, FSDP2Config(mesh = dp_mesh)) on a model sharded by apply_tensor_parallel: valid when
     dp_mesh and the tp mesh are the two dimensions of one (dp, tp) mesh covering the world. Marks the model."""
@@ -1284,7 +1335,9 @@ def check_tp_dp_composition(model, dp_mesh):
         )
     dp_ranks, tp_ranks = set(dp_mesh.mesh.tolist()), set(tp_mesh.mesh.tolist())
     me = dist.get_rank()
-    if dp_ranks & tp_ranks != {me} or dp_mesh.size() * tp_mesh.size() != dist.get_world_size():
+    # A pipeline parallel model (apply_pipeline_parallel first): every stage is one (dp, tp) slice of the world.
+    pp = _pp_size(model)
+    if dp_ranks & tp_ranks != {me} or dp_mesh.size() * tp_mesh.size() * pp != dist.get_world_size():
         raise ValueError(
             f"Unsloth: native FSDP2's mesh (ranks {sorted(dp_ranks)}) must be the data parallel dimension of the "
             f"(dp, tp) mesh whose tp dimension (ranks {sorted(tp_ranks)}) apply_tensor_parallel used, covering "

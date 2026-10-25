@@ -254,3 +254,53 @@ def test_decode_rope_on_another_device_orders_with_the_copy():
         ulp = torch.finfo(q.dtype).eps * max(qu.abs().max().item(), ku.abs().max().item())
         assert (q0.cpu().float() - qu.cpu().float()).abs().max().item() <= 2 * ulp
         assert (k0.cpu().float() - ku.cpu().float()).abs().max().item() <= 2 * ulp
+
+
+def test_a_cos_table_past_int32_offsets_takes_64_bit_indexing():
+    # Meta tensors and a launch stub: only the constexprs the launcher picks are read.
+    def launched(rows):
+        seen = {}
+
+        class _Grid:
+            def __getitem__(self, grid):
+                return lambda *args, **kwargs: seen.update(kwargs)
+
+        cos = torch.empty(rows, 128, device = "meta", dtype = torch.float16)
+        q = torch.empty(2, 8, 1, 128, device = "meta", dtype = torch.float16)
+        k = torch.empty(2, 2, 1, 128, device = "meta", dtype = torch.float16)
+        RE._rope_launch(q, q, k, k, cos, cos, None, False, False, False, lambda fn: _Grid())
+        return seen["LONG_INDEXING"]
+
+    assert launched(2**31 // 128 + 4)
+    assert not launched(4096)
+
+
+@pytest.mark.gpu
+def test_decode_rope_past_int32_cache_offsets_matches_the_reference():
+    head_dim = 128
+    pos = 2**31 // head_dim + 3
+    need = 2 * (pos + 1) * head_dim * 2 + (1 << 30)
+    if torch.cuda.mem_get_info()[0] < need:
+        pytest.skip("needs about 9 GiB of free GPU memory for two 4 GiB tables")
+    cos = torch.empty(pos + 1, head_dim, device = "cuda", dtype = torch.float16)
+    sin = torch.empty_like(cos)
+    half = head_dim // 2
+    cos[pos, :half].uniform_(-1, 1)
+    sin[pos, :half].uniform_(-1, 1)
+    cos[pos, half:] = cos[pos, :half]
+    sin[pos, half:] = sin[pos, :half]
+    torch.manual_seed(0)
+    Q = torch.randn(2, 8, 1, head_dim, device = "cuda", dtype = torch.float16)
+    K = torch.randn(2, 2, 1, head_dim, device = "cuda", dtype = torch.float16)
+
+    def reference(x):
+        x = x.double()
+        rot = torch.cat([-x[..., half:], x[..., :half]], -1)
+        return x * cos[pos].double() + rot * sin[pos].double()
+
+    expected_q, expected_k = reference(Q), reference(K)
+    position_ids = torch.full((2, 1), pos, device = "cuda")
+    assert RE.decode_rope_inplace(Q, K, cos, sin, position_ids)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(Q.double(), expected_q, rtol = 2e-3, atol = 2e-3)
+    torch.testing.assert_close(K.double(), expected_k, rtol = 2e-3, atol = 2e-3)

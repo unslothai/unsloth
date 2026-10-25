@@ -2506,7 +2506,7 @@ export const en = {
           "Loading a model keeps the others when they fit. When they don't, it unloads the ones not in use first, then the active one.",
         multiModelDescriptionAlways:
           "Loading a model never unloads another. A model that does not fit is not loaded. Idle auto-unload and training still free memory.",
-        multiModelHint: "Covers chat, speech, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
+        multiModelHint: "Covers chat, speech, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. A model loaded beside others gets the memory they leave free, so it may start with a shorter context. “When they fit” and “Always” never unload a model on another GPU.",
         allowOversizedLoad: "Allow oversized model loads",
         allowOversizedLoadDescription: "Load image and video models even when the memory check says they will not fit.",
         allowOversizedLoadHint: "Applies where the CPU and GPU share one memory pool (Apple Silicon, integrated GPUs). Unsloth refuses a load when its estimate of the model weights is larger than the memory left after reserving room for the operating system. With this on, those loads are attempted anyway. The estimate can be wrong either way: an oversized load can fail, use up all memory, make the computer swap heavily or stop responding, or stop Unsloth. Off by default.",

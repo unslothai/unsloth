@@ -4147,7 +4147,8 @@ def _linux_amd(*targets, **overrides):
 
 
 @pytest.mark.parametrize(
-    "targets", [("gfx1010",), ("gfx1011",), ("gfx1012",), ("gfx803",), ("gfx1010", "gfx803")]
+    "targets",
+    [("gfx1010",), ("gfx1011",), ("gfx1012",), ("gfx803",), ("gfx90c",), ("gfx1010", "gfx803")],
 )
 def test_linux_amd_without_rocm_kernels_takes_the_vulkan_route(targets, linux_no_rocm_env):
     host = _linux_amd(*targets)
@@ -4160,7 +4161,15 @@ def test_linux_amd_without_rocm_kernels_takes_the_vulkan_route(targets, linux_no
 
 
 @pytest.mark.parametrize(
-    "targets", [("gfx1010", "gfx1100"), ("gfx1100",), ("gfx1030",), ("gfx906",), ("gfx1151",)]
+    "targets",
+    [
+        ("gfx1010", "gfx1100"),
+        ("gfx90c", "gfx1100"),
+        ("gfx1100",),
+        ("gfx1030",),
+        ("gfx906",),
+        ("gfx1151",),
+    ],
 )
 def test_linux_any_rocm_capable_card_keeps_todays_path(targets, linux_no_rocm_env):
     # Vulkan honours no HIP mask, so one ROCm-capable card keeps the whole host on ROCm.
@@ -4289,11 +4298,17 @@ def _linux_rocm_and_vulkan_bundle():
     )
 
 
-def test_linux_rdna1_plan_installs_the_vulkan_bundle_not_a_source_build(linux_no_rocm_env):
+def test_linux_rdna1_plan_installs_the_vulkan_bundle_not_a_source_build(
+    linux_no_rocm_env, monkeypatch
+):
     bundle = _linux_rocm_and_vulkan_bundle()
     host = _linux_amd("gfx1010")
-    # Unrouted, the ROCm branch finds no bundle and the caller source-builds HIP.
+    # Unrouted, the ROCm branch finds no bundle: with hipcc the caller source-builds HIP,
+    # without it (that build would end CPU-only) the Vulkan bundle is taken.
+    monkeypatch.setattr(ilp, "_hipcc_available", lambda: True)
     assert ilp._linux_published_attempts(host, bundle) == []
+    monkeypatch.setattr(ilp, "_hipcc_available", lambda: False)
+    assert [a.install_kind for a in ilp._linux_published_attempts(host, bundle)] == ["linux-vulkan"]
     routed, *_ = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     kinds = [a.install_kind for a in ilp._linux_published_attempts(routed, bundle)]
     assert kinds == ["linux-vulkan", "linux-cpu"]
