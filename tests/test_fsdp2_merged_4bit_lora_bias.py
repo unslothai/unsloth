@@ -13,6 +13,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -138,7 +139,7 @@ _GPU_SCRIPT = textwrap.dedent(
 )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
 @pytest.mark.parametrize("save_method", ["merged_4bit", "merged_4bit_forced"])
 def test_fsdp2_merged_4bit_merges_lora_bias_into_a_sharded_base_bias(tmp_path, save_method):
     pytest.importorskip("bitsandbytes")
