@@ -44,7 +44,12 @@ def _recorder(monkeypatch, signal, **attributes):
     )
 
 
-def _plain(monkeypatch, *, continue_final_message = False, **attributes):
+def _plain(
+    monkeypatch,
+    *,
+    continue_final_message = False,
+    **attributes,
+):
     signal = preemption.PreemptSignal()
     rec = _recorder(monkeypatch, signal, **attributes)
     list(
@@ -60,7 +65,12 @@ def _plain(monkeypatch, *, continue_final_message = False, **attributes):
     return rec.payloads[1]
 
 
-def _tool_loop(monkeypatch, *, continue_final_message = False, **attributes):
+def _tool_loop(
+    monkeypatch,
+    *,
+    continue_final_message = False,
+    **attributes,
+):
     signal = preemption.PreemptSignal()
     rec = _recorder(monkeypatch, signal, **attributes)
     list(

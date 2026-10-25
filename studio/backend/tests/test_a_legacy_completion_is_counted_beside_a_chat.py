@@ -218,7 +218,7 @@ def test_a_numeric_prompt_is_not_undercounted_before_planning(monkeypatch):
     plan beside a 15,000-cell chat on a 32,768-cell cache picked no victim and the cache overflowed."""
     digits = "1234567890" * 2400
     assert inference._prompt_kv_tokens(digits) >= len(digits.encode("utf-8"))
-    for text in ("hello world!", "你好世界", "{\"a\": [1, 2, 3]}", "é\U0001f600"):
+    for text in ("hello world!", "你好世界", '{"a": [1, 2, 3]}', "é\U0001f600"):
         assert inference._prompt_kv_tokens(text) >= len(text.encode("utf-8")), text
 
     monkeypatch.setenv(preemption.PREEMPT_ENV, "1")

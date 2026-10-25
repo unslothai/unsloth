@@ -29,12 +29,18 @@ def _unfinished_call() -> str:
         # Long enough for the early card, which small-argument calls never open.
         "function": {"name": "web_search", "arguments": '{"query": "' + "kernel " * 60},
     }
-    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"tool_calls": [call]}}]}) + "\n"
+    return (
+        "data: " + json.dumps({"choices": [{"index": 0, "delta": {"tool_calls": [call]}}]}) + "\n"
+    )
 
 
 def _cards(events):
-    started = [e["tool_call_id"] for e in events if isinstance(e, dict) and e.get("type") == "tool_start"]
-    ended = [e["tool_call_id"] for e in events if isinstance(e, dict) and e.get("type") == "tool_end"]
+    started = [
+        e["tool_call_id"] for e in events if isinstance(e, dict) and e.get("type") == "tool_start"
+    ]
+    ended = [
+        e["tool_call_id"] for e in events if isinstance(e, dict) and e.get("type") == "tool_end"
+    ]
     return started, ended
 
 

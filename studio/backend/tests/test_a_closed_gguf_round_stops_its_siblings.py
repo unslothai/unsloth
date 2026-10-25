@@ -139,9 +139,7 @@ def test_an_ordinary_error_in_the_drain_is_still_reported(monkeypatch):
     assert not cancel.is_set()
 
 
-def test_a_settlement_error_stops_the_running_sibling_without_stopping_the_request(
-    monkeypatch,
-):
+def test_a_settlement_error_stops_the_running_sibling_without_stopping_the_request(monkeypatch):
     from core.inference.tool_loop_controller import ToolLoopController
 
     outcome: dict = {}
