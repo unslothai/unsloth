@@ -558,7 +558,7 @@ export function DecisionApiSection(): ReactElement | null {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
+                className="shrink-0 text-xs"
                 disabled={busy || downloading}
                 onClick={() => plan && void startDownload(plan)}
               >
@@ -569,7 +569,7 @@ export function DecisionApiSection(): ReactElement | null {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
+                className="shrink-0 text-xs"
                 disabled={busy}
                 onClick={() => void unload()}
               >

@@ -997,7 +997,7 @@ function AnnotateBar({
           type="button"
           onClick={onSend}
           disabled={sendDisabled}
-          className="h-9 cursor-pointer whitespace-nowrap rounded-full bg-action px-4 font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+          className="cursor-pointer whitespace-nowrap rounded-full bg-action px-3 py-2 font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
         >
           {t("browser.annotate.send")}
         </button>

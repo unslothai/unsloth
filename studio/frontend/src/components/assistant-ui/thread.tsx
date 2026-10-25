@@ -8293,7 +8293,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
           type="button"
           size="sm"
           variant="secondary"
-          className="h-7 shrink-0 gap-1.5 text-xs"
+          className="shrink-0 gap-1.5 text-xs"
           onClick={() => {
             startContinuation();
           }}
