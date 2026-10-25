@@ -16,10 +16,13 @@ ENV:
   UNSLOTH_DIFFUSION_PREQUANT_CACHE         0 disables lookups and saves (default on)
   UNSLOTH_DIFFUSION_PREQUANT_CACHE_DIR     cache root (default <studio cache>/diffusion_prequant_cache)
   UNSLOTH_DIFFUSION_PREQUANT_CACHE_MAX_GB  LRU budget in GB (default 40; 0 disables eviction)
+  UNSLOTH_DIFFUSION_PREQUANT_CACHE_ASYNC   0 writes a pipeline load's build before the load returns (default: on a
+                                           background thread once the load is published)
 """
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import hashlib
 import json
@@ -40,6 +43,7 @@ from . import hub_reachability as _reach
 ENV_MODE = "UNSLOTH_DIFFUSION_PREQUANT_CACHE"
 ENV_DIR = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_DIR"
 ENV_MAX_GB = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_MAX_GB"
+ENV_ASYNC = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_ASYNC"
 DEFAULT_MAX_GB = 40.0
 
 # Bump when anything about how Studio quantizes at load changes in a way the key below does not already see.
@@ -93,6 +97,11 @@ _REJECTED: set[str] = set()
 # ------------------------------------------------------------------------------------------------- settings
 def enabled() -> bool:
     raw = (os.environ.get(ENV_MODE) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no", "none")
+
+
+def async_enabled() -> bool:
+    raw = (os.environ.get(ENV_ASYNC) or "").strip().lower()
     return raw not in ("0", "off", "false", "no", "none")
 
 
@@ -890,9 +899,11 @@ def write_streaming_safetensors(
     metadata: Optional[dict] = None,
     cancel_check: Optional[Any] = None,
     hasher: Optional[Any] = None,
+    release: bool = False,
 ) -> int:
     """Write ``tensors`` as safetensors one tensor at a time on the host; returns the file size.
-    Ordered like ``save_file`` (dtype size desc, then name) so every tensor stays aligned for mmap."""
+    Ordered like ``save_file`` (dtype size desc, then name) so every tensor stays aligned for mmap. ``release`` pops
+    each tensor from ``tensors`` once written, so a caller's last reference frees it during the write."""
     import torch
 
     order = sorted(tensors.items(), key = lambda kv: (-kv[1].element_size(), kv[0]))
@@ -911,6 +922,8 @@ def write_streaming_safetensors(
             "data_offsets": [offset, offset + size],
         }
         offset += size
+    names = [name for name, _tensor in order]
+    order = tensor = None
     blob = json.dumps(header, separators = (",", ":")).encode("utf-8")
     blob += b" " * ((8 - len(blob) % 8) % 8)
 
@@ -922,9 +935,10 @@ def write_streaming_safetensors(
     with open(path, "wb") as fh:
         put(struct.pack("<Q", len(blob)))
         put(blob)
-        for _name, tensor in order:
+        for name in names:
             if cancel_check is not None:
                 cancel_check()
+            tensor = tensors.pop(name) if release else tensors[name]
             if tensor.numel() == 0:
                 continue
             if isinstance(tensor, _FlatRef):
@@ -932,7 +946,7 @@ def write_streaming_safetensors(
             flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
             host = flat.cpu() if flat.device.type != "cpu" else flat
             put(memoryview(host.numpy()))
-            del host, flat
+            del host, flat, tensor
         fh.flush()
         os.fsync(fh.fileno())
     return 8 + len(blob) + offset
@@ -1053,9 +1067,16 @@ def save_runtime_quant(
     component: str = "transformer",
     logger: Any = None,
     cancel_check: Optional[Any] = None,
-) -> Optional[str]:
+    defer: bool = False,
+) -> Any:
     """Persist a just-quantized transformer; returns the artifact path or None (logged). Never raises.
-    ``base_repo`` is recorded as ``base_model_id``; ``source_base`` is where the dense weights were read (a mirror)."""
+    ``base_repo`` is recorded as ``base_model_id``; ``source_base`` is where the dense weights were read (a mirror).
+
+    ``defer``: every check (key, lease, flatten, disk room) runs now, and the write itself is returned as a
+    ``PendingWrite`` for the caller to ``start()`` on a background thread once its load is published (or
+    ``discard()``). It owns host tensors only, so nothing the live module does later can change what it writes. Falls
+    back to the synchronous write (and returns its result) when the build is not wholly on the host, host RAM cannot
+    also hold it, another background write runs, or ``UNSLOTH_DIFFUSION_PREQUANT_CACHE_ASYNC=0``."""
     if not enabled():
         return None
     t0 = time.perf_counter()
@@ -1072,6 +1093,8 @@ def save_runtime_quant(
             raise
 
     stack = contextlib.ExitStack()
+    handed_off = False
+    flat = header = state_dict = job = None
     try:
         info = dict(getattr(transformer, "_unsloth_runtime_quant_info", None) or {})
         scheme = info.get("scheme")
@@ -1198,17 +1221,86 @@ def save_runtime_quant(
         header[UNSLOTH_FORMAT_KEY] = prequant_format_for(metadata)
         header[UNSLOTH_METADATA_KEY] = json.dumps(metadata, default = str)
 
-        kdir = root / key
+        job = _WriteJob(key, root / key, flat, header, parts, nbytes, t0, logger)
+        flat = header = None
+        if defer:
+            why = _defer_blocker(job)
+            if why is None:
+                # The snapshot: plain host tensors, no module, no torchao wrapper, no state dict.
+                job.resolve()
+                state_dict = None
+                pending = PendingWrite(job, stack.pop_all())
+                handed_off = True
+                _log(
+                    logger,
+                    "info",
+                    f"writing {key} ({nbytes / 2**30:.2f} GiB) on a background thread once the load is published",
+                )
+                return pending
+            _log(logger, "info", f"writing {key} before the load returns ({why})")
+        state_dict = None
+        return job.run(cancel_check)
+    except Exception as exc:  # noqa: BLE001 - a cache write must never fail a load
+        if cancelled[0]:
+            _log(logger, "info", "skipped (load cancelled during the save)")
+            return None
+        _log(logger, "warning", f"skipped (save failed: {type(exc).__name__}: {str(exc)[:200]})")
+        return None
+    finally:
+        stack.close()
+        flat = header = state_dict = job = None
+        if not handed_off:
+            _release_device_cache()
+
+
+class _WriteJob:
+    """One prepared artifact: the flat tensors, their header and where they go. ``run`` writes, hashes, renames and
+    commits the manifest, raising on any failure with no entry published (the temp file is unlinked)."""
+
+    def __init__(
+        self,
+        key: str,
+        kdir: Path,
+        flat: dict,
+        header: dict,
+        parts: dict,
+        nbytes: int,
+        t0: float,
+        logger: Any,
+    ) -> None:
+        self.key = key
+        self.kdir = kdir
+        self.flat = flat
+        self.header = header
+        self.parts = parts
+        self.nbytes = nbytes
+        self.t0 = t0
+        self.logger = logger
+        self.release = False
+
+    def tensors(self) -> Iterable[Any]:
+        return self.flat.values() if self.flat is not None else ()
+
+    def resolve(self) -> None:
+        """Read every ``_FlatRef`` now: the job then holds the host tensors themselves, not the module's wrappers."""
+        self.flat = {
+            name: (t.tensor() if isinstance(t, _FlatRef) else t) for name, t in self.flat.items()
+        }
+        self.release = True
+
+    def run(self, cancel_check: Optional[Any] = None) -> str:
+        kdir = self.kdir
         kdir.mkdir(parents = True, exist_ok = True)
         fd, tmp = tempfile.mkstemp(dir = str(kdir), prefix = f".{FILE_NAME}.", suffix = _TEMP_SUFFIX)
         os.close(fd)
         try:
             # Hashed during the write (no second pass); the loader verifies it.
             hasher = hashlib.sha256()
+            extra = {"release": True} if self.release else {}
             size = write_streaming_safetensors(
-                tmp, flat, header, cancel_check = cancel_check, hasher = hasher
+                tmp, self.flat, self.header, cancel_check = cancel_check, hasher = hasher, **extra
             )
-            del flat, state_dict
+            self.flat = None
             os.replace(tmp, kdir / FILE_NAME)
             tmp = None
         finally:
@@ -1220,36 +1312,204 @@ def save_runtime_quant(
         sha = hasher.hexdigest()
         _record_verified(kdir, sha)
         manifest = {
-            "key": key,
+            "key": self.key,
             "bytes": size,
             "sha256": sha,
             "created": time.time(),
-            "parts": parts,
+            "parts": self.parts,
         }
         _atomic_bytes(
             kdir / MANIFEST_NAME, json.dumps(manifest, indent = 1, default = str).encode("utf-8")
         )
         _touch(kdir)
-        if replacing is not None:
-            with _lock:
-                _REJECTED.discard(replacing)
+        _log(
+            self.logger,
+            "info",
+            f"saved ({self.key}, {size / 2**30:.2f} GiB in {time.perf_counter() - self.t0:.1f} s)",
+        )
+        evict(logger = self.logger, keep = self.key)
+        return str(kdir / FILE_NAME)
+
+
+# Host RAM a deferred write must leave free beyond the build it keeps alive (the rest of the load pins encoders).
+_ASYNC_RESERVE_BYTES = 4 << 30
+_ASYNC_RESERVE_FRACTION = 0.10
+_BACKGROUND: set = set()
+
+
+def _host_memory_bytes() -> tuple[Optional[int], Optional[int]]:
+    try:
+        from .diffusion_memory import _system_memory_mib
+        total, avail = _system_memory_mib()
+    except Exception:  # noqa: BLE001
+        return None, None
+    if total is None or avail is None:
+        return None, None
+    return int(total) << 20, int(avail) << 20
+
+
+def _defer_blocker(job: _WriteJob) -> Optional[str]:
+    """Why ``job`` must be written now, or None. A deferred write keeps the build's host tensors alive after the
+    module moves to the device, so they must already be host tensors (nothing on a device to pin or race) and fit."""
+    if not async_enabled():
+        return f"{ENV_ASYNC}=0"
+    with _lock:
+        if any(not p.done() for p in _BACKGROUND):
+            return "another background cache write is running"
+    for t in job.tensors():
+        if isinstance(t, _FlatRef):
+            t = t.tensor()
+        device = getattr(t, "device", None)
+        if getattr(device, "type", None) != "cpu":
+            return f"the build is on {device}, not the host"
+    total, avail = _host_memory_bytes()
+    if total is None:
+        return "host memory unknown"
+    reserve = max(_ASYNC_RESERVE_BYTES, int(total * _ASYNC_RESERVE_FRACTION))
+    if avail < job.nbytes + reserve:
+        return (
+            f"host RAM short for a background copy: {avail / 2**30:.1f} GiB available, need "
+            f"{(job.nbytes + reserve) / 2**30:.1f} GiB"
+        )
+    return None
+
+
+class _WriteCancelled(Exception):
+    pass
+
+
+class PendingWrite:
+    """A prepared cache write that runs on a background thread after ``start()``. It holds the writer lease and the
+    build's host tensors (each dropped once written) and nothing else, so unloading, reloading or patching the live
+    pipeline cannot change or free its source. ``cancel()`` stops it between tensors: the temp file is unlinked and
+    no entry is published (the manifest is the commit point)."""
+
+    def __init__(self, job: _WriteJob, stack: contextlib.ExitStack) -> None:
+        self._job: Optional[_WriteJob] = job
+        self._stack: Optional[contextlib.ExitStack] = stack
+        self.key = job.key
+        self.nbytes = job.nbytes
+        self._logger = job.logger
+        self._cancel = threading.Event()
+        self._finished = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.result: Optional[str] = None
+        with _lock:
+            _BACKGROUND.add(self)
+
+    def _check(self) -> None:
+        if self._cancel.is_set():
+            raise _WriteCancelled()
+
+    def start(self) -> bool:
+        """Begin the write; False if it was already started, cancelled or discarded."""
+        with _lock:
+            if self._thread is not None or self._job is None or self._cancel.is_set():
+                return False
+            self._thread = threading.Thread(
+                target = self._run, name = f"prequant-cache-write-{self.key[:8]}", daemon = True
+            )
+        self._thread.start()
+        return True
+
+    def _run(self) -> None:
+        job = self._job
+        try:
+            if job is not None:
+                job.t0 = time.perf_counter()
+                self.result = job.run(self._check)
+        except _WriteCancelled:
+            _log(
+                self._logger,
+                "info",
+                f"skipped ({self.key} cancelled before its background write finished)",
+            )
+        except Exception as exc:  # noqa: BLE001 - a background cache write never surfaces
+            _log(
+                self._logger,
+                "warning",
+                f"skipped (background save failed: {type(exc).__name__}: {str(exc)[:200]})",
+            )
+        finally:
+            self._close()
+
+    def _close(self) -> None:
+        self._job = None
+        stack, self._stack = self._stack, None
+        if stack is not None:
+            try:
+                stack.close()
+            except Exception:  # noqa: BLE001
+                pass
+        with _lock:
+            _BACKGROUND.discard(self)
+        self._finished.set()
+
+    def discard(self) -> None:
+        """Drop a write that was never started (its load failed): releases the lease and the tensors."""
+        with _lock:
+            started = self._thread is not None
+            self._cancel.set()
+        if not started:
+            self._close()
+
+    def cancel(self) -> None:
+        self.discard()
+
+    def done(self) -> bool:
+        return self._finished.is_set()
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        return self._finished.wait(timeout)
+
+
+def cancel_background_writes(timeout: float = 30.0) -> bool:
+    """Cancel every pending / running background write and wait for each to stop; True when all have."""
+    with _lock:
+        pending = list(_BACKGROUND)
+    for p in pending:
+        p.cancel()
+    deadline = time.monotonic() + max(0.0, timeout)
+    return all(p.wait(max(0.0, deadline - time.monotonic())) for p in pending)
+
+
+def wait_background_writes(timeout: Optional[float] = None) -> bool:
+    """Wait for started background writes to finish; True when none is left running."""
+    with _lock:
+        pending = [p for p in _BACKGROUND if p._thread is not None]
+    deadline = None if timeout is None else time.monotonic() + timeout
+    for p in pending:
+        left = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if not p.wait(left):
+            return False
+    return True
+
+
+# How long an unload (or interpreter exit) lets a running write finish before cancelling it.
+FINISH_TIMEOUT_SECONDS = 600.0
+
+
+def finish_background_writes(timeout: float = FINISH_TIMEOUT_SECONDS, logger: Any = None) -> bool:
+    """Let running writes finish (bounded), then cancel what is left; True when every write completed. An unload
+    calls this so the next load never competes with a held build for host RAM, and a reload finds the entry."""
+    with _lock:
+        running = [p for p in _BACKGROUND if p._thread is not None and not p.done()]
+    if running:
         _log(
             logger,
             "info",
-            f"saved ({key}, {size / 2**30:.2f} GiB in {time.perf_counter() - t0:.1f} s)",
+            f"waiting for the background write of {', '.join(p.key for p in running)} before releasing the model",
         )
-        evict(logger = logger, keep = key)
-        return str(kdir / FILE_NAME)
-    except Exception as exc:  # noqa: BLE001 - a cache write must never fail a load
-        if cancelled[0]:
-            _log(logger, "info", "skipped (load cancelled during the save)")
-            return None
-        _log(logger, "warning", f"skipped (save failed: {type(exc).__name__}: {str(exc)[:200]})")
-        return None
-    finally:
-        stack.close()
-        flat = header = state_dict = None
-        _release_device_cache()
+    finished = wait_background_writes(timeout)
+    cancel_background_writes(timeout = 30.0)
+    return finished
+
+
+def _cancel_at_exit() -> None:
+    finish_background_writes()
+
+
+atexit.register(_cancel_at_exit)
 
 
 def _release_device_cache() -> None:
