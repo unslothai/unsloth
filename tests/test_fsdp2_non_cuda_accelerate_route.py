@@ -52,7 +52,12 @@ def _launch_module(monkeypatch):
     return module
 
 
-def _build(monkeypatch, cuda = None, hip = None, xpu = None):
+def _build(
+    monkeypatch,
+    cuda = None,
+    hip = None,
+    xpu = None,
+):
     monkeypatch.setattr(torch.version, "cuda", cuda, raising = False)
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
     monkeypatch.setattr(torch.version, "xpu", xpu, raising = False)
@@ -166,7 +171,9 @@ def test_unsloth_fsdp2_native_on_xpu_stays_native_and_is_refused(launch, monkeyp
     assert "ACCELERATE_USE_FSDP" not in os.environ
     # Trainer setup with a live XPU device: refused with the accelerate alternative named.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(torch, "xpu", types.SimpleNamespace(is_available = lambda: True), raising = False)
+    monkeypatch.setattr(
+        torch, "xpu", types.SimpleNamespace(is_available = lambda: True), raising = False
+    )
     with pytest.raises(RuntimeError, match = "UNSLOTH_FSDP2_BACKEND=accelerate"):
         launch.refuse_native_backend_conflicts(None, uses_cpu = False)
     # The same explicit request with a CPU Trainer runs natively on the CPU.
