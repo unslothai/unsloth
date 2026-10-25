@@ -3397,6 +3397,10 @@ def _live_graph_mode(state: Any) -> str:
         return "unknown"
 
 
+# the learned-peak graph mode of a whole-step graph whose dropped calls run per-block graphs
+TIER_FALLBACK_GRAPH_MODE = "step_blocks"
+
+
 def _tier_graph_mode(state: Any) -> str:
     """Like ``_live_graph_mode`` but reads the armed mode (not ``off``) before the first capture, so it records."""
     try:
@@ -3409,6 +3413,11 @@ def _tier_graph_mode(state: Any) -> str:
         armed = _engaged_graph_mode(pipe, {"cuda_graph": True})
         if not handles:
             return "off"
+        if any(getattr(h, "fallback_handle", None) not in (None, h) for h in handles):
+            # a dropped whole-step graph handed its calls to per-block graphs
+            # (GraphedForward._engage_fallback), which stats() does not see: a mode of its own, so it neither reads
+            # nor records the step / off peaks
+            return TIER_FALLBACK_GRAPH_MODE
         totals = cuda_graph.stats(handles)
         if totals.get("graphs"):
             return armed

@@ -14,6 +14,8 @@ torch = pytest.importorskip("torch")
 import core.inference.diffusion as dif  # noqa: E402
 import core.inference.diffusion_memory as dm  # noqa: E402
 
+_REAL_TIER_GRAPH_MODE = dif._tier_graph_mode
+
 EAGER = "dense:bfloat16|model:m@1|te:dense|cache:off|vae:sliced|attn:native|graphs:off"
 COMPILED = "dense:bfloat16|model:m@1|te:dense|cache:off|vae:sliced|attn:_native_cudnn|graphs:off"
 HEADROOM = 4352  # the dense bf16 seed the L4 load reserved
@@ -291,3 +293,30 @@ def test_the_tier_graph_mode_is_stable_across_the_first_capture(monkeypatch, han
     assert dif._tier_graph_mode(state) == mode
     state.speed_optims = ("compiled",)
     assert dif._tier_graph_mode(state) == "off"
+
+
+def test_an_engaged_per_block_fallback_keys_its_own_graph_mode(store, live, monkeypatch):
+    """A dropped whole-step graph whose calls now run per-block graphs (``fallback_handle``) is neither ``step`` nor
+    ``off``: it reads and records under its own mode, so a step or off peak never prices it."""
+    monkeypatch.setattr(dif.cuda_graph, "live_graph_count", lambda index: 0)
+    monkeypatch.setattr(dif, "_tier_graph_mode", _REAL_TIER_GRAPH_MODE)
+    whole = _Handle(cache = 0, captures = 1)  # its own graph dropped
+    whole.fallback_handle = _Handle(cache = 2, captures = 2)  # per-block graphs live
+    pipe = _pipe(_unsloth_cuda_graphs = (whole,))
+    state = _state(pipe)
+    state.speed_optims = ("compiled", "cuda_graph")
+    state.cuda_graphs = (whole,)
+    assert dif._tier_graph_mode(state) == dif.TIER_FALLBACK_GRAPH_MODE
+    _record(store, COMPILED, "default", 2546)
+    _record(store, COMPILED.replace("graphs:off", "graphs:step"), "default", 1447)
+    assert _tier_peak(state) is None  # neither the off nor the step peak prices it
+    dif._follow_live_graph_mode(state)
+    assert pipe._unsloth_peak_identity[1].endswith("graphs:" + dif.TIER_FALLBACK_GRAPH_MODE)
+    _record(store, pipe._unsloth_peak_identity[1], "default", 3000)
+    assert _tier_peak(state) == 3584  # its own entry: 3000 x 1.15, rounded up to 256 MiB
+    # not engaged yet (the fallback is only armed): the whole step's own mode
+    armed = _Handle()
+    armed.fallback_handle = None
+    state.cuda_graphs = (armed,)
+    pipe._unsloth_cuda_graphs = (armed,)
+    assert dif._tier_graph_mode(state) == "step"
