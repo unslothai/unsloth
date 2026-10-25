@@ -121,7 +121,6 @@ def test_kill_switch(store, monkeypatch):
     assert not dm.tier_peaks_enabled()
 
 
-
 def _state(
     pipe,
     speed = "default",
