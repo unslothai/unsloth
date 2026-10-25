@@ -99,6 +99,38 @@ def test_unknown_gpu_keeps_padding_free(peak):
     assert pc.choose_padding(*Q06, *ALP2, peak, 10**9)[0] is True
 
 
+def test_effective_max_length_follows_trainer_precedence():
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Cfg:
+        max_length: int = 1024
+
+    model = SimpleNamespace(max_seq_length = 4096)
+    # SFTConfig's default is replaced by the model length, as the generated SFTTrainer init does.
+    assert pc._effective_max_length(model, Cfg()) == 4096
+    # A caller-set cap below the model length wins; above it, the model length wins.
+    assert pc._effective_max_length(model, Cfg(max_length = 512)) == 512
+    assert pc._effective_max_length(model, Cfg(max_length = 8192)) == 4096
+    # No model length: the config value is used as is.
+    assert pc._effective_max_length(SimpleNamespace(), Cfg()) == 1024
+    assert pc._effective_max_length(SimpleNamespace(), Cfg(max_length = None)) is None
+
+
+def test_default_max_length_does_not_clip_long_rows():
+    # Codex P2 case: default max_length 1024, model loaded at 4096, rows of 2000 / 4000 tokens on A100.
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Cfg:
+        max_length: int = 1024
+
+    cap = pc._effective_max_length(SimpleNamespace(max_seq_length = 4096), Cfg())
+    _, padded, pairs = pc.estimate_microbatch_tokens([2000, 4000] * 50, 2, cap)
+    assert pc.choose_padding(*Q06, padded, pairs, PEAK["A100"], 10**9)[0] is True
+    _, padded, pairs = pc.estimate_microbatch_tokens([2000, 4000] * 50, 2, 1024)
+    assert pc.choose_padding(*Q06, padded, pairs, PEAK["A100"], 10**9)[0] is False  # the old clipped estimate
+
 def test_estimate_microbatch_tokens():
     real, padded, pairs = pc.estimate_microbatch_tokens([100] * 50, 4)
     assert real == padded == 400 and pairs == 4 * 100 * 101 / 2

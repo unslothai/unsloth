@@ -238,6 +238,27 @@ def _total_microbatches(config, n_rows):
     return int(epochs * math.ceil(n_rows / bs))
 
 
+def _effective_max_length(model, config):
+    """The row cap training will use. This runs before the generated SFTTrainer init, which
+    replaces SFTConfig's default `max_length` with the model's `max_seq_length` and keeps only a
+    caller-set value below it (unsloth/models/rl.py), so mirror that precedence here."""
+    given = getattr(config, "max_length", None)
+    default = None
+    try:
+        import dataclasses
+
+        for field in dataclasses.fields(type(config)):
+            if field.name == "max_length":
+                default = field.default
+    except Exception:
+        pass
+    explicit = given if (given or 0) > 0 and given != default else None
+    model_length = getattr(model, "max_seq_length", None)
+    if model_length:
+        return min(int(model_length), int(explicit)) if explicit else int(model_length)
+    return given
+
+
 def decide_auto_padding_free(
     model,
     config,
@@ -282,7 +303,7 @@ def _decide(model, config, train_dataset, processing_class, formatting_func):
     lengths = _sample_lengths(train_dataset, config, processing_class, formatting_func)
     if not lengths:
         return True, "dataset lengths unknown"
-    est = estimate_microbatch_tokens(lengths, bs, getattr(config, "max_length", None))
+    est = estimate_microbatch_tokens(lengths, bs, _effective_max_length(model, config))
     if est is None:
         return True, "dataset lengths unknown"
     _, padded_tokens, padded_pairs = est
