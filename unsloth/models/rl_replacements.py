@@ -1611,7 +1611,9 @@ def _unsloth_grpo_refuse_unscored_support(self):
     if mismatch:
         import warnings
         warnings.warn(
-            "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+            "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
+            "(UNSLOTH_GRPO_TRUNCATED_SUPPORT=1, or automatic for truncated vLLM rollouts "
+            "feeding the IS correction or off-policy mask) because "
             f"{', '.join(mismatch)}: the scored policy is not the sampler, so its top_k / top_p / "
             "min_p kept set differs from vLLM's and the PPO ratio would be unnormalised. "
             "Scoring over the full vocabulary instead.",
@@ -1621,7 +1623,7 @@ def _unsloth_grpo_refuse_unscored_support(self):
 
 
 def _unsloth_grpo_support_mismatch(self):
-    """Why UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 cannot score this trainer, or [] when it can.
+    """Why kept-set scoring (UNSLOTH_GRPO_TRUNCATED_SUPPORT) cannot score this trainer, or [] when it can.
 
     Each scoring call rebuilds the top_k / top_p / min_p kept set from its own logits and always keeps the
     scored token. That is the sampler's set only while the scored weights are the rollout's. A reference
@@ -3543,7 +3545,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     **kwargs,
                 )
 
-            # Opt-in (UNSLOTH_GRPO_TRUNCATED_SUPPORT=1): score over the rollout's top_k / top_p /
+            # UNSLOTH_GRPO_TRUNCATED_SUPPORT (=1, or automatic in unsloth-zoo for truncated rollouts
+            # feeding the IS correction): score over the rollout's top_k / top_p /
             # min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
             # normalisations unless this marker says the old / ref logps were scored the same way.
             try:
@@ -3557,7 +3560,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 if not getattr(self, "_unsloth_truncated_support_refused", False):
                     import warnings
                     warnings.warn(
-                        "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+                        "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
+                        "(UNSLOTH_GRPO_TRUNCATED_SUPPORT=1, or automatic for truncated vLLM "
+                        "rollouts feeding the IS correction or off-policy mask) because "
                         f"{', '.join(_support_mismatch)}: those logprobs come from weights other "
                         "than the rollout's, whose top_k / top_p / min_p kept set differs from the "
                         "sampler's, so per-policy kept sets give unnormalised PPO ratios and KL. "
