@@ -742,18 +742,24 @@ def drop_absent_adapter_grads_(model: nn.Module, process_group = None) -> list[i
     return absent
 
 
+def _label_adapter_ids(ids: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    # A shifted label belongs to its own token's adapter: (B, T) ids for packed rows, (B,) per row.
+    ids = ids.to(labels.device).long()
+    return ids[:, 1:] if ids.dim() == 2 else ids[:, None].expand(-1, labels.shape[1] - 1)
+
+
 def adapter_token_counts(
     labels: torch.Tensor,
     row_adapter_ids: torch.Tensor,
     num_adapters: int,
     ignore_index: int = -100,
 ) -> torch.Tensor:
-    """Valid (shifted) label tokens per adapter in one microbatch; rows with id -1 count for none."""
-    valid = (labels[:, 1:] != ignore_index).sum(1).float()
-    ids = row_adapter_ids.to(labels.device).long()
+    """Valid (shifted) label tokens per adapter in one microbatch; ids of -1 count for none."""
+    valid = (labels[:, 1:] != ignore_index).float()
+    ids = _label_adapter_ids(row_adapter_ids, labels)
     keep = (ids >= 0).to(valid.dtype)
     return torch.zeros(num_adapters, device = labels.device).index_add(
-        0, ids.clamp_min(0), valid * keep
+        0, ids.clamp_min(0).reshape(-1), (valid * keep).reshape(-1)
     )
 
 
@@ -770,7 +776,8 @@ def per_adapter_loss(
     """Causal LM loss averaged within each adapter, summed over adapters.
 
     Each adapter's parameters only see its own rows, so the gradient of the sum is, per adapter, the
-    gradient of its own mean loss: the same as training it alone. Pass ``model`` so that
+    gradient of its own mean loss: the same as training it alone. ``row_adapter_ids`` is one id per row
+    (B,) or, for packed rows holding several adapters' sequences, one per token (B, T). Pass ``model`` so that
     ``drop_absent_adapter_grads_`` knows which adapters had valid tokens. Under gradient accumulation
     pass ``num_items_in_batch``, each adapter's valid tokens over the whole accumulation window on this
     rank (``adapter_token_counts`` summed over the window), so microbatches are weighted by tokens like
@@ -785,14 +792,16 @@ def per_adapter_loss(
         reduction = "none",
     ).view(shift_labels.shape)
     valid = (shift_labels != ignore_index).float()
-    ids = row_adapter_ids.to(logits.device).long()
-    # Rows with no adapter add zero to slot 0 instead of being masked out: no host sync under compile.
+    ids = _label_adapter_ids(row_adapter_ids, labels)
+    # Tokens with no adapter add zero to slot 0 instead of being masked out: no host sync under compile.
     keep = (ids >= 0).to(token_loss.dtype)
-    ids = ids.clamp_min(0)
+    ids = ids.clamp_min(0).reshape(-1)
     sums = torch.zeros(num_adapters, device = logits.device).index_add(
-        0, ids, token_loss.sum(1) * keep
+        0, ids, (token_loss * keep).reshape(-1)
     )
-    counts = torch.zeros(num_adapters, device = logits.device).index_add(0, ids, valid.sum(1) * keep)
+    counts = torch.zeros(num_adapters, device = logits.device).index_add(
+        0, ids, (valid * keep).reshape(-1)
+    )
     denom = counts if num_items_in_batch is None else num_items_in_batch.to(counts)
     losses = sums / denom.clamp_min(1)
     if model is not None:

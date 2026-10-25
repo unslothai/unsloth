@@ -587,3 +587,86 @@ def test_compiles_fullgraph_without_recompiling_per_batch(triton_kernels):
     finally:
         ml.set_multi_lora_triton(True)
         torch._dynamo.reset()
+
+
+def _tiny_qwen3(attn):
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    torch.manual_seed(0)
+    config = Qwen3Config(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 8,
+        max_position_embeddings = 128,
+        attn_implementation = attn,
+    )
+    config.use_cache = (
+        False  # training setup: transformers only detects packed rows without a KV cache
+    )
+    model = Qwen3ForCausalLM(config).double()
+    targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    ml.inject_multi_lora(model, targets, 8, r = 4)
+    for _, layer in ml._layers(model):
+        layer.double()
+        for B in layer.lora_B:
+            torch.nn.init.normal_(B, std = 0.1)
+    return model
+
+
+@pytest.mark.parametrize("attn", ["sdpa", "eager"])
+def test_packed_rows_of_eight_adapters_match_each_sequence_alone(attn):
+    # bsz 2, 8 users' sequences packed 4 per row, position_ids restarting per sequence (varlen packing).
+    model = _tiny_qwen3(attn)
+    g = torch.Generator().manual_seed(0)
+    lengths = [5, 9, 3, 7, 6, 4, 8, 5]
+    seqs = [torch.randint(0, 64, (n,), generator = g) for n in lengths]
+
+    def adapter_grads(u):
+        return [p.grad.clone() for _, l in ml._layers(model) for p in (l.lora_A[u], l.lora_B[u])]
+
+    alone = {}
+    for u, seq in enumerate(seqs):
+        model.zero_grad(set_to_none = True)
+        ml.set_multi_lora_batch(model, torch.tensor([u]), seq_len = len(seq))
+        out = model(input_ids = seq[None]).logits
+        total, losses = ml.per_adapter_loss(out, seq[None], torch.tensor([u]), 8)
+        total.backward()
+        alone[u] = (losses[u], adapter_grads(u))
+
+    rows = [list(range(0, 4)), list(range(4, 8))]
+    T = max(sum(lengths[u] for u in r) for r in rows)
+    input_ids = torch.zeros(2, T, dtype = torch.long)
+    labels = torch.full((2, T), -100)
+    ids = torch.full((2, T), -1)
+    position_ids = torch.zeros(2, T, dtype = torch.long)
+    for b, r in enumerate(rows):
+        at = 0
+        for u in r:
+            n = lengths[u]
+            input_ids[b, at : at + n] = seqs[u]
+            labels[b, at + 1 : at + n] = seqs[u][1:]  # first token of a sequence is never a label
+            ids[b, at : at + n] = u
+            position_ids[b, at : at + n] = torch.arange(n)
+            at += n
+        position_ids[b, at:] = torch.arange(T - at)  # padding tail: its own sequence, no labels
+
+    def packed(position_ids):
+        model.zero_grad(set_to_none = True)
+        ml.set_multi_lora_batch(model, ids)
+        out = model(input_ids = input_ids, position_ids = position_ids).logits
+        total, losses = ml.per_adapter_loss(out, labels, ids, 8)
+        total.backward()
+        return losses, {u: adapter_grads(u) for u in range(8)}
+
+    losses, grads = packed(position_ids)
+    for u in range(8):  # Qwen3's RMSNorm runs in float32: fp32-level tolerance
+        torch.testing.assert_close(losses[u], alone[u][0], rtol = 1e-5, atol = 1e-6)
+        for a, b in zip(grads[u], alone[u][1]):
+            torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
+    # Negative control: without restarting positions the sequences attend to each other.
+    contaminated, _ = packed(torch.arange(T).expand(2, T))
+    assert not torch.allclose(contaminated, losses, rtol = 1e-3, atol = 1e-4)
