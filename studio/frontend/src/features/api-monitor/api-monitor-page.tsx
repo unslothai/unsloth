@@ -89,6 +89,7 @@ import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
 import { useApiModelReload } from "./use-api-model-reload";
+import { UsageRing } from "@/features/chat/components/context-usage-bar";
 import {
   residentHasRunSettings,
   residentHasSlotsSetting,
@@ -1299,17 +1300,60 @@ export function ApiMonitorPage(): ReactElement {
       : served.length === 1
         ? `Eject ${served[0].name} and free its memory`
         : "No model is loaded";
-  const contextFact = (
-    <>
-      {data?.context_length ? (
-        <Fact label="Context">
-          <span className="tabular-nums">
-            {formatCount(data.context_length)} tokens
+  const contextFact = (model: ServedModel): ReactElement | null => {
+    const id = monitorSelection(model.name).id;
+    // Only requests since this model's latest load: an earlier load may have had another window.
+    let loadedAt = 0;
+    for (const entry of entries) {
+      if (
+        isLifecycleEntry(entry) &&
+        entry.event === "load" &&
+        modelIdsMatch(monitorSelection(entry.model).id, id)
+      ) {
+        loadedAt = Math.max(loadedAt, entry.started_at);
+      }
+    }
+    let last: ApiMonitorEntry | null = null;
+    for (const entry of entries) {
+      if (
+        !isLifecycleEntry(entry) &&
+        entry.total_tokens != null &&
+        entry.context_length &&
+        entry.started_at >= loadedAt &&
+        modelIdsMatch(entry.model, id) &&
+        (last == null || entry.started_at > last.started_at)
+      ) {
+        last = entry;
+      }
+    }
+    // Nothing asked since the load: an empty ring against the live window, when the page knows it.
+    const used = last?.total_tokens ?? (model.active ? 0 : null);
+    const windowSize =
+      last?.context_length ?? (model.active ? data?.context_length : null);
+    if (used == null || !windowSize) {
+      return null;
+    }
+    const percent = Math.min(100, (used / windowSize) * 100);
+    return (
+      <Fact label="In context">
+        <ToolbarTooltip label="Tokens the last request held: its prompt and its reply">
+          <span className="flex items-center gap-1.5 tabular-nums [--track:rgb(0_0_0_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]">
+            <UsageRing
+              percent={percent}
+              stroke={
+                percent > 85
+                  ? "stroke-red-500"
+                  : percent > 65
+                    ? "stroke-amber-500"
+                    : "stroke-control-accent"
+              }
+            />
+            {formatCount(used)} / {formatCount(windowSize)}
           </span>
-        </Fact>
-      ) : null}
-    </>
-  );
+        </ToolbarTooltip>
+      </Fact>
+    );
+  };
   const slotsFact = (
     <>
       {data?.queue ? (
@@ -1477,7 +1521,11 @@ export function ApiMonitorPage(): ReactElement {
                       reload.reloadingKey === "*" && "animate-spin",
                     )}
                   />
-                  {reload.reloadingKey === "*" ? "Reloading" : "Reload all"}
+                  {reload.reloadingKey === "*"
+                    ? "Reloading"
+                    : served.length > 1
+                      ? "Reload all"
+                      : "Reload"}
                 </Button>
               </ToolbarTooltip>
               <ToolbarTooltip label={ejectLabel}>
@@ -1498,7 +1546,11 @@ export function ApiMonitorPage(): ReactElement {
                     strokeWidth={1.75}
                     className={cn("size-4", ejecting && "animate-pulse")}
                   />
-                  {ejecting ? "Ejecting" : "Eject all"}
+                  {ejecting
+                    ? "Ejecting"
+                    : served.length > 1
+                      ? "Eject all"
+                      : "Eject"}
                 </Button>
               </ToolbarTooltip>
             </div>
@@ -1536,9 +1588,7 @@ export function ApiMonitorPage(): ReactElement {
                         </span>
                         {exampleButton(model)}
                       </span>
-                      <dl className="min-w-0">
-                        {model.active ? contextFact : null}
-                      </dl>
+                      <dl className="min-w-0">{contextFact(model)}</dl>
                       <dl className="min-w-0">
                         {model.active ? slotsFact : null}
                       </dl>
