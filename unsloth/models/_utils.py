@@ -5835,6 +5835,27 @@ def _tensor_parallel_trainer_pre(model):
     return tp_trainer_setup(model, phase = "pre")
 
 
+def _refuse_model_parallel_export(model, method):
+    """Merged / GGUF / torchao / OpenVINO / LoRA exports read every weight of the model in this process. Under
+    apply_tensor_parallel each rank holds 1 / tp of the attention / MLP weights; under apply_pipeline_parallel
+    the layers, embeddings and lm_head of the other stages are parameter-free placeholders. Raise on every rank
+    before anything is written (no rank waits on another)."""
+    if _is_unsloth_tensor_parallel(model):
+        raise RuntimeError(
+            f"Unsloth: `{method}` does not support a tensor parallel model (apply_tensor_parallel): each rank "
+            "holds 1 / tp of the attention / MLP weights, so the export would be shard sized. Save the adapter "
+            "with `save_tp_adapter(model, directory)` (on every tp rank), then in a single process load the "
+            f"base model with that adapter and call `{method}` there."
+        )
+    if _is_unsloth_pipeline_parallel(model):
+        raise RuntimeError(
+            f"Unsloth: `{method}` does not support a pipeline parallel model (apply_pipeline_parallel): each "
+            "rank holds one stage, and the other stages' layers, embeddings and lm_head are placeholders. Save "
+            "the adapter with `pp.save_adapter(directory)` (on every pp rank), then in a single process load "
+            f"the base model with that adapter and call `{method}` there."
+        )
+
+
 def _refuse_tensor_parallel_for_inference(model):
     if _is_unsloth_tensor_parallel(model):
         raise RuntimeError(
