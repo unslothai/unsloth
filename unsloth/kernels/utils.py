@@ -165,6 +165,12 @@ def norm_num_warps(table, n_cols, num_warps, device):
         capability = tuple(torch.cuda.get_device_capability(index))
     else:
         capability = _cuda_capability(index)
+    if type(n_cols) is not int:
+        # A traced op's fake run passes a symbolic width, which cannot be hashed: match by equality.
+        for (table_capability, width), warps in table.items():
+            if table_capability == capability and width == n_cols:
+                return warps
+        return num_warps
     return table.get((capability, n_cols), num_warps)
 
 
