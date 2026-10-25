@@ -267,6 +267,23 @@ def test_bf16_without_native_support_stays_untraced(monkeypatch):
     assert _graph_breaks() > 0
 
 
+@pytest.mark.parametrize("gemma", [False, True], ids = ["llama", "gemma"])
+@pytest.mark.parametrize("dim", [64, 4096])
+def test_rms_layernorm_dynamic_shapes(dim, gemma):
+    """dynamic=True gives the op's fake run a symbolic width, which the per-width settings cache
+    cannot hash; a compiled norm must still trace in one graph and match eager bytes."""
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    torch._dynamo.reset()
+    compiled = torch.compile(
+        lambda n, x, gm: fast_rms_layernorm(n, x, gm), fullgraph = True, dynamic = True
+    )
+    for seq in (16, 24, 40):
+        shape = (2, seq, dim)
+        eager = _rms_case(fast_rms_layernorm, shape, CDTYPE, gemma, False)
+        _assert_rms_matches(eager, _rms_case(compiled, shape, CDTYPE, gemma, False))
+
+
 def test_rope_dynamic_shapes():
     """dynamic=True makes the launch grid SymInts (divmod rejected them)."""
     if not TRACEABLE:
