@@ -285,6 +285,8 @@ _physical_gpu_inventory_refreshing = False
 # One re-detection request per recovery, or a poll every few seconds starves detection.
 _REDETECTION_REQUESTED = False
 _physical_gpu_inventory_cache: Optional[tuple[float, Dict[str, Any]]] = None
+# Bumped when a refresh finds a different device set, so device-listing caches can tell a stale answer apart.
+_physical_gpu_inventory_generation = 0
 # Same treatment for the torch side: classify_torch_build() calls availability probes that block on a wedged driver, and /api/health and /api/liveness reach it through the verdict.
 _TORCH_BUILD_SNAPSHOT_TTL_SECONDS = 60.0
 _torch_build_snapshot_lock = threading.Lock()
@@ -750,7 +752,7 @@ def _carry_unanswered_vendors_forward(
 
 def _run_physical_gpu_inventory_probe() -> Dict[str, Any]:
     """One probe pass, stored in the cache. Never raises."""
-    global _physical_gpu_inventory_cache
+    global _physical_gpu_inventory_cache, _physical_gpu_inventory_generation
     previous = _physical_gpu_inventory_cache
     try:
         inventory = _probe_physical_gpu_inventory()
@@ -762,8 +764,17 @@ def _run_physical_gpu_inventory_probe() -> Dict[str, Any]:
     inventory = _carry_unanswered_vendors_forward(
         inventory, previous[1] if previous is not None else None
     )
+    if previous is not None and previous[1].get("devices") != inventory.get("devices"):
+        _physical_gpu_inventory_generation += 1
     _physical_gpu_inventory_cache = (time.monotonic(), inventory)
     return inventory
+
+
+def physical_gpu_inventory_generation() -> int:
+    """Changes whenever the GPUs this host has may have changed: a refresh that found a different device set, or an
+    explicit re-detection (``gpu_query.invalidate_static``). Never probes."""
+    from . import gpu_query
+    return _physical_gpu_inventory_generation + gpu_query.static_generation()
 
 
 def get_physical_gpu_inventory(*, block: bool = True) -> Dict[str, Any]:
@@ -5064,17 +5075,90 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     _apply_system_wide_vram(devices, _rocm_system_wide_vram_by_index(devices))
 
 
+# Discrete-only gfx targets: an APU's sysfs total is the BIOS carve-out, so unlisted targets read unknown. gfx942 is
+# excluded because MI300A (an APU) shares it with MI300X.
+_ROCM_DISCRETE_ONLY_ARCHES = frozenset(
+    {
+        "gfx803",
+        "gfx900",
+        "gfx906",
+        "gfx908",
+        "gfx90a",
+        "gfx950",
+        "gfx1010",
+        "gfx1011",
+        "gfx1012",
+        "gfx1030",
+        "gfx1031",
+        "gfx1032",
+        "gfx1034",
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1200",
+        "gfx1201",
+    }
+)
+
+
+def _rocm_context_free_visible_devices() -> list[Dict[str, Any]]:
+    """Linux ROCm per-device VRAM from KFD topology + DRM sysfs, joined by PCI address, with no torch call. Empty under
+    any visibility mask, a KFD reader disagreement, a shared PCI address or a KFD address with no amdgpu device (a
+    partitioned card); non-discrete targets keep their row with used / total None."""
+    if platform.system() != "Linux" or _rocm_visibility_mask_active():
+        return []
+    pci_ids = _rocm_kfd_gpu_pci_ids()
+    if not pci_ids or len(set(p.lower() for p in pci_ids)) != len(pci_ids):
+        return []
+    # A partitioned card ORs each partition's node id into its KFD location_id (kfd_topology_add_device), so partitions
+    # decode to PCI functions with no amdgpu device of their own while partition 0 matches the whole-board sysfs total.
+    if not {p.lower() for p in pci_ids} <= {c[0].lower() for c in _rocm_linux_amdgpu_cards()}:
+        return []
+    try:
+        from . import amd
+        targets = amd.amd_kfd_gpu_gfx_targets()
+    except Exception as e:
+        logger.debug("KFD gfx target read failed: %s", e)
+        return []
+    if targets is None or len(targets) != len(pci_ids):
+        return []
+    vram_by_pci = _rocm_linux_sysfs_vram_by_pci_gb()
+    devices = []
+    for ordinal, (bdf, target) in enumerate(zip(pci_ids, targets)):
+        entry = vram_by_pci.get(bdf.lower()) if target in _ROCM_DISCRETE_ONLY_ARCHES else None
+        used, total = entry if entry is not None else (None, None)
+        devices.append(
+            {
+                "index": ordinal,
+                "index_kind": "physical",
+                "visible_ordinal": ordinal,
+                "gpu_utilization_pct": None,
+                "temperature_c": None,
+                "vram_used_gb": used,
+                "vram_total_gb": total,
+                "vram_utilization_pct": round((used / total) * 100, 1)
+                if used is not None and total
+                else None,
+                "power_draw_w": None,
+                "power_limit_w": None,
+                "power_utilization_pct": None,
+            }
+        )
+    return devices
+
+
 def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
-    """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
-    when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
+    """``no_context``: never ask torch (it leaves a resident driver context): CUDA devices are empty without nvidia-smi,
+    ROCm ones come from _rocm_context_free_visible_devices."""
     device = get_device()
     if no_context and IS_ROCM and device == DeviceType.CUDA:
+        devices = _rocm_context_free_visible_devices()
         return {
-            "available": False,
+            "available": bool(devices),
             "backend": _backend_label(device),
-            "parent_visible_gpu_ids": [],
-            "devices": [],
-            "index_kind": "relative",
+            "parent_visible_gpu_ids": [d["index"] for d in devices],
+            "devices": devices,
+            "index_kind": "physical" if devices else "relative",
         }
 
     if device == DeviceType.CUDA:
