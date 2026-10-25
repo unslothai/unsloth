@@ -58,6 +58,8 @@ def test_a_self_contained_model_passes():
         (make_glb(TRI)[:-4], "cut short"),
         (b"glTF" + b"\0" * (glb.MAX_GLB_BYTES + 1), "at most 20 MB"),
     ],
+    # Short ids: an id built from a 20 MB byte string overflows the environment on Windows (PYTEST_CURRENT_TEST).
+    ids = lambda v: v if isinstance(v, str) else "glb",
 )
 def test_bad_models_are_refused_with_a_reason(data, reason):
     with pytest.raises(glb.GlbError, match = reason):
