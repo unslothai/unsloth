@@ -145,7 +145,8 @@ def test_examples_split_trl_packed_rows_at_seq_lengths():
     """TRL's packed dataset keeps the boundaries in `seq_lengths` (position_ids come later, in its
     collator): each packed document is its own drafter example and keeps its own prompt."""
     from datasets import Dataset
-    from trl.data_utils import pack_dataset
+
+    pack_dataset = pytest.importorskip("trl.data_utils").pack_dataset
 
     from core.training.drafter import _prompt_end, collect_examples
 
