@@ -171,7 +171,10 @@ def test_only_the_selected_deepspeed_plugin_counts(no_launcher):
     no_launcher.setattr(
         state.AcceleratorState,
         "_shared_state",
-        {"distributed_type": "DistributedType.DEEPSPEED", "deepspeed_plugins": {"a": active, "b": inactive}},
+        {
+            "distributed_type": "DistributedType.DEEPSPEED",
+            "deepspeed_plugins": {"a": active, "b": inactive},
+        },
     )
     assert _mode_inside(torch.nn.Linear(2, 2)) == (True, False)
 
@@ -182,5 +185,9 @@ def test_the_grpo_preamble_copy_is_self_contained():
     from unsloth.models._utils import _get_inference_mode_context_manager as fn
 
     tree = ast.parse(inspect.getsource(fn))
-    called = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    called = {
+        n.func.id
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
     assert "_deepspeed_zero_stage" not in called

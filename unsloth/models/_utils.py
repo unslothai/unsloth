@@ -9100,7 +9100,10 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
         "true",
         "yes",
         "on",
-    ) or (isinstance(shared_state, dict) and "DEEPSPEED" in str(shared_state.get("distributed_type", "")))
+    ) or (
+        isinstance(shared_state, dict)
+        and "DEEPSPEED" in str(shared_state.get("distributed_type", ""))
+    )
     if deepspeed:
         # Inline, not a helper: rl_replacements copies this function's source alone into the
         # generated GRPO trainer. 3 when any source says so, else the known lower stage; unknown
