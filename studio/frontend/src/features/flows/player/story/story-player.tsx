@@ -566,7 +566,6 @@ export function StoryPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [started, state.sceneId, state.rev]);
 
-  // Autosave on every scene change.
   useEffect(() => {
     if (!started || state.status === "generating" || state.status === "error")
       return;
@@ -584,7 +583,6 @@ export function StoryPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [started, state.sceneId, state.status]);
 
-  // Narration and music.
   const voiceRef = useRef<HTMLAudioElement | null>(null);
   const voiceUrl = useMediaUrl(api, voiceOn ? (line?.voice ?? null) : null);
   useEffect(() => {

@@ -489,7 +489,6 @@ setFlowsTransport(async (url, init) => {
   return json({ detail: `mock: no route for ${method} ${path}` }, 404);
 });
 
-// Seed: a story flow, and the perf graph when asked for.
 const params = new URLSearchParams(location.search);
 const story = templateDocument("story");
 story.id = "story";

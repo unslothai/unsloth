@@ -121,7 +121,7 @@ BeforeAll {
             if ($Kind -eq 'old') { throw "the Windows stand-in cannot choose what it prints" }
             Copy-RunnableExe -Destination $exe | Out-Null
         } else {
-            $version = if ($Kind -eq 'old') { '0.4.0' } else { '0.12.1' }
+            $version = if ($Kind -eq 'old') { '0.12.1' } else { '0.13.5' }
             Set-Content -LiteralPath $exe -Value "#!/bin/sh`nprintf 'uv $version\n'`nexit 0`n"
             & chmod +x $exe
         }
@@ -300,7 +300,10 @@ Describe "the uv version floor" {
 
     It "reads the floor setup.ps1 actually ships" {
         $script:SetupUvMinVersionSource | Should -Not -BeNullOrEmpty
-        Test-SetupUvVersionAtLeast -VersionLine 'uv 0.12.1' -Minimum $script:SetupUvMinVersionSource |
+        Test-SetupUvVersionAtLeast -VersionLine 'uv 0.13.5' -Minimum $script:SetupUvMinVersionSource |
             Should -BeTrue
+        # uv 0.12.x still trusts the emSign roots (GHSA-hq85-5cpj-mr62).
+        Test-SetupUvVersionAtLeast -VersionLine 'uv 0.12.1' -Minimum $script:SetupUvMinVersionSource |
+            Should -BeFalse
     }
 }
