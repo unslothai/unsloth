@@ -31145,9 +31145,11 @@ class LlamaCppBackend:
                         def _sidecar_child_on_discrete_gpus(
                             run_args: List[str], child_env: Mapping[str, str]
                         ) -> bool:
-                            """Whether every card this child runs on is discrete. Read at
-                            spawn: a GPU pin, the arch gate or a retry narrows the planned
-                            set, and one shared-memory card means host memory is its VRAM."""
+                            """Whether the card(s) the drafter runs on are all discrete. Read at
+                            spawn: a GPU pin, the arch gate or a retry narrows the planned set.
+                            Positive evidence only: a device override the build did not list, a
+                            card the probe never saw (Vulkan Auto drops its iGPUs) or one
+                            shared-memory card keeps the host KV charged."""
                             if _apple_budget_mib:
                                 return False
                             active = gpu_indices
@@ -31160,21 +31162,67 @@ class LlamaCppBackend:
                                 active = list(_child_gpu_physical_ids)
                                 if not active:
                                     return False
-                            # A --device list (Studio's Vulkan pin or a user's) or a
-                            # --split-mode none --main-gpu then picks among them, read as
-                            # the host-residency verdict reads it, in physical ids.
-                            active, _compact = self._effective_gpu_selection(
+                            override = self._effective_device_ids(run_args, child_env)
+                            if override is not None:
+                                if not override or any(
+                                    d.lower() in _CPU_DEVICE_VALUES for d in override
+                                ):
+                                    return False
+                                # Studio's own Vulkan pin names the planned cards; anything else
+                                # must be a device this build enumerates.
+                                studio_pin = (
+                                    [f"vulkan{i}" for i in _vulkan_pin_ids]
+                                    if is_vulkan_backend and _vulkan_pin_ids
+                                    else None
+                                )
+                                if [d.lower() for d in override] != studio_pin:
+                                    listed = {
+                                        d.lower()
+                                        for d in (
+                                            self._enumerated_gpu_devices(binary, child_env) or []
+                                        )
+                                    }
+                                    if not {d.lower() for d in override} <= listed:
+                                        return False
+                            # A --device list or a --split-mode none --main-gpu picks among
+                            # them, read as the host-residency verdict reads it.
+                            active, compact = self._effective_gpu_selection(
                                 binary, child_env, active, run_args, is_vulkan = is_vulkan_backend
                             )
-                            on = (
-                                set(active)
-                                if active
-                                else {idx for idx, _free in (_detected_gpus or ())}
+                            # The drafter's own card: a one-card pin, else under --split-mode
+                            # none the main one (0 by default), as the spawn places the reserve.
+                            pos = _draft_pin_device_index(
+                                _extra_args_draft_device_pin(run_args),
+                                ",".join(override) if override else None,
+                                len(compact or active or _detected_gpus or ()),
                             )
-                            if on & set(_shared_gpu_ids or ()):
+                            if (
+                                pos is None
+                                and _extra_args_draft_device_pin(run_args) is None
+                                and _split_mode_confines_to_one_device(run_args, child_env)
+                            ):
+                                main = self._effective_main_gpu(run_args, child_env)
+                                # Without a list, an explicit --main-gpu is already applied.
+                                pos = 0 if main is None else (main if override else None)
+                            if pos is not None:
+                                if override:
+                                    if not (compact and 0 <= pos < len(compact)):
+                                        return False
+                                    active = self._physical_ordinals(
+                                        [compact[pos]], child_env, is_vulkan_backend
+                                    )
+                                elif is_vulkan_backend or not self._positional_child_order_unproven(
+                                    child_env
+                                ):
+                                    active = self._physical_ordinals(
+                                        [pos], child_env, is_vulkan_backend
+                                    )
+                            seen = {idx for idx, _free in (_detected_gpus or ())}
+                            on = set(active) if active else seen
+                            if not on or not on <= seen - set(_shared_gpu_ids or ()):
                                 return False
                             return self._discrete_gpu_for_expert_spill(
-                                active or None, _detected_gpus, _shared_gpu_ids
+                                sorted(on), _detected_gpus, _shared_gpu_ids
                             )
 
                         def _sidecar_reserve_reprice(
@@ -32695,6 +32743,19 @@ class LlamaCppBackend:
                 _spec_extras_pick_a_gpu = bool(_spec_device_pick) and not _device_selection_is_cpu(
                     _spec_placement_argv, _spec_placement_env
                 )
+                # Log-only, one verdict for DSpark and DFlash. A priced reserve is reported
+                # by the spawn, which alone knows whether the final argv carries it
+                # (_log_sidecar_fit_reserve); otherwise warn only where the fitter really
+                # runs and cannot size the drafter itself.
+                _sidecar_fit_sized = (
+                    not fit_is_effectively_on(_spec_placement_argv, _spec_placement_env)
+                    or bool(_sidecar_fit_reserve_eligible_mib)
+                    or bool(server_caps.get("fit_measures_borrowed_drafts"))
+                    or (
+                        bool(launch_mtp_draft_path)
+                        and not _sidecar_borrows_target_tensors(launch_mtp_draft_path)
+                    )
+                )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -32707,15 +32768,9 @@ class LlamaCppBackend:
                         None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
                     ),
                     dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
-                    # Log-only. A priced reserve is reported by the spawn, which alone
-                    # knows whether the final argv carries it (_log_sidecar_fit_reserve).
-                    dspark_fit_sized = not use_fit
-                    or bool(_sidecar_fit_reserve_eligible_mib)
-                    or bool(server_caps.get("fit_measures_borrowed_drafts")),
+                    dspark_fit_sized = _sidecar_fit_sized,
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
-                    dflash_fit_sized = not use_fit
-                    or bool(_sidecar_fit_reserve_eligible_mib)
-                    or bool(server_caps.get("fit_measures_borrowed_drafts")),
+                    dflash_fit_sized = _sidecar_fit_sized,
                     # So the fallback says unopenable, not missing. DSpark/DFlash never
                     # reach the drop.
                     mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),
