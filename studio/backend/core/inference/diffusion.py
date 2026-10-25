@@ -14043,7 +14043,9 @@ class DiffusionBackend:
                             init_image, mode = getattr(fam, "condition_image_mode", "RGB") or "RGB"
                         )
                 elif requested_workflow == "edit":
-                    if not getattr(fam, "unified_edit", False):
+                    if not (
+                        getattr(fam, "unified_edit", False) or getattr(fam, "reference_edit", False)
+                    ):
                         raise ValueError(
                             f"Instruction editing is not supported for the '{fam.name}' "
                             "model family."
@@ -15612,8 +15614,8 @@ def _family_workflows(fam: DiffusionFamily) -> list[str]:
     # Reference families (FLUX.2) add reference conditioning via their pipeline's image arg.
     if getattr(fam, "reference", False):
         workflows.append("reference")
-    # Unified families (Qwen-Image-2.1) also follow edit instructions through that same pipeline.
-    if getattr(fam, "unified_edit", False):
+    # Unified (Qwen-Image-2.1) and reference-edit (FLUX.3) families also edit through that same pipeline.
+    if getattr(fam, "unified_edit", False) or getattr(fam, "reference_edit", False):
         workflows.append("edit")
     if getattr(fam, "img2img_pipeline_class", None):
         # Upscale runs on the img2img pipeline, so available exactly when img2img is.
