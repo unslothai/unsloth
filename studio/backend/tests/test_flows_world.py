@@ -117,6 +117,15 @@ def test_npc_reply_validation_only_allows_known_effects():
     assert "complete_quest" not in validate_npc_reply(
         {"text": "x", "complete_quest": "q"}, _state(inventory = ["rod"], completed_quests = ["q"])
     )
+    assert validate_npc_reply({"text": "My rod!"}, _state(inventory = ["rod"])) == {
+        "text": "My rod!",
+        "complete_quest": "q",
+        "take_item": "rod",
+    }
+    assert "complete_quest" not in validate_npc_reply(
+        {"text": "x"}, _state(npc_id = "baker_bea", inventory = ["rod"])
+    )
+    assert "give_item" not in validate_npc_reply({"text": "Here.", "give_item": "rod"}, _state())
     assert "give_item" not in validate_npc_reply(
         {"text": "x", "give_item": "pie"}, _state(inventory = ["pie"])
     )

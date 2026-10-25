@@ -502,7 +502,13 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
     text = re.sub(r"\s+", " ", str(raw.get("text") or "")).strip()[:1200] or "..."
     out: dict[str, Any] = {"text": text}
     give = str(raw.get("give_item") or "").strip()
-    if give in item_ids and give not in inventory:
+    # A giver never hands over the item their own open quest asks the player to find.
+    wanted = {
+        q.get("requires_item")
+        for q in world.get("quests") or []
+        if q["giver"] == npc["id"] and q["id"] not in done
+    }
+    if give in item_ids and give not in inventory and give not in wanted:
         out["give_item"] = give
     take = str(raw.get("take_item") or "").strip()
     if take in inventory:
@@ -515,6 +521,14 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
             out["complete_quest"] = qid
             if need:
                 out["take_item"] = need
+    if "complete_quest" not in out:
+        # Small chat models often forget the effect: bringing a quest's item back to its giver completes it.
+        for q in world.get("quests") or []:
+            need = q.get("requires_item")
+            if q["giver"] == npc["id"] and q["id"] not in done and need and need in inventory:
+                out["complete_quest"] = q["id"]
+                out["take_item"] = need
+                break
     sets = {}
     declared = world.get("vars") or {}
     for s in raw.get("set") or []:
@@ -562,27 +576,27 @@ def npc_prompt(
     )
     item_list = ", ".join("{} (id {})".format(i["name"], i["id"]) for i in items.values())
     quest_list = "\n".join(q_lines)
-    prompt = (
+    head = (
         f"Your quests:\n{quest_list or '- none'}\n"
         f"World items: {item_list or 'none'}\n"
         f"Player ({(world.get('player') or {}).get('name', 'Player')}) carries: {', '.join(inv) or 'nothing'}\n"
         f"Variables: {state.get('vars') or {}}\n"
         f"Conversation so far:\n{convo or '(just met)'}\n"
-        f"Player: {str(state.get('player_message') or '')[:600]}\n"
-        f"{npc['name']}:"
     )
+    turn = f"Player: {str(state.get('player_message') or '')[:600]}\n{npc['name']}:"
     if memories is None:
-        return system, prompt
+        return system, head + turn
     system += (
         f"\n{npc_life(world, npc)}"
         "`remember` lists 1-2 short notes, written as you, worth keeping from this exchange, each with an "
         "importance from 1 (mundane) to 10 (life changing)."
     )
-    prompt = (
-        f"It is {clock_text(state.get('clock'))}.\nWhat you remember:\n{memory_lines(memories)}\n"
-        + prompt
+    # Per-turn parts go last so llama-server reuses the cached prefix.
+    return system, (
+        head
+        + f"It is {clock_text(state.get('clock'))}.\nWhat you remember:\n{memory_lines(memories)}\n"
+        + turn
     )
-    return system, prompt
 
 
 def plan_prompt(world: dict, npc: dict, memories: list[dict], day: int) -> tuple[str, str]:
