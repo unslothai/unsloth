@@ -16,7 +16,6 @@ from pydantic import BaseModel, ConfigDict, Field
 FORMAT = "unsloth-flow"
 FORMAT_VERSION = 1
 
-# Limits enforced on save, import and run.
 MAX_NODES = 2000
 MAX_EDGES = 6000
 MAX_DOC_BYTES = 8 * 1024 * 1024
@@ -31,7 +30,6 @@ MAX_STRING_PARAM = 200_000
 
 FlowKind = Literal["pipeline", "story", "world"]
 
-# Port data types. `any` connects to everything; `list` ports carry `item` in the port spec.
 PortType = Literal[
     "text",
     "number",
@@ -92,10 +90,8 @@ class FlowNode(_Strict):
     params: dict[str, Any] = Field(default_factory = dict)
     pos: tuple[float, float] = (0.0, 0.0)
     label: Optional[str] = Field(default = None, max_length = 200)
-    # Optional group id: a For Each node runs the nodes of its group once per item.
     group: Optional[str] = Field(default = None, max_length = 64)
     collapsed: bool = False
-    # Disabled nodes are skipped (their outputs are absent).
     disabled: bool = False
 
 
@@ -137,26 +133,16 @@ class FlowDocument(_Strict):
     groups: list[FlowGroup] = Field(default_factory = list)
     notes: list[FlowNote] = Field(default_factory = list)
     assets: list[AssetRef] = Field(default_factory = list)
-    # Pre-generated node outputs: {node_id: {port: value}}. Values may reference embedded assets.
     baked: dict[str, dict[str, Any]] = Field(default_factory = dict)
-    # Editor-only state (viewport, layout direction); ignored by the engine.
     editor: dict[str, Any] = Field(default_factory = dict)
-    # Free metadata (author, tags, cover asset id, created_with).
     meta: dict[str, Any] = Field(default_factory = dict)
-
-
-# Values that travel along edges
-# text -> str, number -> float|int, bool -> bool, json -> any JSON, list -> list
-# image/audio/video -> MediaValue dict, dataset -> DatasetValue, model -> ModelValue,
-# checkpoint -> CheckpointValue, story -> StoryManifest dict, world -> WorldSpec dict.
 
 
 class MediaValue(_Strict):
     kind: Literal["image", "audio", "video"]
-    # One of: a Studio gallery id ("image:<id>", "audio:<id>", "video:<id>"), an embedded asset ("sha256:<hex>"),
-    # or a flow output stored by the engine ("flowasset:<id>").
+    # A gallery id ("image:<id>", ...), an embedded asset ("sha256:<hex>") or an engine output ("flowasset:<id>").
     ref: str
-    url: Optional[str] = None  # same-origin, authenticated URL the UI can load
+    url: Optional[str] = None
     mime: Optional[str] = None
     width: Optional[int] = None
     height: Optional[int] = None
@@ -182,7 +168,7 @@ class ModelValue(_Strict):
 
 class CheckpointValue(_Strict):
     kind: Literal["checkpoint"] = "checkpoint"
-    name: str  # "<run folder>" or "<run folder>/checkpoint-N", as MCP names them
+    name: str
     base_model: Optional[str] = None
 
 
@@ -220,15 +206,14 @@ EXPR_OPS = (
 Expr = Any
 
 
-# Story manifest (consumed by the story player)
 class StoryCharacter(_Strict):
     id: str
     name: str
     color: Optional[str] = None
-    look: Optional[str] = None  # appearance prompt
+    look: Optional[str] = None
     voice: Optional[str] = None
-    portrait: Optional[dict[str, Any]] = None  # MediaValue
-    expressions: dict[str, dict[str, Any]] = Field(default_factory = dict)  # name -> MediaValue
+    portrait: Optional[dict[str, Any]] = None
+    expressions: dict[str, dict[str, Any]] = Field(default_factory = dict)
     side: Literal["left", "right", "center"] = "left"
 
 
@@ -239,12 +224,12 @@ StoryPosition = Literal["left", "center", "right", "twoleft", "tworight"]
 class StoryStage(_Strict):
     """Ren'Py-style directions applied when the reader reaches the line; a line with empty text is only these."""
 
-    show: Optional[str] = None  # character id
+    show: Optional[str] = None
     hide: Optional[str] = None
     at: Optional[StoryPosition] = None
     expression: Optional[str] = None
     with_: Optional[StoryTransition] = Field(default = None, alias = "with")
-    sound: Optional[str] = None  # key into StoryManifest.sounds
+    sound: Optional[str] = None
     pause: Optional[float] = Field(default = None, ge = 0, le = 30)
 
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
@@ -255,7 +240,7 @@ class StoryLine(_Strict):
     text: str
     expression: Optional[str] = None
     cond: Expr = Field(default = None, alias = "if")
-    voice: Optional[dict[str, Any]] = None  # MediaValue (pre-rendered narration)
+    voice: Optional[dict[str, Any]] = None
     stage: Optional[StoryStage] = None
 
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
@@ -284,17 +269,16 @@ class StoryEnding(_Strict):
 class StoryScene(_Strict):
     id: str
     title: Optional[str] = None
-    background: Optional[dict[str, Any]] = None  # MediaValue
+    background: Optional[dict[str, Any]] = None
     background_prompt: Optional[str] = None
-    music: Optional[dict[str, Any]] = None  # MediaValue
-    on_stage: list[str] = Field(default_factory = list)  # character ids
+    music: Optional[dict[str, Any]] = None
+    on_stage: list[str] = Field(default_factory = list)
     lines: list[StoryLine] = Field(default_factory = list)
     choices: list[StoryChoice] = Field(default_factory = list)
     next: Optional[str] = None
     random: list[StoryRandom] = Field(default_factory = list)
-    on_enter: dict[str, Expr] = Field(default_factory = dict)  # var -> Expr
+    on_enter: dict[str, Expr] = Field(default_factory = dict)
     ending: Optional[StoryEnding] = None
-    # Live generation: the player asks the engine to fill these when the scene is entered.
     generate_background: bool = False
     generate_lines: bool = False
     transition: Optional[StoryTransition] = None  # background change on entry; None = dissolve
@@ -308,28 +292,24 @@ class StoryManifest(_Strict):
     scenes: list[StoryScene] = Field(default_factory = list)
     # "infinite": the player asks the flow's `next_scene` entrypoint for a new scene after every choice.
     mode: Literal["fixed", "live", "infinite"] = "fixed"
-    style: Optional[str] = None  # art style appended to background/portrait prompts
-    sounds: Optional[dict[str, dict[str, Any]]] = None  # name -> MediaValue, for `[sound name]`
-    entry_points: dict[str, str] = Field(
-        default_factory = dict
-    )  # name -> node id of a subgraph output
+    style: Optional[str] = None
+    sounds: Optional[dict[str, dict[str, Any]]] = None
+    entry_points: dict[str, str] = Field(default_factory = dict)
 
 
-# World spec (consumed by the world player)
 class WorldNpc(_Strict):
     id: str
     name: str
     persona: str = ""
     greeting: str = ""
-    sprite: Optional[dict[str, Any]] = None  # MediaValue
+    sprite: Optional[dict[str, Any]] = None
     sprite_prompt: Optional[str] = None
     x: Optional[int] = None
     y: Optional[int] = None
     wander: bool = True
-    # Only read when the world has a `simulation` section.
     routine: Optional[str] = None
     relationships: Optional[dict[str, str]] = None
-    seed_memories: Optional[list[dict[str, Any]]] = None  # [{text, importance}]
+    seed_memories: Optional[list[dict[str, Any]]] = None
 
 
 class WorldItem(_Strict):
@@ -346,7 +326,7 @@ class WorldQuest(_Strict):
     id: str
     title: str
     description: str = ""
-    giver: str  # npc id
+    giver: str
     requires_item: Optional[str] = None
     reward_text: str = ""
     set: dict[str, Expr] = Field(default_factory = dict)
@@ -375,11 +355,11 @@ class WorldSimulation(_Strict):
     """Generative Agents style village life: a game clock, NPC memories, daily plans and NPC to NPC chats."""
 
     enabled: bool = True
-    minutes_per_second: float = 2.0  # game minutes per real second
+    minutes_per_second: float = 2.0
     start_minute: int = 480
     places: list[WorldPlace] = Field(default_factory = list)
-    chat_cooldown_min: int = 120  # game minutes per NPC pair
-    calls_per_minute: int = 4  # background LLM calls per real minute, across every NPC
+    chat_cooldown_min: int = 120
+    calls_per_minute: int = 4
 
 
 class World3dView(_Strict):
@@ -399,7 +379,6 @@ class WorldSpec(_Strict):
     height: int = Field(default = 36, ge = 8, le = 256)
     tile_size: int = Field(default = 32, ge = 8, le = 128)
     biome: Literal["meadow", "forest", "desert", "snow", "town", "dungeon", "beach"] = "meadow"
-    # Tile kind -> MediaValue. Missing kinds are drawn procedurally.
     tileset: dict[str, dict[str, Any]] = Field(default_factory = dict)
     player: dict[str, Any] = Field(default_factory = lambda: {"name": "You"})
     npcs: list[WorldNpc] = Field(default_factory = list)
@@ -409,13 +388,12 @@ class WorldSpec(_Strict):
     vars: dict[str, Any] = Field(default_factory = dict)
     intro_text: str = ""
     style: Optional[str] = None
-    entry_points: dict[str, str] = Field(default_factory = dict)  # e.g. {"npc_reply": "<node id>"}
+    entry_points: dict[str, str] = Field(default_factory = dict)
     simulation: Optional[WorldSimulation] = None
     render: Optional[Literal["2d", "3d"]] = None
     view3d: Optional[World3dView] = None
 
 
-# Run events (SSE `data:` payloads; `id:` is `seq`)
 RunStatus = Literal[
     "queued", "running", "cancelling", "cancelled", "completed", "failed", "interrupted"
 ]

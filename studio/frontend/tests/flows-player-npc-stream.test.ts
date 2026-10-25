@@ -20,7 +20,6 @@ test("an NPC line grows as its pieces arrive", () => {
   let live = L.appendReplyDelta(null, "tom", 0, 0, "Hel");
   live = L.appendReplyDelta(live, "tom", 0, 0, "lo");
   assert.deepEqual(live, { npcId: "tom", generation: 0, text: "Hello" });
-  // Another villager's reply starts a fresh line.
   assert.equal(L.appendReplyDelta(live, "fern", 0, 0, "Oh")?.text, "Oh");
 });
 

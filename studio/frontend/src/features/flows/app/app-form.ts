@@ -16,7 +16,6 @@ export type AppFieldKind =
   | "document"
   | "list";
 
-/** One form field of a flow opened as an app: a Flow Input (by name) or an input block (by node id). */
 export interface AppField {
   key: string;
   target: "param" | "node";
@@ -49,7 +48,6 @@ const PARAM_KINDS: Record<string, AppFieldKind> = {
   audio: "audio",
 };
 
-/** Read order on the canvas: top to bottom, then left to right. */
 function byCanvas(a: FlowNode, b: FlowNode): number {
   return a.pos[1] - b.pos[1] || a.pos[0] - b.pos[0];
 }
@@ -128,7 +126,6 @@ export function appFields(doc: FlowDocument): AppField[] {
   return fields;
 }
 
-/** The document and run params to start with: input blocks hold the form's values, Flow Inputs go in params. */
 export function applyAppValues(
   doc: FlowDocument,
   fields: AppField[],
@@ -138,8 +135,7 @@ export function applyAppValues(
   const nodeValues = new Map<string, unknown>();
   for (const field of fields) {
     if (!(field.key in values)) continue;
-    // An untouched block field sends nothing: the block keeps its own value (and a seed its randomize setting). A
-    // Flow Input always sends its value, since a run does not fill in declared defaults itself.
+    // An untouched block field sends nothing (the block keeps its value); a Flow Input always sends, defaults are not filled server-side.
     if (field.target !== "param" && Object.is(values[field.key], field.initial))
       continue;
     let value = values[field.key];
@@ -157,7 +153,6 @@ export function applyAppValues(
     const known = NODE_FIELDS[node.type];
     if (!known) return node;
     const next = { ...node.params, [known.param]: nodeValues.get(node.id) };
-    // A typed-in seed is the seed to use; the untouched default keeps the block's randomize setting.
     if (
       node.type === "input.seed" &&
       Number(next.value) !== Number(node.params.value)
@@ -168,7 +163,6 @@ export function applyAppValues(
   return { doc: { ...doc, nodes }, params };
 }
 
-/** Output blocks shown as the app's results, in canvas order. */
 export function appOutputs(doc: FlowDocument): FlowNode[] {
   const inLoop = loopMembers(doc.nodes);
   return doc.nodes
@@ -189,7 +183,6 @@ export interface AppRunState {
   errors: string[];
 }
 
-/** Fold run events into what the app shows: progress over the run's steps, output values, failures. */
 export function foldAppEvents(
   state: AppRunState,
   events: RunEvent[],
@@ -219,7 +212,6 @@ export function foldAppEvents(
         results: { ...next.results, [event.node_id]: outputs.value },
       };
     } else if (event.type === "snapshot") {
-      // A run reconciled after a restart ends with a terminal snapshot and no run.* event.
       const run = (data.run ?? {}) as { status?: string; error?: unknown };
       const nodes = (data.nodes ?? {}) as Record<
         string,

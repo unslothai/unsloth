@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Player entry points answer fast: the model loads ahead of the first call, and an NPC's line streams as written."""
-
 import asyncio
 import json
 
@@ -121,8 +119,6 @@ def test_warm_loads_the_entry_model_once_for_concurrent_callers(monkeypatch):
 
     first, again = asyncio.run(go())
     assert first == [True, True, True] and again is True
-    # Three players arriving together share one load; a later call runs ensure_model again, which is a no-op
-    # when the model is resident.
     assert loads == [("chat", model), ("chat", model)]
 
 
@@ -188,14 +184,13 @@ def test_in_process_streams_arrive_as_the_route_writes_them():
         assert [i for i, _ in seen] == [0, 1, 2] and seen[0][1] < 0.15 and seen[2][1] > 0.35
         finished.clear()
         asyncio.run(leave_early())
-        assert finished == []  # the route was stopped, not run to the end
+        assert finished == []
     finally:
         flow_caller._headers = monkey_headers
         flow_caller.checked_path = saved
 
 
 def test_a_left_player_cancels_a_non_streamed_invoke(monkeypatch):
-    """The background sim's calls are not streamed; when the player aborts one, the invocation stops too."""
     import pytest
     from fastapi import HTTPException
 

@@ -87,7 +87,6 @@ async def generate(ctx: NodeContext) -> dict:
             "Connect either a mask or reference images: the reference workflow does not take a mask"
         )
     if refs:
-        # Studio's reference workflow takes a source image plus extra references.
         workflow = "reference"
         if init is None:
             init, refs = refs[0], refs[1:]
@@ -149,7 +148,6 @@ async def remove_bg(ctx: NodeContext) -> dict:
 
 
 def _max_along(a, radius: int, axis: int):
-    """Running max over a 2*radius+1 window along one axis, zero-padded, in O(log radius) passes."""
     import numpy as np
 
     n, window = a.shape[axis], 2 * radius + 1
@@ -217,8 +215,7 @@ async def upscale(ctx: NodeContext) -> dict:
             options = {"upscale_model": ctx.params.get("upscaler")},
         )
     except FlowNodeError as exc:
-        # No image model loaded (a cached step before this one), or a family that cannot upscale
-        # (FLUX.2-klein among them): a plain resize still gives the size asked for.
+        # No image model loaded, or a family that cannot upscale (FLUX.2-klein): a plain resize still gives the size.
         if "not supported" not in str(exc) and "model is loaded" not in str(exc):
             raise
         ctx.log(f"{exc} Resized with Lanczos instead.", level = "warning")
@@ -253,14 +250,12 @@ def pad_canvas(
         raise FlowNodeError(
             f"The padded image would be {width}x{height}; keep it under {MAX_GRID_SIDE} px"
         )
-    # The border starts as the image's edge colours stretched outwards, which outpaints better than flat black.
     canvas = im.resize((width, height), Image.BILINEAR).filter(ImageFilter.GaussianBlur(24))
     canvas.alpha_composite(im, (left, top))
     mask = Image.new("L", (width, height), 255)
     keep = Image.new("L", (im.width, im.height), 0)
     mask.paste(keep, (left, top))
     if feather:
-        # Overlap the old edge a little so the seam is repainted too, but only on the sides that grew.
         x0 = left + (feather if left else 0)
         y0 = top + (feather if top else 0)
         x1 = left + im.width - (feather if right else 0)
@@ -344,7 +339,6 @@ MAX_GRID_SIDE = 6144
 
 
 def _wrap_label(text: str, width_px: int, font: Any) -> str:
-    """Wrap a row label to `width_px` between words, never inside one."""
     return textwrap.fill(
         text, width = max(6, width_px // max(8, font.size // 2 + 4)), break_long_words = False
     )
@@ -383,9 +377,7 @@ def compose_grid(
     font = _font(max(14, cell // 18))
     row_labels = [str(t).strip().translate(_ASCII_PUNCT) for t in row_labels or []][:rows]
     column_labels = [str(t).strip().translate(_ASCII_PUNCT) for t in column_labels or []][:columns]
-    # XY plots: a header band above the columns and a label strip left of the rows; none without labels.
     top = (font.size * 2 + gap) if any(column_labels) else 0
-    # Wide enough for the longest word, so a row label wraps between words, never inside one.
     longest = max((font.getlength(w) for t in row_labels for w in t.split()), default = 0)
     left = (
         min(cell, max(font.size * 6, cell // 3, int(longest) + gap)) + gap if any(row_labels) else 0
@@ -496,7 +488,6 @@ def sprite_sheet(frames: list[bytes], size: int, columns: int) -> tuple[bytes, d
 
     columns = max(1, min(columns, len(frames)))
     rows = (len(frames) + columns - 1) // columns
-    # Like Compose Grid: many big frames shrink so the sheet stays under MAX_GRID_SIDE.
     size = max(8, min(size, MAX_GRID_SIDE // max(columns, rows)))
     sheet = Image.new("RGBA", (columns * size, rows * size), (0, 0, 0, 0))
     for i, data in enumerate(frames):

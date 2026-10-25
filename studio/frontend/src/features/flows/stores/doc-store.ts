@@ -64,7 +64,6 @@ export interface DocState {
     id: string,
     patch: Partial<Omit<FlowNode, "id" | "params">>,
   ) => void;
-  /** Move nodes and frames (frame keys use GROUP_KEY / NOTE_KEY); `membership` re-parents nodes into groups. */
   moveNodes: (
     positions: Record<string, [number, number]>,
     membership?: Record<string, string | null>,
@@ -78,7 +77,6 @@ export interface DocState {
   connect: (edge: FlowEdge, replaceSingleInput: boolean) => void;
   insertFragment: (fragment: GraphFragment) => void;
   upsertGroup: (group: FlowGroup) => void;
-  /** Set a frame's rectangle and re-parent the nodes it now covers or no longer covers. */
   resizeGroup: (group: FlowGroup) => void;
   groupNodes: (group: FlowGroup, nodeIds: string[]) => void;
   upsertNote: (note: FlowNote, coalesceKey?: string) => void;
@@ -87,7 +85,6 @@ export interface DocState {
 }
 
 const HISTORY_LIMIT = 100;
-/** Keys `moveNodes` accepts for frames, matching the React Flow ids in editor/derive-rf.ts. */
 export const GROUP_KEY = "group:";
 export const NOTE_KEY = "note:";
 const COALESCE_MS = 900;
@@ -178,8 +175,6 @@ export function documentFromState(
   };
 }
 
-/** Autosave signature: the document minus editor-only viewport state, in canonical key order so a
- *  document from the server and the same document rebuilt from the store compare equal. */
 export function documentSignature(doc: FlowDocument): string {
   const canonical = documentFromState({
     meta: metaFromDocument(doc),
@@ -197,7 +192,6 @@ export function newId(prefix: string): string {
 }
 
 export const useDocStore = create<DocState>((set, get) => {
-  /** Apply a change with one undo step; edits sharing `coalesceKey` within COALESCE_MS fold into one. */
   function commit(
     updater: (
       state: DocState,
@@ -275,7 +269,6 @@ export const useDocStore = create<DocState>((set, get) => {
         withGraph(s, {
           nodes: {
             ...s.graph.nodes,
-            // A node dropped inside a frame belongs to it, as a drag or paste there would make it.
             [node.id]: { ...node, group: node.group ?? frameAt(s.graph, node.pos) },
           },
           nodeOrder: [...s.graph.nodeOrder, node.id],
@@ -429,7 +422,6 @@ export const useDocStore = create<DocState>((set, get) => {
             existing.kind === "data" &&
             existing.target === edge.target &&
             existing.target_port === edge.target_port;
-          // A story path leaves each flow handle once.
           const occupiesFlowOut =
             edge.kind === "flow" &&
             existing.kind === "flow" &&
@@ -450,7 +442,6 @@ export const useDocStore = create<DocState>((set, get) => {
         const nodeOrder = [...s.graph.nodeOrder];
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
-          // A copy that lands inside a frame of this flow joins it, as a dragged node would.
           nodes[node.id] = { ...node, group: frameAt(s.graph, node.pos) };
           nodeOrder.push(node.id);
         }
@@ -553,7 +544,6 @@ export const useDocStore = create<DocState>((set, get) => {
   };
 });
 
-/** The smallest frame holding a node at `pos` (by its header centre, default node width), like a drag. */
 function frameAt(graph: DocGraph, pos: [number, number]): string | null {
   const [x, y] = [pos[0] + 130, pos[1] + 16];
   let best: { id: string; area: number } | null = null;
@@ -565,7 +555,6 @@ function frameAt(graph: DocGraph, pos: [number, number]): string | null {
   return best?.id ?? null;
 }
 
-/** Copy nodes (and the edges between them) with fresh ids, offset by `delta`; `insertFragment` places them in a frame. */
 export function cloneFragment(
   graph: DocGraph,
   nodeIds: string[],

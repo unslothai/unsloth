@@ -64,7 +64,6 @@ class _Ctx:
 
 
 def _recipe_routes(job_ids, artifacts):
-    """Fake Data Recipe routes: every POST /jobs starts the next job, which finishes at once."""
     started = iter(job_ids)
     saved = {"recipe": {"columns": [{"name": "q", "column_type": "expression", "expr": "x"}]}}
 

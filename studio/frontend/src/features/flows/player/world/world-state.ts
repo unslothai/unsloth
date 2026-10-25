@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The world's game state outside the renderer: inventory, quests, variables, conversations and save data.
-// Phaser owns positions frame to frame; this owns everything a save slot or an NPC needs to know.
 
 import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
@@ -33,7 +31,6 @@ export interface WorldState {
   completedQuests: string[];
   vars: Record<string, unknown>;
   talks: Record<string, ChatTurn[]>;
-  /** Game minutes since day 1 00:00. */
   clock: number;
   npc: Record<string, NpcMind>;
 }
@@ -73,7 +70,6 @@ export function pickUp(s: WorldState, itemId: string): WorldState {
   };
 }
 
-/** Talking to a quest giver starts their open quests. */
 export function startQuestsOf(
   spec: WorldSpec,
   s: WorldState,
@@ -150,7 +146,6 @@ export function applyReply(
     try {
       vars = applySets(quest.set, st.vars);
     } catch {
-      // A quest effect that does not evaluate leaves the variables as they were.
     }
     st = {
       ...st,
@@ -201,7 +196,6 @@ function mindOf(raw: unknown): NpcMind {
   };
 }
 
-/** A save from this or an older version (v1 has no clock or NPC minds), or null when it is not one. */
 export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   const v = (raw as WorldState | null)?.v;
   if (!raw || typeof raw !== "object" || (v !== 1 && v !== WORLD_SAVE_VERSION))
