@@ -31,12 +31,10 @@ import {
 interface SavedRunSettingsRowProps {
   modelId: string;
   disabled?: boolean;
-  /** What Save stores: the panel's settings with any typed numbers committed. */
   currentConfig: () => PerModelConfig;
   onApply: (config: PerModelConfig) => void;
 }
 
-/** Laid out like the sidebar's Preset row, so picking, saving and deleting read the same. */
 export function SavedRunSettingsRow({
   modelId,
   disabled = false,

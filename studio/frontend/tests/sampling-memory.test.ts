@@ -178,6 +178,5 @@ test("Remember and Save wait for the first read, so its older result cannot over
   );
   assert.match(footer, /checked=\{remember\}\s*disabled=\{!loaded\}/);
   assert.match(footer, /disabled=\{!loaded \|\| busy\}/);
-  // Shown only with changes to save or a saved record to forget.
   assert.match(footer, /\(remember \? !unchanged : saved !== null\) &&/);
 });

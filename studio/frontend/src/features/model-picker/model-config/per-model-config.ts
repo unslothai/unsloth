@@ -1746,12 +1746,12 @@ export function resolveResidentInitialConfig(
   return resolveInitialConfig(alias, ggufVariant);
 }
 
-/** A config in the shape the per-model store writes, schema version included, for another store to keep. */
+/** For another store to keep a config, schema version included. */
 export function toStoredPerModelConfig(config: PerModelConfig): PerModelConfig & { version: number } {
   return toStoredConfig(config);
 }
 
-/** A config another store kept with toStoredPerModelConfig; null for a schema this client cannot read. */
+/** Null for a schema this client cannot read. */
 export function fromStoredPerModelConfig(raw: unknown): PerModelConfig | null {
   return storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION ? null : normalize(raw);
 }

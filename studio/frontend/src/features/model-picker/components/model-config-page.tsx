@@ -4167,7 +4167,7 @@ export function ModelConfigPage({
           disabled={sharedVariantUnresolved}
           currentConfig={() => commitDraft().effectiveRuntimeConfig}
           onApply={(saved) => {
-            // As Reset does: a panel edit, with the raw arguments text dropped for the saved one.
+            // As Reset: an edit that drops the raw arguments text.
             handleSharedConfigEdit();
             markModelConfigDraftEdited(draftKey);
             clearExtraArgsEditForDraft(draftKey);
@@ -4178,7 +4178,6 @@ export function ModelConfigPage({
             });
           }}
         />
-        {/* The sidebar is too narrow for both on one row: the status takes a line of its own. */}
         <div
           className={cn(
             "flex min-w-0 items-center gap-x-2",
@@ -4209,7 +4208,7 @@ export function ModelConfigPage({
             data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
             className={cn(
               "min-w-0 truncate text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400",
-              // min-h: the line keeps its height while empty, so a status appearing never moves the buttons.
+              // min-h keeps the empty line's height, so the buttons never move.
               variant === "sidebar"
                 ? "min-h-[calc(1.375em+0.25rem)] basis-full pt-1 pl-6"
                 : "ml-auto",
@@ -4241,7 +4240,7 @@ export function ModelConfigPage({
           >
             {primaryActionLabel}
           </Button>
-          {/* Load already saves while Remember is ticked: this only shows with changes to save or a record to forget. */}
+          {/* Load saves while Remember is ticked. */}
           {!persistenceOnly &&
             (remember
               ? !matchesStored && !(atDefault && !savedRemember)

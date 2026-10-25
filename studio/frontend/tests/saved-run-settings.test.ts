@@ -37,7 +37,7 @@ test("one model keeps several named settings, listed by name", () => {
     ["Fast", "Long context"],
   );
   assert.equal(list[1].config.customContextLength, 32768);
-  // Per model, not per quant, and a model id's case does not split the list.
+  // Keyed per model, case-insensitively.
   assert.equal(saved.listSavedRunSettings("UNSLOTH/repo-gguf").length, 2);
   assert.equal(saved.listSavedRunSettings("unsloth/Other-GGUF").length, 0);
 });
@@ -66,7 +66,6 @@ test("blank names and a full list are refused", () => {
     assert.ok(saved.saveRunSettings(MODEL, `Set ${i}`, config(4096 + i)));
   }
   assert.equal(saved.saveRunSettings(MODEL, "One more", config(4096)), false);
-  // Replacing one by name still works when full.
   assert.ok(saved.saveRunSettings(MODEL, "Set 0", config(8192)));
 });
 
@@ -89,7 +88,7 @@ test("a future-schema entry is kept but not offered", () => {
 test("a panel opened again reads what another tab saved while none was open", () => {
   saved.saveRunSettings(MODEL, "Fast", config(4096));
   assert.equal(saved.listSavedRunSettings(MODEL).length, 1);
-  // Another tab's write, with no panel here listening for its storage event.
+  // Another tab's write, with nothing here listening.
   const map = JSON.parse(
     store.get(saved.SAVED_RUN_SETTINGS_STORAGE_KEY) ?? "{}",
   );

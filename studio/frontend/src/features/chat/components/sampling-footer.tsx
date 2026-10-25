@@ -224,7 +224,6 @@ export default function SamplingFooter({
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {/* Like the model's run settings: only with changes to save or a record to forget. */}
         {(remember ? !unchanged : saved !== null) && (
           <Button
             type="button"

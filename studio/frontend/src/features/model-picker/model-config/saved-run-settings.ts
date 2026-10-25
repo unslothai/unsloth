@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Named run settings a user keeps for one model, picked from in the run settings panel. Per model,
-// not per quant, so "Long context" is offered for every quant. Only "Remember for this model" decides
-// what a load applies; these are a list to fill the panel from.
+// Named run settings per model, across quants. Only "Remember for this model" decides what a load applies.
 
 import { useSyncExternalStore } from "react";
 import { normalizeModelIdentity } from "./model-identity";
@@ -76,7 +74,7 @@ function writeMap(map: StoredMap): boolean {
     return false;
   }
   cache.clear();
-  // Best-effort, as the per-model store: the write landed, so a host without events still reports it saved.
+  // Best-effort: the write already landed.
   if (typeof window?.dispatchEvent === "function") {
     window.dispatchEvent(new Event(SAVED_RUN_SETTINGS_UPDATED_EVENT));
   }
@@ -93,7 +91,7 @@ function decode(entries: unknown): SavedRunSettings[] {
       entry && typeof entry.name === "string"
         ? normalizeSavedRunSettingsName(entry.name)
         : "";
-    // A future-schema record stays stored but is not offered: this client cannot apply it.
+    // Future-schema records stay stored but are not offered.
     const config = name ? fromStoredPerModelConfig(entry.config) : null;
     if (config) {
       out.push({ name, savedAt: Number(entry.savedAt) || 0, config });
@@ -182,7 +180,7 @@ export function findSavedRunSettings(
 }
 
 export function subscribeSavedRunSettings(onChange: () => void): () => void {
-  // No listener ran while nothing was subscribed, so another tab's writes may be missing from the cache.
+  // No listener ran while unsubscribed: another tab may have written.
   cache.clear();
   const onStorage = (event: StorageEvent) => {
     if (event.key === null || event.key === SAVED_RUN_SETTINGS_STORAGE_KEY) {
