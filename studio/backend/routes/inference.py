@@ -3409,7 +3409,11 @@ def _openai_llama_victims_released(controller, victims, timeout: float, cancel_e
             return True
 
 
-def _openai_llama_wait_for_victims(controller, gen_id: str, cancel_event = None) -> bool:
+def _openai_llama_wait_for_victims(
+    controller,
+    gen_id: str,
+    cancel_event = None,
+) -> bool:
     """True once the victims let go, the cache has room anyway, or the holder is gone. A set
     ``cancel_event`` ends the wait with ``LlamaAdmissionCancelled``."""
     victims = controller.take_awaited_victims(gen_id)
@@ -3447,7 +3451,11 @@ def _openai_llama_armed_victims_pending(controller, gen_id: str) -> bool:
     return participant is not None and bool(participant.awaiting_victims)
 
 
-def _openai_llama_wait_for_armed_victims(controller, gen_id: str, cancel_event = None) -> None:
+def _openai_llama_wait_for_armed_victims(
+    controller,
+    gen_id: str,
+    cancel_event = None,
+) -> None:
     """Blocking: hold an armed chat's prefill until the chats its plan paused let go. A victim
     still decoding when the wait runs out still holds the cells the prefill needs, so the chat is
     refused with ``LlamaAdmissionTimeout`` as an unpausable holder is, not sent beside it."""

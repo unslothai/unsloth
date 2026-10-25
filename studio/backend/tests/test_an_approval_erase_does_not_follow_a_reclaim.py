@@ -289,9 +289,9 @@ def test_a_slot_handed_on_during_the_erase_marks_the_new_holder_for_a_replay(mon
     asyncio.run(worker(lease))
 
     assert backend.erased == [(BASE, SLOT)]
-    assert controller.participant("other").replay_pending is True, (
-        "the erase may have landed on the chat the slot was handed to, and it was not marked"
-    )
+    assert (
+        controller.participant("other").replay_pending is True
+    ), "the erase may have landed on the chat the slot was handed to, and it was not marked"
     assert controller.participant("chat").replay_pending is False
 
 
