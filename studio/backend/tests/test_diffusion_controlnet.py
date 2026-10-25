@@ -422,3 +422,105 @@ def test_a_calibrated_tier_refuses_a_controlnet_it_cannot_stream(monkeypatch):
     st.offload_policy = "group"
     p = b._controlnet_pipe(st, resolved, threading.Event())
     assert hasattr(p.controlnet, "device")
+
+
+def _fake_group_offload(monkeypatch, with_stream_kwargs = True):
+    """Record _offload_controlnet_module's apply_group_offloading kwargs and the denoiser streaming helpers it calls."""
+    from core.inference import diffusion_memory as dm
+
+    calls = {"apply": [], "helpers": []}
+    if with_stream_kwargs:
+
+        def apply_group_offloading(
+            module,
+            onload_device,
+            offload_device = None,
+            offload_type = "block_level",
+            num_blocks_per_group = None,
+            non_blocking = False,
+            use_stream = False,
+            record_stream = False,
+            low_cpu_mem_usage = False,
+        ):
+            calls["apply"].append(
+                dict(
+                    onload_device = onload_device,
+                    offload_type = offload_type,
+                    num_blocks_per_group = num_blocks_per_group,
+                    non_blocking = non_blocking,
+                    use_stream = use_stream,
+                    record_stream = record_stream,
+                )
+            )
+
+    else:
+
+        def apply_group_offloading(
+            module,
+            onload_device,
+            offload_device = None,
+            offload_type = "block_level",
+            num_blocks_per_group = None,
+            use_stream = False,
+        ):
+            calls["apply"].append(dict(onload_device = onload_device, use_stream = use_stream))
+
+    hooks = types.ModuleType("diffusers.hooks")
+    hooks.apply_group_offloading = apply_group_offloading
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+    for name, ret in (
+        ("install_group_offload_buffer_restore", True),
+        ("install_group_offload_hooks_eager", True),
+        ("_pin_top_level_group", True),
+        ("_skip_top_level_copy_back", True),
+        ("install_group_prefetch", 3),
+    ):
+        monkeypatch.setattr(
+            dm,
+            name,
+            lambda *a, _n = name, _r = ret, **k: calls["helpers"].append(_n) or _r,
+        )
+    return calls
+
+
+def test_streamed_controlnet_uses_the_event_fenced_prefetcher_on_cuda(monkeypatch):
+    from core.inference import diffusion as d
+
+    calls = _fake_group_offload(monkeypatch)
+    module = object()
+    assert d._offload_controlnet_module(module, "cuda", None) is True
+    (kwargs,) = calls["apply"]
+    assert kwargs["use_stream"] and kwargs["record_stream"] and kwargs["non_blocking"]
+    assert kwargs["offload_type"] == "block_level" and kwargs["num_blocks_per_group"] == 1
+    assert calls["helpers"] == [
+        "install_group_offload_buffer_restore",
+        "install_group_offload_hooks_eager",
+        "_pin_top_level_group",
+        "install_group_prefetch",
+    ]
+
+
+def test_streamed_controlnet_falls_back_to_no_copy_back_when_the_top_group_cannot_pin(monkeypatch):
+    from core.inference import diffusion as d
+    from core.inference import diffusion_memory as dm
+
+    calls = _fake_group_offload(monkeypatch)
+    monkeypatch.setattr(
+        dm, "_pin_top_level_group", lambda *a, **k: calls["helpers"].append("pin") and False
+    )
+    assert d._offload_controlnet_module(object(), "cuda", None) is True
+    assert calls["helpers"][-3:] == ["pin", "_skip_top_level_copy_back", "install_group_prefetch"]
+
+
+@pytest.mark.parametrize("device, with_stream_kwargs", [("cpu", True), ("cuda", False)])
+def test_controlnet_offload_unchanged_without_a_cuda_stream_path(
+    monkeypatch, device, with_stream_kwargs
+):
+    from core.inference import diffusion as d
+
+    calls = _fake_group_offload(monkeypatch, with_stream_kwargs)
+    assert d._offload_controlnet_module(object(), device, None) is True
+    (kwargs,) = calls["apply"]
+    assert kwargs["use_stream"] is (device == "cuda")
+    assert not kwargs.get("record_stream") and not kwargs.get("non_blocking")
+    assert calls["helpers"] == []

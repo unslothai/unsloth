@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.1, Z-Image and Qwen-Image pin inductor's reduction-config filter on sm120, sm80 and sm89, so one seed renders
-one image in every fresh server there.
+"""FLUX.1, Z-Image and Qwen-Image pin inductor's reduction-config filter on sm120, sm80, sm89 and B200 (sm100), so one
+seed renders one image in every fresh server there.
 
 A few of their norm reductions get several configs that sum in different orders, and a cold-cache server benchmarks
 them in its own process on near-equal timings: fresh servers rendered 2-4 variants per seed on an RTX PRO 6000, A100
-and L4. B200 servers were deterministic for FLUX.1 but not Qwen-Image or Z-Image, so the opt-in is per (family,
-compute capability)."""
+and L4, and on B200 for all three. The opt-in is per (family, compute capability)."""
 
 from __future__ import annotations
 
@@ -30,7 +29,8 @@ _SM120 = (12, 0)
 _MEASURED_ARCHS = ((8, 0), (8, 9), (12, 0))
 _IMAGE_FAMILIES = ("flux.1", "z-image", "qwen-image", "flux.1-kontext", "qwen-image-edit")
 _QWEN_FAMILIES = ("qwen-image", "qwen-image-edit", "qwen-image-layered")
-_B200_PINNED = (*_QWEN_FAMILIES, "z-image")
+_FLUX1_FAMILIES = ("flux.1", "flux.1-kontext")
+_B200_PINNED = (*_QWEN_FAMILIES, "z-image", *_FLUX1_FAMILIES)
 
 
 def _family(name):
@@ -76,17 +76,20 @@ def test_the_race_families_share_one_arch_list():
 
     for name in _IMAGE_FAMILIES:
         expected = (
-            diffusion_families._QWEN_REDUCTION_RACE_ARCHS
+            diffusion_families._FLUX1_REDUCTION_RACE_ARCHS
+            if name in _FLUX1_FAMILIES
+            else diffusion_families._QWEN_REDUCTION_RACE_ARCHS
             if name in _B200_PINNED
             else diffusion_families._REDUCTION_RACE_ARCHS
         )
         assert tuple(_family(name).filter_reduction_configs_archs) == tuple(expected)
     assert set(diffusion_families._REDUCTION_RACE_ARCHS) == set(_MEASURED_ARCHS)
     assert set(diffusion_families._QWEN_REDUCTION_RACE_ARCHS) == {*_MEASURED_ARCHS, (10, 0)}
+    assert set(diffusion_families._FLUX1_REDUCTION_RACE_ARCHS) == {*_MEASURED_ARCHS, (10, 0)}
 
 
 @pytest.mark.parametrize("name", _B200_PINNED)
-def test_qwen_image_also_pins_on_b200(monkeypatch, name):
+def test_b200_race_families_also_pin_on_b200(monkeypatch, name):
     _on(monkeypatch, (10, 0))
     fam = _family(name)
     assert cc.family_filters_reductions(fam) is True
@@ -97,7 +100,9 @@ def test_qwen_image_also_pins_on_b200(monkeypatch, name):
 @pytest.mark.parametrize("name", _IMAGE_FAMILIES)
 def test_image_family_keeps_inductor_pick_elsewhere(monkeypatch, name, cap):
     if cap == (10, 0) and name in _B200_PINNED:
-        pytest.skip("Qwen-Image and Z-Image pin on B200 (test_qwen_image_also_pins_on_b200)")
+        pytest.skip(
+            "FLUX.1, Qwen-Image and Z-Image pin on B200 (test_b200_race_families_also_pin_on_b200)"
+        )
     _on(monkeypatch, cap)
     fam = _family(name)
     assert cc.family_filters_reductions(fam) is False
