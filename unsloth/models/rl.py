@@ -4687,8 +4687,7 @@ class _UnslothFusedLinearHead:
         self._default_chunk = int(
             getattr(sys.modules.get("trl.trainer.utils"), "_CHUNKED_LOGPROB_CHUNK_SIZE", 32768)
         )
-        # unsloth_zoo's log-prob op v4+ takes entropy_requires_grad=None (gradient only if one arrives); an older zoo
-        # would read None as "no entropy gradient".
+        # zoo op v4+ reads entropy_requires_grad=None as "gradient only if one arrives"; older zoos as "none".
         try:
             from unsloth_zoo.fused_losses import fused_linear as _fl
             self._lazy_entropy = int(str(getattr(_fl, "_LP_OP", "")).rsplit("_v", 1)[-1]) >= 4
@@ -4696,8 +4695,7 @@ class _UnslothFusedLinearHead:
             self._lazy_entropy = False
 
     def __getattr__(self, name):
-        # TRL's kernel (or the device wrapper around it) keeps its attributes visible, so a later patch pass
-        # recognises what it already wrapped.
+        # Keep TRL's attributes visible so a later patch pass recognises what it already wrapped.
         if name == "function":
             raise AttributeError(name)
         return getattr(self.function, name)
@@ -4705,8 +4703,7 @@ class _UnslothFusedLinearHead:
     def _row_cap(self, hidden, weight, bias, chunk_size, outputs):
         """``max_rows_per_chunk`` keeping the zoo kernel's logits buffer within TRL's tile for the same call
         ([min(N, TOKEN_CHUNK_SIZE), chunk_size] in the compute dtype): 0 = no cap, None = TRL serves the call."""
-        # TRL's default tile: the zoo kernel keeps its own budget, whose whole-call peak is below TRL's there for
-        # frozen and trainable heads. Only an explicitly smaller chunk_size (a memory request) is honoured.
+        # TRL's default tile: keep the zoo budget (lower peak); only an explicitly smaller chunk_size is honoured.
         if int(chunk_size) >= self._default_chunk:
             return 0
         from unsloth_zoo.fused_losses import fused_linear as fl
@@ -4722,16 +4719,13 @@ class _UnslothFusedLinearHead:
         split_cols = int(getattr(fl, "_SPLIT_COLS", 16384))
         cols = -(-V // 8) * 8
         tiled_vocab = device_type == "cuda" and split_cols > 0 and V > 2 * split_cols
-        # Recompute forward / backward: tiles of at most N rows by the (split-padded) vocab, up to _BWD_TILE_BYTES
-        # whatever the row cap (fewer rows only widen them). Fitting a smaller budget would take full-vocab tiles of
-        # a few rows, 2-8x slower than TRL's kernel, so TRL serves those shapes. Decided from the shapes alone, so a
-        # batch's no-grad and gradient passes use the same kernel.
+        # Recompute tiles cannot fit a budget below _BWD_TILE_BYTES without being 2-8x slower: TRL serves those
+        # shapes. Decided from shapes alone, so a batch's no-grad and gradient passes pick the same kernel.
         padded = -(-V // split_cols) * split_cols if tiled_vocab else cols
         tile_bytes = getattr(fl, "_BWD_TILE_BYTES", 256 * 1024**2)
         if min(tile_bytes, N * padded * 4) > budget:
             return None
-        # Chunked forward (no grad, or a frozen head without a differentiable entropy): [rows, V] fp32 logits.
-        # The recompute path takes it only off CUDA or for vocabularies within two splits.
+        # Chunked forward (no grad, or frozen head without entropy grad): [rows, V] fp32 logits.
         grad = torch.is_grad_enabled() and (
             hidden.requires_grad
             or weight.requires_grad
@@ -4786,8 +4780,7 @@ class _UnslothFusedLinearHead:
                 logit_scale,
                 outputs,
             )
-        # TRL > 1.16 scores over a per-row kept set (support_ids); the zoo kernel scores the full vocabulary.
-        # UNSLOTH_FUSED_LINEAR=0 set after the adapter was installed still restores TRL's kernel.
+        # support_ids (TRL > 1.16, per-row kept set) and a late UNSLOTH_FUSED_LINEAR=0 go to TRL's kernel.
         if support_ids is not None:
             return self.function.apply(*args, support_ids)
         if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
