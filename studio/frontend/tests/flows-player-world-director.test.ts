@@ -156,9 +156,33 @@ test("patches with dangling or reused ids, or past a limit, are dropped", () => 
       ...PATCH,
       npcs: [{ id: "tom", name: "Tom 2", persona: "", greeting: "" }],
     },
+    // One new id for both the villager and the item.
+    {
+      ...PATCH,
+      quest: { ...PATCH.quest, requires_item: "mira" },
+      items: [{ ...PATCH.items![0], id: "mira" }],
+    },
+    // The rod is already what The Lost Rod asks for.
+    { ...PATCH, quest: { ...PATCH.quest, requires_item: "rod" }, items: [] },
   ];
   for (const p of bad)
     assert.equal(D.applyPatch(SPEC, map, s, p, occupied()), null);
+  // An item the player carries or picked up is not asked for again.
+  const cup = {
+    ...SPEC,
+    items: [...SPEC.items, { id: "cup", name: "Cup", description: "" }],
+  } as Spec;
+  const wantsCup = {
+    ...PATCH,
+    quest: { ...PATCH.quest, requires_item: "cup" },
+    items: [],
+  };
+  assert.ok(D.applyPatch(cup, map, s, wantsCup, occupied()));
+  for (const held of [
+    { ...s, inventory: ["cup"] },
+    { ...s, picked: ["cup"] },
+  ])
+    assert.equal(D.applyPatch(cup, map, held, wantsCup, occupied()), null);
   const full = {
     ...s,
     additions: {
@@ -216,8 +240,13 @@ test("an added villager's mind survives save and load", () => {
       calls_per_minute: 4,
     },
   } as unknown as Spec;
-  const out = D.applyPatch(sim, map, finished(), PATCH, occupied());
+  const before = { ...W.initialWorldState(sim), completedQuests: ["lost_rod"] };
+  const out = D.applyPatch(sim, map, before, PATCH, occupied());
   assert.ok(out);
+  // The new villager has a mind with needs from the moment it is added, not only after a reload.
+  assert.ok(out.state.npc.mira?.needs);
+  assert.ok(before.npc.tom);
+  assert.equal(out.state.npc.tom, before.npc.tom);
   const mind = W.initialWorldState({
     ...sim,
     npcs: [...sim.npcs, PATCH.npcs?.[0]],
@@ -264,4 +293,9 @@ test("the player keeps the map from the generated world and adds through the gam
   // The director reads the state the reply just produced, not one React has yet to commit.
   assert.match(src, /await direct\(completed, state\)/);
   assert.match(src, /const s = from \?\? wsRef\.current;/);
+  // A summary cancelled by a new message or a load does not go on to start the director.
+  assert.match(src, /if \(turn === messages\.current\) await direct/);
+  assert.match(src, /loads\.current \+= 1;\n\s+messages\.current \+= 1;/);
+  // Villagers added while playing take part in the village day like the others.
+  assert.match(src, /for \(const n of specRef\.current\.npcs\)/);
 });

@@ -434,6 +434,8 @@ export function WorldPlayer({
 
   // Bumped on every load, so a reply to a conversation from before the load is dropped.
   const loads = useRef(0);
+  // Bumped on every message and load: a summary cancelled by either must not go on to start the director.
+  const messages = useRef(0);
 
   // Long conversations are summarised in the background, one at a time, and never while the player waits on a reply.
   const summarising = spec.summarise !== false;
@@ -700,7 +702,7 @@ export function WorldPlayer({
         NonNullable<ReturnType<typeof villagerStep>>
       > = {};
       const ticked: Record<string, Needs> = {};
-      for (const n of baseSpec.npcs) {
+      for (const n of specRef.current.npcs) {
         const mind = s.npc[n.id] ?? emptyMind();
         if (planEntry && mind.planDay !== day)
           queue.push({
@@ -719,7 +721,7 @@ export function WorldPlayer({
         const life = withNeeds
           ? villagerStep({
               g,
-              spec: baseSpec,
+              spec: specRef.current,
               sim,
               npcId: n.id,
               mind,
@@ -813,6 +815,7 @@ export function WorldPlayer({
     if (!text || !talking || thinking) return;
     setDraft("");
     const npcId = talking;
+    const turn = ++messages.current;
     summaryRun.current?.abort();
     summaryRun.current = null;
     directorRun.current?.abort();
@@ -910,7 +913,7 @@ export function WorldPlayer({
         state.completedQuests.length > prior.completedQuests.length;
       void (async () => {
         await summarise(npcId, state);
-        await direct(completed, state);
+        if (turn === messages.current) await direct(completed, state);
       })();
     } catch (e) {
       if (generation !== loads.current) return;
@@ -964,6 +967,7 @@ export function WorldPlayer({
       return;
     }
     loads.current += 1;
+    messages.current += 1;
     summaryRun.current?.abort();
     summaryRun.current = null;
     directorRun.current?.abort();

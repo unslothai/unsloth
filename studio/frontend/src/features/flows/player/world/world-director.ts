@@ -8,6 +8,7 @@ import { Prng, seedFrom } from "../../expr";
 import type { WorldItem, WorldNpc, WorldQuest, WorldSpec } from "../../types";
 import { type Point, type WorldMap, isSolid, reachable } from "./procgen";
 import type { WorldState } from "./world-state";
+import { initialMinds } from "./world-sim";
 
 export const MAX_OPEN_QUESTS = 3;
 export const MAX_ADDED_NPCS = 4;
@@ -146,9 +147,17 @@ export function applyPatch(
   const newItems = (patch.items ?? []).slice(0, 1);
   if (add.npcs.length + newNpcs.length > MAX_ADDED_NPCS) return null;
   if (add.items.length + newItems.length > MAX_ADDED_ITEMS) return null;
-  for (const x of [...newNpcs, ...newItems])
-    if (typeof x?.id !== "string" || !x.name || ids.has(x.id) || x.id === q.id)
+  const fresh = new Set<string>([q.id]);
+  for (const x of [...newNpcs, ...newItems]) {
+    if (
+      typeof x?.id !== "string" ||
+      !x.name ||
+      ids.has(x.id) ||
+      fresh.has(x.id)
+    )
       return null;
+    fresh.add(x.id);
+  }
   if (
     !spec.npcs.some((n) => n.id === q.giver) &&
     !newNpcs.some((n) => n.id === q.giver)
@@ -158,6 +167,13 @@ export function applyPatch(
     !q.requires_item ||
     (!spec.items.some((i) => i.id === q.requires_item) &&
       !newItems.some((i) => i.id === q.requires_item))
+  )
+    return null;
+  // An item already asked for, carried or picked up cannot be the point of a new quest.
+  if (
+    spec.quests.some((x) => x.requires_item === q.requires_item) ||
+    s.inventory.includes(q.requires_item) ||
+    s.picked.includes(q.requires_item)
   )
     return null;
   const spots = [...occupied];
@@ -216,6 +232,8 @@ export function applyPatch(
         items: [...add.items, ...items],
         quests: [...add.quests, quest],
       },
+      // A new villager lives like the others from the next tick: memories, and needs in a simulation world.
+      npc: { ...initialMinds({ ...spec, npcs }, s.clock), ...s.npc },
       // The giver offers it straight away, so it shows in the quest log.
       activeQuests: [...s.activeQuests, quest.id],
     },
