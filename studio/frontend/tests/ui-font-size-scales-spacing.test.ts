@@ -266,7 +266,6 @@ test("the plain stylesheets' controls follow the scale", () => {
     const at = HUB.indexOf(rule);
     assert.notEqual(at, -1, `${rule} is gone`);
     const body = HUB.slice(at, HUB.indexOf("}", at));
-    // A fixed box, or one sized by its padding around the label (the shared button shape).
     assert.match(
       body,
       /(?:height|width|padding): calc\([\d.]+rem \* var\(--ui-space-scale, 1\)\)/,

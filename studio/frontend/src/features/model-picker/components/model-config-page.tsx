@@ -255,7 +255,6 @@ const SELECT_TRIGGER_CLASS = `panel-select-trigger grid h-8! min-w-0 grid-cols-[
 // .panel-field carries the surface and the value's alignment; the field adds its size.
 const NUMBER_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS}`;
 const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
-// Width is the label plus the shared button padding, so a pill is never wider than what it says.
 const FOOTER_BUTTON_CLASS =
   "w-auto rounded-full text-ui-13 font-medium tracking-nav";
 

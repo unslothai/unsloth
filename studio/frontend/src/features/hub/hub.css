@@ -1321,7 +1321,7 @@
       0 1px 2px color-mix(in srgb, var(--status-success) 22%, transparent);
   }
 
-  /* Icons take no height, as in the shared button. */
+  /* Icons add no height. */
   .hub-run-action-btn svg {
     margin-block: calc(-0.5rem * var(--ui-space-scale, 1));
   }
