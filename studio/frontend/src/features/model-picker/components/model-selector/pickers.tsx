@@ -264,6 +264,7 @@ import {
   soleQuantRowState,
 } from "./row-identity";
 import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import { cachedRepoConfigId } from "../../model-config/model-identity";
 import {
   type FormatTone,
   isFeaturedOnDeviceRepoId,
@@ -6466,11 +6467,17 @@ export function HubModelPicker({
       isDownloaded: true,
       isGguf: Boolean(quant),
     };
-    // As residentModelConfigTarget: a standalone .gguf keys settings by the bare path, its quant is
-    // only a label from the filename.
-    const configureMeta: ModelSelectorChangeMeta = isStandaloneGgufPath(checkpoint)
-      ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
-      : selectMeta;
+    // As residentModelConfigTarget: a cached HF snapshot keys settings by its repo id (still loading
+    // the snapshot), a standalone .gguf by the bare path, its quant only a label from the filename.
+    const snapshotRepoId = cachedRepoConfigId(checkpoint, quant);
+    const configureArgs: [string, ModelSelectorChangeMeta] = snapshotRepoId
+      ? [snapshotRepoId, { ...selectMeta, source: "hub", loadId: checkpoint }]
+      : [
+          checkpoint,
+          isStandaloneGgufPath(checkpoint)
+            ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
+            : selectMeta,
+        ];
     return (
       <div
         key={optionKey}
@@ -6496,7 +6503,7 @@ export function HubModelPicker({
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${entry.id}`}
-              onConfigure={() => onConfigure(checkpoint, configureMeta)}
+              onConfigure={() => onConfigure(...configureArgs)}
             />
           )}
           <ModelRowMenu

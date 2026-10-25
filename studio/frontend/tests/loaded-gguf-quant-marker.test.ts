@@ -51,10 +51,16 @@ test("a loaded row is selected, picked and ejected by its checkpoint, not its la
   assert.match(picker, /onSelect: \(\) => onEject\?\.\(checkpoint\),/);
 });
 
-test("settings opened from a loaded standalone .gguf use the bare path, as other entry points do", () => {
+test("settings opened from a loaded row use the same key as other entry points", () => {
+  // A cached HF snapshot by its repo id, still loading the snapshot.
   assert.match(
     picker,
-    /const configureMeta: ModelSelectorChangeMeta = isStandaloneGgufPath\(checkpoint\)\s*\?\s*\{ \.\.\.selectMeta, ggufVariant: undefined, isGguf: true \}\s*:\s*selectMeta;/,
+    /const snapshotRepoId = cachedRepoConfigId\(checkpoint, quant\);[\s\S]*?\[snapshotRepoId, \{ \.\.\.selectMeta, source: "hub", loadId: checkpoint \}\]/,
   );
-  assert.match(picker, /onConfigure\(checkpoint, configureMeta\)/);
+  // A standalone .gguf by its bare path.
+  assert.match(
+    picker,
+    /isStandaloneGgufPath\(checkpoint\)\s*\?\s*\{ \.\.\.selectMeta, ggufVariant: undefined, isGguf: true \}\s*:\s*selectMeta/,
+  );
+  assert.match(picker, /onConfigure\(\.\.\.configureArgs\)/);
 });
