@@ -1802,10 +1802,15 @@ def test_local_inventory_lists_a_registered_hf_home_as_custom(monkeypatch, tmp_p
     rows = local_inventory._filter_and_dedupe_local_models(rows)
 
     assert [(row.source, row.model_id) for row in rows] == [("custom", None)]
+    # The promotion keeps the discovered path and load id and clears the cache-only flag.
+    assert "models--Org--Model-GGUF" in rows[0].path
+    assert rows[0].load_id and "models--Org--Model-GGUF" in rows[0].load_id
+    assert rows[0].active_cache is None
 
 
+@pytest.mark.parametrize("registered", ["hf_home", "hf_home/hub"])
 def test_local_inventory_preserves_a_configured_hf_cache_registered_as_a_scan_folder(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, registered
 ):
     hf_home = tmp_path / "hf_home"
     hf_cache = hf_home / "hub"
@@ -1822,7 +1827,7 @@ def test_local_inventory_preserves_a_configured_hf_cache_registered_as_a_scan_fo
             (),
             (),
             (),
-            [{"path": str(hf_home)}],
+            [{"path": str(tmp_path / registered)}],
         )
     )
     rows = local_inventory._filter_and_dedupe_local_models(rows)
@@ -1870,7 +1875,8 @@ def test_local_inventory_keeps_the_cache_label_for_a_folder_registered_inside_th
     repo = nested / "models--Org--Nested-GGUF"
     blob = repo / "blobs" / ("a" * 64)
     blob.parent.mkdir(parents = True)
-    payload = b"GGUF" + bytes([3, 0, 0, 0]) + bytes(64)
+    payload = b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64
+    blob.write_bytes(payload)
     snapshot = repo / "snapshots" / ("0" * 40)
     snapshot.mkdir(parents = True)
     (snapshot / "Nested-Q4_K_M.gguf").write_bytes(payload)
@@ -1897,6 +1903,43 @@ def test_local_inventory_keeps_the_cache_label_for_a_folder_registered_inside_th
         ("hf_cache", "Org/Model-GGUF"),
         ("hf_cache", "Org/Nested-GGUF"),
     ]
+
+
+def test_local_inventory_keeps_the_cache_label_for_a_folder_under_an_omlx_root(
+    monkeypatch, tmp_path
+):
+    omlx_root = tmp_path / "omlx"
+    repo = omlx_root / "models--Org--Omlx-GGUF"
+    blob = repo / "blobs" / ("a" * 64)
+    blob.parent.mkdir(parents = True)
+    payload = b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64
+    blob.write_bytes(payload)
+    snapshot = repo / "snapshots" / ("0" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Omlx-Q4_K_M.gguf").write_bytes(payload)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("0" * 40)
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+
+    rows = asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "missing-legacy",
+            tmp_path / "missing-default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(omlx_root)}],
+            omlx_dirs = (omlx_root,),
+        )
+    )
+    rows = local_inventory._filter_and_dedupe_local_models(rows)
+
+    # The oMLX root is a real cache root, so the scan-folder twin keeps the cache label
+    # and dedupes onto the oMLX row instead of surfacing as a custom duplicate.
+    assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Omlx-GGUF")]
 
 
 def test_local_inventory_checks_for_hf_home_hub_off_the_event_loop(monkeypatch, tmp_path):
