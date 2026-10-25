@@ -3955,6 +3955,11 @@ class UnslothTrainer:
                 if eval_info.get("dropped_rows_warning"):
                     self._record_warning(f"Eval dataset: {eval_info['dropped_rows_warning']}")
                 eval_dataset = eval_info["dataset"]
+                # Formatted on its own, so it can resolve to another format than the training split (a split carved
+                # out of train has no entry and shares the training format).
+                dataset_info["eval_final_format"] = str(
+                    eval_info.get("final_format", "") or ""
+                ).lower()
                 logger.info("Eval dataset formatted successfully\n")
             elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
                 formatted_dataset = dataset_info["dataset"]
@@ -4629,6 +4634,11 @@ class UnslothTrainer:
             )
             raw_text_mode = dataset_final_format == "raw_text"
             pretokenized_mode = dataset_final_format == PRETOKENIZED_FORMAT
+            eval_final_format = (
+                str(dataset.get("eval_final_format", dataset_final_format) or "").lower()
+                if isinstance(dataset, dict)
+                else ""
+            )
             # Without a labels column, "Train on responses only" can still mask prompts from input_ids.
             user_labels = pretokenized_mode and has_custom_labels(dataset["dataset"])
             self.tokenizer = get_training_chat_template(
@@ -4946,11 +4956,10 @@ class UnslothTrainer:
                 # Packed rows share one bidirectional attention window, so documents would see each other.
                 config_args["packing"] = False
                 logger.info("Text-diffusion model: sequence packing turned off\n")
-            if pretokenized_mode:
-                # Packing on TRL < 1.7 keeps only input_ids, silently replacing the user's labels.
-                if config_args.get("packing"):
-                    logger.info("Pre-tokenized dataset: sequence packing turned off\n")
-                config_args["packing"] = False
+            eval_pretokenized = (
+                eval_dataset is not None and eval_final_format == PRETOKENIZED_FORMAT
+            )
+            if pretokenized_mode or eval_pretokenized:
                 try:
                     vocab_size = int(self.model.get_input_embeddings().num_embeddings)
                 except Exception:
@@ -4961,19 +4970,31 @@ class UnslothTrainer:
                 completion_only = resolve_completion_only_loss(
                     dataset["dataset"], config_args.get("completion_only_loss")
                 )
+            # Each split goes by its own format: a separately supplied eval split can be pre-tokenized while the
+            # training split is text, and the reverse.
+            if pretokenized_mode:
+                # Packing on TRL < 1.7 keeps only input_ids, silently replacing the user's labels.
+                if config_args.get("packing"):
+                    logger.info("Pre-tokenized dataset: sequence packing turned off\n")
+                config_args["packing"] = False
                 dataset["dataset"] = prepare_pretokenized_dataset(
                     dataset["dataset"],
                     max_seq_length = max_seq,
                     vocab_size = vocab_size,
                     completion_only_loss = completion_only,
                 )
-                if eval_dataset is not None:
-                    eval_dataset = prepare_pretokenized_dataset(
-                        eval_dataset,
-                        max_seq_length = max_seq,
-                        vocab_size = vocab_size,
-                        completion_only_loss = completion_only,
-                    )
+            if eval_pretokenized:
+                # TRL packs eval by `packing` unless eval_packing says otherwise, and packing keeps only input_ids,
+                # so a pre-tokenized eval split beside a packed text train split would lose its labels.
+                if config_args.get("packing"):
+                    logger.info("Pre-tokenized eval dataset: eval sequence packing turned off\n")
+                    config_args["eval_packing"] = False
+                eval_dataset = prepare_pretokenized_dataset(
+                    eval_dataset,
+                    max_seq_length = max_seq,
+                    vocab_size = vocab_size,
+                    completion_only_loss = completion_only,
+                )
 
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything
             # else stays eager.

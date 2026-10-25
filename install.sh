@@ -1430,6 +1430,7 @@ _UIP_STAGE=""
 _UIP_STAGE2=""
 _ROCM_TAG_MEMO_DIR=""
 _ROCM_TAG_MEMO=""
+_LSPCI_MEMO=""
 _UV_PROBE_TARGET=""
 _UV_PROBE_PID=""
 trap _on_install_exit EXIT
@@ -5377,7 +5378,16 @@ _infer_unsupported_amd_gfx_arch_from_gpu_name() {
 # Linux counterpart: first AMD display-class lspci line naming a generation ROCm does not cover. Messaging only, never fed into index selection.
 _infer_linux_unsupported_amd_gfx_arch() {
     command -v lspci >/dev/null 2>&1 || return 1
-    _unsup_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+    if [ -n "${_LSPCI_MEMO:-}" ] && [ -f "$_LSPCI_MEMO" ]; then
+        _unsup_disp=$(cat "$_LSPCI_MEMO")
+    else
+        _unsup_raw=$(lspci -nn 2>/dev/null) && _unsup_ok=1 || _unsup_ok=""
+        _unsup_disp=$(printf '%s\n' "$_unsup_raw" | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+        # Only a successful query is kept, written whole (temp file + rename) so a failed write leaves no memo.
+        if [ -n "$_unsup_ok" ] && [ -n "${_LSPCI_MEMO:-}" ]; then
+            { printf '%s\n' "$_unsup_disp" > "$_LSPCI_MEMO.tmp" && mv -f "$_LSPCI_MEMO.tmp" "$_LSPCI_MEMO"; } 2>/dev/null || rm -f "$_LSPCI_MEMO.tmp" 2>/dev/null || true
+        fi
+    fi
     while IFS= read -r _unsup_ln; do
         [ -n "$_unsup_ln" ] || continue
         if _unsup_gfx=$(_infer_unsupported_amd_gfx_arch_from_gpu_name "$_unsup_ln"); then
@@ -5430,7 +5440,17 @@ _infer_linux_amd_gfx_arch() {
     fi
     if command -v lspci >/dev/null 2>&1; then
         # A non-AMD controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan every display-class line and take the first AMD one that maps. The vendor guard is case-SENSITIVE (a -i "ATI" would match "CorporATIon" on every Intel/NVIDIA line); whole-line matching also survives the 0000: PCI domain prefix.
-        _amd_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+        # Read once per install: the callers run in command substitutions, so the answer is kept in a file (_LSPCI_MEMO).
+        if [ -n "${_LSPCI_MEMO:-}" ] && [ -f "$_LSPCI_MEMO" ]; then
+            _amd_disp=$(cat "$_LSPCI_MEMO")
+        else
+            _amd_raw=$(lspci -nn 2>/dev/null) && _amd_ok=1 || _amd_ok=""
+            _amd_disp=$(printf '%s\n' "$_amd_raw" | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+            # Only a successful query is kept, written whole (temp file + rename) so a failed write leaves no memo.
+            if [ -n "$_amd_ok" ] && [ -n "${_LSPCI_MEMO:-}" ]; then
+                { printf '%s\n' "$_amd_disp" > "$_LSPCI_MEMO.tmp" && mv -f "$_LSPCI_MEMO.tmp" "$_LSPCI_MEMO"; } 2>/dev/null || rm -f "$_LSPCI_MEMO.tmp" 2>/dev/null || true
+            fi
+        fi
         while IFS= read -r _ln; do
             [ -n "$_ln" ] || continue
             # A Krackan Point 2 line is only the fallback: a covered adapter later still answers.
@@ -6036,8 +6056,8 @@ get_torch_index_url() {
         fi
         # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
         # the block between the header comment above and this line, so keep both exact.
-        # RDNA 1 / Polaris / gfx1153 read fine and still have no wheels: no pytorch.org tag and no
-        # AMD per-arch index carries their kernels (only the opt-in multi-arch index does), so the generic tag below installed a multi-GB
+        # RDNA 1 / Polaris / gfx1153 / gfx90c (Renoir-Barcelo iGPU) read fine and still have no wheels: no pytorch.org tag and no
+        # AMD per-arch index carries their kernels (at most the opt-in multi-arch index does), so the generic tag below installed a multi-GB
         # torch that faults on its first GPU op (#8529). Only when EVERY probed arch is one, so
         # a covered peer keeps its wheels. A readable HSA_OVERRIDE_GFX_VERSION is the arch the
         # runtime runs, whatever amd-smi reads, so it alone is judged unless an arch is declared.
@@ -6045,8 +6065,16 @@ get_torch_index_url() {
         _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
         [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_src="$_amd_hsa_gfx"
         _amd_unsup_all=$(printf '%s\n' "$_amd_unsup_src" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803|90c)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
+        # An existing ROCm torch on gfx90c is run via HSA_OVERRIDE_GFX_VERSION=9.0.0: updates keep it.
+        if [ "$_amd_unsup_all" = gfx90c ]; then
+            case "${_PREV_TORCH_VER:-}" in
+                *+rocm*)
+                    echo "[INFO] Keeping ROCm PyTorch on gfx90c: this environment already runs ${_PREV_TORCH_VER}. Start Unsloth Studio with HSA_OVERRIDE_GFX_VERSION=9.0.0 to use the GPU." >&2
+                    _amd_unsup_all="" ;;
+            esac
+        fi
         if [ -n "$_amd_unsup_all" ]; then
             echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
             echo "[WARN] The ROCm PyTorch wheels carry no kernels for it: they would install, then fail on the first GPU operation." >&2
@@ -6056,6 +6084,9 @@ get_torch_index_url() {
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
             fi
             echo "[INFO] If you run this GPU with HSA_OVERRIDE_GFX_VERSION, export it and re-run this installer to keep ROCm PyTorch." >&2
+            if [ "$_amd_unsup_all" = gfx90c ]; then
+                echo "[INFO] gfx90c can run ROCm PyTorch's gfx900 kernels: export HSA_OVERRIDE_GFX_VERSION=9.0.0 (also when you start Unsloth Studio) and re-run this installer. Unsloth does not test this." >&2
+            fi
             if _amd_therock_extra=$(_therock_device_extra_for_gfx "${_amd_unsup_all%%,*}" 2>/dev/null); then
                 echo "[INFO] Untested: AMD's TheRock publishes nightly ${_amd_unsup_all%%,*} wheels. To try them, export both and re-run:" >&2
                 echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL='$THEROCK_MIRROR'" >&2
@@ -6393,7 +6424,7 @@ THEROCK_MIRROR="${UNSLOTH_THEROCK_MIRROR:-https://rocm.nightlies.amd.com/whl-mul
 
 # The device extra TheRock publishes for a gfx, or non-zero when it builds none. Only arches
 # Unsloth's indexes do not cover, so it never competes with get_torch_index_url; gfx803 is
-# absent because TheRock has no Polaris target.
+# absent because TheRock has no Polaris target, gfx90c because its torch has no device-gfx90c extra.
 _therock_device_extra_for_gfx() {
     case "$1" in
         gfx1010|gfx1011|gfx1012|gfx1153) echo "device-$1" ;;
@@ -6855,6 +6886,9 @@ fi
 # Created here, not inside get_torch_index_url: that runs in a command substitution, so only a file outlives it. mktemp -d, never a $$-derived name: a predictable path under a world-writable /tmp can be pre-created as a symlink, feeding the probe a chosen version.
 _ROCM_TAG_MEMO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-rocm.XXXXXX" 2>/dev/null) \
     && _ROCM_TAG_MEMO="$_ROCM_TAG_MEMO_DIR/tag" || _ROCM_TAG_MEMO=""
+# The AMD display-class lspci lines, shared by _infer_linux_amd_gfx_arch and _infer_linux_unsupported_amd_gfx_arch.
+_LSPCI_MEMO=""
+[ -z "$_ROCM_TAG_MEMO_DIR" ] || _LSPCI_MEMO="$_ROCM_TAG_MEMO_DIR/lspci"
 # UNSLOTH_TORCH_EXTRA selects a build on indexes that discriminate by package extra
 # (TheRock's whl-multi-arch). Gated on a pinned index: no index this script picks by itself
 # publishes extras, so an unpinned extra could only break a working resolve.
@@ -7691,7 +7725,7 @@ elif _has_amd_rocm_gpu; then
         _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
         [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_read="$_amd_hsa_gfx"
         _amd_unsup_read=$(printf '%s\n' "$_amd_unsup_read" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803|90c)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }') || _amd_unsup_read=""
     fi
     if [ "$_torch_index_pinned" = true ]; then
@@ -7754,6 +7788,9 @@ case "$TORCH_INDEX_URL" in
                     else
                         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer." "$C_WARN"
                         substep "That variable selects the llama.cpp bundle at install time, so setting it afterwards has no effect until you install or update again." "$C_WARN"
+                    fi
+                    if [ "$_unsup_disp_gfx" = gfx90c ]; then
+                        substep "gfx90c can run ROCm PyTorch's gfx900 kernels: export HSA_OVERRIDE_GFX_VERSION=9.0.0 (also when you start Unsloth Studio) and re-run this installer. Unsloth does not test this."
                     fi
                 else
                     substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"

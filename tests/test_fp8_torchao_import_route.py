@@ -8,6 +8,9 @@ import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
+
+from real_accelerator import has_real_cuda
 
 from unsloth.kernels import fp8 as F8
 
@@ -185,7 +188,7 @@ def test_torchao_block_matmul_routes_empty_inputs_to_triton(monkeypatch):
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or F8.torchao_blockwise_gemm is None,
+    not has_real_cuda() or F8.torchao_blockwise_gemm is None,
     reason = "needs CUDA and torchao's blockwise GEMM",
 )
 def test_fp8_block_matmul_empty_rows_on_gpu():
