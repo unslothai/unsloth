@@ -2673,7 +2673,9 @@ def test_the_launch_path_snapshots_the_link_over_the_credited_devices():
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert (
         '"link_gib_s":(Noneifis_vulkan_backendornot_planner_owns_fitornot_link_indices'
-        "orself._host_torch_is_rocm()elseself._nvidia_link_gib_s(_link_indices)" in compact
+        "orself._host_torch_is_rocm()#Torch-fallbackCUDAordinalsarenotnvidia-smirows."
+        "or(LlamaCppBackend._GPU_IDS_ARE_PCI_INDICESisFalseandself._mig_snapshot_rows()isNone)"
+        "elseself._nvidia_link_gib_s(_link_indices)" in compact
     )
     assert "gpu_indicesifgpu_indicesisnotNoneelse[_idxfor_idx,_freein(gpusor())]" in compact
 
