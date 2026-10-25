@@ -6,6 +6,7 @@
 
 import * as Phaser from "phaser";
 
+import { Prng, seedFrom } from "../../expr";
 import type { WorldItem, WorldNpc, WorldSpec } from "../../types";
 import {
   type Point,
@@ -52,6 +53,8 @@ export interface WorldGameHandle {
   /** Put a villager or item added while playing on the map; the terrain stays as it is. */
   addNpc(npc: WorldNpc, at: Point): void;
   addItem(item: WorldItem, at: Point): void;
+  /** A sign on the map that nothing walks into or picks up (a home a villager built); same id twice is a no-op. */
+  addMarker(id: string, at: Point, icon: string, label: string): void;
   faceNpc(id: string | null): void;
   /** Walk the player to a tile along the shortest path (click-to-move does the same). */
   walkTo(tile: Point): void;
@@ -90,6 +93,8 @@ interface Actor {
   area: Area | null;
   busy: boolean;
   speech: Phaser.GameObjects.Container | null;
+  /** Seeded per world and villager, so where they wander replays the same. */
+  rng: Prng;
 }
 
 export function createWorldGame(
@@ -124,6 +129,7 @@ export function createWorldGame(
         name: string;
       }
     >();
+    markers = new Map<string, Phaser.GameObjects.Text[]>();
     keys!: Record<string, Phaser.Input.Keyboard.Key>;
     bubble!: Phaser.GameObjects.Container;
     nearby: Interactable | null = null;
@@ -331,7 +337,7 @@ export function createWorldGame(
       );
       (a.body.body as Phaser.Physics.Arcade.Body).setImmovable(true);
       this.physics.add.collider(this.player.body, a.body);
-      a.rest = 1 + Math.random() * 3;
+      a.rest = 1 + a.rng.random() * 3;
       this.npcs.push(a);
       const label = this.add
         .text(0, 0, n.name, {
@@ -386,6 +392,7 @@ export function createWorldGame(
         .image(x, y + T * 0.18, "flows-shadow")
         .setDisplaySize(T * 0.85, T * 0.3);
       const sprite = this.add.image(x, y, texture).setOrigin(0.5, 0.92);
+      const rng = new Prng(seedFrom(spec.seed, "wander", id));
       return {
         id,
         name,
@@ -395,10 +402,11 @@ export function createWorldGame(
         home: at,
         path: [],
         rest: 0,
-        phase: Math.random() * 10,
+        phase: rng.random() * 10,
         area: null,
         busy: false,
         speech: null,
+        rng,
       };
     }
 
@@ -512,7 +520,7 @@ export function createWorldGame(
         } else if (!this.steer(n, n.path, NPC_TILES_PER_S * T)) {
           n.rest -= dt;
           if (n.rest <= 0) {
-            n.rest = 2 + Math.random() * 4;
+            n.rest = 2 + n.rng.random() * 4;
             const here = this.tileOf(n);
             const a = n.area;
             const inside =
@@ -524,12 +532,12 @@ export function createWorldGame(
             // Planned NPCs walk the whole way to their place, then mill about inside it.
             const target = a
               ? {
-                  x: a.x + Math.floor(Math.random() * a.w),
-                  y: a.y + Math.floor(Math.random() * a.h),
+                  x: a.x + Math.floor(n.rng.random() * a.w),
+                  y: a.y + Math.floor(n.rng.random() * a.h),
                 }
               : {
-                  x: n.home.x + Math.round((Math.random() - 0.5) * 6),
-                  y: n.home.y + Math.round((Math.random() - 0.5) * 6),
+                  x: n.home.x + Math.round((n.rng.random() - 0.5) * 6),
+                  y: n.home.y + Math.round((n.rng.random() - 0.5) * 6),
                 };
             if (a && !inside) {
               n.rest = 0.5;
@@ -670,6 +678,31 @@ export function createWorldGame(
       if (!sceneRef || sceneRef.items.has(item.id)) return;
       sceneRef.itemTexture(item.id);
       sceneRef.spawnItem(item, at);
+    },
+    addMarker(id: string, at: Point, icon: string, label: string) {
+      const scene = sceneRef;
+      if (!scene || scene.markers.has(id)) return;
+      const cx = at.x * T + T / 2;
+      const cy = at.y * T + T / 2;
+      const sign = scene.add
+        .text(cx, cy, icon, {
+          fontFamily: "Inter, system-ui, sans-serif",
+          fontSize: `${Math.round(T * 0.8)}px`,
+        })
+        .setOrigin(0.5, 0.75)
+        .setDepth(cy);
+      const name = scene.add
+        .text(cx, cy - T * 0.55, label, {
+          fontFamily: "Inter, system-ui, sans-serif",
+          fontSize: `${Math.max(9, Math.round(T * 0.28))}px`,
+          color: "#fff7d6",
+          stroke: "#1b1b28",
+          strokeThickness: 3,
+        })
+        .setOrigin(0.5, 1)
+        .setDepth(cy + 1)
+        .setAlpha(0.85);
+      scene.markers.set(id, [sign, name]);
     },
     faceNpc(id: string | null) {
       if (sceneRef) {
