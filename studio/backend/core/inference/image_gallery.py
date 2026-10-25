@@ -50,6 +50,10 @@ _IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit", "upscale")
 
 def _params_text(meta: dict[str, Any]) -> str:
     """Automatic1111-style ``parameters`` string for cross-tool interop."""
+    from core.inference.diffusion_hires import infotext_fields as hires_infotext, infotext_meta
+
+    # A Hires fix image is written the way A1111 writes one: Size is the base pass, Hires upscale the factor.
+    meta = infotext_meta(meta)
     # The caption the model encoded (FLUX.3 prompt upsampler): other tools reproduce the image from this line. The
     # typed prompt stays in the Unsloth chunk.
     lines = [str(meta.get("enhanced_prompt") or meta.get("prompt", ""))]
@@ -95,9 +99,14 @@ def _params_text(meta: dict[str, Any]) -> str:
         fields += ", Inpaint area: Only masked"
         if meta.get("inpaint_padding") is not None:
             fields += f", Masked area padding: {meta['inpaint_padding']}"
+    fields += hires_infotext(meta)
     # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
     if meta.get("shift") is not None:
         fields += f", Shift: {meta['shift']}"
+    # ADetailer's own keys (adetailer/args.py), so a paste into Studio or a webui with ADetailer restores the pass.
+    if meta.get("detailer"):
+        from core.inference.diffusion_detailer import infotext_fields
+        fields += infotext_fields(meta["detailer"])
     if meta.get("generator"):
         fields += f", Version: {meta['generator']}"
     lines.append(fields)

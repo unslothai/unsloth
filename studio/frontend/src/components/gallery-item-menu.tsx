@@ -198,7 +198,7 @@ export function GalleryPinBadge({
           aria-label={`Unpin this ${noun}`}
           onClick={onUnpin}
           className={cn(
-            "group/pin absolute flex items-center justify-center rounded-full bg-background/80 p-0.5 text-foreground shadow-sm ring-1 ring-border backdrop-blur outline-none transition-colors hover:bg-background focus-visible:ring-2 focus-visible:ring-ring",
+            "group/pin absolute flex items-center justify-center rounded-full bg-background/80 p-0.5 text-foreground shadow-sm backdrop-blur outline-none transition-colors hover:bg-background focus-visible:ring-2 focus-visible:ring-ring",
             className,
           )}
         >

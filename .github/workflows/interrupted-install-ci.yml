@@ -27,6 +27,9 @@ name: Interrupted install recovery
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
       - 'install.ps1'
@@ -335,7 +338,7 @@ jobs:
     # only printed by Write-TauriLog (install.ps1:2440), so the torch leg's marker could
     # never appear. The runner is ephemeral, so the default root is safe to install into.
     needs: select
-    if: needs.select.outputs.interrupt_windows_count != '0'
+    if: (needs.select.outputs.interrupt_windows_count != '0') && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: windows-latest
     timeout-minutes: 90
     strategy:

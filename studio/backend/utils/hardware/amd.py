@@ -3,6 +3,7 @@
 
 """AMD GPU monitoring via amd-smi. Mirrors nvidia.py so hardware.py can swap backends based on IS_ROCM; all functions return the same dict shapes as their nvidia.py counterparts."""
 
+import copy
 import glob
 import json
 import math
@@ -130,6 +131,39 @@ def _run_amd_smi(
     except json.JSONDecodeError:
         logger.warning("Failed to parse amd-smi JSON output")
         return None
+
+
+_display_lock = threading.Lock()
+_display_cache: dict[tuple[str, ...], tuple[float, int, Any]] = {}
+
+
+def _run_amd_smi_for_display(*args: str) -> Optional[Any]:
+    """``_run_amd_smi`` under gpu_query's display rules; the lock coalesces pollers, failures are never cached."""
+    try:
+        from utils import gpu_memory_events
+        from utils.hardware import gpu_query
+
+        use_cache = gpu_query.display_cache_allowed()
+        ttl = gpu_query.ttl_for(gpu_query.DISPLAY)
+    except Exception:
+        use_cache = False
+    if not use_cache:
+        return _run_amd_smi(*args)
+    with _display_lock:
+        cached = _display_cache.get(args)
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < ttl
+            and cached[1] == gpu_memory_events.generation()
+        ):
+            return copy.deepcopy(cached[2])
+        generation = gpu_memory_events.generation()
+        data = _run_amd_smi(*args)
+        if data is None:
+            _display_cache.pop(args, None)
+        else:
+            _display_cache[args] = (time.monotonic(), generation, copy.deepcopy(data))
+        return data
 
 
 def _parse_numeric(value: Any) -> Optional[float]:
@@ -402,7 +436,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     gpu_idx = _first_visible_amd_gpu_id()
     if gpu_idx is None:
         return {"available": False}
-    data = _run_amd_smi("metric", "-g", gpu_idx)
+    data = _run_amd_smi_for_display("metric", "-g", gpu_idx)
     if data is None:
         return {"available": False}
 
@@ -436,7 +470,7 @@ def get_visible_gpu_utilization(
             "index_kind": "unresolved",
         }
 
-    data = _run_amd_smi("metric")
+    data = _run_amd_smi_for_display("metric")
     if data is None:
         return {
             "available": False,

@@ -112,6 +112,8 @@ class ApiKeyResponse(BaseModel):
     last_used_at: Optional[str] = None
     expires_at: Optional[str] = None
     is_active: bool
+    # Read-only: set by the server at mint ("unsloth_start" for the desktop `unsloth start` key).
+    purpose: Optional[str] = None
 
 
 class CreateApiKeyResponse(BaseModel):

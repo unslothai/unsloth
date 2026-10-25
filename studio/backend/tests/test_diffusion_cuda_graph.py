@@ -88,7 +88,8 @@ class _FakeGraph:
 
 
 class _FakeStream:
-    def __init__(self):
+    def __init__(self, device = None):
+        self.device = device
         self.waited: list = []
 
     def wait_stream(self, other):
@@ -105,6 +106,7 @@ def _build_stub_torch():
         "empty_cache": 0,
         "inference_mode": [],
         "graph_error": None,
+        "capture_streams": [],
     }
     torch._records = records
 
@@ -135,8 +137,15 @@ def _build_stub_torch():
         return _FakeGraph()
 
     @contextlib.contextmanager
-    def _graph(graph, pool = None):
+    def _graph(
+        graph,
+        pool = None,
+        stream = None,
+        capture_error_mode = "global",
+    ):
         records["graphs"].append((graph, pool))
+        records["capture_mode"] = capture_error_mode
+        records["capture_streams"].append(stream)
         yield
 
     @contextlib.contextmanager
@@ -198,9 +207,11 @@ def _clean_module_globals():
     """The shared pool and the live-wrapper set are process-wide, so no test may inherit them."""
     cg._POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
+    cg._CAPTURE_STREAMS.clear()
     yield
     cg._POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
+    cg._CAPTURE_STREAMS.clear()
 
 
 def _t(shape = (1, 4), **kwargs):
@@ -286,6 +297,21 @@ def test_capture_then_replay_uses_one_graph_and_copies_statics(stub_torch):
     assert module.calls == cg.WARMUP_ITERS + 1
     assert stub_torch._records["synchronize"] == 1
     assert stub_torch._records["inference_mode"] == [False]
+
+
+def test_each_card_records_on_its_own_capture_stream(stub_torch):
+    """torch's default capture stream lives on the first card that captured; each card needs its own."""
+    first = _armed()
+    first(_t(device_index = 0), timestep = _t((1,), device_index = 0), return_dict = False)
+    second = _armed()
+    second(_t(device_index = 1), timestep = _t((1,), device_index = 1), return_dict = False)
+    third = _armed()
+    third(_t(device_index = 1), timestep = _t((1,), device_index = 1), return_dict = False)
+    streams = stub_torch._records["capture_streams"]
+    assert [s.device for s in streams] == [0, 1, 1]
+    assert (
+        streams[1] is streams[2]
+    ), "one stream per card: pool blocks are reused only from the recording stream"
 
 
 def test_new_shape_adds_a_second_graph(stub_torch):
@@ -1655,3 +1681,64 @@ def test_capture_warmups_wait_for_held_replica_work(stub_torch):
     assert handle.stats["captures"] == 1
     assert seen == [0] * (cg.WARMUP_ITERS + 1)
     assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0
+
+
+def test_engagement_reports_captures_replays_and_per_card_segments():
+    """Status shows whether the graph layers are ENGAGED, not only that nothing recompiled."""
+    import types as _types
+
+    seg = _types.SimpleNamespace(stats = {"segment_captures": 2, "segment_replays": 30})
+    whole = _types.SimpleNamespace(
+        cache = {1: None},
+        stats = {"captures": 1, "replays": 7, "eager_calls": 2, "invalidations": 0},
+        placement = None,
+        poisoned = False,
+        capture_error = None,
+    )
+    blocks = _types.SimpleNamespace(
+        cache = {},
+        stats = {"captures": 3, "replays": 9},
+        placement = None,
+        poisoned = False,
+        capture_error = None,
+        segments = [seg],
+    )
+    out = cg.engagement((whole, blocks))
+    assert out["graphs"] == 1 and out["captures"] == 4 and out["replays"] == 16
+    assert out["eager_calls"] == 2 and out["segment_captures"] == 2 and out["segment_replays"] == 30
+    assert set(out) >= {"dynamo_frames", "graph_breaks"}
+    assert cg.engagement(())["captures"] == 0
+
+
+def test_engagement_counts_the_per_block_graphs_a_whole_step_graph_fell_back_to():
+    import types as _types
+
+    seg = _types.SimpleNamespace(stats = {"segment_captures": 1, "segment_replays": 12})
+    blocks = _types.SimpleNamespace(
+        cache = {1: None, 2: None},
+        stats = {"captures": 5, "replays": 40},
+        placement = None,
+        poisoned = False,
+        capture_error = None,
+        segments = [seg],
+    )
+    step = _types.SimpleNamespace(
+        cache = {},
+        stats = {"captures": 1, "replays": 2, "eager_calls": 3, "fallbacks": 1},
+        placement = None,
+        poisoned = True,
+        capture_error = None,
+        fallback_handle = blocks,
+    )
+    out = cg.engagement((step,))
+    assert out["graphs"] == 2 and out["captures"] == 6 and out["replays"] == 42
+    assert out["fallbacks"] == 1 and out["segment_captures"] == 1 and out["segment_replays"] == 12
+
+
+def test_status_response_models_keep_graph_engagement():
+    from models.inference import DiffusionStatusResponse, VideoStatusResponse
+    counters = {"graphs": 1, "captures": 1, "replays": 7, "eager_calls": 0}
+    for model in (DiffusionStatusResponse, VideoStatusResponse):
+        dumped = model.model_validate({"graph_engagement": counters}).model_dump()
+        assert dumped["graph_engagement"] == counters
+        assert model.model_validate({}).model_dump()["graph_engagement"] is None
