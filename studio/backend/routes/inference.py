@@ -5628,6 +5628,13 @@ async def _aiter_llama_stream_items(
                                 first_token_deadline, post_first_item_read_timeout_s
                             )
                         )
+                        if grace_below and ceiling is not None:
+                            # The wrapped read re-reads this per call and waits out a genuine
+                            # park itself, so it need not stretch to the stall bound: an
+                            # unparked request still ends at its first-token deadline.
+                            ceiling = socket_timeout(
+                                max(0.0, first_token_deadline - time.monotonic())
+                            )
                     else:
                         ceiling = _post_first_timeout_s()
                     _set_stream_response_read_timeout(response, ceiling)
