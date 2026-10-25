@@ -182,3 +182,40 @@ def test_the_lease_key_and_slot_count_follow_the_kept_model(monkeypatch):
     # A model not kept alongside (the primary, or none named) shares the primary's key.
     assert engine_mod.chat_model_key({"model": {"repo": BIG}}) is None
     assert engine_mod.chat_model_key({}) is None
+
+
+def test_a_call_queued_behind_an_alongside_load_counts_against_the_new_model():
+    async def go():
+        lease = GpuLease()
+        kept = {"small": False}
+        loading, inside, done = asyncio.Event(), [], asyncio.Event()
+
+        async def load():
+            async with lease:
+                await loading.wait()
+                kept["small"] = True
+
+        def key():
+            return SMALL.lower() if kept["small"] else None
+
+        async def call(name, model):
+            async with lease.shared(slots = 1, model = model):
+                inside.append(name)
+                await done.wait()
+
+        loader = asyncio.create_task(load())
+        await asyncio.sleep(0.01)
+        # Queued while the small model is still loading: then it is not kept yet.
+        first = asyncio.create_task(call("first", key))
+        await asyncio.sleep(0.01)
+        loading.set()
+        await asyncio.sleep(0.02)
+        second = asyncio.create_task(call("second", SMALL.lower()))
+        await asyncio.sleep(0.02)
+        # One slot on the small model: the second call waits for the first.
+        assert inside == ["first"]
+        done.set()
+        await asyncio.gather(loader, first, second)
+        assert inside == ["first", "second"]
+
+    asyncio.run(go())

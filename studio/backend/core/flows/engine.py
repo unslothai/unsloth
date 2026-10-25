@@ -692,16 +692,19 @@ class GpuLease:
         *,
         background: bool = False,
         slots: Union[int, Callable[[], int]] = 1,
-        model: Optional[str] = None,
+        model: Union[Optional[str], Callable[[], Optional[str]]] = None,
     ):
         """``model`` keys the slot count: calls on different models kept loaded do not count against each other."""
+        key: Optional[str] = None
 
         def admit() -> bool:
-            # Read on every check: an exclusive holder may have swapped the model (and its slot count) meanwhile.
+            nonlocal key
+            # Read on every check: an exclusive holder may have loaded or swapped models (and slot counts) meanwhile.
+            key = model() if callable(model) else model
             n = max(1, int(slots() if callable(slots) else slots))
             # One slot stays free for the player unless there is only one.
             cap = max(1, n - 1) if background else n
-            held, held_bg = self._by_model.get(model, (0, 0))
+            held, held_bg = self._by_model.get(key, (0, 0))
             return (
                 not self._exclusive
                 and self._waiting == 0
@@ -713,19 +716,19 @@ class GpuLease:
             await self._cond.wait_for(admit)
             self._shared += 1
             self._background += background
-            held, held_bg = self._by_model.get(model, (0, 0))
-            self._by_model[model] = [held + 1, held_bg + background]
+            held, held_bg = self._by_model.get(key, (0, 0))
+            self._by_model[key] = [held + 1, held_bg + background]
         try:
             yield
         finally:
             async with self._cond:
                 self._shared -= 1
                 self._background -= background
-                counts = self._by_model[model]
+                counts = self._by_model[key]
                 counts[0] -= 1
                 counts[1] -= background
                 if not counts[0]:
-                    del self._by_model[model]
+                    del self._by_model[key]
                 self._cond.notify_all()
 
 
@@ -1465,11 +1468,10 @@ class FlowEngine:
                 shared = spec["type"] in SHARED_CHAT_NODES and not spec.get("exclusive_gpu")
                 if shared:
                     try:
-                        key = chat_model_key(ctx.params)
                         async with lock.shared(
                             background = rs.background,
-                            slots = lambda: chat_slots(key),
-                            model = key,
+                            slots = lambda: chat_slots(chat_model_key(ctx.params)),
+                            model = lambda: chat_model_key(ctx.params),
                         ):
                             rs.marks.setdefault("gpu_held", time.monotonic())
                             ctx.check_cancelled()
