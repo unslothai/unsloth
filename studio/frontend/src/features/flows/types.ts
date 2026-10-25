@@ -388,6 +388,7 @@ export interface WorldNpc {
   routine?: string;
   relationships?: Record<string, string>;
   seed_memories?: { text: string; importance: number }[];
+  role?: "rival" | "hostile" | null;
 }
 
 export interface WorldItem {
@@ -466,6 +467,7 @@ export interface WorldSpec {
   summarise?: boolean;
   /** False when the NPC Reply node's "Keep generating quests" is off; absent means on. */
   new_quests?: boolean;
+  autonomy?: WorldAutonomy | null;
   render?: "2d" | "3d";
   view3d?: World3dView;
   props3d?: WorldProp3d[];
@@ -501,6 +503,14 @@ export interface WorldProp3d {
   rot?: number;
   scale?: number;
   solid?: boolean;
+}
+
+export interface WorldAutonomy {
+  trade?: boolean;
+  homes?: boolean;
+  quests?: boolean;
+  rivals?: boolean;
+  enemies?: boolean;
 }
 
 export interface World3dView {

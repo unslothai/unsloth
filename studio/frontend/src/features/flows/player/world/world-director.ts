@@ -5,6 +5,7 @@
 import { Prng, seedFrom } from "../../expr";
 import type { WorldItem, WorldNpc, WorldQuest, WorldSpec } from "../../types";
 import { type Point, type WorldMap, isSolid, reachable } from "./procgen";
+import { MAX_ADDED_ROLE, type NpcRole, ROLES, autonomyOf } from "./roles";
 import type { WorldState } from "./world-state";
 import { initialMinds } from "./world-sim";
 
@@ -75,9 +76,19 @@ export function directorRequest(
     events: events.slice(-6),
     allow_npc: (s.additions?.npcs.length ?? 0) < MAX_ADDED_NPCS,
     allow_item: (s.additions?.items.length ?? 0) < MAX_ADDED_ITEMS,
+    allow_rival: roleAllowed(spec, s, "rival"),
+    allow_hostile: roleAllowed(spec, s, "hostile"),
   };
 }
 
+export function roleAllowed(spec: WorldSpec, s: WorldState, role: NpcRole) {
+  const flags = autonomyOf(spec);
+  const on = role === "rival" ? flags.rivals : flags.enemies;
+  const added = (s.additions?.npcs ?? []).filter((n) => n.role === role);
+  return on && added.length < MAX_ADDED_ROLE;
+}
+
+/** A walkable tile the player can reach, inside `area` when one has room, away from everything already placed. */
 export function placeFree(
   map: WorldMap,
   occupied: Point[],
@@ -191,6 +202,10 @@ export function applyPatch(
       name: String(p.name).slice(0, 60),
       persona: String(p.persona ?? "").slice(0, 600),
       greeting: String(p.greeting ?? "").slice(0, 300) || "Hello!",
+      ...(ROLES.includes(p.role as NpcRole) &&
+      roleAllowed(spec, s, p.role as NpcRole)
+        ? { role: p.role as NpcRole }
+        : {}),
       x: p.x,
       y: p.y,
     });

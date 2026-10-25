@@ -4,6 +4,7 @@
 
 import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
+import { type AutoState, autoOf, initialAuto } from "./autonomy";
 import {
   REPLY_ACTIONS,
   type ReplyAction,
@@ -11,6 +12,7 @@ import {
   parseDoing,
 } from "./needs";
 import type { Point } from "./procgen";
+import { autonomyOn } from "./roles";
 import {
   type WorldAdditions,
   additionsOf,
@@ -64,6 +66,8 @@ export interface WorldState {
   errands?: Record<string, Errand>;
   /** Quests, items and villagers added while playing; optional so older saves load. */
   additions?: WorldAdditions;
+  auto?: AutoState;
+  npcAt?: Record<string, Point>;
 }
 
 export interface Errand {
@@ -81,6 +85,7 @@ export interface NpcReply {
   recalled?: string[];
   action?: ReplyAction;
   place?: string;
+  offer_trade?: string;
 }
 
 export function placeIds(spec: WorldSpec): Set<string> {
@@ -130,6 +135,7 @@ export function initialWorldState(spec: WorldSpec): WorldState {
     following: [],
     errands: {},
     additions: noAdditions(),
+    ...(autonomyOn(spec) ? { auto: initialAuto(spec) } : {}),
   };
 }
 
@@ -260,8 +266,14 @@ export function applyReply(
     };
     notes.push(`Gave away ${itemName(reply.take_item)}`);
   }
+  const holder = reply.give_item ? st.auto?.held[reply.give_item] : undefined;
+  if (holder && st.auto) {
+    const { [reply.give_item as string]: _, ...held } = st.auto.held;
+    if (holder === npcId) st = { ...st, auto: { ...st.auto, held } };
+  }
   if (
     reply.give_item &&
+    (!holder || holder === npcId) &&
     spec.items.some((i) => i.id === reply.give_item) &&
     !st.inventory.includes(reply.give_item)
   ) {
@@ -402,5 +414,16 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
     ),
     errands,
     additions,
+    ...(autonomyOn(played)
+      ? { auto: autoOf(r.auto, played), npcAt: npcAtOf(r.npcAt, npcIds) }
+      : {}),
   };
+}
+
+function npcAtOf(raw: unknown, ids: Set<string>): Record<string, Point> {
+  const out: Record<string, Point> = {};
+  for (const [id, p] of Object.entries((raw ?? {}) as Record<string, Point>))
+    if (ids.has(id) && p && typeof p.x === "number" && typeof p.y === "number")
+      out[id] = { x: p.x, y: p.y };
+  return out;
 }
