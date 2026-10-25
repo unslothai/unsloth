@@ -40,7 +40,6 @@ def _native():
     module = sys.modules.get("unsloth.models.fsdp2_native")
     if module is None:
         from test_fsdp2_native_units import _load_native
-
         module = _load_native()
     return module
 
@@ -78,12 +77,19 @@ def build(
     return get_peft_model(model, lora).train()
 
 
-def global_batch(model, bsz, seq = 8, seed = 1):
+def global_batch(
+    model,
+    bsz,
+    seq = 8,
+    seed = 1,
+):
     vocab = ppn._text_config(model).vocab_size
     g = torch.Generator().manual_seed(seed)
     ids = torch.randint(0, vocab, (bsz, seq), generator = g)
     labels = ids.clone()
-    labels[0, :3] = -100  # uneven token counts per dp replica / micro-batch: the global count matters
+    labels[
+        0, :3
+    ] = -100  # uneven token counts per dp replica / micro-batch: the global count matters
     labels[-1, -2:] = -100
     labels[1, -1] = -100
     return ids, labels
@@ -97,7 +103,11 @@ def _reference(model, ids, labels, steps):
         out = model(input_ids = ids, labels = labels, use_cache = False)
         out.loss.backward()
         if step == 0:
-            grads = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+            grads = {
+                n: p.grad.detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
+            }
         norms.append(_clip_fp64(params, 1.0))
         opt.step()
         opt.zero_grad(set_to_none = True)
@@ -177,13 +187,17 @@ def _case_compose(
     model = build(repo, overrides)
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = n_mb, schedule = schedule)
     refusals = {}
-    if world != dims["pp"]:  # a pp mesh smaller than the world: the other dimensions must be applied first
+    if (
+        world != dims["pp"]
+    ):  # a pp mesh smaller than the world: the other dimensions must be applied first
         refusals["step_before_all_dims"] = _raised(lambda: pp.step(ids[mine], labels[mine]))
     if "tp" in dims:
         tpn.apply_tensor_parallel(model, mesh["tp"])
     if "dp" in dims:
         refusals["shard_model_pp_mesh"] = _raised(
-            lambda: native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["pp"]))
+            lambda: native.shard_model(
+                model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["pp"])
+            )
         )
         refusals["shard_model_no_mesh"] = _raised(
             lambda: native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32))
@@ -239,14 +253,19 @@ def _case_compose(
         "groups": len(groups),
         # torchtitan's PP default: no unit reshards after forward (each micro-batch would all-gather again).
         "reshard_after_forward": [
-            g.post_forward_mesh_info is not None for g in _trainable_param_groups(model, trainable = False)
+            g.post_forward_mesh_info is not None
+            for g in _trainable_param_groups(model, trainable = False)
         ],
         "stage_root_fsdp": isinstance(pp.module, FSDPModule),
         "placements": placements,
         "refusals": refusals,
         "stage": pp.stage_index,
-        "saved_ref": load_file(os.path.join(tmp, "ref", "adapter_model.safetensors")) if rank == 0 else None,
-        "saved_pp": load_file(os.path.join(tmp, "pp", "adapter_model.safetensors")) if rank == 0 else None,
+        "saved_ref": load_file(os.path.join(tmp, "ref", "adapter_model.safetensors"))
+        if rank == 0
+        else None,
+        "saved_pp": load_file(os.path.join(tmp, "pp", "adapter_model.safetensors"))
+        if rank == 0
+        else None,
     }
 
 
@@ -263,7 +282,9 @@ def _case_scaler(rank, world, tmp):
     native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
     scaler = torch.amp.GradScaler("cpu", init_scale = 1024.0)
     opt = torch.optim.SGD(pp.parameters(), lr = 1.0)
-    pp.step(ids[4 * dp_rank : 4 * dp_rank + 4], labels[4 * dp_rank : 4 * dp_rank + 4], scaler = scaler)
+    pp.step(
+        ids[4 * dp_rank : 4 * dp_rank + 4], labels[4 * dp_rank : 4 * dp_rank + 4], scaler = scaler
+    )
     if rank == world - 1:
         # One rank (last stage, dp replica 1) finds an inf in its unscale (as a replicated gradient would);
         # set on its found_inf directly: an inf in a DTensor shard is already reduced over dp by GradScaler.
@@ -353,7 +374,9 @@ def _worker(rank, world, port, case, tmp, kwargs):
     import torch.distributed as dist
 
     torch.set_num_threads(1)
-    dist.init_process_group("gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 240))
+    dist.init_process_group(
+        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 240)
+    )
     try:
         res = CASES[case](rank, world, tmp, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
@@ -361,7 +384,11 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 4, **kwargs):
+def _spawn(
+    case,
+    world = 4,
+    **kwargs,
+):
     try:
         ppn._check_torch_pipelining()
     except RuntimeError as exc:
@@ -372,25 +399,47 @@ def _spawn(case, world = 4, **kwargs):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        procs = [ctx.Process(target = _worker, args = (r, world, port, case, tmp, kwargs)) for r in range(world)]
+        procs = [
+            ctx.Process(target = _worker, args = (r, world, port, case, tmp, kwargs))
+            for r in range(world)
+        ]
         for p in procs:
             p.start()
         for p in procs:
             p.join(900)
         codes = [p.exitcode for p in procs]
         assert codes == [0] * world, f"rank exit codes {codes}"
-        return [torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)]
+        return [
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
+        ]
 
 
-def _check(results, dims, n_mb = 2):
+def _check(
+    results,
+    dims,
+    n_mb = 2,
+):
     ref = results[0]["ref"]
     union = set()
     for rank, res in enumerate(results):
-        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5, abs = 1e-6), (rank, res["losses"], ref["losses"])
-        assert res["norms"][0] == pytest.approx(ref["norms"][0], rel = 1e-5), (rank, res["norms"], ref["norms"])
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5, abs = 1e-6), (
+            rank,
+            res["losses"],
+            ref["losses"],
+        )
+        assert res["norms"][0] == pytest.approx(ref["norms"][0], rel = 1e-5), (
+            rank,
+            res["norms"],
+            ref["norms"],
+        )
         # Later norms follow 1-2 AdamW steps (lr 1e-2), whose first updates are ~lr * sign(grad): fp32 summation
         # order on near-zero grads moves them up to ~5e-4 (Gemma3; the pp-only split alone moves it 2.6e-4).
-        assert res["norms"] == pytest.approx(ref["norms"], rel = 2e-3), (rank, res["norms"], ref["norms"])
+        assert res["norms"] == pytest.approx(ref["norms"], rel = 2e-3), (
+            rank,
+            res["norms"],
+            ref["norms"],
+        )
         assert set(res["grads"]) == res["owned"], sorted(set(res["grads"]) ^ res["owned"])[:6]
         num = den = 0.0
         for name, grad in res["grads"].items():
@@ -404,17 +453,26 @@ def _check(results, dims, n_mb = 2):
         union |= set(res["grads"])
         refusals = res["refusals"]
         if len(results) != dims["pp"]:
-            assert "Apply the other mesh dimensions" in (refusals["step_before_all_dims"] or ""), refusals
+            assert "Apply the other mesh dimensions" in (
+                refusals["step_before_all_dims"] or ""
+            ), refusals
         if "dp" in dims:
             assert res["stage_root_fsdp"]
             # FSDP2 shards the trainable weights over dp; each group reduces once per step, not per micro-batch.
             assert res["placements"] and all(
                 any("S(" in pl or "Shard" in pl for pl in pls) for pls in res["placements"].values()
             ), res["placements"]
-            assert res["groups"] >= 1 and res["reduces"] == [res["groups"]] * STEPS, (res["reduces"], res["groups"])
-            assert res["reshard_after_forward"] and not any(res["reshard_after_forward"]), res["reshard_after_forward"]
+            assert res["groups"] >= 1 and res["reduces"] == [res["groups"]] * STEPS, (
+                res["reduces"],
+                res["groups"],
+            )
+            assert res["reshard_after_forward"] and not any(res["reshard_after_forward"]), res[
+                "reshard_after_forward"
+            ]
             assert "meeting only at this rank" in (refusals["shard_model_pp_mesh"] or ""), refusals
-            assert "needs FSDP2Config(mesh = mesh['dp'])" in (refusals["shard_model_no_mesh"] or ""), refusals
+            assert "needs FSDP2Config(mesh = mesh['dp'])" in (
+                refusals["shard_model_no_mesh"] or ""
+            ), refusals
             assert "not a level inside it" in (refusals["shard_model_inner_level"] or ""), refusals
             assert refusals["fsdp_after_refusals"] == 0, refusals
             if dims["dp"] == 1:
@@ -483,5 +541,7 @@ def test_pp_composition_order_and_meshes_are_refused_before_any_change():
         assert res["shard_twice_is_noop"], res
         assert res["composed"], res
     for res in _spawn("pp_tp_mesh"):
-        assert "does not compose with Unsloth pipeline parallelism on these meshes" in (res["err"] or ""), res
+        assert "does not compose with Unsloth pipeline parallelism on these meshes" in (
+            res["err"] or ""
+        ), res
         assert not res["tp"], res
