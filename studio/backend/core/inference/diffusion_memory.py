@@ -476,16 +476,12 @@ def _pin_host_weights_exact(
     chunks: list,
     device: Any = None,
 ) -> int:
-    """``_pin_host_weights`` into chunks of registered host memory sized to their bytes (torch's pinned allocator rounds
-    each chunk up to a power of two: Wan2.2-5B's offloaded TE / DiT / VAE pinned 16.11 GB for 14.53 GB of weights).
-
-    Chunk by chunk, and each chunk's weights move to it as soon as it is registered, so their pageable copies can go
-    before the next chunk is filled instead of the whole module being held twice. A chunk refused after the first one
-    ends the pin there: the moved weights stay pinned (and in ``layout``), the rest stay pageable."""
+    """``_pin_host_weights`` into page-granular registered chunks (torch's allocator rounds up to a power of two).
+    Weights move per chunk so the module is never held twice; a refusal after the first chunk keeps the moved
+    weights pinned and leaves the rest pageable (a first-chunk refusal raises)."""
     import torch
 
     target = torch.device(device) if device is not None else None
-    # The onload device's context registers each chunk (and its teardown syncs that device).
     scope = (
         torch.cuda.device(target)
         if target is not None and target.type == "cuda" and target.index is not None
@@ -544,7 +540,7 @@ def _fill_exact_chunks(
         wrapped: dict = {}
         for item, start, view in placed:
             name, p, attr, _src = params[item]
-            params[item] = None  # the last reference to the pageable copy, once re-pointed
+            params[item] = None
             entries.append((name, start, view))
             if name.startswith("\0"):
                 name = name[1:]
@@ -6326,9 +6322,7 @@ def registered_host_copy(src: Any) -> Any:
 
 
 def _registered_pin(src: Any) -> Any:
-    """``src.pin_memory()`` for the background pinner, in registered host memory where the type allows. GGUF weights
-    (packed bytes + quant type) are re-wrapped like their own ``pin_memory()``: torch's allocator rounded each one up to
-    a power of two (a Q4_K 3072x3072 weight, 5.3 MB, took 8 MiB)."""
+    """``src.pin_memory()`` in registered host memory where the type allows (GGUF re-wrapped, avoiding pow2 rounding)."""
     import torch
 
     if not host_pinning_allowed():

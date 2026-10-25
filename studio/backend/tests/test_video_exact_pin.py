@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A video load's whole-module offload pins each chunk at its own size, not a power of two.
-
-torch's pinned allocator rounds every chunk up to a power of two (Wan2.2-5B's offloaded TE / DiT / VAE: 16.11 GB
-pinned for 14.53 GB of weights). Registered host memory is page granular. CPU tests fake the registration.
-"""
+"""Video whole-module offload pins each chunk page-granular, not a power of two (CPU fakes registration)."""
 
 from __future__ import annotations
 
@@ -93,7 +89,6 @@ def test_exact_chunks_are_sized_to_their_bytes(fake):
     assert need == sum(sizes)
     assert all(size % dm._EXACT_PIN_PAGE == 0 for size in sizes)
     payload = sum(p.nbytes for p in module.parameters())
-    # page rounding only: under one page per chunk
     assert payload <= need < payload + len(sizes) * dm._EXACT_PIN_PAGE
     twin = _module()
     stock_need = dm._pin_host_weights(
@@ -101,7 +96,6 @@ def test_exact_chunks_are_sized_to_their_bytes(fake):
     )
     assert need < stock_need
     _check_values(module, ref)
-    # every weight is a view into a layout chunk, and the kept host map reads it
     bufs = [buf for buf, _ in layout]
     for name, p in module.named_parameters():
         assert host[name].data_ptr() == p.data_ptr()
