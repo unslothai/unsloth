@@ -3539,15 +3539,16 @@ html[data-chat-font] .aui-root {
 		width: calc(100% + 0.625rem * var(--ui-space-scale, 1));
 	}
 
-	/* Fade text cut off at either edge (markComposerScrollEdges sets the flags). The scrollbar strip stays unmasked. */
-	.unsloth-composer-input:is([data-fade-top], [data-fade-bottom]):not(:placeholder-shown) {
+	/* Edge fades. Any text: a faint fade over the last line's lower edge. Lines below or above
+	   (markComposerScrollEdges sets the flags): a clearer fade. The scrollbar strip stays unmasked. */
+	.unsloth-composer-input:not(:placeholder-shown) {
 		mask-image:
 			linear-gradient(
 				to bottom,
 				transparent,
 				#000 var(--composer-fade-top, 0px),
-				#000 calc(100% - var(--composer-fade-bottom, 0px)),
-				var(--composer-fade-bottom-to, transparent)
+				#000 calc(100% - var(--composer-fade-bottom, calc(1.375rem * var(--ui-space-scale, 1)))),
+				transparent
 			),
 			linear-gradient(#000, #000);
 		mask-size: calc(100% - 12px) 100%, 12px 100%;
@@ -3559,14 +3560,8 @@ html[data-chat-font] .aui-root {
 		--composer-fade-top: calc(1.5rem * var(--ui-space-scale, 1));
 	}
 
-	/* Lines below: a clear fade. At the last line: just a hint, so the line being typed stays legible. */
-	.unsloth-composer-input[data-fade-bottom="more"] {
+	.unsloth-composer-input[data-fade-bottom] {
 		--composer-fade-bottom: calc(1.75rem * var(--ui-space-scale, 1));
-	}
-
-	.unsloth-composer-input[data-fade-bottom="end"] {
-		--composer-fade-bottom: calc(1.5rem * var(--ui-space-scale, 1));
-		--composer-fade-bottom-to: rgb(0 0 0 / 0.4);
 	}
 
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
