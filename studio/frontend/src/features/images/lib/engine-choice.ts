@@ -118,6 +118,13 @@ function baseRepoOf(status: ReloadStatus): { baseRepo?: string } {
   return status.base_repo ? { baseRepo: status.base_repo } : {};
 }
 
+/** The page's own GGUF target with the resident's base repo when it names none (one seeded from a status read that
+ *  left it out), so the reload keeps the companions it runs with now. ``last`` itself otherwise. */
+function withResidentBase<T extends { kind?: string | null }>(last: T, status: ReloadStatus): T {
+  if (last.kind !== "gguf" || (last as { baseRepo?: string }).baseRepo || !status.base_repo) return last;
+  return { ...last, ...baseRepoOf(status) };
+}
+
 /** The GGUF the native-reload note names: the page's own last load only while it is still the resident model (another
  *  client may have replaced it), else the checkpoint status reports. */
 export function nativeReloadTarget<T extends { repoId: string; kind?: string | null; filename?: string | null }>(
@@ -126,7 +133,7 @@ export function nativeReloadTarget<T extends { repoId: string; kind?: string | n
 ): T | { repoId: string; kind: "gguf"; filename: string; displayRepoId?: string; baseRepo?: string } | null {
   if (!status?.loaded || status.model_kind !== "gguf" || !status.repo_id || !status.gguf_filename) return null;
   if (last && last.repoId === status.repo_id && last.kind === "gguf" && last.filename === status.gguf_filename) {
-    return last;
+    return withResidentBase(last, status);
   }
   return {
     repoId: status.repo_id,
@@ -219,7 +226,7 @@ export function reapplyTarget<T extends { repoId: string; kind?: string | null; 
     last.kind === status.model_kind &&
     (last.kind === "pipeline" || last.filename === status.gguf_filename)
   ) {
-    return last;
+    return withResidentBase(last, status);
   }
   return residentReloadTarget(status);
 }

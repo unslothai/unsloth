@@ -68,7 +68,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
                 isDisabled
                   ? "ring-border opacity-40 cursor-not-allowed"
                   : selected
-                    ? "ring-1 ring-ring-strong bg-primary/5"
+                    ? "ring-1 ring-ring-strong bg-wash-5"
                     : "ring-border hover:bg-muted/40",
               )}
             >

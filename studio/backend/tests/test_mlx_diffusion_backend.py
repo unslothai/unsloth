@@ -1165,7 +1165,7 @@ def test_the_load_route_takes_the_gpu_arbiter_for_mlx_on_a_cpu_torch_host(monkey
     monkeypatch.setattr("routes.inference._selected_gpu_ordinal", _no_ordinal)
     calls = []
     monkeypatch.setattr(
-        arbiter, "acquire_for_request", lambda owner, fn: calls.append("acquire") or fn()
+        arbiter, "acquire_for_request", lambda owner, fn, **_: calls.append("acquire") or fn()
     )
     monkeypatch.setattr(arbiter, "release", lambda owner: calls.append("release"))
     asyncio.run(
@@ -1754,3 +1754,125 @@ def test_the_mlx_plan_names_the_base_the_load_will_read(monkeypatch, tmp_path):
     assert recorder.calls[-1]["base_repo"] == BASE
     mb.MlxDiffusionBackend().download_plan(str(local), gguf_filename = gguf, base_repo = BASE)
     assert recorder.calls[-1]["base_repo"] == BASE
+
+
+@pytest.mark.parametrize("outcome", ["done", "cancelled", "failed"])
+def test_the_runtime_releases_mlx_buffer_cache_after_every_generation(monkeypatch, outcome):
+    """Freed activations otherwise sit in MLX's buffer cache, i.e. in system RAM, until unload."""
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mflux.utils.exceptions")
+
+    class _Registry:
+        """The two members of mflux's CallbackRegistry the runtime touches."""
+
+        def __init__(self):
+            self.in_loop = []
+
+        def register(self, callback):
+            self.in_loop.append(callback)
+
+    cleared = []
+    real_clear = mx.clear_cache
+    monkeypatch.setattr(mx, "clear_cache", lambda: (cleared.append(1), real_clear()))
+
+    class _Image:
+        image = "png"
+
+    class _Model:
+        callbacks = _Registry()
+
+        def generate_image(self, **kwargs):
+            latents = mx.zeros((2, 2))
+            for t in range(kwargs["num_inference_steps"]):
+                for cb in self.callbacks.in_loop:
+                    cb.call_in_loop(t, kwargs["seed"], kwargs["prompt"], latents, None, None)
+            if outcome == "failed":
+                raise RuntimeError("boom")
+            return _Image()
+
+    def on_step(done):
+        if outcome == "cancelled" and done == 2:
+            raise mb.MlxCancelled("cancelled")
+
+    runtime = mb.MfluxRuntime()
+    kwargs = dict(
+        prompt = "p",
+        negative_prompt = None,
+        seed = 1,
+        steps = 3,
+        width = 64,
+        height = 64,
+        guidance = None,
+        on_step = on_step,
+    )
+    model = _Model()
+    if outcome == "done":
+        assert runtime.generate(model, **kwargs) == "png"
+    else:
+        with pytest.raises(mb.MlxCancelled if outcome == "cancelled" else RuntimeError):
+            runtime.generate(model, **kwargs)
+    assert cleared == [1]
+    assert model.callbacks.in_loop == []
+
+
+def test_every_mlx_cache_clear_goes_through_the_drain():
+    """The only ``clear_cache`` call is inside ``release_buffer_cache``, right after its synchronize."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(mb))
+    sites = []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "clear_cache"
+            ):
+                sites.append(func.name)
+    assert sites == ["release_buffer_cache"]
+
+
+def _recording_mx(sync_error = None, clear_error = None):
+    events = []
+
+    class _Mx:
+        @staticmethod
+        def synchronize(stream = None):
+            events.append("synchronize")
+            if sync_error is not None:
+                raise sync_error
+
+        @staticmethod
+        def clear_cache():
+            events.append("clear_cache")
+            if clear_error is not None:
+                raise clear_error
+
+    return _Mx, events
+
+
+def test_release_buffer_cache_drains_before_clearing():
+    mx, events = _recording_mx()
+    mb.release_buffer_cache(mx)
+    assert events == ["synchronize", "clear_cache"]
+
+
+def test_release_buffer_cache_never_replaces_the_callers_exception():
+    mx, events = _recording_mx(sync_error = RuntimeError("sync"), clear_error = RuntimeError("clear"))
+    with pytest.raises(ValueError, match = "generation failed"):
+        try:
+            raise ValueError("generation failed")
+        finally:
+            mb.release_buffer_cache(mx)
+    assert events == ["synchronize", "clear_cache"]
+
+
+def test_the_mlx_base_fetch_keeps_the_fallback_scheduler_config():
+    import fnmatch
+
+    from core.inference.mlx_diffusion_backend import BASE_ALLOW_PATTERNS
+    for name in ("scheduler/scheduler_config.json", "model_index.json"):
+        assert any(fnmatch.fnmatch(name, pattern) for pattern in BASE_ALLOW_PATTERNS), name

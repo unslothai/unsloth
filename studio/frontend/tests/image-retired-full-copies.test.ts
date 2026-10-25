@@ -143,6 +143,6 @@ test("a retired copy's snapshot that loaded through its base is remembered as th
   // The ready poll reconciles the Reapply target before it decides what to remember.
   const page = readSrc("features/images/images-page.tsx");
   const ready = page.slice(page.indexOf('toast.success("Model loaded"'));
-  const reconcile = ready.indexOf("lastLoad.current = retiredSnapshotAsLoaded(lastLoad.current, loaded)");
-  assert.ok(reconcile > 0 && reconcile < ready.indexOf("matchesRememberedModel(lastLoad.current, loaded)"));
+  const reconcile = ready.indexOf("lastLoad.current = finished ? retiredSnapshotAsLoaded(finished, loaded) : finished");
+  assert.ok(reconcile > 0 && reconcile < ready.indexOf("rememberFinishedLoad(lastLoad.current, loaded"));
 });

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -109,13 +111,14 @@ function SectionNameForm({
         maxLength={CUSTOM_SECTION_NAME_MAX}
         placeholder={t("shell.sections.namePlaceholder")}
         aria-label={t("shell.sections.namePlaceholder")}
-        className="w-full rounded-[14px] border border-border bg-background px-4 py-3 text-base outline-none transition-colors placeholder:text-muted-foreground focus:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus:border-ring"
+        className="w-full rounded-full border border-border bg-background px-4 py-3 text-base outline-none transition-colors placeholder:text-muted-foreground focus:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus:border-ring"
       />
       <DialogFooter className="flex-wrap gap-2 sm:justify-end">
         <Button type="button" variant="ghost" onClick={onCancel}>
           {t("common.cancel")}
         </Button>
-        <Button type="button" onClick={submit} disabled={!clean || unchanged}>
+        <Button variant="secondary" type="button" onClick={submit} disabled={!clean || unchanged}>
+          <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
           {mode === "create" ? t("shell.sections.create") : t("common.save")}
         </Button>
       </DialogFooter>

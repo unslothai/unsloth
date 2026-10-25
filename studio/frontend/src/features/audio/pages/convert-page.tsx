@@ -236,7 +236,7 @@ function SourceTextField({
         aria-busy={transcriber.transcribing}
         onChange={(event) => store.setSourceText(event.target.value)}
         placeholder="Type the words in the recording, or press Transcribe."
-        className="min-h-16 rounded-lg"
+        className="min-h-16"
       />
       {transcriber.error ? (
         <p role="alert" className="text-ui-11p5 leading-snug text-destructive">
@@ -322,7 +322,7 @@ export function ConvertFooter({
       ? (convert.switchNotice?.before ?? null)
       : null;
   return (
-    <div className="flex w-full flex-col items-center gap-1.5">
+    <div className="flex w-full max-w-sm flex-col items-center gap-1.5">
       <TtsFooter
         {...props}
         prompt="convert"

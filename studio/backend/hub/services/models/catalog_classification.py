@@ -16,6 +16,7 @@ from hub.services.models.common import (
     _iter_gguf_paths,
     _local_path_can_chat,
 )
+from utils import gguf_archs as _gguf_archs
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
@@ -24,27 +25,12 @@ from utils.gguf_archs import (
 from utils.paths.path_utils import file_contents_available_locally
 
 
-_DIFFUSION_GGUF_ARCHS = frozenset(
-    {
-        "flux",
-        "flux2",
-        "qwen_image",
-        "qwenimage",
-        "qwen_image21",
-        "qwenimage21",
-        "z_image",
-        "zimage",
-        "krea2",
-    }
-)
-# Archs that alone name the family. Not "flux" / "qwen_image": several DiTs ship under those (#14474).
-_FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2"})
-_UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
-    {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
-)
-_AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
-_PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
-_VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
+_DIFFUSION_GGUF_ARCHS = _gguf_archs.DIFFUSION_IMAGE_GGUF_ARCHS
+_FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = _gguf_archs.FAMILY_NAMING_DIFFUSION_GGUF_ARCHS
+_UNSUPPORTED_DIFFUSION_GGUF_ARCHS = _gguf_archs.UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+_AMBIGUOUS_DIFFUSION_GGUF_ARCHS = _gguf_archs.AMBIGUOUS_DIFFUSION_GGUF_ARCHS
+_PLACEHOLDER_DIFFUSION_GGUF_ARCHS = _gguf_archs.PLACEHOLDER_DIFFUSION_GGUF_ARCHS
+_VIDEO_GGUF_ARCHS = _gguf_archs.VIDEO_GGUF_ARCHS
 _VIDEO_GEN_TASK = "text-to-video"
 
 # TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker keeps them out of

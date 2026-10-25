@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedControl } from "@/components/segmented-control";
 import { InfoHint } from "@/components/ui/info-hint";
 import {
   Select,
@@ -11,9 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
-  type RagAutoInject,
   type RagMode,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
@@ -153,29 +152,17 @@ export function RetrievalSettingsSection() {
             Search attached documents before answering.
           </span>
         </div>
-        <ToggleGroup
-          type="single"
-          variant="outline"
+        <SegmentedControl
           value={ragAutoInject}
-          onValueChange={(value) => {
-            // Radix clears on re-click; ignore empty so one stays selected.
-            if (value) {
-              setRagAutoInject(value as RagAutoInject);
-            }
-          }}
-          className="w-full"
-          aria-label="Auto-retrieve documents"
-        >
-          <ToggleGroupItem value="auto" className="flex-1">
-            Auto
-          </ToggleGroupItem>
-          <ToggleGroupItem value="on" className="flex-1">
-            On
-          </ToggleGroupItem>
-          <ToggleGroupItem value="off" className="flex-1">
-            Off
-          </ToggleGroupItem>
-        </ToggleGroup>
+          options={[
+            { value: "auto", label: "Auto" },
+            { value: "on", label: "On" },
+            { value: "off", label: "Off" },
+          ]}
+          onValueChange={setRagAutoInject}
+          ariaLabel="Auto-retrieve documents"
+          size="compact"
+        />
         <SliderRow
           label="Auto-retrieve threshold"
           value={ragAutoInjectMinScore}
