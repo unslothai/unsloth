@@ -257,15 +257,22 @@ def test_decode_rope_on_another_device_orders_with_the_copy():
 
 
 def test_a_cos_table_past_int32_offsets_takes_64_bit_indexing():
-    # Meta tensors: only shapes and strides are read.
-    from unsloth.kernels.indexing import long_indexing
+    # Meta tensors and a launch stub: only the constexprs the launcher picks are read.
+    def launched(rows):
+        seen = {}
 
-    rows = 2**31 // 128 + 4
-    big = torch.empty(rows, 128, device = "meta", dtype = torch.float16)
-    small = torch.empty(4096, 128, device = "meta", dtype = torch.float16)
-    q = torch.empty(2, 8, 1, 128, device = "meta", dtype = torch.float16)
-    assert long_indexing(q, q, q, q, big, big, block = 128)
-    assert not long_indexing(q, q, q, q, small, small, block = 128)
+        class _Grid:
+            def __getitem__(self, grid):
+                return lambda *args, **kwargs: seen.update(kwargs)
+
+        cos = torch.empty(rows, 128, device = "meta", dtype = torch.float16)
+        q = torch.empty(2, 8, 1, 128, device = "meta", dtype = torch.float16)
+        k = torch.empty(2, 2, 1, 128, device = "meta", dtype = torch.float16)
+        RE._rope_launch(q, q, k, k, cos, cos, None, False, False, False, lambda fn: _Grid())
+        return seen["LONG_INDEXING"]
+
+    assert launched(2**31 // 128 + 4)
+    assert not launched(4096)
 
 
 @pytest.mark.gpu
