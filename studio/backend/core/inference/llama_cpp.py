@@ -572,6 +572,7 @@ from state.tool_approvals import (
     begin_tool_decision,
     new_approval_id,
     decision_reason,
+    note_host_access,
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
@@ -19652,10 +19653,20 @@ class LlamaCppBackend:
             # deepseek4 the rate has little headroom at 1M (~4%), so a layer split adds the
             # extra mask copies like every other arch.
             ub_scale = ub / self._DEFAULT_N_UBATCH
-            return int(
-                self._DSV41_CTX_COMPUTE_FLAT_BYTES
-                + (self._DSV41_CTX_COMPUTE_BYTES_PER_TOK * ub_scale + split_extra) * n_ctx
-            )
+            per_tok = self._DSV41_CTX_COMPUTE_BYTES_PER_TOK * ub_scale + split_extra
+            flat = self._DSV41_CTX_COMPUTE_FLAT_BYTES
+            if not flash_attn:
+                # Dense branch: f32 KQ scores [window + n_comp, ub, n_head]. Layer score sizes
+                # differ, so the allocator fragments and keeps two copies live (one undercounts).
+                n_head = getattr(self, "_n_heads", None) or max(1, n_embd // 64)
+                score_rate = 2 * ub * n_head * 4
+                window_cells = _pad_kv_cells(
+                    self._effective_sliding_window() * max(1, int(n_parallel)) + ub
+                )
+                # The measured rate holds one f16 KQ mask; here it is f32.
+                per_tok += score_rate + ub * 2
+                flat += score_rate * window_cells
+            return int(flat + per_tok * n_ctx)
         if getattr(self, "_architecture", None) == "inkling":
             ub_scale = ub / self._DEFAULT_N_UBATCH
             # The fused banded path requires an f32/f16/bf16 KV cache. A quantized
@@ -42972,6 +42983,8 @@ class LlamaCppBackend:
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
                     )
+                    if needs_confirm:
+                        note_host_access(approval_id, decision.tool_name, decision.arguments)
                     start_event = decision.tool_start_event()
                     start_event["approval_id"] = approval_id
                     start_event["awaiting_confirmation"] = needs_confirm
