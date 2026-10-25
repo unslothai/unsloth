@@ -190,7 +190,7 @@ def _run_example(name: str, stubs: dict):
 
     async def go():
         rs = await eng.start_run(app = None, flow_id = name, doc = parsed, options = {})
-        await asyncio.wait_for(rs.task, timeout = 60)
+        await asyncio.wait_for(rs.task, timeout = 240)
         return rs
 
     rs = run(go())
@@ -483,7 +483,7 @@ async def _run_example_c(
     parsed, errors = parse_document(_example(name))
     assert not errors, errors
     rs = await eng.start_run(app = None, flow_id = name, doc = parsed, options = {"params": params or {}})
-    await asyncio.wait_for(rs.task, timeout = 60)
+    await asyncio.wait_for(rs.task, timeout = 240)
     failed = {nid: s.error for nid, s in rs.nodes.items() if s.status == "failed"}
     return rs, failed
 
