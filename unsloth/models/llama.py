@@ -1429,16 +1429,9 @@ def LlamaModel_fast_forward(
         and self.training
     ):
         # Careful: for inference the attention_mask is size (1, kv_seq_len) while input_embeds is (1, 1, 4096).
-        inputs_requires_grad = inputs_embeds.requires_grad
-        if not inputs_embeds.is_leaf:
-            inputs_embeds = inputs_embeds.detach()
-            inputs_requires_grad = True
-        elif inputs_requires_grad:
-            inputs_embeds.requires_grad_(False)
         attention_mask = attention_mask[:, : self.max_seq_length]  # Must resize!
-        inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
-        if inputs_requires_grad:
-            inputs_embeds.requires_grad_(True)
+        # Preserve the graph for external inputs_embeds without promoting their dtype.
+        inputs_embeds = inputs_embeds * attention_mask.unsqueeze(-1).to(inputs_embeds.dtype)
 
     if attention_mask is None:
         padding_mask = None
