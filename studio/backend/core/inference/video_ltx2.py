@@ -499,7 +499,11 @@ def _copy_file_chunks(
                     got += read
         return
     buffers = max(1, min(buffers, len(jobs)))
-    staging = [torch.empty(chunk_bytes, dtype = torch.uint8, pin_memory = True) for _ in range(buffers)]
+    from .host_pinning import host_pinning_allowed
+
+    # Pageable on an integrated GPU: the copy then completes before copy_ returns, so slot reuse stays safe.
+    pin = host_pinning_allowed(device)
+    staging = [torch.empty(chunk_bytes, dtype = torch.uint8, pin_memory = pin) for _ in range(buffers)]
     done_events: list[Any] = [None] * buffers
     handles: "queue.SimpleQueue[Any]" = queue.SimpleQueue()
     opened: list[Any] = []

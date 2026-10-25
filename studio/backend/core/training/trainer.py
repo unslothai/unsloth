@@ -89,6 +89,7 @@ from utils.datasets.pretokenized import (
     PRETOKENIZED_FORMAT,
     has_custom_labels,
     prepare_pretokenized_dataset,
+    resolve_completion_only_loss,
 )
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
@@ -4964,6 +4965,11 @@ class UnslothTrainer:
                 except Exception:
                     vocab_size = None
                 max_seq = training_args.get("max_seq_length", 2048)
+                # completion_mask is applied (so checked) only under completion_only_loss, which TRL resolves
+                # once from the train split when unset and uses for eval too.
+                completion_only = resolve_completion_only_loss(
+                    dataset["dataset"], config_args.get("completion_only_loss")
+                )
             # Each split goes by its own format: a separately supplied eval split can be pre-tokenized while the
             # training split is text, and the reverse.
             if pretokenized_mode:
@@ -4972,7 +4978,10 @@ class UnslothTrainer:
                     logger.info("Pre-tokenized dataset: sequence packing turned off\n")
                 config_args["packing"] = False
                 dataset["dataset"] = prepare_pretokenized_dataset(
-                    dataset["dataset"], max_seq_length = max_seq, vocab_size = vocab_size
+                    dataset["dataset"],
+                    max_seq_length = max_seq,
+                    vocab_size = vocab_size,
+                    completion_only_loss = completion_only,
                 )
             if eval_pretokenized:
                 # TRL packs eval by `packing` unless eval_packing says otherwise, and packing keeps only input_ids,
@@ -4981,7 +4990,10 @@ class UnslothTrainer:
                     logger.info("Pre-tokenized eval dataset: eval sequence packing turned off\n")
                     config_args["eval_packing"] = False
                 eval_dataset = prepare_pretokenized_dataset(
-                    eval_dataset, max_seq_length = max_seq, vocab_size = vocab_size
+                    eval_dataset,
+                    max_seq_length = max_seq,
+                    vocab_size = vocab_size,
+                    completion_only_loss = completion_only,
                 )
 
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything

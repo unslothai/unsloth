@@ -456,7 +456,8 @@ const PRE_EXTRA_ARGS_SCHEMA_VERSION = 2;
 const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
-export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
+// Mirrors MAX_CHAT_TEMPLATE_BYTES in backend/picker/schemas.py.
+export const MAX_CHAT_TEMPLATE_BYTES = 512 * 1024;
 export const MAX_REASONING_BUDGET_MESSAGE_BYTES = 8_192;
 
 export function isReasoningBudgetMessageValid(value: string): boolean {

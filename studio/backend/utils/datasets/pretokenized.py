@@ -4,8 +4,6 @@
 """Pre-tokenized text datasets: rows that already hold ``input_ids`` (optionally ``attention_mask`` and ``labels``). They train as-is, without a chat template; user ``labels`` are the objective, so response masking applies only to rows without them. Only datasets no other format matched are claimed, so every dataset that trained before keeps its route."""
 
 PRETOKENIZED_FORMAT = "pretokenized"
-# Every per-token column a row may carry. TRL reads completion_mask / assistant_masks position by position (the 0.22
-# collator applies them to the labels, 1.x folds them into labels), so they are trimmed and truncated with input_ids.
 _TOKEN_COLUMNS = (
     "input_ids",
     "attention_mask",
@@ -14,6 +12,45 @@ _TOKEN_COLUMNS = (
     "completion_mask",
     "assistant_masks",
 )
+# Per-token masks TRL applies to the labels when a row has none of its own: a missing value or a
+# length other than input_ids' fails mid-training.
+_MASK_COLUMNS = ("completion_mask", "assistant_masks")
+
+
+def _collator_masks_user_labels() -> bool:
+    """TRL < 1.7's collator applies the masks on top of a row's own labels; 1.7+ uses the labels as they are."""
+    try:
+        import trl
+        from packaging.version import Version
+        return Version(trl.__version__) < Version("1.7.0")
+    except Exception:
+        return True
+
+
+def _checked_masks(columns, completion_only_loss = None) -> tuple:
+    """Masks the trainer will apply, the only ones checked and truncated.
+
+    TRL applies `assistant_masks` on presence but `completion_mask` only under
+    `completion_only_loss`, which, left unset, it resolves from the dataset shape (prompt plus
+    completion columns). Beside user labels the masks are applied only by TRL < 1.7's collator.
+    """
+    if "labels" in columns and not _collator_masks_user_labels():
+        return ()
+    if completion_only_loss is None:
+        completion_only_loss = "prompt" in columns and "completion" in columns
+    return tuple(
+        c
+        for c in _MASK_COLUMNS
+        if c in columns and (completion_only_loss or c != "completion_mask")
+    )
+
+
+def _mask_error(name):
+    return ValueError(
+        f"Pre-tokenized dataset: '{name}' must have the same length as 'input_ids' in every row."
+    )
+
+
 _SAMPLE_ROWS = 20
 
 
@@ -43,10 +80,26 @@ def is_pretokenized_dataset(dataset) -> bool:
 
 
 def _column_names(dataset) -> list[str]:
+    """Columns the trainer's rows expose: a map-style ``set_format(columns = ...)`` hides the rest."""
     names = getattr(dataset, "column_names", None)
     if names:
+        fmt = getattr(dataset, "format", None)
+        if (
+            isinstance(fmt, dict)
+            and fmt.get("columns") is not None
+            and not fmt.get("output_all_columns")
+        ):
+            return [c for c in names if c in fmt["columns"]]
         return list(names)
     return list(next(iter(dataset)).keys())
+
+
+def resolve_completion_only_loss(train_dataset, completion_only_loss = None) -> bool:
+    """TRL resolves an unset `completion_only_loss` once, from the train split's first row, for every split."""
+    if completion_only_loss is not None:
+        return completion_only_loss
+    names = _column_names(train_dataset)
+    return "prompt" in names and "completion" in names
 
 
 def has_custom_labels(dataset) -> bool:
@@ -88,49 +141,59 @@ def _raise_null_values(column, row_index):
     )
 
 
-def _raise_length_mismatch(column):
-    raise ValueError(
-        f"Pre-tokenized dataset: '{column}' must have the same length as 'input_ids' in every row."
-    )
-
-
-def _check_arrow_table(table, max_seq_length, vocab_size) -> tuple[bool, bool]:
+def _check_arrow_table(
+    table,
+    max_seq_length,
+    vocab_size,
+    masks = (),
+    labels = True,
+) -> tuple[bool, bool]:
     """Returns (needs_truncation, needs_trimming)."""
     import pyarrow as pa
     import pyarrow.compute as pc
 
     ids = table.column("input_ids")
     lengths = pc.list_value_length(ids)
+    for name in masks:
+        # An all-null or scalar column has no list kernel: reject it with the same error.
+        kind = table.column(name).type
+        if not (
+            pa.types.is_list(kind)
+            or pa.types.is_large_list(kind)
+            or pa.types.is_fixed_size_list(kind)
+        ):
+            raise _mask_error(name)
+        same = pc.equal(lengths, pc.list_value_length(table.column(name)))
+        # A row without the mask compares as null: that row fails too.
+        if pc.all(same, skip_nulls = False).as_py() is not True:
+            raise _mask_error(name)
+    others = [c for c in ("attention_mask", "token_type_ids") if c in table.column_names]
+    if labels and "labels" in table.column_names:
+        others.append("labels")
     # Arrow reductions (any, all, min_max) skip nulls, so a mask such as [None, 1] or a label hole would pass every
-    # check below and reach the trainer; refuse null elements in every token column first.
-    for column in _TOKEN_COLUMNS:
-        if column in table.column_names and pc.list_flatten(table.column(column)).null_count:
+    # check below and reach the trainer; refuse null elements first.
+    for column in ["input_ids", *masks, *others]:
+        if pc.list_flatten(table.column(column)).null_count:
             values = table.column(column).combine_chunks()
             holes = pc.is_null(pc.list_flatten(values))
             _raise_null_values(column, pc.filter(pc.list_parent_indices(values), holes)[0].as_py())
+    # Trimming slices every token column at the mask's boundaries, so each must line up with input_ids.
+    for column in others:
+        if not pc.all(pc.equal(lengths, pc.list_value_length(table.column(column)))).as_py():
+            raise _mask_error(column)
     needs_trimming = False
     if "attention_mask" in table.column_names:
-        flat_mask = pc.list_flatten(table.column("attention_mask"))
+        mask = table.column("attention_mask").combine_chunks()
+        flat_mask = pc.list_flatten(mask)
         if pa.types.is_boolean(flat_mask.type):
             # Arrow has no bool-vs-int comparison kernel; True/False are exactly 1/0, so compare them as integers.
             flat_mask = pc.cast(flat_mask, pa.int8())
         # Exact membership, not a range: a float mask such as [0.5, 1.0] sits inside [0, 1] yet is neither value.
-        if pc.any(pc.and_(pc.not_equal(flat_mask, 0), pc.not_equal(flat_mask, 1))).as_py():
-            mask = table.column("attention_mask").combine_chunks()
-            flat = pc.list_flatten(mask)
-            bad = pc.and_(pc.not_equal(flat, 0), pc.not_equal(flat, 1))
+        bad = pc.and_(pc.not_equal(flat_mask, 0), pc.not_equal(flat_mask, 1))
+        if pc.any(bad).as_py():
             _raise_bad_mask_values(pc.filter(pc.list_parent_indices(mask), bad)[0].as_py())
-        bounds = pc.min_max(flat_mask).as_py()
         # Only a mask with zeros changes what trains (TRL rebuilds all-one masks); an all-ones mask is left as is.
-        needs_trimming = bounds["min"] == 0
-    # Trimming slices every token column at the mask's boundaries and TRL applies the supervision masks position by
-    # position, so each must line up with input_ids whether or not a row is trimmed.
-    for column in _TOKEN_COLUMNS[1:]:
-        if (
-            column in table.column_names
-            and not pc.all(pc.equal(lengths, pc.list_value_length(table.column(column)))).as_py()
-        ):
-            _raise_length_mismatch(column)
+        needs_trimming = pc.min_max(flat_mask).as_py()["min"] == 0
     if vocab_size:
         flat = pc.list_flatten(ids)
         bounds = pc.min_max(flat).as_py() if len(flat) else {"min": 0, "max": 0}
@@ -141,19 +204,31 @@ def _check_arrow_table(table, max_seq_length, vocab_size) -> tuple[bool, bool]:
                 f"(size {vocab_size}). The dataset was likely "
                 "tokenized for a different model; re-tokenize it with this model's tokenizer."
             )
-    if "labels" in table.column_names:
+    if "labels" in others:
         _check_labels_range(pc.list_flatten(table.column("labels")), vocab_size)
     longest = pc.max(lengths).as_py() or 0
     return bool(max_seq_length) and longest > max_seq_length, needs_trimming
 
 
-def _trim_row(row_index, columns, values):
+def _trim_row(
+    row_index,
+    columns,
+    values,
+    masks = (),
+):
     """Drops the leading/trailing attention_mask==0 positions of one row from every token column. TRL's collators
     rebuild the mask as all ones (padding-free ones drop it), so trimming is the only way a pad stays unattended."""
     width = len(values[columns.index("input_ids")])
     for column, value in zip(columns, values):
-        if value is not None and len(value) != width:
-            _raise_length_mismatch(column)
+        # A mask the trainer applies must be present; a scalar (None, int, numpy 0-d) has no len().
+        if value is None and column not in masks:
+            continue
+        try:
+            bad = len(value) != width
+        except TypeError:
+            bad = True
+        if bad:
+            raise _mask_error(column)
     mask = values[columns.index("attention_mask")] if "attention_mask" in columns else None
     if mask is None:
         return values
@@ -177,14 +252,31 @@ def _trim_row(row_index, columns, values):
     return [v[start:stop] if v is not None else v for v in values]
 
 
+def _restore_format(out, fmt):
+    # The whole format: the column selection too, so hidden columns stay hidden.
+    return out.with_format(
+        fmt["type"],
+        columns = fmt["columns"],
+        output_all_columns = fmt["output_all_columns"],
+        **(fmt["format_kwargs"] or {}),
+    )
+
+
 def prepare_pretokenized_dataset(
     dataset,
     *,
     max_seq_length,
     vocab_size = None,
+    completion_only_loss = None,
 ):
     """Unsloth's SFT preparation passes tokenized rows through untouched: an over-long row would reach the model whole and an id past the embedding table is a device-side assert mid-run. Rows whose attention_mask zeros are leading/trailing padding lose those positions (the trainer would attend and train on them); zeros between attended tokens are refused. A falsy max_seq_length skips truncation. Idempotent."""
-    columns = [c for c in _TOKEN_COLUMNS if c in _column_names(dataset)]
+    names = _column_names(dataset)
+    completion_only_loss = resolve_completion_only_loss(dataset, completion_only_loss)
+    # Masks are checked even when set_format hides them: TRL 0.22-0.26 re-exposes every column through
+    # with_transform, and 1.7+ reads dataset.column_names and builds labels with map(), which sees them all.
+    masks = _checked_masks(getattr(dataset, "column_names", None) or names, completion_only_loss)
+    # A mask the trainer will not apply is left as it is (it may not even be a list).
+    columns = [c for c in _TOKEN_COLUMNS if (c in names and c not in _MASK_COLUMNS) or c in masks]
     table = getattr(dataset, "data", None)
 
     if table is None or not hasattr(table, "column"):
@@ -193,16 +285,16 @@ def prepare_pretokenized_dataset(
             out = {c: list(batch[c]) for c in columns}
             for i, row_index in enumerate(indices):
                 for c in columns:
-                    if out[c][i] is not None and None in out[c][i]:
+                    if isinstance(out[c][i], (list, tuple)) and None in out[c][i]:
                         _raise_null_values(c, row_index)
                 labels = out["labels"][i] if "labels" in out else None
                 if labels is not None and len(labels) != len(out["input_ids"][i]):
-                    _raise_length_mismatch("labels")
+                    raise _mask_error("labels")
                 if labels:
                     high, low = max(labels), min((x for x in labels if x != -100), default = 0)
                     if low < 0 or (vocab_size and high >= vocab_size):
                         _raise_bad_label(low if low < 0 else high, vocab_size)
-                values = _trim_row(row_index, columns, [out[c][i] for c in columns])
+                values = _trim_row(row_index, columns, [out[c][i] for c in columns], masks)
                 if max_seq_length:
                     values = [v[:max_seq_length] if v is not None else v for v in values]
                 for c, v in zip(columns, values):
@@ -212,29 +304,28 @@ def prepare_pretokenized_dataset(
         return dataset.map(_prepare, batched = True, with_indices = True)
 
     # Covers the whole backing table, rows a select() hid included: a bad id there is still a bad dataset.
-    needs_truncation, needs_trimming = _check_arrow_table(table, max_seq_length, vocab_size)
+    needs_truncation, needs_trimming = _check_arrow_table(
+        table, max_seq_length, vocab_size, masks, labels = "labels" in names
+    )
     if needs_trimming:
 
         def _trim(batch, indices):
             out = {c: list(batch[c]) for c in columns}
             for i, row_index in enumerate(indices):
-                trimmed = _trim_row(row_index, columns, [out[c][i] for c in columns])
+                trimmed = _trim_row(row_index, columns, [out[c][i] for c in columns], masks)
                 for c, v in zip(columns, trimmed):
                     out[c][i] = v
             return out
 
         fmt = dataset.format
-        dataset = dataset.with_format(None).map(
-            _trim,
-            batched = True,
-            with_indices = True,
-            desc = "Trimming masked padding from pre-tokenized rows",
-        )
-        dataset = dataset.with_format(
-            fmt["type"],
-            columns = fmt["columns"],
-            output_all_columns = fmt["output_all_columns"],
-            **fmt["format_kwargs"],
+        dataset = _restore_format(
+            dataset.with_format(None).map(
+                _trim,
+                batched = True,
+                with_indices = True,
+                desc = "Trimming masked padding from pre-tokenized rows",
+            ),
+            fmt,
         )
     if not needs_truncation or not max_seq_length:
         return dataset
@@ -252,4 +343,4 @@ def prepare_pretokenized_dataset(
     out = dataset.with_format("arrow").map(
         _truncate_arrow, batched = True, desc = "Truncating pre-tokenized rows"
     )
-    return out.with_format(dataset.format["type"])
+    return _restore_format(out, dataset.format)

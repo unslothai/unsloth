@@ -375,6 +375,7 @@ def _hub(
     monkeypatch.setattr(huggingface_hub, "get_safetensors_metadata", no_metadata)
     monkeypatch.setattr(huggingface_hub, "file_exists", lambda repo, f, **k: f in exists)
     monkeypatch.setattr(loader_utils, "_hub_safetensors_header_dtypes", no_metadata, raising = False)
+    monkeypatch.setattr(loader_utils, "_hub_live_commit", lambda *a, **k: None, raising = False)
     return calls
 
 
@@ -510,3 +511,59 @@ def test_loader_forwards_use_safetensors_to_the_probe(tmp_path, monkeypatch):
             use_safetensors = False,
         )
     assert seen and all(v is False for v in seen)
+
+
+def test_online_probe_ignores_a_stale_cached_single_file(monkeypatch, tmp_path):
+    """Online with `subfolder`: a `model.safetensors` cached under an older commit of the branch must
+    not decide the layout once the branch moved to a sharded checkpoint (transformers refreshes it)."""
+    import huggingface_hub
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.delenv(k, raising = False)
+    stale = str(tmp_path / "stale_model.safetensors")
+    save_file(_tensors(SPLIT, packed = True), stale)
+    old, new = "a" * 40, "b" * 40
+    index = str(tmp_path / "index.json")
+    with open(index, "w", encoding = "utf-8") as f:
+        json.dump({"weight_map": {n: "model-00001-of-00001.safetensors" for n in FUSED_QS}}, f)
+
+    def download(
+        repo_id,
+        filename,
+        *args,
+        revision = None,
+        local_files_only = False,
+        **kwargs,
+    ):
+        if filename == "model.safetensors" and local_files_only and revision in (None, "main", old):
+            return stale  # the branch's previous commit, still in the cache
+        if filename == "model.safetensors.index.json" and revision == new:
+            return index
+        raise FileNotFoundError(filename)
+
+    def header(
+        repo_id,
+        filename,
+        revision = None,
+        token = None,
+    ):
+        if filename.endswith("model-00001-of-00001.safetensors") and revision == new:
+            return {n: "U8" for n in FUSED_QS}
+        raise FileNotFoundError(filename)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    monkeypatch.setattr(loader_utils, "_hub_safetensors_header_dtypes", header)
+    monkeypatch.setattr(loader_utils, "_hub_live_commit", lambda repo, revision, token: new)
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    assert (
+        loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, "someone/gpt-oss", subfolder = "sub")
+        is True
+    )
+    # Offline the cache is all there is, as in transformers.
+    assert (
+        loader_utils.gpt_oss_checkpoint_has_fused_experts(
+            cfg, "someone/gpt-oss", subfolder = "sub", local_files_only = True
+        )
+        is False
+    )

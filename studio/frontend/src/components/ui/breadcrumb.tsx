@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Slot } from "radix-ui";
 import type * as React from "react";
 
@@ -8,9 +9,6 @@ import { cn } from "@/lib/utils";
 import {
   MoreHorizontalCircle01Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronRightIcon,
-} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Breadcrumb({ className, ...props }: React.ComponentProps<"nav">) {
@@ -91,7 +89,7 @@ function BreadcrumbSeparator({
       className={cn("[&>svg]:size-3.5", className)}
       {...props}
     >
-      {children ?? <ChevronRightIcon strokeWidth={2} />}
+      {children ?? <HugeiconsIcon icon={ChevronRightStandardIcon} strokeWidth={2} />}
     </li>
   );
 }
