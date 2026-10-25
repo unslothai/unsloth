@@ -44,7 +44,6 @@ export interface WorldArt {
   tiles: Partial<Record<TileKind, HTMLImageElement>>;
   /** Keyed by "player", npc id or item id. */
   sprites: Record<string, HTMLImageElement>;
-  /** GLB files of the world's model props, keyed by asset ref (3D view only). */
   models?: Record<string, ArrayBuffer>;
 }
 
@@ -63,7 +62,6 @@ export interface WorldGameHandle {
   setNpcBusy(id: string, busy: boolean): void;
   setNpcStatus(id: string, icon: string): void;
   say(id: string, text: string, ms?: number): void;
-  /** The 3D view's scene editor (loaded on first use); the 2D map has none. */
   openEditor?(): Promise<WorldEditor>;
 }
 
@@ -186,7 +184,6 @@ export function createWorldGame(
       });
       layer.setCollision(solid);
       layer.setDepth(-10);
-      // Scenery from the 3D editor: a solid prop blocks its tile here too, and each one shows as a small marker.
       if (map.blocked) {
         map.blocked.forEach((b, i) => {
           if (b)

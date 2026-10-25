@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The pure half of the 3D world editor: props, undo history, tile snapping, which tiles props block, and the checks
-// an imported .glb model must pass. No three.js here, so it runs under node --test and costs the 2D player nothing.
 
 import type { ModelAsset, WorldProp3d, WorldPropKind } from "../../types";
 import type { Point, WorldMap } from "./procgen";
@@ -32,7 +30,6 @@ export const PROP_LABELS: Record<WorldPropKind, string> = {
   model: "Model",
 };
 
-/** Small enough to walk past; every other prop blocks its tile unless the editor says otherwise (the backend agrees). */
 export const OPEN_PROPS: ReadonlySet<WorldPropKind> = new Set([
   "lamp",
   "bench",
@@ -46,7 +43,6 @@ export const propTile = (p: Pick<WorldProp3d, "x" | "y">): Point => ({
   y: Math.floor(p.y),
 });
 
-/** Centre of the tile under (x, y): where the editor drops a prop when you let go of it. */
 export function snapToTile(
   x: number,
   y: number,
@@ -58,7 +54,6 @@ export function snapToTile(
   return { x: tx + 0.5, y: ty + 0.5 };
 }
 
-/** Rotation in degrees, snapped to 15 and kept in [0, 360). */
 export const snapRotation = (deg: number): number =>
   (((Math.round(deg / 15) * 15) % 360) + 360) % 360;
 
@@ -93,7 +88,6 @@ export function makeProp(
   };
 }
 
-/** Tiles nothing may block: where the player starts and where every villager and item stands. */
 function reserved(map: WorldMap): Set<number> {
   const out = new Set<number>();
   const add = (p: Point | undefined) => {
@@ -105,7 +99,6 @@ function reserved(map: WorldMap): Set<number> {
   return out;
 }
 
-/** One flag per tile: 1 where a solid prop stands. Spawn, villager and item tiles stay open so nothing gets trapped. */
 export function blockedCells(
   map: WorldMap,
   props: readonly WorldProp3d[],
@@ -137,7 +130,6 @@ export function setMapProps(
   map.blocked = props.length ? blockedCells(map, props, open) : undefined;
 }
 
-/** A free tile near `from` (not solid, no prop on it) for a new prop, searching outwards. */
 export function freeTileNear(
   map: WorldMap,
   from: Point,
@@ -166,7 +158,6 @@ export function freeTileNear(
   return null;
 }
 
-// Undo / redo: every edit replaces the whole prop list, so a step back is just the previous list.
 
 export interface PropHistory {
   props: WorldProp3d[];
@@ -248,7 +239,6 @@ interface GltfJson {
   extensionsRequired?: string[];
 }
 
-/** Triangles drawn: a mesh counts once per node that places it, so reusing one mesh many times is not free. */
 export function countTriangles(doc: GltfJson): number {
   const acc = doc.accessors ?? [];
   const count = (i: unknown) => {
@@ -280,7 +270,6 @@ export function countTriangles(doc: GltfJson): number {
   );
 }
 
-/** `{bytes, triangles}` for a model a world can use; throws GlbError with a readable reason otherwise. */
 export function inspectGlb(buf: ArrayBuffer): {
   bytes: number;
   triangles: number;
@@ -334,7 +323,6 @@ export function inspectGlb(buf: ArrayBuffer): {
   return { bytes: n, triangles };
 }
 
-// What the World Player's editor panel sees of the 3D editor (implemented in world-editor3d.ts).
 
 export type GizmoMode = "translate" | "rotate" | "scale";
 
@@ -348,10 +336,8 @@ export interface EditorState {
 
 export interface WorldEditor {
   state(): EditorState;
-  /** Called after every change; returns the unsubscribe. */
   subscribe(cb: () => void): () => void;
   add(kind: Exclude<WorldPropKind, "model">): void;
-  /** Place an imported model (already uploaded as `asset`); throws when three.js cannot read it. */
   addModel(asset: ModelAsset, data: ArrayBuffer, name?: string): Promise<void>;
   select(id: string | null): void;
   setMode(mode: GizmoMode): void;
@@ -359,7 +345,6 @@ export interface WorldEditor {
   remove(id?: string | null): void;
   undo(): void;
   redo(): void;
-  /** The ground, water, scenery and props as one binary glTF, for Blender and other tools. */
   exportGlb(): Promise<Blob>;
   close(): void;
 }
@@ -382,7 +367,6 @@ export async function saveUntilCurrent(
   return current() === saved;
 }
 
-/** Runs saves one after another, so an older save can never land after a newer one. */
 export class SaveQueue {
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -392,7 +376,6 @@ export class SaveQueue {
     return next;
   }
 
-  /** Resolves once every save queued so far has finished. */
   idle(): Promise<unknown> {
     return this.tail;
   }

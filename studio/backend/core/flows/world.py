@@ -343,10 +343,8 @@ def apply_play_view(
         view = _view3d(view)
         if view:
             world["view3d"] = view
-        # Scenery placed in the 3D editor is saved on the World Player, so it needs no rerun either.
         if isinstance(p.get("props3d"), list):
             world["props3d"] = props3d(p["props3d"], world["width"], world["height"])
-        # The editor saves scenery back onto this player only, so other players keep their own.
         world["player_node"] = n["id"]
         break
     return world

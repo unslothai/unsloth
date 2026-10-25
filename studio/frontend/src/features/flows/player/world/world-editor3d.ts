@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The 3D world editor: an orbit camera, a move / rotate / scale gizmo on the selected prop, undo and redo, and glTF
-// export. three-world.ts imports it only when you press Edit, so playing never loads it.
 
 import * as three from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -36,20 +34,15 @@ export interface EditorContext {
   camera: three.PerspectiveCamera;
   dom: HTMLCanvasElement;
   layer: PropLayer;
-  /** What Export writes: ground, water, scenery and props, not villagers or labels. */
   exportRoot: three.Object3D;
   map: WorldMap;
   groundAt(x: number, y: number): number;
-  /** Where the player stands and looks (tile units, radians). */
   player(): { x: number; y: number; yaw: number };
-  /** True when terrain lets a prop stand on the tile (not water, wall, tree or rock). */
   openTile(x: number, y: number): boolean;
-  /** Every change to the props: three-world puts them on the map so walking matches. */
   onProps(props: WorldProp3d[]): void;
 }
 
 export interface WorldEditorRuntime extends WorldEditor {
-  /** Advance the orbit camera; three-world calls it every frame while editing. */
   frame(): void;
 }
 
@@ -69,7 +62,6 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
     for (const cb of listeners) cb();
   };
 
-  // Look down at the spot a few tiles ahead of the player, from up and behind.
   const me = ctx.player();
   const fx = -Math.sin(me.yaw);
   const fz = -Math.cos(me.yaw);
@@ -91,7 +83,6 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
   ctx.scene.add(helper);
   const applyMode = () => {
     gizmo.setMode(mode);
-    // Props sit on the ground and turn about the vertical axis only.
     gizmo.showX = mode !== "rotate";
     gizmo.showZ = mode !== "rotate";
     gizmo.showY = mode !== "translate";
@@ -129,7 +120,6 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
     if (mode === "translate")
       obj.position.y = ctx.groundAt(obj.position.x, obj.position.z);
     if (mode === "scale") {
-      // One handle scales the whole prop: take the axis moved furthest.
       const s = [obj.scale.x, obj.scale.y, obj.scale.z].reduce((a, b) =>
         Math.abs(b - scaleBase) > Math.abs(a - scaleBase) ? b : a,
       );
@@ -153,7 +143,6 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
     emit();
   }
 
-  // A click (not a drag) picks the prop under the pointer, or clears the selection on empty ground.
   const ray = new three.Raycaster();
   let down: { x: number; y: number } | null = null;
   const onDown = (e: PointerEvent) => {

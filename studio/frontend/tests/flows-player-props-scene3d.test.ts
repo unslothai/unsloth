@@ -12,7 +12,6 @@ const three = await import("three");
 const S = await import("../src/features/flows/player/world/props-scene3d.ts");
 type Prop = import("../src/features/flows/types.ts").WorldProp3d;
 
-/** A unit box as binary glTF (8 vertices, 12 triangles), the shape of a small Blender export. */
 function boxGlb(): ArrayBuffer {
   const pos: number[] = [];
   for (const x of [-0.5, 0.5])
@@ -107,7 +106,6 @@ test("built-in props stand on the ground, turn and scale, and go when removed", 
 test("an imported model is kept until it is placed, released when its last prop goes, and redrawn on undo", async () => {
   const layer = S.createPropLayer(() => 0);
   await layer.addModel("sha256:boat", boxGlb());
-  // Nothing uses it yet: an import must not be thrown away before the editor places it.
   layer.sync([]);
   assert.equal(layer.modelCount(), 1);
   layer.sync([model("m-1")]);
@@ -128,7 +126,6 @@ test("an imported model is kept until it is placed, released when its last prop 
     1,
     "the model's geometry is released with its last prop",
   );
-  // Undo brings the prop back: the file is still at hand, so the model loads again.
   layer.sync([model("m-1")]);
   await new Promise((r) => setTimeout(r, 50));
   for (let i = 0; i < 50 && layer.modelCount() === 0; i++)

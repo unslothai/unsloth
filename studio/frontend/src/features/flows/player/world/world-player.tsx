@@ -119,7 +119,6 @@ async function loadArt(
   for (const it of spec.items)
     if (it.sprite) jobs.push([`sprite:${it.id}`, it.sprite]);
   const art: WorldArt = { tiles: {}, sprites: {}, models: {} };
-  // GLB props (3D view only): a model that will not load is drawn as a wireframe box.
   await Promise.all(
     models.map(async (ref) => {
       try {
@@ -416,7 +415,6 @@ export function WorldPlayer({
         setTalking(null);
         game.current?.faceNpc(null);
       } else if (editing) {
-        // The scene editor owns the keyboard (G / R / S, X, Ctrl+Z).
       } else if (e.key === "i" || e.key === "I")
         setPanel((p) => (p === "inventory" ? null : "inventory"));
       else if (e.key === "q" || e.key === "Q")
@@ -472,12 +470,10 @@ export function WorldPlayer({
       }),
     [api, editor, flowId, spec.player_node],
   );
-  // Model imports still uploading: Done waits for them, so an imported model is saved rather than lost.
   const imports = useRef(new Set<Promise<void>>());
   const closeEditor = useCallback(async () => {
     if (!editor) return;
     while (imports.current.size) await Promise.allSettled([...imports.current]);
-    // A save already running finishes first; then save until the server holds what the editor shows.
     await saves.current.idle();
     const current = () => JSON.stringify(editor.state().props);
     if (!(await saveUntilCurrent(current, lastSaved.current, saveScene)))

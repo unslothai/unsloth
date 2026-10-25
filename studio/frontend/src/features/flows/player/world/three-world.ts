@@ -247,7 +247,6 @@ export function createWorld3d(
     scene.add(skyDome);
   }
 
-  // The ground, water and scenery: what the editor's Export writes (villagers, items and labels stay in `scene`).
   const world = new three.Group();
   world.name = "world";
   scene.add(world);

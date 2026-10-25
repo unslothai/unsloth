@@ -95,7 +95,6 @@ const WORLD: WorldSpec = {
     : {}),
 };
 
-// Scenery saved by the 3D editor and uploaded models outlive a page load (sessionStorage), like the flow does.
 const PROPS_KEY = "flows-smoke-props3d";
 const MODELS_KEY = "flows-smoke-models";
 const savedProps = (): WorldProp3d[] | null => {

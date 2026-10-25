@@ -57,7 +57,6 @@ def _triangles(doc: dict) -> int:
             elif mode in (5, 6):
                 total += max(0, n - 2)
         per_mesh.append(total)
-    # A mesh is drawn once per node that places it, so reusing one mesh many times is not free.
     placed = sum(
         per_mesh[n["mesh"]]
         for n in doc.get("nodes") or []

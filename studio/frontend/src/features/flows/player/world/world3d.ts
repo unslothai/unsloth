@@ -279,7 +279,6 @@ export function houseCells(
   return out;
 }
 
-/** Every tile a circle of `radius` tiles at (x, y) touches: the tiles `canStand` tests. */
 export function standTiles(x: number, y: number, radius = 0.22): Point[] {
   const out = new Map<string, Point>();
   for (const dx of [-radius, radius])

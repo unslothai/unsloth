@@ -45,9 +45,7 @@ export interface WorldMap {
   spawn: Point;
   npcs: Record<string, Point>;
   items: Record<string, Point>;
-  /** Scenery placed in the 3D editor (both views draw it). */
   props?: WorldProp3d[];
-  /** 1 where a solid prop stands; walking and paths treat those tiles as solid. */
   blocked?: Uint8Array;
 }
 

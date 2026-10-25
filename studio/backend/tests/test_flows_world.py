@@ -402,7 +402,6 @@ def test_scenery_saved_on_the_world_player_needs_no_rerun():
     crate = {"id": "crate-1", "kind": "crate", "x": 5.5, "y": 6.5}
     w, _ = resolve_world_report(doc({"props3d": [crate, {"kind": "nope"}]}), {})
     assert w["props3d"] == [{**crate, "rot": 0.0, "scale": 1.0, "solid": True}]
-    # Deleting every prop in the editor saves an empty list, which clears the world's own props.
     w, _ = resolve_world_report(
         {
             **doc({"props3d": []}),

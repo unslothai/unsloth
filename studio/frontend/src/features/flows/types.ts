@@ -473,9 +473,7 @@ export interface WorldSpec {
   /** Which player draws the world; the top-down map when unset. */
   render?: "2d" | "3d";
   view3d?: World3dView;
-  /** Scenery placed with the 3D editor; saved on the World Player block. */
   props3d?: WorldProp3d[];
-  /** The World Player block whose settings this world was played with; scenery is saved back onto it. */
   player_node?: string;
 }
 
@@ -503,13 +501,10 @@ export interface WorldProp3d {
   kind: WorldPropKind;
   asset?: ModelAsset;
   name?: string;
-  /** Tile units; a prop on a tile stands at its centre (x + 0.5). */
   x: number;
   y: number;
-  /** Degrees about the vertical axis. */
   rot?: number;
   scale?: number;
-  /** Blocks walking on its tile (2D and 3D). */
   solid?: boolean;
 }
 

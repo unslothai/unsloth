@@ -299,7 +299,6 @@ def edit_world_3d(page: Page) -> None:
     assert "boat" in items.nth(5).inner_text()
     page.wait_for_timeout(800)
     shot(page, "world3d_editor")
-    # Blender keys: X deletes the selection, Ctrl+Z brings it back.
     items.nth(0).click()
     page.locator("[data-testid=world3d-canvas]").hover()
     page.keyboard.press("x")
