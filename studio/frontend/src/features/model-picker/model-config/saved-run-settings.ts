@@ -181,7 +181,9 @@ export function findSavedRunSettings(
     : null;
 }
 
-function subscribe(onChange: () => void): () => void {
+export function subscribeSavedRunSettings(onChange: () => void): () => void {
+  // No listener ran while nothing was subscribed, so another tab's writes may be missing from the cache.
+  cache.clear();
   const onStorage = (event: StorageEvent) => {
     if (event.key === null || event.key === SAVED_RUN_SETTINGS_STORAGE_KEY) {
       cache.clear();
@@ -200,7 +202,7 @@ const EMPTY: SavedRunSettings[] = [];
 
 export function useSavedRunSettings(modelId: string): SavedRunSettings[] {
   return useSyncExternalStore(
-    subscribe,
+    subscribeSavedRunSettings,
     () => listSavedRunSettings(modelId),
     () => EMPTY,
   );

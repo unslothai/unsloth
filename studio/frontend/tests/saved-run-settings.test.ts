@@ -86,6 +86,21 @@ test("a future-schema entry is kept but not offered", () => {
   assert.equal(saved.listSavedRunSettings(MODEL).length, 0);
 });
 
+test("a panel opened again reads what another tab saved while none was open", () => {
+  saved.saveRunSettings(MODEL, "Fast", config(4096));
+  assert.equal(saved.listSavedRunSettings(MODEL).length, 1);
+  // Another tab's write, with no panel here listening for its storage event.
+  const map = JSON.parse(
+    store.get(saved.SAVED_RUN_SETTINGS_STORAGE_KEY) ?? "{}",
+  );
+  const [key] = Object.keys(map);
+  map[key] = [];
+  store.set(saved.SAVED_RUN_SETTINGS_STORAGE_KEY, JSON.stringify(map));
+  const unsubscribe = saved.subscribeSavedRunSettings(() => undefined);
+  assert.equal(saved.listSavedRunSettings(MODEL).length, 0);
+  unsubscribe();
+});
+
 test("saved settings never touch what a load applies: that stays Remember's record", () => {
   saved.saveRunSettings(MODEL, "Long", config(32768));
   assert.equal(resolveInitialConfig(MODEL, null).remembered, false);
