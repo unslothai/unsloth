@@ -1541,8 +1541,7 @@ class _WriteCancelled(Exception):
 
 
 class PendingWrite:
-    """A prepared write run on a thread by ``start()``; holds only the lease and host tensors, so the live pipeline
-    cannot change its source. The manifest is the commit point: ``cancel()`` publishes nothing."""
+    """Threaded prepared write holding only the lease and host tensors; the manifest is the commit point."""
 
     def __init__(self, job: _WriteJob, stack: contextlib.ExitStack) -> None:
         self._job: Optional[_WriteJob] = job

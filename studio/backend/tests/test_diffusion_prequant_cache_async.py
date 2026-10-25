@@ -83,7 +83,6 @@ def test_deferred_write_publishes_nothing_until_it_runs_then_matches_the_sync_by
     fam = T._fam(base)
     pending = C.save_runtime_quant(model, fam, base_repo = str(base), defer = True)
     assert isinstance(pending, C.PendingWrite)
-    # Prepared, not written: no artifact, no manifest, a lookup misses, and the build lease is held.
     assert C.lookup(fam, scheme, base_repo = str(base)) is None
     assert _leftovers(env) == []
     assert C._writer_active(env, pending.key)
@@ -105,7 +104,6 @@ def test_the_snapshot_is_independent_of_the_live_module(env, tmp_path, scheme, m
     fam = T._fam(base)
     pending = C.save_runtime_quant(model, fam, base_repo = str(base), defer = True)
     assert isinstance(pending, C.PendingWrite)
-    # What a placement / unload does to the live module: every parameter rebound to new storage, then dropped.
     with torch.no_grad():
         for _name, p in model.named_parameters():
             if type(p) in (torch.nn.Parameter, torch.Tensor):
@@ -127,7 +125,6 @@ def test_the_snapshot_holds_host_tensors_only_and_frees_each_once_written(
     assert job.release
     assert not any(isinstance(t, C._FlatRef) for t in job.flat.values())
     assert all(t.device.type == "cpu" for t in job.flat.values())
-    # No torchao wrapper, module or state dict is reachable from the job: only plain tensors.
     assert all(type(t) is torch.Tensor or type(t) is torch.nn.Parameter for t in job.flat.values())
     refs = [weakref.ref(t) for t in job.flat.values()]
     del model
@@ -249,7 +246,6 @@ def test_fallbacks_write_synchronously(env, tmp_path, scheme, monkeypatch):
     base, model = T._write_base(tmp_path)
     T._quantize(model, scheme)
     fam = T._fam(base)
-    # Kill switch: the pre-change synchronous write.
     monkeypatch.setenv(C.ENV_ASYNC, "0")
     out = C.save_runtime_quant(model, fam, base_repo = str(base), defer = True)
     assert isinstance(out, str) and Path(out).is_file()
@@ -263,7 +259,6 @@ def test_fallbacks_write_synchronously(env, tmp_path, scheme, monkeypatch):
     assert "unknown" in C._defer_blocker(job)
     monkeypatch.setattr(C, "_host_memory_bytes", lambda: (1 << 40, 1 << 39))
     assert C._defer_blocker(job) is None
-    # A device tensor the write would have to pin or race.
     on_meta = C._WriteJob(
         "k", env / "k", {"w": torch.empty(4, device = "meta")}, {}, {}, 4, 0.0, None
     )
