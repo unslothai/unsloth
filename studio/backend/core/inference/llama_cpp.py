@@ -3358,6 +3358,22 @@ def _child_parking_stand_down_reason(server_supports: Optional[bool] = None) -> 
     return None
 
 
+def _silent_parking_left_off(server_caps: Mapping[str, Any], args, env: Mapping[str, str]) -> bool:
+    """Whether a Windows launch leaves a parking build's parking off rather than naming a budget.
+
+    A build predating the stream park notices (no ``--preempt-async``, which came with them in
+    unslothai/llama.cpp#269) is silent for a park during prompt processing, headers included. The
+    sync header wait asks the park probe from a watchdog that shuts the socket down, and a Winsock
+    recv before headers cannot be woken that way, so on Windows such a park ends at the first-token
+    timeout. Studio does not turn that parking on there: the child runs as upstream does and any
+    pausing is Studio's. A budget somebody named is kept, as everywhere else."""
+    if sys.platform != "win32":
+        return False
+    if not server_caps.get("supports_preempt_ram") or server_caps.get("supports_preempt_async"):
+        return False
+    return _named_preempt_ram_mib(args, env) is None
+
+
 def _child_parking_stands_down(server_supports: Optional[bool] = None) -> bool:
     """Whether the child's own parking is to be switched off. One owner pauses chats, so a budget
     somebody named does not buy the child a park Studio would race unexcused; the load warning
@@ -12262,6 +12278,7 @@ class LlamaCppBackend:
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
                 "supports_preempt_ram": False,
+                "supports_preempt_async": False,
                 "supports_slot_save": False,
                 "supports_reasoning_budget": False,
                 "supports_reasoning_budget_message": False,
@@ -12326,6 +12343,7 @@ class LlamaCppBackend:
         supports_no_cache_prompt = False
         supports_metrics = False
         supports_preempt_ram = False
+        supports_preempt_async = False
         supports_slot_save = False
         supports_reasoning_budget = False
         supports_reasoning_budget_message = False
@@ -12578,6 +12596,9 @@ class LlamaCppBackend:
             supports_metrics = _is_real("--metrics")
             # Can park, not does: since unslothai/llama.cpp#197 the launch has to name a budget.
             supports_preempt_ram = _is_real("--preempt-ram")
+            # Shipped in the same change as the stream park notices (unslothai/llama.cpp#269), and
+            # the one trace of them `--help` shows: a build without it parks in silence.
+            supports_preempt_async = _is_real("--preempt-async")
             supports_slot_save = _is_real("--slot-save-path")
             supports_reasoning_budget = _is_real("--reasoning-budget")
             supports_reasoning_budget_message = _is_real("--reasoning-budget-message")
@@ -12694,6 +12715,7 @@ class LlamaCppBackend:
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
             "supports_preempt_ram": supports_preempt_ram,
+            "supports_preempt_async": supports_preempt_async,
             "supports_slot_save": supports_slot_save,
             "supports_reasoning_budget": supports_reasoning_budget,
             "supports_reasoning_budget_message": supports_reasoning_budget_message,
@@ -34422,6 +34444,16 @@ class LlamaCppBackend:
                 # hold target AND draft state, else the park is re-prefilled, not exact.
                 _park_supported = bool(server_caps.get("supports_preempt_ram"))
                 _park_owned = _park_supported and not _child_parking_stands_down(_park_supported)
+                if _park_owned and _silent_parking_left_off(
+                    server_caps, list(cmd) + [str(a) for a in (extra_args or ())], os.environ
+                ):
+                    # Named as zero: a build from before #197 parks on a default budget.
+                    _park_owned = False
+                    cmd.extend(["--preempt-ram", "0"])
+                    logger.info(
+                        "Server-side preemption left off: this llama-server parks without the "
+                        "stream notices, which a Windows header wait needs."
+                    )
                 _exact_kv_bytes, _exact_draft_bytes = 0, 0
                 _exact_budget = None
                 if _park_owned:
