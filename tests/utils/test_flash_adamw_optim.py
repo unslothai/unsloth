@@ -540,7 +540,14 @@ def _steady(step, drop_at):
     return torch.full((1024,), 0.01)
 
 
-def _train(cls, device, gradient = _scaled_noise, steps = 2000, drop_at = 500, **kwargs):
+def _train(
+    cls,
+    device,
+    gradient = _scaled_noise,
+    steps = 2000,
+    drop_at = 500,
+    **kwargs,
+):
     torch.manual_seed(0)
     p = torch.nn.Parameter(torch.zeros(1024, dtype = torch.bfloat16, device = device))
     opt = cls([p], lr = 1e-4, weight_decay = 0.0, quantize = False, **kwargs)
@@ -569,7 +576,9 @@ def test_adamw_flash_bf16_variance_survives_a_state_dict_round_trip(monkeypatch)
     cls = _real_flash_adamw(monkeypatch)
     opt, p, _ = _train(cls, "cpu", steps = 50, drop_at = 25, master_weight_bits = None, fused = False)
     saved = opt.state[p]["exp_avg_sq"].materialize().clone()
-    fresh = cls([p], lr = 1e-4, weight_decay = 0.0, quantize = False, master_weight_bits = None, fused = False)
+    fresh = cls(
+        [p], lr = 1e-4, weight_decay = 0.0, quantize = False, master_weight_bits = None, fused = False
+    )
     fresh.load_state_dict(opt.state_dict())
     loaded = fresh.state[p]["exp_avg_sq"].materialize()
     assert loaded.dtype == torch.float32
