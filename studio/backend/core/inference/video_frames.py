@@ -22,7 +22,9 @@ def device_uint8(frames: Any) -> Optional[Any]:
     count, channels, height, width = frames.shape
     shape = (count, height, width, channels)
     host = None
-    if device.type == "cuda":
+    from .host_pinning import host_pinning_allowed
+
+    if device.type == "cuda" and host_pinning_allowed(device):
         try:
             host = torch.empty(shape, dtype = torch.uint8, device = "cpu", pin_memory = True)
         except Exception:  # noqa: BLE001 - pinned allocation refused (host limits); a pageable copy is still exact

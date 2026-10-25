@@ -467,7 +467,7 @@ export function OpenAICodeExecSection({
                   key={c.id}
                   className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
                     isActive
-                      ? "border-ring-strong bg-primary/5"
+                      ? "border-ring-strong bg-wash-5"
                       : "border-border/60 hover:bg-muted/40"
                   } ${canActivate ? "cursor-pointer" : ""} ${
                     running ? "" : "opacity-60"
@@ -583,7 +583,7 @@ export function OpenAICodeExecSection({
           </Button>
           <Button
             size="sm"
-            className="h-7 shrink-0 px-3 text-xs"
+            className="shrink-0 text-xs"
             onClick={() => void onCreate()}
             disabled={creating || !createName.trim() || !hasCredential}
           >
@@ -594,7 +594,6 @@ export function OpenAICodeExecSection({
         <Button
           size="sm"
           variant="outline"
-          className="h-8"
           onClick={() => setCreateOpen(true)}
           disabled={!hasCredential}
         >

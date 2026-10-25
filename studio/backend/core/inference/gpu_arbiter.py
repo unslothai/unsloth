@@ -666,6 +666,7 @@ def acquire_for(
     gpu_ids: Optional[Iterable[int]] = None,
     need_mib: Optional[dict] = None,
     evict_first: bool = False,
+    admit: Optional[Callable[[], None]] = None,
 ) -> Any:
     """Make ``owner`` resident, evicting every other resident under the default policy.
 
@@ -681,6 +682,7 @@ def acquire_for(
     Under "fit" and "always" only residents on the same GPUs can be evicted (gpu_residency.coreside_locked):
     ``need_mib`` is what an image or video load will hold per physical GPU (None: unknown, so it evicts first),
     and ``evict_first`` makes a chat load with no estimate before launch evict as "off" does.
+    ``admit`` runs under the lock before anything is evicted; raising refuses the acquire untouched.
     """
     global _owner, _owner_epoch, _owner_account, _prior_account
     if owner not in _EVICTORS:
@@ -691,6 +693,8 @@ def acquire_for(
     # The segmenter's VRAM goes to this owner: a mask call arriving before its register returns stays off the card.
     handover = owner != DIFFUSION or register is not None or replacing
     with _lock, _handover_fence() if handover else nullcontext():
+        if admit is not None:
+            admit()
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
         coreside = policy != "off" and owner in _KEPT_UNDER_ALWAYS

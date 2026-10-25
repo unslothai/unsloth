@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useState } from "react";
 import { createApiKey } from "../api/api-keys";
 import { apiKeyActionMessage } from "./api-key-action-message";
@@ -79,7 +81,8 @@ export function CreateKeyForm({
             );
           })}
         </div>
-        <Button type="submit" size="sm" disabled={loading || !name.trim()}>
+        <Button variant="secondary" type="submit" size="sm" disabled={loading || !name.trim()}>
+          {!loading && <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />}
           {loading
             ? t("settings.apiKeys.creating")
             : t("settings.apiKeys.createToken")}

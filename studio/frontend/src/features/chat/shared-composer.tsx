@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   DEFAULT_ENGINE_LAUNCH_FIELDS,
   engineLaunchFieldsFrom,
@@ -31,6 +32,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
@@ -107,9 +109,7 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  ChevronDownIcon,
   Columns2Icon,
-  HeadphonesIcon,
   MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
@@ -2891,7 +2891,7 @@ export function SharedComposer({
               data-composer-attachment="audio"
               className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
             >
-              <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+              <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
               <span data-reload-snapshot-sensitive className="max-w-48 truncate">
                 {clip.name}
               </span>
@@ -2978,7 +2978,7 @@ export function SharedComposer({
                   <DropdownMenuItem
                     onSelect={() => audioInputRef.current?.click()}
                   >
-                    <HeadphonesIcon />
+                    <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={2} />
                     Upload audio
                   </DropdownMenuItem>
                 )}
@@ -3333,7 +3333,7 @@ export function SharedComposer({
                             : "Thinking"}
                         </span>
                       ) : null}
-                      <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
+                      <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
                     </button>
                   )}
                 >
@@ -3564,7 +3564,7 @@ export function SharedComposer({
             ) : busy ? (
               <Button
                 type="button"
-                variant="default"
+                variant="primary"
                 size="icon"
                 className="aui-composer-cancel ml-1.5 size-9 rounded-full"
                 aria-label="Stop generating"
@@ -3579,7 +3579,7 @@ export function SharedComposer({
                   t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
                 }
                 side="bottom"
-                variant="default"
+                variant="primary"
                 size="icon"
                 className="aui-composer-send ml-1.5 size-9 rounded-full"
                 onClick={send}

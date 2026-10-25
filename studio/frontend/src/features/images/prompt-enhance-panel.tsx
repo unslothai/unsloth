@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Cancel01Icon, Copy01Icon, Download04Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -164,7 +164,7 @@ function UpsamplerDownloadNotice({
               type="button"
               size="sm"
               variant="secondary"
-              className="h-7 gap-1.5 self-start text-xs"
+              className="gap-1.5 self-start text-xs"
               disabled={busy}
               onClick={() => void start()}
             >
@@ -313,7 +313,7 @@ export function EnhancePromptControls({
               className="flex items-center gap-1 font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
               Enhanced prompt{stale ? " (for an earlier request)" : ""}
-              <ChevronDown className={cn("size-3 transition-transform", previewOpen && "rotate-180")} />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className={cn("size-3 transition-transform", previewOpen && "rotate-180")} />
             </button>
             <button
               type="button"
@@ -335,7 +335,7 @@ export function EnhancePromptControls({
                   type="button"
                   size="sm"
                   variant="secondary"
-                  className="h-7 px-2 text-xs"
+                  className="text-xs"
                   onClick={() => {
                     onUseCaption(preview.caption);
                     setPreview(null);
@@ -364,7 +364,7 @@ export function EnhancedPromptRecipeRow({ caption }: { caption: string }) {
         className="flex items-start gap-0.5 text-left text-muted-foreground hover:text-foreground"
       >
         Enhanced prompt
-        <ChevronDown className={cn("mt-0.5 size-3 shrink-0 transition-transform", open && "rotate-180")} />
+        <HugeiconsIcon icon={ChevronDownStandardIcon} className={cn("mt-0.5 size-3 shrink-0 transition-transform", open && "rotate-180")} />
       </button>
       <div className="flex min-w-0 flex-col gap-1">
         <span

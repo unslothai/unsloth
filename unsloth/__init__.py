@@ -140,6 +140,10 @@ class _UnslothDeviceStats:
         self.multi_processor_count = 0
 
 
+class _CPUBackendSelected(Exception):
+    """Raised by _gpu_init when unsloth_zoo found no accelerator and selected the CPU backend."""
+
+
 def _bytes_to_gb(value):
     """Convert byte counts to GiB rounded"""
     return round(float(value or 0) / 1024 / 1024 / 1024, 3)
@@ -1680,16 +1684,25 @@ if _IS_MLX:
     _install_mlx_unsloth_trainer_shim()
 
 else:
-    # GPU path: load everything from _gpu_init
-    from ._gpu_init import *
-    from ._gpu_init import __version__
+    try:
+        # GPU path: load everything from _gpu_init
+        from ._gpu_init import *
+        from ._gpu_init import __version__
+        _IS_CPU_BACKEND = False
+    except _CPUBackendSelected:
+        _IS_CPU_BACKEND = True
+        _sys_mod = __import__("sys").modules
+        _sys_mod.pop(f"{__name__}._gpu_init", None)
+        del _sys_mod
+        from ._cpu_init import *  # __all__ carries __version__
 
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
     try:
-        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
-        _install_fsdp2_hooks()
-        del _install_fsdp2_hooks
+        if not _IS_CPU_BACKEND:
+            from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+            _install_fsdp2_hooks()
+            del _install_fsdp2_hooks
     except Exception:
         pass
 
@@ -1703,6 +1716,14 @@ else:
         del _install_raw_accelerator_fallback
     except Exception:
         pass
+
+    # Native FSDP2 shards inside the Trainer.__init__ wrapper that FastLanguageModel / FastModel loads
+    # install. A FastSentenceTransformer encoder never loads through them, so under UNSLOTH_FSDP2=1 its
+    # Trainer trained with DDP instead, silently. Install the wrapper up front under the flag.
+    from .fsdp2_launch import install_native_fsdp2_trainer_init as _install_native_trainer_init
+
+    _install_native_trainer_init()
+    del _install_native_trainer_init
 
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""

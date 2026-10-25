@@ -554,8 +554,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         )}
 
         <Button
+          variant="dark"
           type="submit"
-          className="mx-auto flex w-fit px-4"
+          className="mx-auto flex w-fit"
           disabled={
             loading ||
             statusLoading ||

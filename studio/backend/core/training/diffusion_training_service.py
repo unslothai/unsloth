@@ -17,6 +17,7 @@ runs a scripted target on a thread.
 
 from __future__ import annotations
 
+from core.inference.inference_gate import pauses_background_embedding
 from core.training.account_jobs import (
     account_is_retired,
     init_job_owner,
@@ -665,6 +666,7 @@ class DiffusionTrainingService:
 
     @_invalidates_gpu_memory("diffusion training start")
     @owned_job()
+    @pauses_background_embedding
     def start(self, config: dict) -> str:
         """Validate ``config``, spawn the trainer, and start pumping its events.
 
