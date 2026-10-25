@@ -148,6 +148,41 @@ def test_materialize_native_dir_symlinks_and_breaks_collisions(tmp_path):
         assert Path(r.path).parent == dest
 
 
+def test_materialize_native_dir_real_files_hardlinks_inside_dest(tmp_path):
+    # sd-server rejects a staged LoRA whose canonical path leaves --lora-model-dir, so server staging needs a real file.
+    src = tmp_path / "cache" / "a.safetensors"
+    src.parent.mkdir()
+    src.write_bytes(b"x")
+    dest = tmp_path / "managed"
+    out = dl.materialize_native_dir(
+        [dl.ResolvedLora("a", "a", str(src), "safetensors", 1.0)], dest, real_files = True
+    )
+    staged = Path(out[0].path)
+    assert not staged.is_symlink() and staged.is_file()
+    assert Path(os.path.realpath(staged)).parent == Path(os.path.realpath(dest))
+    assert os.path.samefile(staged, src)  # a hard link, not a copy
+    staged.unlink()
+    assert src.read_bytes() == b"x"
+
+
+def test_materialize_native_dir_real_files_copies_when_hardlink_fails(tmp_path, monkeypatch):
+    src = tmp_path / "a.safetensors"
+    src.write_bytes(b"x")
+
+    def _no_link(*a, **k):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(dl.os, "link", _no_link)
+    out = dl.materialize_native_dir(
+        [dl.ResolvedLora("a", "a", str(src), "safetensors", 1.0)],
+        tmp_path / "managed",
+        real_files = True,
+    )
+    staged = Path(out[0].path)
+    assert not staged.is_symlink() and staged.read_bytes() == b"x"
+    assert not os.path.samefile(staged, src)
+
+
 def test_list_loras_scans_local(tmp_path, monkeypatch):
     d = tmp_path / "loras"
     d.mkdir()
@@ -497,3 +532,307 @@ def test_scan_local_tolerates_bad_sidecar(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "loras_dir", lambda: d)
     entry = next(e for e in dl.list_loras() if e.id == "a")
     assert entry.families == () and entry.weight_default == 1.0
+
+
+def test_moss_image_has_no_lora_loader_so_lora_is_gated_off(monkeypatch):
+    import threading
+
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_moss_image import MOSSImagePipeline
+
+    assert not hasattr(MOSSImagePipeline, "load_lora_weights")
+    for quant in (None, "int8", "fp8"):
+        assert not dl.supports_lora(
+            engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = quant
+        )
+    assert dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = None
+    )
+    fam = detect_family("OpenMOSS-Team/MOSS-Image-SFT")
+    assert fam is not None and fam.name == "moss-image"
+
+    backend = _backend()
+    monkeypatch.setattr(backend, "validate_load_request", lambda *a, **k: fam)
+    # Refused before anything loads; a weight-0 selection is not active and is not refused here.
+    for load in (backend.begin_load, backend.load_pipeline):
+        with pytest.raises(ValueError, match = "no LoRA loader"):
+            load("OpenMOSS-Team/MOSS-Image-SFT", loras = [("styleA", 1.0)])
+    # A generation-time selection on a loaded MOSS pipe is refused the same way, for every quant.
+    for quant in (None, "int8"):
+        state = types.SimpleNamespace(
+            pipe = _FakePipe(), family = fam, kind = "pipeline", transformer_quant = quant, hf_token = None
+        )
+        with pytest.raises(ValueError, match = "no LoRA loader"):
+            backend._apply_loras(state, [("styleA", 1.0)], threading.Event())
+        backend._apply_loras(state, [("styleA", 0.0)], threading.Event())
+
+
+def _peft_add_adapter(layer, name, config):
+    # PEFT >= 0.19 takes ``config``; 0.18 takes every option positionally (``use_rslora`` required). Pass by keyword
+    # what the installed signature names, read off ``config``, so the helper holds across PEFT 0.18.0 -> 0.20.0.
+    import inspect
+
+    known = {"r": config.r, "lora_alpha": config.lora_alpha, "config": config}
+    kwargs = {}
+    for param in list(inspect.signature(layer.update_layer).parameters.values())[1:]:
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+        if param.name in known:
+            kwargs[param.name] = known[param.name]
+        elif hasattr(config, param.name):
+            kwargs[param.name] = getattr(config, param.name)
+    layer.update_layer(name, **kwargs)
+
+
+def _peft_two_adapter_pipe():
+    # A real PEFT LoRA Linear carrying two baked adapters, behind a pipe whose set_adapters does what diffusers does.
+    import torch
+    from peft import LoraConfig
+    from peft.tuners.lora.layer import Linear
+
+    torch.manual_seed(0)
+    config = LoraConfig(r = 2, lora_alpha = 4, lora_dropout = 0.0, init_lora_weights = False)
+    layer = Linear(
+        torch.nn.Linear(8, 8, bias = False),
+        "a",
+        config = config,
+        r = 2,
+        lora_alpha = 4,
+        init_lora_weights = False,
+    )
+    _peft_add_adapter(layer, "b", config)
+    layer.set_adapter(["a", "b"])
+    layer.eval()
+
+    class _Pipe:
+        transformer = torch.nn.Sequential(layer)
+
+        def set_adapters(
+            self,
+            names,
+            adapter_weights = None,
+        ):
+            layer.set_adapter(list(names))
+            for name, weight in zip(names, adapter_weights):
+                layer.set_scale(name, weight)
+
+    return _Pipe(), layer
+
+
+def test_baked_lora_subset_and_weight_changes_keep_compiled_graphs(monkeypatch):
+    # A baked int8/fp8 load keeps its adapters, so a subset / weight change only moves scales. PEFT's float scale is
+    # a Dynamo guard (self.scaling['b'] == 1.0) and a CUDA-graph kernel argument: each change recompiled and dropped
+    # every captured graph. Pinned as device tensors, the first prompt's graph serves every selection.
+    import threading
+
+    import torch
+    from torch._dynamo.testing import CompileCounter
+
+    from core.inference import diffusion as diff
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    resets = []
+    monkeypatch.setattr(diff.cuda_graph, "reset_all", lambda handles: resets.append(handles))
+    b = _backend()
+    pipe, layer = _peft_two_adapter_pipe()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    pipe._unsloth_loras = b._resolve_lora_set(
+        [("a", 1.0), ("b", 1.0)], family = "flux.1", hf_token = None
+    )
+    pipe._unsloth_loras_baked = True
+    # What the load does once the denoiser is placed (absent before the fix: the floats stay).
+    getattr(diff, "_pin_baked_lora_scales", lambda *_: 0)(pipe, "cpu")
+
+    x = torch.randn(3, 8)
+
+    def expected(wa, wb):
+        with torch.no_grad():
+            out = layer.base_layer(x)
+            for name, w in (("a", wa), ("b", wb)):
+                out = out + layer.lora_B[name](layer.lora_A[name](x)) * (w * 4 / 2)
+            return out
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = torch.compile(pipe.transformer, backend = counter)
+    with torch.no_grad():
+        torch.testing.assert_close(compiled(x), expected(1.0, 1.0))
+        compiled(x)
+    assert counter.frame_count == 1
+
+    for loras, wa, wb in (
+        ([("a", 1.0)], 1.0, 0.0),  # subset: b omitted
+        ([("a", 1.0), ("b", 1.0)], 1.0, 1.0),  # back
+        ([("b", 0.5)], 0.0, 0.5),  # the other subset, new weight
+        ([("a", 0.7), ("b", 1.0)], 0.7, 1.0),  # weight tweak
+        ([], 0.0, 0.0),  # every adapter off
+        ([("a", 1.0), ("b", 1.0)], 1.0, 1.0),
+    ):
+        b._apply_loras(state, loras, threading.Event())
+        with torch.no_grad():
+            torch.testing.assert_close(compiled(x), expected(wa, wb))
+        assert [w for (_n, _p, w) in pipe._unsloth_loras] == [wa, wb]
+    assert counter.frame_count == 1  # no recompile
+    assert resets == []  # no captured graph dropped
+    torch._dynamo.reset()
+
+
+def test_pinned_lora_scale_falls_back_when_a_scale_is_rewritten(monkeypatch):
+    # Something rewriting a pinned scale as a float (a direct set_adapters) drops the pin: the next change takes the
+    # set_adapters + graph reset path again instead of writing into a tensor the forward no longer reads.
+    import threading
+
+    from core.inference import diffusion as diff
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    resets = []
+    monkeypatch.setattr(diff.cuda_graph, "reset_all", lambda handles: resets.append(handles))
+    b = _backend()
+    pipe, layer = _peft_two_adapter_pipe()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    pipe._unsloth_loras = b._resolve_lora_set(
+        [("a", 1.0), ("b", 1.0)], family = "flux.1", hf_token = None
+    )
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 2
+    # Idempotent: a second call pins nothing.
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 0
+    layer.set_scale("b", 1.0)
+    b._apply_loras(state, [("a", 1.0)], threading.Event())
+    assert layer.scaling["b"] == 0.0
+    assert len(resets) == 1
+
+
+def test_pin_declines_weights_off_the_target_device():
+    from core.inference import diffusion as diff
+
+    pipe, layer = _peft_two_adapter_pipe()
+    pipe._unsloth_loras = (("a", "/a", 1.0), ("b", "/b", 1.0))
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cuda") == 0
+    assert isinstance(layer.scaling["a"], float)
+
+
+def test_replica_fingerprint_sees_an_in_place_scale_write():
+    from core.inference import diffusion as diff
+    from core.inference.diffusion_multigpu import weights_fingerprint
+
+    pipe, _layer = _peft_two_adapter_pipe()
+    pipe._unsloth_loras = (("a", "/a", 1.0), ("b", "/b", 1.0))
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 2
+    before = weights_fingerprint(pipe.transformer)
+    assert weights_fingerprint(pipe.transformer) == before
+    assert diff._set_pinned_lora_scales(pipe, {"a": 1.0})
+    assert weights_fingerprint(pipe.transformer) != before
+
+
+def test_pinned_lora_change_also_sets_the_text_encoder_scales(monkeypatch):
+    # A LoRA file can carry text-encoder weights too. The pinned path skips set_adapters, so it has to set the text
+    # encoder's scales itself, or prompts encode with the bake-time weight while the marker names the new one.
+    import threading
+
+    import torch
+    from peft import LoraConfig
+    from peft.tuners.lora.layer import Linear
+
+    from core.inference import diffusion as diff
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    monkeypatch.setattr(diff.cuda_graph, "reset_all", lambda handles: None)
+    pipe, _layer = _peft_two_adapter_pipe()
+    config = LoraConfig(r = 2, lora_alpha = 4, lora_dropout = 0.0, init_lora_weights = False)
+    te = Linear(
+        torch.nn.Linear(8, 8, bias = False),
+        "a",
+        config = config,
+        r = 2,
+        lora_alpha = 4,
+        init_lora_weights = False,
+    )
+    _peft_add_adapter(te, "b", config)
+    pipe.components = {"transformer": pipe.transformer, "text_encoder": torch.nn.Sequential(te)}
+    b = _backend()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    pipe._unsloth_loras = b._resolve_lora_set(
+        [("a", 1.0), ("b", 1.0)], family = "flux.1", hf_token = None
+    )
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 2
+    b._apply_loras(state, [("a", 0.5)], threading.Event())
+    assert te.scaling == {"a": 1.0, "b": 0.0}  # 0.5 * alpha / r, and the omitted adapter off
+
+
+def _peft_embedding(name = "a"):
+    import torch
+    from peft import LoraConfig
+    from peft.tuners.lora.layer import Embedding
+
+    config = LoraConfig(r = 2, lora_alpha = 4, lora_dropout = 0.0, init_lora_weights = False)
+    return Embedding(
+        torch.nn.Embedding(10, 8),
+        name,
+        config = config,
+        r = 2,
+        lora_alpha = 4,
+        init_lora_weights = False,
+    )
+
+
+def test_pin_declines_a_denoiser_lora_it_cannot_pin(monkeypatch):
+    # A PEFT Embedding keeps its factors in lora_embedding_A/B, not lora_B. Pinning only the Linear would make a
+    # weight change skip set_adapters and leave the embedding at its bake-time scale: decline, keep floats.
+    import torch
+
+    from core.inference import diffusion as diff
+
+    pipe, layer = _peft_two_adapter_pipe()
+    emb = _peft_embedding()
+    pipe.transformer = torch.nn.Sequential(layer, emb)
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 0
+    assert not getattr(pipe, diff._PINNED_LORA_SCALES_ATTR, None)
+    assert all(not isinstance(v, torch.Tensor) for v in layer.scaling.values())
+    assert diff._set_pinned_lora_scales(pipe, {"a": 0.5}) is False
+
+
+def test_pinned_lora_change_also_sets_a_text_encoder_embedding_scale(monkeypatch):
+    # The side layers include a text encoder's PEFT Embedding (no lora_B entry), so its scale follows the change.
+    import torch
+
+    from core.inference import diffusion as diff
+
+    pipe, _layer = _peft_two_adapter_pipe()
+    emb = _peft_embedding()
+    pipe.components = {"transformer": pipe.transformer, "text_encoder": torch.nn.Sequential(emb)}
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 2
+    assert diff._set_pinned_lora_scales(pipe, {"a": 0.5}) is True
+    assert emb.scaling == {"a": 1.0}  # 0.5 * alpha / r

@@ -174,7 +174,7 @@ export function ColorPickerSwatch({
           {value.toUpperCase()}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-60 rounded-lg p-3">
+      <PopoverContent align="end" className="w-60 rounded-xl p-3">
         <div className="flex flex-col gap-3">
           <div
             ref={areaRef}
@@ -183,7 +183,7 @@ export function ColorPickerSwatch({
             aria-valuetext={hexDraft}
             aria-valuenow={Math.round(hsv.v * 100)}
             tabIndex={0}
-            className="relative h-36 w-full cursor-crosshair touch-none rounded-lg"
+            className="relative h-36 w-full cursor-crosshair touch-none rounded-md"
             style={{
               background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, ${hueColor})`,
             }}
@@ -259,7 +259,7 @@ export function ColorPickerSwatch({
                   "settings.appearance.custom.colorPicker.eyedropper",
                 )}
                 title={t("settings.appearance.custom.colorPicker.eyedropper")}
-                className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors hover:text-foreground"
+                className="btn-fill flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
               >
                 <HugeiconsIcon icon={ColorPickerIcon} className="size-4" />
               </button>
