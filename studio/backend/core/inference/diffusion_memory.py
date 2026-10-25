@@ -6193,9 +6193,9 @@ def _background_pin_enabled() -> bool:
     ) and host_pinning_allowed()
 
 
-# Image loads: the streamed text encoders pin after the load returns (registered host memory, 8 threads) instead of
-# into slabs before it. "0" restores the up-front slab pin.
-LAZY_ENCODER_PIN_ENV = "UNSLOTH_DIFFUSION_LAZY_ENCODER_PIN"
+# Image loads: the streamed text encoders pin on a worker (registered host memory, 8 threads) that overlaps the rest of
+# the load, instead of into slabs one tensor at a time. "0" restores the slabs.
+ENCODER_BACKGROUND_PIN_ENV = "UNSLOTH_DIFFUSION_ENCODER_BACKGROUND_PIN"
 # Streamed text encoders that do not fit the pin budget whole pin a prefix of their offload groups that does. "0"
 # restores all-or-nothing.
 PARTIAL_ENCODER_PIN_ENV = "UNSLOTH_DIFFUSION_PARTIAL_ENCODER_PIN"
@@ -6213,12 +6213,26 @@ def request_background_encoder_pins(pipe: Any) -> None:
         pass
 
 
+def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
+    """Wait for the encoder pins the load started; returns the seconds waited.
+
+    Left running into the first prompt instead, the pin slowed it by as much as it saved (FLUX.1 bf16 on a B200:
+    first encode 1.1 -> 3.7 s, the T5 pin 2.0 -> 3.5 s), so the load finishes it."""
+    if pipe is None:
+        return 0.0
+    start_background_pins(pipe)
+    waited = finish_background_pins(pipe)
+    if waited >= 0.5 and logger is not None:
+        logger.info("diffusion.memory: the load waited %.1f s for the encoder pins", waited)
+    return waited
+
+
 def _encoder_background_pin_wanted(pipe: Any) -> bool:
     """Deferred encoder pins need the registered pin: the allocator's per-tensor ``pin_memory()`` rounds each tensor up
     to a power of two, which the budget (priced at weight bytes) does not cover."""
     return (
         bool(getattr(pipe, _ENCODER_PIN_REQUEST_ATTR, False))
-        and not _env_off(LAZY_ENCODER_PIN_ENV)
+        and not _env_off(ENCODER_BACKGROUND_PIN_ENV)
         and _background_pin_enabled()
         and _fast_pin_supported()
     )

@@ -20,7 +20,11 @@ _CUDA = torch.cuda.is_available()
 
 @pytest.fixture
 def budget(monkeypatch):
-    for name in (dm.GROUP_OFFLOAD_PIN_ENV, dm.PARTIAL_ENCODER_PIN_ENV, dm.LAZY_ENCODER_PIN_ENV):
+    for name in (
+        dm.GROUP_OFFLOAD_PIN_ENV,
+        dm.PARTIAL_ENCODER_PIN_ENV,
+        dm.ENCODER_BACKGROUND_PIN_ENV,
+    ):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(dm, "host_pinning_allowed", lambda *a, **k: True)
     monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
@@ -68,7 +72,7 @@ def test_no_leftover_on_an_integrated_gpu_or_capped_pinned_memory(budget, monkey
 
 @pytest.fixture
 def wanted(monkeypatch):
-    monkeypatch.delenv(dm.LAZY_ENCODER_PIN_ENV, raising = False)
+    monkeypatch.delenv(dm.ENCODER_BACKGROUND_PIN_ENV, raising = False)
     monkeypatch.delenv(dm.BACKGROUND_PIN_ENV, raising = False)
     monkeypatch.setattr(dm, "host_pinning_allowed", lambda *a, **k: True)
     monkeypatch.setattr(dm, "_fast_pin_supported", lambda: True)
@@ -86,7 +90,7 @@ def test_a_requested_pipe_defers_its_encoder_pins(wanted):
     assert not dm._encoder_background_pin_wanted(video)
 
 
-@pytest.mark.parametrize("env", ["LAZY_ENCODER_PIN_ENV", "BACKGROUND_PIN_ENV"])
+@pytest.mark.parametrize("env", ["ENCODER_BACKGROUND_PIN_ENV", "BACKGROUND_PIN_ENV"])
 def test_the_kill_switches_restore_the_up_front_pin(wanted, monkeypatch, env):
     monkeypatch.setenv(getattr(dm, env), "0")
     assert not dm._encoder_background_pin_wanted(wanted)
@@ -105,6 +109,15 @@ def test_a_registered_pin_is_priced_at_page_rounded_bytes_not_powers_of_two():
     module = torch.nn.Linear(1500, 1000, bias = False).to(torch.bfloat16)  # 3,000,000 bytes
     assert dm._module_host_mib(module) == 4  # the allocator's 4 MiB block
     assert dm._module_registered_mib(module) == 3
+
+
+def test_the_load_starts_and_waits_for_the_encoder_pins(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dm, "start_background_pins", lambda pipe: calls.append("start") or 1)
+    monkeypatch.setattr(dm, "finish_background_pins", lambda pipe: calls.append("finish") or 0.0)
+    dm.finish_encoder_pins_at_load(types.SimpleNamespace())
+    assert calls == ["start", "finish"]
+    assert dm.finish_encoder_pins_at_load(None) == 0.0
 
 
 def _fake_groups(sizes):
@@ -178,7 +191,9 @@ def test_the_image_load_requests_starts_and_stops_the_encoder_pins():
     request = _calls(tree, "request_background_encoder_pins")
     apply = _calls(tree, "apply_memory_plan")
     assert request and apply and min(c.lineno for c in request) < min(c.lineno for c in apply)
-    assert _calls(tree, "start_background_pins")
+    starts = _calls(tree, "start_background_pins")
+    assert starts and min(c.lineno for c in starts) > min(c.lineno for c in apply)
+    assert _calls(tree, "finish_encoder_pins_at_load")
     unload = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_unload_locked"
     )
@@ -248,9 +263,9 @@ def test_a_streamed_encoder_pins_after_the_load_and_encodes_identically(
 
 
 @pytest.mark.skipif(not _CUDA, reason = "needs a CUDA device")
-def test_the_lazy_pin_kill_switch_pins_the_encoder_during_the_load(budget, monkeypatch):
+def test_the_kill_switch_pins_the_encoder_into_slabs_during_the_apply(budget, monkeypatch):
     pytest.importorskip("diffusers")
-    monkeypatch.setenv(dm.LAZY_ENCODER_PIN_ENV, "0")
+    monkeypatch.setenv(dm.ENCODER_BACKGROUND_PIN_ENV, "0")
     budget(1 << 20)
     pipe = _tiny_pipe()
     dm.request_background_encoder_pins(pipe)

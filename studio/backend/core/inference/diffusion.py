@@ -219,6 +219,7 @@ from .diffusion_memory import (
     reclaim_offload_host_memory,
     release_pinned_host_memory,
     request_background_encoder_pins,
+    finish_encoder_pins_at_load,
     start_background_pins,
     stop_background_pins,
     refine_balanced_plan_for_components,
@@ -10631,6 +10632,8 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
+                    # the encoder pins overlap the rest of the load
+                    start_background_pins(pipe)
                     # a transient OOM during setup may have re-planned to lower residency
                     plan = applied_plan(pipe, plan)
                     _drop_measured_reserve_for_layer_split(pipe, plan)
@@ -10976,7 +10979,7 @@ class DiffusionBackend:
             "; ".join(plan.reasons),
             plan.estimates,
         )
-        start_background_pins(getattr(state, "pipe", None))
+        finish_encoder_pins_at_load(getattr(state, "pipe", None), logger)
         return self.status()
 
     @staticmethod
