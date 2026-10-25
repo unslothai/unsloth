@@ -2452,9 +2452,8 @@ class _PerDeviceRopeCache:
         self._rope_cache_versions = [None] * DEVICE_COUNT
         # Rows each device can serve without bookkeeping; reset on growth. Read per layer per decode step.
         self._rope_rows_ready = [0] * DEVICE_COUNT
-        # A compiled block with grad off (compiled generate under inference_mode) cannot leave
-        # inference mode inside the graph, so its build may hold inference tensors; such a device
-        # rebuilds on its next grad-enabled use and stays off the rows-ready fast path until then.
+        # A compiled grad-off build may hold inference tensors (AOTAutograd drops
+        # inference_mode(False)); rebuilt on the next grad-enabled read, off the fast path.
         self._rope_rebuild_for_grad = [False] * DEVICE_COUNT
         # Never fewer rows than the eager cache started with, so those positions stay valid.
         self._rope_cache_floor = self.current_rope_size
@@ -2470,8 +2469,7 @@ class _PerDeviceRopeCache:
         # saved for backward, so the compiled training block failed and fell back to eager.
         import contextlib
 
-        # Dynamo cannot trace is_inference_mode_enabled (a graph break, an error under fullgraph);
-        # a compiled build with grad off is flagged by _mark_rope_build instead.
+        # Dynamo cannot trace is_inference_mode_enabled; _mark_rope_build covers compiled builds.
         if torch.compiler.is_compiling() or not torch.is_inference_mode_enabled():
             return contextlib.nullcontext()
         stack = contextlib.ExitStack()
@@ -2869,8 +2867,7 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self._unsloth_short_sin_cpu = (emb.sin() * self.scaling_factor).to(dtype = dtype)
         # The long cache only exists once something asks for more than original_max_position_embeddings.
         self._init_rope_cache_state(dtype)
-        # _rope_rebuild_for_grad tracks the long cache; the short cache keeps its own mark so a long
-        # rebuild cannot clear a short cache still holding inference tensors.
+        # Own mark for the short cache: a long rebuild must not clear it.
         self._short_rope_rebuild_for_grad = [False] * DEVICE_COUNT
 
         self.short_cos_cached = torch.empty(
