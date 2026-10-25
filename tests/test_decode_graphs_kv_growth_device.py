@@ -25,7 +25,9 @@ class _StopAfter(StoppingCriteria):
 
     def __call__(self, input_ids, scores, **kwargs):
         self.k += 1
-        return torch.full((input_ids.shape[0],), self.k >= self.n, dtype = torch.bool, device = input_ids.device)
+        return torch.full(
+            (input_ids.shape[0],), self.k >= self.n, dtype = torch.bool, device = input_ids.device
+        )
 
 
 def _load(device = 0):
@@ -39,7 +41,16 @@ def _load(device = 0):
     return model, tok
 
 
-def _run(model, tok, enc, graphs, monkeypatch, max_new, stop = None, min_new = 0):
+def _run(
+    model,
+    tok,
+    enc,
+    graphs,
+    monkeypatch,
+    max_new,
+    stop = None,
+    min_new = 0,
+):
     monkeypatch.setattr(G, "ENABLED", None)
     monkeypatch.delenv("UNSLOTH_DECODE_CUDA_GRAPHS", raising = False)
     criteria = StoppingCriteriaList([_StopAfter(stop)]) if stop else None
@@ -55,7 +66,12 @@ def _run(model, tok, enc, graphs, monkeypatch, max_new, stop = None, min_new = 0
     for name in ("alloc_decode_buffers", "resize_decode_buffers"):
         fn = getattr(G, name)
 
-        def spy(attn, *args, _fn = fn, **kwargs):
+        def spy(
+            attn,
+            *args,
+            _fn = fn,
+            **kwargs,
+        ):
             out = _fn(attn, *args, **kwargs)
             seen[0] = max(seen[0], attn.paged_attention.shape[0])
             return out
