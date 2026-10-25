@@ -2371,8 +2371,6 @@ export const it = {
         noRamReserveDescription: "Riduce la RAM occupata dai pesi del modello.",
         noRamReserveHint: "Salta il caricamento mappato in memoria sulle build Windows supportate quando il modello è interamente scaricato sulla GPU, così le sue pagine non restano residenti. Altrimenti mantiene il caricamento mappato in memoria. I buffer CPU necessari possono comunque occupare RAM. Rimuove --no-mmap e --mlock.",
         multiModel: "Mantieni più modelli caricati",
-        moreSettings: "Altre impostazioni della memoria",
-        moreSettingsDescription: "Riserva di RAM di sistema, caricamenti troppo grandi e scaricamento per inattività per immagini e video.",
         openSystemSettings: "Impostazioni di sistema",
         multiModelOff: "Disattivato",
         multiModelFit: "Se c'è spazio",

@@ -2417,8 +2417,6 @@ export const ja = {
         noRamReserveDescription: "モデルの重みが占有する RAM を減らします。",
         noRamReserveHint: "モデルが GPU に完全にオフロードされている場合、対応する Windows ビルドではメモリマップ読み込みを行わず、ファイルのページが常駐しないようにします。それ以外ではメモリマップ読み込みを維持します。必要な CPU バッファは RAM を使用することがあります。--no-mmap と --mlock を除去します。",
         multiModel: "複数のモデルを読み込んだままにする",
-        moreSettings: "その他のメモリ設定",
-        moreSettingsDescription: "システム RAM の確保、メモリを超える読み込み、画像と動画のアイドル時アンロード。",
         openSystemSettings: "システム設定",
         multiModelOff: "オフ",
         multiModelFit: "収まる場合",

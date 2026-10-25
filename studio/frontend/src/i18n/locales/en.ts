@@ -2498,8 +2498,6 @@ export const en = {
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
         multiModel: "Keep multiple models loaded",
-        moreSettings: "More memory settings",
-        moreSettingsDescription: "System RAM reservation, oversized loads and idle unload for image and video.",
         openSystemSettings: "System settings",
         multiModelOff: "Off",
         multiModelFit: "When they fit",

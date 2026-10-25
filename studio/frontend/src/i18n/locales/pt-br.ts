@@ -2450,8 +2450,6 @@ export const ptBR = {
         noRamReserveDescription: "Reduz a RAM ocupada pelos pesos do modelo.",
         noRamReserveHint: "Ignora o carregamento mapeado em memória nas versões compatíveis do Windows quando o modelo está totalmente descarregado na GPU, para que suas páginas não fiquem residentes. Caso contrário, mantém o carregamento mapeado em memória. Buffers de CPU necessários ainda podem usar RAM. Remove --no-mmap e --mlock.",
         multiModel: "Manter vários modelos carregados",
-        moreSettings: "Mais configurações de memória",
-        moreSettingsDescription: "Reserva de RAM do sistema, carregamentos acima da memória e descarregamento por inatividade para imagem e vídeo.",
         openSystemSettings: "Configurações do sistema",
         multiModelOff: "Desativado",
         multiModelFit: "Quando couberem",

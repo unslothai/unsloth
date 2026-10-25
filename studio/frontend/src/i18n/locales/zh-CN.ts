@@ -2405,8 +2405,6 @@ export const zhCN = {
         noRamReserveDescription: "减少模型权重占用的内存。",
         noRamReserveHint: "当模型完全卸载到 GPU 时，在受支持的 Windows 版本上跳过内存映射加载，使其页面不再常驻；否则保持内存映射加载。必要的 CPU 缓冲区仍可能占用内存。移除 --no-mmap 和 --mlock。",
         multiModel: "保持多个模型加载",
-        moreSettings: "更多内存设置",
-        moreSettingsDescription: "系统内存预留、超出内存的加载，以及图片和视频的空闲卸载。",
         openSystemSettings: "系统设置",
         multiModelOff: "关闭",
         multiModelFit: "能容纳时",

@@ -212,6 +212,24 @@ export function ModelMemorySection({
     <SettingsSection
       title={t("settings.resources.modelMemory.title")}
       ref={ref}
+      // The API tab's copy points at the rest of the section, in System settings.
+      action={
+        full ? undefined : (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground"
+            onClick={() =>
+              useSettingsDialogStore
+                .getState()
+                .openDialog("resources", { scrollTarget: "resources-model-memory" })
+            }
+          >
+            {t("settings.resources.modelMemory.openSystemSettings")}
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
+          </Button>
+        )
+      }
     >
       <SettingsRow
         label={t("settings.resources.modelMemory.keepResident")}
@@ -320,25 +338,7 @@ export function ModelMemorySection({
       )}
       {full ? (
         <MediaIdleUnloadSetting residencyKey={settings?.keepResident} />
-      ) : (
-        <SettingsRow
-          label={t("settings.resources.modelMemory.moreSettings")}
-          description={t("settings.resources.modelMemory.moreSettingsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              useSettingsDialogStore
-                .getState()
-                .openDialog("resources", { scrollTarget: "resources-model-memory" })
-            }
-          >
-            {t("settings.resources.modelMemory.openSystemSettings")}
-            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
-          </Button>
-        </SettingsRow>
-      )}
+      ) : null}
     </SettingsSection>
   );
 }
