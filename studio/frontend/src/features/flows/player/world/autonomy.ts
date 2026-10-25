@@ -99,8 +99,8 @@ export function makesOf(spec: WorldSpec, npcId: string): Good {
 function withVillagers(spec: WorldSpec, a: AutoState): AutoState {
   const missing = spec.npcs.filter((n) => !(n.id in a.coins));
   if (!missing.length && PLAYER in a.coins) return a;
-  const coins = { [PLAYER]: PLAYER_COINS, ...a.coins };
-  const goods = { [PLAYER]: {}, ...a.goods };
+  const coins: Record<string, number> = { [PLAYER]: PLAYER_COINS, ...a.coins };
+  const goods: Record<string, Stock> = { [PLAYER]: {}, ...a.goods };
   for (const n of missing) {
     coins[n.id] = NPC_COINS;
     goods[n.id] = { [makesOf(spec, n.id)]: STOCK_START };
