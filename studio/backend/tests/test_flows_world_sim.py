@@ -32,9 +32,9 @@ CLASSIC_SYSTEM = (
     "agree to head somewhere: Pond (id pond), Mill (id mill). Leave it empty otherwise."
 )
 CLASSIC_PROMPT = (
-    "Your quests:\n- Lost rod (id q): Find my rod Needs item id rod.\nWorld items: Fishing Rod (id rod), Berry Pie "
-    "(id pie)\nPlayer (Pip) carries: Berry Pie (id pie)\nVariables: {'reputation': 2}\nConversation so far:\n"
-    "Player: hello\nOld Tom: Hmph.\nPlayer: Seen my rod?\nOld Tom:"
+    "Conversation so far:\nPlayer: hello\nOld Tom: Hmph.\nYour quests:\n- Lost rod (id q): Find my rod Needs item "
+    "id rod.\nWorld items: Fishing Rod (id rod), Berry Pie (id pie)\nPlayer (Pip) carries: Berry Pie (id pie)\n"
+    "Variables: {'reputation': 2}\nPlayer: Seen my rod?\nOld Tom:"
 )
 
 SIM_RAW = {
@@ -254,6 +254,7 @@ def test_plan_places_are_restricted():
     out = run(
         world_nodes.world_npc_plan(SimCtx("world.npc_plan", inputs = {"state": state}, llm = llm))
     )["plan"]
+    assert seen.get("seed") is None
     assert out["npc"] == "bea" and out["day"] == 1
     assert out["plan"] == [
         {"start": 1440 + 420, "minutes": 60, "activity": "Bake", "place": "cafe"},
@@ -291,6 +292,8 @@ def test_encounter_output_schema():
     }
     ctx = SimCtx("world.npc_chat", inputs = {"state": state}, llm = lambda **kw: copy.deepcopy(raw))
     chat = run(world_nodes.world_npc_chat(ctx))["chat"]
+    # Live calls send no fixed seed: Studio turns the prompt cache off for a seeded request.
+    assert ctx.llm_calls[0].get("seed") is None
     assert chat["lines"] == [
         {"npc": a["id"], "text": "Party at the cafe tonight!"},
         {"npc": b["id"], "text": "Hmph, fine."},
