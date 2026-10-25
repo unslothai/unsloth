@@ -214,7 +214,10 @@ def _case_parity(
     if gc:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
-    originals = {"embed": weakref.ref(model.get_input_embeddings()), "head": weakref.ref(model.get_output_embeddings())}
+    originals = {
+        "embed": weakref.ref(model.get_input_embeddings()),
+        "head": weakref.ref(model.get_output_embeddings()),
+    }
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = n_mb, schedule = schedule)
     gc_module.collect()
     alive = {k: r() is not None for k, r in originals.items()}
