@@ -1690,6 +1690,24 @@ def _stage_packed_metadata(seq_lengths: torch.Tensor) -> Tuple[torch.Tensor, Tup
     return staged, tuple(host_lengths.tolist())
 
 
+def _is_compiling() -> bool:
+    is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+    try:
+        return bool(is_compiling()) if is_compiling is not None else False
+    except Exception:
+        return False
+
+
+def _pinned_to_device(tensor: torch.Tensor, device) -> torch.Tensor:
+    """non_blocking copy from pinned memory; a plain (blocking) copy when pinning fails."""
+    try:
+        pinned = tensor.pin_memory()
+    except RuntimeError:
+        # No pinnable host memory (pinned limit, WSL, a CUDA-less build): pageable copy, same values.
+        return tensor.to(device = device)
+    return pinned.to(device = device, non_blocking = True)
+
+
 def get_packed_info_from_kwargs(
     kwargs: dict,
     device: torch.device,
@@ -1712,6 +1730,17 @@ def get_packed_info_from_kwargs(
     if entry is not None and entry["seq_lengths"] is seq_lengths:
         return entry["result"]
 
+    if _is_compiling():
+        # Under a user torch.compile, a host tuple of lengths specializes the graph on the segment
+        # count (one recompile per count under dynamic = True) and pin_memory cannot be traced.
+        lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
+        cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
+        torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
+        max_seqlen = int(lengths.max().item())
+        result = (lengths, cu_seqlens, max_seqlen)
+        _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "result": result}
+        return result
+
     if (
         isinstance(seq_lengths, torch.Tensor)
         and seq_lengths.device.type == "cpu"
@@ -1720,7 +1749,7 @@ def get_packed_info_from_kwargs(
         # One pinned non_blocking H2D copy; pageable copies and .item() both drain the stream.
         staged, host = _stage_packed_metadata(seq_lengths)
         n = len(host)
-        moved = staged.pin_memory().to(device = device, non_blocking = True)
+        moved = _pinned_to_device(staged, device)
         lengths, cu_seqlens = moved[:n], moved[n:]
     else:
         lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)

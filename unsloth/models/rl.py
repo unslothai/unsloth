@@ -2248,7 +2248,11 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
     present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8, device = "cpu")
     # torch.tensor(..., device = cuda) is a pageable, stream-draining copy; pinned + non_blocking is not.
     if device.type == "cuda":
-        present = present.pin_memory().to(device, non_blocking = True)
+        try:
+            present = present.pin_memory().to(device, non_blocking = True)
+        except RuntimeError:
+            # Pinning can fail (pinned limit, WSL); a pageable copy carries the same mask.
+            present = present.to(device)
     else:
         present = present.to(device)
     dist.all_reduce(present, op = dist.ReduceOp.MAX, group = group)
