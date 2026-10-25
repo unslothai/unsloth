@@ -330,7 +330,6 @@ class WorldNpc(_Strict):
     routine: Optional[str] = None
     relationships: Optional[dict[str, str]] = None
     seed_memories: Optional[list[dict[str, Any]]] = None  # [{text, importance}]
-    # Only read when the world's `autonomy` allows it.
     role: Optional[Literal["rival", "hostile"]] = None
 
 
@@ -386,8 +385,6 @@ class WorldSimulation(_Strict):
 
 
 class WorldAutonomy(_Strict):
-    """What villagers may do on their own; every flag off keeps the world as it was."""
-
     trade: bool = False  # make, buy and sell goods
     homes: bool = False  # claim a free house or build one
     quests: bool = False  # a rival races the player for quest items

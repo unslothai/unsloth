@@ -45,9 +45,8 @@ TILE_PROMPTS = {
     "tree": "dense tree canopy seen from above",
     "rock": "mossy grey boulders",
 }
-# Turns of conversation a reply reads; the world player sends exactly these (MAX_HISTORY in world-state.ts).
+# Keep in sync with MAX_HISTORY in world-state.ts.
 MAX_HISTORY = 24
-# What villagers may do on their own (roles.ts), and the NPC Reply setting that turns them on.
 AUTONOMY_FLAGS = ("trade", "homes", "quests", "rivals", "enemies")
 AUTONOMY_LEVELS = {
     "off": (),
@@ -56,7 +55,6 @@ AUTONOMY_LEVELS = {
     "full": AUTONOMY_FLAGS,
 }
 NPC_ROLES = ("rival", "hostile")
-# Action play in the 3D view, and the World Player's Gameplay setting that turns it on.
 ACTION_FLAGS = ("movement", "shooter")
 GAMEPLAY_LEVELS = {
     "explore": {},
@@ -74,7 +72,6 @@ def action_of(raw: Any) -> Optional[dict]:
     return flags if any(flags.values()) else None
 
 
-# Rivals or hostiles the quest director may add, each (MAX_ADDED_ROLE in roles.ts).
 MAX_ADDED_ROLE = 2
 SUMMARY_CHARS = 600
 
@@ -523,7 +520,6 @@ def world_schema(npcs: int, items: int) -> dict:
     }
 
 
-# The only things an NPC can do from a conversation; the world player carries them out.
 REPLY_ACTIONS = ("follow_player", "stop_following", "go_to")
 FOLLOW_ASK = re.compile(r"\b(follow me|come with me|come along|walk with me|tag along)\b")
 FOLLOW_STOP = re.compile(
@@ -578,7 +574,6 @@ SUMMARY_SCHEMA = {
 }
 
 
-# A world keeps growing while it is played: one new quest at a time, maybe with a new item or villager.
 DIRECTOR_SCHEMA = {
     "type": "object",
     "properties": {
@@ -731,7 +726,6 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
         out["action"], out["place"] = action, place
     elif action in ("follow_player", "stop_following"):
         out["action"] = action
-    # A villager only offers what they have; asked to trade, one who forgot to offer offers their first good.
     goods = [g["id"] for g in state.get("goods") or [] if isinstance(g, dict) and g.get("id")]
     offer = str(raw.get("offer_trade") or "").strip().lower()
     if offer in goods:
@@ -744,7 +738,6 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
 
 
 def talk_summary(state: dict) -> tuple[str, int]:
-    """What the NPC remembers of turns already folded away, and the seq of the last turn it covers (-1 for none)."""
     s = state.get("summary") if isinstance(state.get("summary"), dict) else {}
     text = re.sub(r"\s+", " ", str(s.get("text") or "")).strip()[:SUMMARY_CHARS]
     upto = s.get("upto")
@@ -787,7 +780,6 @@ def clean_summary(raw: Any) -> str:
 
 
 def _used_items(world: dict, state: dict) -> set:
-    """Items a new quest cannot ask for: already asked for by a quest, carried, or picked up."""
     return (
         {q.get("requires_item") for q in world.get("quests") or []}
         | set(state.get("inventory") or [])
@@ -796,13 +788,11 @@ def _used_items(world: dict, state: dict) -> set:
 
 
 def director_prompt(state: dict) -> tuple[str, str]:
-    """Ask for the next quest of a world in play, built from what is already there."""
     world = state.get("world") if isinstance(state.get("world"), dict) else None
     if world is None:
         raise WorldError("the director needs the world in its state")
     done = set(state.get("completed_quests") or [])
     npcs = "\n".join(f"- {n['id']}: {n['name']}" for n in world.get("npcs") or [])
-    # Only items a new quest may still ask for, so the model is not tempted by ones already used.
     used = _used_items(world, state)
     items = "\n".join(
         f"- {i['id']}: {i['name']}" for i in world.get("items") or [] if i["id"] not in used
@@ -856,7 +846,6 @@ def director_prompt(state: dict) -> tuple[str, str]:
 
 
 def validate_director(raw: Any, state: dict) -> dict:
-    """A patch that only adds: one quest, at most one new item and one new villager, every reference resolved."""
     world = state.get("world") if isinstance(state.get("world"), dict) else None
     if world is None or not isinstance(raw, dict):
         raise WorldError("the director did not return a quest")
@@ -922,7 +911,6 @@ def validate_director(raw: Any, state: dict) -> dict:
         asked[:60] if asked and find(items, asked) is None else ""
     )
     if re.fullmatch(r"[a-z0-9]+(_[a-z0-9]+)+", new_item_name):
-        # An id-like name ("wind_chime") reads as a name ("Wind chime").
         new_item_name = new_item_name.replace("_", " ").capitalize()
     if need is None and new_item_name and state.get("allow_item"):
         need = _unique(slug(new_item_name, "item"), taken)
@@ -948,7 +936,6 @@ def validate_director(raw: Any, state: dict) -> dict:
 
 
 def world_places(world: dict) -> list[dict]:
-    """Where an NPC can be sent: simulation places, then map regions."""
     seen, out = set(), []
     for p in [
         *((world.get("simulation") or {}).get("places") or []),
@@ -987,13 +974,11 @@ ROLE_LINES = {
 
 
 def role_line(state: dict) -> str:
-    """The villager's role, read before the persona so a small model keeps to it (empty without one)."""
     role = state.get("role")
     return f"{ROLE_LINES[role]}\n" if role in ROLE_LINES else ""
 
 
 def trade_rules(state: dict) -> str:
-    """What the villager sells, for a world with trading on (empty otherwise)."""
     goods = [g for g in state.get("goods") or [] if isinstance(g, dict) and g.get("id")]
     if not goods:
         return ""
@@ -1041,10 +1026,8 @@ def npc_prompt(
     if npc.get("wander") is not False:
         system += action_rules(world)
     system += trade_rules(state)
-    # Said again last: small models follow the end of the prompt most closely.
     system += f"\n{role_line(state)}" if role_line(state) else ""
-    # Turns already folded into the summary are left out; the summary sits in the system prompt, which changes
-    # only when turns are folded, so llama-server keeps reusing the cached prefix.
+    # Summary lives in the system prompt (changes only on fold) so llama-server reuses the cached prefix.
     history = [
         h
         for h in state.get("history") or []

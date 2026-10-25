@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Which autonomy a world opted into, and who plays the rival or the hostile villager.
 
 import { seedFrom } from "../../expr";
 import type { WorldNpc, WorldQuest, WorldSpec } from "../../types";
@@ -17,7 +16,6 @@ export type AutonomyFlag = (typeof AUTONOMY)[number];
 export type Flags = Record<AutonomyFlag, boolean>;
 export type NpcRole = "rival" | "hostile";
 export const ROLES: readonly NpcRole[] = ["rival", "hostile"];
-/** Rivals or hostiles the quest director may add, each. */
 export const MAX_ADDED_ROLE = 2;
 
 export function autonomyOf(spec: WorldSpec): Flags {
@@ -40,10 +38,6 @@ function pick<T>(list: T[], ...seed: unknown[]): T | null {
   return list.length ? list[seedFrom(...seed) % list.length] : null;
 }
 
-/**
- * The hostile villagers: those the world marks hostile, or (when enemies are on and none is marked) one villager
- * who gives no quest, picked by seed.
- */
 export function hostilesOf(spec: WorldSpec): string[] {
   if (!autonomyOf(spec).enemies) return [];
   const marked = spec.npcs.filter((n) => n.role === "hostile" && walks(n));
@@ -57,7 +51,6 @@ export function hostilesOf(spec: WorldSpec): string[] {
   return one ? [one.id] : [];
 }
 
-/** Who races the player for a quest's item: a marked rival other than the giver, else one picked by seed. */
 export function rivalFor(spec: WorldSpec, q: WorldQuest): string | null {
   if (!autonomyOf(spec).quests) return null;
   const hostile = new Set(hostilesOf(spec));

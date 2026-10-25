@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Villagers acting on their own: the opt-in setting, trade offers, roles in prompts, and roles the director adds."""
 
 from core.flows.schema import WorldSpec
 from core.flows.world import (
@@ -70,10 +69,8 @@ def test_a_trade_offer_is_only_something_the_villager_sells():
     s = reply_state(goods = GOODS)
     assert validate_npc_reply({"text": "Fish!", "offer_trade": "fish"}, s)["offer_trade"] == "fish"
     assert "offer_trade" not in validate_npc_reply({"text": "A sword!", "offer_trade": "sword"}, s)
-    # Asked to trade, a villager who forgot to offer offers their first good.
     asked = reply_state(goods = GOODS, player_message = "What do you have for sale?")
     assert validate_npc_reply({"text": "Lots."}, asked)["offer_trade"] == "bread"
-    # Without autonomy nothing is offered, whatever the model says.
     assert "offer_trade" not in validate_npc_reply(
         {"text": "Fish!", "offer_trade": "fish"},
         reply_state(player_message = "what do you have for sale?"),

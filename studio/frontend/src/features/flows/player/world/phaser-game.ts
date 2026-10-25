@@ -57,10 +57,8 @@ export interface WorldGameHandle {
   destroy(): void;
   playerTile(): Point;
   removeItem(id: string): void;
-  /** Put a villager or item added while playing on the map; the terrain stays as it is. */
   addNpc(npc: WorldNpc, at: Point): void;
   addItem(item: WorldItem, at: Point): void;
-  /** A sign on the map that nothing walks into or picks up (a home a villager built); same id twice is a no-op. */
   addMarker(id: string, at: Point, icon: string, label: string): void;
   faceNpc(id: string | null): void;
   /** Walk the player to a tile along the shortest path (click-to-move does the same). */
@@ -117,7 +115,6 @@ interface Actor {
   area: Area | null;
   busy: boolean;
   speech: Phaser.GameObjects.Container | null;
-  /** Seeded per world and villager, so where they wander replays the same. */
   rng: Prng;
 }
 
