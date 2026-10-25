@@ -212,7 +212,8 @@ def _case_compose(
         )
         refusals["shard_model_cpu_offload"] = _raised(
             lambda: native.shard_model(
-                model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], cpu_offload = True)
+                model,
+                native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], cpu_offload = True),
             )
         )
         refusals["fsdp_after_refusals"] = sum(
