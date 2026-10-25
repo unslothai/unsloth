@@ -2153,6 +2153,15 @@ def _segmenter(holds_vram, call_device = None):
     return setup
 
 
+def _prompt_upsampler(loading, holds_vram):
+    def setup(monkeypatch):
+        import core.inference.flux3_prompt_upsampler as upsampler
+        fake = types.SimpleNamespace(is_loading = lambda: loading, holds_vram = lambda: holds_vram)
+        monkeypatch.setattr(upsampler, "_sidecar", fake)
+
+    return setup
+
+
 def _worker(module, attr, **state):
     """A training / export singleton in ``module`` reporting ``state`` (method name -> result)."""
 
@@ -2186,6 +2195,9 @@ def _worker(module, attr, **state):
         pytest.param(_segmenter(True), False, id = "segmenter-gpu"),
         pytest.param(_segmenter(False, "cuda:0"), False, id = "segmenter-call-on-gpu"),
         pytest.param(_segmenter(False, "cpu"), True, id = "segmenter-cpu"),
+        pytest.param(_prompt_upsampler(False, True), False, id = "prompt-upsampler-gpu"),
+        pytest.param(_prompt_upsampler(True, False), False, id = "prompt-upsampler-loading"),
+        pytest.param(_prompt_upsampler(False, False), True, id = "prompt-upsampler-cpu"),
         pytest.param(
             _worker("core.training.training", "_training_backend", is_training_active = True),
             False,

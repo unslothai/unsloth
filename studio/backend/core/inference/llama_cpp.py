@@ -845,6 +845,12 @@ def _gpus_held_outside_llama() -> Optional[frozenset]:
         ):
             return None
 
+        # The FLUX.3 prompt upsampler's llama-server, spawned outside _owned_backends.
+        upsampler_module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+        upsampler = getattr(upsampler_module, "_sidecar", None)
+        if upsampler is not None and (upsampler.is_loading() or upsampler.holds_vram()):
+            return None
+
         embeddings = sys.modules.get("core.rag.embeddings")
         if embeddings is not None:
             if embeddings._lock.locked() or embeddings._backend_lock.locked():
