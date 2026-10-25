@@ -29,7 +29,15 @@ def _cudnn_sdpa_available():
 needs_cudnn = pytest.mark.skipif(not _cudnn_sdpa_available(), reason = "no masked cuDNN SDPA here")
 
 
-def _qkv(bsz, n_heads, n_kv, q_len, head_dim, gqa, seed = 0):
+def _qkv(
+    bsz,
+    n_heads,
+    n_kv,
+    q_len,
+    head_dim,
+    gqa,
+    seed = 0,
+):
     g = torch.Generator(device = "cuda").manual_seed(seed)
     mk = lambda h: torch.randn(
         bsz, h, q_len, head_dim, device = "cuda", dtype = torch.bfloat16, generator = g
@@ -41,7 +49,12 @@ def _qkv(bsz, n_heads, n_kv, q_len, head_dim, gqa, seed = 0):
     return [t.requires_grad_() for t in (q, k, v)]
 
 
-def _mask(kind, bsz, q_len, seed = 0):
+def _mask(
+    kind,
+    bsz,
+    q_len,
+    seed = 0,
+):
     """The masks run_attention hands SDPA: (bsz, 1, q, k) bool keep masks with fully masked rows
     opened up, a (bsz, 1, 1, k) key-padding mask, or an HF-style additive bf16 mask."""
     g = torch.Generator().manual_seed(seed)
@@ -242,7 +255,10 @@ def test_inference_prefill_bucketed_decode_untouched(monkeypatch, masked):
     m32 = kw.get("attn_mask")
     with sdpa_kernel([SDPBackend.MATH]):
         orc = F.scaled_dot_product_attention(
-            q.float(), k.float(), v.float(), **({"attn_mask": m32} if masked else {"is_causal": True})
+            q.float(),
+            k.float(),
+            v.float(),
+            **({"attn_mask": m32} if masked else {"is_causal": True}),
         )
     assert _rel(got.float(), orc) <= 1.25 * _rel(want.float(), orc) + 2e-3
 

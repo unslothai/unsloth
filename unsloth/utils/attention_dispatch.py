@@ -366,7 +366,9 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
         and (
             torch.compiler.is_compiling()
             or _decode_picks_cudnn(
-                query, key, kwargs.get("attn_mask", args[0] if args else None),
+                query,
+                key,
+                kwargs.get("attn_mask", args[0] if args else None),
                 bool(kwargs.get("enable_gqa", False)),
             )
         )  # fmt: skip
@@ -377,8 +379,8 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
 
 
 decode_scaled_dot_product_attention.__doc__ = (
-    (F.scaled_dot_product_attention.__doc__ or "") + decode_scaled_dot_product_attention.__doc__
-)
+    F.scaled_dot_product_attention.__doc__ or ""
+) + decode_scaled_dot_product_attention.__doc__
 
 
 # Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
