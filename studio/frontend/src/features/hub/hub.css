@@ -709,7 +709,7 @@
     background-color: color-mix(in srgb, var(--accent) 60%, var(--popover)) !important;
   }
 
-  /* The composer + menu's shape: 12px rows on an 8px gutter keep the 20px corners concentric. */
+  /* 12px rows + 8px gutter = the 20px corner. */
   .hub-composer-menu[data-slot] {
     border-radius: var(--radius-xl) !important;
     padding: calc(0.5rem * var(--ui-space-scale, 1)) calc(8px * var(--ui-space-scale, 1)) !important;

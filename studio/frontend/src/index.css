@@ -3882,13 +3882,10 @@ html[data-chat-font] .aui-root {
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Concentric with the item hover boxes: container radius =
-		   item radius (12px) + side gutter (8px), so the curves run parallel. */
+		/* 12px item corners + 8px gutter = the 20px corner. */
 		border-radius: var(--radius-xl) !important;
 		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
 		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
-		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
-		   sits evenly inset on all four sides. */
 		padding-left: calc(8px * var(--ui-space-scale, 1));
 		padding-right: calc(8px * var(--ui-space-scale, 1));
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
