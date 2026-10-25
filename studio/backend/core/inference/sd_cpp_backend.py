@@ -1569,10 +1569,9 @@ def _decisive_evidence_only(record: Optional[dict]) -> Optional[dict]:
         if isinstance(entry, dict) and entry.get("proven")
     }
     unscoped = _unscoped_evidence(record)
-    if record.get("proven") and not isinstance(record.get("per_card"), dict):
-        # Cards named without tallies: the proof cannot be told apart, so it stays whole.
-        unscoped = {"strikes": 0, "proven": True}
-    if not (proven_cards or unscoped["proven"]):
+    # Proof without per-card tallies stays as written: record-wide, and scoped to its ``cards`` when it names any.
+    whole = bool(record.get("proven")) and not isinstance(record.get("per_card"), dict)
+    if not (proven_cards or unscoped["proven"] or whole):
         return None
     kept = {
         "strikes": 0,
@@ -1583,7 +1582,9 @@ def _decisive_evidence_only(record: Optional[dict]) -> Optional[dict]:
     if record.get("cards"):
         # Without unscoped proof only the proven cards stay known: a card left in ``cards`` without its own
         # entry would fall through to the record-wide proof and divert on another card's failure.
-        kept["cards"] = [c for c in record["cards"] if unscoped["proven"] or c in proven_cards]
+        kept["cards"] = [
+            c for c in record["cards"] if whole or unscoped["proven"] or c in proven_cards
+        ]
     if proven_cards:
         kept["per_card"] = proven_cards
     kept["unscoped"] = {"strikes": 0, "proven": unscoped["proven"]}

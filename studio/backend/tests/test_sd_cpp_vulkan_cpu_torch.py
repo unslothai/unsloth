@@ -552,6 +552,16 @@ def test_an_old_rule_record_keeps_only_the_proven_cards_known():
     assert sd_cpp_backend._record_diverts(kept, fp, card = "Card B") is False
 
 
+@pytest.mark.parametrize("card,diverts", [("Card A", True), ("Card B", False), (None, True)])
+def test_an_old_rule_proof_without_tallies_keeps_its_cards(card, diverts):
+    """Proof naming cards but no per-card tallies diverted only those cards; migrating it must not widen it."""
+    old = {"strikes": 1, "proven": True, "fingerprint": {"bundle": "t"}, "cards": ["Card A"]}
+    fp = {"bundle": "t"}
+    assert sd_cpp_backend._record_diverts(old, fp, card = card) is diverts
+    kept = sd_cpp_backend._record_under_current_rule("vulkan", old)
+    assert sd_cpp_backend._record_diverts(kept, fp, card = card) is diverts
+
+
 def test_the_fallback_status_counts_the_same_evidence_as_the_runtime(monkeypatch):
     """Settings must not report a diversion the runtime decision no longer makes."""
     monkeypatch.setattr(sd_cpp_backend, "sd_cpp_vulkan_fallback_enabled", lambda: True)
