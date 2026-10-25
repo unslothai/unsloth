@@ -450,7 +450,9 @@ def test_packed_rows_leave_a_compiled_block_for_the_eager_wrapper(monkeypatch, i
 @_TORCH_VARLEN_HOST
 def test_packed_rows_in_a_compiled_block_take_varlen(monkeypatch):
     if hpa._torch_varlen(torch.device("cuda", 0)) is None:
-        pytest.skip("this torch has no window_size varlen_attn")
+        pytest.skip(
+            reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
+        )
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
 
     hpa._ORIG_SDPA[0] = sdpa_attention_forward
