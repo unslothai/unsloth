@@ -1686,7 +1686,7 @@ def _checkpoint_index(name, kwargs):
         root = os.path.join(name, sub)
         index = os.path.join(root, "model.safetensors.index.json")
         if os.path.isfile(index):
-            with open(index) as f:
+            with open(index, encoding = "utf-8") as f:
                 weight_map = json.load(f)["weight_map"]
             return {k: os.path.join(root, v) for k, v in weight_map.items()}
         single = os.path.join(root, "model.safetensors")
@@ -1710,7 +1710,7 @@ def _checkpoint_index(name, kwargs):
         index = None
     if index is None:
         return keys_of(hf_hub_download(name, "model.safetensors", **hub))
-    with open(index) as f:
+    with open(index, encoding = "utf-8") as f:
         weight_map = json.load(f)["weight_map"]
     paths = {v: hf_hub_download(name, v, **hub) for v in sorted(set(weight_map.values()))}
     return {k: paths[v] for k, v in weight_map.items()}

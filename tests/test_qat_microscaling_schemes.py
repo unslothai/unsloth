@@ -179,7 +179,7 @@ def test_mx_qat_linear_takes_float32_activations_under_autocast(weight_dtype):
     # Autocast feeds float32 activations into bfloat16 (or float32) linears.
     # torchao's CPU fake-quant backward cannot mix a float32 weight with bfloat16 activations.
     device = "cpu" if weight_dtype == torch.bfloat16 else "cuda"
-    if device == "cuda" and not torch.cuda.is_available():
+    if device == "cuda" and not has_real_cuda():
         pytest.skip("float32 weights under autocast need the CUDA MX path")
     model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(device, weight_dtype)
     model = _prepare_model_for_qat(model, _mx_torchao_config())
