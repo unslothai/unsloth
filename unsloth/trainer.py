@@ -215,11 +215,12 @@ def _should_auto_padding_free(config) -> bool:
     return getattr(config, "padding_free", None) is None
 
 
-def _auto_padding_choice(original_init, model, config, train_dataset, processing_class, args, kwargs):
+def _auto_padding_choice(
+    original_init, model, config, train_dataset, processing_class, args, kwargs
+):
     """(use_padding_free, reason) for an unset `padding_free` (unsloth/utils/padding_choice.py)."""
     try:
         from unsloth.utils.padding_choice import decide_auto_padding_free
-
         try:
             bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs).arguments
         except Exception:

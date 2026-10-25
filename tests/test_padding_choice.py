@@ -103,7 +103,9 @@ def test_estimate_microbatch_tokens():
     real, padded, pairs = pc.estimate_microbatch_tokens([100] * 50, 4)
     assert real == padded == 400 and pairs == 4 * 100 * 101 / 2
     real, padded, _ = pc.estimate_microbatch_tokens([10, 1000], 8, max_length = 500)
-    assert padded == pytest.approx(8 * 500, rel = 0.02)  # 8 draws of 2 lengths: max is almost always 500
+    assert padded == pytest.approx(
+        8 * 500, rel = 0.02
+    )  # 8 draws of 2 lengths: max is almost always 500
     assert real < padded
     assert pc.estimate_microbatch_tokens([], 2) is None
     assert pc.estimate_microbatch_tokens([5, 6], 0) is None
@@ -148,10 +150,18 @@ def test_env_overrides_and_failures(monkeypatch):
 class _Tok:
     chat_template = "x"
 
-    def __call__(self, texts, add_special_tokens = False):
+    def __call__(
+        self,
+        texts,
+        add_special_tokens = False,
+    ):
         return {"input_ids": [t.split() for t in texts]}
 
-    def apply_chat_template(self, messages, tokenize = False):
+    def apply_chat_template(
+        self,
+        messages,
+        tokenize = False,
+    ):
         return " ".join(m["content"] for m in messages)
 
 
@@ -160,7 +170,14 @@ def test_row_texts_formats():
     cfg = SimpleNamespace(dataset_text_field = "text")
     rows = [{"text": "a b c"}, {"text": "d"}]
     assert pc._row_texts(rows, ["text"], cfg, None, tok) == ["a b c", "d"]
-    rows = [{"messages": [{"role": "user", "content": "hi there"}, {"role": "assistant", "content": "yo"}]}]
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": "hi there"},
+                {"role": "assistant", "content": "yo"},
+            ]
+        }
+    ]
     assert pc._row_texts(rows, ["messages"], cfg, None, tok) == ["hi there yo"]
     rows = [{"prompt": "p q", "completion": " r"}]
     assert pc._row_texts(rows, ["prompt", "completion"], cfg, None, tok) == ["p q r"]
@@ -190,10 +207,15 @@ def test_sample_lengths():
 
 
 def test_total_microbatches():
-    cfg = SimpleNamespace(per_device_train_batch_size = 2, gradient_accumulation_steps = 4, max_steps = 60)
+    cfg = SimpleNamespace(
+        per_device_train_batch_size = 2, gradient_accumulation_steps = 4, max_steps = 60
+    )
     assert pc._total_microbatches(cfg, 52000) == 240
     cfg = SimpleNamespace(
-        per_device_train_batch_size = 2, gradient_accumulation_steps = 4, max_steps = -1, num_train_epochs = 1
+        per_device_train_batch_size = 2,
+        gradient_accumulation_steps = 4,
+        max_steps = -1,
+        num_train_epochs = 1,
     )
     assert pc._total_microbatches(cfg, 52001) == 26001
     assert pc._total_microbatches(cfg, None) is None

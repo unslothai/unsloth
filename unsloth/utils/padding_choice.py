@@ -40,7 +40,9 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_EFFICIENCY = 0.5  # fraction of the datasheet peak a LoRA step reaches when GPU bound (A100 measured 0.5)
+_EFFICIENCY = (
+    0.5  # fraction of the datasheet peak a LoRA step reaches when GPU bound (A100 measured 0.5)
+)
 _MAX_PADDED_GPU_S = 0.10  # padded micro batch GPU estimate below which the host dominates
 _SAVED_S_PER_MICROBATCH = 0.04  # host time block compile saved per micro batch where it won
 _EXTRA_COMPILE_S_16BIT = 25.0
@@ -59,7 +61,12 @@ def padding_choice_mode():
     return "auto"
 
 
-def estimate_microbatch_tokens(lengths, batch_size, max_length = None, seed = 0):
+def estimate_microbatch_tokens(
+    lengths,
+    batch_size,
+    max_length = None,
+    seed = 0,
+):
     """Expected (real tokens, padded tokens, attention pairs when padded) per micro batch.
 
     Batches are drawn uniformly from `lengths` (the trainer shuffles); padded = batch * longest.
@@ -93,7 +100,9 @@ def choose_padding(
     """Pure rule. Returns (use_padding_free: bool, reason: str, padded_gpu_s: float | None)."""
     if not peak_tflops or peak_tflops <= 0 or not linear_flops_per_token or not padded_tokens:
         return True, "no estimate", None
-    flops = linear_flops_per_token * padded_tokens + (attention_flops_per_pair or 0) * (padded_pairs or 0)
+    flops = linear_flops_per_token * padded_tokens + (attention_flops_per_pair or 0) * (
+        padded_pairs or 0
+    )
     gpu_s = flops / (peak_tflops * 1e12 * _EFFICIENCY)
     if gpu_s >= _MAX_PADDED_GPU_S:
         return True, f"GPU bound (padded micro batch ~{gpu_s * 1e3:.0f} ms of GPU work)", gpu_s
@@ -112,7 +121,11 @@ def choose_padding(
 # Feature gathering. Every failure returns None, which keeps padding-free.
 
 
-def _sample_indices(n, k = _SAMPLE_ROWS, seed = 0):
+def _sample_indices(
+    n,
+    k = _SAMPLE_ROWS,
+    seed = 0,
+):
     if n <= k:
         return list(range(n))
     return sorted(random.Random(seed).sample(range(n), k))
@@ -191,9 +204,10 @@ def _block_compile_installed(model):
     if not _enabled():
         return False
     for module in model.modules():
-        if getattr(type(module).forward, _MARK, False) and module.__dict__.get(
-            "_unsloth_block_mode", None
-        ) != _OFF:
+        if (
+            getattr(type(module).forward, _MARK, False)
+            and module.__dict__.get("_unsloth_block_mode", None) != _OFF
+        ):
             return True
     return False
 
@@ -224,7 +238,13 @@ def _total_microbatches(config, n_rows):
     return int(epochs * math.ceil(n_rows / bs))
 
 
-def decide_auto_padding_free(model, config, train_dataset, processing_class, formatting_func = None):
+def decide_auto_padding_free(
+    model,
+    config,
+    train_dataset,
+    processing_class,
+    formatting_func = None,
+):
     """True = padding-free (old default), False = padded batches. Never raises."""
     mode = padding_choice_mode()
     if mode == "padding_free":
