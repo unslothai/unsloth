@@ -31168,6 +31168,17 @@ class LlamaCppBackend:
                                     d.lower() in _CPU_DEVICE_VALUES for d in override
                                 ):
                                     return False
+                                # This backend's own names only: a CUDA + Vulkan build lists
+                                # both, and Vulkan0 is not CUDA0.
+                                if not all(
+                                    (
+                                        re.fullmatch(r"(?i)vulkan\d+", d)
+                                        if is_vulkan_backend
+                                        else _CUDA_LIKE_DEVICE_RE.match(d)
+                                    )
+                                    for d in override
+                                ):
+                                    return False
                                 # Studio's own Vulkan pin names the planned cards; anything else
                                 # must be a device this build enumerates.
                                 studio_pin = (
@@ -31184,6 +31195,45 @@ class LlamaCppBackend:
                                     }
                                     if not {d.lower() for d in override} <= listed:
                                         return False
+                            seen = {idx for idx, _free in (_detected_gpus or ())}
+                            shared = set(_shared_gpu_ids or ())
+                            if (
+                                is_vulkan_backend
+                                and override
+                                and not {int(d[6:]) for d in override} <= seen
+                            ):
+                                # A card the probe never saw (Vulkan Auto drops its iGPUs).
+                                return False
+                            # No shared-memory card anywhere: whichever card the drafter
+                            # lands on is discrete, so no ordinal has to be mapped.
+                            if (
+                                seen
+                                and not (seen & shared)
+                                and self._discrete_gpu_for_expert_spill(
+                                    None, _detected_gpus, _shared_gpu_ids
+                                )
+                            ):
+                                return True
+                            # A mixed host: narrow only through an order the child provably
+                            # shares (CUDA ordinals under the child's own CUDA_DEVICE_ORDER,
+                            # a numeric mask _physical_ordinals can read).
+                            if not is_vulkan_backend and (
+                                self._positional_child_order_unproven(child_env)
+                                or any(
+                                    not all(
+                                        t.strip().isdigit()
+                                        for t in str(child_env.get(name)).split(",")
+                                        if t.strip()
+                                    )
+                                    for name in (
+                                        "CUDA_VISIBLE_DEVICES",
+                                        "HIP_VISIBLE_DEVICES",
+                                        "ROCR_VISIBLE_DEVICES",
+                                    )
+                                    if child_env.get(name) is not None
+                                )
+                            ):
+                                return False
                             # A --device list or a --split-mode none --main-gpu picks among
                             # them, read as the host-residency verdict reads it.
                             active, compact = self._effective_gpu_selection(
@@ -31217,9 +31267,8 @@ class LlamaCppBackend:
                                     active = self._physical_ordinals(
                                         [pos], child_env, is_vulkan_backend
                                     )
-                            seen = {idx for idx, _free in (_detected_gpus or ())}
                             on = set(active) if active else seen
-                            if not on or not on <= seen - set(_shared_gpu_ids or ()):
+                            if not on or not on <= seen - shared:
                                 return False
                             return self._discrete_gpu_for_expert_spill(
                                 sorted(on), _detected_gpus, _shared_gpu_ids
@@ -34788,7 +34837,16 @@ class LlamaCppBackend:
                         _spawn_shares: Optional[list[float]] = [1.0]
                         _spawn_output_dev: Optional[int] = None
                         _spawn_pinned_at: Optional[int] = None
-                        if (
+                        # A CPU child (--device none / cpu, or an empty written mask) has no
+                        # card for --fit-target to keep anything free on.
+                        _spawn_cpu_only = _device_selection_is_cpu(run_cmd, env) or (
+                            _child_gpu_physical_ids is not None
+                            and _child_gpu_physical_ids is not _parent_view_gpu_ids
+                            and not _child_gpu_physical_ids
+                        )
+                        if _spawn_cpu_only:
+                            _spawn_shares = None
+                        elif (
                             _spawn_device_count > 1
                             and _extra_args_split_mode(run_cmd, env) == "tensor"
                         ):
@@ -35009,7 +35067,11 @@ class LlamaCppBackend:
                                 _sidecar_fit_reserve_mib = _spawn_reserve
                                 if list(_spawn_flags) not in _sidecar_override_pairs:
                                     _sidecar_override_pairs.append(list(_spawn_flags))
-                        if _sidecar_fit_reserve_eligible_mib and _sidecar_kind_for_fit:
+                        if (
+                            _sidecar_fit_reserve_eligible_mib
+                            and _sidecar_kind_for_fit
+                            and not _spawn_cpu_only
+                        ):
                             # Reported here, off the argv this attempt spawns: planning cannot
                             # know which of the gates above holds.
                             self._log_sidecar_fit_reserve(
@@ -41533,7 +41595,9 @@ class LlamaCppBackend:
         try:
             threading.Thread(target = _retire, daemon = True, name = "llama-device-lost").start()
         except RuntimeError:
-            pass
+            if metal_poison is not None:
+                # No retirement will run, so a later poison line must be free to try again.
+                metal_poison["pending"] = False
 
     @contextlib.contextmanager
     def _open_chat_stream_with_respawn_retry(
