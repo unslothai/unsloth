@@ -660,7 +660,11 @@ def _dpo_v1_heads(trainer, model):
 
 
 def unsloth_fused_dpo_compute_loss_v1(
-    trainer, model, inputs, return_outputs = False, trl_semantics = None
+    trainer,
+    model,
+    inputs,
+    return_outputs = False,
+    trl_semantics = None,
 ):
     """TRL 1.x ``DPOTrainer._compute_loss`` for text-only decoder models, scored from hidden
     states in row chunks. Returns ``None`` (run TRL's own) whenever the inputs leave that case.
@@ -727,11 +731,15 @@ def unsloth_fused_dpo_compute_loss_v1(
     chosen_logps, rejected_logps = logps.chunk(2, dim = 0)
 
     if self.precompute_ref_logps:
-        ref_chosen_logps, ref_rejected_logps = inputs["ref_chosen_logps"], inputs["ref_rejected_logps"]
+        ref_chosen_logps, ref_rejected_logps = (
+            inputs["ref_chosen_logps"],
+            inputs["ref_rejected_logps"],
+        )
     else:
         ref_model_kwargs = dict(model_kwargs)
-        with torch.no_grad(), disable_gradient_checkpointing(
-            self.model, self.args.gradient_checkpointing_kwargs
+        with (
+            torch.no_grad(),
+            disable_gradient_checkpointing(self.model, self.args.gradient_checkpointing_kwargs),
         ):
             if ref is None:
                 peft_model = self.accelerator.unwrap_model(model)
@@ -811,7 +819,9 @@ def unsloth_fused_dpo_compute_loss_v1(
         elif loss_type == "robust":
             clean_loss_term = -(1 - self.label_smoothing) * F.logsigmoid(self.beta * delta_score)
             flipped_loss_term = -self.label_smoothing * F.logsigmoid(-self.beta * delta_score)
-            per_sequence_loss = (clean_loss_term - flipped_loss_term) / (1 - 2 * self.label_smoothing)
+            per_sequence_loss = (clean_loss_term - flipped_loss_term) / (
+                1 - 2 * self.label_smoothing
+            )
         elif loss_type == "bco_pair":
             chosen_rewards = self.beta * chosen_logratios
             rejected_rewards = self.beta * rejected_logratios
@@ -852,7 +862,8 @@ def unsloth_fused_dpo_compute_loss_v1(
             logistic_component = -F.logsigmoid(logits)
             exp_component = torch.exp(-logits)
             per_sequence_loss = (
-                logistic_component * (1 - log_ratio_modulation) + exp_component * log_ratio_modulation
+                logistic_component * (1 - log_ratio_modulation)
+                + exp_component * log_ratio_modulation
             )
         elif loss_type == "sft":
             # F.cross_entropy over the chosen completion tokens == -mean of their logps.
@@ -893,7 +904,9 @@ def unsloth_fused_dpo_compute_loss_v1(
     self._metrics[mode]["entropy"].append(entropy)
 
     if mode == "train":
-        num_tokens_in_batch = self.accelerator.gather_for_metrics(inputs["attention_mask"].sum()).sum().item()
+        num_tokens_in_batch = (
+            self.accelerator.gather_for_metrics(inputs["attention_mask"].sum()).sum().item()
+        )
         if trl_semantics.get("tp_size", False):
             num_tokens_in_batch = num_tokens_in_batch // self._tp_size
         self._total_train_tokens += num_tokens_in_batch
@@ -909,8 +922,12 @@ def unsloth_fused_dpo_compute_loss_v1(
     total_chosen_tokens = self.accelerator.gather_for_metrics(total_chosen_tokens).sum().item()
     total_rejected_logits = self.accelerator.gather_for_metrics(total_rejected_logits).sum().item()
     total_rejected_tokens = self.accelerator.gather_for_metrics(total_rejected_tokens).sum().item()
-    avg_chosen_logits = total_chosen_logits / total_chosen_tokens if total_chosen_tokens > 0 else 0.0
-    avg_rejected_logits = total_rejected_logits / total_rejected_tokens if total_rejected_tokens > 0 else 0.0
+    avg_chosen_logits = (
+        total_chosen_logits / total_chosen_tokens if total_chosen_tokens > 0 else 0.0
+    )
+    avg_rejected_logits = (
+        total_rejected_logits / total_rejected_tokens if total_rejected_tokens > 0 else 0.0
+    )
     self._metrics[mode]["logits/chosen"].append(avg_chosen_logits)
     self._metrics[mode]["logits/rejected"].append(avg_rejected_logits)
 
@@ -939,5 +956,7 @@ def unsloth_fused_dpo_compute_loss_v1(
     agg_margins = self.accelerator.gather(margins)
     self._metrics[mode]["rewards/margins"].append(agg_margins.mean().item())
     self._metrics[mode]["logps/chosen"].append(self.accelerator.gather(chosen_logps).mean().item())
-    self._metrics[mode]["logps/rejected"].append(self.accelerator.gather(rejected_logps).mean().item())
+    self._metrics[mode]["logps/rejected"].append(
+        self.accelerator.gather(rejected_logps).mean().item()
+    )
     return loss

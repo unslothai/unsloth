@@ -69,11 +69,14 @@ def _run(tmp_path, flag):
     script.write_text(SCRIPT, encoding = "utf-8")
     proc = subprocess.run(
         [sys.executable, str(script), MODEL, str(tmp_path / f"out_{flag}")],
-        env = env, capture_output = True, text = True, timeout = 1200,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 1200,
     )
     lines = [l for l in proc.stdout.splitlines() if l.startswith("RESULT ")]
     assert proc.returncode == 0 and lines, proc.stdout[-4000:] + proc.stderr[-4000:]
-    return json.loads(lines[-1][len("RESULT "):])
+    return json.loads(lines[-1][len("RESULT ") :])
 
 
 def test_fused_dpo_v1_engages_only_when_requested(tmp_path):
@@ -81,9 +84,13 @@ def test_fused_dpo_v1_engages_only_when_requested(tmp_path):
 
     from trl import DPOTrainer
 
-    source = inspect.getsource(DPOTrainer._compute_loss) if hasattr(DPOTrainer, "_compute_loss") else ""
+    source = (
+        inspect.getsource(DPOTrainer._compute_loss) if hasattr(DPOTrainer, "_compute_loss") else ""
+    )
     hooked_release = (
-        "completion_mask" in source and "self._truncate_inputs(" not in source and "fused_lm_head=True" not in source
+        "completion_mask" in source
+        and "self._truncate_inputs(" not in source
+        and "fused_lm_head=True" not in source
     )
     on = _run(tmp_path, "1")
     off = _run(tmp_path, None)
