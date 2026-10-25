@@ -524,8 +524,9 @@ def test_packed_rows_in_a_compiled_block_take_varlen(monkeypatch):
         lambda q, k, v: hpa._sdpa_packed_varlen(
             module, q, k, v, mask, scaling = 0.11, packed_seq_lengths = psl
         )[0],
-        dynamic = True,
     )
+    for t, dims in ((q, (2,)), (k, (2,)), (v, (2,)), (mask, (2, 3))):
+        torch._dynamo.mark_dynamic(t, dims)  # as _block_compile marks the sequence
     before = hpa.HF_PACKED_ATTENTION_STATS["fast"]
     fast = fn(q, k, v)
     expected = hpa._leaves_block_probe("cuda", 0, torch.bfloat16, D, None)

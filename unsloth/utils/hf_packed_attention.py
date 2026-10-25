@@ -341,7 +341,8 @@ def _sdpa_packed_varlen(
             query.device.type,
             query.device.index,
             query.dtype,
-            query.shape[-1],
+            # int(): a symbolic head dim (dynamic=True) cannot be folded and would trace the probe.
+            int(query.shape[-1]),
             _window_key(module, kwargs),
         )
     ):
