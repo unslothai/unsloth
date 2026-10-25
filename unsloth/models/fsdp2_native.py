@@ -1007,7 +1007,6 @@ def _fully_shard(fully_shard, module, **kwargs):
 
 
 def _block_cudagraphs_requested():
-    """UNSLOTH_BLOCK_CUDAGRAPHS=1: _block_compile records each compiled block as a CUDA graph."""
     block_compile = sys.modules.get(f"{__package__}._block_compile") if __package__ else None
     options = getattr(block_compile, "_COMPILE_OPTIONS", None)
     if isinstance(options, dict):
@@ -1020,13 +1019,8 @@ def _skip_free_unsharded_param():
 
 
 def _keep_unsharded_for_block_cudagraphs(model):
-    """A CUDA graph reads each weight at the address it had when it was recorded. FSDP2 frees a unit's
-    gathered parameters at every reshard and allocates them again at the next all-gather, so the
-    addresses move every step and torch re-records every block graph (2 x T4, Qwen3 LoRA: 6 records
-    and 0 replays per step, 3x the step time without graphs) until cudagraph_unexpected_rerecord_limit.
-    Keep the gathered storage allocated instead: reshard still puts the sharded DTensor back on the
-    module and the next all-gather copies the updated shards into the same memory, so the addresses
-    stay fixed. Costs one gathered copy of each unit per rank. Returns the parameters kept."""
+    """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
+    step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place."""
     if not _block_cudagraphs_requested():
         return 0
     FSDPModule = _fsdp_module_class()

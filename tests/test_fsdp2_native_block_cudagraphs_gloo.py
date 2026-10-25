@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2, on a gloo CPU world of 2.
-
-A CUDA graph replays at the weight addresses it recorded. FSDP2 frees every unit's gathered weights at
-reshard and allocates them again at the next all-gather, so on a GPU each step moved the addresses and
-torch re-recorded every block graph (2 x T4, Qwen3 LoRA: 6 records, 0 replays per step). With graphs
-requested the gathered storage must stay allocated at one address across steps, and every forward must
-still see the weights the optimizer just updated (losses equal the run without graphs, bitwise). Fit
-layout (LoRA, root unit) and sharded layout (full fine-tuning, one unit per block)."""
+"""UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 (gloo, world 2): gathered weights keep one address across
+steps so block CUDA graphs replay, and losses still match the run without graphs bitwise."""
 
 import multiprocessing
 import os
@@ -31,7 +25,6 @@ STEPS = 3
 
 
 def _gathered(model):
-    """(storage bytes, data_ptr) of every FSDP-managed parameter's gathered tensor, outside any step."""
     from torch.distributed.fsdp import FSDPModule
 
     out = []
@@ -114,7 +107,6 @@ def test_gathered_weights_keep_one_address_under_block_cudagraphs(ranks, layout)
     for res in ranks:
         steps = res[layout, True]["gathered"]
         assert steps[0], "no FSDP-managed parameters found"
-        # Allocated after every step (not freed at reshard), at the same address every step.
         for snap in steps:
             assert all(size > 0 for size, _ in snap), snap
         assert all(snap == steps[0] for snap in steps), steps
@@ -122,7 +114,6 @@ def test_gathered_weights_keep_one_address_under_block_cudagraphs(ranks, layout)
 
 @pytest.mark.parametrize("layout", ["lora", "full"])
 def test_kept_weights_follow_the_optimizer(ranks, layout):
-    # Kept storage must still be refreshed from the updated shards: the same losses as without graphs.
     for res in ranks:
         assert res[layout, True]["losses"] == res[layout, False]["losses"]
         assert len(set(res[layout, True]["losses"])) == STEPS  # the weights did move
@@ -130,7 +121,6 @@ def test_kept_weights_follow_the_optimizer(ranks, layout):
 
 @pytest.mark.parametrize("layout", ["lora", "full"])
 def test_without_graphs_the_gathered_weights_are_freed(ranks, layout):
-    # Control: the default path still frees the gathered weights at reshard (memory unchanged).
     for res in ranks:
         snap = res[layout, False]["gathered"][-1]
         assert any(size == 0 for size, _ in snap), snap
