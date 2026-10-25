@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { NextSceneRequest as Req } from "../src/features/flows/player/story/lookahead.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -13,9 +14,6 @@ const L = await import("../src/features/flows/player/story/lookahead.ts");
 type Manifest = import("../src/features/flows/types.ts").StoryManifest;
 type Scene = import("../src/features/flows/types.ts").StoryScene;
 type State = import("../src/features/flows/player/story/reducer.ts").StoryState;
-type Req = import(
-	"../src/features/flows/player/story/lookahead.ts",
-).NextSceneRequest;
 
 const m: Manifest = {
 	title: "Dungeon",
