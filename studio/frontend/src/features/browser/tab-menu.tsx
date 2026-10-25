@@ -37,10 +37,10 @@ import {
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
-  ReloadIcon,
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { type ComponentType, Fragment, type ReactNode } from "react";

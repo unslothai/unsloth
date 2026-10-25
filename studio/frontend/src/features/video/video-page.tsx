@@ -8,7 +8,6 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  ReloadIcon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
@@ -16,6 +15,7 @@ import {
   ImageCropIcon,
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 

@@ -55,12 +55,12 @@ import {
   PlayIcon,
   PlusSignIcon,
   Refresh01Icon,
-  ReloadIcon,
   RemoveCircleIcon,
   Search01Icon,
   Settings02Icon,
   Timer01Icon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,

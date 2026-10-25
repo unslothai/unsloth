@@ -91,8 +91,8 @@ import {
   TextWrapIcon,
   ViewIcon,
   VolumeMute02Icon,
-  ReloadIcon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   ArrowLeft,

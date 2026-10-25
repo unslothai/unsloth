@@ -33,9 +33,9 @@ import {
   InformationCircleIcon,
   PlusSignIcon,
   Refresh01Icon,
-  ReloadIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
