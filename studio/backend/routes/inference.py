@@ -3329,7 +3329,12 @@ def _openai_llama_enrol_raw_holder(
     return None
 
 
-def _openai_llama_count_raw_holder(*, gen_id: str, cancel_event = None, **kwargs) -> None:
+def _openai_llama_count_raw_holder(
+    *,
+    gen_id: str,
+    cancel_event = None,
+    **kwargs,
+) -> None:
     """Count a raw holder and plan room for it, for a caller off the event loop. A set
     ``cancel_event`` ends the wait for its victims with ``LlamaAdmissionCancelled``, uncounted."""
     controller = _openai_llama_enrol_raw_holder(gen_id = gen_id, **kwargs)
@@ -3571,7 +3576,10 @@ def _prompt_kv_tokens(prompt) -> int:
 
 
 def _openai_llama_count_direct_holder(
-    llama_backend, tokens: int, prefix: str, cancel_event = None
+    llama_backend,
+    tokens: int,
+    prefix: str,
+    cancel_event = None,
 ) -> Optional[str]:
     """Count a request that reaches llama-server outside admission as a holder the controller
     cannot pause, and plan room for it. Returns the id to release, or None when not counted. A set
@@ -10561,7 +10569,12 @@ def _direct_llama_request_finished() -> None:
 
 
 @contextmanager
-def _direct_llama_request(counted: bool = True, *, kv_tokens: int = 0, cancel_event = None):
+def _direct_llama_request(
+    counted: bool = True,
+    *,
+    kv_tokens: int = 0,
+    cancel_event = None,
+):
     """Hold the direct-call count for the duration of the block.
 
     The increment is the last statement before the try that decrements it, so no
@@ -26927,9 +26940,8 @@ async def _generate_tts_wav(
                 wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:
             # An idle auto-unload cancels through the backend without setting this route's event.
-            if (
-                _audio_cancel.is_set()
-                or isinstance(e, (AudioGenerationCancelledError, LlamaAdmissionCancelled))
+            if _audio_cancel.is_set() or isinstance(
+                e, (AudioGenerationCancelledError, LlamaAdmissionCancelled)
             ):
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
             if isinstance(e, LlamaAdmissionTimeout):

@@ -83,7 +83,11 @@ class _LeavesAfter:
         return now - self._first >= self._seconds
 
 
-def _raw_holder(fake, controller, gen_id = "raw"):
+def _raw_holder(
+    fake,
+    controller,
+    gen_id = "raw",
+):
     controller.register(gen_id, tokens = 9000, state = ParticipantState.STREAMING_RAW)
     inference._plan_for_unpausable_holder(controller, gen_id, refresh = False)
     assert controller.participant("chat").state == ParticipantState.PREEMPTING
@@ -461,7 +465,12 @@ def _handled_in_function(node, parents) -> bool:
     return False
 
 
-def _handled(node, tree, parents, seen = ()) -> bool:
+def _handled(
+    node,
+    tree,
+    parents,
+    seen = (),
+) -> bool:
     """Answered by a try around it, or, inside a nested helper, around every call of that helper."""
     if _handled_in_function(node, parents):
         return True
@@ -541,13 +550,13 @@ def test_every_eviction_wait_answers_a_stop_as_a_cancellation():
         name = _callee(node)
         if name in ("_openai_llama_let_victims_go", "_openai_llama_preemption_arm_async"):
             routes += 1
-            assert _handled(node, tree, parents), (
-                f"{name} at line {node.lineno} lets a Stop escape as a 500"
-            )
+            assert _handled(
+                node, tree, parents
+            ), f"{name} at line {node.lineno} lets a Stop escape as a 500"
         elif name == "_openai_llama_publish_round_charge":
-            assert not _swallowed(node, parents), (
-                f"the round at line {node.lineno} swallows a Stop and goes upstream anyway"
-            )
+            assert not _swallowed(
+                node, parents
+            ), f"the round at line {node.lineno} swallows a Stop and goes upstream anyway"
     assert routes >= 15, routes
 
     llama_tree, llama_parents = _tree(llama_cpp_mod)
@@ -558,7 +567,7 @@ def test_every_eviction_wait_answers_a_stop_as_a_cancellation():
             "_call_conversation_grew",
         ):
             rounds += 1
-            assert _handled_in_function(node, llama_parents), (
-                f"the re-cost at line {node.lineno} of llama_cpp.py treats a Stop as a failure"
-            )
+            assert _handled_in_function(
+                node, llama_parents
+            ), f"the re-cost at line {node.lineno} of llama_cpp.py treats a Stop as a failure"
     assert rounds >= 3, rounds
