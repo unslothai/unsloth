@@ -3,16 +3,9 @@
 
 """Which forwarded headers rewrite the ASGI client and scheme.
 
-uvicorn defaults to ``proxy_headers=True`` with ``forwarded_allow_ips="127.0.0.1"``, so any loopback peer
-could set ``request.client`` from ``X-Forwarded-For`` and the scheme from ``X-Forwarded-Proto``. A same-host
-proxy that relays a client-supplied ``X-Forwarded-For`` unchanged then lets the caller pick the address every
-per-IP limiter keys on. Studio therefore runs uvicorn as a direct server unless forwarded headers are trusted:
-
-* ``UNSLOTH_STUDIO_TRUST_FORWARDED`` (the operator runs Studio behind their own proxy) and Colab (its notebook
-  proxy) keep uvicorn's rewriting, exactly as before.
-* Otherwise uvicorn's rewriting is off, and only a request relayed by the Cloudflare tunnel Studio itself
-  manages is rewritten: the client from ``CF-Connecting-IP`` (set by Cloudflare's edge) and the scheme from
-  ``X-Forwarded-Proto``, matching what uvicorn did for that tunnel before.
+uvicorn's default (``proxy_headers=True``, ``forwarded_allow_ips="127.0.0.1"``) lets any loopback peer pick
+``request.client`` via ``X-Forwarded-For``, so only Colab and ``UNSLOTH_STUDIO_TRUST_FORWARDED`` keep it;
+otherwise only requests from Studio's own Cloudflare tunnel are rewritten.
 """
 
 from __future__ import annotations
@@ -30,10 +23,9 @@ from utils.client_ip import (
 def uvicorn_forwarded_kwargs(*, is_colab: bool) -> dict[str, Any]:
     """The ``proxy_headers`` / ``forwarded_allow_ips`` arguments for ``uvicorn.Config``."""
     if is_colab:
-        # Colab's single-user sandbox: trust its reverse proxy so the app sees the real https origin.
         return {"proxy_headers": True, "forwarded_allow_ips": "*"}
     if trust_forwarded_headers():
-        # Operator opt-in: uvicorn's own behaviour, including FORWARDED_ALLOW_IPS.
+        # uvicorn's own behaviour, including FORWARDED_ALLOW_IPS
         return {"proxy_headers": True}
     return {"proxy_headers": False}
 

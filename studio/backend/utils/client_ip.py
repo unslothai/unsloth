@@ -9,16 +9,10 @@ Trust model, in order:
      one the trusted proxy appended. The leftmost entry is client-controlled and
      spoofable, so this assumes a proxy that appends (or overwrites) the header;
      only enable the env var behind such a proxy.
-  2. If the socket peer is loopback and the request came through the Cloudflare
-     tunnel Unsloth itself manages (published in ``app.state.cloudflare_url``, Host
-     naming that tunnel), honor ``CF-Connecting-IP``. That tunnel terminates at
-     loopback, so every tunneled visitor would otherwise collapse onto the local
-     cloudflared process and share one rate-limit bucket. ``CF-Connecting-IP`` is
-     set by Cloudflare's edge and can't be forged by a tunneled client. With no
-     managed tunnel the header is the text of whatever relayed the request.
-  3. A loopback peer that still names a forwarded client (another same-host proxy
-     or tunnel) gets ``relayed:<peer>``: one bucket per relay, and never mistaken
-     for a local caller by the reachability checks that read this value.
+  2. A loopback peer relaying Unsloth's own Cloudflare tunnel (``app.state.cloudflare_url``,
+     Host naming it): ``CF-Connecting-IP``, set by Cloudflare's edge, so tunnel visitors
+     don't share the local cloudflared bucket. Without that tunnel the header is forgeable.
+  3. Any other loopback relay: ``relayed:<peer>``, one bucket per relay, never a local caller.
   4. Otherwise the socket peer, so a direct LAN caller can't spoof a header to
      dodge a per-IP limit.
 """
@@ -37,7 +31,6 @@ def _trust_forwarded_for() -> bool:
 
 
 def trust_forwarded_headers() -> bool:
-    """Whether the operator opted in to forwarded headers (Unsloth behind their own reverse proxy)."""
     return _trust_forwarded_for()
 
 
@@ -103,7 +96,6 @@ def _request_app_state(request):
 
 
 def _managed_tunnel_hostname(app_state) -> str | None:
-    """Hostname of the Cloudflare tunnel Unsloth started and published, or None when none is live."""
     url = getattr(app_state, "cloudflare_url", None) if app_state is not None else None
     if not isinstance(url, str) or not url:
         return None
@@ -115,9 +107,7 @@ def _managed_tunnel_hostname(app_state) -> str | None:
 
 
 def request_from_managed_tunnel(scope, app_state) -> bool:
-    """Whether an ASGI request carries the marks of Unsloth's own Cloudflare tunnel: a live published
-    tunnel, exactly one valid ``CF-Connecting-IP`` and a Host naming that tunnel. The caller still has to
-    check that the socket peer is loopback (the local cloudflared process)."""
+    """Live published tunnel, one valid ``CF-Connecting-IP``, Host naming it. Caller checks the peer is loopback."""
     expected = _managed_tunnel_hostname(app_state)
     if not expected or not isinstance(scope, dict):
         return False

@@ -2856,11 +2856,7 @@ def run_server(
         server_header = False,
         http = uvicorn_http_protocol(),
     )
-    # uvicorn's proxy-header rewriting stays on only where forwarded headers are trusted: Colab's reverse
-    # proxy (forwarded_allow_ips="*", fine in its single-user sandbox) and UNSLOTH_STUDIO_TRUST_FORWARDED.
-    # Elsewhere it would let any loopback peer (a same-host proxy relaying the caller's X-Forwarded-For)
-    # choose request.client, so Studio runs as a direct server and rewrites only requests relayed by the
-    # Cloudflare tunnel it manages itself. See utils/forwarded_headers.py.
+    # Proxy headers only where trusted, else any loopback peer picks request.client: utils/forwarded_headers.py
     from utils.forwarded_headers import uvicorn_forwarded_kwargs, wrap_direct_server
 
     config_kwargs.update(uvicorn_forwarded_kwargs(is_colab = _IS_COLAB))

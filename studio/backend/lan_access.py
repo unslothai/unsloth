@@ -268,7 +268,6 @@ def _listener_config(app, host: str, port: int):
         access_log = False,
         server_header = False,
         http = uvicorn_http_protocol(),
-        # a direct LAN listener: X-Forwarded-For from a peer is never its address unless the operator opted in
         **uvicorn_forwarded_kwargs(is_colab = False),
     )
 
