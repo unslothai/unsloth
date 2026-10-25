@@ -781,12 +781,24 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         original_init(self, *args, **kwargs)
         self._context_parallel_manager = None
         # Unsloth's attention ignores transformers' own CP: it would stay local to each shard.
-        parallelism_config = getattr(getattr(self, "args", None), "parallelism_config", None)
-        if (getattr(parallelism_config, "cp_size", 1) or 1) > 1:
-            raise NotImplementedError(
-                "Unsloth: use SFTConfig(context_parallel_size = N) instead of "
-                "parallelism_config with cp_size > 1."
-            )
+        # `accelerate launch` with parallelism_config_cp_size builds it from the environment
+        # (ACCELERATE_USE_PARALLELISM_CONFIG), leaving args.parallelism_config None.
+        for source, parallelism_config in (
+            (
+                "parallelism_config",
+                getattr(getattr(self, "args", None), "parallelism_config", None),
+            ),
+            (
+                "the accelerate config (parallelism_config_cp_size)",
+                getattr(getattr(self, "accelerator", None), "parallelism_config", None),
+            ),
+        ):
+            cp_size = getattr(parallelism_config, "cp_size", 1) or 1
+            if cp_size > 1:
+                raise NotImplementedError(
+                    f"Unsloth: use SFTConfig(context_parallel_size = {cp_size}) instead of "
+                    f"{source} with cp_size > 1."
+                )
         size, backend, rotate_method = context_parallel_options(getattr(self, "args", None))
         if size <= 1:
             _install_accelerator_state(self)
