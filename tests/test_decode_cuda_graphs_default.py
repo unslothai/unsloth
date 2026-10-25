@@ -15,6 +15,8 @@ import torch
 import unsloth.models._decode_graphs as G
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
+# The unset default only turns graphs on for NVIDIA CUDA; ROCm keeps them off unless the flag is 1.
+rl_default = pytest.mark.skipif(not G._DEFAULT_OK, reason = "RL default is NVIDIA CUDA only")
 MODEL = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 PROMPTS = ["Once upon a time there was", "def f(x):"]
 ENV = "UNSLOTH_DECODE_CUDA_GRAPHS"
@@ -126,7 +128,7 @@ def _gen(
     return out.sequences.cpu(), torch.stack(out.logits).cpu()
 
 
-@cuda
+@rl_default
 def test_plain_generate_off_rl_generate_on_and_released(runtime):
     model, tok = _load()
     FastLanguageModel.for_inference(model)
@@ -160,7 +162,7 @@ def test_plain_generate_off_rl_generate_on_and_released(runtime):
     assert _Stats(model)()["graphs"] == 0
 
 
-@cuda
+@rl_default
 def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path):
     """A real GRPOTrainer step: its generate() runs graphed with the variable unset, completions
     match the eager rollout, and the decode buffers are gone before the loss is computed."""
@@ -181,7 +183,9 @@ def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path):
     )  # fmt: skip
     trainer = GRPOTrainer(model = model, reward_funcs = [reward], args = cfg,
                           train_dataset = Dataset.from_list(rows), processing_class = tok)  # fmt: skip
-    gen = trainer._generate_single_turn
+    # TRL >= 0.24 generates in _generate_single_turn; older TRL only has _generate_and_score_completions.
+    hook = "_generate_single_turn" if hasattr(trainer, "_generate_single_turn") else "_generate_and_score_completions"
+    gen = getattr(trainer, hook)
 
     def recorded(*a, **k):
         before = _Stats(model)().get("replays", 0)
@@ -190,7 +194,7 @@ def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path):
         seen["buffers_at_loss"].append((_graph_buffers(model), _decode_buffers(model)))
         return out
 
-    trainer._generate_single_turn = recorded
+    setattr(trainer, hook, recorded)
     trainer.train()
     assert len(seen["replays"]) == 2 and all(r > 0 for r in seen["replays"]), seen
     assert seen["buffers_at_loss"] == [(0, 0), (0, 0)], seen
