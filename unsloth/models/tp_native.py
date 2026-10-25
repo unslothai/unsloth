@@ -1492,11 +1492,19 @@ def tp_clip_grad_norm_(
         dist.all_reduce(shard_sq, group = group)
         total = total + shard_sq
     total = total.sqrt()
-    coef = float(max_norm) / (float(total) + eps)
-    if coef < 1:
-        for p in params:
-            p.grad.mul_(coef)
+    _scale_grads_(params, total, max_norm, eps)
     return total
+
+
+def _scale_grads_(params, total, max_norm, eps):
+    """torch's clip: a tensor coefficient clamped at 1 and applied unconditionally (no host sync, no
+    data-dependent branch). DTensor grads are scaled through their local shard."""
+    with torch.no_grad():
+        coef = torch.clamp(max_norm / (total + eps), max = 1.0)
+        for p in params:
+            g = p.grad
+            local = g.to_local() if _is_dtensor(g) else g
+            local.mul_(coef.to(device = local.device, dtype = local.dtype))
 
 
 def _clip_over_world(params, max_norm, eps):
@@ -1530,10 +1538,7 @@ def _clip_over_world(params, max_norm, eps):
         total = sq if total is None else total + sq
     dist.all_reduce(total)
     total = total.sqrt()
-    coef = float(max_norm) / (float(total) + eps)
-    if coef < 1:
-        for p in params:
-            p.grad.mul_(coef)
+    _scale_grads_(params, total, max_norm, eps)
     return total
 
 
