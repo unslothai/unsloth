@@ -55,6 +55,7 @@ import {
   PlayIcon,
   PlusSignIcon,
   Refresh01Icon,
+  ReloadIcon,
   RemoveCircleIcon,
   Search01Icon,
   Settings02Icon,
@@ -87,6 +88,7 @@ import { useSingleLine } from "./use-single-line";
 import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
+import { useApiModelReload } from "./use-api-model-reload";
 import {
   residentHasRunSettings,
   residentHasSlotsSetting,
@@ -840,10 +842,7 @@ function QuickStart({
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span
-        className={cn(
-          "flex size-10 items-center justify-center rounded-md text-muted-foreground",
-          INSET,
-        )}
+        className="flex size-10 items-center justify-center icon-disc text-muted-foreground"
       >
         <HugeiconsIcon
           icon={ComputerTerminal01Icon}
@@ -941,6 +940,11 @@ export function ApiMonitorPage(): ReactElement {
         .join(","),
     [entries],
   );
+  const reload = useApiModelReload({
+    selectModel: runtime.selectModel,
+    onSettled: refresh,
+    residencyKey,
+  });
   const [unloadError, setUnloadError] = useState<string | null>(null);
   const resident = useResidentRunTarget(data?.active_model);
   const [configRequest, setConfigRequest] =
@@ -1232,6 +1236,31 @@ export function ApiMonitorPage(): ReactElement {
       </Button>
     </ToolbarTooltip>
   );
+  const reloadBusy = reload.reloadingKey != null || ejecting || modelLoading;
+  const reloadButton = (model: ServedModel): ReactElement => (
+    <ToolbarTooltip label={`Reload ${model.name}`}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={`Reload ${model.name}`}
+        onClick={() => void reload.reloadServed(model)}
+        disabled={reloadBusy}
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+      >
+        <HugeiconsIcon
+          icon={ReloadIcon}
+          strokeWidth={1.75}
+          className={cn(
+            "size-3.5",
+            (reload.reloadingKey === model.checkpoint ||
+              reload.reloadingKey === "*") &&
+              "animate-spin",
+          )}
+        />
+      </Button>
+    </ToolbarTooltip>
+  );
   const exampleButton = (model: ServedModel): ReactElement => (
     <ToolbarTooltip label={`API example for ${model.name}`}>
       <Button
@@ -1328,6 +1357,7 @@ export function ApiMonitorPage(): ReactElement {
             configRequest={configRequest}
             onConfigRequestAdopted={() => setConfigRequest(null)}
             onEjectAll={() => void ejectAll()}
+            onLastLoadChanged={reload.refreshLastLoad}
           />
         </div>
       </div>
@@ -1416,29 +1446,70 @@ export function ApiMonitorPage(): ReactElement {
                 </div>
               </div>
             </div>
-            <ToolbarTooltip label={ejectLabel}>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  void (served.length > 1 ? ejectAll() : ejectServed(served[0]))
-                }
-                disabled={ejecting || modelLoading || served.length === 0}
-                className="gap-1.5 rounded-full"
+            <div className="flex items-center gap-2">
+              <ToolbarTooltip label={reload.reloadAllTitle(served)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={
+                    reload.reloadingKey === "*"
+                      ? "Reloading"
+                      : served.length > 1
+                        ? "Reload all"
+                        : "Reload"
+                  }
+                  onClick={() => void reload.reloadAll(served)}
+                  disabled={
+                    reloadBusy ||
+                    (served.length === 0 && reload.lastLoadLabel == null)
+                  }
+                  className="size-control rounded-full"
+                >
+                  <HugeiconsIcon
+                    icon={ReloadIcon}
+                    strokeWidth={1.75}
+                    className={cn(
+                      "size-4",
+                      reload.reloadingKey === "*" && "animate-spin",
+                    )}
+                  />
+                </Button>
+              </ToolbarTooltip>
+              <ToolbarTooltip label={ejectLabel}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    void (served.length > 1
+                      ? ejectAll()
+                      : ejectServed(served[0]))
+                  }
+                  disabled={ejecting || modelLoading || served.length === 0}
+                  className="gap-1.5 rounded-full"
+                >
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className={cn("size-4", ejecting && "animate-pulse")}
+                  />
+                  {ejecting
+                    ? "Ejecting"
+                    : served.length > 1
+                      ? "Eject all"
+                      : "Eject"}
+                </Button>
+              </ToolbarTooltip>
+            </div>
+            {reload.error ? (
+              <span
+                role="alert"
+                className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
               >
-                <HugeiconsIcon
-                  icon={RemoveCircleIcon}
-                  strokeWidth={1.75}
-                  className={cn("size-4", ejecting && "animate-pulse")}
-                />
-                {ejecting
-                  ? "Ejecting"
-                  : served.length > 1
-                    ? "Eject all"
-                    : "Eject"}
-              </Button>
-            </ToolbarTooltip>
+                {reload.error}
+              </span>
+            ) : null}
           </div>
           <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>
             {served.length > 1 ? (
@@ -1464,6 +1535,7 @@ export function ApiMonitorPage(): ReactElement {
                         />
                       </span>
                       <span className="flex items-center gap-0.5">
+                        {reloadButton(model)}
                         {settingsButton(model)}
                         {exampleButton(model)}
                       </span>
@@ -1512,6 +1584,7 @@ export function ApiMonitorPage(): ReactElement {
                           revealOnHover={true}
                         />
                       </span>
+                      {reloadButton(served[0])}
                       {settingsButton(served[0])}
                       {exampleButton(served[0])}
                     </>
@@ -1810,10 +1883,7 @@ export function ApiMonitorPage(): ReactElement {
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
                     <span
-                      className={cn(
-                        "flex size-10 items-center justify-center rounded-md text-muted-foreground",
-                        INSET,
-                      )}
+                      className="flex size-10 items-center justify-center icon-disc text-muted-foreground"
                     >
                       <HugeiconsIcon
                         icon={FileSearchIcon}
