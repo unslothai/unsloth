@@ -94,6 +94,40 @@ def _snapshot(
     return snap
 
 
+# Backend CI has neither diffusers nor transformers, and an unresolvable class keeps the defaults (conservative):
+# resolve the classes these tests name from a table, and check the real lookup separately where the libraries exist.
+_PINS_FP32 = {
+    "UNet2DConditionModel": False,
+    "AutoencoderKL": False,
+    "AutoencoderKLFlux2": False,
+    "CLIPTextModel": False,
+    "CLIPTextModelWithProjection": False,
+    "UNet2DModel": False,
+    "T5EncoderModel": True,
+}
+
+
+@pytest.fixture(autouse = True)
+def _class_table(monkeypatch):
+    monkeypatch.setattr(
+        fv,
+        "_class_pins_fp32",
+        lambda library, class_name: library not in fv._WEIGHT_LIBRARIES
+        or _PINS_FP32.get(class_name, True),
+    )
+
+
+def test_the_real_class_lookup_reads_keep_in_fp32_modules(monkeypatch):
+    pytest.importorskip("diffusers")
+    pytest.importorskip("transformers")
+    monkeypatch.undo()
+    assert fv._class_pins_fp32("diffusers", "UNet2DConditionModel") is False
+    assert fv._class_pins_fp32("transformers", "CLIPTextModel") is False
+    assert fv._class_pins_fp32("transformers", "T5EncoderModel") is True
+    assert fv._class_pins_fp32("diffusers", "NoSuchModel") is True
+    assert fv._class_pins_fp32("not_a_library", "UNet2DConditionModel") is True
+
+
 def test_every_sdxl_component_maps_to_its_twin():
     names = [*SDXL_CONFIGS, *SDXL_DEFAULTS, *SDXL_TWINS]
     assert fv.plan_fp16_twins(names, SDXL_INDEX) == {
