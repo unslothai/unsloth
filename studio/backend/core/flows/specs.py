@@ -1965,13 +1965,15 @@ NODE_SPECS: list[dict] = [
         "world.npc_reply",
         "NPC Reply (live)",
         "world",
-        "Entrypoint the world player calls when you talk to an NPC: replies in character from the world state.",
+        "Entrypoint the world player calls when you talk to an NPC: replies in character from the world state. "
+        "Long conversations are summarised in the background, so each NPC remembers what was said.",
         inputs = [inp("state", "json", optional = True)],
         outputs = [out("reply", "json")],
         params = [
             P("model", "model", None, "Model", model_kind = "chat"),
             P("max_tokens", "int", 200, "Max tokens"),
             P("rules", "textarea", "Stay in character. Keep replies under 60 words.", "Rules"),
+            P("summarise", "bool", True, "Summarise long conversations"),
         ],
         lane = "gpu",
         model_kind = "chat",
