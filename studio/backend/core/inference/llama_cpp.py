@@ -2569,12 +2569,14 @@ def _image_token_price(backend, part: dict) -> int:
     if dims is None:
         return ceiling
     width, height = dims
-    tokens = max(1, round(width / merged)) * max(1, round(height / merged))
+    # Ceil, not round: mtmd may round either side up, and this must stay an upper bound.
+    tokens = math.ceil(width / merged) * math.ceil(height / merged)
     extra_args = getattr(backend, "_extra_args", None)
     try:
         cap = extra_args_image_max_tokens(extra_args) or 0
-        # mtmd upscales a small image to at least --image-min-tokens.
-        tokens = max(tokens, extra_args_image_min_tokens(extra_args) or 0)
+        # mtmd upscales an image below --image-min-tokens, and the grid it lands on is not this one.
+        if tokens < (extra_args_image_min_tokens(extra_args) or 0):
+            return ceiling
     except Exception:  # noqa: BLE001 -- pricing must never break a count
         cap = 0
     cap = cap or ceiling - _IMAGE_WRAPPER_TOKENS
