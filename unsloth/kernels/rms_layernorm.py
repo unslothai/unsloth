@@ -547,8 +547,7 @@ def _settings(
     device = None,
     dw = False,
 ):
-    # Cached per (width, device) for eager calls (host bound at small shapes). Tracing, and a traced
-    # op's fake run with a symbolic width (a SymInt cannot be hashed), call it directly.
+    # Cached per (width, device) for eager calls; tracing and symbolic (unhashable) widths skip it.
     if torch.compiler.is_compiling() or type(n_cols) is not int:
         return _arch_settings(n_cols, device, dw)
     return _cached_arch_settings(n_cols, device, dw)
