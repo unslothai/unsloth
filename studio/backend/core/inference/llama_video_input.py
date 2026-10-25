@@ -206,8 +206,7 @@ def shrink_video_for_llama(
         raw = base64.b64decode(video_b64)
     except (binascii.Error, ValueError):
         return video_b64
-    # Refused before the tool check: without ffmpeg the clip still goes to llama-server's own
-    # FFmpeg, and `-protocol_whitelist file` still lets a playlist read local files.
+    # Before the tool check: without ffmpeg the clip still reaches llama-server's own FFmpeg.
     refuse_playlist(raw)
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")

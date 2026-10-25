@@ -178,7 +178,6 @@ def test_mlx_video_clip_refuses_a_playlist_before_writing(tmp_path, monkeypatch,
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     with pytest.raises(PlaylistRefused, match = "Playlists are not accepted"):
         mlx_inference._write_video_clip(_b64(payload))
-    # Nothing reaches disk, so cv2.VideoCapture and mlx-vlm never get a path to open.
     assert list(tmp_path.iterdir()) == []
 
 
