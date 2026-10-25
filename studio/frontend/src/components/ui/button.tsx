@@ -51,9 +51,8 @@ export const buttonVariants = cva(
         hero: "h-auto rounded-full px-5 py-2.5",
       },
     },
-    // Filled: 12px sides, 8px around the label's line at every size; icons add no height, and the
-    // min-height keeps that line when a responsive label hides. A trailing icon (a dropdown chevron)
-    // gets 15px on the label side and 14px on its own, as its glyph sits inset.
+    // Filled: 12px sides, 8px around the label's line at every size; icons add no height. A trailing
+    // icon (a dropdown chevron) gets 15px on the label side and 14px on its own, as its glyph sits inset.
     compoundVariants: [
       {
         variant: [
@@ -67,7 +66,7 @@ export const buttonVariants = cva(
         ],
         size: ["default", "sm", "lg", "hero"],
         class:
-          "h-auto min-h-[calc(1lh_+_14px*var(--ui-space-scale,1)_+_2px)] gap-1.5 px-[calc(11px*var(--ui-space-scale,1))] py-[calc(7px*var(--ui-space-scale,1))] has-data-[icon=inline-end]:pr-[calc(11px*var(--ui-space-scale,1))] has-data-[icon=inline-start]:pl-[calc(11px*var(--ui-space-scale,1))] has-[>svg:last-child]:pl-[calc(14px*var(--ui-space-scale,1))] has-[>svg:last-child]:pr-[calc(13px*var(--ui-space-scale,1))] [&_svg]:-my-2",
+          "h-auto gap-1.5 px-[calc(11px*var(--ui-space-scale,1))] py-[calc(7px*var(--ui-space-scale,1))] has-data-[icon=inline-end]:pr-[calc(11px*var(--ui-space-scale,1))] has-data-[icon=inline-start]:pl-[calc(11px*var(--ui-space-scale,1))] has-[>svg:last-child]:pl-[calc(14px*var(--ui-space-scale,1))] has-[>svg:last-child]:pr-[calc(13px*var(--ui-space-scale,1))] [&_svg]:-my-2",
       },
     ],
     defaultVariants: {
