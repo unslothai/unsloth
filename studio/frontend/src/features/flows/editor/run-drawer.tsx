@@ -85,9 +85,18 @@ function Timeline() {
             <span className="w-24 text-zinc-500">
               {rt.cached ? "cached" : rt.status.replace("_", " ")}
             </span>
-            <span className="min-w-0 flex-1 truncate text-zinc-500">
-              {rt.error ?? rt.phase ?? ""}
-            </span>
+            {rt.status === "failed" ? (
+              <span className="min-w-0 flex-1 text-red-300">
+                {rt.error || "It stopped with an error"}{" "}
+                <span className="whitespace-nowrap text-zinc-400 underline underline-offset-2">
+                  Open block
+                </span>
+              </span>
+            ) : (
+              <span className="min-w-0 flex-1 truncate text-zinc-500">
+                {rt.error ?? rt.phase ?? ""}
+              </span>
+            )}
             {rt.progress !== null && rt.status === "running" && (
               <span className="h-1 w-24 overflow-hidden rounded bg-white/10">
                 <span
