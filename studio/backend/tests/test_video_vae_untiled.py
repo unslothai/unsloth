@@ -52,7 +52,12 @@ def test_untiled_when_it_fits(monkeypatch):
     assert U.install_untiled_decode(_pipe(vae), WAN)
     assert vae.decode(Z, return_dict = False) == ("untiled",)
     assert vae.use_tiling is True
-    assert vae.decode._unsloth_untiled_stats == {"untiled": 1, "tiled": 0, "oom_fallback": 0}
+    assert vae.decode._unsloth_untiled_stats == {
+        "untiled": 1,
+        "tiled": 0,
+        "wide": 0,
+        "oom_fallback": 0,
+    }
 
 
 def test_tiled_when_it_does_not_fit(monkeypatch):

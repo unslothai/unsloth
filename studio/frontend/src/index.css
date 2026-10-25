@@ -2014,18 +2014,18 @@ html[data-chat-font] .aui-root {
 @theme {
 	/* One radius scale for the whole app, fixed so no theme or region shifts it. Tiers nest
 	   concentrically (outer = inner + inset), as the composer (28px around an 18px send circle
-	   at a 10px inset) and the + menu (21px around 12px rows at a 9px gutter) do. Anything one
+	   at a 10px inset) and the + menu (20px around 12px rows at an 8px gutter) do. Anything one
 	   line tall is rounded-full.
 	   sm   8px  tiny tiles and swatches
 	   md  12px  rows in menus and lists, tiles inside a card (bare `rounded` too)
 	   lg  16px  compact multi-line boxes: code blocks, thumbnails
-	   xl  21px  menus, popovers, textareas, boxes inside a card or dialog
+	   xl  20px  menus, popovers, textareas, boxes inside a card or dialog
 	   2xl 24px  cards and panels
 	   3xl 28px  composer, dialogs, sheets, large floating surfaces */
 	--radius-sm: 8px;
 	--radius-md: 12px;
 	--radius-lg: 16px;
-	--radius-xl: 21px;
+	--radius-xl: 20px;
 	--radius-2xl: 24px;
 	--radius-3xl: 28px;
 	--radius-4xl: 32px;
@@ -3127,34 +3127,6 @@ html[data-chat-font] .aui-root {
 		border-radius: calc(var(--radius-md) + 10px) !important;
 	}
 
-	/* Audio, Images and Video: 20px textareas and drop zones. */
-	[data-media-rail-root] {
-		--radius-xl: 20px;
-	}
-
-	/* The model picker keeps the corners it was designed with: the scale it had before the fixed
-	   tiers (derived from a 1.25rem base) and its 1.25rem surface. */
-	.unsloth-model-selector-menu {
-		--radius: 1.1rem;
-		--radius-sm: calc(1.25rem - 4px);
-		--radius-md: calc(1.25rem - 2px);
-		--radius-lg: 1.25rem;
-		--radius-xl: calc(1.25rem + 4px);
-		--radius-2xl: calc(1.25rem + 8px);
-		--radius-3xl: calc(1.25rem + 12px);
-		--radius-4xl: calc(1.25rem + 16px);
-	}
-	.unsloth-model-selector-menu[data-slot] {
-		border-radius: 1.25rem !important;
-	}
-	/* Its outline buttons keep their border. */
-	html:not(.dark) .unsloth-model-selector-menu .btn-fill {
-		border-color: var(--border);
-		background-color: var(--background);
-	}
-	html:not(.dark) .unsloth-model-selector-menu .btn-fill:hover {
-		background-color: color-mix(in oklab, var(--accent) 50%, transparent);
-	}
 	html.dark .unsloth-model-selector-menu .btn-fill {
 		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}
@@ -3887,15 +3859,12 @@ html[data-chat-font] .aui-root {
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Concentric with the item hover boxes: container radius =
-		   item radius (12px) + side gutter (9px), so the curves run parallel. */
+		/* 12px item corners + 8px gutter = the 20px corner. */
 		border-radius: var(--radius-xl) !important;
 		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
 		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
-		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
-		   sits evenly inset on all four sides. */
-		padding-left: calc(9px * var(--ui-space-scale, 1));
-		padding-right: calc(9px * var(--ui-space-scale, 1));
+		padding-left: calc(8px * var(--ui-space-scale, 1));
+		padding-right: calc(8px * var(--ui-space-scale, 1));
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 

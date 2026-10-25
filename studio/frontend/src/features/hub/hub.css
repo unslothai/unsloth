@@ -709,10 +709,10 @@
     background-color: color-mix(in srgb, var(--accent) 60%, var(--popover)) !important;
   }
 
-  /* The composer + menu's shape: 12px rows on a 9px gutter keep the 21px corners concentric. */
+  /* 12px rows + 8px gutter = the 20px corner. */
   .hub-composer-menu[data-slot] {
     border-radius: var(--radius-xl) !important;
-    padding: calc(0.5rem * var(--ui-space-scale, 1)) calc(9px * var(--ui-space-scale, 1)) !important;
+    padding: calc(0.5rem * var(--ui-space-scale, 1)) calc(8px * var(--ui-space-scale, 1)) !important;
   }
   html.dark .hub-composer-menu {
     background-color: var(--card) !important;
@@ -1301,7 +1301,6 @@
 
   .hub-run-action-btn {
     display: inline-flex;
-    height: calc(2.25rem * var(--ui-space-scale, 1));
     cursor: pointer;
     align-items: center;
     justify-content: center;
@@ -1309,8 +1308,7 @@
     white-space: nowrap;
     border-radius: 9999px;
     background-color: var(--status-success);
-    padding-left: calc(1rem * var(--ui-space-scale, 1));
-    padding-right: calc(1rem * var(--ui-space-scale, 1));
+    padding: calc(0.5rem * var(--ui-space-scale, 1)) calc(0.75rem * var(--ui-space-scale, 1));
     font-size: calc(0.8125rem * var(--ui-font-scale, 1));
     font-weight: 600;
     line-height: calc(1.125rem * var(--ui-font-scale, 1));
@@ -1321,6 +1319,11 @@
       inset 0 1px 0
         color-mix(in srgb, var(--status-success-foreground) 18%, transparent),
       0 1px 2px color-mix(in srgb, var(--status-success) 22%, transparent);
+  }
+
+  /* Icons add no height. */
+  .hub-run-action-btn svg {
+    margin-block: calc(-0.5rem * var(--ui-space-scale, 1));
   }
 
   .hub-run-action-btn:hover:not(:disabled) {
