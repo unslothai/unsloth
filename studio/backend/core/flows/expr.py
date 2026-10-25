@@ -123,7 +123,9 @@ def _eq(a: Any, b: Any) -> bool:
         return isinstance(a, bool) and isinstance(b, bool) and a == b
     if _is_num(a) and _is_num(b):
         return a == b
-    if type(a) is not type(b) and not (a is None or b is None):
+    if a is None or b is None:
+        return a is None and b is None
+    if type(a) is not type(b):
         return False
     if isinstance(a, list):
         return len(a) == len(b) and all(_eq(x, y) for x, y in zip(a, b))

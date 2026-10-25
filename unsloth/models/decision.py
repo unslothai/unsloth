@@ -1081,6 +1081,46 @@ def _attach_gguf_saving(model) -> None:
     model.push_to_hub_gguf = types.MethodType(push_to_hub_gguf, model)
 
 
+def _install_clef_loss_scaler(accelerator, scaler, get_optimizer):
+    accelerator.scaler = scaler
+    # Accelerate unscales before clipping only when it runs native fp16 itself (a prior fp16 Trainer in
+    # this process can leave that state); unscaling twice raises in GradScaler.
+    if getattr(accelerator, "native_amp", False) and accelerator.mixed_precision == "fp16":
+        return
+    clip = accelerator.clip_grad_norm_
+
+    def _clip_grad_norm(
+        parameters,
+        max_norm,
+        norm_type = 2,
+    ):
+        scaler.unscale_(get_optimizer())
+        return clip(parameters, max_norm, norm_type)
+
+    accelerator.clip_grad_norm_ = _clip_grad_norm
+
+
+def _clef_loss_scaler(model, args):
+    """A GradScaler for the float32 path, whose float16 backward loses Gemma 3's gradients unscaled
+    (#14439); not fp16 = True, which also means autocast, Apex and DeepSpeed / FSDP fp16 engines."""
+    from .loader_utils import deepspeed_zero_stage, fsdp_version_requested
+
+    device = next(model.parameters()).device
+    if (
+        not _clef_forced_float32(model)
+        or device.type not in ("cuda", "xpu")
+        or getattr(args, "deepspeed", None)
+        or getattr(args, "fsdp", None)
+        or deepspeed_zero_stage() is not None
+        or fsdp_version_requested()
+    ):
+        return None
+    if hasattr(torch.amp, "GradScaler"):
+        return torch.amp.GradScaler(device.type)
+    # torch < 2.3 has only the CUDA scaler.
+    return torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+
+
 def _clef_mixed_precision(model, args) -> None:
     # Unsloth's rule for Qwen3.5 (rl.py): on its float32 path a model never autocasts, since
     # float16 NaNs the gated delta net; bfloat16 weights pair with bf16 only; an fp16 load (T4) keeps fp16.
@@ -1225,6 +1265,13 @@ class DecisionTrainer(Trainer):
                 return backward(loss, **backward_kwargs)
 
         self.accelerator.backward = _backward
+        scaler = _clef_loss_scaler(model, self.args) if clef else None
+        if scaler is not None:
+            _install_clef_loss_scaler(
+                self.accelerator,
+                scaler,
+                lambda: getattr(self.optimizer, "optimizer", self.optimizer),
+            )
 
     @contextlib.contextmanager
     def _dataset_field_order(self):

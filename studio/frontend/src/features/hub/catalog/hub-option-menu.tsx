@@ -209,7 +209,7 @@ export function HubOptionMenu<T extends string>({
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
           "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] ring-0",
-          composer ? "hub-composer-menu gap-0" : "rounded-[14px] p-1",
+          composer ? "hub-composer-menu gap-0" : "rounded-lg p-1",
           contentClassName,
         )}
       >
@@ -242,9 +242,8 @@ export function HubOptionMenu<T extends string>({
                   "relative flex w-full min-w-0 cursor-pointer select-none items-center py-2 pl-3 text-left text-sm outline-none transition-colors",
                   composer
                     ? "hub-menu-row pr-9"
-                    : // 14px menu radius minus the 4px padding, so the hover nests
-                      // cleanly into the dropdown's corners.
-                      "rounded-[10px] pr-8 leading-snug",
+                    : // 12px rows in a 16px menu with a 4px gutter, so the hover nests in its corners.
+                      "rounded-md pr-8 leading-snug",
                 )}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">

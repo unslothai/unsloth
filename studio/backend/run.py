@@ -1377,6 +1377,9 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its lazy
 # submodule imports and the DiffusionGemma runner never trip the install guard on a clean install.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+# Studio decides training / export / chat-only from its own hardware detection, so keep
+# `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 
 _OWN_PID_FILE: "Path | None" = None
@@ -2853,16 +2856,16 @@ def run_server(
         server_header = False,
         http = uvicorn_http_protocol(),
     )
-    # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees the real https origin.
-    # forwarded_allow_ips="*" is safe in Colab's single-user sandbox but too lax for local/standalone.
-    if _IS_COLAB:
-        config_kwargs["proxy_headers"] = True
-        config_kwargs["forwarded_allow_ips"] = "*"
+    # Proxy headers only where trusted, else any loopback peer picks request.client: utils/forwarded_headers.py
+    from utils.forwarded_headers import uvicorn_forwarded_kwargs, wrap_direct_server
+
+    config_kwargs.update(uvicorn_forwarded_kwargs(is_colab = _IS_COLAB))
+    served_app = app if config_kwargs["proxy_headers"] else wrap_direct_server(app, app.state)
     if tls is not None:
         from utils.studio_tls import StudioTLSConfig
-        config = StudioTLSConfig(app, tls = tls, **config_kwargs)
+        config = StudioTLSConfig(served_app, tls = tls, **config_kwargs)
     else:
-        config = uvicorn.Config(app, **config_kwargs)
+        config = uvicorn.Config(served_app, **config_kwargs)
     app.state.studio_tls = tls
     app.state.loopback_http_port = None
     _server = _ReadyServer(config)

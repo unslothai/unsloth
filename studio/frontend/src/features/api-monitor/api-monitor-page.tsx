@@ -46,12 +46,12 @@ import {
   CodeIcon,
   ComputerTerminal01Icon,
   Copy01Icon,
-  CursorPointer02Icon,
   Delete02Icon,
+  FileSearchIcon,
   FlashIcon,
-  Key01Icon,
   PauseIcon,
   PlayIcon,
+  PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -71,6 +71,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { buildApiExample } from "./api-sampling-example";
+import {
+  ApiExampleBox,
+  useApiExampleChoices,
+} from "./components/api-example-box";
 import { ApiExampleDialog } from "./components/api-example-dialog";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
@@ -211,17 +216,6 @@ function compactEndpoint(endpoint: string): string {
     .replace(V1_PREFIX_RE, "/");
 }
 
-function quickStartSnippet(baseUrl: string, model: string): string {
-  const body = JSON.stringify({
-    model,
-    messages: [{ role: "user", content: "Hello!" }],
-  }).replace(/'/g, "'\\''");
-  return `curl ${baseUrl}/chat/completions \\
-  -H "Authorization: Bearer $UNSLOTH_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '${body}'`;
-}
-
 function statusDotClass(status: ApiMonitorEntry["status"]): string {
   switch (status) {
     case "running":
@@ -312,7 +306,7 @@ function Stat({
       <span className="truncate text-ui-12 text-muted-foreground">{label}</span>
       <span
         className={cn(
-          "truncate text-ui-21 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground",
+          "truncate font-heading text-ui-21 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground",
           value === "–" && "text-muted-foreground/70",
           tone === "error" && "text-red-600 dark:text-red-400",
           tone === "active" && "text-blue-600 dark:text-blue-400",
@@ -486,7 +480,7 @@ const RequestRow = memo(function RequestRow({
   // A lifecycle row has no payload, so it reads as a status line.
   if (isLifecycleEntry(entry)) {
     return (
-      <div className="flex w-full min-w-0 flex-col gap-0.5 rounded-lg px-3 py-2">
+      <div className="flex w-full min-w-0 flex-col gap-0.5 rounded-md px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
@@ -525,7 +519,7 @@ const RequestRow = memo(function RequestRow({
       onClick={() => onSelect(entry.id)}
       aria-current={selected}
       className={cn(
-        "flex w-full min-w-0 flex-col gap-1 rounded-lg px-3 py-2.5 text-left outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring/70",
+        "flex w-full min-w-0 flex-col gap-1 rounded-md px-3 py-2.5 text-left outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring/70",
         selected ? "bg-muted" : "hover:bg-muted/50",
       )}
     >
@@ -840,12 +834,12 @@ function QuickStart({
   baseUrl: string;
   model: string | null;
 }): ReactElement {
-  const snippet = quickStartSnippet(baseUrl, model ?? "MODEL_ID");
+  const choices = useApiExampleChoices(baseUrl, "curl");
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span
         className={cn(
-          "flex size-10 items-center justify-center rounded-xl text-muted-foreground",
+          "flex size-10 items-center justify-center rounded-md text-muted-foreground",
           INSET,
         )}
       >
@@ -865,27 +859,26 @@ function QuickStart({
             : "Load a model, then send a request to the base URL. It appears here as it streams."}
         </p>
       </div>
-      <div className="relative w-full max-w-2xl text-left">
-        <pre
-          className={cn(
-            "overflow-x-auto scroll-rounded rounded-lg py-3 pr-11 pl-3.5 font-mono text-ui-11 leading-[1.6] text-foreground",
-            INSET,
-          )}
-        >
-          {snippet}
-        </pre>
-        <div className="absolute top-1.5 right-1.5">
-          <CopyButton value={snippet} label="Copy example request" />
-        </div>
+      <div className="w-full max-w-2xl text-left">
+        <ApiExampleBox
+          choices={choices}
+          code={buildApiExample({
+            baseUrl,
+            model: model ?? "MODEL_ID",
+            sampling: {},
+            language: choices.language,
+            os: choices.os,
+          })}
+        />
       </div>
       <Button
         type="button"
         variant="outline"
         size="sm"
         onClick={openApiSettings}
-        className="h-8 gap-1.5 rounded-full"
+        className="gap-1.5 rounded-full"
       >
-        <HugeiconsIcon icon={Key01Icon} strokeWidth={1.75} className="size-4" />
+        <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
         Create an API key and see more examples
       </Button>
     </div>
@@ -1245,7 +1238,7 @@ export function ApiMonitorPage(): ReactElement {
         <HugeiconsIcon
           icon={CodeIcon}
           strokeWidth={1.75}
-          className="size-3.5"
+          className="size-4"
         />
       </Button>
     </ToolbarTooltip>
@@ -1306,12 +1299,12 @@ export function ApiMonitorPage(): ReactElement {
   );
 
   return (
-    <main className="api-rounding mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
+    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 sm:px-10">
       <GuidedTour {...tour.tourProps} />
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+            <h1 className="font-heading text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
               API
             </h1>
             <span
@@ -1344,12 +1337,12 @@ export function ApiMonitorPage(): ReactElement {
             size="icon"
             onClick={openApiSettings}
             aria-label="API settings"
-            className="size-10 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
+            className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
           >
             <HugeiconsIcon
               icon={Settings02Icon}
               strokeWidth={1.75}
-              className="size-5"
+              className="size-[calc(18px*var(--ui-space-scale,1))]"
             />
           </Button>
         </ToolbarTooltip>
@@ -1376,7 +1369,8 @@ export function ApiMonitorPage(): ReactElement {
             </span>
             <div className="flex min-w-0 flex-col">
               <span className="text-ui-11 text-muted-foreground">Base URL</span>
-              <div className="group/copy flex min-w-0 items-center gap-1">
+              {/* h-5: at the copy button's 28px the chip sat below the text. */}
+              <div className="group/copy flex h-5 min-w-0 items-center gap-1">
                 <span className="truncate font-mono text-ui-13 text-foreground">
                   {baseUrl}
                 </span>
@@ -1411,7 +1405,7 @@ export function ApiMonitorPage(): ReactElement {
                       : ejectServed(served[0]))
                   }
                   disabled={ejecting || modelLoading || served.length === 0}
-                  className="h-9 gap-1.5 rounded-full px-3.5"
+                  className="gap-1.5 rounded-full"
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -1486,15 +1480,18 @@ export function ApiMonitorPage(): ReactElement {
             </div>
           ) : (
             <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
-              <Fact label="Model" className="group/copy max-w-full">
+              <Fact label="Model" className="max-w-full">
                 {served.length === 1 ? (
                   <>
-                    <span className="truncate font-mono">{served[0].name}</span>
-                    <CopyButton
-                      value={served[0].name}
-                      label="Copy model name"
-                      revealOnHover={true}
-                    />
+                    {/* Its own reveal group: hovering settings or code must not show Copy. */}
+                    <span className="group/copy flex min-w-0 items-center gap-1">
+                      <span className="truncate font-mono">{served[0].name}</span>
+                      <CopyButton
+                        value={served[0].name}
+                        label="Copy model name"
+                        revealOnHover={true}
+                      />
+                    </span>
                     {settingsButton(served[0])}
                     {exampleButton(served[0])}
                   </>
@@ -1600,7 +1597,7 @@ export function ApiMonitorPage(): ReactElement {
                   aria-current={active ? "page" : undefined}
                   onClick={() => setStatusFilter(option.value)}
                   className={cn(
-                    "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
+                    "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 font-heading text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
                     active &&
                       "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
                   )}
@@ -1698,7 +1695,7 @@ export function ApiMonitorPage(): ReactElement {
                   void clear();
                 }}
                 aria-label="Clear log"
-                className="rounded-full"
+                className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
               >
                 <HugeiconsIcon
                   icon={Delete02Icon}
@@ -1745,7 +1742,7 @@ export function ApiMonitorPage(): ReactElement {
               {loading ? (
                 <div className="flex flex-col gap-2 p-1.5">
                   {[0, 1, 2].map((i) => (
-                    <Skeleton key={i} className="h-16 w-full rounded-lg" />
+                    <Skeleton key={i} className="h-16 w-full rounded-md" />
                   ))}
                 </div>
               ) : visible.length === 0 ? (
@@ -1760,7 +1757,7 @@ export function ApiMonitorPage(): ReactElement {
                       setStatusFilter("all");
                       setModelFilter(ALL_MODELS);
                     }}
-                    className="h-8 rounded-full"
+                    className="rounded-full"
                   >
                     Clear filters
                   </Button>
@@ -1789,19 +1786,19 @@ export function ApiMonitorPage(): ReactElement {
                 <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
                   <span
                     className={cn(
-                      "flex size-10 items-center justify-center rounded-xl text-muted-foreground",
+                      "flex size-10 items-center justify-center rounded-md text-muted-foreground",
                       INSET,
                     )}
                   >
                     <HugeiconsIcon
-                      icon={CursorPointer02Icon}
+                      icon={FileSearchIcon}
                       strokeWidth={1.75}
                       className="size-5"
                     />
                   </span>
                   <p className="max-w-xs text-sm text-muted-foreground">
-                    Select a request to inspect its prompt, reply, tokens and
-                    errors. Use the arrow keys to step through the list.
+                    Select a request to see its details. Arrow keys move
+                    through the list.
                   </p>
                 </div>
               )}

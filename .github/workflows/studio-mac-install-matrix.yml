@@ -10,6 +10,9 @@ name: Mac Unsloth Install Matrix CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'studio/install_llama_prebuilt.py'
       - 'studio/setup.sh'
@@ -120,6 +123,7 @@ permissions:
 
 jobs:
   install-load:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Install + load (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25

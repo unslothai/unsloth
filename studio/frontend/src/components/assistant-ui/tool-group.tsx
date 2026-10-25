@@ -1,5 +1,6 @@
 "use client";
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   memo,
   useCallback,
@@ -24,7 +25,6 @@ import {
   useToolPaneScope,
   useUnresolvedToolPaneScope,
 } from "@/features/chat/tool-output-scope";
-import { ChevronDownIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
@@ -50,10 +50,10 @@ const ANIMATION_DURATION = 200;
 const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
   variants: {
     variant: {
-      outline: "corner-squircle rounded-lg border py-3",
+      outline: "corner-squircle rounded-xl border py-3",
       ghost: "",
       muted:
-        "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
+        "corner-squircle rounded-xl border border-muted-foreground/30 bg-muted/30 py-3",
     },
   },
   defaultVariants: { variant: "ghost" },
@@ -207,7 +207,8 @@ function ToolGroupTrigger({
           </span>
         )}
       </span>
-      <ChevronDownIcon
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
         data-slot="tool-group-trigger-chevron"
         className={cn(
           "aui-tool-group-trigger-chevron size-3.5 shrink-0",
