@@ -72,6 +72,51 @@ def test_count_memo_reuses_a_render_only_within_one_server_process(monkeypatch):
     assert len(calls) == 5
 
 
+def test_count_memo_tells_apart_schemas_in_a_different_key_order(monkeypatch):
+    """llama-server keeps a JSON object's key order and a template that walks a schema renders
+    it in that order, so the same entries in another order can tokenize differently. A key with
+    sorted keys served one request's count to the other."""
+    from core.inference import llama_cpp
+
+    class _Backend(llama_cpp.LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:8080"
+        _auth_headers: dict = {}
+
+    def _tool(properties):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look something up.",
+                    "parameters": {"type": "object", "properties": properties},
+                },
+            }
+        ]
+
+    city = {"type": "string"}
+    year = {"type": "integer"}
+    calls: list = []
+    monkeypatch.setattr(llama_cpp.httpx, "Client", _counting_client(calls))
+    monkeypatch.setattr(llama_cpp, "_COUNT_MEMO", llama_cpp.collections.OrderedDict())
+    backend = _Backend.__new__(_Backend)
+    backend._process = SimpleNamespace(pid = 4242)
+    msgs = [{"role": "user", "content": "count me"}]
+
+    backend.count_chat_tokens(
+        msgs, tools = _tool({"city": city, "year": year}), prefer_native = True
+    )
+    backend.count_chat_tokens(
+        msgs, tools = _tool({"year": year, "city": city}), prefer_native = True
+    )
+    assert len(calls) == 2, "the second schema order was answered from the first one's count"
+    backend.count_chat_tokens(
+        msgs, tools = _tool({"year": year, "city": city}), prefer_native = True
+    )
+    assert len(calls) == 2, "the same render in the same order must still be a memo hit"
+
+
 def test_display_strip_leaves_markup_free_text_alone_and_still_strips_markup():
     strip = inference._strip_tool_xml_for_display
     prose = "The keeper climbed the stairs, call: home soon; web_search ARGS later.\n\nTOOL_CALLS"

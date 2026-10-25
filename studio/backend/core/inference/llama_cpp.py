@@ -9509,7 +9509,8 @@ def _count_memo_key(backend, template_body: dict, prefer_native: bool) -> Option
     if pid is None:
         return None
     try:
-        encoded = json.dumps(template_body, sort_keys = True, ensure_ascii = False, default = str)
+        # Key order as sent: llama-server keeps it, and a template walking a schema renders in it.
+        encoded = json.dumps(template_body, ensure_ascii = False, default = str)
     except (TypeError, ValueError):
         return None
     digest = hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).hexdigest()
