@@ -7274,8 +7274,7 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
     if existing is None:
         inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
         return
-    # A pass set before Unsloth keys the cache with its own uuid only, so add the marker to it.
-    # Raw callables and uuid-less passes already make torch bypass the cache.
+    # A pre-set pass keys the cache by its uuid alone; raw callables / uuid-less passes bypass it.
     if isinstance(existing, (list, tuple)):
         if any(getattr(p, "_unsloth_readback_barrier", False) for p in existing):
             return

@@ -253,9 +253,7 @@ def _install_with(monkeypatch, existing):
 
 
 def test_a_user_custom_graph_pass_keys_the_cache_on_the_barrier_too(monkeypatch):
-    """A CustomGraphPass set before Unsloth keyed the FX / AOT caches with its uuid alone, so a warm
-    cache written without the barrier was still served. Its uuid now carries the marker too, and
-    the user's pass still runs on every graph."""
+    """A pre-set CustomGraphPass must carry the marker in its uuid and still run."""
     from torch._inductor.custom_graph_pass import CustomGraphPass
 
     user = _user_pass_class()()
@@ -268,7 +266,7 @@ def test_a_user_custom_graph_pass_keys_the_cache_on_the_barrier_too(monkeypatch)
     graph = object()
     keyed(graph)
     assert user.calls == [(graph, (), {})]
-    # Re-running the fix (another import path) neither re-wraps nor drops the user pass.
+    # Idempotent: no re-wrap.
     fixes._key_inductor_caches_on_readback_barrier(inductor_config, CustomGraphPass)
     assert inductor_config.post_grad_custom_post_pass is keyed
 
