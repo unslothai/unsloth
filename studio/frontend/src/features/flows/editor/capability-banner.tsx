@@ -11,7 +11,6 @@ import {
 import { pendingItems } from "../capability-items";
 import { useUiStore } from "../stores/ui-store";
 
-/** Asks the owner to approve what the flow reaches outside itself (Python, hosts, MCP, triggers) before it runs. */
 export function CapabilityBanner({ flowId }: { flowId: string }) {
   const [report, setReport] = useState<CapabilityReport | null>(null);
   const [busy, setBusy] = useState(false);
@@ -31,7 +30,6 @@ export function CapabilityBanner({ flowId }: { flowId: string }) {
     setReport(null);
   }, [flowId]);
 
-  // Edits change what is needed (new code, a new host), so read it again after every save.
   useEffect(() => {
     if (saveState === "saved") refresh();
   }, [saveState, refresh]);
@@ -43,7 +41,6 @@ export function CapabilityBanner({ flowId }: { flowId: string }) {
     setBusy(true);
     try {
       const approved = await approveCapabilities(flowId, report.pending);
-      // The user may have opened another flow meanwhile; its banner must keep its own report.
       if (current.current === flowId) setReport(approved);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not approve");

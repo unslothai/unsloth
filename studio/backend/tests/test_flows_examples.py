@@ -174,7 +174,6 @@ def _png(
 
 
 def _run_example(name: str, stubs: dict):
-    """Run a bundled example through the real engine: real CPU blocks, the given stubs for models and uploads."""
     import asyncio
 
     from core.flows.compiler import parse_document
@@ -332,7 +331,6 @@ def test_background_swap_places_the_cutout_on_the_new_scene():
     placed = rs.nodes["place"].outputs["image"]
     im = pixels(placed).convert("RGB")
     assert im.size == (400, 400)
-    # The product sits centred at 62% height on the generated background, which shows around it.
     assert im.getpixel((200, 248)) == (255, 0, 0)
     assert im.getpixel((10, 10)) == (0, 255, 0)
     assert saved and saved[0][0]["ref"] == placed["ref"]
@@ -341,7 +339,6 @@ def test_background_swap_places_the_cutout_on_the_new_scene():
 
 
 def _run_example_b(name: str, stubs: dict) -> tuple[Any, dict]:
-    """Run a bundled example through the engine: the real CPU blocks, stubs for the model and file blocks."""
     eng = FlowEngine()
     eng.handlers = {**load_handlers(), **stubs}
     eng.mint_key = lambda account: ("sk-unsloth-test", None)
@@ -399,7 +396,6 @@ def test_document_audiobook_reads_each_passage_and_joins_them():
             "output.library": _calls(saved),
         },
     )
-    # 1000 words in 120-word passages is 9; For Each reads the first 8, in order.
     assert outputs["passages"][0].startswith("word0 ") and len(outputs["passages"]) == 9
     assert spoken == outputs["passages"][:8]
     assert joined == [[f"audio:{i}" for i in range(1, 9)]]
@@ -436,7 +432,6 @@ def test_resume_tailor_matches_then_writes_from_the_resume():
         "tailored bullets": ["Built daily SQL reports"],
         "cover letter": "Dear team, ...",
     }
-    # Both steps see the job post and the resume; the writer also gets the match notes.
     for step in ("fit", "write"):
         assert "Data Analyst, Riverside Health" in prompts[step]
         assert "wrote daily SQL reports in pandas" in prompts[step]
@@ -469,7 +464,6 @@ async def _run_example_c(
     stubs: dict,
     params: dict | None = None,
 ):
-    """Run a bundled example through the real engine and CPU blocks; `stubs` replace the model blocks."""
     import asyncio
 
     from core.flows.compiler import parse_document
@@ -632,7 +626,6 @@ def test_campaign_kit_crops_one_image_into_three_captioned_ads():
         data, _ = assets.read(assets.parse_ref(ad["ref"]))
         img = Image.open(io.BytesIO(data)).convert("RGB")
         sizes.append(img.size)
-        # The headline is drawn at the top of every ad over the flat test photo.
         assert len(img.crop((0, 0, img.width, img.height // 3)).getcolors(1 << 20)) > 1
     assert sizes == [(1080, 1080), (1080, 1350), (1200, 628)]
     assert len(rs.nodes["save"].outputs["saved"]) == 3

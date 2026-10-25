@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The story player's state machine: pure, deterministic and serializable (save slots store `StoryState`).
-// Scene conventions match studio/backend/core/flows/story.py:
-// - a scene with no visible lines is a router: on_enter, then `random`, the first passing empty-text choice, or `next`;
-// - a scene with no way out and no `ending` ends the story ("The End");
-// - a choice whose `goto` is not a known scene asks the Next Scene entry point to write it (infinite mode).
+// Scene conventions match studio/backend/core/flows/story.py.
 
 import {
   ExprError,
@@ -29,7 +25,6 @@ import type {
 export const STORY_SAVE_VERSION = 1;
 const MAX_HOPS = 200;
 const MAX_BACKLOG = 300;
-/** Backlog entries for the player's own picks use this speaker. */
 export const CHOICE_SPEAKER = "__choice__";
 
 export type StoryStatus =
@@ -55,10 +50,8 @@ export interface StoryState {
   ending: { title: string; kind: string } | null;
   backlog: BacklogEntry[];
   visited: string[];
-  /** Scenes written live (infinite mode) and backgrounds painted live, keyed by scene id. */
   extraScenes: Record<string, StoryScene>;
   backgrounds: Record<string, MediaValue>;
-  /** Set while waiting for the Next Scene entry point: the scene id to fill and the choice that led there. */
   pending: { sceneId: string; choice: string } | null;
   error: string | null;
   /** Bumped on restart/load so late live results for an older playthrough are dropped. */
@@ -103,18 +96,15 @@ export function visibleLines(
   return (scene.lines ?? []).filter((l) => cond(l.if, vars));
 }
 
-/** A text-less line of stage directions: applied on the way past, never shown. */
 export function isDirection(line: StoryLine | undefined): boolean {
   return Boolean(line && line.text === "" && line.stage);
 }
 
-/** Seconds a `[pause n]` line holds the reader, or null. */
 export function pauseOf(line: StoryLine | null | undefined): number | null {
   const p = line && isDirection(line) ? line.stage?.pause : null;
   return typeof p === "number" ? p : null;
 }
 
-/** The first line at or after `from` the reader stops on: text or a pause. `lines.length` if none. */
 export function restAt(lines: StoryLine[], from: number): number {
   let i = Math.max(0, from);
   while (
@@ -126,7 +116,6 @@ export function restAt(lines: StoryLine[], from: number): number {
   return i;
 }
 
-/** The reader has not moved past the scene's first stop (directions before it are not a stop). */
 export function atSceneStart(m: StoryManifest, s: StoryState): boolean {
   const scene = sceneOf(m, s, s.sceneId);
   return !scene || s.line <= restAt(visibleLines(scene, s.vars), 0);
@@ -139,7 +128,6 @@ export function visibleChoices(
   return (scene.choices ?? []).filter((c) => c.text !== "" && cond(c.if, vars));
 }
 
-/** `{{name}}` -> the variable's value. */
 export function interpolate(
   text: string,
   vars: Record<string, unknown>,
@@ -223,7 +211,6 @@ function end(
   };
 }
 
-/** Enter `sceneId`: apply on_enter, then either start reading or route onwards (routers chain up to MAX_HOPS). */
 function enter(
   m: StoryManifest,
   s0: StoryState,
@@ -282,7 +269,6 @@ function enter(
   return leave(m, s, scene, hops + 1);
 }
 
-/** Leave the current scene after its last line (or at once for a router). */
 function leave(
   m: StoryManifest,
   s: StoryState,
@@ -360,7 +346,6 @@ export function reduce(
       const scene = sceneOf(m, s, s.sceneId);
       if (!scene) return fail(s, "Missing scene");
       const lines = visibleLines(scene, s.vars);
-      // Its dialogue is still being written: the "..." placeholder cannot be read past.
       if (lines.length === 0 && scene.generate_lines) return s;
       const next = restAt(lines, s.line + 1);
       if (next < lines.length) {
@@ -393,7 +378,6 @@ export function reduce(
     case "load": {
       if (!saveFits(m, a.state)) return s;
       const loaded = { ...a.state, rev: s.rev + 1 };
-      // A save from before the story gained directions may point at one: move to the next readable line.
       const scene = sceneOf(m, loaded, loaded.sceneId);
       if (!scene || loaded.status !== "reading") return loaded;
       const lines = visibleLines(scene, loaded.vars);
@@ -436,7 +420,6 @@ export function reduce(
       if (a.rev !== s.rev) return s;
       const scene = sceneOf(m, s, a.sceneId);
       if (!scene || a.lines.length === 0) return s;
-      // Mid-scene the reader's line index belongs to the current list; the next visit writes fresh lines.
       const here = s.sceneId === a.sceneId && s.status === "reading";
       if (here && !atSceneStart(m, s)) return s;
       const replaced: StoryScene = {
@@ -448,7 +431,6 @@ export function reduce(
         ...s,
         extraScenes: { ...s.extraScenes, [a.sceneId]: replaced },
       };
-      // Only restart the scene if the reader is still on its first line.
       if (here) {
         const old = visibleLines(scene, s.vars);
         const shown = Boolean(old[restAt(old, 0)]?.text);
@@ -466,7 +448,6 @@ export function reduce(
   }
 }
 
-/** The scene ids reachable in one step from `sceneId` (for prefetching their art). */
 export function nextSceneIds(
   m: StoryManifest,
   s: StoryState,
@@ -481,7 +462,6 @@ export function nextSceneIds(
   return [...ids].filter((id) => sceneOf(m, s, id));
 }
 
-/** A save made for this story: right version, and its scene still exists (a re-roll can rename scenes). */
 export function saveFits(
   m: StoryManifest,
   state: StoryState | null | undefined,
@@ -500,7 +480,6 @@ export function currentLine(m: StoryManifest, s: StoryState): StoryLine | null {
   return line ?? null;
 }
 
-/** The nearest scene at or before the current one that has a background (routers have none). */
 export function backgroundFor(
   m: StoryManifest,
   s: StoryState,
@@ -518,9 +497,7 @@ export interface StageSlot {
 
 export interface StageView {
   cast: (StageSlot & { enter: StoryTransition | null })[];
-  /** Taken off since the previous stop, kept for the exit transition. */
   leaving: (StageSlot & { exit: StoryTransition | null })[];
-  /** `[sound]` cues reached since the previous stop. */
   sounds: string[];
 }
 
@@ -562,7 +539,6 @@ export function stageAt(m: StoryManifest, s: StoryState): StageView {
   const stop = (i: number) =>
     i < lines.length && (!isDirection(lines[i]) || pauseOf(lines[i]) !== null);
   if (s.status !== "reading" && stop(s.line)) {
-    // Choices or the ending open after the last line was shown: its cues already played there.
     prev = s.line;
   } else {
     for (let i = 0; i < upto; i++) if (stop(i)) prev = i;

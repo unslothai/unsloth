@@ -42,7 +42,6 @@ def _summary_from_row(row: sqlite3.Row) -> dict:
     doc = json.loads(row["doc_json"])
     meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
     cover = meta.get("cover")
-    # An imported package keeps its cover as a media value.
     if isinstance(cover, dict):
         cover = cover.get("url")
     return {
@@ -134,7 +133,6 @@ def delete_flow(flow_id: str) -> None:
         conn.execute("DELETE FROM flow_sessions WHERE flow_id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_capabilities WHERE flow_id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_triggers WHERE flow_id = ?", (flow_id,))
-        # Run history goes too; its events and node results cascade.
         conn.execute("DELETE FROM flow_runs WHERE flow_id = ?", (flow_id,))
         conn.execute(
             "INSERT OR IGNORE INTO flow_tombstones (id, deleted_at) VALUES (?, ?)",
@@ -492,9 +490,6 @@ def delete_session(flow_id: str, slot: str) -> None:
         conn.close()
 
 
-# Approved capabilities
-
-
 def get_capabilities(flow_id: str) -> dict:
     conn = get_connection()
     try:
@@ -518,9 +513,6 @@ def set_capabilities(flow_id: str, approved: dict) -> None:
         conn.commit()
     finally:
         conn.close()
-
-
-# Triggers
 
 
 def _trigger_from_row(row: sqlite3.Row) -> dict:

@@ -213,7 +213,6 @@ async def test_chained_compares_report_the_new_delta():
     )
     ctx = Ctx(inputs = {"table": first, "baseline": base}, params = {"key": ["m"], "metric": "delta"})
     out = await load_handlers()["table.compare"](ctx)
-    # Deltas [10, 20] against [5, 15]: the new difference is 5 each, not the old deltas' mean of 15.
     assert out["delta"] == pytest.approx(5.0)
 
 

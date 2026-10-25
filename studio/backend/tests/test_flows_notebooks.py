@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unsloth notebooks in Flows: the catalog's Studio task, the static .ipynb importer, notebook templates,
-and the widened Fine-tune settings."""
-
 import asyncio
 import json
 
@@ -67,7 +64,6 @@ def test_sft_notebook_becomes_a_flow_with_its_settings():
     data = next(n["params"] for n in doc["nodes"] if n["type"] == "data.hf_dataset")
     assert data["repo"] == "mlabonne/FineTome-100k"
     export = next(n["params"] for n in doc["nodes"] if n["type"] == "train.export")
-    # The f16 save sits behind `if False:`, so only the q8_0 one counts.
     assert export == {"format": "gguf", "quant": "q8_0"}
     assert report["unsupported"] == []
     assert any("formatting_prompts_func" in line for line in report["approximated"])
@@ -252,7 +248,6 @@ def test_epochs_win_when_max_steps_is_zero_and_fractions_are_reported():
     tune = _tune(doc)
     assert "max_steps" not in tune and tune["num_epochs"] == 2
     assert any("1.5 epochs" in line for line in report["approximated"])
-    # A single-segment Hub id is a real dataset.
     data = next(n["params"] for n in doc["nodes"] if n["type"] == "data.hf_dataset")
     assert data["repo"] == "imdb"
 
@@ -327,7 +322,6 @@ def test_load_in_4bit_is_sent_only_when_off_and_orpheus_trains_16bit():
 
 
 def test_bundled_embedding_templates_do_not_stream():
-    # The training route refuses streaming for embedding models.
     for doc in build_examples.build():
         for n in doc["nodes"]:
             p = n.get("params") or {}
@@ -403,7 +397,6 @@ def test_vision_streaming_qat_and_text_deepseek_import_runnable_or_refused():
     )
     assert _tune(vision)["task"] == "vision" and "dataset_streaming" not in _tune(vision)
     assert any("Streaming" in line for line in report["approximated"])
-    # DeepSeek-R1 distills are text; only the OCR recipe is vision.
     assert catalog._category("DeepSeek_R1_0528_Qwen3_(8B)_GRPO.ipynb") == "grpo"
     assert catalog._category("Llama3.1_(8B)-DeepSeek_R1_Distill.ipynb") != "vision"
     assert catalog._category("Deepseek_OCR_(3B).ipynb") == "vision"
@@ -429,7 +422,6 @@ def test_vision_streaming_qat_and_text_deepseek_import_runnable_or_refused():
     ],
 )
 def test_streaming_is_dropped_where_the_training_route_refuses_it(extra, why):
-    # The route rejects streaming with train_on_completions or without max_steps, so the flow could not start.
     doc, report = notebook_import.read_notebook(
         _plain("dataset = load_dataset('a/b', split = 'train', streaming = True)", extra),
         "x.ipynb",

@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in engine capabilities: job polling, partial outputs, load settings, backend requirements, bindable params,
-Combinations, the Studio-wide GPU lease and read-only system routes."""
-
 import asyncio
 import os
 
@@ -52,9 +49,6 @@ def no_lease(monkeypatch):
     monkeypatch.setattr(arb, "_lease", None)
     monkeypatch.setattr(arb, "_owner", None)
     monkeypatch.setattr(arb, "_residents", {})
-
-
-# poll_job
 
 
 class _PollCtx:
@@ -133,9 +127,6 @@ def test_poll_job_raises_the_job_error_and_reports_a_stop_as_cancelled():
         )
 
 
-# Partial outputs
-
-
 def _rows_spec():
     return spec(
         "test.rows",
@@ -171,14 +162,12 @@ async def test_partial_rows_stream_but_never_feed_the_next_step(monkeypatch):
     assert rs.status == "completed"
     assert seen["value"] == [1, 2, 3]
     partials = [e for e in rs.events if e["type"] == "node.partial"]
-    # Coalesced: the newest value per port, never more events than calls.
     assert partials and partials[-1]["data"] == {
         "port": "rows",
         "value": [1, 2],
         "step": 2,
         "total": 3,
     }
-    # A finished node drops its partial; the output replaces it.
     assert "partial" not in rs.nodes["r"].snapshot()
     assert rs.nodes["r"].outputs == {"rows": [1, 2, 3]}
 
@@ -224,9 +213,6 @@ async def test_a_failed_step_keeps_its_last_partial(monkeypatch):
     assert snap["status"] == "failed"
     assert snap["partial"]["rows"]["value"] == ["a", "b"]
     assert any(e["type"] == "node.partial" for e in rs.events)
-
-
-# Load settings and model identity
 
 
 def _llm_fakes(monkeypatch):
@@ -275,7 +261,6 @@ def test_load_settings_reload_only_when_they_change(monkeypatch):
         await _common.ensure_model(ctx, "chat", choice, kv8)
         await _common.ensure_model(ctx, "chat", choice, dict(kv8))
         await _common.ensure_model(ctx, "chat", choice, {"cache_type_kv": "q4_0"})
-        # A plain step after a benchmark variant gets Studio's defaults back.
         await _common.ensure_model(ctx, "chat", choice)
 
     asyncio.run(go())
@@ -298,7 +283,6 @@ def test_a_load_elsewhere_voids_the_remembered_settings(monkeypatch):
     choice = {"repo": "unsloth/Qwen3-0.6B-GGUF"}
     kv8 = {"cache_type_kv": "q8_0"}
     asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
-    # Another caller swaps models and later reloads the same repo with defaults.
     monkeypatch.setattr(gpu_arbiter, "_loads", gpu_arbiter._loads + 2)
     monkeypatch.setitem(
         gpu_arbiter._owner_loads,
@@ -310,7 +294,6 @@ def test_a_load_elsewhere_voids_the_remembered_settings(monkeypatch):
 
 
 def test_a_media_load_keeps_the_chat_models_settings(no_lease, monkeypatch):
-    # Keep multiple models loaded: an image load beside an unchanged chat model must not force a chat reload.
     loads, _ = _llm_fakes(monkeypatch)
     monkeypatch.setitem(arb._EVICTORS, arb.DIFFUSION, lambda: None)
     monkeypatch.setattr(arb, "_owner_loads", {})
@@ -375,9 +358,6 @@ def test_a_local_model_key_changes_when_its_files_change(tmp_path):
     assert hub == {"repo": "unsloth/x", "variant": None}
 
 
-# Bindable params and Combinations
-
-
 def _bindable_spec():
     return spec(
         "test.scale",
@@ -437,7 +417,6 @@ async def test_a_connected_value_replaces_the_param_and_is_clamped(monkeypatch):
     )
     rs = await _run(eng, d)
     assert rs.outputs == {"r": 30} and seen == [10]
-    # Unconnected, the field value is used.
     d["edges"] = [e for e in d["edges"] if e["target_port"] != "param:factor"]
     d["id"] = "f2"
     rs = await _run(eng, d)
@@ -461,18 +440,14 @@ def test_combinations_cover_every_pair_and_refuse_a_grid_too_big():
         asyncio.run(logic.product(Big()))
 
 
-# The Studio-wide GPU lease
-
-
 def test_a_lease_refuses_other_loads_and_training_but_not_its_holder(no_lease, monkeypatch):
     monkeypatch.setitem(arb._EVICTORS, arb.CHAT, lambda: None)
     monkeypatch.setitem(arb._EVICTORS, arb.DIFFUSION, lambda: None)
     assert arb.lease_refusal() is None
-    arb.acquire_for(arb.CHAT, lambda: None)  # no lease: unchanged
+    arb.acquire_for(arb.CHAT, lambda: None)
 
     async def holder():
         with arb.operation_lease("bench", "run-1", 60, label = "Benchmark Model"):
-            # The holder's own load passes, also from a worker thread (routes run sync code there).
             arb.acquire_for(arb.CHAT, lambda: None)
             await asyncio.to_thread(arb.acquire_for, arb.CHAT, lambda: None)
             other = asyncio.get_running_loop()
@@ -483,7 +458,7 @@ def test_a_lease_refuses_other_loads_and_training_but_not_its_holder(no_lease, m
     refusal = asyncio.run(holder())
     assert isinstance(refusal, arb.GpuLeaseHeldError)
     assert "Benchmark Model is using the GPU" in str(refusal)
-    assert arb.lease_refusal() is None  # released
+    assert arb.lease_refusal() is None
 
 
 def test_a_refused_load_keeps_the_load_generation(no_lease, monkeypatch):
@@ -496,7 +471,6 @@ def test_a_refused_load_keeps_the_load_generation(no_lease, monkeypatch):
 
     with pytest.raises(RuntimeError):
         arb.acquire_for(arb.CHAT, refuse)
-    # Flows keeps the loaded model's settings while the generation is unchanged.
     assert arb.load_count() == before
 
 
@@ -506,13 +480,13 @@ def test_while_leased_other_callers_get_409_and_plain_reasserts_pass(no_lease, m
     arb.acquire_for(arb.CHAT, lambda: None)
     lease = arb.operation_lease("bench", "run-1", 60, label = "Benchmark Model")
     lease.__enter__()
-    arb._lease_holder.set(None)  # back to an outside caller
+    arb._lease_holder.set(None)
     try:
         with pytest.raises(arb.GpuLeaseHeldError):
             arb.acquire_for(arb.DIFFUSION, lambda: None)
         with pytest.raises(arb.GpuLeaseHeldError):
             arb.acquire_for(arb.CHAT, lambda: None)
-        arb.acquire_for(arb.CHAT)  # a chat request re-asserting the resident model keeps working
+        arb.acquire_for(arb.CHAT)
         http = arb.lease_refusal().as_http_exception()
         assert http.status_code == 409 and http.detail["error"] == "gpu_leased"
         with pytest.raises(arb.GpuLeaseHeldError):
@@ -533,18 +507,18 @@ def test_a_reassert_under_a_lease_never_evicts_the_leased_model(no_lease, monkey
     )
     monkeypatch.setattr(arb, "_owner", arb.CHAT)
     monkeypatch.setattr(arb, "_residents", {arb.DIFFUSION: None, arb.CHAT: None})
-    arb.acquire_for(arb.CHAT, policy = "fit")  # no lease: a re-assert makes room as before
+    arb.acquire_for(arb.CHAT, policy = "fit")
     assert len(made_room) == 1
     released.clear()
     lease = arb.operation_lease("bench", "run-1", 60, label = "Benchmark Image")
     lease.__enter__()
-    arb._lease_holder.set(None)  # a chat request from outside the lease
+    arb._lease_holder.set(None)
     try:
         arb.acquire_for(arb.CHAT, policy = "fit")
-        arb.acquire_for(arb.CHAT)  # Off would evict the other resident outright
+        arb.acquire_for(arb.CHAT)
     finally:
         arb._lease = None
-    assert len(made_room) == 1 and released == []  # the segmenter and video servers stay up too
+    assert len(made_room) == 1 and released == []
     assert arb.DIFFUSION in arb._residents
 
 
@@ -601,7 +575,6 @@ async def test_an_exclusive_node_holds_the_lease_and_its_cancel_hook_still_acts_
     parsed, _ = parse_document(doc([node("m", "test.measure")]))
     rs = await eng.start_run(app = None, flow_id = "f1", doc = parsed)
     await asyncio.wait_for(started.wait(), 5)
-    # Outside the node, the GPU is leased.
     assert isinstance(arb.lease_refusal(), arb.GpuLeaseHeldError)
     await eng.cancel(rs.id)
     await asyncio.wait_for(rs.task, 20)
@@ -661,7 +634,6 @@ def test_unloads_and_training_teardown_respect_a_lease_taken_later(no_lease):
         with pytest.raises(fastapi.HTTPException) as err:
             inference._refuse_while_leased()
         assert err.value.status_code == 409
-        # A training start that passed its first check meets the lease again where it frees the GPU.
         with pytest.raises(arb.GpuLeaseHeldError):
             training._free_gpu_for_diffusion_training()
         source = open(training.__file__, encoding = "utf-8").read()
@@ -676,7 +648,6 @@ def test_unloads_and_training_teardown_respect_a_lease_taken_later(no_lease):
         assert "_refuse_while_leased()" in isource[start : start + 900]
     finally:
         arb._lease = None
-    # The holder's own unload passes.
     with arb.operation_lease("bench", "run-1", 60):
         inference._refuse_while_leased()
 
@@ -690,7 +661,6 @@ def test_every_unload_path_shares_the_lease_guard(no_lease):
     lease.__enter__()
     arb._lease_holder.set(None)
     try:
-        # The llama-compatible /models/unload calls the shared implementation, not the route wrapper.
         with pytest.raises(fastapi.HTTPException) as err:
             asyncio.run(inference._unload_model_impl(UnloadRequest(model_path = "x"), "owner"))
         assert err.value.status_code == 409
@@ -707,9 +677,6 @@ def test_a_lease_waits_for_a_residency_change_already_under_way(no_lease):
     assert arb._lease is None
     with arb.operation_lease("bench", "run-1", 60):
         assert arb._lease is not None
-
-
-# Read-only system routes
 
 
 def test_system_routes_are_reachable_for_reads_only():

@@ -104,7 +104,6 @@ def test_single_input_takes_one_connection_multi_takes_many():
 def test_required_input_missing_but_param_fallback_counts():
     issues = _issues(doc([node("s", "text.split")]))
     assert issues[0]["node_id"] == "s"
-    # llm.generate has an optional prompt port and a prompt param.
     _compile(doc([node("g", "llm.generate", prompt = "hi")]))
 
 
@@ -127,7 +126,6 @@ def test_flow_edges_only_between_story_handles():
             [edge("s", "next", "sc", "in", "flow"), edge("sc", "next", "e", "in", "flow")],
         )
     )
-    # Player nodes are compiled but never executed.
     assert plan.order == []
     assert len(plan.flow_edges) == 2
     issues = _issues(
@@ -156,7 +154,6 @@ def test_for_each_body_ordering_collect_and_escape_rules():
     assert plan.bodies == {"fe": ["t"]}
     assert plan.collect == {"fe": ("t", "text")}
     assert plan.top_level() == ["items", "fe", "out"]
-    # A body node feeding the outside directly is refused.
     issues = _issues(doc(nodes, [*edges[:3], edge("t", "text", "out", "value")]))
     assert any("can only feed its group" in i["message"] for i in issues)
 
@@ -247,7 +244,6 @@ def test_model_needs_merges_requirements_and_node_models():
 def test_for_each_groups_owning_each_other_are_refused_without_hanging():
     import threading
 
-    # Two For Each nodes, each in the other's group: an imported document can say so.
     nodes = [
         node("items", "input.list", items = ["a"]),
         node("a", "logic.for_each", group = "b"),
