@@ -8,9 +8,10 @@ guard and CUDA-graph wrapper); ``kick`` replays them through the compiled callab
 capture suppressed, so the next render pays only the capture. A render arriving mid-compile waits for it: a render
 beside the compile was starved to 49-62 s on a B200. Any failure ends the attempt and the next render compiles inline.
 
-Dense, non-offloaded denoisers only: torchao ones are ~30x slower eager, and offload hooks would fight two forwards.
-By default only the deferred profile (generation 3, already eager -> compiled) uses it; UNSLOTH_DIFFUSION_BG_COMPILE=1
-also moves a load's first-render compile (render 1 then differs from render 2 for one seed), =0 disables it.
+Dense denoisers only: torchao ones are ~30x slower eager. Offloaded ones too: no render runs beside the compile,
+so offload hooks see one forward at a time (UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED=0 opts out). By default only the deferred
+profile (generation 3, already eager -> compiled) uses it; UNSLOTH_DIFFUSION_BG_COMPILE=1 also moves a load's
+first-render compile (render 1 then differs from render 2 for one seed), =0 disables it.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import time
 from typing import Any, Callable, Optional
 
 _ENV = "UNSLOTH_DIFFUSION_BG_COMPILE"
+OFFLOADED_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED"
 _MAX_SAMPLES = 4
 
 # ContextVars, not thread-locals: diffusion_render_thread.run copies the caller's context onto the render thread.
@@ -42,6 +44,11 @@ _AUXILIARY: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 def enabled() -> bool:
     raw = (os.environ.get(_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def offloaded_enabled() -> bool:
+    raw = (os.environ.get(OFFLOADED_ENV) or "").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
 
@@ -153,8 +160,90 @@ def recording(module: Any) -> bool:
 
 
 def _cuda_graph_helpers() -> tuple[Callable, Callable, Callable]:
-    from .diffusion_cuda_graph import _flatten, _rebuild, graph_key
-    return _flatten, _rebuild, graph_key
+    from .diffusion_cuda_graph import graph_key
+    return _flatten_sample, _rebuild_sample, graph_key
+
+
+# Plain state objects in a call (Qwen-Image-2.1's ``QwenImage21KVCache``) are recorded as fresh instances of cloned tensors.
+OBJECTS_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_OBJECTS"
+_OBJECT_DEPTH = 3
+# A prefix holding a condition image is ~2.2 GiB: such a call keeps compiling on the render.
+_OBJECT_MAX_BYTES = 1 << 30
+
+
+def _objects_enabled() -> bool:
+    raw = (os.environ.get(OBJECTS_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _plain_state(obj: Any) -> Optional[dict]:
+    import torch
+
+    if isinstance(obj, (torch.nn.Module, torch.Tensor, type)) or callable(obj):
+        return None
+    cls = type(obj)
+    if str(cls.__module__).split(".")[0] in ("builtins", "torch") or hasattr(cls, "__slots__"):
+        return None
+    state = getattr(obj, "__dict__", None)
+    return state if isinstance(state, dict) else None
+
+
+def _flatten_sample(
+    obj: Any,
+    out: list,
+    depth: int = 0,
+    budget: Optional[list] = None,
+) -> tuple:
+    import torch
+
+    if budget is None:
+        budget = [0]
+    if torch.is_tensor(obj):
+        out.append(obj)
+        return ("t", len(out) - 1)
+    if isinstance(obj, (list, tuple)):
+        return ("l", isinstance(obj, tuple), [_flatten_sample(o, out, depth, budget) for o in obj])
+    if isinstance(obj, dict):
+        return ("d", [(k, _flatten_sample(v, out, depth, budget)) for k, v in obj.items()])
+    if isinstance(obj, (int, float, bool, str, bytes)) or obj is None:
+        return ("v", obj)
+    state = _plain_state(obj) if _objects_enabled() and depth < _OBJECT_DEPTH else None
+    if state is None:
+        raise TypeError(f"cannot make a static buffer for a {type(obj).__name__} in the call tree")
+    first = len(out)
+    spec = (
+        "o",
+        type(obj),
+        [(k, _flatten_sample(v, out, depth + 1, budget)) for k, v in state.items()],
+    )
+    held = budget[1] if len(budget) > 1 else None
+    if held is not None:
+        held.update(range(first, len(out)))
+    if depth == 0:
+        # The outermost object's slice holds every nested one's: charging each level would count a tensor twice.
+        budget[0] += sum(t.numel() * t.element_size() for t in out[first:])
+    if budget[0] > _OBJECT_MAX_BYTES:
+        raise TypeError(
+            f"{type(obj).__name__} holds {budget[0] >> 20} MiB, above the {_OBJECT_MAX_BYTES >> 20} MiB a sample copies"
+        )
+    return spec
+
+
+def _rebuild_sample(spec: tuple, tensors: list) -> Any:
+    kind = spec[0]
+    if kind == "t":
+        return tensors[spec[1]]
+    if kind == "l":
+        values = [_rebuild_sample(s, tensors) for s in spec[2]]
+        return tuple(values) if spec[1] else values
+    if kind == "d":
+        return {k: _rebuild_sample(s, tensors) for k, s in spec[1]}
+    if kind == "o":
+        obj = object.__new__(spec[1])
+        for k, s in spec[2]:
+            obj.__dict__[k] = _rebuild_sample(s, tensors)
+        return obj
+    return spec[1]
 
 
 def _capture_armed(module: Any) -> bool:
@@ -260,11 +349,15 @@ class BackgroundCompile:
             if key in self._keys:
                 return None
             live: list = []
-            spec = _flatten((args, kwargs), live)
+            held: set = set()
+            spec = _flatten((args, kwargs), live, 0, [0, held])
             if _capture_armed(module):
                 # Like the capture's static buffers (made outside inference mode): dynamo guards on inference-ness.
-                with torch.inference_mode(False):
-                    clones = [torch.empty_like(t) for t in live]
+                # Tensors inside a state object are not graph inputs: they keep the inference-ness they arrived with.
+                clones = []
+                for index, t in enumerate(live):
+                    with torch.inference_mode(index in held and t.is_inference()):
+                        clones.append(torch.empty_like(t))
                 for dst, src in zip(clones, live):
                     dst.copy_(src)
             else:
@@ -282,6 +375,14 @@ class BackgroundCompile:
         except Exception as exc:  # noqa: BLE001 - an uncloneable tree just means no background compile
             self.state = "failed"
             self.error = f"record: {type(exc).__name__}: {exc}"
+            # Not _finish: the hook is running, and removing it mid-dispatch would mutate the dict torch iterates.
+            self.samples = []
+            if self.logger is not None:
+                self.logger.info(
+                    "diffusion.bg_compile: %s cannot be recorded (%s); the next render compiles inline",
+                    type(module).__name__,
+                    self.error,
+                )
         return None
 
     def wants_samples(self) -> bool:
@@ -452,15 +553,15 @@ def select_module(
     backend: Any,
     denoiser_hooked: bool,
 ) -> Any:
-    """The one dense, resident, default-tier CUDA denoiser whose compile may move off the render, or None.
+    """The one dense default-tier CUDA denoiser whose compile may move off the render, or None.
 
-    Not torchao (~30x slower eager), GGUF (compiles only its dequant), a step cache (toggles graphs per step),
-    max-autotune (an explicit request to pay the compile) or an offloaded denoiser."""
+    Not torchao (~30x slower eager), GGUF (compiles only its dequant), a step cache (toggles graphs per step) or
+    max-autotune (an explicit request to pay the compile). An offloaded denoiser only with ``offloaded_enabled``."""
     if not enabled():
         return None
     if "compiled" not in tuple(speed_optims or ()) or not default_tier:
         return None
-    if quantized or gguf or step_cache or denoiser_hooked:
+    if quantized or gguf or step_cache or (denoiser_hooked and not offloaded_enabled()):
         return None
     if device != "cuda" or backend == "rocm":
         return None

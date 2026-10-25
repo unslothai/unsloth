@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -443,7 +444,6 @@ import {
   ArrowUpIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  HeadphonesIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -2904,7 +2904,7 @@ const PendingAudioChip: FC = () => {
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
       <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
-        <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+        <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
         <button
           type="button"
@@ -9282,7 +9282,7 @@ const UserMessageAudio: FC = () => {
   return (
     <div className="col-start-2 flex justify-end">
       <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
-        <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+        <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
       </div>
     </div>
