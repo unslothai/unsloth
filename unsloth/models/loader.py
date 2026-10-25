@@ -85,6 +85,7 @@ except:
 import importlib.util
 from ..device_type import (
     xpu_keeps_explicit_bf16,
+    xpu_vllm_refuses_bf16,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -2983,6 +2984,24 @@ class FastModel(FastBaseModel):
                 do_forced_float32 = True
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
+        # A bf16 load of this family would otherwise drop to fp16 when vLLM refuses bf16 (forced float32 is caught in FastBaseModel).
+        if (
+            not do_forced_float32
+            and fast_inference
+            and DEVICE_TYPE == "xpu"
+            and (dtype == torch.bfloat16 or (dtype is None and SUPPORTS_BFLOAT16))
+            and any(
+                name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
+                or name.lower() in model_types_all
+                for name in FORCE_FLOAT32
+            )
+            and is_vLLM_available()
+            and xpu_vllm_refuses_bf16()
+        ):
+            raise RuntimeError(
+                "Unsloth: vLLM does not accept bfloat16 on this Intel GPU, and this model cannot "
+                "run in float16. Load it with fast_inference = False."
+            )
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
             use_gradient_checkpointing, max_seq_length, dtype
         )
