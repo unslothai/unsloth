@@ -43,6 +43,7 @@ hooks_router = APIRouter()
 WEBHOOK_MAX_BYTES = 256 * 1024
 
 KEEPALIVE_S = 15.0
+DISCONNECT_POLL_S = 0.1
 _SLOT = r"^[A-Za-z0-9_-]{1,64}$"
 _TIME = Field(default = None, ge = 0, le = 2**53)
 
@@ -79,6 +80,7 @@ class InvokeBody(BaseModel):
     rev: Optional[int] = None
     stream: bool = False
     warm: bool = False
+    background: bool = False
 
 
 class SessionBody(BaseModel):
@@ -702,13 +704,14 @@ async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
         inputs = body.inputs,
         params = body.params,
         hf_token = _hf_token(request),
+        timing = {},
+        background = body.background,
     )
     if body.stream:
         return _invoke_stream(request, engine, call, body)
     task = asyncio.create_task(engine.invoke(**call))
     try:
-        # Stop the invocation too, so it does not hold the GPU lock ahead of the call the player now waits for.
-        while not (await asyncio.wait({task}, timeout = 1.0))[0]:
+        while not (await asyncio.wait({task}, timeout = DISCONNECT_POLL_S))[0]:
             if await request.is_disconnected():
                 task.cancel()
                 raise HTTPException(
@@ -720,7 +723,12 @@ async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
     finally:
         if not task.done():
             task.cancel()
-    return {"outputs": outputs, "session_id": body.session_id, "rev": body.rev}
+    return {
+        "outputs": outputs,
+        "session_id": body.session_id,
+        "rev": body.rev,
+        "timing": call["timing"],
+    }
 
 
 def _invoke_stream(
@@ -785,6 +793,7 @@ def _invoke_stream(
                     "outputs": outputs,
                     "session_id": body.session_id,
                     "rev": body.rev,
+                    "timing": call["timing"],
                 }
             )
         finally:
