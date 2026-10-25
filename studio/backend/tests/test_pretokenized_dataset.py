@@ -820,6 +820,8 @@ def test_mlx_training_passes_the_model_vocab_size_to_both_splits():
         vocab = next(k.value for k in call.keywords if k.arg == "vocab_size")
         assert isinstance(vocab, ast.Call) and vocab.func.id == "_mlx_vocab_size"
         assert [a.id for a in vocab.args] == ["model"]
+        # zoo's MLX reader applies masks by its own policy, not the installed TRL's.
+        assert any(k.arg == "mlx" and k.value.value is True for k in call.keywords)
 
 
 def test_cuda_training_turns_eval_packing_off_for_a_pretokenized_eval_split():
@@ -868,3 +870,28 @@ def test_prepare_trims_formatted_streams(fmt, with_labels):
     assert [[int(x) for x in r["attention_mask"]] for r in out] == [[1, 1], [1, 1]]
     if with_labels:
         assert [[int(x) for x in r["labels"]] for r in out] == [[2, 3], [4, 5]]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_mlx_trims_assistant_masks_beside_labels_whatever_the_trl(streaming, monkeypatch):
+    # zoo's MLX reader applies assistant_masks beside labels and refuses a length mismatch, even
+    # where TRL >= 1.7's collator would ignore them.
+    import utils.datasets.pretokenized as pretokenized
+
+    monkeypatch.setattr(pretokenized, "_collator_masks_user_labels", lambda: False)
+    rows = {
+        "input_ids": [[0, 0, 4, 5]],
+        "attention_mask": [[0, 0, 1, 1]],
+        "labels": [[-100, -100, 4, 5]],
+        "assistant_masks": [[0, 0, 1, 1]],
+        "completion_mask": [[0, 0, 1]],
+    }
+    ds = Dataset.from_dict(rows)
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    out = list(prepare_pretokenized_dataset(ds, max_seq_length = None, vocab_size = 100, mlx = True))
+    assert out[0]["input_ids"] == [4, 5]
+    assert out[0]["labels"] == [4, 5]
+    assert out[0]["assistant_masks"] == [1, 1]
+    # completion_mask applies on MLX only for an explicit completion_only_loss=True: left as is.
+    assert out[0]["completion_mask"] == [0, 0, 1]

@@ -3638,12 +3638,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if dataset_final_format == "pretokenized":
         from utils.datasets.pretokenized import prepare_pretokenized_dataset
         dataset = prepare_pretokenized_dataset(
-            dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model)
+            dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model), mlx = True
         )
     if eval_dataset is not None and eval_final_format == "pretokenized":
         from utils.datasets.pretokenized import prepare_pretokenized_dataset
         eval_dataset = prepare_pretokenized_dataset(
-            eval_dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model)
+            eval_dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model), mlx = True
         )
 
     requested_max_steps = config.get("max_steps", 0) or 0

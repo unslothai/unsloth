@@ -27,13 +27,25 @@ def _collator_masks_user_labels() -> bool:
         return True
 
 
-def _checked_masks(columns, completion_only_loss = None) -> tuple:
+def _checked_masks(
+    columns,
+    completion_only_loss = None,
+    mlx = False,
+) -> tuple:
     """Masks the trainer will apply, the only ones checked and truncated.
 
     TRL applies `assistant_masks` on presence but `completion_mask` only under
     `completion_only_loss`, which, left unset, it resolves from the dataset shape (prompt plus
     completion columns). Beside user labels the masks are applied only by TRL < 1.7's collator.
+    zoo's MLX reader applies `assistant_masks` on presence, labels or not, and `completion_mask`
+    only for an explicit `completion_only_loss=True`.
     """
+    if mlx:
+        return tuple(
+            c
+            for c in _MASK_COLUMNS
+            if c in columns and (completion_only_loss is True or c != "completion_mask")
+        )
     if "labels" in columns and not _collator_masks_user_labels():
         return ()
     if completion_only_loss is None:
@@ -268,13 +280,17 @@ def prepare_pretokenized_dataset(
     max_seq_length,
     vocab_size = None,
     completion_only_loss = None,
+    mlx = False,
 ):
     """Unsloth's SFT preparation passes tokenized rows through untouched: an over-long row would reach the model whole and an id past the embedding table is a device-side assert mid-run. Rows whose attention_mask zeros are leading/trailing padding lose those positions (the trainer would attend and train on them); zeros between attended tokens are refused. A falsy max_seq_length skips truncation. Idempotent."""
     names = _column_names(dataset)
-    completion_only_loss = resolve_completion_only_loss(dataset, completion_only_loss)
+    if not mlx:
+        completion_only_loss = resolve_completion_only_loss(dataset, completion_only_loss)
     # Masks are checked even when set_format hides them: TRL 0.22-0.26 re-exposes every column through
     # with_transform, and 1.7+ reads dataset.column_names and builds labels with map(), which sees them all.
-    masks = _checked_masks(getattr(dataset, "column_names", None) or names, completion_only_loss)
+    masks = _checked_masks(
+        getattr(dataset, "column_names", None) or names, completion_only_loss, mlx = mlx
+    )
     # A mask the trainer will not apply is left as it is (it may not even be a list).
     columns = [c for c in _TOKEN_COLUMNS if (c in names and c not in _MASK_COLUMNS) or c in masks]
     table = getattr(dataset, "data", None)
