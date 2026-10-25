@@ -214,7 +214,68 @@ def normalize_world(
     sim = _simulation(raw.get("simulation"), width, height, regions)
     if sim is not None:
         world["simulation"] = sim
+    if raw.get("render") in ("2d", "3d"):
+        world["render"] = raw["render"]
+    view = _view3d(raw.get("view3d"))
+    if view:
+        world["view3d"] = view
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
+
+
+TIMES_OF_DAY = ("dawn", "day", "dusk", "night")
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _view3d(raw: Any) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    if raw.get("time_of_day") in TIMES_OF_DAY:
+        out["time_of_day"] = raw["time_of_day"]
+    if isinstance(raw.get("sky"), str) and _HEX.match(raw["sky"].strip()):
+        out["sky"] = raw["sky"].strip().lower()
+    for key, lo, hi in (
+        ("fog", 0.0, 1.0),
+        ("camera_height", 0.3, 4.0),
+        ("walk_speed", 0.5, 20.0),
+        ("terrain", 0.0, 3.0),
+    ):
+        v = raw.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+            out[key] = round(max(lo, min(hi, float(v))), 3)
+    if isinstance(raw.get("ambient"), dict):
+        out["ambient"] = raw["ambient"]
+    return out
+
+
+def apply_play_view(
+    world: dict,
+    doc: dict,
+    node_outputs: Optional[dict] = None,
+    source: Optional[str] = None,
+) -> dict:
+    """Player node view settings win over the world's (read from the saved flow, so no rerun); the one fed by ``source`` wins."""
+    players = [
+        n for n in doc.get("nodes") or [] if n["type"] == "world.play" and not n.get("disabled")
+    ]
+    fed = {e["target"] for e in doc.get("edges") or [] if source and e.get("source") == source}
+    # The player itself can be the source (once it has run output); then it wins over players it feeds.
+    players.sort(key = lambda n: (n["id"] != source, n["id"] not in fed))
+    for n in players:
+        p = n.get("params") or {}
+        if p.get("view") in ("2d", "3d"):
+            world["render"] = p["view"]
+        view = dict(world.get("view3d") or {})
+        if p.get("time_of_day") in TIMES_OF_DAY:
+            view["time_of_day"] = p["time_of_day"]
+        for a in input_values(doc, node_outputs or {}, n["id"], "ambient"):
+            if isinstance(a, dict):
+                view["ambient"] = a
+        view = _view3d(view)
+        if view:
+            world["view3d"] = view
+        break
+    return world
 
 
 def _memory_items(raw: Any) -> list[dict]:
@@ -918,8 +979,9 @@ def resolve_world_report(
     warnings: list[str] = []
     picked = most_downstream(doc, node_outputs, WORLD_SOURCE_TYPES, "world")
     raw: Optional[dict] = None
+    source: Optional[str] = None
     if picked is not None and isinstance(picked[1], dict):
-        raw = picked[1]
+        raw, source = picked[1], picked[0]["id"]
     else:
         for n in doc.get("nodes") or []:
             if n["type"] != "world.spec" or n.get("disabled"):
@@ -929,7 +991,7 @@ def resolve_world_report(
                 ins[0] if ins and isinstance(ins[0], dict) else (n.get("params") or {}).get("world")
             )
             if isinstance(base, dict):
-                raw = dict(base)
+                raw, source = dict(base), n["id"]
                 for ts in input_values(doc, node_outputs, n["id"], "tileset"):
                     if isinstance(ts, dict):
                         raw["tileset"] = {**(raw.get("tileset") or {}), **ts}
@@ -964,6 +1026,9 @@ def resolve_world_report(
         if name and name not in eps and not n.get("disabled"):
             eps[name] = n["id"]
     world["entry_points"] = eps
+    world = WorldSpec.model_validate(apply_play_view(world, doc, node_outputs, source)).model_dump(
+        exclude_none = True
+    )
     reply = next((n for n in doc.get("nodes") or [] if n["id"] == eps.get("npc_reply")), None)
     if reply is not None and (reply.get("params") or {}).get("summarise") is False:
         world["summarise"] = False
