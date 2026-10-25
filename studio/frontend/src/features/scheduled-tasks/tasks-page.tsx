@@ -331,6 +331,7 @@ export function TasksPage() {
   const [deleting, setDeleting] = useState<ScheduledTask | null>(null);
   const [shown, setShown] = useState<TaskStatus[]>(loadFilter);
   const [query, setQuery] = useState("");
+  const [listed, setListed] = useState(false);
   const visibleTasks = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return tasks
@@ -361,13 +362,14 @@ export function TasksPage() {
     void navigate({ to: "/tasks", search: {}, replace: true });
   }, [create, navigate]);
   useEffect(() => {
-    if (!editId || status !== "ready") return;
+    // Only this visit's list: one kept from an earlier visit can lack the task or hold old instructions.
+    if (!editId || !listed || status !== "ready") return;
     const target = tasks.find((task) => task.id === editId);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- as above, once the list has the task.
     if (target) setEditing(target);
     else toast.info(t("scheduledTasks.taskMissing"));
     void navigate({ to: "/tasks", search: {}, replace: true });
-  }, [editId, status, tasks, navigate, t]);
+  }, [editId, listed, status, tasks, navigate, t]);
 
   function toggleStatus(status: TaskStatus, on: boolean) {
     const next = STATUSES.filter((candidate) => (candidate === status ? on : shown.includes(candidate)));
@@ -376,7 +378,7 @@ export function TasksPage() {
   }
 
   useEffect(() => {
-    void refresh();
+    void refresh().finally(() => setListed(true));
     // Other tabs/devices send no event: re-read on storage marks, show and focus.
     const onStorage = (event: StorageEvent) => {
       if (event.key === SCHEDULED_TASKS_WRITTEN_KEY) void refresh();
