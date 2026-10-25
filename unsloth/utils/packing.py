@@ -53,6 +53,9 @@ _XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
 
+# Per device: (lengths, cu_seqlens, host tuple) from the one D2H read in get_packed_info_from_kwargs
+_PACKED_HOST_LENGTHS_CACHE: dict = {}
+
 # Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
 _SDPA_MASK_CACHE: dict = {}
 
@@ -1677,6 +1680,34 @@ def _wrap_generate_clears_varlen(model, hybrid_modules) -> None:
     model._unsloth_varlen_generate_wrapped = True
 
 
+def _stage_packed_metadata(seq_lengths: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, ...]]:
+    """Host int32 [2n+1] = lengths ++ cu_seqlens (same cumsum as the device path), plus the lengths as ints."""
+    host_lengths = seq_lengths.reshape(-1).to(torch.int32)
+    n = host_lengths.numel()
+    staged = torch.zeros(2 * n + 1, dtype = torch.int32, device = "cpu")
+    staged[:n] = host_lengths
+    torch.cumsum(host_lengths, dim = 0, dtype = torch.int32, out = staged[n + 1 :])
+    return staged, tuple(host_lengths.tolist())
+
+
+def _is_compiling() -> bool:
+    is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+    try:
+        return bool(is_compiling()) if is_compiling is not None else False
+    except Exception:
+        return False
+
+
+def _pinned_to_device(tensor: torch.Tensor, device) -> torch.Tensor:
+    """non_blocking copy from pinned memory; a plain (blocking) copy when pinning fails."""
+    try:
+        pinned = tensor.pin_memory()
+    except RuntimeError:
+        # No pinnable host memory (pinned limit, WSL, a CUDA-less build): pageable copy, same values.
+        return tensor.to(device = device)
+    return pinned.to(device = device, non_blocking = True)
+
+
 def get_packed_info_from_kwargs(
     kwargs: dict,
     device: torch.device,
@@ -1699,14 +1730,57 @@ def get_packed_info_from_kwargs(
     if entry is not None and entry["seq_lengths"] is seq_lengths:
         return entry["result"]
 
-    lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
-    cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
-    torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
+    if _is_compiling():
+        # Under a user torch.compile, a host tuple of lengths specializes the graph on the segment
+        # count (one recompile per count under dynamic = True) and pin_memory cannot be traced.
+        lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
+        cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
+        torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
+        max_seqlen = int(lengths.max().item())
+        result = (lengths, cu_seqlens, max_seqlen)
+        _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "result": result}
+        return result
 
-    max_seqlen = int(lengths.max().item())
+    if (
+        isinstance(seq_lengths, torch.Tensor)
+        and seq_lengths.device.type == "cpu"
+        and torch.device(device).type == "cuda"
+    ):
+        # One pinned non_blocking H2D copy; pageable copies and .item() both drain the stream.
+        staged, host = _stage_packed_metadata(seq_lengths)
+        n = len(host)
+        moved = _pinned_to_device(staged, device)
+        lengths, cu_seqlens = moved[:n], moved[n:]
+    else:
+        lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
+        cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
+        torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
+        # The one D2H read per batch.
+        host = tuple(lengths.tolist())
+
+    max_seqlen = max(host)
     result = (lengths, cu_seqlens, max_seqlen)
     _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "result": result}
+    _PACKED_HOST_LENGTHS_CACHE[lengths.device] = (lengths, cu_seqlens, host)
     return result
+
+
+def _cached_host_lengths(seq_lengths, cu_seqlens = None) -> Optional[Tuple[int, ...]]:
+    """Host copy of the lengths get_packed_info_from_kwargs built (no device read), else None.
+    With cu_seqlens, also requires that it is the cumsum built beside those lengths."""
+    entry = _PACKED_HOST_LENGTHS_CACHE.get(getattr(seq_lengths, "device", None))
+    if entry is None or entry[0] is not seq_lengths:
+        return None
+    if cu_seqlens is not None and entry[1] is not cu_seqlens:
+        return None
+    return entry[2]
+
+
+def _host_segment_lengths(seq_lengths) -> Tuple[int, ...]:
+    host = _cached_host_lengths(seq_lengths)
+    if host is not None:
+        return host
+    return tuple(int(length) for length in seq_lengths.tolist())
 
 
 def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int]) -> Tuple[int, ...]:
@@ -1730,10 +1804,15 @@ def cover_padded_cu_seqlens(
     if entry is not None and entry["cu_seqlens"] is cu_seqlens and entry["total"] == total_tokens:
         return entry["result"]
 
-    padding = total_tokens - int(cu_seqlens[-1].item())
+    host = _cached_host_lengths(seq_info[0], cu_seqlens)
+    if host is not None:
+        padding = total_tokens - sum(host)
+    else:
+        padding = total_tokens - int(cu_seqlens[-1].item())
     result = (cu_seqlens, max_seqlen)
     if padding > 0:
-        tail = torch.tensor([total_tokens], dtype = cu_seqlens.dtype, device = device)
+        # new_full is a fill kernel; torch.tensor(..., device = cuda) is a blocking H2D copy.
+        tail = cu_seqlens.new_full((1,), total_tokens)
         result = (torch.cat([cu_seqlens, tail]), max(max_seqlen, padding))
     _PADDED_CU_SEQLENS_CACHE[device] = {
         "cu_seqlens": cu_seqlens,
@@ -1763,10 +1842,12 @@ def build_xformers_block_causal_mask(
         if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
             return entry["mask"]
 
-        lengths_tensor = seq_lengths.to("cpu", torch.int32)
-        if lengths_tensor.numel() == 0:
+        lengths = _cached_host_lengths(seq_lengths)
+        if lengths is None:
+            lengths_tensor = seq_lengths.to("cpu", torch.int32)
+            lengths = tuple(int(x) for x in lengths_tensor.tolist())
+        if len(lengths) == 0:
             return None
-        lengths = tuple(int(x) for x in lengths_tensor.tolist())
         lengths = _with_padding_segment(lengths, total_tokens)
         mask = _get_cached_block_mask(lengths, sliding_window, device, is_causal = is_causal)
 
@@ -1816,9 +1897,7 @@ def packed_segment_lengths(
     entry = _SEGMENT_LENGTHS_CACHE.get(seq_lengths.device)
     if entry is not None and entry[0] is seq_lengths and entry[1] == total_tokens:
         return entry[2]
-    lengths = _with_padding_segment(
-        tuple(int(length) for length in seq_lengths.tolist()), total_tokens
-    )
+    lengths = _with_padding_segment(_host_segment_lengths(seq_lengths), total_tokens)
     _SEGMENT_LENGTHS_CACHE[seq_lengths.device] = (seq_lengths, total_tokens, lengths)
     return lengths
 
@@ -1839,10 +1918,7 @@ def build_sdpa_packed_attention_mask(
     if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
         return entry["mask"]
 
-    lengths = _with_padding_segment(
-        tuple(int(length) for length in seq_lengths.tolist()),
-        total_tokens,
-    )
+    lengths = _with_padding_segment(_host_segment_lengths(seq_lengths), total_tokens)
     total_tokens = sum(lengths)
     mask = torch.full(
         (total_tokens, total_tokens),
@@ -1955,6 +2031,7 @@ def clear_packed_caches():
     """Release cached masks/metadata to free device memory."""
     _XFORMERS_MASK_CACHE.clear()
     _PACKED_INFO_CACHE.clear()
+    _PACKED_HOST_LENGTHS_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
     _SEGMENT_LENGTHS_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()

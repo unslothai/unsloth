@@ -1738,6 +1738,7 @@ def test_the_gfx_probe_answers_nothing_without_a_rocm_userspace(monkeypatch):
 
     class _Result:
         stdout = "  Name:                    gfx1030\n  Name:                    gfx1030\n"
+        returncode = 0
 
     monkeypatch.setattr(hw.subprocess, "run", lambda *_a, **_k: _Result())
     assert hw._linux_amd_gfx_candidates() == ["gfx1030"]

@@ -1537,6 +1537,8 @@ class TestHealthWaitMeasuresStalls:
         timeout = 0.6,
     ):
         monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_SAMPLE_S", 0.1)
+        # /health is mocked and the worker never listens, so the port-owner check doesn't apply.
+        monkeypatch.setattr(LlamaCppBackend, "_health_listener_is_ours", lambda self, process: True)
         b = _make_backend()
         b._process = subprocess.Popen([sys.executable, "-c", *argv])
         started = time.monotonic()

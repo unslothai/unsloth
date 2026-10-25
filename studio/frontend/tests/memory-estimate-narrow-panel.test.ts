@@ -3,11 +3,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ChevronDown } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import * as React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import type * as MemoryEstimateModule from "../src/features/model-picker/components/memory-estimate-row.tsx";
+import * as chevronIcons from "../src/lib/chevron-icons.ts";
 import * as memoryFit from "../src/features/model-picker/model-config/memory-fit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -20,7 +21,8 @@ const { MemoryEstimateRow } = loadWithStubs<typeof MemoryEstimateModule>(
   {
     react: React,
     "react/jsx-runtime": jsxRuntime,
-    "lucide-react": { ChevronDown },
+    "@hugeicons/react": { HugeiconsIcon },
+    "@/lib/chevron-icons": chevronIcons,
     "../model-config/memory-fit": memoryFit,
     "@/components/ui/tooltip": {
       Tooltip: ({ children }: { children: React.ReactNode }) => children,

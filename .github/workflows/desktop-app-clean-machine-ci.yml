@@ -23,6 +23,9 @@ on:
   # from the DEFAULT branch, so an edit on a feature branch could only run after a blind
   # merge.
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/desktop-app-clean-machine-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
@@ -114,7 +117,7 @@ jobs:
     # A fork PR's token is read-only whatever this workflow declares, so it cannot list
     # review drafts. Skip rather than fail: a
     # property of the trigger, not a broken release.
-    if: github.event.pull_request.head.repo.fork != true
+    if: (github.event.pull_request.head.repo.fork != true) && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: desktop macOS ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -1018,7 +1021,7 @@ jobs:
   # ── Windows: NSIS setup.exe, silent install ──────────────────────────────
   windows:
     # See the macOS job: a fork PR's token cannot list drafts, so skip rather than fail.
-    if: github.event.pull_request.head.repo.fork != true
+    if: (github.event.pull_request.head.repo.fork != true) && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: desktop windows
     runs-on: windows-latest
     # 60, not 45: a full torch install is slowest on Windows.

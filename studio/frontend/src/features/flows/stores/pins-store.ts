@@ -4,11 +4,7 @@
 import { create } from "zustand";
 import type { MediaValue } from "../types";
 
-/**
- * Outputs pinned from a node's history, per flow, kept in this browser only. They go with each run as `pinned`,
- * so a pinned node is not run and its pinned output feeds the next blocks. Kept out of the flow document, so
- * sharing or exporting a flow never carries them.
- */
+/** Per-flow pins, kept in this browser only (never in the document, so sharing never carries them). */
 type Pins = Record<string, Record<string, unknown>>;
 
 const KEY = (flowId: string) => `unsloth.flows.pins.${flowId}`;

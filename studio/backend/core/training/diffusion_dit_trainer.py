@@ -2121,13 +2121,17 @@ def _build_latent_cache(
             len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
         )
 
+    from core.inference.host_pinning import host_pinning_allowed
+
+    pin = device == "cuda" and host_pinning_allowed()
+
     def _hold(t):
         if t is None:
             return None
         import torch
 
         t = t.to(torch.float32).cpu()
-        if device == "cuda":
+        if pin:
             try:
                 t = t.pin_memory()
             except RuntimeError:
@@ -2237,13 +2241,17 @@ def _load_warm_conditioning(
             return None, None
         embeds.append(entry)
 
+    from core.inference.host_pinning import host_pinning_allowed
+
+    pin = device == "cuda" and host_pinning_allowed()
+
     def _hold(t):
         if t is None:
             return None
         import torch  # noqa: F401 -- pin_memory needs torch initialised
 
         t = t.contiguous()
-        if device == "cuda":
+        if pin:
             try:
                 t = t.pin_memory()
             except RuntimeError:

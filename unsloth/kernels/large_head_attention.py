@@ -430,7 +430,7 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
     B, H, S, D = q.shape
     HKV = k.shape[1]
     G = H // HKV
-    if do.stride(-1) != 1:
+    if do.stride(-1) != 1 or _row_span(do) > _INT32_MAX:
         do = do.contiguous()
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
@@ -720,6 +720,19 @@ def _enabled():
 _enabled.cache_clear = lambda: _ENABLED.__setitem__(0, None)
 
 
+def _row_span(x):
+    """Largest element offset the kernels compute in int32 for a [B, H, S, D] operand.
+
+    Batch and head offsets are int64 in every kernel; the row and column offsets
+    (offs_m * stride_m + offs_d) are int32, so they are what must stay below 2**31. A strided
+    view can have a small numel and still reach far past 2**31 elements along S. An operand
+    whose last stride is not 1 is copied contiguous before launch, so its numel bounds it.
+    """
+    if x.stride(-1) != 1:
+        return x.numel()
+    return (x.shape[-2] - 1) * x.stride(-2) + (x.shape[-1] - 1)
+
+
 def _shapes_qualify(query, key, value):
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
         return False
@@ -737,7 +750,9 @@ def _shapes_qualify(query, key, value):
         return False
     if key.dtype != query.dtype or value.dtype != query.dtype:
         return False
-    return max(query.numel(), key.numel(), value.numel()) <= _INT32_MAX
+    if max(query.numel(), key.numel(), value.numel()) > _INT32_MAX:
+        return False
+    return max(_row_span(query), _row_span(key), _row_span(value)) <= _INT32_MAX
 
 
 _SELF_CHECK = {}
@@ -844,6 +859,14 @@ if hasattr(torch.compiler, "assume_constant_result"):
     _math_sdpa_requested = torch.compiler.assume_constant_result(_math_sdpa_requested)
 
 
+def _is_capturing(device):
+    try:
+        with torch.cuda.device(device):
+            return torch.cuda.is_current_stream_capturing()
+    except Exception:
+        return False
+
+
 def _make_router(original):
     def _sdpa_large_head(
         module,
@@ -864,6 +887,10 @@ def _make_router(original):
             and not dropout
             # The kernel only reads the mask's structure, so a trainable mask would get no grad.
             and not (torch.is_tensor(attention_mask) and attention_mask.requires_grad)
+            # transformers 4.x pairs is_causal with a mask (SDPA applies both); intervals carry only the mask.
+            and not (
+                attention_mask is not None and is_causal is not None and is_causal is not False
+            )
             and kwargs.get("position_bias", None) is None
             and kwargs.get("softcap", None) is None
             and not kwargs.get("output_attentions", False)
@@ -875,15 +902,27 @@ def _make_router(original):
             B, S = query.shape[0], query.shape[2]
             intervals = None
             compiling = torch.compiler.is_compiling()
+            # A host sync (mask scan, first self check) is illegal while a CUDA graph is captured,
+            # and a captured graph would replay one mask's verdict for whatever the buffer holds
+            # later. So capture only reads cached self checks and sends masked calls to SDPA.
+            capturing = not compiling and _is_capturing(query.device)
             if attention_mask is None:
                 causal = is_causal if is_causal is not None else getattr(module, "is_causal", True)
                 intervals = _dense_intervals(B, S, bool(causal), query.device)
-            elif not compiling and _SELF_CHECK.get((str(query.device), query.dtype), True):
+            elif (
+                not compiling
+                and not capturing
+                and _SELF_CHECK.get((str(query.device), query.dtype), True)
+            ):
                 # Reading a mask's structure needs a host sync; compiled graphs keep SDPA. Inference
                 # masks cannot cache the verdict, so they are rescanned per layer: one sync each, only
                 # at prefill (decode never qualifies), cheaper than SDPA's repeated KV heads and mask.
-                intervals = intervals_from_mask(attention_mask, B, S)
-            if compiling:
+                try:
+                    intervals = intervals_from_mask(attention_mask, B, S)
+                except torch.cuda.OutOfMemoryError:
+                    # The mask scan allocates row chunks; near capacity, SDPA below decides as before.
+                    LARGE_HEAD_ENGAGED["fallback"] += 1
+            if compiling or capturing:
                 checked = _SELF_CHECK.get((str(query.device), query.dtype), False)
             elif intervals is not None:
                 checked = _self_check(query.device, query.dtype)

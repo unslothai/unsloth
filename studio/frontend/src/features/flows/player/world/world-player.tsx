@@ -274,7 +274,6 @@ export function WorldPlayer({
     [npcById, spec, toast, witness],
   );
 
-  // Load art, then boot Phaser (its own chunk).
   useEffect(() => {
     let live = true;
     let handle: WorldGameHandle | null = null;

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib.util
 import logging
@@ -1465,7 +1466,16 @@ class TestLoadHubDownloadExclusion:
         llama_source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         ).read_text(encoding = "utf-8")
-        assert "@_with_gguf_load_marker\n    def load_model(" in llama_source
+        # Any position in the stack (#14546 put @holds_inference under it); the marker must wrap load_model.
+        loads = [
+            node
+            for cls in ast.parse(llama_source).body
+            if isinstance(cls, ast.ClassDef) and cls.name == "LlamaCppBackend"
+            for node in cls.body
+            if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+        ]
+        assert len(loads) == 1
+        assert "_with_gguf_load_marker" in [ast.unparse(d) for d in loads[0].decorator_list]
 
     def _capture_hub_guard_require_mmproj(
         self,

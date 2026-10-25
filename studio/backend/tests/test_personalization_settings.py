@@ -194,6 +194,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("flows", True),
     ("export", False),
     ("api", False),
+    ("tasks", False),
 ]
 
 
@@ -233,6 +234,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("flows", True),
         ("export", False),
         ("api", False),
+        ("tasks", False),
     ]
 
 
@@ -517,6 +519,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "flows", "pinned": True},
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
+                    {"id": "tasks", "pinned": False},
                 ],
                 "sidebarNavAuto": [],
             },
