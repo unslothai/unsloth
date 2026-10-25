@@ -167,7 +167,8 @@ def test_a_refused_quest_is_asked_again_with_the_reason():
     assert out["reply"]["patch"]["quest"]["requires_item"] == "bell"
     assert "refused" not in ctx.llm_calls[0]["prompt"]
     assert "Your last answer was refused: the new quest needs an item" in ctx.llm_calls[1]["prompt"]
-    assert ctx.llm_calls[0]["seed"] != ctx.llm_calls[1]["seed"]
+    # No fixed seed (it would turn the prompt cache off); the retry differs by its prompt and sampling.
+    assert ctx.llm_calls[0].get("seed") is None and ctx.llm_calls[1].get("seed") is None
 
 
 def test_prompt_offers_new_things_only_when_allowed():

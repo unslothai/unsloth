@@ -46,6 +46,15 @@ TILE_PROMPTS = {
 }
 # Keep in sync with MAX_HISTORY in world-state.ts.
 MAX_HISTORY = 24
+AUTONOMY_FLAGS = ("trade", "homes", "quests", "rivals", "enemies")
+AUTONOMY_LEVELS = {
+    "off": (),
+    "village": ("trade", "homes"),
+    "rivals": ("trade", "homes", "quests", "rivals"),
+    "full": AUTONOMY_FLAGS,
+}
+NPC_ROLES = ("rival", "hostile")
+MAX_ADDED_ROLE = 2
 SUMMARY_CHARS = 600
 
 
@@ -115,6 +124,7 @@ def normalize_world(
             "sprite": n.get("sprite") if isinstance(n.get("sprite"), dict) else None,
             "sprite_prompt": str(n.get("sprite_prompt") or n.get("look") or "")[:400] or None,
             "wander": n.get("wander", True) is not False,
+            **({"role": n["role"]} if n.get("role") in NPC_ROLES else {}),
             **pos(n),
             **_npc_life(n, ref, npc_ids),
         }
@@ -215,6 +225,9 @@ def normalize_world(
     sim = _simulation(raw.get("simulation"), width, height, regions)
     if sim is not None:
         world["simulation"] = sim
+    auto = raw.get("autonomy")
+    if isinstance(auto, dict) and any(auto.get(k) is True for k in AUTONOMY_FLAGS):
+        world["autonomy"] = {k: auto.get(k) is True for k in AUTONOMY_FLAGS}
     if raw.get("render") in ("2d", "3d"):
         world["render"] = raw["render"]
     view = _view3d(raw.get("view3d"))
@@ -480,6 +493,7 @@ FOLLOW_ASK = re.compile(r"\b(follow me|come with me|come along|walk with me|tag 
 FOLLOW_STOP = re.compile(
     r"\b(stop following|go (back )?home|you can go|wait (for me )?here|stay here)\b"
 )
+TRADE_ASK = re.compile(r"\b(buy|sell|trade|for sale|wares|what do you have|how much)\b")
 
 NPC_REPLY_SCHEMA = {
     "type": "object",
@@ -490,6 +504,7 @@ NPC_REPLY_SCHEMA = {
         "complete_quest": {"type": "string"},
         "action": {"type": "string", "enum": ["", *REPLY_ACTIONS]},
         "place": {"type": "string"},
+        "offer_trade": {"type": "string"},
         "set": {
             "type": "array",
             "maxItems": 3,
@@ -540,6 +555,7 @@ DIRECTOR_SCHEMA = {
         "new_npc_name": {"type": "string"},
         "new_npc_persona": {"type": "string"},
         "new_npc_greeting": {"type": "string"},
+        "new_npc_role": {"type": "string", "enum": ["", *NPC_ROLES]},
         "region": {"type": "string"},
     },
     "required": [
@@ -678,6 +694,12 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
         out["action"], out["place"] = action, place
     elif action in ("follow_player", "stop_following"):
         out["action"] = action
+    goods = [g["id"] for g in state.get("goods") or [] if isinstance(g, dict) and g.get("id")]
+    offer = str(raw.get("offer_trade") or "").strip().lower()
+    if offer in goods:
+        out["offer_trade"] = offer
+    elif goods and TRADE_ASK.search(asked):
+        out["offer_trade"] = goods[0]
     if has_memory(state):
         out["remember"] = clean_notes(raw.get("remember"))
     return out
@@ -766,6 +788,17 @@ def director_prompt(state: dict) -> tuple[str, str]:
             "Or invent one new villager to give it (new_npc_name, new_npc_persona, new_npc_greeting) and set "
             "`giver` to their name."
         )
+    roles = {
+        "rival": "rival (races the player for quest items)",
+        "hostile": "hostile (chases and robs the player, never hurts anyone)",
+    }
+    allowed = [roles[r] for r in NPC_ROLES if state.get("allow_npc") and state.get(f"allow_{r}")]
+    if allowed:
+        rules.append(
+            "A new villager may set `new_npc_role` to "
+            + " or ".join(allowed)
+            + " when it suits the story; leave it empty for a friendly villager."
+        )
     if state.get("allow_item") or state.get("allow_npc"):
         rules.append("`region` is the region id where anything new appears.")
     system = (
@@ -826,6 +859,12 @@ def validate_director(raw: Any, state: dict) -> dict:
                 "persona": text("new_npc_persona", 600) or "a friendly newcomer",
                 "greeting": text("new_npc_greeting", 300) or f"Hello, I'm {new_npc_name}.",
                 **({"region": region} if region else {}),
+                **(
+                    {"role": role}
+                    if (role := text("new_npc_role", 20)) in NPC_ROLES
+                    and state.get(f"allow_{role}")
+                    else {}
+                ),
             }
         )
     if giver is None:
@@ -890,6 +929,36 @@ def action_rules(world: dict) -> str:
     )
 
 
+ROLE_LINES = {
+    "rival": (
+        "Your role: the player's RIVAL. You want the same quest items they want and mean to find them first: brag "
+        "about it, tease them, and never help them with a quest or tell them where an item is. Never cruel."
+    ),
+    "hostile": (
+        "Your role: HOSTILE to the player. Speak gruffly and threateningly, refuse to help them, and demand coins "
+        "to leave them alone. You never hurt anyone."
+    ),
+}
+
+
+def role_line(state: dict) -> str:
+    role = state.get("role")
+    return f"{ROLE_LINES[role]}\n" if role in ROLE_LINES else ""
+
+
+def trade_rules(state: dict) -> str:
+    goods = [g for g in state.get("goods") or [] if isinstance(g, dict) and g.get("id")]
+    if not goods:
+        return ""
+    wares = ", ".join(
+        f"{g.get('name') or g['id']} (id {g['id']}, {g.get('price')} coins)" for g in goods[:7]
+    )
+    return (
+        f"\nYou sell: {wares}. When the player wants to buy, set `offer_trade` to one of those ids; the "
+        "player decides in the trade panel."
+    )
+
+
 def npc_prompt(
     state: dict,
     rules: str,
@@ -909,7 +978,8 @@ def npc_prompt(
     ]
     system = (
         f"You are {npc['name']}, a character in the game world \"{world.get('title')}\".\n"
-        f"Persona: {npc.get('persona') or 'a friendly local'}\n"
+        + role_line(state)
+        + f"Persona: {npc.get('persona') or 'a friendly local'}\n"
         f"World: {world.get('intro_text') or ''}\n"
         + (
             f"Earlier conversations with the player, as you remember them: {summary}\n"
@@ -923,6 +993,8 @@ def npc_prompt(
     )
     if npc.get("wander") is not False:
         system += action_rules(world)
+    system += trade_rules(state)
+    system += f"\n{role_line(state)}" if role_line(state) else ""
     # Summary lives in the system prompt (changes only on fold) so llama-server reuses the cached prefix.
     history = [
         h
@@ -935,13 +1007,15 @@ def npc_prompt(
     )
     item_list = ", ".join("{} (id {})".format(i["name"], i["id"]) for i in items.values())
     quest_list = "\n".join(q_lines)
+    # The conversation comes first: what changes between turns (quests, inventory, variables) follows it, so a
+    # picked-up item does not make llama-server process the whole conversation again.
     head = (
+        f"Conversation so far:\n{convo or '(just met)'}\n"
         f"Your quests:\n{quest_list or '- none'}\n"
         f"World items: {item_list or 'none'}\n"
         f"Player ({(world.get('player') or {}).get('name', 'Player')}) carries: {', '.join(inv) or 'nothing'}\n"
         f"Variables: {state.get('vars') or {}}\n"
         + ("You are walking with the player.\n" if state.get("following") else "")
-        + f"Conversation so far:\n{convo or '(just met)'}\n"
     )
     turn = f"Player: {str(state.get('player_message') or '')[:600]}\n{npc['name']}:"
     if memories is None:
@@ -1103,6 +1177,9 @@ def resolve_world_report(
         world["summarise"] = False
     if reply is not None and (reply.get("params") or {}).get("new_quests") is False:
         world["new_quests"] = False
+    level = (reply.get("params") or {}).get("autonomy") if reply is not None else None
+    if level in AUTONOMY_LEVELS and level != "off":
+        world["autonomy"] = {k: k in AUTONOMY_LEVELS[level] for k in AUTONOMY_FLAGS}
     if "npc_reply" not in eps:
         warnings.append("No NPC Reply (live) node: NPCs will only say their greeting")
     sim = world.get("simulation")

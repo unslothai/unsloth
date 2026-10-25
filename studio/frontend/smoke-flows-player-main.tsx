@@ -92,6 +92,56 @@ const WORLD: WorldSpec = {
     : {}),
 };
 
+// `&autonomy=1`: the same village with villagers acting on their own (trade, homes, a rival, a hostile drifter).
+const LIVELY: WorldSpec = {
+  ...WORLD,
+  autonomy: {
+    trade: true,
+    homes: true,
+    quests: true,
+    rivals: true,
+    enemies: true,
+  },
+  npcs: [
+    ...WORLD.npcs,
+    { id: "ada", name: "Ada", persona: "carpenter", greeting: "Need planks?" },
+    {
+      id: "bo",
+      name: "Bo",
+      persona: "stone mason",
+      greeting: "Solid as rock.",
+    },
+    {
+      id: "grim",
+      name: "Grim",
+      persona: "a sour drifter",
+      greeting: "What do you want?",
+      role: "hostile",
+    },
+  ],
+  regions: [
+    ...WORLD.regions,
+    {
+      id: "cottage",
+      name: "Rose Cottage",
+      x: 30,
+      y: 3,
+      w: 5,
+      h: 4,
+      on_enter_text: "",
+    },
+    {
+      id: "square",
+      name: "Town Square",
+      x: 16,
+      y: 20,
+      w: 7,
+      h: 5,
+      on_enter_text: "",
+    },
+  ],
+};
+const PLAYED = params.get("autonomy") ? LIVELY : WORLD;
 const PROPS_KEY = "flows-smoke-props3d";
 const MODELS_KEY = "flows-smoke-models";
 const savedProps = (): WorldProp3d[] | null => {
@@ -139,7 +189,7 @@ const mock: PlayerApi = {
   },
   async world() {
     const props = savedProps();
-    return props ? { ...WORLD, props3d: props } : WORLD;
+    return props ? { ...PLAYED, props3d: props } : PLAYED;
   },
   async saveWorldProps(_flowId, props) {
     sessionStorage.setItem(PROPS_KEY, JSON.stringify(props));
@@ -162,7 +212,18 @@ const mock: PlayerApi = {
       npc_id: string;
       inventory: string[];
       player_message: string;
+      goods?: { id: string }[];
     };
+    if (state.goods?.length && /buy|sell|have/.test(state.player_message)) {
+      return {
+        outputs: {
+          reply: {
+            text: "Take a look at what I have.",
+            offer_trade: state.goods[0].id,
+          },
+        },
+      };
+    }
     if (state.npc_id === "tom" && state.inventory.includes("rod")) {
       return {
         outputs: {
@@ -221,7 +282,7 @@ window.__flowsPlayerSmoke = {
   calls,
   sessions,
   exited: 0,
-  map: generateMap(WORLD),
+  map: generateMap(PLAYED),
   world: null,
 };
 
