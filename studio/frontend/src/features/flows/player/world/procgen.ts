@@ -4,7 +4,8 @@
 // Deterministic: the same WorldSpec always yields the same map, so shared worlds and saves stay valid.
 
 import { Prng, seedFrom } from "../../expr";
-import type { WorldBiome, WorldSpec } from "../../types";
+import type { WorldBiome, WorldProp3d, WorldSpec } from "../../types";
+import { setMapProps } from "./props3d";
 
 export const TILE_KINDS = [
   "grass",
@@ -42,6 +43,8 @@ export interface WorldMap {
   spawn: Point;
   npcs: Record<string, Point>;
   items: Record<string, Point>;
+  props?: WorldProp3d[];
+  blocked?: Uint8Array;
 }
 
 interface BiomeRule {
@@ -121,7 +124,8 @@ export const isSolid = (map: WorldMap, x: number, y: number): boolean =>
   y < 0 ||
   x >= map.width ||
   y >= map.height ||
-  SOLID.has(TILE_KINDS[map.tiles[y * map.width + x]]);
+  SOLID.has(TILE_KINDS[map.tiles[y * map.width + x]]) ||
+  map.blocked?.[y * map.width + x] === 1;
 
 export const kindAt = (map: WorldMap, x: number, y: number): TileKind =>
   TILE_KINDS[map.tiles[y * map.width + x]];
@@ -311,7 +315,9 @@ export function generateMap(spec: WorldSpec): WorldMap {
       }
     }
   }
-  return { width: w, height: h, tiles, spawn, npcs, items };
+  const map: WorldMap = { width: w, height: h, tiles, spawn, npcs, items };
+  if (spec.props3d?.length) setMapProps(map, spec.props3d);
+  return map;
 }
 
 export function reachable(map: WorldMap, from: Point): Uint8Array {

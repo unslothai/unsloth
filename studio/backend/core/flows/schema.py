@@ -373,6 +373,22 @@ class World3dView(_Strict):
     ambient: Optional[dict[str, Any]] = None  # an audio MediaValue looped while you play
 
 
+class WorldProp3d(_Strict):
+    """A piece of scenery placed in the 3D editor: a built-in low-poly prop or an imported GLB model."""
+
+    id: str
+    kind: Literal[
+        "house", "tree", "lamp", "fence", "well", "crate", "rock", "bench", "stall", "model"
+    ]
+    asset: Optional[dict[str, Any]] = None  # the GLB flow asset of a "model" prop
+    name: Optional[str] = None
+    x: float  # tile units; a prop snapped to a tile stands at its centre (x + 0.5)
+    y: float
+    rot: float = 0  # degrees about the vertical axis
+    scale: float = 1
+    solid: bool = True  # blocks walking on its tile, in 2D and 3D
+
+
 class WorldSpec(_Strict):
     title: str
     seed: int = 0
@@ -393,6 +409,8 @@ class WorldSpec(_Strict):
     simulation: Optional[WorldSimulation] = None
     render: Optional[Literal["2d", "3d"]] = None
     view3d: Optional[World3dView] = None
+    props3d: Optional[list[WorldProp3d]] = None
+    player_node: Optional[str] = None
 
 
 RunStatus = Literal[
