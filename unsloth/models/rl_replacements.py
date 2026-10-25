@@ -1003,7 +1003,9 @@ def sft_trainer_compute_loss(function_name, function):
                 )
                 loss = per_token_loss.sum() / torch.as_tensor(num_tokens).clamp(min = 1)
                 if self.args.average_tokens_across_devices and num_items_in_batch is not None:
-                    loss = loss * self.accelerator.num_processes
+                    # As TRL / Trainer: tensor parallel ranks share one batch, so they do not count.
+                    tp_size = self.get_tp_size() if callable(getattr(self, "get_tp_size", None)) else 1
+                    loss = loss * (self.accelerator.num_processes // max(int(tp_size or 1), 1))
                 aux_loss = getattr(outputs, "aux_loss", None)
                 if getattr(self, "aux_loss_enabled", False) and aux_loss is not None:
                     steps = (

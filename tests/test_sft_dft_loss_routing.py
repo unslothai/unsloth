@@ -125,6 +125,17 @@ def test_dft_refuses_a_qat_lm_head():
     assert len(model.calls) == 1
 
 
+def test_dft_device_average_ignores_tensor_parallel_ranks():
+    # average_tokens_across_devices: scale by the data parallel ranks only (num_processes // tp_size), as TRL.
+    Trainer = _trainer_class()
+    trainer = Trainer("dft")
+    trainer.args.average_tokens_across_devices = True
+    trainer.accelerator = SimpleNamespace(num_processes = 4)
+    trainer.get_tp_size = lambda: 2
+    loss = trainer.compute_loss(_FusedModel(), {"input_ids": None}, num_items_in_batch = 3)
+    assert loss.item() == pytest.approx(2 * _dft(_FusedModel().log_probs.detach(), 3))
+
+
 def test_dft_without_loss_kwargs_is_a_per_micro_batch_mean():
     Trainer = _trainer_class()
     model = _FusedModel()
