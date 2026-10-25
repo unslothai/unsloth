@@ -8,6 +8,7 @@ from core.flows.registry import FlowNodeError
 from core.flows.schema import WorldSpec
 from core.flows.world import (
     BIOME_TILES,
+    apply_play_view,
     WorldError,
     normalize_world,
     npc_prompt,
@@ -336,3 +337,15 @@ def test_npc_node():
         world_nodes.world_npc(FakeCtx("world.npc", params = {"name": "Old Tom", "persona": "p"}))
     )["npc"]
     assert out["id"] == "old_tom"
+
+
+def test_the_source_player_wins_over_an_earlier_unrelated_one():
+    doc = {
+        "nodes": [
+            {"id": "other", "type": "world.play", "params": {"view": "2d"}},
+            {"id": "mine", "type": "world.play", "params": {"view": "3d", "time_of_day": "night"}},
+        ],
+        "edges": [],
+    }
+    w = apply_play_view({}, doc, source = "mine")
+    assert w["render"] == "3d" and w["view3d"]["time_of_day"] == "night"

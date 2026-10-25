@@ -258,7 +258,8 @@ def apply_play_view(
         n for n in doc.get("nodes") or [] if n["type"] == "world.play" and not n.get("disabled")
     ]
     fed = {e["target"] for e in doc.get("edges") or [] if source and e.get("source") == source}
-    players.sort(key = lambda n: n["id"] not in fed)
+    # The player itself can be the source (once it has run output); then it wins over players it feeds.
+    players.sort(key = lambda n: (n["id"] != source, n["id"] not in fed))
     for n in players:
         p = n.get("params") or {}
         if p.get("view") in ("2d", "3d"):
