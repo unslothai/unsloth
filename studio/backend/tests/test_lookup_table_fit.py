@@ -222,8 +222,14 @@ def test_an_override_onto_a_device_keeps_a_resident_table_charged():
     assert not _override_places_tensor_on_device(PLE, ["-ot", "exps=CPU"])
     assert _override_places_tensor_on_device(PLE, [], {"LLAMA_ARG_OVERRIDE_TENSOR": "embd=CUDA0"})
     assert _host_pinned_input_bytes(("qwen4exp", {PLE: FLASH_NEXT_PLE}, 0), ot, {}) == 0
-    # Upstream b11870 gathers the Engram rows in the graph, so -ot places it like any other table.
-    assert _host_pinned_input_bytes(("deepseek41", {PLE: DSV41_ENGRAM}, 0), ot, {}) == 0
+    # Upstream b11870 gathers the Engram rows in the graph, so -ot places it like any other table;
+    # a build that keeps it on the host whatever -ot says still discounts it.
+    engram = ("deepseek41", {PLE: DSV41_ENGRAM}, 0)
+    assert _host_pinned_input_bytes(engram, ot, {}) == 0
+    assert (
+        llama_cpp_module._host_pinned_input_bytes(engram, ot, {}, host_forced = {"deepseek41"})
+        == DSV41_ENGRAM
+    )
 
 
 def _gemma3n_named():
@@ -742,8 +748,15 @@ def test_a_streamed_table_under_an_override_keeps_the_resident_embedding_host_on
     assert seen[-1]["host_only_bytes"] >= FLASH_NEXT_TOKEN_EMBD, seen[-1]
 
 
-def test_a_device_override_on_deepseek41_keeps_studio_from_turning_lazy_reads_off():
-    """-lzm off would make the overridden Engram table GPU-resident while it is priced on the host."""
+@pytest.mark.parametrize(
+    "forced, flags", [(frozenset(), []), (frozenset({"deepseek41"}), ["--lazy-mode", "off"])]
+)
+def test_a_device_override_on_deepseek41_follows_the_builds_placement(monkeypatch, forced, flags):
+    """Where -ot moves the Engram table, -lzm off would make it GPU-resident while it is priced on
+    the host; a build that keeps it on the host still gets the resident choice."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_forced_table_archs", staticmethod(lambda binary = None: forced)
+    )
     backend = _scan_backend("deepseek41", {PLE: DSV41_ENGRAM})
     assert (
         backend._managed_lazy_mode_flags(
@@ -753,5 +766,20 @@ def test_a_device_override_on_deepseek41_keeps_studio_from_turning_lazy_reads_of
             env = {},
             resident_fits = lambda _t: True,
         )
-        == []
+        == flags
+    )
+
+
+@pytest.mark.parametrize("marked", [True, False])
+def test_the_host_forced_probe_reads_the_builds_loader(tmp_path, marked):
+    """Studio's prebuilt b11734-mix-c208e5f carries the loader warning; upstream b11870 does not."""
+    server = tmp_path / "llama-server"
+    server.write_bytes(b"\x7fELF server")
+    marker = llama_cpp_module._HOST_FORCED_TABLE_MARKER if marked else b"place it anywhere"
+    (tmp_path / "libllama.so.0.7.0").write_bytes(b"\x00" * 64 + marker + b" %s, using %s\n")
+    got = LlamaCppBackend._host_forced_table_archs(str(server))
+    assert got == (frozenset({"deepseek41"}) if marked else frozenset())
+    assert (
+        LlamaCppBackend._host_forced_table_archs(str(tmp_path / "gone" / "llama-server"))
+        == frozenset()
     )

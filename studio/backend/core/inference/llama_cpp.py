@@ -82,6 +82,8 @@ from core.inference.context_window import (
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.lookup_tables import (
+    HOST_FORCED_TABLE_ARCHS as _HOST_FORCED_TABLE_ARCHS,
+    HOST_FORCED_TABLE_MARKER as _HOST_FORCED_TABLE_MARKER,
     LAZY_READ_AUTO_MIN_BYTES as _LOOKUP_LAZY_READ_AUTO_MIN_BYTES,
     LAZY_READ_TENSORS as _LOOKUP_LAZY_READ_TENSORS,
     is_per_layer_embedding as _is_per_layer_embedding,
@@ -7954,6 +7956,21 @@ def _override_places_tensor_on_device(
     return False
 
 
+@functools.lru_cache(maxsize = 8)
+def _host_forced_in_files(key: tuple) -> frozenset[str]:
+    """``_host_forced_table_archs`` for the files ``key`` names (path, size, mtime)."""
+    import mmap
+
+    for path, _size, _mtime in key:
+        try:
+            with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ) as m:
+                if m.find(_HOST_FORCED_TABLE_MARKER) >= 0:
+                    return _HOST_FORCED_TABLE_ARCHS
+        except (OSError, ValueError):
+            continue
+    return frozenset()
+
+
 def _lazy_read_names(
     architecture: Optional[str], tensor_bytes: Mapping[str, int], mode: str
 ) -> frozenset[str]:
@@ -7972,9 +7989,11 @@ def _host_pinned_input_bytes(
     env: Optional[Mapping[str, str]] = None,
     *,
     lazy_mode: str = "off",
+    host_forced: Iterable[str] = (),
 ) -> int:
     """Bytes of the file llama.cpp keeps on the host however many layers it offloads;
-    ``lazy_mode`` is the mode the child resolves to."""
+    ``lazy_mode`` is the mode the child resolves to, ``host_forced`` the archs whose table
+    the build keeps on the host whatever -ot says."""
     if not scan:
         return 0
     architecture, named, _experts = scan
@@ -7982,7 +8001,11 @@ def _host_pinned_input_bytes(
     total = 0
     for name, size in (named or {}).items():
         if _is_per_layer_embedding(name):
-            if name in streamed or not _override_places_tensor_on_device(name, extra_args, env):
+            if (
+                name in streamed
+                or architecture in host_forced
+                or not _override_places_tensor_on_device(name, extra_args, env)
+            ):
                 total += int(size)
     token_embd = int((named or {}).get("token_embd.weight") or 0)
     if token_embd and int((named or {}).get("output.weight") or 0):
@@ -12081,6 +12104,30 @@ class LlamaCppBackend:
             list(gpu_indices) if gpu_indices else None
         )
 
+    @staticmethod
+    def _host_forced_table_archs(binary: Optional[str] = None) -> frozenset[str]:
+        """``_HOST_FORCED_TABLE_ARCHS`` when the build beside ``binary`` keeps their table on
+        the host whatever -ot says (its loader carries ``_HOST_FORCED_TABLE_MARKER``), else
+        none: an unreadable build is priced as honouring the override."""
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return frozenset()
+        try:
+            resolved = _resolve_llama_binary(binary)
+            libs = sorted(
+                p
+                for p in resolved.parent.iterdir()
+                if re.match(r"^(lib)?llama\.(so|dylib|dll)", p.name) and p.is_file()
+            )
+            key = tuple(
+                (str(p), st.st_size, st.st_mtime_ns)
+                for p in (libs or [resolved])
+                for st in (p.stat(),)
+            )
+        except OSError:
+            return frozenset()
+        return _host_forced_in_files(key)
+
     def lookup_tables_stream_by_default(
         self,
         extra_args: Optional[Iterable[str]] = None,
@@ -12159,10 +12206,13 @@ class LlamaCppBackend:
         if table <= 0:
             return []
         scan = self._gguf_tensor_scan(model_path)
-        if scan is None or any(
-            _override_places_tensor_on_device(name, extra_args, source_env)
-            for name in scan[1]
-            if _is_per_layer_embedding(name)
+        if scan is None or (
+            scan[0] not in self._host_forced_table_archs()
+            and any(
+                _override_places_tensor_on_device(name, extra_args, source_env)
+                for name in scan[1]
+                if _is_per_layer_embedding(name)
+            )
         ):
             return []
         try:
@@ -12237,10 +12287,14 @@ class LlamaCppBackend:
             if scan is not None
             else frozenset()
         )
-        if scan is not None and any(
-            _override_places_tensor_on_device(name, extra_args, source_env)
-            for name in scan[1]
-            if _is_per_layer_embedding(name) and name not in streamed
+        if (
+            scan is not None
+            and scan[0] not in self._host_forced_table_archs()
+            and any(
+                _override_places_tensor_on_device(name, extra_args, source_env)
+                for name in scan[1]
+                if _is_per_layer_embedding(name) and name not in streamed
+            )
         ):
             return probe_discount
 
@@ -29204,6 +29258,7 @@ class LlamaCppBackend:
                                 _inp_extras,
                                 _inp_env,
                                 lazy_mode = _inp_lazy,
+                                host_forced = self._host_forced_table_archs(binary),
                             )
                         except Exception as e:  # unread header: charge the whole file
                             logger.debug("Host-pinned input embeddings unpriced: %s", e)

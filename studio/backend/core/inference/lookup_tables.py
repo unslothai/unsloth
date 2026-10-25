@@ -13,6 +13,12 @@ LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
     "deepseek41": ("per_layer_token_embd.weight",),
 }
 LAZY_READ_AUTO_MIN_BYTES = 4 * 1024**3
+# Archs whose table a build marked by HOST_FORCED_TABLE_MARKER keeps on the host whatever -ot
+# says. Studio's prebuilt b11734-mix-c208e5f logs "per_layer_token_embd.weight (105471 MiB
+# iq4_nl) must stay in host memory; ignoring placement on CUDA0, using CPU" for the DeepSeek-V4.1
+# Engram table; upstream b11870 gathers it in the graph and honours the override.
+HOST_FORCED_TABLE_ARCHS = frozenset({"deepseek41"})
+HOST_FORCED_TABLE_MARKER = b"must stay in host memory; ignoring placement on"
 PER_LAYER_EMBD_PREFIX = "per_layer_token_embd"
 
 

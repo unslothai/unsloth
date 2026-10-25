@@ -16064,6 +16064,8 @@ def _gguf_memory_breakdown(
             lookup_table_bytes = min(main_bytes, max(lookup_table_bytes, _resident))
 
     def _lt_override_moves_table() -> bool:
+        if _lt_arch in _lt_backend._host_forced_table_archs():
+            return False  # this build keeps the table on the host whatever -ot says
         try:
             scan = _lt_backend._gguf_tensor_scan(gguf_path)
         except Exception:  # noqa: BLE001 -- unread header: the canonical name alone
