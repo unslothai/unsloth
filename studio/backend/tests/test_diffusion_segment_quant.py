@@ -120,6 +120,20 @@ def test_auto_memory_tight_reads_the_card_only_once_cuda_is_up(monkeypatch):
     assert seg.auto_memory_tight("cuda:0") is False
 
 
+def test_a_bf16_pick_is_not_unloaded_as_tight_after_its_first_find(monkeypatch):
+    # mem_get_info free drop with bf16 resident after a Find, A100 + torch 2.11 (dequantized INT8 file, the larger).
+    import torch
+
+    measured_drop_mib = 2282
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: True)
+    for total in (12_000, 24_000, 40_000, 80_000):
+        floor = max(seg._TIGHT_FREE_MIB, int(total * seg._TIGHT_FREE_FRACTION))
+        free = floor + seg._BF16_RESIDENT_MIB
+        monkeypatch.setattr(seg, "_cuda_free_mib", lambda ordinal, f = free, t = total: (f, t))
+        assert seg.auto_memory_tight("cuda:0") is False
+        assert not seg.vram_is_tight(free - measured_drop_mib, total), total
+
+
 def test_a_loaded_segmenter_keeps_its_memory_reading(monkeypatch):
     """Loaded on a card, the free memory read on the next call no longer counts the segmenter itself: the choice made
     at load is reused, so a bf16 model is not swapped for int8 (or back) on every call."""
