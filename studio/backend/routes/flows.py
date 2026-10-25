@@ -43,8 +43,6 @@ hooks_router = APIRouter()
 WEBHOOK_MAX_BYTES = 256 * 1024
 
 KEEPALIVE_S = 15.0
-# How often a non-streamed /invoke checks that the player is still there: a background call the player dropped
-# stops within this, so it does not keep the GPU from the reply the player is waiting for.
 DISCONNECT_POLL_S = 0.1
 _SLOT = r"^[A-Za-z0-9_-]{1,64}$"
 _TIME = Field(default = None, ge = 0, le = 2**53)
@@ -86,7 +84,6 @@ class InvokeBody(BaseModel):
     stream: bool = False
     # Only load the model this entry point answers with, ahead of the first call.
     warm: bool = False
-    # Nobody waits on this call (writing ahead, background upkeep): it leaves a chat slot free for the player.
     background: bool = False
 
 
