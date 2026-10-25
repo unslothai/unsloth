@@ -7259,16 +7259,54 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
         # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
         inductor_config.fx_graph_cache = False
         return
+    marker = "unsloth-inductor-readback-barrier-v1"
 
     class ReadbackBarrierCacheKey(custom_graph_pass):
+        _unsloth_readback_barrier = True
+
         def __call__(self, graph):
             return None
 
         def uuid(self):
-            return "unsloth-inductor-readback-barrier-v1"
+            return marker
 
-    if getattr(inductor_config, "post_grad_custom_post_pass", None) is None:
+    existing = getattr(inductor_config, "post_grad_custom_post_pass", None)
+    if existing is None:
         inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+        return
+    # A pre-set pass keys the cache by its uuid alone; raw callables / uuid-less passes bypass it.
+    if isinstance(existing, (list, tuple)):
+        if any(getattr(p, "_unsloth_readback_barrier", False) for p in existing):
+            return
+        inductor_config.post_grad_custom_post_pass = type(existing)(
+            [*existing, ReadbackBarrierCacheKey()]
+        )
+        return
+    if getattr(existing, "_unsloth_readback_barrier", False):
+        return
+    if not isinstance(existing, custom_graph_pass) or not existing.uuid():
+        return
+    base = custom_graph_pass
+    try:
+        from torch._inductor.custom_graph_pass import CustomInferenceAwareGraphPass
+        if isinstance(existing, CustomInferenceAwareGraphPass):
+            base = CustomInferenceAwareGraphPass  # called with is_inference=
+    except ImportError:
+        pass
+
+    class ReadbackBarrierKeyedPass(base):
+        _unsloth_readback_barrier = True
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __call__(self, graph, *args, **kwargs):
+            return self.inner(graph, *args, **kwargs)
+
+        def uuid(self):
+            return (marker, self.inner.uuid())
+
+    inductor_config.post_grad_custom_post_pass = ReadbackBarrierKeyedPass(existing)
 
 
 def fix_inductor_reduction_readback_race():

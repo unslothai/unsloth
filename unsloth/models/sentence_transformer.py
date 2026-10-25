@@ -23,11 +23,12 @@ from .loader_utils import (
 from ..device_type import DEVICE_TYPE, xpu_keeps_explicit_bf16
 from ._utils import (
     config_return_dict,
-    SUPPORTS_BFLOAT16,
+    is_bfloat16_supported,
     resolve_model_class,
     resolve_encoder_attention_implementation,
     maybe_prefetch_hf_snapshot,
     _mark_full_finetuning,
+    check_mixed_gpu_placement,
 )
 import inspect
 import json
@@ -134,6 +135,7 @@ def _maybe_upcast_force_float32_inference(st_model):
     if inner is None or not _is_force_float32_config(getattr(inner, "config", None)):
         return False
     params = list(st_model.parameters())
+    SUPPORTS_BFLOAT16 = is_bfloat16_supported()
     if SUPPORTS_BFLOAT16:
         if any(p.dtype == torch.float16 for p in params):
             print(f"Unsloth: {inner.config.model_type} does not support float16. Using bfloat16.")
@@ -2458,6 +2460,9 @@ class FastSentenceTransformer(FastModel):
     @staticmethod
     def _apply_torch_compile(model, mode = "default"):
         """Apply torch.compile to a SentenceTransformer model (with an accelerate unwrap_model bug workaround)."""
+        if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1":
+            print("Unsloth: UNSLOTH_COMPILE_DISABLE=1, so skipping torch.compile of the encoder.")
+            return model
         if getattr(model, "_unsloth_unpadding_installed", False):
             from ._sentence_transformer_unpadding import disable_sentence_transformer_unpadding
             disable_sentence_transformer_unpadding(model)
@@ -2516,6 +2521,7 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
+        SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         # Remote-class probes must use this load's trust, revision and hub options.
         _remote_class_probe_kwargs = dict(
             trust_remote_code = trust_remote_code,
@@ -2617,6 +2623,7 @@ class FastSentenceTransformer(FastModel):
             if _validated:
                 st_kwargs["revision"] = _validated
             st_model = SentenceTransformer(model_name, **st_kwargs)
+            check_mixed_gpu_placement(getattr(st_model[0], "auto_model", st_model), dtype)
             # unsupported GPUs emulate bfloat16 slowly; float16 can yield non-finite activations.
             if (dtype is None and not SUPPORTS_BFLOAT16) or dtype == torch.float16:
                 _maybe_upcast_force_float32_inference(st_model)
@@ -2660,10 +2667,11 @@ class FastSentenceTransformer(FastModel):
             if config_kwargs and config is not None:
                 kwargs["config"] = config
 
-        # Fast encoder path: native torch.compile for encoder models (6x speedup), bypassing Unsloth's auto-compiler, whose @torch.compiler.disable decorators error for encoders on torch 2.9+. Set UNSLOTH_COMPILE_DISABLE=1 for the old path.
+        # Fast encoder path: native torch.compile for encoder models (6x speedup), bypassing Unsloth's auto-compiler, whose @torch.compiler.disable decorators error for encoders on torch 2.9+. UNSLOTH_COMPILE_DISABLE=1 keeps the path and skips only its torch.compile (_apply_torch_compile).
         is_encoder_model = model_type.lower() in FastSentenceTransformer.ENCODER_MODEL_TYPES
-        use_fast_encoder = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1"
-        if use_fast_encoder and is_encoder_model:
+        # Only the fallback loader forwards load_in_8bit; UNSLOTH_COMPILE_DISABLE=1 kept 8-bit encoders there.
+        keep_8bit = load_in_8bit and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1"
+        if is_encoder_model and not keep_8bit:
             # torch.compile mode "default" is safest for PEFT/LoRA training; "reduce-overhead" uses CUDA Graphs, which are incompatible with PEFT.
             compile_mode = "default"
 
@@ -2755,6 +2763,7 @@ class FastSentenceTransformer(FastModel):
                 **({"config_kwargs": config_kwargs} if config_kwargs else {}),
             )
 
+            check_mixed_gpu_placement(getattr(st_model[0], "auto_model", st_model), dtype)
             st_model._unsloth_fast_encoder = True
             _apply_max_seq_length(st_model, max_seq_length)
             _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
@@ -3371,6 +3380,14 @@ def _patch_sentence_transformer_trainer():
     from functools import wraps
 
     _original_init = SentenceTransformerTrainer.__init__
+    _original_train = SentenceTransformerTrainer.train
+
+    def _check_live_placement(trainer):
+        # A CPU-loaded model reaches its card only here: check before the deferred compile's first forward.
+        try:
+            check_mixed_gpu_placement(getattr(trainer, "model", None), live = True)
+        except Exception:
+            pass
 
     @wraps(_original_init)
     def _patched_init(self, *args, **kwargs):
@@ -3418,6 +3435,7 @@ def _patch_sentence_transformer_trainer():
                 model._compile_pending = False
 
         _original_init(self, *args, **kwargs)
+        _check_live_placement(self)
 
         # Disable mixed precision when FORCE_FLOAT32 is active (matches rl.py behavior)
         if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -3440,7 +3458,13 @@ def _patch_sentence_transformer_trainer():
             except Exception as exc:
                 print(f"Unsloth: could not enable MFU logging ({exc}).")
 
+    @wraps(_original_train)
+    def _patched_train(self, *args, **kwargs):
+        _check_live_placement(self)
+        return _original_train(self, *args, **kwargs)
+
     SentenceTransformerTrainer.__init__ = _patched_init
+    SentenceTransformerTrainer.train = _patched_train
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
 
 

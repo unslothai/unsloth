@@ -99,30 +99,30 @@ def _rope_embedding_QK(
     K,
     K_out,
     q_batch_stride,
-    q_seq_stride,
+    q_seq_stride: tl.constexpr,  # 4096 n_heads * head_dim (6144 fused QKV, 128 contiguous)
     q_head_stride,
-    q_dim_stride,
+    q_dim_stride: tl.constexpr,  # 1
     qo_batch_stride,
-    qo_seq_stride,
+    qo_seq_stride: tl.constexpr,  # 4096 or 128
     qo_head_stride,
-    qo_dim_stride,
+    qo_dim_stride: tl.constexpr,  # 1
     k_batch_stride,
-    k_seq_stride,
+    k_seq_stride: tl.constexpr,  # 1024 n_kv_heads * head_dim
     k_head_stride,
-    k_dim_stride,
+    k_dim_stride: tl.constexpr,  # 1
     ko_batch_stride,
-    ko_seq_stride,
+    ko_seq_stride: tl.constexpr,  # 1024 or 128
     ko_head_stride,
-    ko_dim_stride,
+    ko_dim_stride: tl.constexpr,  # 1
     cos,
-    cos_row_stride,
+    cos_row_stride,  # runtime: a SymInt in compiled graphs
     sin,
     sin_row_stride,
     rope_embedding_indices,
     seqlen,
-    n_heads_Q,
-    n_heads_K,
-    n_groups_Q,
+    n_heads_Q: tl.constexpr,  # 32
+    n_heads_K: tl.constexpr,  # 8 (0 without K)
+    n_groups_Q: tl.constexpr,  # 1
     half_head_dim: tl.constexpr,
     BACKWARD_PASS: tl.constexpr,
     HAS_ROPE_INDICES: tl.constexpr,
