@@ -583,7 +583,7 @@ export function OpenAICodeExecSection({
           </Button>
           <Button
             size="sm"
-            className="h-7 shrink-0 px-3 text-xs"
+            className="shrink-0 text-xs"
             onClick={() => void onCreate()}
             disabled={creating || !createName.trim() || !hasCredential}
           >
@@ -594,7 +594,6 @@ export function OpenAICodeExecSection({
         <Button
           size="sm"
           variant="outline"
-          className="h-8"
           onClick={() => setCreateOpen(true)}
           disabled={!hasCredential}
         >

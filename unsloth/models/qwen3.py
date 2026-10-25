@@ -206,7 +206,7 @@ def Qwen3Attention_fast_forward_inference(
     hidden_size = self.config.hidden_size
     attention_size = n_heads * head_dim
     # Graph mode (a captured decode step): no host lengths, the cache slot is on the device.
-    static = _decode_graphs.static() if _decode_graphs.ENABLED else None
+    static = _decode_graphs.static()
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 

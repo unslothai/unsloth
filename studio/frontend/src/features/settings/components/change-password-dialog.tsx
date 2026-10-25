@@ -279,7 +279,7 @@ export function ChangePasswordDialog({
       }}
     >
       <DialogTrigger asChild={true}>
-        <Button variant="outline" size="sm" className="h-8">
+        <Button variant="outline" size="sm" >
           {copy.trigger}
         </Button>
       </DialogTrigger>

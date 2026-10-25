@@ -2080,7 +2080,7 @@ export function ChatProvidersSettings({
                     className={
                       availableModels.length > 0
                         ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
-                        : "h-8 shrink-0 px-3"
+                        : "shrink-0"
                     }
                     disabled={loadModelsDisabled}
                     title={loadModelsTitle}
@@ -2320,7 +2320,6 @@ export function ChatProvidersSettings({
               <Button
                 type="button"
                 size="sm"
-                className="h-8"
                 disabled={
                   registryLoading ||
                   syncingProviders ||
@@ -2339,7 +2338,6 @@ export function ChatProvidersSettings({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-8"
                 onClick={editingProviderId ? closeForm : resetForm}
               >
                 {editingProviderId ? "Cancel" : "Clear"}
