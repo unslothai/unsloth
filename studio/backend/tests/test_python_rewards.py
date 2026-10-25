@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import gc
+import json
 import os
 import threading
 import time
@@ -180,7 +181,7 @@ def test_a_rendered_prompt_reaches_python_rewards_as_its_turns():
     ds = Dataset.from_list([{"prompt": turns, "answer": "4"}])
     out, rendered = rl.render_grpo_prompts(ds, Tok(), False, keep_turns = True)
     assert rendered and isinstance(out[0]["prompt"], str)
-    assert out[0][PROMPT_TURNS_COLUMN] == turns
+    assert json.loads(out[0][PROMPT_TURNS_COLUMN]) == turns
     assert PROMPT_TURNS_COLUMN not in rl.render_grpo_prompts(ds, Tok(), False)[0].column_names
 
     seen = {}
@@ -206,6 +207,89 @@ def test_a_rendered_prompt_reaches_python_rewards_as_its_turns():
     assert seen["prompts"] == [turns]
     fn(prompts = [padded], completions = [[{"role": "assistant", "content": "4"}]])
     assert seen["prompts"] == [turns]
+
+
+def test_rendered_turns_drop_padded_tool_call_arguments():
+    from datasets import Dataset
+
+    from core.training.rewards import PROMPT_TURNS_COLUMN
+
+    class Tok:
+        chat_template = "{{ messages }}"
+
+        def apply_chat_template(self, messages, tokenize, add_generation_prompt, **kw):
+            return str(messages)
+
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "add",
+            "parameters": {"type": "object", "properties": {"a": {"type": "integer"}}},
+        },
+    }
+
+    def call(args):
+        fn = {"name": "add", "arguments": args}
+        calls = [{"type": "function", "function": fn}]
+        return [{"role": "assistant", "content": "", "tool_calls": calls}]
+
+    rows = [
+        {"prompt": [{"role": "user", "content": "q"}, *call({"a": 1})], "tools": [tool]},
+        {"prompt": [{"role": "user", "content": "q"}, *call({"b": 2})], "tools": [tool]},
+    ]
+    out, rendered = rl.render_grpo_prompts(Dataset.from_list(rows), Tok(), None, keep_turns = True)
+    assert rendered
+    seen = {}
+
+    class Worker:
+        def score(self, names, prompts, completions, kwargs):
+            seen["prompts"] = prompts
+            return {names[0]: [1.0]}
+
+    (fn,) = python_rewards.make_python_reward_funcs([{"name": "r"}], Worker())
+    turns = {PROMPT_TURNS_COLUMN: [out[0][PROMPT_TURNS_COLUMN]]}
+    fn(prompts = [out[0]["prompt"]], completions = ["x"], **turns)
+    args = seen["prompts"][0][-1]["tool_calls"][0]["function"]["arguments"]
+    assert args == {"a": 1}
+
+
+def test_superseded_previews_are_bounded_and_not_kept_warm(monkeypatch):
+    release, started = threading.Event(), []
+
+    class Slow:
+        isolation = {}
+
+        def __init__(self):
+            self.closed = False
+            started.append(self)
+
+        def score(self, names, *_):
+            release.wait(10)
+            return {names[0]: [1.0]}
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(python_rewards, "_start_preview_worker", lambda specs, mode: Slow())
+    monkeypatch.setattr(python_rewards, "_previews", {})
+
+    def spec(n):
+        return [{"name": "r", "entry": "reward", "code": f"# {n}"}]
+
+    def run(n):
+        python_rewards.preview_python_scores(spec(n), "x", {}, owner = "acct")
+
+    threads = [threading.Thread(target = run, args = (n,)) for n in range(2)]
+    for t in threads:
+        t.start()
+        time.sleep(0.3)
+    with pytest.raises(python_rewards.PythonRewardError, match = "still scoring"):
+        run(2)
+    release.set()
+    for t in threads:
+        t.join(10)
+    assert len(started) == 2 and started[0].closed and not started[1].closed
+    python_rewards._close_preview()
 
 
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):

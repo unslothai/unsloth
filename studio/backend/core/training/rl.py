@@ -433,8 +433,9 @@ def render_grpo_prompts(
         if prefills:
             out[PREFILL_COLUMN] = (prompt[-1].get("content") or "") if prefill else ""
         if keep_turns:
-            # Python rewards read roles and the last user turn, as Try it gives them.
-            out[PROMPT_TURNS_COLUMN] = prompt
+            # Python rewards read roles and the last user turn, as Try it gives them. JSON, since
+            # Arrow would pad the cleaned turns again.
+            out[PROMPT_TURNS_COLUMN] = json.dumps(messages, default = str)
         return out
 
     map_kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}
