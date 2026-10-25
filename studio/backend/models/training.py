@@ -596,8 +596,12 @@ class TrainingStartRequest(BaseModel):
             "back to the incoming activation dtype."
         ),
     )
+    # Bounded to what transformers.set_seed (numpy) accepts: an out-of-range value otherwise passes every
+    # preflight and only dies in set_seed once the model has loaded.
     random_seed: int = Field(
         3407,
+        ge = 0,
+        le = 2**32 - 1,
         description = (
             "Random seed; matches the Unsloth backend / MLX worker default "
             "and unsloth's historical recommended value."
