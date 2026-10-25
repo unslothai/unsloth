@@ -191,7 +191,7 @@ test("a nav row's New pill sits beside its label, clear of the trailing disclosu
   // no ml-auto: a trailing pill would sit under the overlay's chevron.
   assert.match(
     item,
-    /<Badge\s+variant="secondary"\s+className="group-data-\[collapsible=icon\]:hidden"\s*>\s*\{badge\}/,
+    /<Badge\s+variant="secondary"\s+className="bg-primary\/10 text-primary group-data-\[collapsible=icon\]:hidden"\s*>\s*\{badge\}/,
   );
   assert.match(item, /\{overlay\}/);
   const more = block(
