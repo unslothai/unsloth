@@ -146,7 +146,16 @@ def _ignored_state(model, config):
     ]
 
 
-def _case(rank, world, tmp, ckpt, mode, fit, arch, ignore = None):
+def _case(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    mode,
+    fit,
+    arch,
+    ignore = None,
+):
     native, loading = _load_module()
     AutoModelForCausalLM = _auto(arch)
 
