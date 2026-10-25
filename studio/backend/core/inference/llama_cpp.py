@@ -41343,10 +41343,10 @@ class LlamaCppBackend:
         except Exception:
             embedding = False
         args = [str(a) for a in (self._extra_args or ())]
-        # Last-wins, as common/arg.cpp applies them: --rerank sets RANK pooling.
-        pooling = str(os.environ.get("LLAMA_ARG_POOLING") or "").strip().lower() or None
-        if str(os.environ.get("LLAMA_ARG_RERANKING") or "").strip().lower() in ("1", "true", "on"):
-            embedding, pooling = True, "rank"
+        # Argv only: load_model strips inherited LLAMA_ARG_POOLING / _RERANKING /
+        # _EMBEDDINGS from the child. Last-wins, as common/arg.cpp applies them: --rerank
+        # sets RANK pooling.
+        pooling = None
         for i, raw in enumerate(args):
             flag = _flag_name(raw)
             if flag in ("--embedding", "--embeddings"):

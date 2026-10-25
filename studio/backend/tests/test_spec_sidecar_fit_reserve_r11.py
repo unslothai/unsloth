@@ -73,6 +73,32 @@ def test_embedding_and_rerank_servers_are_probed_where_they_compute(
     assert field in post.call_args.kwargs["json"]
 
 
+@pytest.mark.parametrize(
+    "env, embedding, route",
+    [
+        ({"LLAMA_ARG_RERANKING": "1"}, False, "/completion"),
+        ({"LLAMA_ARG_POOLING": "rank"}, True, "/embedding"),
+    ],
+)
+def test_inherited_pooling_env_does_not_choose_the_probe(monkeypatch, env, embedding, route):
+    """load_model pops LLAMA_ARG_POOLING / _RERANKING / _EMBEDDINGS from the child's env, so
+    the probe must not follow them onto /rerank, which that child refuses before compute."""
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend = _lc.LlamaCppBackend()
+    backend._port = 1
+    backend._extra_args = []
+    monkeypatch.setattr(_lc.LlamaCppBackend, "is_embedding_gguf", property(lambda self: embedding))
+    resp = type(
+        "Resp",
+        (),
+        {"status_code": 500, "json": lambda self: {"error": {"message": "Compute error."}}},
+    )()
+    with patch.object(_lc.httpx, "post", return_value = resp, create = True) as post:
+        assert backend._metal_compute_failure_confirmed() is True
+    assert post.call_args.args[0].endswith(route)
+
+
 def test_a_reranker_by_gguf_default_alone_is_not_probed(monkeypatch):
     """--embeddings on a RANK-pooling GGUF: /rerank refuses (no --rerank) and /embedding would
     over-read RANK's buffer, so nothing is sent and the server is not retired."""
