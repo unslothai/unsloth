@@ -60,8 +60,6 @@ SIM_RAW = {
 
 
 class SimCtx(FakeCtx):
-    """FakeCtx plus /v1/embeddings: a bag-of-letters vector, or no embedder at all."""
-
     def __init__(
         self,
         *a,
@@ -155,7 +153,6 @@ def test_simulation_section_is_normalised():
         {"text": "I am hosting a party", "importance": 5},
         {"text": "Tom owes me a pie", "importance": 10},
     ]
-    # No places: the regions become places; no regions either: one town square.
     from_regions = normalize_world({**RAW, "simulation": True}, seed = 1)["simulation"]["places"]
     assert [p["name"] for p in from_regions] == ["Pond", "Mill"]
     bare = normalize_world(
@@ -215,7 +212,6 @@ def test_reply_with_memory_retrieves_and_records_in_one_call():
     assert call["system"].startswith(
         npc_prompt({**state, "memory": None}, "Stay in character. Keep replies under 60 words.")[0]
     )
-    # The keyword fallback logged once and the reply still came back.
     assert ctx.embedded and any("keywords" in m for _, m in ctx.logs)
 
 

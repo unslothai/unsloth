@@ -324,7 +324,6 @@ function isChatOnlyAllowed(pathname: string): boolean {
   // verdict, and on Apple Silicon a chat-only host is where video works anyway. So a direct link
   // or a reload must reach VideoPage's gate, which self-gates on videoSupported.
   if (pathname === "/video" || pathname.startsWith("/video/")) return true;
-  // Flows run whatever the host can: GGUF chat, sd.cpp images and CPU audio all work without a GPU.
   if (pathname === "/flows" || pathname.startsWith("/flows/")) return true;
   return false;
 }

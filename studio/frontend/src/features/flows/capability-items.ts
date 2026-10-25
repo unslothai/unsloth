@@ -8,7 +8,6 @@ export interface CapabilityItem {
   label: string;
 }
 
-/** One readable line per thing the owner is asked to approve. */
 export function pendingItems(
   pending: FlowCapabilitySet | null | undefined,
 ): CapabilityItem[] {

@@ -38,7 +38,6 @@ def _clip(
     h = 48,
     tone_s = None,
 ):
-    """A tiny MP4 whose frame i is filled with gray level i, with an optional sine audio track."""
     import av
     import numpy as np
 
@@ -109,7 +108,6 @@ def test_composite_places_and_clips_the_overlay():
     assert out.size == (100, 100)
     assert out.getpixel((50, 50))[:3] == (255, 255, 255)
     assert out.getpixel((5, 5))[:3] == (0, 0, 0)
-    # Hanging off the corner is clipped, not refused.
     edge = _open(mu.composite_images(base, top, x = 0.0, y = 0.0, scale = 0.2))
     assert edge.getpixel((2, 2))[:3] == (255, 255, 255) and edge.getpixel((50, 50))[:3] == (0, 0, 0)
     half = _open(mu.composite_images(base, top, scale = 0.2, opacity = 0.5)).getpixel((50, 50))
@@ -169,7 +167,6 @@ def test_composite_keeps_a_huge_overlay_within_the_size_limit():
 def test_a_late_sound_keeps_its_offset():
     import numpy as np
 
-    # A trim point half a second before the sound starts: the gap stays silent instead of the sound moving up.
     sliced = mu._slice_audio(_clip(frames = 24, fps = 12, tone_s = 1.0), -0.5, 1.0)
     with wave.open(io.BytesIO(sliced)) as w:
         assert w.getnframes() >= int(1.4 * 44100)
@@ -203,7 +200,6 @@ def test_video_frame_seeks_near_the_end_instead_of_decoding_everything(monkeypat
     clip = _clip(frames = 96, fps = 12)
     first = _open(mu.video_frame(clip, "first", 0.0)).convert("RGB")
     assert first.getpixel((5, 5))[0] < 20
-    # Only a short decode budget: reading the last frame of an 8 s clip must seek, not walk from the top.
     monkeypatch.setattr(mu, "MAX_VIDEO_FRAMES", 20)
     last = _open(mu.video_frame(clip, "last", 0.0)).convert("RGB")
     assert last.getpixel((5, 5))[0] > 200
@@ -248,7 +244,6 @@ def test_a_phone_clip_is_turned_upright():
     import numpy as np
 
     class Frame:
-        # A landscape-coded frame whose display matrix says turn 90 degrees counterclockwise (a portrait phone clip).
         rotation = 90
 
         def to_ndarray(self, format):

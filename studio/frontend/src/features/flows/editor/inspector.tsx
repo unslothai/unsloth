@@ -41,7 +41,6 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
       {!hasOutputs && runtime.text && <OutputValue value={runtime.text} />}
       {hasOutputs &&
         spec.outputs.length === 0 &&
-        // Preview and Result blocks have no output ports; show the value they display.
         Object.entries(runtime.outputs ?? {}).map(([key, value]) => (
           <OutputValue key={key} value={value} />
         ))}
@@ -98,7 +97,6 @@ function InspectorImpl() {
     useCatalogStore((s) =>
       spec ? s.categories[spec.category]?.color : undefined,
     ) ?? "#64748b";
-  // A string, so the inspector re-renders only when the set of bound params changes.
   const bound = useDocStore((s) => {
     if (!nodeId) return "";
     const ids: string[] = [];

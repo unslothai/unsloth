@@ -13,7 +13,6 @@ export function runToNode(nodeId: string): Promise<void> {
   return runFlow({ targetNodes: [nodeId] });
 }
 
-/** Run this node again past the cache, with a new seed when it has one. */
 export function rerollNode(nodeId: string): Promise<void> {
   const spec = getSpec(useDocStore.getState().graph.nodes[nodeId]?.type ?? "");
   if (spec?.params.some((p) => p.id === "seed" && p.kind === "seed")) {
