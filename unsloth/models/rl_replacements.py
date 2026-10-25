@@ -966,6 +966,27 @@ def sft_trainer_compute_loss(function_name, function):
         ):
             import trl.trainer.utils as _trl_utils
             if hasattr(_trl_utils, "add_fused_lm_head"):
+                # TRL's fused head projects with lm_head.weight directly, skipping QAT fake quantization.
+                try:
+                    head = model.get_output_embeddings()
+                except Exception:
+                    head = None
+                try:
+                    from unsloth.models.llama import lm_head_needs_forward as _needs_forward
+                except Exception:
+                    _needs_forward = lambda module: False
+                if head is not None and (
+                    _needs_forward(head)
+                    or any(
+                        getattr(m, "activation_fake_quantizer", None) is not None
+                        or getattr(m, "weight_fake_quantizer", None) is not None
+                        for m in head.modules()
+                    )
+                ):
+                    raise NotImplementedError(
+                        "Unsloth: loss_type = 'dft' runs on TRL's fused LM head, which skips the QAT fake "
+                        "quantization of lm_head. Leave lm_head out of QAT or use loss_type = 'nll'."
+                    )
                 inputs = {**inputs, "use_cache": False}
                 outputs = model(**inputs, fused_lm_head = True)
                 if getattr(outputs, "log_probs", None) is None:

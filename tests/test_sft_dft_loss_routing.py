@@ -110,6 +110,21 @@ def test_dft_eval_outputs_carry_logits():
     assert [bool(c.get("fused_lm_head")) for c in model.calls] == [True, False]
 
 
+def test_dft_refuses_a_qat_lm_head():
+    # The fused head projects with lm_head.weight directly, so QAT's fake quantizers would be skipped.
+    Trainer = _trainer_class()
+    model = _FusedModel()
+    head = torch.nn.Linear(4, 5, bias = False)
+    head.weight_fake_quantizer = torch.nn.Identity()
+    model.get_output_embeddings = lambda: head
+    with pytest.raises(NotImplementedError, match = "QAT"):
+        Trainer("dft").compute_loss(model, {"input_ids": None}, num_items_in_batch = 3)
+    assert model.calls == []
+    model.get_output_embeddings = lambda: torch.nn.Linear(4, 5, bias = False)
+    Trainer("dft").compute_loss(model, {"input_ids": None}, num_items_in_batch = 3)
+    assert len(model.calls) == 1
+
+
 def test_dft_without_loss_kwargs_is_a_per_micro_batch_mean():
     Trainer = _trainer_class()
     model = _FusedModel()
