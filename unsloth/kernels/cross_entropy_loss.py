@@ -107,8 +107,9 @@ def _cross_entropy_forward(
         logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
-    exp_logits = tl.exp(logits - c)
-    logsumexp = c + tl.log(tl.sum(exp_logits, 0))
+    # One reduction that skips the label (col_offsets never equals -100); the label is added back below.
+    sum_others = tl.sum(tl.where(col_offsets == label_idx, 0.0, tl.exp(logits - c)), 0)
+    logsumexp = c + tl.log(sum_others)
 
     if label_idx != -100:
         x = tl.load(logits_ptr + label_idx).to(tl.float32)
@@ -119,8 +120,8 @@ def _cross_entropy_forward(
         if DO_SOFTCAPPING:
             x = SOFTCAP * triton_tanh(x / SOFTCAP)
         # lse - x rounds to 0 past a ~16.6 nat margin in fp32 (softmax collapse, arXiv 2610.31642).
-        sum_others = tl.sum(tl.where(col_offsets == label_idx, 0.0, exp_logits), 0)
-        loss = _softplus(c + tl.log(sum_others) - x)
+        loss = _softplus(logsumexp - x)
+        logsumexp = c + tl.log(sum_others + tl.exp(x - c))
     else:
         loss = 0.0
     tl.store(logsumexp_ptr, logsumexp)
@@ -252,12 +253,20 @@ def _chunked_cross_entropy_forward(
     # All -inf chunk (masked vocab range): shift by 0 so logsumexp is -inf, not NaN.
     c = tl.where(c == -float("inf"), 0.0, c)
     exp_logits = tl.exp(logits - c)
-    logsumexp = c + tl.log(tl.sum(exp_logits, 0))
-    # Only the chunk holding the label differs from its plain logsumexp.
-    logsumexp_others = logsumexp
-    if (label_idx >= chunk_idx * BLOCK_SIZE) & (label_idx < (chunk_idx + 1) * BLOCK_SIZE):
-        sum_others = tl.sum(tl.where(col_offsets == label_idx, 0.0, exp_logits), 0)
-        logsumexp_others = c + tl.log(sum_others)
+    # One reduction per chunk: the label chunk sums the other terms and adds the label back as a scalar.
+    has_label = (label_idx >= chunk_idx * BLOCK_SIZE) & (label_idx < (chunk_idx + 1) * BLOCK_SIZE)
+    if has_label:
+        exp_logits = tl.where(col_offsets == label_idx, 0.0, exp_logits)
+    sum_others = tl.sum(exp_logits, 0)
+    logsumexp_others = c + tl.log(sum_others)
+    logsumexp = logsumexp_others
+    if has_label:
+        x_label = tl.load(logits_ptr + label_idx).to(tl.float32)
+        if DO_LOGIT_SCALING:
+            x_label = LOGIT_SCALE * x_label
+        if DO_SOFTCAPPING:
+            x_label = SOFTCAP * triton_tanh(x_label / SOFTCAP)
+        logsumexp = c + tl.log(sum_others + tl.exp(x_label - c))
     tl.store(logsumexp_others_ptr, logsumexp_others)
 
     if chunk_idx == 0:
