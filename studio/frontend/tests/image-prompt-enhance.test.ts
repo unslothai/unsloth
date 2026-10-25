@@ -171,8 +171,7 @@ test("status parsing tolerates missing and malformed fields", () => {
   assert.equal(upsamplerNeedsDownload({ ...noProjector, mmproj_downloaded: true, current_downloaded: true }), false);
   assert.equal(upsamplerNeedsDownload({ ...full, supported: false }), false);
 
-  // An earlier quant serving (model + projector present, the current default not downloaded) keeps the control
-  // offered and sizes it at the current default; an older backend without the field reads as fully downloaded.
+  // An earlier quant serving keeps the control offered, sized at the current default.
   const earlier = parsePromptUpsamplerStatus({
     supported: true,
     downloaded: true,
@@ -190,8 +189,7 @@ test("status parsing tolerates missing and malformed fields", () => {
   const current = parsePromptUpsamplerStatus({ ...earlier, current_downloaded: true, current_missing_bytes: 0 });
   assert.equal(upsamplerNeedsDownload(current), false);
   assert.equal(upsamplerServesEarlierQuant(current), false);
-  // A model-only fallback (earlier quant, no projector): the Download fetches the current default AND the projector,
-  // so it is sized at current_missing_bytes and named as an earlier quant, not as a missing projector alone.
+  // Model-only earlier quant: the Download fetches the default AND the projector.
   const modelOnly = parsePromptUpsamplerStatus({
     ...earlier,
     mmproj_downloaded: false,

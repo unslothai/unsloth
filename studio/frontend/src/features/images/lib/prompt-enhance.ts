@@ -43,13 +43,10 @@ export interface PromptUpsamplerStatus {
   size_bytes: number;
   mmproj_size_bytes: number;
   mmproj_downloaded: boolean;
-  // The current default pair is downloaded. False while an earlier quant serves (downloaded above), so the
-  // Download control stays offered; an older backend without the field reads it as downloaded && mmproj_downloaded.
+  // False while an earlier quant serves (downloaded above); an older backend without it reads downloaded && mmproj.
   current_downloaded: boolean;
-  // Bytes the Download control still fetches for the current default, when an earlier quant serves.
   current_missing_bytes: number;
-  // The current default model file ("" from a backend that does not report it): ``filename`` differs while an
-  // earlier quant serves.
+  // "" from an older backend.
   current_filename: string;
   // Local files from the env overrides: no repo download is offered beside them.
   override: boolean;
@@ -111,8 +108,7 @@ export function parsePromptUpsamplerStatus(raw: unknown): PromptUpsamplerStatus 
   };
 }
 
-/** The model or its vision projector (edits) is missing, or an earlier quant serves in place of the current
- * default, so the Download control stays offered. */
+/** The model, its vision projector (edits) or the current default quant is missing. */
 export function upsamplerNeedsDownload(status: PromptUpsamplerStatus): boolean {
   return (
     status.supported &&
@@ -121,9 +117,8 @@ export function upsamplerNeedsDownload(status: PromptUpsamplerStatus): boolean {
   );
 }
 
-/** Enhancing already runs from an earlier quant; the Download control fetches the current default (and the vision
- * projector, when that is missing too). A model with no projector is an earlier quant when it is not the current
- * default file: the Download then fetches both, not the projector alone. */
+/** An earlier quant serves; a model with no projector counts when it is not the default file (the Download then
+ * fetches both, not the projector alone). */
 export function upsamplerServesEarlierQuant(status: PromptUpsamplerStatus): boolean {
   if (!status.downloaded || status.current_downloaded) return false;
   return (
