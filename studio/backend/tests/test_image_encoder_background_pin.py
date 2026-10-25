@@ -185,7 +185,7 @@ def _calls(tree, name):
 
 
 def test_the_image_load_requests_starts_and_stops_the_encoder_pins():
-    tree = ast.parse((_BACKEND / "core" / "inference" / "diffusion.py").read_text())
+    tree = ast.parse((_BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8"))
     request = _calls(tree, "request_background_encoder_pins")
     apply = _calls(tree, "apply_memory_plan")
     assert request and apply and min(c.lineno for c in request) < min(c.lineno for c in apply)
