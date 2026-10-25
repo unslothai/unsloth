@@ -87,6 +87,12 @@ function summary(entry: StoredFlow, example = false) {
     cover: null,
     nodeCount: entry.doc.nodes.length,
     example,
+    ...(example
+      ? {
+          tags: { story: ["story"], world: ["world", "npc"], pipeline: ["image", "comic"] }[entry.doc.kind],
+          needs: { story: ["image"], world: ["chat", "image"], pipeline: ["chat", "image"] }[entry.doc.kind],
+        }
+      : {}),
   };
 }
 

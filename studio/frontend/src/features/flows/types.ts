@@ -592,6 +592,8 @@ export interface FlowSummary {
   cover?: string | null;
   nodeCount: number;
   example?: boolean;
+  tags?: string[];
+  needs?: string[];
 }
 
 export interface FlowRecord {

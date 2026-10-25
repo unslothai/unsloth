@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
-from core.flows import capabilities, compiler, notebook_import, package, triggers
+from core.flows import capabilities, compiler, notebook_import, package, replication, triggers
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -154,7 +154,20 @@ def _example_summary(doc: dict) -> dict:
         "nodeCount": len(doc.get("nodes") or []),
         "example": True,
         "tags": meta.get("tags") or [],
+        "needs": _example_needs(doc),
     }
+
+
+def _example_needs(doc: dict) -> list[str]:
+    """The model kinds an example needs, in first-use order, plus "training" when it fine-tunes."""
+    needs: list[str] = []
+    for model in (doc.get("requirements") or {}).get("models") or []:
+        kind = model.get("kind") if isinstance(model, dict) else None
+        if kind and not model.get("optional") and kind not in needs:
+            needs.append(kind)
+    if any(str(n.get("type", "")).startswith("train.") for n in doc.get("nodes") or []):
+        needs.append("training")
+    return needs
 
 
 @router.get("/examples")
@@ -173,6 +186,9 @@ def _import_doc(data: bytes, name: Optional[str] = None) -> tuple[dict, dict]:
     if name:
         doc["name"] = name[:200]
     record = _save(doc, None)
+    report["replication"] = replication.notices(doc)
+    if report.get("baked_nodes") and replication.live_conversations(doc):
+        report["live_note"] = replication.LIVE_NOTE
     return record, report
 
 
@@ -531,13 +547,44 @@ async def plan_flow(request: Request, flow_id: str, body: PlanBody) -> dict:
     except CompileError as exc:
         return {"models": [], "gpu_ops": 0, "cached_nodes": 0, "errors": exc.issues, "warnings": []}
     baked = set((doc.get("baked") or {}).keys())
+    models = await _model_report(request, plan)
     return {
-        "models": await _model_report(request, plan),
+        "models": models,
         "gpu_ops": len(plan.gpu_nodes()),
         "cached_nodes": len([n for n in plan.order if n in baked]),
         "errors": [],
         "warnings": plan.warnings,
+        "hints": await asyncio.to_thread(_residency_hints, models),
     }
+
+
+# Model kinds that take turns on the GPU: with Keep multiple models loaded off, each switch is a full reload.
+SWAPPING_KINDS = ("chat", "vision", "tts", "audio", "image", "video")
+
+
+def _residency_hints(models: list[dict]) -> list[dict]:
+    """A flow that alternates between models while Studio evicts on every load: say how to stop the reloads."""
+    repos = {
+        m["repo"].lower()
+        for m in models
+        if m.get("kind") in SWAPPING_KINDS and not m.get("optional")
+    }
+    if len(repos) < 2:
+        return []
+    try:
+        from utils.multi_model_settings import get_multi_model_mode
+        mode = get_multi_model_mode()
+    except Exception:
+        return []
+    if mode != "off":
+        return []
+    return [
+        {
+            "id": "multi_model",
+            "message": f"This flow switches between {len(repos)} models. With Keep multiple models loaded set to "
+            "When they fit, models that fit stay loaded instead of reloading at every switch.",
+        }
+    ]
 
 
 def _hf_token(request: Request) -> Optional[str]:
