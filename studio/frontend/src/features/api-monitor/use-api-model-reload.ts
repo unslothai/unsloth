@@ -26,6 +26,7 @@ export type ReloadableModel = {
   checkpoint: string;
   quant: string | null;
   active: boolean;
+  isMlx?: boolean;
 };
 
 function errorMessage(err: unknown, fallback: string): string | null {
@@ -38,15 +39,18 @@ function errorMessage(err: unknown, fallback: string): string | null {
 }
 
 function servedTarget(model: ReloadableModel): LastLoadRecord {
+  if (isStandaloneGgufPath(model.checkpoint)) {
+    return { id: model.checkpoint, kind: "gguf", ggufVariant: null };
+  }
+  // As the picker's loaded row: the checkpoint, not the public alias a kept slot is listed under.
+  // Only the synthetic primary row carries its "<id>:<quant>" label as the checkpoint.
   const { id, ggufVariant } = monitorSelection(model.name);
-  const standalone = isStandaloneGgufPath(model.checkpoint);
+  const variant = model.quant ?? ggufVariant;
   return {
-    id: standalone ? model.checkpoint : id,
-    kind:
-      standalone || ggufVariant != null || model.quant != null
-        ? "gguf"
-        : "model",
-    ggufVariant: standalone ? null : (ggufVariant ?? model.quant),
+    id: model.checkpoint === model.name ? id : model.checkpoint,
+    // MLX reports its precision folder as the quant, but it loads as a model, not a GGUF.
+    kind: variant != null && !model.isMlx ? "gguf" : "model",
+    ggufVariant: variant,
   };
 }
 

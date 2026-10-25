@@ -251,12 +251,15 @@ type ServedModel = {
   checkpoint: string;
   active: boolean;
   quant: string | null;
+  isMlx: boolean;
 };
 
 function servedModels(
   loaded: { id: string; quant?: string | null; checkpoint?: string }[],
   activeModel: string | null,
   residentCheckpoint: string | null | undefined,
+  // Status says MLX only for the primary model; kept slots carry no backend.
+  loadedIsMlx: boolean | null,
 ): ServedModel[] {
   const activeId = monitorSelection(activeModel).id;
   // At most one primary row: two local files can share a public name, and marking both ejected the primary.
@@ -278,6 +281,7 @@ function servedModels(
     checkpoint: model.checkpoint ?? model.id,
     active: index === activeIndex,
     quant: model.quant ?? null,
+    isMlx: index === activeIndex && loadedIsMlx === true,
   }));
   if (activeModel && !rows.some((row) => row.active)) {
     rows.unshift({
@@ -285,6 +289,7 @@ function servedModels(
       checkpoint: activeModel,
       active: true,
       quant: monitorSelection(activeModel).ggufVariant,
+      isMlx: loadedIsMlx === true,
     });
   }
   return rows.sort((a, b) => Number(b.active) - Number(a.active));
@@ -925,6 +930,7 @@ export function ApiMonitorPage(): ReactElement {
   const runtime = useChatModelRuntime();
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const [unloading, setUnloading] = useState(false);
   const [ejectingKept, setEjectingKept] = useState(false);
   const [exampleModel, setExampleModel] = useState<ServedModel | null>(null);
@@ -1158,8 +1164,9 @@ export function ApiMonitorPage(): ReactElement {
   const activeModel = data?.active_model ?? null;
   const now = useServerNow(data?.server_time, entries.length > 0);
   const served = useMemo(
-    () => servedModels(loadedModels, activeModel, residentCheckpoint),
-    [loadedModels, activeModel, residentCheckpoint],
+    () =>
+      servedModels(loadedModels, activeModel, residentCheckpoint, loadedIsMlx),
+    [loadedModels, activeModel, residentCheckpoint, loadedIsMlx],
   );
   const serverStatus =
     SERVER_STATUS[
