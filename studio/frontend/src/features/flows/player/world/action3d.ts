@@ -40,15 +40,15 @@ export interface Box {
 
 /** Footprint (tiles) and height of each prop kind at scale 1; the shapes props-scene3d draws. */
 const PROP_BOX: Record<WorldPropKind, [number, number, number]> = {
-  house: [1.8, 1.8, 2.2],
-  tree: [0.35, 0.35, 2.6],
-  lamp: [0.15, 0.15, 2.0],
-  fence: [1, 0.16, 0.55],
-  well: [0.95, 0.95, 0.9],
-  crate: [0.7, 0.7, 0.6],
-  rock: [0.75, 0.75, 0.45],
-  bench: [1, 0.4, 0.45],
-  stall: [1.5, 1, 1.6],
+  house: [0.9, 0.9, 1.35],
+  tree: [0.25, 0.25, 1.7],
+  lamp: [0.1, 0.1, 1.7],
+  fence: [0.96, 0.1, 0.55],
+  well: [0.76, 0.76, 1.28],
+  crate: [0.52, 0.52, 0.51],
+  rock: [0.7, 0.7, 0.54],
+  bench: [0.8, 0.3, 0.6],
+  stall: [1, 0.75, 1.1],
   model: [0.9, 0.9, 1],
 };
 

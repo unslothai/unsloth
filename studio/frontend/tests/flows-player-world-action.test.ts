@@ -88,24 +88,24 @@ test("sprinting into a wall never passes through it, and the body slides along i
 });
 
 test("a low step is climbed, a tall box blocks, and a jump gets onto a crate", () => {
-  const rock = world([{ ...crate(6.5, 5.5), kind: "rock", scale: 0.8 }]);
+  const rock = world([{ ...crate(6.5, 5.5), kind: "rock", scale: 0.7 }]);
   const b = A.newBody(rock, 4.5, 5.5);
   run(rock, b, 60, 1.2);
-  assert.ok(b.x > 7, "walked over the 0.36 rock");
+  assert.ok(b.x > 7, "walked over the 0.38 rock");
   const tall = world([{ ...crate(6.5, 5.5), scale: 2 }]);
   const c = A.newBody(tall, 4.5, 5.5);
   run(tall, c, 60, 2);
-  assert.ok(c.x < 6.5 - 0.7 - A.RADIUS + 0.05, `${c.x}`);
-  // A 0.6 crate is too high to step but a jump lands on top of it.
+  assert.ok(c.x < 6.5 - 0.52 - A.RADIUS + 0.05, `${c.x}`);
+  // A 0.51 crate is too high to step but a jump lands on top of it.
   const box = world([crate(6.5, 5.5)]);
   const d = A.newBody(box, 4.5, 5.5);
   run(box, d, 60, 1);
   assert.ok(d.x < 6.5, "blocked without a jump");
   A.advance(box, d, { ...east, jump: true }, A.STEP_S, 3);
-  for (let i = 0; i < 25; i++) A.advance(box, d, east, A.STEP_S, 3);
+  for (let i = 0; i < 12; i++) A.advance(box, d, east, A.STEP_S, 3);
   for (let i = 0; i < 6 && d.x < 6.5; i++) A.advance(box, d, east, A.STEP_S, 3);
   for (let i = 0; i < 60; i++) A.advance(box, d, still, A.STEP_S, 3);
-  assert.ok(Math.abs(d.z - 0.6) < 1e-6 && d.grounded, `${d.x},${d.z}`);
+  assert.ok(Math.abs(d.z - 0.51) < 1e-6 && d.grounded, `${d.x},${d.z}`);
 });
 
 test("crouching passes under a low roof, and standing up waits for headroom", () => {
