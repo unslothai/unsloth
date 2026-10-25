@@ -760,10 +760,21 @@ def test_old_torch_pipelining_is_refused_before_the_model_is_cut(monkeypatch):
     import torch.distributed.pipelining as pipelining
 
     class OldGPipe:  # torch 2.6: no scale_grads, step without return_outputs
-        def __init__(self, stage, n_microbatches, loss_fn = None):
+        def __init__(
+            self,
+            stage,
+            n_microbatches,
+            loss_fn = None,
+        ):
             pass
 
-        def step(self, *args, target = None, losses = None, **kwargs):
+        def step(
+            self,
+            *args,
+            target = None,
+            losses = None,
+            **kwargs,
+        ):
             pass
 
     if _torch_pipelining_error() is None:
