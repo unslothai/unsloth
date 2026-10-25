@@ -1301,6 +1301,29 @@ def _enable_flex_attention_support(model_class, model_type = ""):
     return True
 
 
+# Inductor's head_dim 256 flex template; with less, Gemma 3's flex backward is wrong (#14439).
+_FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY = 151552
+
+
+def _flex_preferred_fits(config):
+    """False when a visible CUDA card lacks that shared memory; fails open on ROCm / no CUDA."""
+    head_dim = _text_attention_head_dim(config)
+    if head_dim is None or not (
+        _SDPA_FLASH_MAX_HEAD_DIM < head_dim <= _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM
+    ):
+        return True
+    try:
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return True
+        return all(
+            torch.cuda.get_device_properties(index).shared_memory_per_block_optin
+            >= _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return True
+
+
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
@@ -1309,6 +1332,8 @@ def _supports_flex_attention(model_class, config, model_type):
     if _is_flex_excluded(model_type):
         return False
     if not _flex_attention_gpu_is_supported():
+        return False
+    if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -5698,7 +5723,10 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
-            _refuse_tensor_parallel_for_trainer(model)
+            # Unsloth tensor parallel model (apply_tensor_parallel): no DDP over the tp ranks, dataloader
+            # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
+            _refuse_pipeline_parallel_for_trainer(model)
+            tensor_parallel = _tensor_parallel_trainer_pre(model)
             from ..fsdp2_launch import unsloth_fsdp2_native_requested
 
             # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
@@ -5724,6 +5752,9 @@ def patch_gradient_accumulation_fix(Trainer):
             _original_trainer_init(self, *args, **kwargs)
             if native_fsdp2:
                 native_fsdp2_trainer_setup(self, phase = "post")
+            if tensor_parallel:
+                from .tp_native import tp_trainer_setup
+                tp_trainer_setup(phase = "post", trainer = self)
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (
@@ -5804,18 +5835,29 @@ def _is_unsloth_pipeline_parallel(model):
 
 
 def _refuse_tensor_parallel_for_trainer(model):
+    """Trainer(model_init = ...): the model it returns is built after the Trainer set up its accelerator."""
     if _is_unsloth_tensor_parallel(model):
         raise RuntimeError(
-            "Unsloth: a tensor parallel model (apply_tensor_parallel) cannot be trained by the "
-            "Trainer yet: accelerate would wrap the tensor parallel ranks in DDP. Use a custom "
-            "training loop (unsloth/models/tp_native.py)."
+            "Unsloth: a tensor parallel model (apply_tensor_parallel) returned by model_init cannot be "
+            "trained by the Trainer; build it first and pass Trainer(model = model)."
         )
+    _refuse_pipeline_parallel_for_trainer(model)
+
+
+def _refuse_pipeline_parallel_for_trainer(model):
     if _is_unsloth_pipeline_parallel(model):
         raise RuntimeError(
             "Unsloth: a pipeline parallel model (apply_pipeline_parallel) cannot be trained by the "
             "Trainer yet: each rank holds one stage, and a stage cannot run a forward alone. Use a custom "
             "training loop with PipelineParallel.step (unsloth/models/pp_native.py)."
         )
+
+
+def _tensor_parallel_trainer_pre(model):
+    if not _is_unsloth_tensor_parallel(model):
+        return False
+    from .tp_native import tp_trainer_setup
+    return tp_trainer_setup(model, phase = "pre")
 
 
 def _refuse_tensor_parallel_for_inference(model):
