@@ -104,7 +104,9 @@ def test_assignment_after_construction_is_explicit():
         gradient_checkpointing: bool = True
 
         def __post_init__(self):
-            self.gradient_checkpointing = self.gradient_checkpointing  # assignments inside __init__ do not count
+            self.gradient_checkpointing = (
+                self.gradient_checkpointing
+            )  # assignments inside __init__ do not count
 
     assert module.track_explicit_gradient_checkpointing(Config)
     assert Config().__dict__[module.EXPLICIT_FLAG] is False
