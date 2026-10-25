@@ -190,7 +190,6 @@ function makeWorld(options: {
     "@/features/hub": { formatBytes: (bytes: number) => `${bytes} B` },
     "@/i18n": { useT: () => t },
     "@/lib/api-base": apiStubs["@/lib/api-base"],
-    "@/lib/chevron-icons": { ChevronDownDoubleStandardIcon: [] },
     "@/lib/strip-ansi": { stripAnsi: (value: string) => value },
     "@/lib/toast": { toast },
     "@/lib/utils": {
@@ -198,6 +197,7 @@ function makeWorld(options: {
     },
     "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
     "@hugeicons/react": { HugeiconsIcon: () => null },
+    "lucide-react": { ArrowDownIcon: () => null },
     "../api/debug-logs": api,
     "../components/settings-row": {
       SettingsRow: (props: { label: string; children?: React.ReactNode }) =>

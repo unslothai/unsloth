@@ -13,6 +13,7 @@ import {
 
 import {
   FolderAddIcon,
+  PlusSignIcon,
   Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -1842,7 +1843,8 @@ export function DiffusionTrainPanel({
             className={cn(
               fieldClass,
               "rounded-lg transition-colors",
-              dropActive && "outline-2 outline-dashed outline-offset-4 outline-primary/60",
+              dropActive &&
+                "outline-2 outline-dashed outline-offset-4 outline-wash-30 dark:outline-wash-60",
             )}
             onDragOver={(e) => {
               // tauri consumes os drags before the webview, as the chat composer notes.
@@ -1926,11 +1928,11 @@ export function DiffusionTrainPanel({
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="h-8 shrink-0 gap-1.5 px-3 text-xs"
+                    className="shrink-0 gap-1.5 text-xs"
                     onClick={() => addInputRef.current?.click()}
                     disabled={uploading}
                   >
-                    <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
+                    <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Add"}
                   </Button>
                   <FolderPickButton disabled={uploading} onPick={() => pickFolder(dataset)} />
@@ -1994,7 +1996,7 @@ export function DiffusionTrainPanel({
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="h-8 shrink-0 gap-1.5 px-3 text-xs"
+                    className="shrink-0 gap-1.5 text-xs"
                     onClick={() => {
                       if (!uploadName.trim()) {
                         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
@@ -2146,8 +2148,9 @@ export function DiffusionTrainPanel({
           className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8"
         >
           <Button
+            variant="dark"
             type="button"
-            className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+            className="relative z-10 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
             onClick={onStart}
             disabled={starting || uploading || running || familyUntrainable}
           >
@@ -2398,6 +2401,7 @@ export function DiffusionTrainPanel({
                   <div className="flex flex-wrap gap-2">
                     {liveRunSummary?.can_resume && status.job_id && (
                       <Button
+                        variant="dark"
                         type="button"
                         className="flex-1"
                         onClick={() => void onResume(status.job_id as string)}

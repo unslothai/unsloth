@@ -461,6 +461,16 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_qwenimage21_fused import uninstall
         uninstall()
 
+    def moss_fused(ctx: PatchContext) -> Any:
+        from ..diffusion_moss_fused import install
+        return install(
+            ctx.transformer,
+            ctx.logger,
+            offload_active = ctx.offload_active
+            if ctx.denoiser_offloaded is None
+            else bool(ctx.denoiser_offloaded),
+        )
+
     return [
         # Shared compile-safe fusions (RMSNorm / AdaLN) and the per-arch addcmul fusions: speed tiers only.
         PatchSpec(
@@ -558,5 +568,15 @@ def _builtin_specs() -> list[PatchSpec]:
             classes = ("QwenImage21Transformer2DModel",),
             warn = "qwen-image-2.1 convrot sharing",
             env = "UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED",
+        ),
+        PatchSpec(
+            "moss_fused",
+            STAGE_PRE_COMPILE,
+            moss_fused,
+            None,
+            group = GROUP_FUSED_DIT,
+            classes = ("MOSSImageTransformer",),
+            warn = "moss-image fused projections",
+            env = "UNSLOTH_DIFFUSION_MOSS_FUSED",
         ),
     ]
