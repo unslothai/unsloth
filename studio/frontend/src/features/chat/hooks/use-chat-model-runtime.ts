@@ -905,6 +905,17 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
   notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
 }
 
+/** Off unloads idle kept models after the reply: wait for them to go, or the picker keeps listing them. */
+export async function resyncInferenceStatusAfterKeptModelsUnload(): Promise<void> {
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const status = await getInferenceStatus().catch(() => null);
+    if (!status || (status.serving?.length ?? 0) <= 1) break;
+  }
+  await syncInferenceStatusToStore({ includeLoras: false, quiet: true });
+  notifyModelLifecycle({ runtime: "chat", loading: false, model: null });
+}
+
 function pickOf(info: {
   id: string;
   ggufVariant?: string | null;
