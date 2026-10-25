@@ -85,6 +85,46 @@ if loader == "unit":
     }
     _apply_user_rope_scaling(cfg, new)
     assert cfg.rope_parameters == new
+    # Entries without rope_theta keep the layer type's base (Gemma 3's rotary init indexes it).
+    cfg = Cfg()
+    _apply_user_rope_scaling(
+        cfg,
+        {
+            "full_attention": {"rope_type": "yarn", "factor": 4.0},
+            "sliding_attention": {"rope_type": "default"},
+        },
+    )
+    assert cfg.rope_parameters == {
+        "full_attention": {"rope_type": "yarn", "factor": 4.0, "rope_theta": 1e6},
+        "sliding_attention": {"rope_type": "default", "rope_theta": 1e4},
+    }, cfg.rope_parameters
+
+    from unsloth.models.vision import _vllm_rope_scaling
+
+    assert _vllm_rope_scaling(yarn, True) == yarn
+    for args in ((new, True), (yarn, False)):
+        try:
+            _vllm_rope_scaling(*args)
+            raise AssertionError(f"vLLM RoPE override accepted: {args}")
+        except NotImplementedError:
+            pass
+    # fast_inference: load_vllm reads config.json itself, so the override must be forwarded.
+    import ast, inspect, textwrap
+    import unsloth.models.vision as vision
+
+    source = inspect.getsource(vision.FastBaseModel.from_pretrained)
+    forwarded = [
+        node
+        for node in ast.walk(ast.parse(textwrap.dedent(source)))
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Subscript)
+            and getattr(t.value, "id", None) == "load_vllm_kwargs"
+            and getattr(t.slice, "value", None) == "rope_scaling"
+            for t in node.targets
+        )
+    ]
+    assert forwarded, "load_vllm_kwargs never receives rope_scaling"
     print("OK", unsloth.__file__)
     sys.exit(0)
 yarn = {"rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 40960}

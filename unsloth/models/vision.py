@@ -45,9 +45,38 @@ def _apply_user_rope_scaling(config, rope_scaling):
                 "Unsloth: this model keeps one RoPE setting per layer type "
                 f"({sorted(current)}); pass rope_scaling as a dict keyed by those layer types."
             )
-        target.rope_parameters = {k: dict(v) for k, v in scaling.items()}
+        # Gemma 3's rotary init indexes rope_parameters[layer_type]["rope_theta"]: keep each base.
+        target.rope_parameters = {
+            k: {
+                **{
+                    key: current[k][key]
+                    for key in ("rope_theta", "partial_rotary_factor")
+                    if key in current[k]
+                },
+                **v,
+            }
+            for k, v in scaling.items()
+        }
         return
     target.rope_scaling = _user_rope_scaling(target, scaling)
+
+
+def _vllm_rope_scaling(rope_scaling, load_vllm_takes_it):
+    """The caller's RoPE override for load_vllm (flat dicts only)."""
+    from .llama import _rope_scaling_as_dict
+
+    scaling = _rope_scaling_as_dict(rope_scaling)
+    if not load_vllm_takes_it or (scaling and all(isinstance(v, dict) for v in scaling.values())):
+        raise NotImplementedError(
+            "Unsloth: fast_inference = True cannot pass this rope_scaling to vLLM"
+            + (
+                " (one RoPE setting per layer type)"
+                if load_vllm_takes_it
+                else " (this unsloth_zoo's load_vllm has no rope_scaling argument; upgrade unsloth_zoo)"
+            )
+            + ", so generation would not match training. Load with fast_inference = False."
+        )
+    return dict(scaling)
 
 
 def _embeddings_or_none(model, getter):
@@ -4096,6 +4125,13 @@ class FastBaseModel:
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
         if user_rope_scaling is not None:
+            if fast_inference and is_vLLM_available():
+                import inspect as _inspect
+                from unsloth_zoo.vllm_utils import load_vllm as _load_vllm
+
+                _vllm_rope_scaling(
+                    user_rope_scaling, "rope_scaling" in _inspect.getfullargspec(_load_vllm).args
+                )
             _apply_user_rope_scaling(model_config, user_rope_scaling)
 
         verify_fp8_support_if_applicable(
@@ -4358,6 +4394,12 @@ class FastBaseModel:
                 for allowed_arg in allowed_args:
                     if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
                         load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
+                # vLLM reads config.json itself: the RoPE override must reach it too, else rollouts
+                # run the checkpoint's RoPE while training runs the caller's.
+                if user_rope_scaling is not None:
+                    load_vllm_kwargs["rope_scaling"] = _vllm_rope_scaling(
+                        user_rope_scaling, "rope_scaling" in allowed_args
+                    )
 
                 llm = load_vllm(**load_vllm_kwargs)
 
