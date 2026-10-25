@@ -142,6 +142,32 @@ def calculate_settings(
     return BLOCK_SIZE, num_warps
 
 
+# UNSLOTH_NORM_ARCH_WARPS=0 keeps calculate_settings' warps in the LayerNorm / RMSNorm kernels.
+_NORM_ARCH_WARPS = os.environ.get("UNSLOTH_NORM_ARCH_WARPS", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _cuda_capability(index):
+    return tuple(torch.cuda.get_device_capability(index))
+
+
+def norm_num_warps(table, n_cols, num_warps, device):
+    """num_warps from table[(capability, n_cols)] for CUDA devices, else the default."""
+    if not _NORM_ARCH_WARPS or device is None or device.type != "cuda" or torch.version.hip:
+        return num_warps
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    if torch.compiler.is_compiling():
+        capability = tuple(torch.cuda.get_device_capability(index))
+    else:
+        capability = _cuda_capability(index)
+    return table.get((capability, n_cols), num_warps)
+
+
 HAS_CUDA_STREAM = False
 try:
     import bitsandbytes as bnb
@@ -445,7 +471,11 @@ def _is_packed_state(quant_state):
 def get_lora_parameters(proj):
     """Return (weight, weight quant_state, lora A, lora B, lora scale).
     With QAT enabled, also fake-quantizes the base layer and lora weights.
+    Tensor parallel projections (models/tp_native.py) return local shards of their DTensors.
     """
+    localize = proj.__dict__.get("_unsloth_tp_local")
+    if localize is not None:
+        return localize(proj)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)
@@ -513,6 +543,9 @@ def get_lora_parameters(proj):
 
 
 def get_lora_parameters_bias(proj):
+    localize = proj.__dict__.get("_unsloth_tp_local")
+    if localize is not None:
+        return localize(proj, bias = True)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)

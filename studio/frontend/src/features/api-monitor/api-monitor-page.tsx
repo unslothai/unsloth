@@ -46,8 +46,8 @@ import {
   CodeIcon,
   ComputerTerminal01Icon,
   Copy01Icon,
-  CursorPointer02Icon,
   Delete02Icon,
+  FileSearchIcon,
   FlashIcon,
   PauseIcon,
   PlayIcon,
@@ -306,7 +306,7 @@ function Stat({
       <span className="truncate text-ui-12 text-muted-foreground">{label}</span>
       <span
         className={cn(
-          "truncate text-ui-21 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground",
+          "truncate font-heading text-ui-21 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground",
           value === "–" && "text-muted-foreground/70",
           tone === "error" && "text-red-600 dark:text-red-400",
           tone === "active" && "text-blue-600 dark:text-blue-400",
@@ -876,7 +876,7 @@ function QuickStart({
         variant="outline"
         size="sm"
         onClick={openApiSettings}
-        className="h-8 gap-1.5 rounded-full"
+        className="gap-1.5 rounded-full"
       >
         <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
         Create an API key and see more examples
@@ -1405,7 +1405,7 @@ export function ApiMonitorPage(): ReactElement {
                       : ejectServed(served[0]))
                   }
                   disabled={ejecting || modelLoading || served.length === 0}
-                  className="h-9 gap-1.5 rounded-full px-3.5"
+                  className="gap-1.5 rounded-full"
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -1597,7 +1597,7 @@ export function ApiMonitorPage(): ReactElement {
                   aria-current={active ? "page" : undefined}
                   onClick={() => setStatusFilter(option.value)}
                   className={cn(
-                    "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
+                    "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 font-heading text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
                     active &&
                       "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
                   )}
@@ -1757,7 +1757,7 @@ export function ApiMonitorPage(): ReactElement {
                       setStatusFilter("all");
                       setModelFilter(ALL_MODELS);
                     }}
-                    className="h-8 rounded-full"
+                    className="rounded-full"
                   >
                     Clear filters
                   </Button>
@@ -1791,14 +1791,14 @@ export function ApiMonitorPage(): ReactElement {
                     )}
                   >
                     <HugeiconsIcon
-                      icon={CursorPointer02Icon}
+                      icon={FileSearchIcon}
                       strokeWidth={1.75}
                       className="size-5"
                     />
                   </span>
                   <p className="max-w-xs text-sm text-muted-foreground">
-                    Select a request to inspect its prompt, reply, tokens and
-                    errors. Use the arrow keys to step through the list.
+                    Select a request to see its details. Arrow keys move
+                    through the list.
                   </p>
                 </div>
               )}

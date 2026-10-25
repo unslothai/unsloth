@@ -619,3 +619,58 @@ def test_h200_nvl_uses_its_own_dense_peak(monkeypatch):
     for name, peak in (("NVIDIA H200 NVL", 835.5), ("NVIDIA H200", 989.0)):
         monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
         assert mfu.get_peak_tflops(dtype = torch.bfloat16) == peak, name
+
+
+def test_checkpointing_splits_mfu_from_hfu(tmp_path, monkeypatch):
+    """train_mfu leaves out the forward that checkpointing recomputes; train_hfu charges it."""
+    from transformers import Trainer, TrainingArguments
+
+    monkeypatch.setenv("UNSLOTH_PEAK_TFLOPS", "1")
+    rows = [
+        {"input_ids": [1, 2, 3, 4], "attention_mask": [1, 1, 1, 0], "labels": [1, 2, 3, -100]},
+        {"input_ids": [5, 6, 7, 8], "attention_mask": [1, 1, 0, 0], "labels": [5, 6, -100, -100]},
+    ]
+    dataset = [{k: torch.tensor(v) for k, v in row.items()} for row in rows]
+
+    def run(checkpointing):
+        trainer = Trainer(
+            model = _model(),
+            args = TrainingArguments(
+                output_dir = str(tmp_path),
+                per_device_train_batch_size = 2,
+                max_steps = 1,
+                logging_steps = 1,
+                report_to = [],
+                use_cpu = True,
+                save_strategy = "no",
+                gradient_checkpointing = checkpointing,
+            ),
+            train_dataset = dataset,
+        )
+        mfu.add_mfu_callback(trainer)
+        trainer.train()
+        return [entry for entry in trainer.state.log_history if "loss" in entry][0]
+
+    entry = run(True)
+    # Per step: 5 tokens (lengths 3 and 2), 9 causal pairs, full head on every token.
+    pair = 2 * 2 * 4 * (4 + 4)
+    model_flops = 5 * 6 * LAYERS + 5 * 6 * HEAD + 9 * 3 * pair
+    hw_flops = 5 * 8 * LAYERS + 5 * 6 * HEAD + 9 * 4 * pair
+    assert entry["train_hfu"] / entry["train_mfu"] == pytest.approx(hw_flops / model_flops)
+    assert entry["train_mfu"] == pytest.approx(entry["train_tflops_per_gpu"])
+    assert entry["train_hfu"] == pytest.approx(entry["train_hw_tflops_per_gpu"])
+    plain = run(False)
+    assert plain["train_hfu"] == pytest.approx(plain["train_mfu"])
+
+
+def test_blackwell_dense_peaks(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for name, peak in (
+        ("NVIDIA B200", 2250.0),
+        ("NVIDIA B300 SXM6 AC", 2250.0),
+        ("NVIDIA GB200", 2500.0),
+        ("NVIDIA GB300", 2500.0),
+    ):
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
+        assert mfu.get_peak_tflops(dtype = torch.bfloat16) == peak, name

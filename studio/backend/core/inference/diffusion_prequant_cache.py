@@ -454,6 +454,7 @@ def lookup(
     base_repo: Optional[str],
     component: str = "transformer",
     logger: Any = None,
+    source_base: Optional[str] = None,
 ) -> Optional[str]:
     """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises."""
     if not enabled() or scheme not in CACHEABLE_SCHEMES:
@@ -463,7 +464,13 @@ def lookup(
         key = shards = None
         # Every shard set: a repo without refs/main may hold several commit-pinned snapshots.
         seen: set = set()
-        for candidate in (source_shards(source, component), *_shard_sets(source, component)):
+        # Serve only a build of the exact shards already loaded; other snapshots may differ under the same keys.
+        candidates = (
+            (source_shards(source_base, component),)
+            if source_base
+            else (source_shards(source, component), *_shard_sets(source, component))
+        )
+        for candidate in candidates:
             if not candidate or tuple(candidate) in seen:
                 continue
             seen.add(tuple(candidate))

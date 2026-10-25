@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -434,6 +435,7 @@ import {
   UndoIcon,
   VolumeMute02Icon,
   WorkflowCircle05Icon,
+  Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshGlyph } from "@/lib/refresh-icon";
@@ -443,7 +445,6 @@ import {
   ArrowUpIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  HeadphonesIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -2904,7 +2905,7 @@ const PendingAudioChip: FC = () => {
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
       <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
-        <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+        <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
         <button
           type="button"
@@ -8292,7 +8293,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
           type="button"
           size="sm"
           variant="secondary"
-          className="h-7 shrink-0 gap-1.5 text-xs"
+          className="shrink-0 gap-1.5 text-xs"
           onClick={() => {
             startContinuation();
           }}
@@ -8917,7 +8918,7 @@ const DeleteMessageButton: FC = () => {
 };
 
 const MORE_MENU_CONTENT_CLASS =
-  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
+  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(8px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
 
 // Loaded on first use: the dialog is not part of the first screen.
 const LazyRewindDialog = lazy(() =>
@@ -9282,10 +9283,50 @@ const UserMessageAudio: FC = () => {
   return (
     <div className="col-start-2 flex justify-end">
       <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
-        <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+        <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
       </div>
     </div>
+  );
+};
+
+const SCHEDULED_REPLY_KEY = "scheduled-task-replies";
+
+function scheduledTaskIdOf(custom: unknown): string | null {
+  const source = (custom as { scheduledTask?: { taskId?: unknown } } | undefined)?.scheduledTask;
+  return typeof source?.taskId === "string" ? source.taskId : null;
+}
+
+/** "Sent by scheduled task" over a task run's prompt; the reply carries the mark too, surviving rewrites. */
+const ScheduledTaskSource: FC = () => {
+  const t = useT();
+  const navigate = useNavigate();
+  const taskId = useAuiState(({ thread, message }) => {
+    const own = scheduledTaskIdOf(message.metadata?.custom);
+    if (own) return own;
+    // One pass per messages snapshot, not a search per prompt per streamed token.
+    const byPrompt = memoOnArrayByKey(thread.messages, SCHEDULED_REPLY_KEY, () => {
+      const map = new Map<string, string>();
+      thread.messages.forEach((entry, index) => {
+        const reply = thread.messages[index + 1];
+        const replyTask =
+          reply?.role === "assistant" ? scheduledTaskIdOf(reply.metadata?.custom) : null;
+        if (replyTask) map.set(entry.id, replyTask);
+      });
+      return map;
+    });
+    return byPrompt.get(message.id) ?? null;
+  });
+  if (!taskId) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => void navigate({ to: "/tasks", search: { edit: taskId } })}
+      className="inline-flex cursor-pointer items-center gap-1.5 rounded-md text-ui-13 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-3.5" />
+      {t("scheduledTasks.sentBy")}
+    </button>
   );
 };
 
@@ -9302,6 +9343,7 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
+      <ScheduledTaskSource />
       <UserMessageAttachments />
       <UserMessageAudio />
 
