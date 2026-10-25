@@ -263,6 +263,16 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
     /\(\(selectedSet !== null \|\| customName !== null\) && extraArgsBlocked\)/,
   );
   assert.match(page, /if \(keep && extraArgsBlocked\) \{/);
+  // The name box's Save and Enter reach handleSave, so it holds the Save button's readiness gates.
+  assert.match(
+    page,
+    /const handleSave = [\s\S]{0,400}if \(stagedMetadataPending \|\| budgetSettling\) \{\s*return false;/,
+  );
+  // No pick or Reset before the server copy is read: it could not forget a row it has not seen.
+  assert.match(
+    page,
+    /disabled=\{sharedVariantUnresolved \|\| extraArgsHydrating\}/,
+  );
   // Editing Default shows the name it will be saved under; Save uses it without asking.
   assert.match(
     page,
@@ -272,7 +282,7 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
   // Reset goes back to Default settings at once, not just the panel values.
   assert.match(
     page,
-    /disabled=\{atDefault && selectedSet === null\}[\s\S]{0,120}onClick=\{\(\) => pickSet\(null\)\}/,
+    /disabled=\{\(atDefault && selectedSet === null\) \|\| extraArgsHydrating\}[\s\S]{0,160}onClick=\{\(\) => pickSet\(null\)\}/,
   );
   // The pencil beside the dropdown renames a set, or names an edited Default before it exists.
   assert.match(

@@ -3895,6 +3895,10 @@ export function ModelConfigPage({
     if (sharedVariantUnresolved) {
       return false;
     }
+    // As the Save button: the name box's Save and Enter must not persist before these settle.
+    if (stagedMetadataPending || budgetSettling) {
+      return false;
+    }
     const keep = into !== null;
     if (keep && extraArgsBlocked) {
       toast.error("Fix the extra arguments before saving.");
@@ -4351,7 +4355,8 @@ export function ModelConfigPage({
           customName={naming ? null : customName}
           onEditName={editName}
           naming={naming}
-          disabled={sharedVariantUnresolved}
+          // Until the server copy is read: a pick before then could not forget a row it has not seen.
+          disabled={sharedVariantUnresolved || extraArgsHydrating}
           onPick={pickSet}
           onNamingChange={setNaming}
           onNamingSubmit={submitNaming}
@@ -4414,7 +4419,7 @@ export function ModelConfigPage({
             variant="outline"
             size="sm"
             className="text-muted-foreground"
-            disabled={atDefault && selectedSet === null}
+            disabled={(atDefault && selectedSet === null) || extraArgsHydrating}
             // Back to Default settings, effective at once like picking it in the dropdown.
             onClick={() => pickSet(null)}
           >
