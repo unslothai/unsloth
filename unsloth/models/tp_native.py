@@ -1514,6 +1514,9 @@ def save_tp_adapter(model, save_directory, **kwargs):
 # load-time peak is the replicated parts plus 1 / tp of the attention / MLP weights, never the whole model.
 
 _PRELOADED = "_unsloth_tp_preloaded"
+_TP_QUANTIZED_HINT = (
+    "Load 4-bit / 8-bit / quantized models in full and call apply_tensor_parallel, or pass load_in_4bit = False."
+)
 _UNSUPPORTED_LOAD_KWARGS = (
     "load_in_4bit",
     "load_in_8bit",
@@ -1697,6 +1700,12 @@ class _SliceReader:
         self.slice_bytes += t.numel() * t.element_size()
         return t
 
+    def rows(self, key, start, stop):
+        """Rows [start, stop) of dim 0 (an FSDP2 chunk); only those bytes are read."""
+        t = self._open(key).get_slice(key)[start:stop]
+        self.slice_bytes += t.numel() * t.element_size()
+        return t
+
 
 def _checkpoint_key(names, model, index):
     prefix = getattr(_unwrap(model), "base_model_prefix", "") or ""
@@ -1726,20 +1735,8 @@ def _buffer_skeleton(model):
             torch.set_default_dtype(previous)
 
 
-def _materialize_sharded(model, name, kwargs, mesh, plan, device):
-    """Fill a meta model from the checkpoint: replicated tensors whole, sharded projections as local slices."""
-    tp, rank = mesh.size(), mesh.get_local_rank()
-    tp_plan = derive_tp_plan(model, tp, plan)
-    shards = {}
-    for region in tp_plan.regions:
-        for proj in region.projs:
-            weight, base = _weight(proj.module)
-            col = proj.style == COLWISE
-            shards[id(weight)] = (proj, 0 if col else 1, proj.parts if col else (weight.shape[1],))
-            if base.bias is not None and col:
-                shards[id(base.bias)] = (proj, 0, proj.parts)
-    index = _checkpoint_index(name, kwargs)
-    reader = _SliceReader(index)
+def _parameter_slots(model):
+    """{id(parameter): (parameter, [(module, name)], [qualified names])}: tied parameters are one slot."""
     slots = {}
     for module_name, module in model.named_modules(remove_duplicate = False):
         for pname, p in module._parameters.items():
@@ -1747,36 +1744,43 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
                 entry = slots.setdefault(id(p), (p, [], []))
                 entry[1].append((module, pname))
                 entry[2].append(f"{module_name}.{pname}" if module_name else pname)
+    return slots
+
+
+def _fill_from_checkpoint(
+    model,
+    name,
+    kwargs,
+    device,
+    read_local,
+    label = "tensor parallel",
+    fallback = "full load, then apply_tensor_parallel",
+):
+    """Fill a meta model from its safetensors checkpoint. `read_local(old, reader, key)` returns this rank's
+    Parameter for a sharded tensor (reading only its bytes) or None, and then the tensor is read whole.
+    Meta buffers come from the checkpoint or a meta-parameter skeleton of the same class (RoPE tables).
+    Returns (reader, sharded numel, whole numel)."""
+    index = _checkpoint_index(name, kwargs)
+    reader = _SliceReader(index)
     sharded_numel = full_numel = 0
-    for pid, (old, where, names) in slots.items():
+    for old, where, names in _parameter_slots(model).values():
         key = _checkpoint_key(names, model, index)
         if key is None:
             raise ValueError(
-                f"Unsloth: tensor parallel sharded loading found no checkpoint tensor for '{names[0]}'; load "
-                "this model without sharded loading (full load, then apply_tensor_parallel)."
+                f"Unsloth: {label} sharded loading found no checkpoint tensor for '{names[0]}'; load "
+                f"this model without sharded loading ({fallback})."
             )
         if reader.shape(key) != tuple(old.shape):
             raise ValueError(
                 f"Unsloth: checkpoint tensor '{key}' has shape {reader.shape(key)}, the model expects "
                 f"{tuple(old.shape)}."
             )
-        shard = shards.get(pid)
-        if shard is None:
+        new = read_local(old, reader, key)
+        if new is None:
             value = reader.full(key).to(device = device, dtype = old.dtype)
             new = nn.Parameter(value, requires_grad = old.requires_grad)
             full_numel += old.numel()
         else:
-            proj, dim, parts = shard
-            local = reader.slice(key, dim, parts, rank, tp).to(device = device, dtype = old.dtype)
-            # A plain local tensor tagged with its full shape: nn.Linear keeps the full in / out features, so
-            # get_peft_model builds full-size LoRA factors with the 1-GPU init (a DTensor would make PEFT size
-            # them from the shard). apply_tensor_parallel wraps it into the DTensor.
-            new = nn.Parameter(local.contiguous(), requires_grad = old.requires_grad)
-            if len(parts) > 1:
-                new._unsloth_tp_parts = (dim, tuple(parts))
-            new._unsloth_tp_full_shape = tuple(old.shape)
-            new._unsloth_tp_preload_ranks = mesh.mesh.tolist()
-            setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
             sharded_numel += old.numel()
         for module, pname in where:
             module._parameters[pname] = new
@@ -1794,14 +1798,48 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
                 if value.is_meta:
                     raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
             module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
+    if isinstance(getattr(model, "hf_device_map", None), dict):
+        model.hf_device_map = {"": device.index if device.type == "cuda" else device.type}
+    return reader, sharded_numel, full_numel
+
+
+def _materialize_sharded(model, name, kwargs, mesh, plan, device):
+    """Fill a meta model from the checkpoint: replicated tensors whole, sharded projections as local slices."""
+    tp, rank = mesh.size(), mesh.get_local_rank()
+    tp_plan = derive_tp_plan(model, tp, plan)
+    shards = {}
+    for region in tp_plan.regions:
+        for proj in region.projs:
+            weight, base = _weight(proj.module)
+            col = proj.style == COLWISE
+            shards[id(weight)] = (proj, 0 if col else 1, proj.parts if col else (weight.shape[1],))
+            if base.bias is not None and col:
+                shards[id(base.bias)] = (proj, 0, proj.parts)
+
+    def read_local(old, reader, key):
+        shard = shards.get(id(old))
+        if shard is None:
+            return None
+        proj, dim, parts = shard
+        local = reader.slice(key, dim, parts, rank, tp).to(device = device, dtype = old.dtype)
+        # A plain local tensor tagged with its full shape: nn.Linear keeps the full in / out features, so
+        # get_peft_model builds full-size LoRA factors with the 1-GPU init (a DTensor would make PEFT size
+        # them from the shard). apply_tensor_parallel wraps it into the DTensor.
+        new = nn.Parameter(local.contiguous(), requires_grad = old.requires_grad)
+        if len(parts) > 1:
+            new._unsloth_tp_parts = (dim, tuple(parts))
+        new._unsloth_tp_full_shape = tuple(old.shape)
+        new._unsloth_tp_preload_ranks = mesh.mesh.tolist()
+        setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
+        return new
+
+    reader, sharded_numel, full_numel = _fill_from_checkpoint(model, name, kwargs, device, read_local)
     for region in tp_plan.regions:
         for proj in region.projs:
             base = _weight(proj.module)[1]
             base.__dict__["_unsloth_tp_load_guard"] = base.register_forward_pre_hook(
                 _refuse_unapplied_forward
             )
-    if isinstance(getattr(model, "hf_device_map", None), dict):
-        model.hf_device_map = {"": device.index if device.type == "cuda" else device.type}
     stats = {
         "tp": tp,
         "rank": rank,
@@ -1834,16 +1872,16 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     if state["active"]:
         return original(cls, name, *args, **kwargs)  # a nested load inside from_pretrained
     config = kwargs.get("config")
+    label = state.get("label", "tensor parallel")
     for key in _UNSUPPORTED_LOAD_KWARGS:
         if kwargs.get(key) or (key == "quantization_config" and getattr(config, key, None)):
             raise ValueError(
-                f"Unsloth: tensor parallel sharded loading supports 16-bit safetensors checkpoints only "
-                f"(got {key}). Load 4-bit / 8-bit / quantized models in full and call apply_tensor_parallel, "
-                "or pass load_in_4bit = False."
+                f"Unsloth: {label} sharded loading supports 16-bit safetensors checkpoints only "
+                f"(got {key}). {state.get('quantized_hint', _TP_QUANTIZED_HINT)}"
             )
     mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
     if mesh.ndim != 1:
-        raise ValueError("Unsloth: sharded_loading takes a 1-D tp mesh (pass mesh['tp']).")
+        raise ValueError(state.get("mesh_hint", "Unsloth: sharded_loading takes a 1-D tp mesh (pass mesh['tp'])."))
     device = _load_device(kwargs.get("device_map"), mesh)
     kwargs = dict(kwargs, device_map = "meta")
     state["active"] = True
@@ -1857,10 +1895,11 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
         model.config, "quantization_config", None
     ):
         raise ValueError(
-            "Unsloth: tensor parallel sharded loading supports 16-bit checkpoints only; this checkpoint is "
-            "pre-quantized. Load it in full and call apply_tensor_parallel."
+            f"Unsloth: {label} sharded loading supports 16-bit checkpoints only; this checkpoint is "
+            f"pre-quantized. {state.get('prequantized_hint', 'Load it in full and call apply_tensor_parallel.')}"
         )
-    _materialize_sharded(model, name, kwargs, mesh, state["plan"], device)
+    materialize = state.get("materialize", _materialize_sharded)
+    materialize(model, name, kwargs, mesh, state["plan"], device)
     state["models"].append(model)
     return model
 
@@ -1871,7 +1910,7 @@ def _world_mesh():
 
     if not dist.is_initialized():
         raise RuntimeError(
-            "Unsloth: tensor parallel sharded loading needs an initialized process group (torchrun) or a tp_mesh."
+            "Unsloth: sharded loading needs an initialized process group (torchrun) or a mesh."
         )
     device_type = "cuda" if torch.cuda.is_available() else "cpu"
     return init_device_mesh(device_type, (dist.get_world_size(),), mesh_dim_names = ("tp",))
@@ -1889,11 +1928,20 @@ def sharded_loading(tp_mesh = None, plan = None):
         model = FastLanguageModel.get_peft_model(model, ...)
         apply_tensor_parallel(model, mesh["tp"])  # required before the first forward
     """
+    with _sharded_from_pretrained({"mesh": tp_mesh, "plan": plan}) as state:
+        yield state
+
+
+@contextlib.contextmanager
+def _sharded_from_pretrained(state):
+    """Swap transformers' PreTrainedModel.from_pretrained for the meta build + checkpoint fill of `state`
+    (mesh, plan, materialize(model, name, kwargs, mesh, plan, device), message parts). Shared by tensor
+    parallel and native FSDP2 sharded loading."""
     from transformers import PreTrainedModel
 
     descriptor = PreTrainedModel.__dict__["from_pretrained"]
     original = descriptor.__func__
-    state = {"mesh": tp_mesh, "plan": plan, "models": [], "active": False}
+    state = dict(state, models = [], active = False)
 
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
         return _from_pretrained_sharded(

@@ -1459,6 +1459,10 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         torch.cuda.set_device(device)
     _warn_nccl2_memory(dist, device)
     mesh = config.mesh if config.mesh is not None else _default_mesh(device, dist)
+    from .fsdp2_load import begin_shard, finish_shard, gather_replicated
+
+    # fsdp2_sharded_loading chunks -> full-shape meta placeholders until fully_shard (empty otherwise).
+    pending = begin_shard(model, mesh, config)
     _sync_trainable_from_first_rank(model, dist, device, config.mesh)
     param_dtype = _resolve_param_dtype(model, config)
     mp_policy = MixedPrecisionPolicy(param_dtype = param_dtype, reduce_dtype = config.reduce_dtype)
@@ -1567,6 +1571,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         if layout.replicate_frozen:
             replicated.update(p for p in model.parameters() if not p.requires_grad)
         _refuse_units_sharing_params(model, units + list(extra_units), replicated)
+        gather_replicated(model, pending, replicated, mesh, also = (ignored,))
         if replicated:
             if not _supports_ignored_params(fully_shard):
                 raise RuntimeError(
@@ -1594,6 +1599,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 else None
             ),
         )
+        finish_shard(model, pending)
         model._unsloth_reshard_after_forward = False
     setattr(model, _NATIVE_FLAG, True)
     for param in model.parameters():
