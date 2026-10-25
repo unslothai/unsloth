@@ -252,6 +252,8 @@ def _chunked_cross_entropy_forward(
         logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
+    # All -inf chunk (masked vocab range): shift by 0 so logsumexp is -inf, not NaN.
+    c = tl.where(c == -float("inf"), 0.0, c)
     exp_logits = tl.exp(logits - c)
     logsumexp = c + tl.log(tl.sum(exp_logits, 0))
     # Only the chunk holding the label differs from its plain logsumexp.
@@ -467,8 +469,9 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 )
             # softplus(logsumexp(chunked_logsumexp_others) - x), with the -x done separately.
             logsumexp = torch.logsumexp(logsumexp, dim = 1)
+            # Out of place: in-place ops on the returned tensor zero its compiled grads (torch 2.11).
             losses = torch.nn.functional.softplus(torch.logsumexp(logsumexp_others, dim = 1) + losses)
-            losses.masked_fill_(labels == -100, 0)  # Don't forget to mask padding out!
+            losses = losses.masked_fill(labels == -100, 0)  # mask padding out
 
         ctx.save_for_backward(logits, logsumexp, losses, labels)
         ctx.DO_SOFTCAPPING = DO_SOFTCAPPING
