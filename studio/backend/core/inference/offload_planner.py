@@ -1898,7 +1898,7 @@ def _plan_at(
             return Plan(
                 n_ctx = n_ctx,
                 reason = (
-                    f"a partial spill ({len(moved)} of {len(spillable)} blocks) across "
+                    f"a partial spill ({_rung_description(units, layout)}) across "
                     f"{n_devices} devices cannot be checked against a pooled budget, "
                     "because llama.cpp assigns contiguous layer ranges per device and "
                     "-ot does not move a layer; leaving llama.cpp's own fitter to place it"
@@ -1983,6 +1983,29 @@ def _plan_at(
                     return rescued
         else:
             taken, freed = graded, graded_freed
+            # Every block moved and one card is still short: its own rows can cover that before
+            # the output head is given up.
+            if (
+                n_devices > 1
+                and not opts.trust_device_row_model
+                and _per_device_shortfall(
+                    layout,
+                    opts,
+                    n_ctx,
+                    _moved_by_index(taken),
+                    False,
+                    vram_bytes_per_device,
+                    **per_device_kw,
+                )
+                is not None
+            ):
+                per_device = _select_units_per_device(
+                    layout, opts, n_ctx, vram_bytes_per_device, **per_device_kw
+                )
+                if per_device is not None and needed - sum(u.nbytes for u in per_device) <= budget:
+                    taken = per_device
+                    freed = sum(u.nbytes for u in per_device)
+                    per_device_selected = True
         described = _rung_description(taken, layout)
         return attempt(
             taken,
