@@ -165,6 +165,13 @@ def norm_num_warps(table, n_cols, num_warps, device):
         capability = tuple(torch.cuda.get_device_capability(index))
     else:
         capability = _cuda_capability(index)
+    if not isinstance(n_cols, int):
+        # A symbolic width (fake run under torch.compile(dynamic=True)) cannot be hashed. Compare it only
+        # against this GPU's entries, so an untabled GPU adds no guard on the width.
+        for (table_capability, table_cols), warps in table.items():
+            if table_capability == capability and table_cols == n_cols:
+                return warps
+        return num_warps
     return table.get((capability, n_cols), num_warps)
 
 
