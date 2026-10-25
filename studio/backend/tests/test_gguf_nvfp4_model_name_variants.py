@@ -152,8 +152,7 @@ def test_each_download_plan_holds_exactly_its_own_file(repo):
     from hub.utils.gguf_plan import build_gguf_variant_plans
 
     siblings = [
-        SimpleNamespace(rfilename = name, size = 1 << 20, lfs = None)
-        for name in COMMUNITY_REPOS[repo]
+        SimpleNamespace(rfilename = name, size = 1 << 20, lfs = None) for name in COMMUNITY_REPOS[repo]
     ]
     plans = build_gguf_variant_plans(siblings)
     assert {key: set(plan.main_filenames) for key, plan in plans.items()} == {
