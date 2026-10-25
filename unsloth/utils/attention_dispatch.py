@@ -116,12 +116,22 @@ def _training_sdpa(*args, **kwargs):
     return scaled_dot_product_attention(*args, **kwargs)
 
 
+def _inference_sdpa(*args, **kwargs):
+    """SDPA for a non-training forward. A prefill (q_len == k_len) picks cuDNN attention too and pays
+    the same per-length plan build (one per new prompt length), so it is bucketed the same way."""
+    if len(args) >= 3 and _cudnn_length_bucket_applies(*args[:3], **kwargs):
+        return _cudnn_length_bucketed_sdpa(*args, **kwargs)
+    return scaled_dot_product_attention(*args, **kwargs)
+
+
 # Wherever SDPA picks cuDNN attention for a training call (H100 on torch 2.14: the default
 # priority), every new sequence length builds a new cuDNN plan, ~170 ms forward plus backward on
 # H100. Padded batches change length every step, so that cost landed on nearly every step. Padding
 # Q / K / V along the sequence to a multiple of this bucket bounds the plans to max_len / bucket.
-# Only causal calls with no mask and q_len == k_len: padded keys come after every real query, so
-# causal masking hides them and the real rows are what the unpadded call returns. 0 disables.
+# Causal calls with no mask: padded keys come after every real query, so causal masking hides them.
+# Masked calls (GRPO / DPO left padding): the mask is padded too, its new key columns masked out and
+# its new query rows attending everything (finite, and their zero output gradient adds nothing to
+# dK / dV). Either way q_len == k_len and the real rows are what the unpadded call returns. 0 disables.
 try:
     _CUDNN_LENGTH_BUCKET = max(int(os.environ.get("UNSLOTH_SDPA_CUDNN_BUCKET", "128")), 0)
 except ValueError:
@@ -143,12 +153,29 @@ def _cudnn_length_bucket_applies(
     # zero keys inside the global sequence.
     if get_cp_manager() is not None:
         return False
-    if attn_mask is not None or not is_causal or dropout_p:
+    if dropout_p or (attn_mask is None) != bool(is_causal):
         return False
     if not (isinstance(Q, Tensor) and Q.is_cuda and Q.dim() == 4 and K.dim() == 4 and V.dim() == 4):
         return False
     if Q.dtype not in (torch.float16, torch.bfloat16) or Q.shape[-2] != K.shape[-2]:
         return False
+    enable_gqa = True if kwargs.get("enable_gqa", False) else False
+    if attn_mask is not None:
+        if not _cudnn_bucket_mask_ok(attn_mask, Q, K):
+            return False
+        needs_grad = torch.is_grad_enabled() and (
+            Q.requires_grad or K.requires_grad or V.requires_grad
+        )
+        choice = _sdpa_masked_choice(
+            str(Q.device),
+            Q.dtype,
+            Q.shape[-1],
+            Q.shape[1],
+            K.shape[1],
+            enable_gqa,
+            True if needs_grad else False,
+        )
+        return choice == _CUDNN_CHOICE
     _, choice = _sdpa_backend_state(
         str(Q.device),
         Q.dtype,
@@ -156,9 +183,45 @@ def _cudnn_length_bucket_applies(
         Q.shape[1],
         K.shape[1],
         True,
-        bool(kwargs.get("enable_gqa", False)),
+        enable_gqa,
     )
     return choice == _CUDNN_CHOICE
+
+
+def _cudnn_bucket_mask_ok(attn_mask, Q, K):
+    """A 4D bool keep mask or Q-dtype additive mask, (bsz, heads | 1, q_len | 1, k_len), that takes
+    no gradient: the per-batch padding masks run_attention builds for left / right padded batches.
+    Batch-shared masks (cached windowed / packed masks, bsz 1) are left alone: one cached tensor
+    serves every layer, and a padded copy per layer would multiply its memory."""
+    if not isinstance(attn_mask, Tensor) or attn_mask.dim() != 4 or attn_mask.requires_grad:
+        return False
+    if attn_mask.dtype != torch.bool and attn_mask.dtype != Q.dtype:
+        return False
+    if attn_mask.device != Q.device or attn_mask.shape[-1] != K.shape[-2]:
+        return False
+    if attn_mask.shape[-2] != 1 and attn_mask.shape[-2] != Q.shape[-2]:
+        return False
+    if Q.shape[0] == 1 or attn_mask.shape[0] != Q.shape[0]:
+        return False
+    return attn_mask.shape[1] == 1 or attn_mask.shape[1] == Q.shape[1]
+
+
+def _sdpa_masked_choice(device, dtype, head_dim, n_heads, n_kv_heads, enable_gqa, needs_grad):
+    """SDPBackend SDPA picks for a masked, non-causal call with these shapes (-1 if unknown)."""
+    cuda = torch.backends.cuda
+    backends = (
+        cuda.flash_sdp_enabled(),
+        cuda.cudnn_sdp_enabled(),
+        cuda.mem_efficient_sdp_enabled(),
+        cuda.math_sdp_enabled(),
+        tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
+        torch.are_deterministic_algorithms_enabled(),
+        torch.is_deterministic_algorithms_warn_only_enabled(),
+    )
+    gqa, mha = _sdpa_gqa_choices(
+        device, dtype, head_dim, n_heads, n_kv_heads, False, True, needs_grad, 0.0, backends
+    )
+    return gqa if enable_gqa else mha
 
 
 def _cudnn_length_bucketed_sdpa(
@@ -175,7 +238,22 @@ def _cudnn_length_bucketed_sdpa(
     q_len = Q.shape[-2]
     pad = _CUDNN_LENGTH_BUCKET - q_len % _CUDNN_LENGTH_BUCKET
     Q, K, V = (F.pad(x, (0, 0, 0, pad)) for x in (Q, K, V))
-    out = scaled_dot_product_attention(Q, K, V, is_causal = True, **kwargs)
+    if attn_mask is None:
+        out = scaled_dot_product_attention(Q, K, V, is_causal = True, **kwargs)
+        return out[..., :q_len, :]
+    # One allocation. Padded query rows attend everything (True / 0), so no row is fully masked;
+    # they are sliced off below. Padded keys are masked out for every real query (False / the
+    # dtype minimum, whose exp is 0).
+    rows = attn_mask.shape[-2]
+    shape = (*attn_mask.shape[:-2], rows if rows == 1 else rows + pad, q_len + pad)
+    if attn_mask.dtype == torch.bool:
+        padded = attn_mask.new_ones(shape)
+        padded[..., :rows, q_len:] = False
+    else:
+        padded = attn_mask.new_zeros(shape)
+        padded[..., :rows, q_len:] = torch.finfo(attn_mask.dtype).min
+    padded[..., :rows, :q_len] = attn_mask
+    out = scaled_dot_product_attention(Q, K, V, attn_mask = padded, **kwargs)
     return out[..., :q_len, :]
 
 
@@ -239,6 +317,38 @@ def _no_cudnn_training_devices():
 
 
 _NO_CUDNN_TRAINING = _no_cudnn_training_devices()
+
+
+def _decode_no_cudnn_devices():
+    """Device indices whose single-query (decode) SDPA calls avoid cuDNN attention: sm90 / sm100,
+    where torch >= 2.10 puts cuDNN first. cuDNN builds a plan for every new key length, and a decode
+    step grows the cache by one token, so each generated token paid a new plan (~300 ms with a
+    padding mask). UNSLOTH_SDPA_DECODE_CUDNN=1 keeps it."""
+    if os.environ.get("UNSLOTH_SDPA_DECODE_CUDNN", "0") == "1" or torch.version.hip is not None:
+        return frozenset()
+    return frozenset(i for i, cap in enumerate(_visible_capabilities()) if cap[0] in (9, 10))
+
+
+_NO_CUDNN_DECODE = _decode_no_cudnn_devices()
+
+
+def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
+    """SDPA for the fast decode paths (one query against the KV cache), kept off cuDNN attention
+    where torch would pick it (_decode_no_cudnn_devices); flash / efficient need no per-length plan."""
+    if (
+        _CUDNN_CHOICE is not None
+        and query.is_cuda
+        and query.shape[-2] == 1
+        and query.device.index in _NO_CUDNN_DECODE
+    ):
+        with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+            return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
+    return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
+
+
+decode_scaled_dot_product_attention.__doc__ = (
+    (F.scaled_dot_product_attention.__doc__ or "") + decode_scaled_dot_product_attention.__doc__
+)
 
 
 # Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
@@ -527,6 +637,7 @@ def _constant_probe(fn):
 
 
 _sdpa_backend_state = _constant_probe(_sdpa_backend_state)
+_sdpa_masked_choice = _constant_probe(_sdpa_masked_choice)
 
 
 @functools.lru_cache(maxsize = 128)
@@ -844,7 +955,7 @@ def _sdpa_packed_segments(
         if gqa:
             kwargs["enable_gqa"] = True
         K_run, V_run = kv(gqa)
-        out = (_training_sdpa if training else scaled_dot_product_attention)(
+        out = (_training_sdpa if training else _inference_sdpa)(
             Q_run, split(K_run), split(V_run), **kwargs
         )
         outs.append(out.transpose(1, 2).flatten(0, 1))
@@ -1497,7 +1608,7 @@ def _run_attention(
             )
 
         kwargs = dict(sdpa_kwargs)
-        sdpa = _training_sdpa if context.training else scaled_dot_product_attention
+        sdpa = _training_sdpa if context.training else _inference_sdpa
         kwargs.setdefault("attn_mask", local_mask)
         kwargs.setdefault("is_causal", is_causal_local)
 
