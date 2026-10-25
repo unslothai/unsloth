@@ -57,7 +57,6 @@ function spec(simulation?: Partial<NonNullable<Spec["simulation"]>>): Spec {
   } as Spec;
 }
 
-/** Records every call a renderer would get. */
 function fakeHandle(npcAt: Record<string, { x: number; y: number }> = {}) {
   const calls: {
     place: Record<string, Area | null>;
@@ -264,7 +263,6 @@ test("follow me: a reply makes the NPC walk to the player through the handle, st
   assert.equal(g.calls.status.tom, "");
   assert.equal(r.steered.size, 0);
 
-  // Unknown actions or places change nothing.
   const same = W.applyReply(s, ws, "tom", {
     text: "x",
     action: "dance" as never,
@@ -363,7 +361,6 @@ test("saves keep needs, actions, followers and errands; old saves load with fres
     W.initialWorldState(s).npc.isabella.needs,
   );
   assert.equal(up.npc.isabella.doing, undefined);
-  // Junk in a save is dropped, not trusted.
   const junk = W.deserialize(s, {
     ...old,
     following: ["ghost", "tom"],

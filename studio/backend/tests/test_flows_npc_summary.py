@@ -41,7 +41,6 @@ def test_summary_sits_in_the_stable_prefix():
     assert SUMMARY["text"] in a_sys and SUMMARY["text"] not in a_prompt
     # Same summary, later turn: the system prompt is byte for byte the same, so the cached prefix holds.
     assert a_sys == b_sys
-    # Without a summary the prompt is the classic one.
     assert npc_prompt(_classic_state(), "Stay in character.") == (CLASSIC_SYSTEM, CLASSIC_PROMPT)
 
 
