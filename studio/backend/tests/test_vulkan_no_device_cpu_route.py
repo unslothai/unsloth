@@ -723,3 +723,23 @@ def test_a_stall_replay_with_the_vision_argv_clears_the_text_only_diagnosis(monk
     assert "--mmproj" in fallback_sources[0]
     assert backend._cpu_fallback_reason == "vulkan_startup_stall"
     assert backend._mmproj_fallback_reason is None
+
+
+def test_a_stalled_first_launch_replays_before_any_retry_rung(monkeypatch, tmp_path):
+    """The first-spawn stall check runs ahead of every rung that relaunches the same driver:
+    an MTP request must not spend a second stall window on the speculative retry."""
+    _route_env(monkeypatch, "timeout")
+    sink = {}
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [None, None, None],
+        extra_args = ["--spec-type", "mtp"],
+        stall_launches = (0,),
+        sink = sink,
+    )
+    assert loaded is True
+    assert len(launches) == 2
+    assert launches[1][0][0] == "/staged/llama-server"
+    assert fallback_sources == [launches[0][0]]
+    assert backend._cpu_fallback_reason == "vulkan_startup_stall"
