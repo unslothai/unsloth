@@ -157,7 +157,6 @@ def test_ppo_train_rewrite_applies_to_installed_trl():
         "entropy = _unsloth_entropy",
     ):
         assert needle in new, needle
-    # TRL's lines survive as the fallback branch.
     for line in (
         "new_logprobs = selective_log_softmax(logits, mb_responses)",
         "ref_logprob = selective_log_softmax(ref_logits, response)",
@@ -166,7 +165,6 @@ def test_ppo_train_rewrite_applies_to_installed_trl():
         assert line in new
     assert rl.ppo_trainer_fused_logprobs("train", new) == new
     assert rl.ppo_trainer_fused_logprobs("generate_completions", source) == source
-    # A TRL whose anchors drifted keeps its source.
     drifted = source.replace(
         "new_logprobs = selective_log_softmax(logits, mb_responses)", "new_logprobs = f(logits)"
     )
@@ -246,7 +244,6 @@ def test_ppo_rollout_and_reference_logprobs_match_trl_fp64():
     ref = _Policy(honours_flag = False)
     out = frl.ppo_forward(route, module.forward, ref, qr, 0)
     assert frl.ppo_score(route, ref, out.logits[:, CL - 1 : -1], qr[:, CL:], T) is None
-    # And the rollout scorer falls back to TRL's formula on those logits.
     got = frl.ppo_policy_logprobs(
         route, module.forward, module.selective_log_softmax, ref, qr, qr[:, CL:], CL, 0, T
     )

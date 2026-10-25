@@ -144,9 +144,6 @@ def score_hidden_states(
     return out.to(targets.device), None
 
 
-# ---------------------------------------------------------------------------------------------------------- PPO
-
-
 class _PPORoute:
     __slots__ = ("trainer",)
 
@@ -282,8 +279,6 @@ def ppo_policy_logprobs(
         return out[0]
     return selective_log_softmax(tensor / temperature, responses)
 
-
-# --------------------------------------------------------------------------------------------------------- RLOO
 
 _RLOO_VISION_KEYS = (
     "pixel_values",
