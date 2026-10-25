@@ -991,6 +991,10 @@ def sft_trainer_compute_loss(function_name, function):
                         else 1
                     )
                     loss = loss + self.router_aux_loss_coef * aux_loss / steps
+                if return_outputs:
+                    # prediction_step / compute_metrics read logits, which the fused head never builds (as TRL does).
+                    with torch.no_grad():
+                        outputs = model(**{k: v for k, v in inputs.items() if k != "labels"})
                 return (loss, outputs) if return_outputs else loss
         outputs = super().compute_loss(
             model,

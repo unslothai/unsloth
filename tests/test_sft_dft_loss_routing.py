@@ -74,7 +74,9 @@ class _FusedModel:
 
     def __call__(self, **kwargs):
         self.calls.append(kwargs)
-        assert kwargs.get("fused_lm_head") is True
+        if not kwargs.get("fused_lm_head"):
+            assert "labels" not in kwargs
+            return SimpleNamespace(logits = torch.zeros(2, 3, 5))
         return SimpleNamespace(log_probs = self.log_probs, label_mask = self.mask, aux_loss = None)
 
 
@@ -87,12 +89,25 @@ def test_dft_runs_on_the_fused_head_not_the_nll_loss():
     model = _FusedModel()
     loss = Trainer("dft").compute_loss(model, {"input_ids": None}, num_items_in_batch = 3)
     assert len(model.calls) == 1, "dft was routed to the NLL forward, so it trains as plain NLL"
+    assert model.calls[0].get("fused_lm_head") is True
     assert model.calls[0]["use_cache"] is False
     assert loss.item() == pytest.approx(_dft(model.log_probs.detach(), 3))
     loss.backward()
     # The DFT weight exp(log_p) is detached: d/dlp of -lp * sg(exp(lp)) is -exp(lp).
     expected = -model.log_probs.detach().exp() / 3
     assert torch.allclose(model.log_probs.grad, expected)
+
+
+def test_dft_eval_outputs_carry_logits():
+    # prediction_step reads outputs.logits; the fused head has none, so they come from a plain no-grad forward.
+    Trainer = _trainer_class()
+    model = _FusedModel()
+    loss, outputs = Trainer("dft").compute_loss(
+        model, {"input_ids": None, "labels": None}, return_outputs = True, num_items_in_batch = 3
+    )
+    assert loss.item() == pytest.approx(_dft(model.log_probs.detach(), 3))
+    assert outputs.logits.shape == (2, 3, 5)
+    assert [bool(c.get("fused_lm_head")) for c in model.calls] == [True, False]
 
 
 def test_dft_without_loss_kwargs_is_a_per_micro_batch_mean():
