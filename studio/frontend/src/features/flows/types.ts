@@ -470,6 +470,8 @@ export interface WorldSpec {
   style?: string | null;
   entry_points?: Record<string, string>;
   simulation?: WorldSimulation;
+  /** False when the NPC Reply node's "Summarise long conversations" is off; absent means on. */
+  summarise?: boolean;
 }
 
 export type RunStatus =

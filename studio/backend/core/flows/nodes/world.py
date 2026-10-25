@@ -20,16 +20,20 @@ from core.flows.world import (
     BIOME_TILES,
     NPC_MEMORY_REPLY_SCHEMA,
     NPC_REPLY_SCHEMA,
+    SUMMARY_SCHEMA,
     TILE_PROMPTS,
     WorldError,
     chat_prompt,
     chat_schema,
+    clean_summary,
+    compact_prompt,
     has_memory,
     normalize_world,
     npc_prompt,
     plan_prompt,
     validate_chat,
     validate_npc_reply,
+    talk_summary,
     world_schema,
 )
 
@@ -281,6 +285,8 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
     state = ctx.inputs.get("state")
     if not isinstance(state, dict):
         raise FlowNodeError("NPC Reply needs the conversation state from the world player.")
+    if state.get("task") == "summarise":
+        return await _summarise(ctx, state)
     memories: Optional[list[dict]] = None
     if has_memory(state):
         npc = next(
@@ -321,6 +327,27 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
     if memories is not None:
         reply["recalled"] = [r["id"] for r in memories]
     return {"reply": reply}
+
+
+async def _summarise(ctx: NodeContext, state: dict) -> dict:
+    """Fold the oldest turns of a long conversation into what the NPC remembers, so nothing said is lost."""
+    try:
+        system, prompt = compact_prompt(state)
+    except WorldError as exc:
+        raise FlowNodeError(str(exc)) from exc
+    raw = await ctx.llm_json(
+        model = ctx.params.get("model"),
+        system = system,
+        prompt = prompt,
+        schema = SUMMARY_SCHEMA,
+        temperature = 0.3,
+        max_tokens = 320,
+        seed = seed_from(ctx.seed, state.get("npc_id"), "summary", talk_summary(state)[1]),
+    )
+    try:
+        return {"reply": {"summary": clean_summary(raw)}}
+    except WorldError as exc:
+        raise FlowNodeError(str(exc), retryable = True) from exc
 
 
 def _sim_world(state: Any, who: str) -> dict:

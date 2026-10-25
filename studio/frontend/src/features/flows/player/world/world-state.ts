@@ -17,11 +17,27 @@ import {
 } from "./world-sim";
 
 export const WORLD_SAVE_VERSION = 2;
+/** Turns kept per NPC for the conversation panel. */
 const MAX_TURNS = 40;
+/** Turns a reply reads, as MAX_HISTORY in the backend's world.py; older ones live on in the NPC's summary. */
+export const MAX_HISTORY = 24;
+/** Unsummarised turns that start a summary, and how many of the oldest it folds in. */
+export const SUMMARY_AFTER = 16;
+const SUMMARY_FOLD = 10;
+/** Unsummarised turns are kept while summaries fail, up to this many. */
+const MAX_KEPT = 120;
 
 export interface ChatTurn {
   role: "player" | "npc";
   text: string;
+  /** Position in the whole conversation; saves from before summaries have none. */
+  seq?: number;
+}
+
+/** What an NPC remembers of turns folded away: `upto` is the seq of the last turn it covers. */
+export interface NpcSummary {
+  text: string;
+  upto: number;
 }
 
 export interface WorldState {
@@ -33,6 +49,7 @@ export interface WorldState {
   completedQuests: string[];
   vars: Record<string, unknown>;
   talks: Record<string, ChatTurn[]>;
+  summaries: Record<string, NpcSummary>;
   /** Game minutes since day 1 00:00. */
   clock: number;
   npc: Record<string, NpcMind>;
@@ -59,6 +76,7 @@ export function initialWorldState(spec: WorldSpec): WorldState {
     completedQuests: [],
     vars: { ...(spec.vars ?? {}) },
     talks: {},
+    summaries: {},
     clock,
     npc: simOf(spec) ? initialMinds(spec, clock) : {},
   };
@@ -100,14 +118,82 @@ export function withMind(
   return { ...s, npc: { ...s.npc, [npcId]: fn(s.npc[npcId] ?? emptyMind()) } };
 }
 
+/** Turns with their seq; a save from before summaries numbers them in order. */
+function numbered(turns: ChatTurn[]): (ChatTurn & { seq: number })[] {
+  return turns.every((t) => typeof t.seq === "number")
+    ? (turns as (ChatTurn & { seq: number })[])
+    : turns.map((t, i) => ({ ...t, seq: i }));
+}
+
+const uptoOf = (s: WorldState, npcId: string) =>
+  s.summaries?.[npcId]?.upto ?? -1;
+
+/** Without summaries the oldest turns go; with them only turns already summarised do, unless far too many pile up. */
+function trimTalk(
+  turns: (ChatTurn & { seq: number })[],
+  upto: number,
+  summarising: boolean,
+): ChatTurn[] {
+  if (!summarising) return turns.slice(-MAX_TURNS);
+  let drop = 0;
+  while (
+    turns.length - drop > MAX_TURNS &&
+    (turns[drop].seq <= upto || turns.length - drop > MAX_KEPT)
+  )
+    drop++;
+  return turns.slice(drop);
+}
+
 export function addTurn(
   s: WorldState,
   npcId: string,
   turn: ChatTurn,
+  summarising = false,
 ): WorldState {
-  const prev = s.talks[npcId] ?? [];
-  const next = [...prev, turn].slice(-MAX_TURNS);
+  const prev = numbered(s.talks[npcId] ?? []);
+  const seq = Math.max(prev.at(-1)?.seq ?? -1, uptoOf(s, npcId)) + 1;
+  const next = trimTalk(
+    [...prev, { ...turn, seq }],
+    uptoOf(s, npcId),
+    summarising,
+  );
   return { ...s, talks: { ...s.talks, [npcId]: next } };
+}
+
+/** The turns a reply reads: those not yet summarised, newest last. */
+export function talkHistory(s: WorldState, npcId: string): ChatTurn[] {
+  const upto = uptoOf(s, npcId);
+  return numbered(s.talks[npcId] ?? [])
+    .filter((t) => t.seq > upto)
+    .slice(-MAX_HISTORY);
+}
+
+/** The oldest turns to fold into the NPC's summary once enough have piled up, or null. */
+export function summaryDue(
+  s: WorldState,
+  npcId: string,
+): { turns: ChatTurn[]; upto: number } | null {
+  const upto = uptoOf(s, npcId);
+  const open = numbered(s.talks[npcId] ?? []).filter((t) => t.seq > upto);
+  if (open.length <= SUMMARY_AFTER) return null;
+  const turns = open.slice(0, SUMMARY_FOLD);
+  return {
+    turns: turns.map(({ role, text }) => ({ role, text })),
+    upto: turns[turns.length - 1].seq,
+  };
+}
+
+/** Store a new summary covering turns up to `upto`; a stale one (from before a newer summary) is ignored. */
+export function foldSummary(
+  s: WorldState,
+  npcId: string,
+  text: string,
+  upto: number,
+): WorldState {
+  if (upto <= uptoOf(s, npcId)) return s;
+  const summaries = { ...s.summaries, [npcId]: { text, upto } };
+  const turns = trimTalk(numbered(s.talks[npcId] ?? []), upto, true);
+  return { ...s, summaries, talks: { ...s.talks, [npcId]: turns } };
 }
 
 /** Apply a validated reply; re-checks every effect against the world so a bad reply cannot corrupt a save. */
@@ -116,11 +202,12 @@ export function applyReply(
   s: WorldState,
   npcId: string,
   reply: NpcReply,
+  summarising = false,
 ): { state: WorldState; notes: string[] } {
   const notes: string[] = [];
   const itemName = (id: string) =>
     spec.items.find((i) => i.id === id)?.name ?? id;
-  let st = addTurn(s, npcId, { role: "npc", text: reply.text });
+  let st = addTurn(s, npcId, { role: "npc", text: reply.text }, summarising);
   if (reply.take_item && st.inventory.includes(reply.take_item)) {
     st = {
       ...st,
@@ -201,6 +288,16 @@ function mindOf(raw: unknown): NpcMind {
   };
 }
 
+function summariesOf(raw: unknown): Record<string, NpcSummary> {
+  const out: Record<string, NpcSummary> = {};
+  for (const [id, v] of Object.entries((raw ?? {}) as Record<string, unknown>)) {
+    const x = v as Partial<NpcSummary> | null;
+    if (x && typeof x.text === "string" && typeof x.upto === "number")
+      out[id] = { text: x.text, upto: x.upto };
+  }
+  return out;
+}
+
 /** A save from this or an older version (v1 has no clock or NPC minds), or null when it is not one. */
 export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   const v = (raw as WorldState | null)?.v;
@@ -225,6 +322,7 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
     completedQuests: (r.completedQuests ?? []).filter((q) => questIds.has(q)),
     vars: { ...(r.vars ?? {}) },
     talks: r.talks ?? {},
+    summaries: summariesOf(r.summaries),
     clock: num(r.clock, fresh.clock),
     npc,
   };

@@ -44,6 +44,9 @@ import {
   type WorldState,
   addTurn,
   applyReply,
+  foldSummary,
+  summaryDue,
+  talkHistory,
   deserialize,
   initialWorldState,
   pickUp,
@@ -382,6 +385,44 @@ export function WorldPlayer({
   // Bumped on every load, so a reply to a conversation from before the load is dropped.
   const loads = useRef(0);
 
+  // Long conversations are summarised in the background, one at a time, and never while the player waits on a reply.
+  const summarising = spec.summarise !== false;
+  const summaryRun = useRef<AbortController | null>(null);
+  const summarise = useCallback(
+    async (npcId: string, s: WorldState) => {
+      const due = summarising && replyEntry ? summaryDue(s, npcId) : null;
+      if (!due || summaryRun.current) return;
+      const generation = loads.current;
+      const run = new AbortController();
+      summaryRun.current = run;
+      try {
+        const res = await api.invoke(
+          flowId,
+          replyEntry!,
+          {
+            state: {
+              task: "summarise",
+              world: spec,
+              npc_id: npcId,
+              summary: s.summaries[npcId],
+              turns: due.turns,
+            },
+          },
+          { signal: run.signal },
+        );
+        const text = (res.outputs.reply as { summary?: string } | undefined)
+          ?.summary;
+        if (text && !run.signal.aborted && generation === loads.current)
+          setWs((st) => foldSummary(st, npcId, text, due.upto));
+      } catch {
+        // A failed summary keeps every turn; the next reply tries again.
+      } finally {
+        if (summaryRun.current === run) summaryRun.current = null;
+      }
+    },
+    [api, flowId, replyEntry, spec, summarising],
+  );
+
   // Village life: no new background call while the player talks, and the one in flight is dropped.
   useEffect(() => {
     queue.setPaused(!ready || lockedRef.current);
@@ -594,7 +635,15 @@ export function WorldPlayer({
     if (!text || !talking || thinking) return;
     setDraft("");
     const npcId = talking;
-    const before = addTurn(wsRef.current, npcId, { role: "player", text });
+    summaryRun.current?.abort();
+    summaryRun.current = null;
+    const history = talkHistory(wsRef.current, npcId);
+    const before = addTurn(
+      wsRef.current,
+      npcId,
+      { role: "player", text },
+      summarising,
+    );
     setWs(before);
     if (!replyEntry) {
       setWs((s) => addTurn(s, npcId, { role: "npc", text: "..." }));
@@ -613,7 +662,8 @@ export function WorldPlayer({
           state: {
             world: spec,
             npc_id: npcId,
-            history: (before.talks[npcId] ?? []).slice(0, -1),
+            history,
+            summary: before.summaries[npcId],
             player_message: text,
             vars: before.vars,
             inventory: before.inventory,
@@ -636,7 +686,7 @@ export function WorldPlayer({
       const reply = res.outputs.reply as NpcReply | undefined;
       if (!reply?.text) throw new Error("No reply");
       const prior = wsRef.current;
-      const applied = applyReply(spec, prior, npcId, reply);
+      const applied = applyReply(spec, prior, npcId, reply, summarising);
       let state = applied.state;
       const notes = applied.notes;
       if (sim) {
@@ -672,6 +722,7 @@ export function WorldPlayer({
       for (const id of state.picked)
         if (!prior.picked.includes(id)) game.current?.removeItem(id);
       for (const n of notes) toast(n);
+      void summarise(npcId, state);
     } catch (e) {
       if (generation !== loads.current) return;
       setLive(null);
@@ -721,6 +772,8 @@ export function WorldPlayer({
       return;
     }
     loads.current += 1;
+    summaryRun.current?.abort();
+    summaryRun.current = null;
     queue.clear();
     busy.current.clear();
     setBackground(null);
