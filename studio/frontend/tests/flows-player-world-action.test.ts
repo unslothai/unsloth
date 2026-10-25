@@ -66,6 +66,15 @@ test("a jump needs the ground (or a moment after leaving it), and gravity brings
   assert.ok(b.grounded);
 });
 
+test("a jump pressed on a short frame that runs no physics step still jumps", () => {
+  const w = world();
+  const b = A.newBody(w, 5.5, 5.5);
+  // At 144 fps the first frame is shorter than one step: nothing runs yet.
+  assert.equal(A.advance(w, b, { ...still, jump: true }, 1 / 144, 3), 0);
+  for (let i = 0; i < 3; i++) A.advance(w, b, still, 1 / 144, 3);
+  assert.ok(b.vz > 0 && !b.grounded, "the press was kept for the next step");
+});
+
 test("sprinting into a wall never passes through it, and the body slides along it", () => {
   const w = world([], wallAt);
   const b = A.newBody(w, 8.5, 5.5);
@@ -138,6 +147,16 @@ test("rotated props block along their rotated footprint", () => {
   const b = A.newBody(fence(90), 7.2, 4.5);
   run(fence(90), b, 60, 1, south);
   assert.ok(b.y > 6.5, `${b.y}`);
+});
+
+test("a prop's collider turns the same way three.js turns the rendered prop", async () => {
+  const three = await import("three");
+  const fence = A.propBox({ ...crate(5, 5), kind: "fence", rot: 45, scale: 3 }, () => 0)!;
+  // Where three.js puts the fence's local +x end after a 45 degree Y rotation (z is tile y).
+  const end = new three.Vector3(1.2, 0, 0).applyAxisAngle(new three.Vector3(0, 1, 0), Math.PI / 4);
+  assert.ok(A.circleHitsBox(fence, 5 + end.x, 5 + end.z, 0.05));
+  // The mirror diagonal is open.
+  assert.ok(!A.circleHitsBox(fence, 5 + end.x, 5 - end.z, 0.05));
 });
 
 test("shots hit the first hostile in line, walls stop them, friendlies are never hurt", () => {

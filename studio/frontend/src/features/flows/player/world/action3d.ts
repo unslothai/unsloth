@@ -128,8 +128,9 @@ export function circleHitsBox(
 ): boolean {
   const dx = x - b.cx;
   const dy = y - b.cy;
-  const lx = dx * b.cos + dy * b.sin;
-  const ly = -dx * b.sin + dy * b.cos;
+  // three.js turns +x toward -z (tile -y) for a positive Y rotation, as props-scene3d renders the prop.
+  const lx = dx * b.cos - dy * b.sin;
+  const ly = dx * b.sin + dy * b.cos;
   const px = Math.max(-b.hx, Math.min(b.hx, lx));
   const py = Math.max(-b.hy, Math.min(b.hy, ly));
   return (lx - px) ** 2 + (ly - py) ** 2 < r * r;
@@ -187,6 +188,8 @@ export interface Body {
   coyote: number;
   jumpBuffer: number;
   acc: number;
+  /** A jump pressed on a frame that ran no physics step, kept for the next step. */
+  jumpQueued?: boolean;
 }
 
 export interface MoveInput {
@@ -289,13 +292,15 @@ export function advance(
 ): number {
   b.acc = Math.min(b.acc + dt, MAX_STEPS * STEP_S);
   let n = 0;
-  let jump = input.jump;
+  let jump = input.jump || Boolean(b.jumpQueued);
+  b.jumpQueued = false;
   while (b.acc >= STEP_S - 1e-9) {
     step(w, b, { ...input, jump }, walk);
     jump = false;
     b.acc -= STEP_S;
     n++;
   }
+  if (jump) b.jumpQueued = true;
   return n;
 }
 
