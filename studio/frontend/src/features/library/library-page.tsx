@@ -148,7 +148,7 @@ function nameMatches(name: string, needle: string): boolean {
 }
 
 const BAR_PILL =
-  "flex h-9 items-center gap-2 rounded-full px-4 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+  "flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium [&_svg]:-my-2 outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
 
@@ -762,7 +762,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
 
   const uploadButton = (
-    <Button variant="muted" className="rounded-full px-5" onClick={() => fileInput.current?.click()}>
+    <Button variant="muted" className="rounded-full" onClick={() => fileInput.current?.click()}>
       {t("library.empty.uploadFiles")}
     </Button>
   );
@@ -816,7 +816,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       return (
         <Button
           variant="dark"
-          className="rounded-full px-5"
+          className="rounded-full"
           onClick={() => setNameDialog({ mode: "create", parentId: null })}
         >
           {t("library.empty.createFolder")}
@@ -826,7 +826,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     if (!(tab in EMPTY_LINKS)) return uploadButton;
     const [to, label] = EMPTY_LINKS[tab as keyof typeof EMPTY_LINKS];
     return (
-      <Button variant="muted" className="rounded-full px-5" onClick={() => void navigate({ to })}>
+      <Button variant="muted" className="rounded-full" onClick={() => void navigate({ to })}>
         {t(label)}
       </Button>
     );

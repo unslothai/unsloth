@@ -6549,7 +6549,7 @@ export function ImagesPage({
             {!external && !loraCapable && offersNativeLoraReload(status) && (
               <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
-                <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
+                <Button size="sm" variant="secondary" className="shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
                 </Button>
               </div>
@@ -6558,7 +6558,7 @@ export function ImagesPage({
               <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <span>Speed compiled this model after a few images, so LoRAs are off. Reload it to add LoRAs.</span>
                 {(canReapply || residentReloadTarget(status) !== null) && (
-                  <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleReapply}>
+                  <Button size="sm" variant="secondary" className="shrink-0 text-xs" disabled={busy !== null} onClick={handleReapply}>
                     Reload model
                   </Button>
                 )}
@@ -6898,7 +6898,7 @@ export function ImagesPage({
           <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
             {busy === "generating" ? (
               <Button
-                className="relative z-10 h-10 px-7 text-ui-13 hover:bg-muted dark:hover:bg-muted"
+                className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
@@ -6908,7 +6908,7 @@ export function ImagesPage({
             ) : (
               <>
                 <Button variant="dark"
-                  className="relative z-10 h-10 px-7 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
@@ -6920,7 +6920,7 @@ export function ImagesPage({
                       {/* A disabled button gets no pointer events; the span keeps the reason reachable. */}
                       <span className="relative z-10 inline-flex">
                         <Button
-                          className="h-10 px-4 text-ui-13"
+                          className="text-ui-13"
                           variant="secondary"
                           disabled={busy !== null || varyBlocked !== null}
                           onClick={handleVary}
@@ -6943,7 +6943,7 @@ export function ImagesPage({
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button
-                        className="relative z-10 h-10 px-4 text-ui-13"
+                        className="relative z-10 text-ui-13"
                         variant="secondary"
                         disabled={busy !== null}
                         onClick={handleReapply}

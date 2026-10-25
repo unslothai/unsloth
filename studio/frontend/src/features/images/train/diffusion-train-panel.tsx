@@ -1794,7 +1794,7 @@ export function DiffusionTrainPanel({
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="h-8 shrink-0 gap-1.5 px-3 text-xs"
+                    className="shrink-0 gap-1.5 text-xs"
                     onClick={() => addInputRef.current?.click()}
                     disabled={uploading}
                   >
@@ -1858,7 +1858,7 @@ export function DiffusionTrainPanel({
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="h-8 shrink-0 gap-1.5 px-3 text-xs"
+                    className="shrink-0 gap-1.5 text-xs"
                     onClick={() => {
                       if (!uploadName.trim()) {
                         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
@@ -2005,7 +2005,7 @@ export function DiffusionTrainPanel({
           <Button
             variant="dark"
             type="button"
-            className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+            className="relative z-10 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
             onClick={onStart}
             disabled={starting || uploading || running || familyUntrainable}
           >

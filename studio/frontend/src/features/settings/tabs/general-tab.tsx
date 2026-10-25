@@ -593,7 +593,6 @@ export function GeneralTab() {
               type="button"
               variant="outline"
               size="sm"
-              className="h-8"
               disabled={!draftToken && !hfToken}
               onClick={clearHfToken}
             >

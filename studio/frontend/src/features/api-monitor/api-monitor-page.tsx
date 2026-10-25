@@ -869,7 +869,7 @@ function QuickStart({
         variant="outline"
         size="sm"
         onClick={openApiSettings}
-        className="h-8 gap-1.5 rounded-full"
+        className="gap-1.5 rounded-full"
       >
         <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
         Create an API key and see more examples
@@ -1389,7 +1389,7 @@ export function ApiMonitorPage(): ReactElement {
                       : ejectServed(served[0]))
                   }
                   disabled={ejecting || modelLoading || served.length === 0}
-                  className="h-9 gap-1.5 rounded-full px-3.5"
+                  className="gap-1.5 rounded-full"
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -1741,7 +1741,7 @@ export function ApiMonitorPage(): ReactElement {
                       setStatusFilter("all");
                       setModelFilter(ALL_MODELS);
                     }}
-                    className="h-8 rounded-full"
+                    className="rounded-full"
                   >
                     Clear filters
                   </Button>

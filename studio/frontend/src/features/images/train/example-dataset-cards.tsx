@@ -145,7 +145,8 @@ export function ExampleDatasetCards({
                 type="button"
                 size="sm"
                 variant="outline"
-                className="ml-auto h-7 shrink-0 px-3 text-xs"
+                // ml-auto keeps it right-aligned even when the previews are missing.
+                className="ml-auto shrink-0 text-xs"
                 onClick={() => onImport(ex)}
                 disabled={busyId !== null}
               >
