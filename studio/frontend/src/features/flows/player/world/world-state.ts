@@ -385,7 +385,8 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   const played = withAdditions(spec, additions);
   const itemIds = new Set(played.items.map((i) => i.id));
   const questIds = new Set(played.quests.map((q) => q.id));
-  const fresh = initialWorldState(spec);
+  // Villagers added while playing have minds too: start from the world as played.
+  const fresh = initialWorldState(played);
   const npc: Record<string, NpcMind> = {};
   for (const id of Object.keys(fresh.npc))
     npc[id] = r.npc?.[id] ? mindOf(r.npc[id], fresh.npc[id]) : fresh.npc[id];

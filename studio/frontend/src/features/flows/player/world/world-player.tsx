@@ -479,8 +479,9 @@ export function WorldPlayer({
   const directorRun = useRef<AbortController | null>(null);
   const events = useRef<string[]>([]);
   const direct = useCallback(
-    async (justCompleted: boolean) => {
-      const s = wsRef.current;
+    // `from` is the state a reply just produced: React may not have committed it yet when this runs.
+    async (justCompleted: boolean, from?: WorldState) => {
+      const s = from ?? wsRef.current;
       const played = specRef.current;
       if (
         !growing ||
@@ -909,7 +910,7 @@ export function WorldPlayer({
         state.completedQuests.length > prior.completedQuests.length;
       void (async () => {
         await summarise(npcId, state);
-        await direct(completed);
+        await direct(completed, state);
       })();
     } catch (e) {
       if (generation !== loads.current) return;

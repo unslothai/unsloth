@@ -206,6 +206,51 @@ test("additions survive save and load, and keep their quests and items", () => {
   assert.deepEqual(junk, D.noAdditions());
 });
 
+test("an added villager's mind survives save and load", () => {
+  const sim = {
+    ...SPEC,
+    simulation: {
+      enabled: true,
+      minutes_per_second: 2,
+      start_minute: 480,
+      places: [{ id: "pond", name: "Pond", x: 2, y: 2, w: 8, h: 6 }],
+      chat_cooldown_min: 120,
+      calls_per_minute: 4,
+    },
+  } as unknown as Spec;
+  const out = D.applyPatch(sim, map, finished(), PATCH, occupied());
+  assert.ok(out);
+  const mind = W.initialWorldState({
+    ...sim,
+    npcs: [...sim.npcs, PATCH.npcs?.[0]],
+  } as Spec).npc.mira;
+  assert.ok(mind);
+  const remembered = {
+    ...out.state,
+    npc: {
+      ...out.state.npc,
+      mira: {
+        ...mind,
+        memory: [
+          {
+            id: "m0",
+            text: "Pip rang the bell",
+            kind: "observation",
+            t_created: 480,
+            t_access: 480,
+            importance: 5,
+          },
+        ],
+      },
+    },
+  };
+  const back = W.deserialize(
+    sim,
+    JSON.parse(JSON.stringify(W.serialize(remembered as never))),
+  );
+  assert.equal(back?.npc.mira?.memory.length, 1);
+});
+
 test("the player keeps the map from the generated world and adds through the game handle", () => {
   const src = readFileSync(
     new URL(
@@ -218,4 +263,7 @@ test("the player keeps the map from the generated world and adds through the gam
   assert.match(src, /h\?\.addNpc\(n, n\)/);
   assert.match(src, /h\?\.addItem\(i, i\)/);
   assert.match(src, /deserialize\(baseSpec, rec\.state\)/);
+  // The director reads the state the reply just produced, not one React has yet to commit.
+  assert.match(src, /await direct\(completed, state\)/);
+  assert.match(src, /const s = from \?\? wsRef\.current;/);
 });
