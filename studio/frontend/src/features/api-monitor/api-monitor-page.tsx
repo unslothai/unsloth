@@ -1347,11 +1347,12 @@ export function ApiMonitorPage(): ReactElement {
       <Fact label="Context" className="gap-0">
         {/* Chat's header chip; hover, or click to pin, for the prompt and reply split. */}
         {/* A pill in the row icons' light hover (the row icons take its dark hover), flush on the label:
-            its own 10px padding is the label gap, matching Slots' gap-2.5. */}
+            its own 8px padding is the label gap, matching Slots'. */}
         <ContextUsageChip
           pinOnClick={true}
           hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
-          className="-my-1.5 [&>button]:rounded-full"
+          padX={2}
+          className="-my-1 h-6 [&>button]:rounded-full"
           used={used}
           total={windowSize}
           promptTokens={last?.prompt_tokens ?? undefined}
@@ -1363,7 +1364,7 @@ export function ApiMonitorPage(): ReactElement {
   const slotsFact = (
     <>
       {data?.queue ? (
-        <Fact label="Slots" className="gap-2.5">
+        <Fact label="Slots">
           {canEditSlots ? (
             <ToolbarTooltip label="Change parallel slots">
               <button

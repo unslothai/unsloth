@@ -143,8 +143,10 @@ export const ContextUsageBar: FC<
     pinOnClick?: boolean;
     /** Replaces the hover surface's shape and colour (the API page's pill). */
     hoverClassName?: string;
+    /** Side padding of the face, in --spacing units; the widths below count it. */
+    padX?: number;
   }
-> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, ...input }) => {
+> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2.5, ...input }) => {
   const pin = useClickPin(pinOnClick);
   const state = deriveContextUsageBar(input);
   if (!state) return null;
@@ -161,10 +163,11 @@ export const ContextUsageBar: FC<
   const showRing = state.compactFace === null;
   // Mono text, so widths are exact in ch. Full: padding, face, and the gap and ring. Compact: an icon button.
   const fullWidth = showRing
-    ? `calc(${faceWidthCh(face)}ch + var(--icon-size) + 7 * var(--spacing))`
-    : `calc(${faceWidthCh(face)}ch + 5 * var(--spacing))`;
+    ? `calc(${faceWidthCh(face)}ch + var(--icon-size) + ${2 * padX + 2} * var(--spacing))`
+    : `calc(${faceWidthCh(face)}ch + ${2 * padX} * var(--spacing))`;
   const compactWidth =
-    compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${faceWidthCh(compactFace)}ch + 5 * var(--spacing))`;
+    compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${faceWidthCh(compactFace)}ch + ${2 * padX} * var(--spacing))`;
+  const padStyle = { paddingInline: `calc(${padX} * var(--spacing))` };
   const hover = hoverClassName ?? "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
 
   return (
@@ -207,14 +210,14 @@ export const ContextUsageBar: FC<
                   <UsageRing percent={percent} stroke={severity.stroke} />
                 </span>
               ) : (
-                <span className={cn("flex h-full shrink-0 items-center px-2.5", hover)}><Face face={compactFace} /></span>
+                <span className={cn("flex h-full shrink-0 items-center", hover)} style={padStyle}><Face face={compactFace} /></span>
               )}
             </span>
             <span
               className="col-start-1 row-start-1 h-full overflow-hidden"
               style={{ width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
             >
-              <span className={cn("flex h-full w-(--full) items-center gap-2 px-2.5", hover)}>
+              <span className={cn("flex h-full w-(--full) items-center gap-2", hover)} style={padStyle}>
                 <Face face={face} />
                 {showRing ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
               </span>
