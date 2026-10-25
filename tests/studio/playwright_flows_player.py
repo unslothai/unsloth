@@ -1,6 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+"""Flows players end to end against a mock backend (studio/frontend/smoke-flows-player.html).
+
+Story: begin, read, pick choices, save, and reach the ending the compiled Lantern Picnic example promises.
+World: start the Phaser village, walk to Old Tom, start his quest, pick up the rod, return it and see the
+quest complete. World 3D: the same quest in the first-person three.js view, keyboard walking and turning, and
+the map / 3D toggle keeping the player where they stand. Screenshots go to $FLOWS_SHOTS (default ./outputs/flows)."""
+
 from __future__ import annotations
 
 import os
@@ -136,6 +143,85 @@ def play_world(page: Page) -> None:
     assert replies[1]["inputs"]["state"]["inventory"] == ["rod"], replies[1]
 
 
+def play_world_3d(page: Page) -> None:
+    page.goto(f"{BASE}?flow=world&render=3d&time=dusk")
+    page.wait_for_selector("[data-testid=world-start]", timeout = 120_000)
+    arm(page)
+    page.wait_for_selector("[data-testid=world3d-canvas]")
+    page.click("[data-testid=world-start]")
+    page.wait_for_function("window.__flowsPlayerSmoke.world !== null")
+    page.wait_for_timeout(1500)
+    shot(page, "world3d_explore")
+    still = page.screenshot()
+    page.keyboard.down("ArrowLeft")
+    page.wait_for_timeout(700)
+    page.keyboard.up("ArrowLeft")
+    page.wait_for_timeout(200)
+    assert page.screenshot() != still, "turning did not change the 3D view"
+    before = page.evaluate("window.__flowsPlayerSmoke.world.playerTile()")
+    moved = None
+    for key in ("w", "s", "a", "d"):
+        page.keyboard.down(key)
+        page.wait_for_timeout(1_000)
+        page.keyboard.up(key)
+        if page.evaluate("window.__flowsPlayerSmoke.world.playerTile()") != before:
+            moved = key
+            break
+    assert moved, f"the keyboard never moved the player from {before}"
+
+    walk_to(page, "npcs", "fern", "Talk to Grandma Fern")
+    for _ in range(2):
+        page.keyboard.down("s")
+        page.wait_for_timeout(300)
+        page.keyboard.up("s")
+    page.evaluate("window.__flowsPlayerSmoke.world.setNpcStatus('fern', 'zz')")
+    page.evaluate("window.__flowsPlayerSmoke.world.say('fern', 'Have you eaten? Sit, sit.', 6000)")
+    page.wait_for_timeout(500)
+    shot(page, "world3d_capsule")
+    walk_to(page, "npcs", "tom", "Talk to Old Tom")
+    page.wait_for_timeout(300)
+    shot(page, "world3d_npc")
+    talk(page, "Hello there!", "(tom) You said: Hello there!")
+    page.wait_for_timeout(600)
+    shot(page, "world3d_dialogue")
+    page.get_by_role("button", name = "Bye").click()
+
+    walk_to(page, "items", "rod", "Pick up Lucky Rod")
+    page.wait_for_timeout(300)
+    shot(page, "world3d_item")
+    page.keyboard.press("e")
+    page.get_by_text("Picked up Lucky Rod").wait_for()
+
+    walk_to(page, "npcs", "tom", "Talk to Old Tom")
+    talk(page, "I found your rod", "My lucky rod! You found it!")
+    page.get_by_text("Quest complete: The Lucky Rod", exact = False).wait_for()
+    page.get_by_role("button", name = "Bye").click()
+
+    here = page.evaluate("window.__flowsPlayerSmoke.world.playerTile()")
+    page.click("[data-testid=world-view-toggle]")
+    page.wait_for_function("!document.querySelector('[data-testid=world3d-canvas]')")
+    page.wait_for_function(
+        "window.__flowsPlayerSmoke.world && document.querySelector('[data-testid=world-canvas] canvas')"
+    )
+    page.wait_for_timeout(900)
+    assert page.evaluate("window.__flowsPlayerSmoke.world.playerTile()") == here
+    shot(page, "world3d_to_map")
+    page.click("[data-testid=world-view-toggle]")
+    page.wait_for_selector("[data-testid=world3d-canvas]")
+    page.wait_for_timeout(900)
+    assert page.evaluate("window.__flowsPlayerSmoke.world.playerTile()") == here
+    calls = page.evaluate("window.__flowsPlayerSmoke.calls")
+    assert [c["entry"] for c in calls] == ["reply", "reply"], calls
+
+    for t in ("dawn", "day", "night"):
+        page.goto(f"{BASE}?flow=world&render=3d&time={t}")
+        arm(page)
+        page.click("[data-testid=world-start]")
+        page.wait_for_function("window.__flowsPlayerSmoke.world !== null")
+        page.wait_for_timeout(1200)
+        shot(page, f"world3d_{t}")
+
+
 STAMP: dict[str, float] = {}
 
 
@@ -170,7 +256,10 @@ def main() -> int:
     try:
         wait_for_smoke_page(BASE, "smoke-flows-player-main.tsx", proc = proc)
         with sync_playwright() as p:
-            browser = p.chromium.launch(args = chromium_launch_args())
+            # Software WebGL for the 3D view on GPU-less runners.
+            browser = p.chromium.launch(
+                args = chromium_launch_args() + ["--enable-unsafe-swiftshader"]
+            )
             page = browser.new_page(viewport = {"width": 1280, "height": 800})
             errors: list[str] = []
             # Warm-up: the first visit makes Vite optimize Phaser and reload the page; play after that.
@@ -178,7 +267,7 @@ def main() -> int:
             page.wait_for_selector("[data-testid=world-start]", timeout = 180_000)
             page.wait_for_timeout(3_000)
             page.on("pageerror", lambda e: errors.append(str(e)))
-            for scenario in (play_story, play_world):
+            for scenario in (play_story, play_world, play_world_3d):
                 retry_on_reload(page, scenario)
             browser.close()
             assert not errors, errors
