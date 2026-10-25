@@ -36,7 +36,11 @@ def parallel_opted_in(monkeypatch):
     monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
 
 
-def _call(index, query, name = _EDIT):
+def _call(
+    index,
+    query,
+    name = _EDIT,
+):
     return {
         "index": index,
         "id": f"call_{index}",

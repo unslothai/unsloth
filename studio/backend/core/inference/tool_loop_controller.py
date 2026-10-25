@@ -1436,7 +1436,6 @@ class ToolLoopController:
             # `prepare_call` loads a deferred MCP tool's schema before it heals, so a round's key
             # heals against the same schema; this reads it without loading it into the catalog.
             from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
-
             spec = _mcp_tool_spec(tool_name)
             if isinstance(spec, Mapping):
                 schemas = [*schemas, *(neutralize_tool_descriptions([dict(spec)]) or [])]

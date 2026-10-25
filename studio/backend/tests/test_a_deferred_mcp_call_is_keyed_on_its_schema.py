@@ -36,9 +36,7 @@ _OTHER = {"function": {"name": _LOOKUP, "arguments": json.dumps({"query": "beta"
 def cached_lookup(monkeypatch):
     """A cached MCP tool with one required string argument, not yet in this response's catalog."""
     spec = _tool(_LOOKUP)
-    monkeypatch.setattr(
-        tools_mod, "mcp_tool_spec", lambda name: spec if name == _LOOKUP else None
-    )
+    monkeypatch.setattr(tools_mod, "mcp_tool_spec", lambda name: spec if name == _LOOKUP else None)
 
 
 def _controller():
