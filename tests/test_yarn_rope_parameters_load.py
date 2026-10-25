@@ -29,7 +29,7 @@ import _zoo_aggressive_cuda_spoof as _spoof
 _spoof.apply()
 import torch
 import unsloth
-_is_cuda = lambda d: d is not None and torch.device(d).type == "cuda"
+_is_cuda = lambda d: isinstance(d, (str, int, torch.device)) and not isinstance(d, bool) and torch.device(d).type == "cuda"
 for _name in ("empty", "zeros", "ones", "full", "tensor", "arange", "randn", "rand", "randint",
               "empty_like", "zeros_like", "ones_like"):
     _orig = getattr(torch, _name)
@@ -73,10 +73,32 @@ if loader == "unit":
             "sliding_attention": {"rope_type": "default", "rope_theta": 1e4},
         }
 
+    # A flat override applies to full attention only, as transformers' Gemma 3 config does.
     cfg = Cfg()
+    assert _apply_user_rope_scaling(cfg, {"rope_type": "yarn", "factor": 4.0}) is None
+    assert cfg.rope_parameters == {
+        "full_attention": {"rope_type": "yarn", "factor": 4.0, "rope_theta": 1e6},
+        "sliding_attention": {"rope_type": "default", "rope_theta": 1e4},
+    }, cfg.rope_parameters
+
+    # A flat config keeps its layout keys (Qwen2-VL mrope_section, StableLM partial_rotary_factor).
+    class Flat:
+        max_position_embeddings = 4096
+        rope_parameters = {
+            "rope_type": "default", "rope_theta": 1e4, "partial_rotary_factor": 0.25,
+            "mrope_section": [2, 1, 1],
+        }
+
+    flat = Flat()
+    applied = _apply_user_rope_scaling(flat, {"rope_type": "yarn", "factor": 4.0})
+    expected = {
+        "rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 4096,
+        "rope_theta": 1e4, "partial_rotary_factor": 0.25, "mrope_section": [2, 1, 1],
+    }
+    assert applied == expected and flat.rope_scaling == expected, (applied, flat.rope_scaling)
     try:
-        _apply_user_rope_scaling(cfg, {"rope_type": "yarn", "factor": 4.0})
-        raise AssertionError("flat YaRN accepted for a per-layer-type config")
+        _apply_user_rope_scaling(Flat(), {"full_attention": {"rope_type": "yarn", "factor": 4.0}})
+        raise AssertionError("per-layer-type override accepted for a flat config")
     except ValueError:
         pass
     new = {
@@ -102,7 +124,7 @@ if loader == "unit":
     from unsloth.models.vision import _vllm_rope_scaling
 
     assert _vllm_rope_scaling(yarn, True) == yarn
-    for args in ((new, True), (yarn, False)):
+    for args in ((new, True), (yarn, False), (yarn, True, True)):
         try:
             _vllm_rope_scaling(*args)
             raise AssertionError(f"vLLM RoPE override accepted: {args}")

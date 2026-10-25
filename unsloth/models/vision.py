@@ -25,12 +25,18 @@ except:
     from transformers import AutoModelForVision2Seq
 
 
+# Keys that describe the model's rotary layout, not the scaling: a caller's override keeps them.
+_ROPE_LAYOUT_KEYS = ("rope_theta", "partial_rotary_factor", "mrope_section", "mrope_interleaved")
+
+
 def _apply_user_rope_scaling(config, rope_scaling):
-    """Put the caller's rope_scaling (e.g. YaRN) on the text config before the model is built."""
+    """Put the caller's rope_scaling (e.g. YaRN) on the text config before the model is built.
+    Returns the dict applied (flat), or None for a per-layer-type layout."""
     from .llama import _rope_scaling_as_dict, _user_rope_scaling
 
     target = config.get_text_config() if hasattr(config, "get_text_config") else config
-    scaling = _rope_scaling_as_dict(rope_scaling)
+    scaling = dict(_rope_scaling_as_dict(rope_scaling))
+    nested = bool(scaling) and all(isinstance(v, dict) for v in scaling.values())
     current = getattr(target, "rope_parameters", None)
     # transformers v5 keys rope_parameters by layer type on mixed-attention models (Gemma 3).
     per_layer_type = (
@@ -40,41 +46,55 @@ def _apply_user_rope_scaling(config, rope_scaling):
         and all(isinstance(v, dict) for v in current.values())
     )
     if per_layer_type:
-        if set(scaling) != set(current) or not all(isinstance(v, dict) for v in scaling.values()):
+        if not nested and "full_attention" in current:
+            # As transformers' Gemma 3 config does: a flat override applies to full attention only.
+            scaling = {"full_attention": scaling}
+        elif not nested or not set(scaling) <= set(current):
             raise ValueError(
                 "Unsloth: this model keeps one RoPE setting per layer type "
                 f"({sorted(current)}); pass rope_scaling as a dict keyed by those layer types."
             )
         # Gemma 3's rotary init indexes rope_parameters[layer_type]["rope_theta"]: keep each base.
         target.rope_parameters = {
-            k: {
-                **{
-                    key: current[k][key]
-                    for key in ("rope_theta", "partial_rotary_factor")
-                    if key in current[k]
-                },
-                **v,
-            }
-            for k, v in scaling.items()
+            k: (
+                {**{key: v[key] for key in _ROPE_LAYOUT_KEYS if key in v}, **scaling[k]}
+                if k in scaling
+                else dict(v)
+            )
+            for k, v in current.items()
         }
-        return
-    target.rope_scaling = _user_rope_scaling(target, scaling)
+        return None
+    if nested:
+        raise ValueError(
+            "Unsloth: rope_scaling keyed by layer type was given, but this model has one RoPE "
+            "setting for every layer; pass a single dict such as {'rope_type': 'yarn', 'factor': 4.0}."
+        )
+    existing = _rope_scaling_as_dict(
+        getattr(target, "rope_parameters", None) or getattr(target, "rope_scaling", None) or {}
+    )
+    layout = {key: existing[key] for key in _ROPE_LAYOUT_KEYS if key in existing}
+    applied = {**layout, **_user_rope_scaling(target, scaling)}
+    target.rope_scaling = applied
+    return dict(applied)
 
 
-def _vllm_rope_scaling(rope_scaling, load_vllm_takes_it):
-    """The caller's RoPE override for load_vllm (flat dicts only)."""
+def _vllm_rope_scaling(rope_scaling, load_vllm_takes_it, is_vlm = False):
+    """The caller's RoPE override for load_vllm (flat dicts on text models only)."""
     from .llama import _rope_scaling_as_dict
 
     scaling = _rope_scaling_as_dict(rope_scaling)
-    if not load_vllm_takes_it or (scaling and all(isinstance(v, dict) for v in scaling.values())):
+    reason = None
+    if not load_vllm_takes_it:
+        reason = "this unsloth_zoo's load_vllm has no rope_scaling argument; upgrade unsloth_zoo"
+    elif scaling and all(isinstance(v, dict) for v in scaling.values()):
+        reason = "one RoPE setting per layer type"
+    elif is_vlm:
+        # vLLM applies hf_overrides to the top-level config, not the text config a VLM reads RoPE from.
+        reason = "vLLM would apply it to the vision-language config, not its text model"
+    if reason is not None:
         raise NotImplementedError(
-            "Unsloth: fast_inference = True cannot pass this rope_scaling to vLLM"
-            + (
-                " (one RoPE setting per layer type)"
-                if load_vllm_takes_it
-                else " (this unsloth_zoo's load_vllm has no rope_scaling argument; upgrade unsloth_zoo)"
-            )
-            + ", so generation would not match training. Load with fast_inference = False."
+            f"Unsloth: fast_inference = True cannot pass this rope_scaling to vLLM ({reason}), "
+            "so generation would not match training. Load with fast_inference = False."
         )
     return dict(scaling)
 
@@ -4129,9 +4149,14 @@ class FastBaseModel:
                 import inspect as _inspect
                 from unsloth_zoo.vllm_utils import load_vllm as _load_vllm
                 _vllm_rope_scaling(
-                    user_rope_scaling, "rope_scaling" in _inspect.getfullargspec(_load_vllm).args
+                    user_rope_scaling,
+                    "rope_scaling" in _inspect.getfullargspec(_load_vllm).args,
+                    is_vlm = getattr(model_config, "get_text_config", lambda: model_config)() is not model_config,
                 )
-            _apply_user_rope_scaling(model_config, user_rope_scaling)
+            # vLLM gets what the model got (theta, original window, layout keys filled in).
+            user_rope_scaling = (
+                _apply_user_rope_scaling(model_config, user_rope_scaling) or user_rope_scaling
+            )
 
         verify_fp8_support_if_applicable(
             model_config, fast_inference = bool(fast_inference and is_vLLM_available())
@@ -4397,7 +4422,9 @@ class FastBaseModel:
                 # run the checkpoint's RoPE while training runs the caller's.
                 if user_rope_scaling is not None:
                     load_vllm_kwargs["rope_scaling"] = _vllm_rope_scaling(
-                        user_rope_scaling, "rope_scaling" in allowed_args
+                        user_rope_scaling,
+                        "rope_scaling" in allowed_args,
+                        is_vlm = getattr(model_config, "get_text_config", lambda: model_config)() is not model_config,
                     )
 
                 llm = load_vllm(**load_vllm_kwargs)
