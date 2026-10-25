@@ -132,7 +132,6 @@ export const TILE_LIFT: Record<TileKind, number> = {
   flowers: 0,
 };
 
-/** The colour and lift of one tile. */
 export function tileLook(
   map: WorldMap,
   x: number,
@@ -224,7 +223,6 @@ export function waterLevel(t: Terrain, x: number, y: number): number {
   return heightAt(t, x + 0.5, y + 0.5) - TILE_LIFT.water - 0.18;
 }
 
-/** Cells of each solid kind, for one instanced mesh per kind. */
 export function decorCells(
   map: WorldMap,
 ): Record<"tree" | "rock" | "wall" | "flowers", Point[]> {
