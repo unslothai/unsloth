@@ -227,6 +227,24 @@ def test_a_failed_load_discards_the_prepared_write(env, tmp_path, scheme):
     assert C.lookup(fam, scheme, base_repo = str(base)) is None
 
 
+def test_a_writer_thread_that_cannot_start_releases_the_snapshot(
+    env, tmp_path, scheme, monkeypatch
+):
+    base, model = T._write_base(tmp_path)
+    T._quantize(model, scheme)
+    fam = T._fam(base)
+    pending = C.save_runtime_quant(model, fam, base_repo = str(base), defer = True)
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(C.threading.Thread, "start", refuse)
+    assert pending.start() is False
+    assert pending.done() and pending not in C._BACKGROUND
+    assert _leftovers(env) == [] and not C._writer_active(env, pending.key)
+    assert C.lookup(fam, scheme, base_repo = str(base)) is None
+
+
 def test_fallbacks_write_synchronously(env, tmp_path, scheme, monkeypatch):
     base, model = T._write_base(tmp_path)
     T._quantize(model, scheme)

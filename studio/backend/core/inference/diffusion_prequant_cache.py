@@ -1568,7 +1568,18 @@ class PendingWrite:
             self._thread = threading.Thread(
                 target = self._run, name = f"prequant-cache-write-{self.key[:8]}", daemon = True
             )
-        self._thread.start()
+        try:
+            self._thread.start()
+        except Exception as exc:  # noqa: BLE001 - no writer thread: drop the snapshot and lease, the next load re-quantises
+            with _lock:
+                self._thread = None
+            _log(
+                self._logger,
+                "warning",
+                f"skipped (background writer did not start: {type(exc).__name__})",
+            )
+            self._close()
+            return False
         return True
 
     def _run(self) -> None:
