@@ -27,7 +27,6 @@ export function getSpec(type: string): NodeSpec | undefined {
   return useCatalogStore.getState().specs[type];
 }
 
-/** True when this Studio does not know the block, or the block comes from a newer revision of it. */
 export function needsNewerStudio(node: { type: string; v?: number }): boolean {
   const spec = getSpec(node.type);
   return !spec || (node.v ?? 1) > spec.v;
@@ -52,7 +51,6 @@ export function findPort(
   );
 }
 
-/** Params with every spec default applied: what a freshly dropped node carries. */
 export function defaultParams(spec: NodeSpec): Record<string, unknown> {
   const params: Record<string, unknown> = {};
   for (const param of spec.params) {

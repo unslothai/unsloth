@@ -36,13 +36,11 @@ export interface WorldBridge {
   onNearby(target: Interactable | null): void;
   onInteract(target: Interactable): void;
   onRegion(regionId: string | null): void;
-  /** True while a dialogue or menu has the keyboard. */
   locked(): boolean;
 }
 
 export interface WorldArt {
   tiles: Partial<Record<TileKind, HTMLImageElement>>;
-  /** Keyed by "player", npc id or item id. */
   sprites: Record<string, HTMLImageElement>;
   models?: Record<string, ArrayBuffer>;
 }
@@ -52,12 +50,9 @@ export interface WorldGameHandle {
   playerTile(): Point;
   removeItem(id: string): void;
   faceNpc(id: string | null): void;
-  /** Walk the player to a tile along the shortest path (click-to-move does the same). */
   walkTo(tile: Point): void;
-  /** Where an NPC stands now (they wander). */
   npcTile(id: string): Point | null;
   npcTiles(): Record<string, Point>;
-  /** Send an NPC to an area to spend time in; null goes back to wandering near home. */
   setNpcPlace(id: string, area: Area | null): void;
   setNpcBusy(id: string, busy: boolean): void;
   setNpcStatus(id: string, icon: string): void;
@@ -299,7 +294,6 @@ export function createWorldGame(
       cam.setBounds(0, 0, map.width * T, map.height * T);
       cam.startFollow(this.player.sprite, true, 0.12, 0.12);
       cam.setRoundPixels(true);
-      // Whole-number zoom keeps tile edges on pixel boundaries.
       const fitZoom = () =>
         cam.setZoom(
           Phaser.Math.Clamp(Math.round(this.scale.width / (T * 18)), 1, 3),
@@ -346,7 +340,6 @@ export function createWorldGame(
           ? coverImage(img, VARIANTS * T)
           : paintTile(kind, VARIANTS * T, ground, spec.seed);
         if (img && (kind === "tree" || kind === "rock")) {
-          // A generated canopy/rock texture sits on painted ground so it still reads as an obstacle.
           const [c, cx] = canvas(VARIANTS * T, VARIANTS * T);
           cx.drawImage(
             paintTile(ground, VARIANTS * T, ground, spec.seed),
@@ -547,7 +540,6 @@ export function createWorldGame(
               here.x < a.x + a.w &&
               here.y >= a.y &&
               here.y < a.y + a.h;
-            // Planned NPCs walk the whole way to their place, then mill about inside it.
             const target = a
               ? {
                   x: a.x + Math.floor(Math.random() * a.w),

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure decisions behind dropping files on the canvas and the node toolbar (no stores, no network).
 
 import type { MediaValue, NodeSpec, ParamSpec } from "../types";
 
@@ -14,7 +13,6 @@ function isMedia(value: unknown): value is MediaValue {
   );
 }
 
-/** Text files above this stay out of a node's params (they would bloat every save). */
 export const MAX_TEXT_BYTES = 200_000;
 const TEXT_EXT = /\.(txt|md|markdown|json|csv|tsv|yaml|yml|xml|html?)$/i;
 const MEDIA_EXT: Record<string, "image" | "audio" | "video"> = {
@@ -33,7 +31,6 @@ const MEDIA_EXT: Record<string, "image" | "audio" | "video"> = {
   webm: "video",
 };
 
-// PDF and Word files go to a Document block; plain text, Markdown and HTML stay Text blocks.
 const DOCUMENT_MIMES = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -57,7 +54,6 @@ export interface FileTarget {
   via: "asset" | "text";
 }
 
-/** The input block a dropped or pasted file becomes; null for files Flows do not take (a .unslothflow imports from the gallery). */
 export function inputForFile(name: string, mime: string): FileTarget | null {
   const kind = mime.split("/", 1)[0];
   const ext = (name.split(".").pop() ?? "").toLowerCase();
@@ -73,12 +69,10 @@ export function inputForFile(name: string, mime: string): FileTarget | null {
   return null;
 }
 
-/** True when a drag carries files from the desktop (not a block dragged from the palette). */
 export function dragHasFiles(types: readonly string[]): boolean {
   return types.includes("Files");
 }
 
-/** Which single block the toolbar belongs to: exactly one selected block in an editable flow. */
 export function toolbarNodeId(
   selected: readonly string[],
   isBlock: (id: string) => boolean,
@@ -88,7 +82,6 @@ export function toolbarNodeId(
   return isBlock(selected[0]) ? selected[0] : null;
 }
 
-/** The model picker a node exposes on its toolbar, if any. */
 export function quickModelParam(spec: NodeSpec | undefined): ParamSpec | null {
   return spec?.params.find((p) => p.kind === "model") ?? null;
 }
@@ -122,7 +115,6 @@ function firstMedia(value: unknown, depth = 0): MediaValue | null {
   return null;
 }
 
-/** What Download gives for a node's last outputs: its first image, clip or video, else the outputs as JSON. */
 export function outputDownload(
   outputs: Record<string, unknown> | null,
   baseName: string,

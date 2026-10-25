@@ -70,7 +70,6 @@ test("every structured kind has a viewer and every renderer checks the registry 
   const registry = readSrc("features/flows/editor/value-viewers.tsx");
   for (const kind of STRUCTURED_KINDS)
     assert.match(registry, new RegExp(`\\b${kind}: lazy\\(`));
-  // The inspector and the App view share OutputValue.
   const inspector = readSrc("features/flows/editor/output-value.tsx");
   assert.ok(
     inspector.indexOf("isStructuredValue(value)") > 0 &&
@@ -86,7 +85,6 @@ test("every structured kind has a viewer and every renderer checks the registry 
     readSrc("features/flows/editor/run-drawer.tsx"),
     /<StructuredOutput value=/,
   );
-  // The chart library stays out of the editor chunk: only the lazy full viewer imports it.
   assert.doesNotMatch(registry, /from "recharts"/);
   assert.match(registry, /import\("\.\/value-viewers-full"\)/);
 });

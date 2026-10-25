@@ -51,7 +51,6 @@ export function copySelection(): GraphFragment | null {
   return fragment;
 }
 
-/** Re-id a fragment and move its top-left corner to `at`. */
 export function placeFragment(
   fragment: GraphFragment,
   at: { x: number; y: number } | null,
@@ -83,7 +82,6 @@ function parseClipboardText(text: string): GraphFragment | null {
   }
 }
 
-/** The first image on the system clipboard, or null (no image, no permission, or no async clipboard API). */
 async function clipboardImage(): Promise<File | null> {
   if (!navigator.clipboard?.read) return null;
   try {
@@ -143,7 +141,6 @@ export function useEditorShortcuts(active: boolean): void {
       }
       if (mod && key === "enter") {
         event.preventDefault();
-        // Same path as the Run button, so a flow with inputs opens the Run dialog first.
         const run = document.querySelector<HTMLButtonElement>(
           '[data-testid="flows-run"]',
         );
@@ -183,7 +180,6 @@ export function useEditorShortcuts(active: boolean): void {
             paste(local);
           }
         };
-        // A copied picture becomes an Image block; anything else pastes blocks as before.
         void clipboardImage().then((file) => {
           if (!file) return pasteBlocks();
           const at = pointer ?? centreOfCanvas();
@@ -223,7 +219,6 @@ export function useEditorShortcuts(active: boolean): void {
   }, [active, fitView, screenToFlowPosition]);
 }
 
-/** Frame the selected nodes in a new group (For Each runs the nodes inside its group). */
 export function groupSelection(
   rectFallback?: [number, number, number, number],
 ): void {

@@ -45,8 +45,6 @@ EXT_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "gif"
             "pdf": "application/pdf",
             "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "txt": "text/plain", "md": "text/markdown", "html": "text/html", "glb": "model/gltf-binary"}  # fmt: skip
-# Documents a Load Document block reads. Text types are only taken when the uploader says so (they have no magic
-# bytes), and are always served back as plain text so an HTML file never renders on Studio's origin.
 DOCUMENT_MIMES = frozenset(
     (
         "application/pdf",
@@ -87,15 +85,13 @@ def sniff_mime(data: bytes) -> Optional[str]:
     if head[:4] == b"fLaC":
         return "audio/flac"
     if data[4:8] == b"ftyp":
-        # M4A / M4B (phone voice memos, iTunes audio) share MP4's box format; the brand says it is audio.
         return (
             "audio/mp4"
             if data[8:12] in (b"M4A ", b"M4B ") or _mp4_audio_only(data)
             else "video/mp4"
         )
     if head[:4] == b"\x1aE\xdf\xa3":
-        # A browser voice recording is WebM with only an Opus / Vorbis track. Read the codecs from the header only,
-        # before the first Cluster (1F 43 B6 75), so frame bytes can never look like a codec id.
+        # Read WebM codecs from the header only (before the first Cluster), so frame bytes never look like a codec id.
         cluster = data.find(b"\x1fC\xb6u", 0, 1 << 20)
         tracks = data[: cluster if cluster > 0 else 65536]
         audio_only = (b"A_OPUS" in tracks or b"A_VORBIS" in tracks) and b"V_" not in tracks
@@ -110,11 +106,9 @@ def sniff_mime(data: bytes) -> Optional[str]:
 
 
 def _mp4_audio_only(data: bytes) -> bool:
-    """True when every track handler in an MP4 is sound: AAC files often carry a generic isom / mp42 brand."""
     kinds, at, seen = set(), data.find(b"hdlr"), 0
     # A real file has a few handlers (one per track, plus metadata); stop early so a crafted upload cannot spin here.
     while at != -1 and seen < 32:
-        # hdlr box: type, version + flags (4), pre_defined (4), then the handler type.
         kinds.add(data[at + 12 : at + 16])
         at, seen = data.find(b"hdlr", at + 4), seen + 1
     return b"soun" in kinds and b"vide" not in kinds

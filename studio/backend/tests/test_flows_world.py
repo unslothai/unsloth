@@ -8,6 +8,7 @@ from core.flows.registry import FlowNodeError
 from core.flows.schema import WorldSpec
 from core.flows.world import (
     BIOME_TILES,
+    apply_play_view,
     WorldError,
     normalize_world,
     npc_prompt,
@@ -107,7 +108,6 @@ def test_npc_reply_validation_only_allows_known_effects():
         "take_item": "rod",
         "set": {"reputation": 2},
     }
-    # Quest needs the item; another NPC cannot complete it; done quests stay done.
     assert "complete_quest" not in validate_npc_reply(
         {"text": "x", "complete_quest": "q"}, _state()
     )

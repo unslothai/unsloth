@@ -84,7 +84,6 @@ async def agent(ctx: NodeContext) -> dict:
         raise FlowNodeError("The prompt is empty: type one or connect text to Prompt")
     system = render(str(ctx.params.get("system") or ""), template_vars(ctx))
     image = ctx.inputs.get("image")
-    # A picture goes to the Vision model (or the vision model already loaded); a chat-only model cannot see it.
     if image:
         await ensure_model(ctx, "vision", ctx.params.get("vision_model"))
     else:
@@ -95,8 +94,7 @@ async def agent(ctx: NodeContext) -> dict:
     ctx.check_cancelled()
     payload = await ctx.call("POST", "/v1/chat/completions", json = body)
     text = strip_think(_message_text(payload))
-    # The tool loop runs inside the route and the non-streaming answer carries no trace of its calls, so steps says
-    # which tools were offered, not which ran.
+    # The non-streaming answer carries no trace of tool calls, so steps lists the tools offered, not those that ran.
     steps = {
         "tools": body["enabled_tools"],
         "knowledge_base": (body.get("rag_scope") or {}).get("kb_id"),
@@ -138,8 +136,7 @@ async def classify(ctx: NodeContext) -> dict:
     )
     label = value.get("label") if isinstance(value, dict) else None
     if label not in labels:
-        # A model without structured output can answer in another case or with extra words: an exact match in any
-        # case wins over a category that merely appears inside the answer.
+        # A model may answer in another case or with extra words: an exact match in any case wins over a substring.
         lowered = str(label or "").strip().lower()
         label = next((c for c in labels if c.lower() == lowered), None) or next(
             (c for c in labels if c.lower() in lowered), labels[-1]

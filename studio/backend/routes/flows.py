@@ -61,9 +61,7 @@ class RunBody(BaseModel):
     target_nodes: list[str] = Field(default_factory = list, max_length = 2000)
     force_nodes: list[str] = Field(default_factory = list, max_length = 2000)
     bake: bool = False
-    # Recompute nodes the flow ships pre-generated (a story's "New story" re-roll).
     ignore_baked: bool = False
-    # Outputs the editor pinned from a node's history: those nodes are not run, their pinned outputs feed downstream.
     pinned: dict[str, dict[str, Any]] = Field(default_factory = dict, max_length = 2000)
     doc: Optional[dict[str, Any]] = None
 
@@ -79,9 +77,7 @@ class InvokeBody(BaseModel):
     params: dict[str, Any] = Field(default_factory = dict)
     session_id: Optional[str] = Field(default = None, max_length = 128)
     rev: Optional[int] = None
-    # Answer as server-sent events: `delta` text while it is written, then `result` (or `error`).
     stream: bool = False
-    # Only load the model this entry point answers with, ahead of the first call.
     warm: bool = False
 
 
@@ -250,7 +246,6 @@ async def upload_asset(
         digest, sniffed = await asyncio.to_thread(asset_store.store, data, hint or mime)
     except ValueError as exc:
         raise HTTPException(status_code = 415, detail = str(exc))
-    # A document keeps its file name so the block can show which file it holds.
     label = (name or "")[:200] if asset_store.kind_of(sniffed) == "document" else None
     return {"media": asset_store.media_value(digest, sniffed, name = label or None)}
 
@@ -325,7 +320,6 @@ def _after(request: Request) -> Optional[int]:
     return None
 
 
-# POST too: quick tunnels hold a streamed GET until it closes.
 REPLAY_PAGE = 5000
 
 
@@ -371,7 +365,6 @@ async def run_events(request: Request, run_id: str) -> StreamingResponse:
                     if len(page) < REPLAY_PAGE:
                         break
                 if rs is None:
-                    # A run a restart interrupted has no terminal event; its stored snapshot ends the stream.
                     yield _sse(
                         {
                             "seq": max(sent, stored["last_seq"]),
@@ -444,7 +437,6 @@ def put_flow(flow_id: str, body: FlowBody) -> dict:
 
 @router.delete("/{flow_id}", status_code = 204)
 async def delete_flow(flow_id: str) -> Response:
-    # A running flow would keep training or generating with no page left to stop it.
     engine = get_engine()
     stopping = []
     for rs in list(engine.runs.values()):
@@ -453,10 +445,8 @@ async def delete_flow(flow_id: str) -> Response:
             if rs.task is not None and not rs.task.done():
                 stopping.append(rs.task)
     if stopping:
-        # Let them write their last events before their rows are deleted.
         await asyncio.wait(stopping, timeout = 30)
     flows_db.delete_flow(flow_id)
-    # The Python blocks' sandbox belongs to the flow; nothing can reach it once the flow is gone.
     try:
         from core.inference.tools import remove_session_sandbox
         await asyncio.to_thread(remove_session_sandbox, automation.python_session(flow_id), True)
@@ -625,7 +615,6 @@ def latest_outputs(flow_id: str) -> dict:
 
 
 def _node_outputs(record: dict) -> dict[str, dict]:
-    """Baked outputs, overridden by what this account's latest runs produced."""
     outputs = {
         nid: dict(v) for nid, v in (record["doc"].get("baked") or {}).items() if isinstance(v, dict)
     }
@@ -671,8 +660,7 @@ async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
         return _invoke_stream(request, engine, call, body)
     task = asyncio.create_task(engine.invoke(**call))
     try:
-        # A player that moved on (an NPC conversation pauses the background sim) aborts its fetch: stop the
-        # invocation too, so it does not hold the GPU lock in front of the call the player is waiting for.
+        # Stop the invocation too, so it does not hold the GPU lock ahead of the call the player now waits for.
         while not (await asyncio.wait({task}, timeout = 1.0))[0]:
             if await request.is_disconnected():
                 task.cancel()
@@ -722,7 +710,6 @@ def _invoke_stream(
                 if await request.is_disconnected():
                     return
                 yield ": keepalive\n\n"
-            # Deltas flushed as the entry point finished are still queued.
             while not events.empty():
                 event = events.get_nowait()
                 if event["type"] == "node.text_delta" and event.get("node_id") == entry:
@@ -754,7 +741,6 @@ def _invoke_stream(
                 }
             )
         finally:
-            # A player that left (or loaded a save) does not need the rest of this answer.
             if not task.done():
                 task.cancel()
 
@@ -865,7 +851,6 @@ async def export_flow(
     try:
         doc = record["doc"]
         if mode == "baked":
-            # A Playable export ships what the flow last produced here, not only what an explicit bake stored.
             latest = {
                 nid: entry["outputs"]
                 for nid, entry in _latest_outputs(flow_id).items()
@@ -881,9 +866,6 @@ async def export_flow(
         media_type = media_type,
         headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
-
-
-# Capabilities: what a flow reaches outside itself, and the owner's approval of it
 
 
 class ApproveBody(BaseModel):
@@ -926,8 +908,7 @@ def approve_capabilities(flow_id: str, body: ApproveBody) -> dict:
     record = _flow_or_404(flow_id)
     need = capabilities.doc_needs(record["doc"])
     before = flows_db.get_capabilities(flow_id)
-    # Approve what the owner was shown and the flow still needs; anything added since stays pending. What was approved
-    # before and is still needed stays approved, since the banner sends only what is pending.
+    # Approve only what the owner was shown and the flow still needs; anything added since stays pending.
     approved = {
         "python": [
             h
@@ -949,7 +930,6 @@ def approve_capabilities(flow_id: str, body: ApproveBody) -> dict:
         and (body.triggers or capabilities.is_approved(before, "trigger", "trigger")),
     }
     flows_db.set_capabilities(flow_id, approved)
-    # A trigger added by an API-key save was left out of the index; the owner's approval puts it in.
     triggers.sync(flow_id, record["doc"])
     return _capability_report(record)
 
@@ -993,8 +973,7 @@ async def call_webhook(request: Request, token: str) -> dict:
 
     if not triggers.TOKEN_RE.match(token):
         raise HTTPException(status_code = 404, detail = "Not found")
-    # Resolve the secret before reading anything, so an unknown URL costs no body read. Only a real secret gets a
-    # rate-limit bucket, so a flood of made-up ones cannot push a real one's bucket out.
+    # Resolve the secret first: unknown URLs cost no body read, and only real secrets get a rate-limit bucket.
     row = await asyncio.to_thread(run_as, OWNER, flows_db.trigger_by_token, token)
     if row is None:
         raise HTTPException(status_code = 404, detail = "Not found")

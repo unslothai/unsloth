@@ -76,9 +76,7 @@ def test_agent_asks_only_for_the_search_tools(monkeypatch):
     assert body["enable_tools"] is True
     assert body["enabled_tools"] == ["web_search", "search_knowledge_base"]
     assert body["rag_scope"] == {"kb_id": "kb1"}
-    # A stale mcp param from an older save is ignored: flows never send MCP tools.
     assert body["mcp_enabled"] is False and body["max_tool_calls_per_message"] == 3
-    # Never left unset: an omitted enabled_tools means every built-in, python and terminal included.
     assert "python" not in body["enabled_tools"] and "terminal" not in body["enabled_tools"]
     assert "permission_mode" not in body and "confirm_tool_calls" not in body
     assert out["text"] == "Paris."
@@ -117,7 +115,6 @@ def test_agent_puts_history_before_the_new_message(monkeypatch):
     asyncio.run(chat.agent(ctx))
     roles = [m["role"] for m in ctx.calls[-1][2]["messages"]]
     assert roles == ["system", "user", "assistant", "user"]
-    # A resumed chat drops its oldest turns when it outgrows the context instead of failing.
     assert ctx.calls[-1][2]["context_overflow"] == "truncate_oldest"
     assert ctx.calls[-1][2]["context_policy"] == "rolling"
 
@@ -260,7 +257,6 @@ def test_agent_sends_an_image_to_a_local_vision_model(monkeypatch):
     )
     asyncio.run(chat.agent(ctx))
     content = ctx.calls[-1][2]["messages"][-1]["content"]
-    # The picture goes to the Vision model, never to the chat-only Model.
     assert kinds == [("vision", vision_model)]
     assert content[1]["image_url"]["url"].startswith("data:image/png")
     asyncio.run(

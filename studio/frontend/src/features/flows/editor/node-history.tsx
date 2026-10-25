@@ -12,7 +12,6 @@ import {
 import { useRuntimeStore } from "../stores/runtime-store";
 import { MediaThumb } from "./media";
 
-/** A node's last outputs across runs; pin one and the next runs use it instead of running the node. */
 export function NodeHistory({
   nodeId,
   onView,
@@ -49,7 +48,6 @@ export function NodeHistory({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a different node starts with nothing viewed
   useEffect(() => {
-    // The strip until the new answer arrives would belong to the last node, and Pin would save it here.
     setEntries(null);
     setViewing(null);
     onView(null);

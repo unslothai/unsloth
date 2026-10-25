@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Automation blocks: who may run Python, HTTP and triggers (run origin x owner approval), the HTTP host guard,
-the schedule (fires once per due time, never catches up, skips overlaps) and webhooks (secret, size, switched off)."""
-
 import asyncio
 import json
 import time
@@ -144,7 +141,6 @@ def test_changed_code_needs_approval_again(client):
     client.put("/api/flows/py4", json = {"doc": edited, "baseUpdatedAt": record["updatedAt"]})
     assert client.get("/api/flows/py4/capabilities").json()["pending"]["python"]
     assert "not approved" in _run(client, "py4")["nodes"]["p"]["error"]
-    # A doc sent with the run cannot smuggle in other code either.
     run_id = client.post(
         "/api/flows/py4/runs",
         json = {"doc": {**edited, "nodes": [node("p", "code.python", code = "result = 3")]}},
@@ -156,7 +152,7 @@ def test_approval_covers_only_what_the_owner_was_shown(client):
     _python_flow(client, "py5")
     resp = client.post("/api/flows/py5/approve", json = {"python": ["sha256:0000"], "triggers": True})
     assert resp.json()["pending"]["python"] == [capabilities.code_hash(CODE)]
-    assert resp.json()["approved"]["triggers"] is False  # no trigger block, nothing to approve
+    assert resp.json()["approved"]["triggers"] is False
 
 
 def test_an_import_starts_unapproved(client):
@@ -245,13 +241,10 @@ def test_python_output_parsing():
         automation.parse_python_output("Traceback: boom")
 
 
-# Schedule
-
-
 def test_cron_parsing_and_matching():
     sets = triggers.parse_cron("*/15 9-17 * * 1-5")
-    assert triggers.cron_matches(sets, datetime(2026, 10, 22, 9, 30))  # a Thursday
-    assert not triggers.cron_matches(sets, datetime(2026, 10, 25, 9, 30))  # a Sunday
+    assert triggers.cron_matches(sets, datetime(2026, 10, 22, 9, 30))
+    assert not triggers.cron_matches(sets, datetime(2026, 10, 25, 9, 30))
     assert 0 in triggers.parse_cron("0 0 * * 7")[4]
     with pytest.raises(ValueError):
         triggers.parse_cron("61 * * * *")
@@ -300,16 +293,16 @@ def test_scheduler_fires_approved_flows_and_skips_overlaps(client, monkeypatch):
         finally:
             reset_account(token)
 
-    assert tick() == []  # not approved yet
+    assert tick() == []
     _approve(client, "sch1")
     assert tick() == ["run-1"]
     assert started[0]["origin"] == "trigger"
     assert started[0]["options"]["params"]["__trigger"]["s"]["fired_at"]
-    assert tick() == []  # already fired for this time
+    assert tick() == []
     monkeypatch.setattr(triggers, "_busy", lambda flow_id: True)
     flows_db_row = [r for r in _owner(flows_db.list_triggers) if r["flow_id"] == "sch1"][0]
     _owner(flows_db.mark_trigger_fired, "sch1", "s", 0)
-    assert tick() == []  # its last run is still going
+    assert tick() == []
     assert flows_db_row["kind"] == "schedule"
 
 
@@ -321,9 +314,6 @@ def _owner(fn, *args):
         reset_account(token)
 
 
-# Webhook
-
-
 def _webhook_flow(client, enabled = True) -> str:
     d = doc([node("w", "trigger.webhook", enabled = enabled)], id = "hook1")
     client.post("/api/flows", json = {"doc": d})
@@ -333,13 +323,12 @@ def _webhook_flow(client, enabled = True) -> str:
 def test_webhook_needs_its_secret_approval_and_a_small_json_body(client):
     path = _webhook_flow(client)
     assert client.post("/api/flows/hooks/" + "x" * 32, json = {}).status_code == 404
-    assert client.post(path, json = {"a": 1}).status_code == 409  # triggers not approved
+    assert client.post(path, json = {"a": 1}).status_code == 409
     _approve(client, "hook1")
     run_id = client.post(path, json = {"a": 1}).json()["run_id"]
     snap = _wait(client, run_id)
     assert snap["nodes"]["w"]["outputs"]["payload"] == {"a": 1}
     assert client.post(path, content = b"not json").status_code == 400
-    # NaN / Infinity would make the triggered run's snapshot unreadable.
     assert client.post(path, content = b'{"a": NaN}').status_code == 400
     big = json.dumps({"x": "y" * (flows_routes.WEBHOOK_MAX_BYTES + 1)})
     assert client.post(path, content = big).status_code == 413
@@ -381,9 +370,6 @@ def test_other_accounts_triggers_never_fire(client):
         ]
         == []
     )
-
-
-# Review fixes
 
 
 def test_approving_a_new_capability_keeps_the_earlier_ones(client):
@@ -442,7 +428,6 @@ def test_a_trigger_off_in_the_saved_flow_never_fires_even_if_the_index_lags(clie
     _approve(client, "hook1")
     d = client.get("/api/flows/hook1").json()
     d["doc"]["nodes"][0]["params"]["enabled"] = False
-    # The index update fails after the save: the saved document still wins.
     monkeypatch.setattr(triggers, "sync", lambda *a: (_ for _ in ()).throw(RuntimeError("db")))
     assert client.put("/api/flows/hook1", json = {"doc": d["doc"]}).status_code == 200
     assert client.post(path, json = {}).status_code == 409
@@ -450,8 +435,8 @@ def test_a_trigger_off_in_the_saved_flow_never_fires_even_if_the_index_lags(clie
 
 def test_cron_either_day_field_matches_when_both_are_set():
     sets = triggers.parse_cron("0 9 1 * 1")
-    assert triggers.cron_matches(sets, datetime(2026, 10, 26, 9, 0))  # a Monday, not the 1st
-    assert triggers.cron_matches(sets, datetime(2026, 10, 1, 9, 0))  # the 1st, a Thursday
+    assert triggers.cron_matches(sets, datetime(2026, 10, 26, 9, 0))
+    assert triggers.cron_matches(sets, datetime(2026, 10, 1, 9, 0))
     assert not triggers.cron_matches(sets, datetime(2026, 10, 27, 9, 0))
     weekdays = triggers.parse_cron("0 9 * * 1")
     assert not triggers.cron_matches(weekdays, datetime(2026, 10, 1, 9, 0))
@@ -478,9 +463,7 @@ def test_a_long_log_does_not_cut_the_python_result():
 
     program = automation._program("print('x' * 50000)\nresult = {'n': len(inputs)}", [1, 2])
     out = subprocess.run([sys.executable, "-c", program], capture_output = True, text = True).stdout
-    result, log = automation.parse_python_output(
-        out[:16000]
-    )  # the tool keeps the head of long output
+    result, log = automation.parse_python_output(out[:16000])
     assert result == {"n": 2} and log.startswith("xxx")
 
 
@@ -559,7 +542,6 @@ def test_an_api_key_save_never_arms_triggers(client):
         ).status_code
         == 200
     )
-    # The key's schedule is not indexed, and the flow's trigger approval is withdrawn.
     assert [t["node_id"] for t in client.get("/api/flows/hook1/triggers").json()["triggers"]] == [
         "w"
     ]
@@ -609,7 +591,7 @@ def test_a_trigger_fires_only_as_the_kind_the_saved_flow_has(client, monkeypatch
 
 
 def test_http_json_with_nan_is_not_parsed():
-    assert automation._no_constant  # the HTTP block parses with the same strict constants
+    assert automation._no_constant
     import inspect
     assert "parse_constant = _no_constant" in inspect.getsource(automation.http_request)
 
@@ -664,7 +646,6 @@ def test_run_flow_runs_a_called_flows_python_only_with_that_flows_approval(clien
     )
     assert _approve(client, "child_py").status_code == 200
     assert _run(client, "parent_py")["nodes"]["call"]["status"] == "done"
-    # An API key start of the parent still never runs the called flow's Python.
     by_key = _run(client, "parent_py", "owner_api")
     assert (
         by_key["nodes"]["call"]["status"] == "failed"
