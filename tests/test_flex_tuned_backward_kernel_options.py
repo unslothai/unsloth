@@ -86,11 +86,11 @@ def test_wrapper_passes_tuned_backward_options(monkeypatch):
     class M(torch.nn.Module):
         is_causal = True
 
-    q = torch.randn(1, 2, 8, 256, requires_grad=True)
-    k = torch.randn(1, 2, 8, 256, requires_grad=True)
-    v = torch.randn(1, 2, 8, 256, requires_grad=True)
+    q = torch.randn(1, 2, 8, 256, requires_grad = True)
+    k = torch.randn(1, 2, 8, 256, requires_grad = True)
+    v = torch.randn(1, 2, 8, 256, requires_grad = True)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
-    wrapped(M(), q, k, v, object())   # a non-None mask: stays on flex
+    wrapped(M(), q, k, v, object())  # a non-None mask: stays on flex
     for key_, val in u._FLEX_TUNED_BWD_KERNEL_OPTIONS.items():
         assert seen[key_] == val
     assert seen["FORCE_USE_FLEX_ATTENTION"] is True
