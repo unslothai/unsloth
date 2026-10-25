@@ -248,6 +248,8 @@ def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
     """Non-reentrant checkpointing frees recomputed inputs while the backward graph records:
     cudagraph trees raise "observed an input tensor deallocate during graph recording". Its
     forward and its recompute both take the graph-free compile; reentrant keeps graphs."""
+    if not hasattr(torch._C._autograd, "_top_saved_tensors_default_hooks"):
+        pytest.skip("torch < 2.8 cannot read the saved tensor hooks stack")
     from torch.utils.checkpoint import checkpoint
 
     seen = []
