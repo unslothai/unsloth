@@ -3667,7 +3667,9 @@ export function ModelConfigPage({
       : "Saved settings will be forgotten"
     : !remember && atDefault
       ? "Using default settings"
-      : "";
+      : remember && !atDefault
+        ? "Unsaved changes"
+        : "";
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
     ? remember
@@ -4222,8 +4224,11 @@ export function ModelConfigPage({
           >
             {primaryActionLabel}
           </Button>
-          {/* Hidden with nothing to save or forget, else never-remembered models show a dead Forget. */}
-          {!persistenceOnly && (remember || savedRemember) && (
+          {/* Load already saves while Remember is ticked: this only shows with changes to save or a record to forget. */}
+          {!persistenceOnly &&
+            (remember
+              ? !matchesStored && !(atDefault && !savedRemember)
+              : savedRemember) && (
             <Button
               type="button"
               variant="outline"
@@ -4242,7 +4247,7 @@ export function ModelConfigPage({
               }
               onClick={handleSave}
             >
-              {remember ? "Save settings" : "Forget settings"}
+              {remember ? "Save without loading" : "Forget settings"}
             </Button>
           )}
           <Button
