@@ -1781,29 +1781,28 @@ def native_full_state_dict(
 
 
 def _reshard_after_forward_off(unit):
-    """Keep `unit` gathered after its forward. FSDPModule.set_reshard_after_forward exists from torch
-    2.8; on 2.6 / 2.7 set the param group's post-forward mesh the same way (None is what
-    reshard_after_forward = False resolves to). Returns what _reshard_after_forward_restore needs."""
-    if hasattr(unit, "set_reshard_after_forward"):
-        unit.set_reshard_after_forward(False, recurse = False)
-        return None
-    group = getattr(unit._get_fsdp_state(), "_fsdp_param_group", None)
-    if group is None:
-        return None
-    previous = group.post_forward_mesh_info
-    group.post_forward_mesh_info = None
-    return (group, previous)
+    """Keep `unit` gathered after forward: post-forward mesh None, as set_reshard_after_forward(False)
+    writes. By hand since that setter is missing on torch 2.6 / 2.7 and refuses int values on restore."""
+    state = unit._get_fsdp_state()
+    groups = getattr(state, "_fsdp_param_groups", None)
+    if groups is None:  # torch < 2.13: at most one param group
+        group = getattr(state, "_fsdp_param_group", None)
+        groups = [] if group is None else [group]
+    previous = [(group, group.post_forward_mesh_info) for group in groups]
+    auto = getattr(state, "_auto_reshard_after_forward", None)
+    for group in groups:
+        group.post_forward_mesh_info = None
+    if auto is not None:
+        state._auto_reshard_after_forward = False
+    return state, auto, previous
 
 
 def _reshard_after_forward_restore(unit, saved):
-    if hasattr(unit, "set_reshard_after_forward"):
-        unit.set_reshard_after_forward(
-            getattr(unit, "_unsloth_reshard_after_forward", True), recurse = False
-        )
-        return
-    if saved is not None:
-        group, previous = saved
-        group.post_forward_mesh_info = previous
+    state, auto, previous = saved
+    for group, info in previous:
+        group.post_forward_mesh_info = info
+    if auto is not None:
+        state._auto_reshard_after_forward = auto
 
 
 @contextlib.contextmanager
@@ -1836,10 +1835,17 @@ def native_fsdp2_unsharded(model):
         yield model
     finally:
         root.__dict__["_unsloth_unsharded_depth"] = 0
+        errors = []
         for unit in units:
-            unit.reshard()
+            try:
+                unit.reshard()
+            except Exception as exc:
+                errors.append(exc)
+        for unit in units:
             if id(unit) in saved:
                 _reshard_after_forward_restore(unit, saved[id(unit)])
+        if errors:
+            raise errors[0]
 
 
 def _ga_mode(model = None):
