@@ -190,7 +190,6 @@ def _root_mesh(mesh):
             pass
     try:
         from torch.distributed.device_mesh import _mesh_resources
-
         return _mesh_resources.get_root_mesh(mesh)
     except Exception:
         return None
@@ -249,7 +248,9 @@ def check_pp_dp_composition(model, dp_mesh):
             f"given ({type(stage.model).__name__}), not a level inside it ({type(model).__name__})."
         )
     if stage.dp_mesh is not None:
-        raise ValueError("Unsloth: this pipeline stage is already sharded over a data parallel mesh.")
+        raise ValueError(
+            "Unsloth: this pipeline stage is already sharded over a data parallel mesh."
+        )
     if dp_mesh is None:
         raise ValueError(
             "Unsloth: native FSDP2 over a pipeline parallel model needs FSDP2Config(mesh = mesh['dp']), the "
@@ -881,7 +882,6 @@ class PipelineParallel:
     def composed(self):
         """True when the stage spans more ranks than its pp group (dp and / or tp)."""
         import torch.distributed as dist
-
         return dist.is_initialized() and dist.get_world_size() != self.num_stages
 
     def _meshes(self):
@@ -900,20 +900,27 @@ class PipelineParallel:
             check_mesh_composition(meshes)
         except ValueError as exc:
             names = getattr(_root_mesh(self.mesh), "mesh_dim_names", None) or ("tp", "dp")
-            missing = " then ".join(
-                call
-                for name, call in (
-                    ("tp", "apply_tensor_parallel(model, mesh['tp'])"),
-                    ("dp", "shard_model(model, FSDP2Config(mesh = mesh['dp']))"),
+            missing = (
+                " then ".join(
+                    call
+                    for name, call in (
+                        ("tp", "apply_tensor_parallel(model, mesh['tp'])"),
+                        ("dp", "shard_model(model, FSDP2Config(mesh = mesh['dp']))"),
+                    )
+                    if name not in meshes and (name in names or not set(names) & {"tp", "dp"})
                 )
-                if name not in meshes and (name in names or not set(names) & {"tp", "dp"})
-            ) or "apply_tensor_parallel over the tp dimension / shard_model over the dp dimension"
+                or "apply_tensor_parallel over the tp dimension / shard_model over the dp dimension"
+            )
             raise RuntimeError(
                 f"Unsloth: this pipeline stage spans {', '.join(meshes)} only ({exc}). Apply the other mesh "
                 f"dimensions before training: {missing}."
             ) from None
 
-    def _attach_data_parallel(self, dp_mesh, mp_policy = None):
+    def _attach_data_parallel(
+        self,
+        dp_mesh,
+        mp_policy = None,
+    ):
         """shard_model(model, FSDP2Config(mesh = dp_mesh)) sharded this stage: make the PipelineStage's module
         the outer FSDP2 root (no parameters of its own), so torch's PipelineStage defers the gradient
         reduce-scatter to the end of the step (set_requires_gradient_sync(False) per micro-batch backward,
@@ -1127,9 +1134,7 @@ class PipelineParallel:
         """(local tensor, number of ranks holding the same values) for this rank's gradient. Stages hold
         disjoint parameters; inside a stage plain gradients are replicated over its world // pp ranks and
         a DTensor's local shard repeats over that count divided by its shard dimensions."""
-        stage_ranks = (
-            torch.distributed.get_world_size() // self.num_stages if self.composed else 1
-        )
+        stage_ranks = torch.distributed.get_world_size() // self.num_stages if self.composed else 1
         try:
             from torch.distributed.tensor import DTensor, Replicate
         except ImportError:
