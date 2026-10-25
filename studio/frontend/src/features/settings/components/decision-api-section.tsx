@@ -366,7 +366,7 @@ export function DecisionApiSection(): ReactElement | null {
               target="_blank"
               rel="noreferrer"
               title={t("settings.apiKeys.decisionApi.docsLabel")}
-              className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {t("settings.apiKeys.decisionApi.docs")}
               <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -416,7 +416,7 @@ export function DecisionApiSection(): ReactElement | null {
     return error ? (
       <section
         data-settings-label={t("settings.apiKeys.decisionApi.title")}
-        className="overflow-hidden rounded-lg border border-border/70"
+        className="overflow-hidden rounded-xl border border-border/70"
       >
         {header}
       </section>
@@ -491,7 +491,7 @@ export function DecisionApiSection(): ReactElement | null {
     <section
       ref={sectionRef}
       data-settings-label={t("settings.apiKeys.decisionApi.title")}
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       {header}
 
@@ -558,7 +558,7 @@ export function DecisionApiSection(): ReactElement | null {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
+                className="shrink-0 text-xs"
                 disabled={busy || downloading}
                 onClick={() => plan && void startDownload(plan)}
               >
@@ -569,7 +569,7 @@ export function DecisionApiSection(): ReactElement | null {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
+                className="shrink-0 text-xs"
                 disabled={busy}
                 onClick={() => void unload()}
               >

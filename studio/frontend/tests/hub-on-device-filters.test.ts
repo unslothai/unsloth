@@ -50,9 +50,9 @@ test("a row's own vision flag counts as Vision", () => {
   assert.equal(matchesInventoryCapabilities(row, ["vision"]), true);
 });
 
-test("Add folder and Free up space are icon buttons with labels", () => {
+test("Model folders and Free up space are icon buttons with labels", () => {
   const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
-  for (const label of ["Add folder", "Free up space"]) {
+  for (const label of ["Model folders", "Free up space"]) {
     assert.match(toolbar, new RegExp(`aria-label="${label}"`));
     assert.doesNotMatch(toolbar, new RegExp(`/>\\s*${label}\\s*</button>`));
   }

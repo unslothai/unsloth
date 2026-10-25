@@ -91,7 +91,7 @@ test("Recommended browsing lists checkpoints only past 30 likes", async () => {
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*isDiffusionRow\(row\) \|\|\s*hasRecommendedCheckpointLikes\(row\.result\)/,
+    /\(!browsing \|\|[\s\S]{0,240}hasRecommendedCheckpointLikes\(result\)\)\) &&\s*matchesRecommended\(result, quantFormats\)/,
   );
   assert.match(
     page,
@@ -118,7 +118,11 @@ test("image and video models skip the likes rules and list full-precision checkp
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /isDiffusionRow\(row\)\s*\?\s*matchesRecommendedDiffusion\(row\.result, diffusionQuantFormats\)\s*:\s*matchesRecommended\(row\.result, checkpointQuantFormats\)/,
+    /isDiffusionRow\(row\) \? diffusionQuantFormats : checkpointQuantFormats/,
+  );
+  assert.match(
+    page,
+    /searchBrowsing,\s*isDiffusionResult\(result\),\s*quantFormats,/,
   );
 });
 
@@ -132,7 +136,16 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*isDiffusionRow\(row\) \|\|\s*resolveOwnerProviderLogo/,
+    /if \(format !== "recommended"\) \{\s*return matchesFormat\(detectResultFormat\(result\), format\);\s*\}\s*if \(diffusion\) return matchesRecommendedDiffusion\(result, quantFormats\);\s*return \(\s*\(!browsing \|\|\s*\(\(resolveOwnerProviderLogo/,
+  );
+  // The search's skip test follows the formats' contents: a system poll's new array must not restart it.
+  assert.match(
+    page,
+    /const quantFormatsKey = checkpointQuantFormats\.join\(","\);[\s\S]{0,600}\[effectiveDiscoverFormat, searchBrowsing, quantFormatsKey\]/,
+  );
+  assert.match(
+    page,
+    /matchesDiscoverFormat\(\s*row\.result,\s*effectiveDiscoverFormat,\s*!hasQuery,\s*isDiffusionRow\(row\),/,
   );
   assert.doesNotMatch(page, /preset\?\.format \?\? "gguf"/);
   const channels = await readSrcAsync("features/hub/lib/channels.ts");

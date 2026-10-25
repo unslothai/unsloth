@@ -46,16 +46,13 @@ test("pinned items lead, keeping the order they arrived in", () => {
 });
 
 test("an unrelated merge does not rearrange the pinned group", () => {
-  // The backend orders pins by PIN time, which the client never learns. Sorting them by created_at
-  // would flip this pair, since the older item was pinned more recently and so leads on the server.
+  // The backend orders pins by pin time, which the client never learns.
   const serverOrder = [item("pinnedRecentlyButOld", 1, true), item("pinnedLongAgoButNew", 9, true)];
   const merged = sortGalleryItems([item("fresh", 10), ...serverOrder]);
   assert.deepEqual(ids(merged), ["pinnedRecentlyButOld", "pinnedLongAgoButNew", "fresh"]);
 });
 
 test("the item just pinned goes to the very front of the pinned group", () => {
-  // The backend orders pinned by pin time, which the client cannot know, so the freshly pinned
-  // item leads even though an older pin has a newer created_at.
   const items = [item("a", 5, true), item("b", 1)];
   assert.deepEqual(ids(applyPin(items, "b", true)), ["b", "a"]);
 });
@@ -104,7 +101,6 @@ test("removing the only item clears the selection", () => {
 });
 
 test("a merged generation lands after the pinned group, not at the very front", () => {
-  // The server sorts pinned first, so prepending a fresh record would disagree with it on reload.
   const existing = [item("pin", 1, true), item("older", 2)];
   const fresh = item("new", 9);
   assert.deepEqual(ids(sortGalleryItems([fresh, ...existing])), ["pin", "new", "older"]);
@@ -115,12 +111,8 @@ test("with nothing pinned a merged generation still leads", () => {
   assert.deepEqual(ids(merged), ["new", "older"]);
 });
 
-// --- lost-generation probe ---------------------------------------------------------------------
-
-/** A baseline whose loaded window is a sound basis for judging an unpinned row. */
 const judging = (knownIds: ReadonlySet<string>) => ({ knownIds, canJudgeUnpinned: true });
 
-/** A fake gallery listing, already in server order, served in pages. */
 const pager =
   (all: ReturnType<typeof item>[], pageSize: number) => async (offset: number) => ({
     items: all.slice(offset, offset + pageSize),
@@ -128,8 +120,6 @@ const pager =
   });
 
 test("a pinned first row does not mask a newly saved record", async () => {
-  // The regression: with a pin present, reading only row 0 saw the pin, which was already known,
-  // and reported a finished generation as never submitted.
   const listing = [item("pin", 5, true), item("fresh", 9), item("old", 1)];
   const known = new Set(["pin", "old"]);
   assert.equal(await hasUnknownRecord(judging(known), pager(listing, 50), 50), true);
@@ -151,7 +141,6 @@ test("the probe walks past a pinned group that spans more than one page", async 
     item("fresh", 9),
   ];
   const known = new Set(["p1", "p2", "p3"]);
-  // Page size 2, so the first unpinned row only appears on the second page.
   assert.equal(await hasUnknownRecord(judging(known), pager(listing, 2), 2), true);
 });
 
@@ -171,8 +160,6 @@ test("an empty gallery reports no new record", async () => {
 });
 
 test("an unknown pinned row is not proof that a generation landed", async () => {
-  // With more pins than the client had loaded, knownIds omits the later ones. Treating such a pin
-  // as evidence reported a lost submission as a finished run that produced no image.
   const listing = [item("loadedPin", 5, true), item("unloadedPin", 4, true), item("old", 1)];
   const known = new Set(["loadedPin", "old"]);
   assert.equal(await hasUnknownRecord(judging(known), pager(listing, 50), 50), false);
@@ -183,11 +170,7 @@ test("a new record is still found past an unknown pinned row", async () => {
   assert.equal(await hasUnknownRecord(judging(new Set(["old"])), pager(listing, 50), 50), true);
 });
 
-// --- what the loaded window is allowed to conclude -----------------------------------------------
-
 test("an all-pinned partial window cannot judge an unpinned row", () => {
-  // 50 pins loaded, more pages behind them: every unpinned row is unfamiliar just for being
-  // unloaded, so unknown stops meaning new.
   const loaded = Array.from({ length: 50 }, (_, i) => item(`p${i}`, 100 - i, true));
   const known = new Set(loaded.map((i) => i.id));
   assert.equal(newRecordProbeBaseline(loaded, true, known).canJudgeUnpinned, false);
@@ -199,16 +182,12 @@ test("a window holding any unpinned record can judge", () => {
 });
 
 test("a complete window can judge even with nothing unpinned in it", () => {
-  // hasMore false means the client has the whole gallery, so there is nothing it has not seen.
   const loaded = [item("pin", 5, true)];
   assert.equal(newRecordProbeBaseline(loaded, false, new Set()).canJudgeUnpinned, true);
-  // The empty gallery of a first-ever generation is the same case.
   assert.equal(newRecordProbeBaseline([], false, new Set()).canJudgeUnpinned, true);
 });
 
 test("a window that cannot judge refuses to claim proof", async () => {
-  // The regression: with 50+ pins loaded, the first historical unpinned row is necessarily
-  // unknown, and treating it as proof suppressed a real submission failure.
   const listing = [
     item("p0", 9, true),
     item("p1", 8, true),
@@ -231,8 +210,6 @@ test("an empty gallery still proves its first generation", async () => {
   assert.equal(await hasUnknownRecord(baseline, pager([item("first", 1)], 50), 50), true);
 });
 
-// --- per-item serialization ----------------------------------------------------------------------
-
 test("two tasks on the same key run in call order, never overlapping", async () => {
   const events: string[] = [];
   const gate = (name: string, ms: number) => async () => {
@@ -240,8 +217,6 @@ test("two tasks on the same key run in call order, never overlapping", async () 
     await new Promise((r) => setTimeout(r, ms));
     events.push(`${name}:end`);
   };
-  // The slow one is queued first, which is exactly the case a plain `await` gets wrong: the fast
-  // second PATCH would land first and the server would keep the earlier intent.
   const first = serializeById("img:a", gate("first", 20));
   const second = serializeById("img:a", gate("second", 0));
   await Promise.all([first, second]);
@@ -280,16 +255,13 @@ test("the rejection reaches the caller that queued it", async () => {
 });
 
 test("per item keys let a later pin be stamped first, one key per gallery does not", async () => {
-  // The server stamps pinned_at when it RUNS the PATCH and orders pins by that stamp. Two requests
-  // in flight together can therefore be stamped in either order, which is what a per-item key
-  // allowed: the strip showed the click order and the next load showed the stamp order.
+  // The server stamps pinned_at when it runs the PATCH, so concurrent requests can reorder.
   const stamped = async (keyFor: (id: string) => string) => {
     const order: string[] = [];
     const patch = (id: string, ms: number) => async () => {
       await new Promise((r) => setTimeout(r, ms));
       order.push(id);
     };
-    // "a" is clicked first but is the slower request.
     await Promise.all([
       serializeById(keyFor("a"), patch("a", 20)),
       serializeById(keyFor("b"), patch("b", 0)),
@@ -301,22 +273,15 @@ test("per item keys let a later pin be stamped first, one key per gallery does n
 });
 
 test("a baseline frozen before the request is not softened by a page loaded during it", async () => {
-  // The regression: the ids came from before the POST but the window half was read in the catch.
-  // Scrolling while the request was in flight paged in historical unpinned rows, which turned a
-  // window that must refuse to judge into one that judged, and the newest historical row then read
-  // as proof of a generation that never reached the server.
   const pins = [item("p0", 9, true), item("p1", 8, true)];
   const baseline = newRecordProbeBaseline(pins, true, new Set(["p0", "p1"]));
-  // The window the user scrolled to, and the listing, both now hold that historical row.
   const listing = [...pins, item("historical", 1)];
   assert.equal(await hasUnknownRecord(baseline, pager(listing, 50), 50), false);
-  // Read after the scroll instead, the same moment claims proof, which is the bug.
   const afterScroll = newRecordProbeBaseline(listing, true, new Set(["p0", "p1"]));
   assert.equal(await hasUnknownRecord(afterScroll, pager(listing, 50), 50), true);
 });
 
 test("a page fetch re-reads its offset when the shelf shortens mid request", async () => {
-  // The server's list, newest first. The client has the first two loaded.
   let shelf = ["e", "d", "c", "b", "a"];
   let loaded = ["e", "d"];
   let epoch = 0;
@@ -327,8 +292,6 @@ test("a page fetch re-reads its offset when the shelf shortens mid request", asy
     () => 0,
     async (offset) => {
       requested.push(offset);
-      // The archive lands while the first request is in flight: "d" leaves the shelf, so every
-      // record behind it shifts up by one on the server AND locally.
       if (requested.length === 1) {
         shelf = shelf.filter((id) => id !== "d");
         loaded = loaded.filter((id) => id !== "d");
@@ -337,8 +300,6 @@ test("a page fetch re-reads its offset when the shelf shortens mid request", asy
     },
   );
   assert.ok(result);
-  // Without the re-read this asks for offset 2 against the shortened shelf and returns ["b", "a"],
-  // skipping "c" entirely -- the record that shifted across the boundary.
   assert.deepEqual(requested, [2, 1]);
   assert.deepEqual(result.page, ["c", "b"]);
 });
@@ -352,7 +313,7 @@ test("a page fetch gives up rather than spinning when the shelf keeps moving", a
     () => 0,
     async () => {
       calls += 1;
-      loaded -= 1; // something mutates the list on every single response
+      loaded -= 1;
       return [];
     },
   );
@@ -361,8 +322,6 @@ test("a page fetch gives up rather than spinning when the shelf keeps moving", a
 });
 
 test("a failed unpin puts the image back where it was, not at the front of the pins", () => {
-  // Pins are ordered by pin TIME, which the client never learns, so a rollback must replay the
-  // order it saw. applyPin(..., true) means "freshly pinned" and would promote this to the head.
   const before = [item("first", 1, true), item("second", 2, true), item("third", 3, true)];
   const order = pinnedOrder(before);
   const optimistic = applyPin(before, "third", false);
@@ -372,7 +331,6 @@ test("a failed unpin puts the image back where it was, not at the front of the p
 });
 
 test("a rollback leaves an image pinned during the request at the front", () => {
-  // Absent from the snapshot means pinned since, and the newest pin leads.
   const before = [item("a", 1, true), item("b", 2, true)];
   const order = pinnedOrder(before);
   const withNewPin = applyPin([...before, item("c", 3)], "c", true);
@@ -385,26 +343,23 @@ test("a finished generation does not duplicate a record a resync already loaded"
   const merged = mergeGenerated(alreadyLoaded, [fresh]);
   assert.deepEqual(ids(merged), ["new", "old"]);
   assert.equal(merged.length, 2);
-  // And it still merges a record nothing had seen.
   assert.deepEqual(ids(mergeGenerated([item("old", 1)], [fresh])), ["new", "old"]);
 });
 
 test("a gallery load is discarded when a pin lands while it is in flight", async () => {
-  // The response was snapshotted before the PATCH, so applying it would show the image unpinned
-  // while the server has it pinned, with nothing scheduled to correct it.
   let epoch = 0;
   let fetches = 0;
   const result = await fetchWhileStable(
     () => epoch,
     async () => {
       fetches += 1;
-      if (fetches === 1) epoch += 1; // the user pins mid request
+      if (fetches === 1) epoch += 1;
       return [item("a", 1, fetches > 1)];
     },
   );
   assert.equal(fetches, 2);
   assert.ok(result);
-  assert.equal(result[0].pinned, true); // the retry sees the server after the pin
+  assert.equal(result[0].pinned, true);
 });
 
 test("a gallery load gives up rather than overwriting a strip that keeps changing", async () => {
@@ -418,17 +373,14 @@ test("a gallery load gives up rather than overwriting a strip that keeps changin
       return "stale";
     },
   );
-  // Null, so the caller keeps its optimistic state, which is what the server already agreed to.
   assert.equal(result, null);
   assert.equal(fetches, PAGE_MAX_ATTEMPTS);
 });
 
 test("a page fetch is refused when an archive is merely IN FLIGHT", async () => {
-  // The gap the count cannot see: the server shortens the shelf when it PROCESSES the archive,
-  // while the count only moves when the response gets back, so only a token bumped at request
-  // START reveals a page read inside that round trip.
+  // Only a token bumped at request START reveals a page read inside the archive round trip.
   const full = ["e", "d", "c", "b", "a"];
-  const shortened = ["e", "c", "b", "a"]; // the server has already archived "d"
+  const shortened = ["e", "c", "b", "a"];
   let loaded = 2;
   let epoch = 0;
   const seen: string[][] = [];
@@ -438,12 +390,12 @@ test("a page fetch is refused when an archive is merely IN FLIGHT", async () => 
     () => 0,
     async (offset) => {
       if (seen.length === 0) {
-        epoch += 1; // the user clicks Archive while this request is in flight
+        epoch += 1;
         const page = shortened.slice(offset, offset + 2);
         seen.push(page);
-        return page; // ["b", "a"] -- "c" would be skipped for good
+        return page;
       }
-      loaded = 1; // the archive has landed locally by now
+      loaded = 1;
       const page = shortened.slice(offset, offset + 2);
       seen.push(page);
       return page;
@@ -456,12 +408,11 @@ test("a page fetch is refused when an archive is merely IN FLIGHT", async () => 
 });
 
 test("a page fetch is refused while a shelf mutation is still pending", async () => {
-  // The token is an EDGE, not a state: a page starting after the bump and landing before the row is
-  // dropped sees it and the count hold still, so only "is anything in flight" catches this.
+  // The token is an edge, not a state, so only an in-flight check catches this.
   const shortened = ["e", "c", "b", "a"]; // the server has already archived "d"
   let loaded = 2;
-  let pending = 1; // the PATCH is in flight for the whole of the first read
-  const epoch = 7; // bumped before this page even started, so it never moves again
+  let pending = 1;
+  const epoch = 7;
   const seen: string[][] = [];
   const result = await fetchNextPage(
     () => loaded,
@@ -471,7 +422,7 @@ test("a page fetch is refused while a shelf mutation is still pending", async ()
       const page = shortened.slice(offset, offset + 2);
       seen.push(page);
       if (seen.length === 1) {
-        pending = 0; // the archive lands, the row is dropped
+        pending = 0;
         loaded = 1;
       }
       return page;
@@ -492,8 +443,6 @@ test("archived audio pages from the stable server cursor", () => {
     /const page = await loadPage\(\s*rowsRef\.current\.length,\s*audioCursor\.current,\s*scanAll \? SEARCH_PAGE_SIZE : ARCHIVED_PAGE_SIZE,?\s*\);[\s\S]*audioCursor\.current = page\.nextAudioCursor;/,
   );
 });
-
-// -- manual order (drag) --------------------------------------------------------------------------
 
 const shelf = () => [item("a", 4), item("b", 3), item("c", 2), item("d", 1)];
 
@@ -542,7 +491,6 @@ test("a manual key compares in seconds against ISO timestamps too", () => {
   assert.deepEqual(ids(sortGalleryItems(items)), ["dragged", "newer"]);
 });
 
-// Shelf rows tagged with the page that shows them; a page's history is the shelf filtered to its tag.
 const row = (id: string, page: "s" | "m", pinned = false) => ({ id, created_at: 0, pinned, page });
 const onPage =
   (page: "s" | "m") =>
@@ -563,23 +511,18 @@ const placed = <T extends FlaggableItem & { page: string }>(
 };
 
 test("a move in one page's view does not take its pin from another page's hidden rows", () => {
-  // Music's pin leads the shared shelf; dragging a Speak clip to the top of Speak's unpinned
-  // history used to drop it next to that pin and pin it.
   const shelf = [row("m1", "m", true), row("s1", "s"), row("s2", "s"), row("m2", "m")];
   assert.deepEqual(placed(shelf, "s", "s2", null).view, ["s2", "s1"]);
   assert.equal(placed(shelf, "s", "s2", null).afterId, "m1");
-  // The unscoped id would have pinned it.
   assert.equal(moveGalleryItem(shelf, "s2", null).find((i) => i.id === "s2")?.pinned, true);
 });
 
 test("dropping below a page's last pin keeps the clip unpinned past hidden pins", () => {
   const shelf = [row("s1", "s", true), row("m1", "m", true), row("s2", "s"), row("s3", "s")];
-  // After s1 in Speak's view: between a pin and an unpinned row, the moved clip keeps its own state.
   assert.deepEqual(placed(shelf, "s", "s3", "s1").view, ["s1*", "s3", "s2"]);
 });
 
 test("a move the page's own view would pin still pins", () => {
-  // Pins sort first on a shelf, so a hidden pin can sit between two of this page's pins.
   const shelf = [row("s1", "s", true), row("m1", "m", true), row("s2", "s", true), row("s3", "s")];
   assert.deepEqual(placed(shelf, "s", "s3", "s1").view, ["s1*", "s3*", "s2*"]);
 });

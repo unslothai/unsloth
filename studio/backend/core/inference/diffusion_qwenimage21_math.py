@@ -53,8 +53,12 @@ def _bounded_attention(
     **kwargs,
 ):
     import torch
+    from .diffusion_attention import mps_prefill_attention
 
     rows = _query_rows(query, key, budget)
+    if mps_prefill_attention(query, key, value, mask, seq_dim = 1):
+        # Decided per call: the prefill kernel never builds the scores, so neither budget nor element cap applies.
+        rows = max(1, query.shape[1])
     outputs = []
     for start in range(0, query.shape[1], rows):
         part = query[:, start : start + rows]

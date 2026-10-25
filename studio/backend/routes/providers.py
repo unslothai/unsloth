@@ -8,10 +8,13 @@ listing.
 
 import asyncio
 import hashlib
+import ipaddress
 import json
+import re
 import time
 import uuid
 from typing import Optional
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
@@ -77,6 +80,67 @@ router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 _MAX_RESPONSES_CONNECTIVITY_MODELS = 5
 _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS = 15.0
+_RESPONSES_PROBE_BUDGET_SECONDS = 20.0
+_API_KEY_REJECTED = "The server rejected the API key."
+# Their /models answers without auth, so only a second request can tell a bad key apart.
+_KEY_CHECKED_PROVIDERS = frozenset({"openrouter", "huggingface"})
+_URL_USERINFO = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/\s@'\"]+@", re.IGNORECASE)
+
+
+def _redact_url_userinfo(text: str) -> str:
+    return _URL_USERINFO.sub(r"\1", text)
+
+
+def _unreachable_detail(base_url: str) -> str:
+    try:
+        parts = urlsplit(base_url)
+        host = parts.hostname or ""
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return "Couldn't reach the server. Is it running?"
+    try:
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    shown = f"[{host}]" if ":" in host else host
+    detail = f"Couldn't reach {shown}:{port}. Is the server running?"
+    if loopback:
+        detail += " If Studio runs in Docker, try host.docker.internal."
+    return detail
+
+
+def _known_provider_error(
+    exc: Exception,
+    base_url: str,
+    *,
+    listing_models: bool = False,
+) -> str | None:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in (401, 403):
+            return _API_KEY_REJECTED
+        if listing_models and status in (404, 405):
+            return "No /models endpoint at this URL (check that it ends in /v1)."
+    elif isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return _unreachable_detail(base_url)
+    return None
+
+
+def _provider_error_detail(
+    exc: Exception,
+    base_url: str,
+    *,
+    listing_models: bool = False,
+) -> str:
+    return _known_provider_error(
+        exc, base_url, listing_models = listing_models
+    ) or _redact_url_userinfo(safe_curated_detail(exc))
+
+
+def _log_provider_failure(event: str, exc: Exception, **fields) -> None:
+    error = _redact_url_userinfo(str(exc))
+    # A traceback repeats the raw message, so it is kept only when there was nothing to redact.
+    logger.error(event, error = error, exc_info = error == str(exc), **fields)
 
 
 _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only they can change it."
@@ -294,7 +358,7 @@ async def create_provider_config(
     # user fills one in); anything present is checked before a key is decrypted.
     if base_url:
         try:
-            base_url = validate_provider_base_url(base_url)
+            base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from None
 
@@ -432,7 +496,7 @@ async def update_provider_config(
     base_url = payload.base_url
     if base_url and base_url != existing["base_url"]:
         try:
-            base_url = validate_provider_base_url(base_url)
+            base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from None
 
@@ -683,19 +747,38 @@ def _bind_saved_provider_target(payload):
             status_code = 400,
             detail = f"Provider '{config['display_name']}' is disabled.",
         )
-    return payload.model_copy(
-        update = {
-            "provider_type": config["provider_type"],
-            "base_url": config["base_url"],
-            "api_type": config.get("api_type", "chat_completions"),
-        }
-    )
+    update = {
+        "provider_type": config["provider_type"],
+        "api_type": config.get("api_type", "chat_completions"),
+    }
+    # Pinning the saved endpoint keeps a saved credential off other hosts; a keyless row has none to protect, so an
+    # edited base URL is used as sent.
+    if (
+        not payload.base_url
+        or config["provider_type"] == "openai_codex"
+        or credential_secrets.provider_api_key_saved(config["id"])
+    ):
+        update["base_url"] = config["base_url"]
+    return payload.model_copy(update = update)
+
+
+def _unlisted_model_message(model_id: str, models: list) -> str | None:
+    ids = [m["id"] for m in models if isinstance(m, dict) and isinstance(m.get("id"), str)]
+    if not ids or model_id in ids:
+        return None
+    message = f"Connected, but model '{model_id}' is not listed by this server."
+    near = next((i for i in ids if i.lower() == model_id.lower()), None)
+    if near:
+        return f"{message} Did you mean '{near}'?"
+    shown = ", ".join(ids[:3]) + (", ..." if len(ids) > 3 else "")
+    return f"{message} Available: {shown}"
 
 
 async def _test_custom_provider_connectivity(
     client,
     model_id: str,
     api_type: str = "chat_completions",
+    base_url: str = "",
 ) -> ProviderTestResult:
     """Probe a custom OpenAI-compatible endpoint without assuming /chat/completions. TTS-only gateways such as
     Kokoro expose ``/models`` and ``/audio/speech`` but not ``/chat/completions``. Try those first, then fall
@@ -711,7 +794,8 @@ async def _test_custom_provider_connectivity(
     if models is not None and api_type != "responses":
         return ProviderTestResult(
             success = True,
-            message = f"Connected successfully. Found {len(models)} model(s).",
+            message = (model_id and _unlisted_model_message(model_id, models))
+            or f"Connected successfully. Found {len(models)} model(s).",
             models_count = len(models),
         )
 
@@ -748,14 +832,22 @@ async def _test_custom_provider_connectivity(
             success = False,
             message = (
                 "Connection failed: could not reach /models and no model ID was "
-                f"provided to test further. {safe_curated_detail(models_error)}"
+                f"provided to test further. {_provider_error_detail(models_error, base_url)}"
             ),
             models_count = None,
         )
 
     if api_type == "responses":
         last_failure = "Responses endpoint returned no completion."
+        # Several unanswered models would otherwise keep the dialog waiting for over a minute.
+        deadline = asyncio.get_running_loop().time() + _RESPONSES_PROBE_BUDGET_SECONDS
         for response_model_id in responses_model_ids:
+            probe_timeout = min(
+                _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
+                deadline - asyncio.get_running_loop().time(),
+            )
+            if probe_timeout <= 0:
+                break
             try:
                 received_response = False
                 model_failure: str | None = None
@@ -779,10 +871,7 @@ async def _test_custom_provider_connectivity(
                                 )
 
                 try:
-                    await asyncio.wait_for(
-                        consume_response_stream(),
-                        timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
-                    )
+                    await asyncio.wait_for(consume_response_stream(), timeout = probe_timeout)
                 finally:
                     await response_stream.aclose()
                 if received_response and model_failure is None:
@@ -792,12 +881,9 @@ async def _test_custom_provider_connectivity(
                     )
                 last_failure = model_failure or "Responses endpoint returned no completion."
             except asyncio.TimeoutError:
-                last_failure = (
-                    "Responses endpoint timed out after "
-                    f"{_PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS:g} seconds."
-                )
+                last_failure = f"Responses endpoint timed out after {probe_timeout:.0f} seconds."
             except Exception as exc:
-                last_failure = safe_curated_detail(exc)
+                last_failure = _provider_error_detail(exc, base_url)
         return ProviderTestResult(
             success = False,
             message = f"Connection failed: {last_failure}",
@@ -834,7 +920,7 @@ async def _test_custom_provider_connectivity(
     except Exception as exc:
         return ProviderTestResult(
             success = False,
-            message = f"Connection failed: {safe_curated_detail(exc)}",
+            message = f"Connection failed: {_provider_error_detail(exc, base_url)}",
             models_count = None,
         )
 
@@ -913,7 +999,7 @@ async def test_provider(
                 models_count = None,
             )
     try:
-        base_url = validate_provider_base_url(base_url)
+        base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
     except ValueError as exc:
         return ProviderTestResult(
             success = False,
@@ -921,7 +1007,8 @@ async def test_provider(
             models_count = None,
         )
 
-    client = ExternalProviderClient(
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
@@ -953,10 +1040,14 @@ async def test_provider(
             return await _test_decision_connectivity(client, (payload.model_id or "").strip())
         if payload.provider_type == "custom":
             return await _test_custom_provider_connectivity(
-                client, payload.model_id or "", payload.api_type
+                client, payload.model_id or "", payload.api_type, base_url
             )
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
+            if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
+                return ProviderTestResult(
+                    success = False, message = f"Connection failed: {_API_KEY_REJECTED}"
+                )
             return ProviderTestResult(
                 success = True,
                 message = (
@@ -966,21 +1057,22 @@ async def test_provider(
                 models_count = None,
             )
         models = await client.list_models()
+        if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
+            return ProviderTestResult(
+                success = False, message = f"Connection failed: {_API_KEY_REJECTED}"
+            )
         return ProviderTestResult(
             success = True,
             message = f"Connected successfully. Found {len(models)} model(s).",
             models_count = len(models),
         )
     except Exception as exc:
-        logger.error(
-            "providers.test_failed",
-            provider_type = payload.provider_type,
-            error = str(exc),
-            exc_info = True,
-        )
+        _log_provider_failure("providers.test_failed", exc, provider_type = payload.provider_type)
         return ProviderTestResult(
             success = False,
-            message = f"Connection failed: {safe_curated_detail(exc)}",
+            message = (
+                f"Connection failed: {_provider_error_detail(exc, base_url, listing_models = True)}"
+            ),
             models_count = None,
         )
     finally:
@@ -1093,7 +1185,7 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
     )
     base_url = payload.base_url or info["base_url"]
     try:
-        base_url = validate_provider_base_url(base_url)
+        base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
@@ -1104,7 +1196,8 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
     if cached is not None and time.monotonic() - cached[0] < _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
         return cached[1]
 
-    client = ExternalProviderClient(
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
@@ -1125,7 +1218,14 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         await client.close()
     capabilities = provider_model_capabilities(payload.provider_type, models)
     if capabilities:
-        _model_capability_cache[cache_key] = (time.monotonic(), capabilities)
+        now = time.monotonic()
+        for key in [
+            key
+            for key, (stored_at, _) in _model_capability_cache.items()
+            if now - stored_at >= _MODEL_CAPABILITY_CACHE_TTL_SECONDS
+        ]:
+            del _model_capability_cache[key]
+        _model_capability_cache[cache_key] = (now, capabilities)
     return capabilities
 
 
@@ -1178,11 +1278,12 @@ async def list_provider_models(
 
     base_url = payload.base_url or info["base_url"]
     try:
-        base_url = validate_provider_base_url(base_url)
+        base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    client = ExternalProviderClient(
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
@@ -1272,12 +1373,13 @@ async def list_provider_models(
             for m in models
         ]
     except Exception as exc:
-        raise log_and_http_error(
-            exc,
-            502,
-            f"Failed to list models from {payload.provider_type}.",
-            event = "providers.list_models_failed",
-            log = logger,
+        _log_provider_failure(
+            "providers.list_models_failed", exc, provider_type = payload.provider_type
         )
+        detail = _known_provider_error(exc, base_url, listing_models = True)
+        raise HTTPException(
+            status_code = 502,
+            detail = detail or f"Failed to list models from {payload.provider_type}.",
+        ) from None
     finally:
         await client.close()

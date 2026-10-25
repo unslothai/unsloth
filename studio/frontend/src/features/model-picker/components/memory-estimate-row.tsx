@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChevronDown } from "lucide-react";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Tooltip,
@@ -11,9 +12,11 @@ import {
 import type { MemoryEstimate } from "../api/memory-estimate";
 import {
   type MemoryFitVerdict,
+  NOTE_SEPARATOR,
   formatMemoryGb,
   glueNoteItems,
   memoryFigureCandidates,
+  mlxOffloadPercent,
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
@@ -225,6 +228,17 @@ export function MemoryEstimateRow({
     },
   );
   const kvNote = resolveKvNote(estimate);
+  const weightsNote = [
+    estimate.gpuLayers != null && estimate.layerCount != null
+      ? `${estimate.gpuLayers} of ${estimate.layerCount + 1} layers on GPU`
+      : null,
+    estimate.mlxPleOffload ? `PLE ${mlxOffloadPercent(estimate.mlxPleOffload)} on disk` : null,
+    estimate.mlxExpertOffload
+      ? `experts ${mlxOffloadPercent(estimate.mlxExpertOffload)} on disk`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(NOTE_SEPARATOR);
   const draftCacheNote = resolveDraftCacheNote(
     estimate.drafterRuntimeGpuBytes,
     estimate.drafterRuntimeBytes,
@@ -247,7 +261,8 @@ export function MemoryEstimateRow({
             Beta
           </span>
         </span>
-        <ChevronDown
+        <HugeiconsIcon
+          icon={ChevronDownStandardIcon}
           aria-hidden="true"
           className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-hover:text-foreground motion-reduce:transition-none ${expanded ? "rotate-0" : "-rotate-90"}`}
         />
@@ -290,11 +305,7 @@ export function MemoryEstimateRow({
         <MemoryBreakdownLine
           label="Weights"
           value={formatMemoryGb(estimate.weightsBytes)}
-          note={
-            estimate.gpuLayers != null && estimate.layerCount != null
-              ? `${estimate.gpuLayers} of ${estimate.layerCount + 1} layers on GPU`
-              : undefined
-          }
+          note={weightsNote || undefined}
         />
         <MemoryBreakdownLine
           label="KV cache"
