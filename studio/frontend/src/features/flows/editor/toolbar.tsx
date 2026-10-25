@@ -80,7 +80,6 @@ function ToolbarImpl({
 }: { onBack: () => void; onPlay: () => void; onApp?: () => void }) {
   const name = useDocStore((s) => s.meta.name);
   const kind = useDocStore((s) => s.meta.kind);
-  // A pipeline with a Chat Output block plays as a chat.
   const playsChat = useDocStore((s) =>
     s.graph.nodeOrder.some((id) => {
       const n = s.graph.nodes[id];

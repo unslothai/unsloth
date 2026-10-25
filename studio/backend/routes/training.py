@@ -2445,8 +2445,7 @@ async def start_training(
         def _free_vram_for_training() -> None:
             from core.inference import gpu_arbiter
 
-            # The guard at the top of start_training ran before the awaited preflights; a lease taken since then
-            # must still stop the teardown.
+            # Re-check: a lease taken during the awaited preflights must still stop the teardown.
             gpu_arbiter.raise_if_leased()
             try:
                 from core.export import get_export_backend

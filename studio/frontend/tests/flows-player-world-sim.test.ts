@@ -187,7 +187,6 @@ test("scheduler: one call in flight, plans first, a per-minute budget", async ()
   assert.deepEqual(started, ["plan:a", "chat:1", "chat:2", "chat:3"]);
   gates["chat:3"].resolve();
   await flush();
-  // Four starts inside the minute: the fifth waits for the window to move.
   assert.equal(started.length, 4);
   assert.equal(q.allows(), false);
   now = 60_001;

@@ -14,7 +14,6 @@ import type {
   WorldSpec,
 } from "../types";
 
-/** Answered on demand through /invoke while playing; a re-roll leaves them alone. */
 export const PLAYER_ENTRYPOINTS = new Set([
   "story.next_scene",
   "story.scene_art",
@@ -49,13 +48,11 @@ export interface InvokeResult {
   rev?: number;
 }
 
-/** What a streamed /invoke sends: text while it is written, then the outputs (or an error). */
 export type InvokeStreamEvent =
   | { type: "delta"; port?: string; text: string }
   | ({ type: "result" } & InvokeResult)
   | { type: "error"; status?: number; detail?: string };
 
-/** Hand each text delta to `onDelta` and return the final outputs; a stream that ends without them is an error. */
 export async function consumeInvokeStream(
   events: AsyncIterable<InvokeStreamEvent>,
   onDelta: (text: string, port?: string) => void,
@@ -79,7 +76,6 @@ export async function consumeInvokeStream(
   throw new PlayerApiError("The reply stopped before it finished", 502);
 }
 
-/** Everything the players need from the backend; the smoke harness swaps in a mock. */
 export interface PlayerApi {
   flowInfo(
     flowId: string,
@@ -94,13 +90,10 @@ export interface PlayerApi {
       sessionId?: string;
       rev?: number;
       signal?: AbortSignal;
-      /** Run params for the call, e.g. the chat player's message and history. */
       params?: Record<string, unknown>;
-      /** Stream the answer: called with each piece of text as the entry point writes it. */
       onDelta?: (text: string, port?: string) => void;
     },
   ): Promise<InvokeResult>;
-  /** Load the model an entry point answers with, ahead of the first call; resolves when it is ready. */
   warm?(flowId: string, entry: string): Promise<boolean>;
   listSessions(flowId: string): Promise<SessionRecord[]>;
   loadSession(flowId: string, slot: string): Promise<SessionRecord | null>;
@@ -110,7 +103,6 @@ export interface PlayerApi {
     state: unknown,
     label?: string,
   ): Promise<void>;
-  /** Re-run the flow with a new seed (Story/World Generator re-roll) and wait for it to finish. */
   reroll(
     flowId: string,
     seed: number,
@@ -135,7 +127,6 @@ async function json<T>(res: Response): Promise<T> {
       const body = await res.json();
       detail = formatFastApiDetail(body?.detail) || detail;
     } catch {
-      // keep statusText
     }
     throw new PlayerApiError(detail || `HTTP ${res.status}`, res.status);
   }
@@ -287,7 +278,6 @@ export const playerApi: PlayerApi = {
 const MAX_URLS = 96;
 const urlCache = new Map<string, Promise<string>>();
 
-/** An object URL for a MediaValue, fetched with auth once and kept in a small LRU. */
 export function mediaObjectUrl(
   api: PlayerApi,
   media: MediaValue,

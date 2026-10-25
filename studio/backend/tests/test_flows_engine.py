@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The run supervisor with fake handlers: ordering, skips and joins, For Each, cache, cancel, failure isolation,
-GPU swap ordering and event replay."""
-
 import asyncio
 
 import pytest
@@ -78,7 +75,6 @@ async def test_linear_run_produces_outputs_and_ordered_events():
     assert stored[-1]["type"] == "run.completed"
     assert flows_db.get_run(rs.id)["status"] == "completed"
     assert flows_db.node_results(rs.id)["t"]["outputs"] == {"text": "<hi>"}
-    # Replay from the middle.
     assert [e["seq"] for e in flows_db.events_after(rs.id, seqs[3])] == seqs[4:]
 
 
@@ -252,12 +248,10 @@ async def test_cache_hits_on_second_run_and_force_bypasses():
     second = await _run(eng, d)
     assert calls == ["t"]
     assert _status(first, "t") == "done" and _status(second, "t") == "cached"
-    # Moving a node does not change its key.
     moved = {**d, "nodes": [{**n, "pos": [500, 500]} for n in d["nodes"]]}
     assert _status(await _run(eng, moved), "t") == "cached"
     await _run(eng, d, force_nodes = ["t"])
     assert calls == ["t", "t"]
-    # A changed param is a new key.
     changed = {**d, "nodes": [d["nodes"][0], {**d["nodes"][1], "params": {"template": "other"}}]}
     await _run(eng, changed)
     assert calls == ["t", "t", "t"]
@@ -391,7 +385,6 @@ async def test_invoke_runs_entrypoint_with_supplied_inputs():
 
 @run_async
 async def test_cancelled_invoke_fires_the_entrypoints_stop_hooks():
-    # A player who leaves mid-call must stop the external job (image, audio, chat) the entry point started.
     started = asyncio.Event()
     hooked = []
 
@@ -433,7 +426,6 @@ def test_orphaned_runs_are_interrupted():
     flows_db.update_run("orphan", status = "running")
     assert flows_db.reconcile_orphaned_runs() >= 1
     assert flows_db.get_run("orphan")["status"] == "interrupted"
-    # A terminal status is never reopened.
     flows_db.update_run("orphan", status = "running")
     assert flows_db.get_run("orphan")["status"] == "interrupted"
 
@@ -522,7 +514,6 @@ async def test_stop_reaches_every_parallel_iteration_still_running():
     await asyncio.sleep(0.05)
     await eng.cancel(rs.id)
     await asyncio.wait_for(rs.task, 20)
-    # The finished iteration's hook went with it; the running one still stopped its job.
     assert hooked == ["b"]
 
 

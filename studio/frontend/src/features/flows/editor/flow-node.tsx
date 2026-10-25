@@ -106,7 +106,6 @@ function OutputPreview({
       </p>
     );
   }
-  // A partial is always from this run (queueing clears it), so it wins over the last run's kept outputs.
   if (
     runtime.partial &&
     runtime.status !== "done" &&

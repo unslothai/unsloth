@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Procedural art for worlds without generated images: tile textures, chibi characters and item gems.
-// Everything is seeded, so a world looks the same every time it loads.
 
 import { Prng, seedFrom } from "../../expr";
 import type { TileKind } from "./procgen";
@@ -46,7 +44,6 @@ function speckle(
   }
 }
 
-/** A `size`x`size` tileable texture for one tile kind (four tiles across at the usual 4x atlas size). */
 export function paintTile(
   kind: TileKind,
   size: number,
@@ -237,7 +234,6 @@ export function paintTile(
   return c;
 }
 
-/** A front-facing chibi character, `size` pixels tall, coloured from its id. */
 export function paintChibi(id: string, size: number): HTMLCanvasElement {
   const rng = new Prng(seedFrom("chibi", id));
   const hue = Math.floor(rng.random() * 360);
@@ -284,7 +280,6 @@ export function paintChibi(id: string, size: number): HTMLCanvasElement {
   return c;
 }
 
-/** A sparkling gem for items without art. */
 export function paintItem(id: string, size: number): HTMLCanvasElement {
   const rng = new Prng(seedFrom("item", id));
   const hue = Math.floor(rng.random() * 360);
@@ -314,7 +309,6 @@ export function paintItem(id: string, size: number): HTMLCanvasElement {
   return c;
 }
 
-/** Draw `img` scaled to fit a `w`x`h` canvas (aspect kept), bottom-centred. */
 export function fitImage(
   img: CanvasImageSource & { width: number; height: number },
   w: number,
@@ -329,7 +323,6 @@ export function fitImage(
   return c;
 }
 
-/** Scale an image to cover a `size` square (a tileable texture source). */
 export function coverImage(
   img: CanvasImageSource & { width: number; height: number },
   size: number,

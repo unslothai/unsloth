@@ -23128,10 +23128,7 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
 
 
 def _refuse_while_leased() -> None:
-    """An explicit unload is a residency change too: an operation holding the GPU lease (a benchmark, an eval) keeps
-    its model. The holder's own unloads (a Flows node restoring chat) pass."""
     from core.inference import gpu_arbiter
-
     leased = gpu_arbiter.lease_refusal()
     if leased is not None:
         raise leased.as_http_exception()
@@ -23142,7 +23139,6 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
-    # Every unload path (this route, the llama-compatible /models/unload) honours the GPU lease.
     _refuse_while_leased()
     extra = (
         await _route_to_extra_slot(request.model_path)

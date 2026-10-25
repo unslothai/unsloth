@@ -16,7 +16,6 @@ from urllib.parse import urlsplit
 
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
-# What a trigger run passes in: run params {"__trigger": {node_id: {...}}}.
 TRIGGER_PARAM = "__trigger"
 HTTP_MAX_BYTES = 2 * 1024 * 1024
 PY_RESULT_MARKER = "<<FLOW_RESULT>>"
