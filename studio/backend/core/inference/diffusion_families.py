@@ -2583,8 +2583,7 @@ def _local_weights_are_complete(component: Path, library_name: str) -> bool:
         sizes = [w.stat().st_size for s in stems if (w := component / f"{s}.{ext}").is_file()]
         if sizes:
             return any(sizes)
-    # A single-file .fp16 twin with no default beside it: the snapshot an fp16 load staged, read with variant="fp16"
-    # (diffusion_fp16_variant).
+    # A lone single-file .fp16 twin: a snapshot an fp16 load staged, read with variant="fp16".
     return any(
         _nonempty_file(component / f"{s}.fp16.safetensors")
         for s in ("diffusion_pytorch_model", "model")

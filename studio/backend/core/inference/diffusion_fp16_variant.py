@@ -3,15 +3,9 @@
 
 """Read a pipeline's ``.fp16`` weight twins instead of its default fp32 files when the load casts to fp16 anyway.
 
-SDXL base / turbo ship fp32 defaults beside fp16 twins (``unet/diffusion_pytorch_model.fp16.safetensors``...). On an
-fp16 card ``from_pretrained(torch_dtype=float16)`` read the 12.9 GB fp32 set and cast it down; the twins are the same
-weights stored at fp16 (6.5 GB), so ``variant="fp16"`` reads half the bytes and holds bit-identical tensors. Only for
-an fp16 target: fp16 -> bf16 rounds differently from fp32 -> bf16, so a bf16 or fp32 load keeps the defaults.
-
-Declined (defaults kept) unless EVERY component the pipeline loads from the repo has a single-file safetensors twin,
-and no component class pins modules to fp32 (a pinned module would upcast fp16-rounded weights). Decided from a file
-listing (Hub siblings for the download plan, the snapshot on disk for the load), never assumed.
-Kill switch: ``UNSLOTH_DIFFUSION_FP16_VARIANT=0``.
+SDXL: 6.5 GB of twins instead of 12.9 GB fp32, bit-identical after the cast. fp16 targets only: fp16 -> bf16
+rounds differently from fp32 -> bf16. Requires a single-file twin for EVERY loaded component and no class pinning
+fp32 modules (would upcast fp16-rounded weights). Kill switch: ``UNSLOTH_DIFFUSION_FP16_VARIANT=0``.
 """
 
 from __future__ import annotations
@@ -28,7 +22,6 @@ FP16_VARIANT_ENV = "UNSLOTH_DIFFUSION_FP16_VARIANT"
 _STEMS = ("diffusion_pytorch_model", "model")
 _DEFAULT_SINGLE_RE = re.compile(r"^(diffusion_pytorch_model|model)\.safetensors$")
 _TWIN_SINGLE_RE = re.compile(r"^(diffusion_pytorch_model|model)\.fp16\.safetensors$")
-# Any weight-looking file of a component, default or variant, single or sharded, safetensors or .bin.
 _WEIGHT_RE = re.compile(
     r"^(?:diffusion_pytorch_model|pytorch_model|model)[.-].*(?:bin|safetensors)(?:\.index.*\.json)?$"
 )
@@ -59,8 +52,7 @@ _DEFAULT_ANY_RE = re.compile(
 
 
 def shadowed_twins(paths: Iterable[str]) -> set[str]:
-    """The ``.fp16`` twins in ``paths`` whose folder also lists a default weight file: the default-variant load reads
-    that one, so the twin is not part of what is held (a cache listing carrying both)."""
+    """Twins in ``paths`` whose folder also has a default weight file (the default load reads that one)."""
     paths = [str(p) for p in paths]
     default_dirs = {
         p.rpartition("/")[0] for p in paths if _DEFAULT_ANY_RE.match(p.rpartition("/")[2])
@@ -69,8 +61,7 @@ def shadowed_twins(paths: Iterable[str]) -> set[str]:
 
 
 def twin_of(rfilename: str) -> Optional[str]:
-    """``unet/diffusion_pytorch_model.safetensors`` -> ``unet/diffusion_pytorch_model.fp16.safetensors``; None for
-    anything that is not a single-file default safetensors (shards, .bin, twins themselves)."""
+    """Twin path of a single-file default safetensors, else None."""
     folder, _, name = str(rfilename).rpartition("/")
     match = _DEFAULT_SINGLE_RE.match(name)
     if not folder or match is None:
@@ -100,13 +91,8 @@ def plan_fp16_twins(
     *,
     components: Optional[Iterable[str]] = None,
 ) -> Optional[dict[str, str]]:
-    """``{component: twin file}`` when every weight-bearing component the load reads has a single-file fp16 twin in
-    ``names`` (repo-relative paths), else None.
-
-    ``components`` limits the check to the folders the load reads from the repo (a pre-cast encoder or a supplied
-    denoiser is not read there); default: every manifest entry with a library and class. A component counts as
-    weight-bearing when ``names`` holds any weight file under it; a weightless one (tokenizer, scheduler) is skipped.
-    """
+    """``{component: twin file}`` when every weight-bearing component in ``components`` (default: all manifest
+    entries) has a single-file fp16 twin in ``names``, else None."""
     if not isinstance(model_index, Mapping):
         return None
     specs: dict[str, tuple[Any, Any]] = {}
@@ -126,7 +112,7 @@ def plan_fp16_twins(
     for folder in sorted(wanted):
         leaves = by_folder.get(folder, set())
         if not any(_WEIGHT_RE.match(leaf) for leaf in leaves):
-            continue  # tokenizer / scheduler / feature extractor
+            continue
         twins = sorted(leaf for leaf in leaves if _TWIN_SINGLE_RE.match(leaf))
         if len(twins) != 1:
             return None  # no twin, or an ambiguous pair (diffusion_pytorch_model + model)
@@ -178,13 +164,8 @@ def local_fp16_variant(
     torch_dtype: Any = None,
     supplied: Iterable[str] = (),
 ) -> Optional[str]:
-    """``"fp16"`` when ``from_pretrained(snapshot)`` should read the twins, else None.
-
-    Twins are read when every component the load reads from ``snapshot`` (manifest entries minus ``supplied``
-    objects) has its twin on disk, and either the load is a plain fp16 one (``torch_dtype`` the same fp16 dtype, not
-    a per-component map), or the default files are missing (a twins-only snapshot an fp16 load staged: the only set
-    on disk that loads at all).
-    """
+    """``"fp16"`` when every non-``supplied`` component has its twin on disk and the load is plain fp16 (no
+    per-component dtype map) or the defaults are missing (twins-only snapshot), else None."""
     if not fp16_variant_enabled() or not snapshot or not os.path.isdir(snapshot):
         return None
     index = read_model_index(snapshot)

@@ -63,7 +63,6 @@ SDXL_CONFIGS = {
     "tokenizer_2/tokenizer_config.json": 725,
     "unet/config.json": 1680,
     "vae/config.json": 642,
-    # Present on the Hub, never read by the torch loader.
     "unet/diffusion_pytorch_model.fp16.bin": 5135149760,
     "unet/openvino_model.bin": 5135149760,
     "text_encoder_2/flax_model.msgpack": 2778702264,
@@ -95,7 +94,6 @@ def _snapshot(
     return snap
 
 
-# ------------------------------------------------------------------------------------------------- the twin plan
 
 
 def test_every_sdxl_component_maps_to_its_twin():
@@ -156,7 +154,6 @@ def test_twin_names():
     assert not fv.is_fp16_twin("vae/diffusion_pytorch_model.fp16.bin")
 
 
-# --------------------------------------------------------------------------------------------- the load decision
 
 
 def test_an_fp16_load_reads_the_twins_and_a_bf16_load_the_defaults(tmp_path):
@@ -171,7 +168,6 @@ def test_an_fp16_load_reads_the_twins_and_a_bf16_load_the_defaults(tmp_path):
     # fp16 -> bf16 rounds differently from fp32 -> bf16: a bf16 / fp32 load keeps the defaults.
     assert fv.local_fp16_variant(str(snap), load_dtype = torch.bfloat16) is None
     assert fv.local_fp16_variant(str(snap), load_dtype = torch.float32) is None
-    # A per-component dtype map (small-host route) keeps the defaults.
     mapped = {"default": torch.float16, "unet": torch.float32}
     assert fv.local_fp16_variant(str(snap), load_dtype = torch.float16, torch_dtype = mapped) is None
 
@@ -182,7 +178,7 @@ def test_defaults_only_snapshot_never_asks_for_the_variant(tmp_path):
 
 
 def test_twins_only_snapshot_loads_the_twins_at_any_dtype(tmp_path):
-    # What an fp16 load staged: without the variant from_pretrained would find no weights at all.
+    # Twins-only snapshot: without the variant nothing loads.
     import torch
     snap = _snapshot(tmp_path, [*SDXL_CONFIGS, *SDXL_TWINS])
     assert fv.local_fp16_variant(str(snap), load_dtype = torch.bfloat16) == "fp16"
@@ -210,7 +206,6 @@ def test_kill_switch(tmp_path, monkeypatch):
     assert fv.local_fp16_variant(str(snap), load_dtype = "torch.float16") is None
 
 
-# ---------------------------------------------------------------------------------------------- the download plan
 
 
 def _stub_hub(
@@ -257,7 +252,7 @@ def test_an_fp16_plan_stages_the_twins_instead_of_the_defaults(monkeypatch, tmp_
     assert resident == SDXL_TWINS
     configs = sum(s for n, s in SDXL_CONFIGS.items() if n.endswith((".json", ".txt")))
     assert total == sum(SDXL_TWINS.values()) + configs
-    # The memory plan prices the twins 1:1: the same resident bytes the fp32 defaults price at their factor.
+    # Twins price 1:1.
     twins_resident = resident_bytes_from_declared(SDXL, resident.items())
     assert twins_resident == sum(SDXL_TWINS.values())
     assert (
@@ -298,7 +293,6 @@ def test_resident_estimate_ignores_a_twin_beside_its_default():
     assert companion_bytes_from_declared(SDXL, twins_te.items()) == sum(twins_te.values())
 
 
-# ---------------------------------------------------------------------------- prefetch, sizes, completeness on disk
 
 
 def test_prefetch_reads_the_twins_the_load_reads(tmp_path):

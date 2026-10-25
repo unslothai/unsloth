@@ -242,7 +242,7 @@ def pipeline_component_files(
 ) -> list[str]:
     """The weight files ``from_pretrained`` reads from a local diffusers snapshot: every component
     ``model_index.json`` names, text encoders first, then the VAE, then the denoiser. Cache only.
-    ``variant="fp16"`` names the single-file ``.fp16`` twins the load reads instead of the defaults."""
+    ``variant="fp16"`` names the ``.fp16`` twins instead."""
     if not snapshot:
         return []
     try:

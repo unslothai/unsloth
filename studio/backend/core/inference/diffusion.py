@@ -6977,7 +6977,6 @@ class DiffusionBackend:
             skip_te_components = tuple(te_files) + replaced,
             skip_transformer_weights = skip_transformer_weights,
             failures_out = plan_failures,
-            # The load stages the fp16 twins on an fp16 card, so the plan scopes the same files.
             fp16_twins = kind == "pipeline"
             and allow_device_probe
             and self._fp16_load_target(fam, load_kwargs.get("gpu_ordinal")),
@@ -7625,8 +7624,7 @@ class DiffusionBackend:
                 continue
         if load_itemsize is None:
             return sizes
-        # An .fp16 twin is what the load reads only where the component has no default file (a twins-only snapshot an
-        # fp16 load staged); beside a default it prices the same tensors twice.
+        # A twin beside a default would price the same tensors twice.
         default_dirs = {
             rel.rsplit("/", 1)[0]
             for rel in sizes
@@ -9320,9 +9318,7 @@ class DiffusionBackend:
                                 }
                                 if hf_token:
                                     pipe_kwargs["token"] = hf_token
-                                # The snapshot the staged plan filled: an fp16 load whose every component has an
-                                # .fp16 twin there reads the twins (half of SDXL's fp32 defaults), bit-identical after
-                                # the cast. Re-checked against the final kwargs before from_pretrained.
+                                # fp16 load with a twin for every component reads the twins (bit-identical after cast).
                                 _te_replaced = te_precast_components(
                                     fam, fetch_base, text_encoder_quant, target
                                 )
@@ -9333,7 +9329,6 @@ class DiffusionBackend:
                                     None
                                     if pipeline_seed_scheme is not None
                                     or _pipeline_prequant_skipped
-                                    # Per-component assemblers below open their own files, never a variant.
                                     or is_flux3_family(fam)
                                     or fam.name in (MOSS_IMAGE_FAMILY_NAME, KREA2_FAMILY_NAME)
                                     else local_fp16_variant(
@@ -9562,8 +9557,7 @@ class DiffusionBackend:
                                             small_host, dtype
                                         )
                                     if _fp16_variant is not None:
-                                        # Final kwargs: a per-component dtype map or a supplied component changes
-                                        # what the twins must cover.
+                                        # Re-check: a dtype map or supplied component changes what twins must cover.
                                         _fp16_variant = local_fp16_variant(
                                             _variant_snapshot,
                                             load_dtype = dtype,
@@ -15494,17 +15488,14 @@ def _pipeline_selected_file(
 
 
 def _pipeline_resident_weight(rfilename: str) -> bool:
-    """Whether a selected file becomes tensor storage in the loaded pipeline (an fp16 twin the plan swapped in
-    included)."""
+    """Whether a selected file becomes tensor storage in the loaded pipeline (fp16 twins included)."""
     name = rfilename.rsplit("/", 1)[-1].lower()
     return bool(_DEFAULT_PIPELINE_WEIGHT_RE.match(name)) or is_fp16_twin(name)
 
 
 def _swap_in_fp16_twins(repo_id: str, info: Any, picked: list[Any], hf_token: Any) -> list[Any]:
-    """``picked`` with each component's default safetensors replaced by its ``.fp16`` twin, when every component
-    whose default weights are picked has one (``diffusion_fp16_variant.plan_fp16_twins``); else ``picked`` unchanged.
-    Kept as is when the defaults are already cached and the twins are not: reading the cached fp32 set beats
-    downloading the twins again."""
+    """``picked`` with default safetensors swapped for ``.fp16`` twins when every component has one; unchanged
+    when the defaults are cached and the twins are not (cached fp32 beats a fresh download)."""
     if not fp16_variant_enabled():
         return picked
     try:
@@ -15534,7 +15525,6 @@ def _swap_in_fp16_twins(repo_id: str, info: Any, picked: list[Any], hf_token: An
         defaults = {
             n for n in picked_names if n.split("/", 1)[0] in plan and _pipeline_resident_weight(n)
         }
-        # Only a single default safetensors per component swaps 1:1 for its twin.
         if len(defaults) != len(plan) or any(
             twin_of(n) != plan[n.split("/", 1)[0]] for n in defaults
         ):
