@@ -2907,6 +2907,28 @@ def _preempt_ram_disabled_in(args, env: Optional[Mapping[str, str]] = None) -> b
     return disabled or not named
 
 
+def _assistant_prefill_from_args(args, env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether this launch continues a trailing assistant message (llama-server's default) or
+    renders it as a finished turn and generates a new one after it (``--no-prefill-assistant``).
+    Read in llama.cpp's order: ``LLAMA_ARG_PREFILL_ASSISTANT`` first, then argv last-wins."""
+    value = str((os.environ if env is None else env).get("LLAMA_ARG_PREFILL_ASSISTANT", ""))
+    enabled = value.strip().lower() not in _LLAMA_ARG_FALSE_VALUES
+    for token in args or ():
+        name = _flag_name(str(token))
+        if name == "--prefill-assistant":
+            enabled = True
+        elif name == "--no-prefill-assistant":
+            enabled = False
+    return enabled
+
+
+def _resume_extends_trailing_turn(backend, continue_final_message) -> bool:
+    """Whether a paused attempt was continuing a trailing assistant message. Under
+    ``--no-prefill-assistant`` a request that did not ask to continue saw that message as a
+    finished turn and generated a new one, so its partial is that new turn, not more of it."""
+    return bool(continue_final_message) or getattr(backend, "_assistant_prefill_enabled", True)
+
+
 def _preempt_ram_switched_off_in(args, env: Optional[Mapping[str, str]] = None) -> bool:
     """True when this launch NAMES a zero budget, switching the server's parking off by hand.
 
@@ -22498,6 +22520,7 @@ class LlamaCppBackend:
         self._requested_reasoning_budget_message = ""
         self._swa_full = False
         self._kv_cache_unified = False
+        self._assistant_prefill_enabled = True
         self._server_preempts_kv = False
         self._server_launched_parking = False
         # The diffusion runner reads no llama.cpp env, so a previous GGUF's mode must not be
@@ -37183,6 +37206,9 @@ class LlamaCppBackend:
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
+                self._assistant_prefill_enabled = _assistant_prefill_from_args(
+                    _last_spawn_cmd or cmd, env
+                )
                 if _preempt_ram_disabled_in(_last_spawn_cmd or cmd, env = env):
                     self._server_preempts_kv = False
                 self._server_launched_parking = bool(self._server_preempts_kv and kv_cache_unified)
@@ -42659,7 +42685,11 @@ class LlamaCppBackend:
             yield {"type": "preempt", "state": "resumed"}
             resumed = [dict(message) for message in retry_messages]
             continues = self._assemble_preempt_resume(
-                resumed, checkpoint, content_text, reasoning_text
+                resumed,
+                checkpoint,
+                content_text,
+                reasoning_text,
+                continue_final_message = continue_final_message,
             )
             _paused_usage = _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
             _paused_completion_tokens = (
@@ -42791,26 +42821,34 @@ class LlamaCppBackend:
         )
 
     def _assemble_preempt_resume(
-        self, conversation, checkpoint, content_accum, reasoning_accum
+        self,
+        conversation,
+        checkpoint,
+        content_accum,
+        reasoning_accum,
+        *,
+        continue_final_message = True,
     ) -> bool:
         """Put a paused attempt's partial back so the next one continues it. Returns whether the
-        conversation now ends on something continuable."""
+        conversation now ends on something continuable. ``continue_final_message`` is what the
+        paused attempt was sent with."""
         from core.inference.chat_template_helpers import (
             append_assistant_turn,
             trailing_assistant_reasoning,
         )
 
+        extends = _resume_extends_trailing_turn(self, continue_final_message)
         if checkpoint.has_resume_point():
             partial = {"role": "assistant", "content": content_accum}
             # The preceding thought is replayed too, or the continuation is conditioned on a prefix
             # that never produced it.
             if reasoning_accum:
                 partial["reasoning_content"] = reasoning_accum
-            append_assistant_turn(conversation, partial, continue_final_message = True)
+            append_assistant_turn(conversation, partial, continue_final_message = extends)
             return True
 
         if checkpoint.has_reasoning_resume_point():
-            prior = trailing_assistant_reasoning(conversation)
+            prior = trailing_assistant_reasoning(conversation) if extends else ""
             if prior:
                 conversation[-1] = {
                     **conversation[-1],
@@ -46958,7 +46996,11 @@ class LlamaCppBackend:
                     )
                     try:
                         _declined_continues = self._assemble_preempt_resume(
-                            conversation, _checkpoint, _preempt_content, reasoning_accum
+                            conversation,
+                            _checkpoint,
+                            _preempt_content,
+                            reasoning_accum,
+                            continue_final_message = continue_final_message,
                         )
                     except Exception:
                         logger.warning(
@@ -46984,6 +47026,7 @@ class LlamaCppBackend:
                         _checkpoint,
                         _preempt_content,
                         reasoning_accum,
+                        continue_final_message = continue_final_message,
                     )
                 except Exception:
                     logger.warning(
@@ -48165,10 +48208,18 @@ class LlamaCppBackend:
                 yield {"type": "preempt", "state": "resumed"}
                 # Assembling must never end the turn: any failure re-issues the attempt whole.
                 _resume_messages = list(stream_payload["messages"])
-                _merged_p = trailing_assistant_text(_resume_messages) is not None
+                _final_continued = bool(stream_payload.get("continue_final_message"))
+                _merged_p = (
+                    _resume_extends_trailing_turn(self, _final_continued)
+                    and trailing_assistant_text(_resume_messages) is not None
+                )
                 try:
                     _resume_continues = self._assemble_preempt_resume(
-                        _resume_messages, _checkpoint_f, _paused_visible, _paused_reasoning
+                        _resume_messages,
+                        _checkpoint_f,
+                        _paused_visible,
+                        _paused_reasoning,
+                        continue_final_message = _final_continued,
                     )
                 except Exception:
                     logger.warning(
