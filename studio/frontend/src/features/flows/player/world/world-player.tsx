@@ -629,7 +629,6 @@ export function WorldPlayer({
     chat,
   ]);
 
-  // The reply being written; a load stops it so the old game's answer does not keep the model busy.
   const replyRun = useRef<AbortController | null>(null);
   const send = async () => {
     const text = draft.trim();
