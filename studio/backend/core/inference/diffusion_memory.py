@@ -6331,6 +6331,8 @@ def _registered_pin(src: Any) -> Any:
     a power of two (a Q4_K 3072x3072 weight, 5.3 MB, took 8 MiB)."""
     import torch
 
+    if not host_pinning_allowed():
+        return src  # integrated GPU: a pinned copy only takes RAM from the card
     if type(src) is torch.Tensor:
         return registered_host_copy(src)
     gguf = _gguf_parameter_class()
