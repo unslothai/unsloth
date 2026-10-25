@@ -527,10 +527,29 @@ def doctor(
         "--env-var",
         help = "With --mcp: the environment variable that holds the Unsloth Studio API key.",
     ),
-    timeout: float = typer.Option(
-        60.0,
+    timeout: Optional[float] = typer.Option(
+        None,
         "--timeout",
-        help = "Seconds before the all_reduce smoke test is declared hung.",
+        help = "Seconds before the all_reduce smoke test (on a DGX Spark, also the NCCL link probe) "
+        "is declared hung. Default 60, and 90 for the Spark link probe.",
+    ),
+    parity_only: bool = typer.Option(
+        False,
+        "--parity-only",
+        help = "DGX Spark: only compare the two nodes' capability gates. No GPU work, no NCCL run.",
+    ),
+    deep: bool = typer.Option(
+        False,
+        "--deep",
+        help = "DGX Spark: also import torch/vllm on both nodes to compare their runtime gates.",
+    ),
+    skip_parity: bool = typer.Option(
+        False, "--skip-parity", help = "DGX Spark: do not run the cross-node parity check."
+    ),
+    skip_fastpath: bool = typer.Option(
+        False,
+        "--skip-fastpath",
+        help = "DGX Spark: do not compare the two nodes' fast-path packages and kernels.",
     ),
 ):
     """Preflight checks for this machine. Exit status 1 means a problem was found."""
@@ -542,16 +561,44 @@ def doctor(
     if mcp:
         from unsloth_cli.commands.mcp import mcp_doctor
         code = mcp_doctor(env_var)
-    if not run_gpus:
+    try:
+        from studio import spark_cluster
+        on_spark = spark_cluster.is_dgx_spark()
+    except Exception:
+        on_spark = False
+    # On a Spark, --no-gpus still runs the GPU-free peer checks; plain --mcp checks only MCP.
+    if not run_gpus and (mcp or not on_spark):
         if not mcp:
             typer.echo("Nothing to check.")
         raise typer.Exit(code)
     if mcp:
         typer.echo("")
-    try:
-        _gpu_checks(timeout)
-    except typer.Exit as e:
-        raise typer.Exit(max(e.exit_code, code))
+    local_timeout = 60.0 if timeout is None else timeout
+    if not on_spark:
+        try:
+            _gpu_checks(local_timeout)
+        except typer.Exit as e:
+            raise typer.Exit(max(e.exit_code, code))
+        raise typer.Exit(code)
+    # A Spark gets the same local GPU check as any machine, then the peer and link checks.
+    # --no-gpus and --parity-only both promise no GPU work, on this node or the peer.
+    local_rc = 0
+    if run_gpus and not parity_only:
+        try:
+            _gpu_checks(local_timeout)
+        except typer.Exit as e:
+            local_rc = e.exit_code
+        typer.echo("")
+    from unsloth_cli.commands.spark_doctor import spark_doctor
+
+    spark_rc = spark_doctor(
+        parity_only = parity_only or not run_gpus,
+        deep = deep and run_gpus,
+        skip_parity = skip_parity,
+        skip_fastpath = skip_fastpath,
+        timeout = timeout,
+    )
+    raise typer.Exit(code = 1 if (code or local_rc or spark_rc) else 0)
 
 
 def _gpu_checks(timeout: float):

@@ -98,6 +98,7 @@ else:
     from unsloth_cli.commands.inference import inference
     from unsloth_cli.commands.chat import chat
     from unsloth_cli.commands.start import start_app
+    from unsloth_cli.commands.spark import spark_app
     from unsloth_cli.commands.export import export, list_checkpoints
     from unsloth_cli.commands.eval import evaluate as eval_command
     from unsloth_cli.commands.doctor import doctor
@@ -245,6 +246,12 @@ if not _windows_studio_mutation_entry:
         help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe, "
         "VS Code) against Unsloth.",
     )
+    app.add_typer(
+        spark_app,
+        name = "spark",
+        help = "Pair a second NVIDIA DGX Spark over its 200GbE ConnectX link.",
+    )
+
     app.add_typer(
         mcp_app, name = "mcp", help = "Connect coding agents to the Unsloth Studio MCP server."
     )
