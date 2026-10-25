@@ -1574,6 +1574,23 @@ def test_clef_loss_scaler_on_torch_without_torch_amp_grad_scaler(tmp_path, monke
     assert made == [1]
 
 
+def test_clef_loss_scaler_unscales_once_before_clipping():
+    # A prior fp16 Trainer in the process can leave Accelerate on native fp16, which unscales itself.
+    calls = []
+    scaler = types.SimpleNamespace(unscale_ = lambda optimizer: calls.append(("unscale", optimizer)))
+    for native, wants in ((False, [("unscale", "opt"), "clip"]), (True, ["clip"])):
+        calls.clear()
+        accelerator = types.SimpleNamespace(
+            native_amp = native,
+            mixed_precision = "fp16" if native else "no",
+            clip_grad_norm_ = lambda p, m, n = 2: calls.append("clip"),
+        )
+        decision._install_clef_loss_scaler(accelerator, scaler, lambda: "opt")
+        assert accelerator.scaler is scaler
+        accelerator.clip_grad_norm_([], 1.0)
+        assert calls == wants
+
+
 def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):
     # A T4: evaluate and serving autocast fp16, so training does too.
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
