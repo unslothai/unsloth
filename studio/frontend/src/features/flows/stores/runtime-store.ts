@@ -10,7 +10,6 @@ export interface NodeRuntime {
   phase: string | null;
   preview: string | null;
   outputs: Record<string, unknown> | null;
-  /** Values a long step published before it finished (rows so far); never what other steps read. */
   partial: Record<string, unknown> | null;
   partialStep: { step: number; total: number } | null;
   error: string | null;
@@ -72,7 +71,6 @@ function stepOf(data: PartialData): { step: number; total: number } | null {
     : null;
 }
 
-/** A snapshot's stored partials ({port: {value, step, total}}) as runtime fields. */
 function partialFields(
   stored: Record<string, PartialData> | undefined,
 ): Pick<NodeRuntime, "partial" | "partialStep"> {
@@ -97,7 +95,6 @@ const TERMINAL_RUN: Record<string, RunStatus> = {
   "run.queued": "queued",
 };
 
-/** Fold a batch of events into the state, replacing only the node entries the batch touched. */
 export function reduceEvents(
   state: Pick<
     RuntimeState,
@@ -245,7 +242,6 @@ export function reduceEvents(
   };
 }
 
-/** A node's progress as 0..1: `fraction`, else `step / total` (events and run snapshots carry the same object). */
 export function progressFraction(data: unknown): number | null {
   if (typeof data === "number") return data;
   if (!data || typeof data !== "object") return null;
@@ -270,7 +266,6 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       runError: null,
       lastSeq: 0,
       logs: [],
-      // Keep previous outputs visible until the new run replaces them.
       nodes: Object.fromEntries(
         Object.entries(s.nodes).map(([id, node]) => [
           id,
@@ -280,7 +275,6 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
             progress: null,
             error: null,
             text: "",
-            // Partials belong to the run that sent them; outputs stay until replaced.
             partial: null,
             partialStep: null,
           },
@@ -310,7 +304,6 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     }),
 }));
 
-/** Coalesce SSE events into one store update per animation frame. */
 export function createEventBatcher(apply: (events: RunEvent[]) => void): {
   push: (event: RunEvent) => void;
   flush: () => void;

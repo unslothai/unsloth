@@ -88,7 +88,6 @@ test("every NPC and item is reachable from spawn in every biome", () => {
           `${biome}/${seed}: ${id} at ${p.x},${p.y} unreachable`,
         );
       }
-      // The border is closed: nobody walks off the map.
       for (let x = 0; x < map.width; x++)
         assert.ok(P.isSolid(map, x, 0) && P.isSolid(map, x, map.height - 1));
     }
@@ -141,7 +140,6 @@ test("world state: pick up, give, quests and save round-trip", () => {
   assert.deepEqual(after.activeQuests, []);
   assert.deepEqual(after.inventory, []);
   assert.ok(notes.some((n) => n.includes("yay")));
-  // Effects the world does not know are ignored even if the server let them through.
   const bogus = W.applyReply(s, after, "n1", {
     text: "x",
     give_item: "dragon",

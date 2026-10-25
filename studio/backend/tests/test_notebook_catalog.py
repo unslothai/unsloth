@@ -73,7 +73,6 @@ def test_offline_mode_never_fetches(monkeypatch, fresh_cache):
     ],
 )
 def test_rl_recipes_are_not_sft(name):
-    # Studio trains SFT / CPT only, so these open in Colab.
     assert catalog._category(name) == "grpo"
     assert catalog.STUDIO_TASKS.get("grpo") is None
 

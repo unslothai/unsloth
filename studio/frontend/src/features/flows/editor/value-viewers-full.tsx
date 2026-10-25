@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The full table, chart, heatmap and tensor viewers (lazy chunk: only loaded once such a value is shown). */
 
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -57,7 +56,6 @@ async function copyText(text: string, what: string): Promise<void> {
   }
 }
 
-/** Every row: a table with only a preview inline is read from its asset first. */
 async function fullTable(table: TableValue): Promise<TableValue | null> {
   if (!table.ref || (table.row_count ?? 0) <= table.rows.length) return table;
   try {
@@ -276,7 +274,6 @@ export function ChartViewer({
   );
 }
 
-/** The whole value stored as a JSON asset at `ref`. */
 async function loadRef<T>(ref: string, signal?: AbortSignal): Promise<T> {
   const path = mediaPath({ ref } as MediaValue);
   if (!path) throw new Error("Unreadable reference");
@@ -284,7 +281,6 @@ async function loadRef<T>(ref: string, signal?: AbortSignal): Promise<T> {
   return JSON.parse(await blob.text()) as T;
 }
 
-/** A value's asset (`ref`), fetched once per reference; cleared at once when the reference changes. */
 function useRefValue<T>(ref: string | undefined): T | null {
   const [loaded, setLoaded] = useState<{ ref: string; value: T } | null>(null);
   useEffect(() => {
@@ -295,7 +291,6 @@ function useRefValue<T>(ref: string | undefined): T | null {
       .catch(() => undefined);
     return () => abort.abort();
   }, [ref]);
-  // A result for an earlier reference is never shown under the current one.
   return loaded && loaded.ref === ref ? loaded.value : null;
 }
 

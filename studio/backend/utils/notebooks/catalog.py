@@ -58,7 +58,6 @@ _CATEGORY_RULES = (
     ("classification", ("classification", "bert")),
 )
 
-# What Studio can train for each category (the Train page's model kind); the rest open in Colab.
 STUDIO_TASKS = {
     "sft": "text",
     "reasoning": "text",
@@ -68,7 +67,6 @@ STUDIO_TASKS = {
     "audio": "audio",
     "embedding": "embedding",
 }
-# Studio's own offline switch, next to the Hugging Face ones.
 _OFFLINE_ENV = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "UNSLOTH_STUDIO_OFFLINE")
 
 logger = logging.getLogger(__name__)
@@ -92,7 +90,6 @@ def _text(value: Any) -> str | None:
 
 
 def _category(name: str) -> str:
-    # Upstream mixes "-" and "_" between words ("Tool_Calling" and "Tool-Calling").
     lowered = name.lower().replace("-", "_")
     return next(
         (

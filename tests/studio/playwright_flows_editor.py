@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Flows editor in a real browser against the in-memory backend of smoke-flows.html: gallery, story
-graph, quick add, inspector, a simulated run, undo, and the 1000-node performance numbers."""
-
 import json
 import os
 import sys
@@ -58,7 +55,6 @@ def pane_center(page) -> tuple[float, float]:
 
 
 def pan_metrics(page, label: str) -> None:
-    """Space-drag the canvas for ~2 s while a rAF loop records frame times."""
     box = page.locator(".react-flow__pane").bounding_box()
     # Start in the corner: fitView leaves padding there, so the drag grabs the pane, not a node.
     x, y = box["x"] + 230, box["y"] + 90
@@ -96,7 +92,6 @@ def main() -> int:
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)))
 
-            # Gallery
             page.goto(BASE)
             page.wait_for_selector('[data-testid="flows-gallery"]', timeout = 60_000)
             page.wait_for_selector('[data-testid="flows-card"]', timeout = 20_000)
@@ -107,20 +102,17 @@ def main() -> int:
             )
             page.screenshot(path = str(SHOTS / "editor_gallery.png"))
 
-            # New pipeline from the gallery opens the editor
             page.click('[data-testid="flows-new-pipeline"]')
             page.wait_for_selector('[data-testid="flows-editor"]', timeout = 20_000)
             page.wait_for_selector(".react-flow__node-flowNode", timeout = 20_000)
             check(node_count(page) == 4, "new pipeline opens with its 4 template nodes")
 
-            # Story graph
             open_flow(page, "story")
             metrics["story_time_to_nodes_ms"] = page.evaluate("() => performance.now()")
             check(node_count(page) == 8, f"story template renders 8 nodes (got {node_count(page)})")
             check(page.locator(".react-flow__edge").count() == 7, "story template renders 7 edges")
             page.screenshot(path = str(SHOTS / "editor_story.png"))
 
-            # Quick add by double-clicking the canvas
             before = node_count(page)
             x, y = pane_center(page)
             page.mouse.move(x, y + 260)
@@ -133,7 +125,6 @@ def main() -> int:
             page.wait_for_timeout(250)
             check(node_count(page) == before + 1, "quick add inserts a node")
 
-            # Undo / redo
             mod = "Meta" if sys.platform == "darwin" else "Control"
             page.locator(".react-flow__pane").click(position = {"x": 20, "y": 20})
             page.keyboard.press(f"{mod}+z")
@@ -143,7 +134,6 @@ def main() -> int:
             page.wait_for_timeout(150)
             check(node_count(page) == before + 1, "redo restores it")
 
-            # Inspector
             header = page.locator('.react-flow__node-flowNode [data-node-id="s1"] .flow-node-drag')
             t0 = time.perf_counter()
             header.dblclick()
@@ -159,7 +149,6 @@ def main() -> int:
             check(saved == "saved", f"autosave settles to saved (got {saved})")
             page.screenshot(path = str(SHOTS / "editor_inspector.png"))
 
-            # Simulated run on the pipeline
             open_flow(page, "pipeline")
             page.click('[data-testid="flows-run"]')
             page.wait_for_selector('[data-testid="flows-download-run"]', timeout = 5_000)
@@ -180,7 +169,6 @@ def main() -> int:
             )
             page.screenshot(path = str(SHOTS / "editor_run.png"))
 
-            # Perf: 1000 nodes / ~1500 edges
             open_flow(page, "perf", f"&nodes={PERF_NODES}")
             page.wait_for_function(
                 f"() => document.querySelectorAll('.react-flow__node-flowNode').length >= {PERF_NODES}",
@@ -197,7 +185,6 @@ def main() -> int:
             page.screenshot(path = str(SHOTS / f"editor_perf_{PERF_NODES}.png"))
 
             pan_metrics(page, "pan_all_1000_visible")
-            # Zoom in to a working scale, then pan for 2 s while counting frames.
             page.evaluate("() => 0")
             x, y = pane_center(page)
             for _ in range(6):
@@ -208,14 +195,12 @@ def main() -> int:
             metrics["perf_rendered_nodes_zoomed"] = node_count(page)
             pan_metrics(page, "pan_zoomed")
 
-            # Inspector latency on the big graph
             first = page.locator(".react-flow__node-flowNode .flow-node-drag").first
             t0 = time.perf_counter()
             first.dblclick()
             page.wait_for_selector('[data-testid="flows-inspector"]', timeout = 5_000)
             metrics["perf_inspector_open_ms"] = (time.perf_counter() - t0) * 1000
 
-            # Render isolation: progress for one node commits only that node's subtree.
             result = page.evaluate(
                 """async () => {
                   const s = window.__flowsSmoke;

@@ -369,13 +369,11 @@ export function StoryPlayer({
 
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const requested = useRef<Set<string>>(new Set());
-  // Lines that arrived while the reader was mid-scene; the next visit to that scene plays them.
   const heldLines = useRef<Map<string, NonNullable<StoryScene["lines"]>>>(
     new Map(),
   );
   const artEntry = manifest.entry_points?.scene_art;
   const nextEntry = manifest.entry_points?.next_scene;
-  // Load the writer's chat model on the title screen, so the first generated scene does not wait for it.
   useEffect(() => {
     if (nextEntry && api.warm)
       void api.warm(flowId, nextEntry).catch(() => false);
@@ -443,7 +441,6 @@ export function StoryPlayer({
     [chars],
   );
 
-  // Write the next scene (infinite mode).
   useEffect(() => {
     if (state.status !== "generating" || !state.pending || !nextEntry) return;
     const { rev } = state;
@@ -492,7 +489,6 @@ export function StoryPlayer({
     historyText,
   ]);
 
-  // Paint this scene and prefetch the next ones; write lines for scenes that ask for it.
   useEffect(() => {
     if (!started || !scene) return;
     const rev = state.rev;
@@ -562,7 +558,6 @@ export function StoryPlayer({
           );
       }
     }
-    // Only when the scene changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [started, state.sceneId, state.rev]);
 
@@ -1225,7 +1220,6 @@ function formatVars(vars: Record<string, unknown>): string {
     .join(" · ");
 }
 
-/** A stable per-flow seed for a fresh playthrough. */
 export function storySeed(flowId: string): number {
   return seedFrom("play", flowId);
 }

@@ -83,7 +83,6 @@ def scrub(value: Any) -> Any:
     return value
 
 
-# Secrets in a URL: user:password@ and query values named like a credential (?api_key=, &token=, &sig=).
 _URL_USERINFO = re.compile(r"(https?://)[^/@\s?#]+@", re.I)
 _SECRET_QUERY = re.compile(r"([?&])([^=&#\s]+)=([^&#\s]*)")
 _SIGNED_QUERY = re.compile(r"(^|[_-]|%2d|%5f)(signature|credential|security[_-]?token)$", re.I)
@@ -91,8 +90,7 @@ _SIGNED_QUERY = re.compile(r"(^|[_-]|%2d|%5f)(signature|credential|security[_-]?
 
 def _blank_query(match: "re.Match") -> str:
     name = match.group(2)
-    # Servers decode the name, so api%5Fkey is api_key. Signed URLs carry live credentials in X-Amz-Signature,
-    # X-Goog-Signature, X-Amz-Credential and the like.
+    # Servers decode the name (api%5Fkey is api_key); signed URLs carry live credentials (X-Amz-Signature, ...).
     plain = unquote_plus(name)
     if (
         _SECRET_KEY.search(plain)
@@ -112,7 +110,6 @@ def _is_media(value: Any) -> bool:
 
 
 def _is_data_asset(value: Any) -> bool:
-    """A large table, heatmap or tensor whose full data is a JSON flow asset."""
     return (
         isinstance(value, dict)
         and value.get("kind") in ("table", "heatmap", "tensor")
@@ -167,7 +164,6 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
 
 
 def _drop_local(value: Any) -> Any:
-    """For a JSON-only export: media that only exists on this machine is removed."""
     if isinstance(value, list):
         return [
             _drop_local(v) for v in value if not (_is_media(v) and v["ref"].startswith(_LOCAL_REFS))
@@ -219,7 +215,6 @@ async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[byte
     files: dict[str, tuple[bytes, str]] = {}
     for node in doc.get("nodes", []):
         node["params"] = await _embed(node.get("params") or {}, read_media, files)
-    # Flow inputs can default to an image or clip too.
     if doc.get("params"):
         doc["params"] = await _embed(doc["params"], read_media, files)
     if mode == "baked":
@@ -237,7 +232,6 @@ async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[byte
         zf.writestr("flow.json", json.dumps(doc, indent = 1))
         for digest, (data, mime) in sorted(files.items()):
             ext = asset_store.MIME_EXT.get(mime, "bin")
-            # Media is already compressed; storing it keeps export fast.
             zf.writestr(
                 zipfile.ZipInfo(f"assets/{digest}.{ext}"), data, compress_type = zipfile.ZIP_STORED
             )
@@ -250,7 +244,6 @@ async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[byte
 
 
 def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int) -> bytes:
-    """Read at most ``limit`` bytes, whatever the header claims."""
     with zf.open(info) as fh:
         data = fh.read(limit + 1)
     if len(data) > limit:
@@ -347,7 +340,6 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
                     raise PackageError(f"{info.filename} does not match its checksum")
                 mime = asset_store.sniff_mime(blob)
                 if mime is None and ext == "json":
-                    # A large table, heatmap or tensor travels as plain JSON data, never code.
                     try:
                         json.loads(blob)
                     except (ValueError, RecursionError):

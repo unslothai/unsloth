@@ -227,7 +227,6 @@ function ImportDialog({
     disabled: busy,
     onFiles: (files) => {
       const file = files[0];
-      // A flow file carries its own name; the file name would replace it.
       if (file) return submit(file);
     },
   });
@@ -244,7 +243,6 @@ function ImportDialog({
   const submit = useCallback(async (data: Blob | string, name?: string) => {
     setBusy(true);
     try {
-      // A picked or dropped file carries its own name; only a notebook goes to the notebook importer.
       const notebook = notebookName(data, name);
       setResult(
         notebook

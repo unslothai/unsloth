@@ -4,7 +4,6 @@
 import { MediaThumb, isMediaValue } from "./media";
 import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
-/** One output value: media, a media list, a table / chart / heatmap / tensor, text, or JSON. Shared by the inspector and the App view. */
 export function OutputValue({ value }: { value: unknown }) {
   if (value === null || value === undefined)
     return <span className="text-zinc-600">-</span>;

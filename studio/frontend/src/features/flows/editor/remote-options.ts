@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Values at a dotted path of a route's answer; `name[]` maps over a list (`tasks[].id`). */
 export function pickOptions(data: unknown, path: string | undefined): string[] {
   let values: unknown[] = [data];
   for (const raw of (path ?? "").split(".").filter(Boolean)) {

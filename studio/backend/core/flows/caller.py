@@ -46,7 +46,6 @@ _FLOW_RAG_PATTERNS = (
     re.compile(r"^/api/rag/knowledge-bases/[^/]+/documents$"),
     re.compile(r"^/api/rag/jobs/[^/]+$"),
 )
-# Read-only system facts a benchmark records (hardware, llama.cpp build); never written through Flows.
 FLOW_READ_ONLY = ("/api/system", "/api/llama/backend")
 
 
@@ -241,7 +240,6 @@ class _StreamingASGITransport(httpx.AsyncBaseTransport):
                     started.set_exception(RuntimeError("The route sent no response"))
                 queue.put_nowait(None)
 
-        # Its own task, like ``forward``: the route's account binding stays out of the node.
         task = asyncio.create_task(run())
         try:
             status, headers = await started

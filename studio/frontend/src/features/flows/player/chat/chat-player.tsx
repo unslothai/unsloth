@@ -123,7 +123,6 @@ export function ChatPlayer({
 
   const reset = () => {
     generation.current += 1;
-    // Stop the abandoned reply so the next message does not queue behind it on the GPU.
     inflight.current?.abort();
     inflight.current = null;
     setTurns([]);
@@ -187,7 +186,6 @@ export function ChatPlayer({
         </div>
       </div>
       <form
-        // The right gutter keeps Send clear of the player's fullscreen button on narrow screens.
         className="border-white/10 border-t py-3 pr-14 pl-4"
         onSubmit={(e) => {
           e.preventDefault();
