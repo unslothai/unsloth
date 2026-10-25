@@ -241,14 +241,13 @@ def test_the_backend_counts_images_through_its_own_helpers(monkeypatch):
     assert backend._estimate_countable_message(message) >= 60 * 34
 
 
-def test_an_image_upscaled_by_image_min_tokens_is_charged_the_ceiling():
+def test_image_min_tokens_charges_the_ceiling():
     # mtmd upscales a 256 px image to at least 1024 embeddings under --image-min-tokens 1024.
     backend = _backend(extra_args = ["--image-min-tokens", "1024"])
 
     price = llama_cpp._image_token_price(backend, _image(_png(256, 256)))
 
     assert price == llama_cpp._mcp_image_tokens(backend)
-    assert llama_cpp._image_token_price(backend, _image(_png(1920, 1080))) == 60 * 34 + 128
 
 
 def test_a_tall_screenshot_is_never_priced_below_its_patch_grid():

@@ -2574,8 +2574,8 @@ def _image_token_price(backend, part: dict) -> int:
     extra_args = getattr(backend, "_extra_args", None)
     try:
         cap = extra_args_image_max_tokens(extra_args) or 0
-        # mtmd upscales an image below --image-min-tokens, and the grid it lands on is not this one.
-        if tokens < (extra_args_image_min_tokens(extra_args) or 0):
+        # mtmd resizes against --image-min-tokens on its own rounded grid, which this does not model.
+        if extra_args_image_min_tokens(extra_args):
             return ceiling
     except Exception:  # noqa: BLE001 -- pricing must never break a count
         cap = 0
