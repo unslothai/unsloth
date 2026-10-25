@@ -220,13 +220,15 @@ export const ContextUsageBar: FC<
           </button>
         </TooltipTrigger>
       </div>
+      {/* The dropdown surface (background, radius, light shadow, dark glow via .dropdown-surface),
+          not the black tooltip, since it opens from a header control like the menus beside it. */}
       <TooltipContent
         side="bottom"
         sideOffset={8}
-        variant="rich"
-        className="[&_span>svg]:hidden!"
+        variant="none"
+        className="dropdown-surface rounded-lg bg-popover px-4 py-3 font-sans text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] [&_span>svg]:hidden!"
       >
-        <div className="grid min-w-44 gap-1.5 text-xs">
+        <div className="grid min-w-48 gap-2 text-sm">
           {percent !== null ? (
             <div className="flex items-center justify-between gap-4">
               <span className="text-muted-foreground">

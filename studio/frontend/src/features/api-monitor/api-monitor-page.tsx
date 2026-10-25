@@ -1347,7 +1347,7 @@ export function ApiMonitorPage(): ReactElement {
         {/* Chat's header chip; hover, or click to pin, for the prompt and reply split. */}
         <ContextUsageChip
           pinOnClick={true}
-          className="-my-1.5 -ml-2.5"
+          className="-my-1.5"
           used={used}
           total={windowSize}
           promptTokens={last?.prompt_tokens ?? undefined}
