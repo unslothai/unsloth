@@ -17,6 +17,8 @@ import {
 } from "@/features/hub/stores/inventory-events";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type CacheEntry,
@@ -26,7 +28,7 @@ import {
   loadCacheInventory,
   purgeCaches,
 } from "../api/caches";
-import { SettingsRow } from "./settings-row";
+import { SettingsCardRow } from "./storage-overview";
 
 /** Decimal units, matching the disk readings the Storage section already shows. */
 export function formatCacheSize(bytes: number): string {
@@ -101,13 +103,11 @@ function presentCaches(inventory: CacheInventory | null): CacheEntry[] {
   return inventory.caches.filter((entry) => entry.present);
 }
 
-export function CacheStorageRows() {
+export function useCacheStorage() {
   const t = useT();
   const [inventory, setInventory] = useState<CacheInventory | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
-  const [target, setTarget] = useState<PurgeTarget | null>(null);
   const [clearing, setClearing] = useState(false);
 
   // A measurement installs itself only while it is the newest one asked for.
@@ -156,7 +156,7 @@ export function CacheStorageRows() {
   const bulkKeys = inventory ? bulkPurgeKeys(inventory) : [];
   const reclaimable = inventory?.reclaimableBytes ?? 0;
 
-  const runPurge = async (keys: readonly CacheKey[]) => {
+  const runPurge = async (keys: readonly CacheKey[]): Promise<boolean> => {
     setClearing(true);
     const request = ++latestRequest.current;
     try {
@@ -169,28 +169,61 @@ export function CacheStorageRows() {
         bumpInventoryVersion();
         measuredVersion.current = getInventoryVersion();
       }
-      setTarget(null);
       const failures = outcome.results.flatMap((result) => result.errors);
       if (failures.length > 0) {
         toast.warning(t("settings.resources.storage.caches.partial"), {
           description: failures[0],
         });
-        return;
+        return true;
       }
       toast.success(
         t("settings.resources.storage.caches.cleared", {
           size: formatCacheSize(outcome.freedBytes),
         }),
       );
+      return true;
     } catch (error) {
       toast.error(t("settings.resources.storage.caches.clearFailed"), {
         description: error instanceof Error ? error.message : undefined,
       });
+      return false;
     } finally {
       setClearing(false);
       // Whatever measurement this superseded will not clear it.
       if (request === latestRequest.current) setLoading(false);
     }
+  };
+
+  return {
+    inventory,
+    loading,
+    loadError,
+    clearing,
+    entries,
+    bulkKeys,
+    reclaimable,
+    refresh,
+    runPurge,
+  };
+}
+
+export type CacheStorage = ReturnType<typeof useCacheStorage>;
+
+export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
+  const t = useT();
+  const {
+    inventory,
+    loading,
+    loadError,
+    clearing,
+    entries,
+    bulkKeys,
+    reclaimable,
+  } = cache;
+  const [expanded, setExpanded] = useState(false);
+  const [target, setTarget] = useState<PurgeTarget | null>(null);
+  const runPurge = async (keys: readonly CacheKey[]) => {
+    if (await cache.runPurge(keys)) setTarget(null);
   };
 
   const confirmTitle =
@@ -210,7 +243,7 @@ export function CacheStorageRows() {
 
   return (
     <>
-      <SettingsRow
+      <SettingsCardRow
         label={t("settings.resources.storage.caches.label")}
         description={
           loadError
@@ -224,43 +257,31 @@ export function CacheStorageRows() {
         }
         hint={t("settings.resources.storage.caches.hint")}
       >
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8"
-            disabled={loading || clearing}
-            onClick={() => void refresh({ refresh: true })}
-          >
-            {t("settings.resources.storage.caches.recheckAction")}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8"
-            disabled={loading || clearing}
-            onClick={() => setExpanded((open) => !open)}
-          >
-            {expanded
-              ? t("settings.resources.storage.caches.hideDetailsAction")
-              : t("settings.resources.storage.caches.detailsAction")}
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            className="h-8"
-            disabled={
-              loading || clearing || loadError !== null || bulkKeys.length === 0
-            }
-            onClick={() => setTarget({ kind: "bulk" })}
-          >
-            {t("settings.resources.storage.caches.clearAction")}
-          </Button>
-        </div>
-      </SettingsRow>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={loading || clearing}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {expanded
+            ? t("settings.resources.storage.caches.hideDetailsAction")
+            : t("settings.resources.storage.caches.detailsAction")}
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={
+            loading || clearing || loadError !== null || bulkKeys.length === 0
+          }
+          onClick={() => setTarget({ kind: "bulk" })}
+        >
+          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+          {t("settings.resources.storage.caches.clearAction")}
+        </Button>
+      </SettingsCardRow>
 
       {expanded ? (
-        <div className="flex flex-col pl-3.5">
+        <div className="flex flex-col pb-2">
           {entries.length === 0 ? (
             <p className="py-2 text-xs text-muted-foreground">
               {t("settings.resources.storage.caches.empty")}
@@ -269,7 +290,7 @@ export function CacheStorageRows() {
             entries.map((entry) => (
               <div
                 key={entry.key}
-                className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 py-2"
+                className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 py-2.5"
               >
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <span className="text-sm text-foreground">

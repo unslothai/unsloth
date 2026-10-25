@@ -419,21 +419,22 @@ def _local_gguf_entry(
             else:
                 selected_variants, _has_vision, complete, load_dir = selected
                 variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
-                if complete:
-                    complete_keys = {str(quant).casefold() for quant in complete}
-                    complete_files = {
-                        str(variant.filename).casefold()
-                        for variant in selected_variants
-                        if getattr(variant, "filename", None)
-                        and getattr(variant, "quant", None)
-                        and str(variant.quant).casefold() in complete_keys
-                    }
-                    variants = [
-                        variant
-                        for variant in variants
-                        if getattr(variant, "filename", None)
-                        and str(variant.filename).casefold() in complete_files
-                    ]
+                # Filter even when nothing is complete: the selector can fall back to a snapshot
+                # with no whole quant, and its torn split shards must not be offered.
+                complete_keys = {str(quant).casefold() for quant in complete}
+                complete_files = {
+                    str(variant.filename).casefold()
+                    for variant in selected_variants
+                    if getattr(variant, "filename", None)
+                    and getattr(variant, "quant", None)
+                    and str(variant.quant).casefold() in complete_keys
+                }
+                variants = [
+                    variant
+                    for variant in variants
+                    if getattr(variant, "filename", None)
+                    and str(variant.filename).casefold() in complete_files
+                ]
         else:
             load_dir = _resolve_load_dir(p) if p.name.startswith("models--") else p
             variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
@@ -1085,6 +1086,26 @@ def recently_downloaded(repo_id: str) -> bool:
     if not isinstance(repo_id, str) or not repo_id.strip():
         return False
     return repo_id.strip().lower() in _just_downloaded
+
+
+def local_gguf_torn_only(repo_id: str) -> bool:
+    """Whether the HF cache holds GGUF builds of *repo_id* that the index left out because none is whole."""
+    if not isinstance(repo_id, str) or repo_id.strip().count("/") != 1:
+        return False
+    try:
+        from hub.utils.gguf import list_local_gguf_variants
+        from hub.utils.hf_cache_state import iter_repo_cache_dirs
+        for repo_dir in iter_repo_cache_dirs("model", repo_id.strip()):
+            snapshots = repo_dir / "snapshots"
+            if not snapshots.is_dir():
+                continue
+            for snapshot in snapshots.iterdir():
+                variants, _ = list_local_gguf_variants(str(snapshot))
+                if any(getattr(v, "quant", None) for v in variants):
+                    return True
+    except Exception:
+        return False
+    return False
 
 
 def _snapshot_is_trusted(

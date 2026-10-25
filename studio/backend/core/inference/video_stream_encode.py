@@ -19,6 +19,8 @@ import threading
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from .host_pinning import host_pinning_allowed
+
 STREAM_ENCODE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE"
 QUEUE_DEPTH = 8
 _STOP = object()
@@ -132,7 +134,7 @@ class StreamEncode:
                 self._side = torch.cuda.Stream(device = device)
             ready = torch.cuda.Event()
             ready.record(torch.cuda.current_stream(device))
-            host = torch.empty(x.shape, dtype = torch.uint8, pin_memory = True)
+            host = torch.empty(x.shape, dtype = torch.uint8, pin_memory = host_pinning_allowed(device))
             with torch.cuda.stream(self._side):
                 self._side.wait_event(ready)
                 host.copy_(x, non_blocking = True)
@@ -396,7 +398,7 @@ class H3StreamEncode(StreamEncode):
             pair = []
             for values in self._pixel:
                 host = torch.tensor(values, dtype = torch.float32)
-                if device.type == "cuda":
+                if device.type == "cuda" and host_pinning_allowed(device):
                     host = host.pin_memory()
                 pair.append(host.to(device, non_blocking = True).view(1, -1, 1, 1, 1))
             held = (device, tuple(pair))
@@ -559,6 +561,17 @@ def claim_stream(
     return session.take(video_frames, fps, audio, audio_sample_rate)
 
 
+def _decodes_on_cuda(pipe: Any, decoder: Any, torch: Any) -> bool:
+    """True if resident on CUDA, or offloaded to host while the pipeline executes on CUDA."""
+    if next(decoder.parameters()).device.type == "cuda":
+        return True
+    try:
+        device = torch.device(getattr(pipe, "_execution_device", None) or "cpu")
+    except Exception:  # noqa: BLE001 - no execution device: a CPU render
+        return False
+    return device.type == "cuda"
+
+
 def open_stream_encode(
     pipe: Any,
     fps: int,
@@ -566,7 +579,7 @@ def open_stream_encode(
     engage: bool,
     logger: Any = None,
 ) -> Optional[StreamEncode]:
-    """A session for a resident CUDA ``AutoencoderKLWan`` with libx264 frame threads, or None."""
+    """A session for an ``AutoencoderKLWan`` decoding on CUDA with libx264 frame threads, or None."""
     if not engage or not stream_encode_enabled():
         return None
     from .video_encode import frame_threads_enabled
@@ -587,7 +600,9 @@ def open_stream_encode(
         import av  # noqa: F401
         import torch
 
-        if not torch.cuda.is_available() or next(decoder.parameters()).device.type != "cuda":
+        if not torch.cuda.is_available():
+            return None
+        if not _decodes_on_cuda(pipe, decoder, torch):
             return None
         return StreamEncode(vae, processor, fps, logger)
     except Exception:  # noqa: BLE001 - no PyAV, no CUDA or no parameters: encode afterwards

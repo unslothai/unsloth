@@ -61,6 +61,7 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
+from . import hub_reachability
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
@@ -227,6 +228,7 @@ from .diffusion import (
 from .diffusion_native_quant import native_quant_reason
 from .diffusion_batched import is_oom_error
 from .diffusion_block_graph import compile_pipe_below_offload_hooks
+from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
 from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
@@ -2887,8 +2889,7 @@ def _h3_residency_budget_bytes(
 ) -> int:
     """Device bytes the resident set may occupy for this request."""
     try:
-        import torch
-
+        from .diffusion_memory import cuda_reusable_cache_bytes
         from .video_minimax_h3 import H3_TEXT_ENCODER_BF16_GB
         from .video_minimax_h3_residency import h3_phase_need_gb
         from .video_minimax_h3_te import H3_TE_STREAMED_GB
@@ -2897,8 +2898,8 @@ def _h3_residency_budget_bytes(
         free = _h3_signed_free_device_bytes(device)
         if free is None:
             return 0
-        cached = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
-        available = int(free) + max(0, cached) + int(residency.resident_bytes())
+        cached = cuda_reusable_cache_bytes(device)
+        available = int(free) + cached + int(residency.resident_bytes())
         te_gb = (
             H3_TE_STREAMED_GB
             if te_streamed
@@ -3141,6 +3142,155 @@ def _save_runtime_quant_to_cache(
         logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
 
 
+def _video_native_cache_spec(
+    fam: Any,
+    *,
+    target: Any,
+    transformer_quant: Optional[str],
+    plan: Any,
+    kind: str,
+    source_dir: Optional[str],
+) -> Optional[dict]:
+    """Cache spec of the native build an OFFLOADED CUDA load's runtime quant makes, else None. Never raises.
+
+    Must use the same inputs as the quant step (``native_scheme`` / ``native_kwargs``) so a hit replays that build."""
+    try:
+        if kind != "pipeline" or getattr(fam, "modular_workflow", None):
+            return None
+        if getattr(target, "device", None) != "cuda" or plan is None:
+            return None
+        if plan_keeps_transformer_resident(plan):
+            return None
+        requested = normalize_transformer_quant(transformer_quant)
+        if requested is None:
+            return None
+        pinned = None if requested == TQ_AUTO else requested
+        scheme = native_quant_scheme(
+            target,
+            _auto_offload_scheme(transformer_quant) if pinned is None else pinned,
+            family = fam.name,
+            offload = True,
+        )
+        if scheme is None:
+            return None
+        if stored_denoiser_precision(source_dir) is not None:
+            return None  # the quant step declines a widened checkpoint
+        from .diffusion_native_cache import native_spec
+
+        return native_spec(
+            scheme,
+            fam.name,
+            act_int8 = scheme == TQ_INT8 and native_int8_act(target),
+        )
+    except Exception:  # noqa: BLE001 -- unanswerable: no cache, the dense build runs
+        return None
+
+
+def _native_spec_for(scheme: Optional[str], fam: Any, act_int8: Any) -> Optional[dict]:
+    try:
+        from .diffusion_native_cache import native_spec
+        return native_spec(scheme, getattr(fam, "name", None), act_int8 = bool(act_int8))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _save_native_quant_to_cache(
+    fam: Any,
+    views: Any,
+    spec: dict,
+    *,
+    base: Optional[str],
+    source: Optional[str],
+    cancel_check: Any = None,
+) -> None:
+    """Cache every expert of a native runtime build, one entry per component. Never raises."""
+    try:
+        from .diffusion_native_cache import save
+        from .video_denoiser_prequant import denoiser_components
+
+        components = denoiser_components(fam)
+        views = list(views or ())
+        if len(components) != len(views):
+            logger.info("diffusion.prequant_cache: native skipped (denoiser views != components)")
+            return
+        for component, view in zip(components, views):
+            save(
+                getattr(view, "transformer", None),
+                fam,
+                spec,
+                base_repo = base,
+                source_base = source,
+                component = component,
+                logger = logger,
+                cancel_check = cancel_check,
+            )
+    except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
+        logger.warning("diffusion.prequant_cache: native skipped (%s)", exc)
+
+
+def _read_native_quant_from_cache(
+    fam: Any,
+    spec: Optional[dict],
+    *,
+    base: Optional[str],
+    source: Optional[str],
+    config_kwargs: dict,
+    cancel_check: Any = None,
+) -> dict[str, Any]:
+    """``{component: module}`` for EVERY denoiser from the native cache, or ``{}`` (all or nothing). Never raises."""
+    if spec is None:
+        return {}
+    try:
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(logger)  # a no-op once the load closed it above
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        logger.debug("dynamo pre-import skipped: %r", exc)
+    try:
+        import diffusers
+
+        from .diffusion_native_cache import load, lookup
+        from .video_denoiser_prequant import denoiser_components
+
+        transformer_cls = getattr(diffusers, str(getattr(fam, "transformer_class", "")), None)
+        if transformer_cls is None:
+            return {}
+        components = denoiser_components(fam)
+        paths = {}
+        for component in components:
+            path = lookup(
+                fam, spec, base_repo = base, source_base = source, component = component, logger = logger
+            )
+            if path is None:
+                return {}
+            paths[component] = path
+        out: dict[str, Any] = {}
+        for component, path in paths.items():
+            module = load(
+                path,
+                transformer_cls,
+                str(source or base),
+                component = component,
+                spec = spec,
+                config_kwargs = config_kwargs,
+                logger = logger,
+                cancel_check = cancel_check,
+            )
+            if module is None:
+                return {}
+            out[component] = module
+        logger.info(
+            "video.transformer_quant: read %d native %s denoiser(s) for %s from the local prequant "
+            "cache; the dense denoiser shards are not loaded",
+            len(out),
+            spec.get("scheme"),
+            getattr(fam, "name", None),
+        )
+        return out
+    except Exception as exc:  # noqa: BLE001 - a cache problem is a miss
+        logger.warning("diffusion.prequant_cache: native read skipped (%s)", exc)
+        return {}
+
+
 # The planner DECIDED against the seed (not "never ran"); a load must not re-take it after teardown.
 DENOISER_SEED_DECLINED = "__declined__"
 
@@ -3312,6 +3462,12 @@ def _video_seed_stays_resident(
     return plan_keeps_transformer_resident(planned)
 
 
+def _carried_call(pipe: Any, kwargs: dict, has_step_callback: bool) -> Any:
+    """Armed on the render thread (the interleave check is per thread); needs the step callback to stop before decode."""
+    with cross_forward_render(pipe, enabled = has_step_callback):
+        return pipe(**kwargs)
+
+
 def _render_under_no_grad(state: Any) -> bool:
     """Render under no_grad: torchao weight subclasses fail an offload hook's in-place swap under inference_mode.
     Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
@@ -3440,11 +3596,13 @@ def _video_prefer_whole_module(
     text_encoder_mib: Optional[int],
     vae_mib: Optional[int],
     runtime_mib: int,
+    resident_mib: int = 0,
 ) -> Any:
     """Swap a streamed-DiT plan for whole-module offload when every component fits whole, one at a time.
 
     Wan2.2-5B at 16 GiB: 0.14-0.28 s per forward whole-module vs 0.28-0.33 s int8 streamed, so streaming only wins
-    very short calls. ``denoiser_mib`` is one expert of a dual-DiT family. An explicit memory mode is left as asked."""
+    very short calls. ``denoiser_mib`` is one expert of a dual-DiT family. ``resident_mib`` stays on the card in every
+    phase (LTX-2.5's encoder worker context), excluded from ``vae_mib``. An explicit memory mode is left as asked."""
     if (
         getattr(plan, "offload_policy", None) != OFFLOAD_GROUP
         or not bool(getattr(plan, "stream_transformer", True))
@@ -3457,14 +3615,17 @@ def _video_prefer_whole_module(
     budget = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib")
     if budget is None:
         return plan
+    resident = max(0, int(resident_mib))
     phases = (
-        int(text_encoder_mib) + DEFAULT_BASE_OVERHEAD_MIB,
+        int(text_encoder_mib) + resident + DEFAULT_BASE_OVERHEAD_MIB,
         int(denoiser_mib)
         + min(int(runtime_mib), _VIDEO_DENOISE_ACTIVATION_MIB)
+        + resident
         + DEFAULT_BASE_OVERHEAD_MIB,
         # the decode holds only the decoded-clip share; the denoise base is already in the DiT phase
         int(vae_mib)
         + max(0, int(runtime_mib) - _VIDEO_DENOISE_ACTIVATION_MIB)
+        + resident
         + DEFAULT_BASE_OVERHEAD_MIB,
     )
     if max(phases) > int(budget):
@@ -5512,7 +5673,11 @@ class VideoBackend:
             # Skipped wholesale offline: model_info is a Hub call, and the number it produces is the size of a download
             # that is not going to happen -- every file below either resolves from the cache or fails the load. total
             # stays 0, which load_progress already reads as "no estimate" and reports as a bare phase.
-            api = HfApi(token = hf_token or None) if not local_files_only else None
+            api = (
+                hub_reachability.guarded(HfApi(token = hf_token or None))
+                if not local_files_only
+                else None
+            )
             for repo, wanted in requests:
                 if api is None:
                     break
@@ -6496,6 +6661,7 @@ class VideoBackend:
         way: the base entry drops the dense ``text_encoder/`` shards whenever this resolves, so
         without it the artifact that replaces them is in no entry at all and the disk preflight
         passes on a volume that cannot hold the 27 GB it is about to pull."""
+        api = hub_reachability.always_asked(api)  # picks the conditioner: bounded, never skipped
         from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
 
         filename = h3_te_quant_filename(scheme)
@@ -6717,6 +6883,9 @@ class VideoBackend:
         """``(repo_id, [(rfilename, size)])`` for every hosted denoiser artifact, or ``(None, [])``, so preflight
         counts the checkpoint that replaces the dropped dense shards. The header probe asks with ``api``'s own
         token, so a gated artifact is judged by the same credentials that would stage it."""
+        api = hub_reachability.always_asked(
+            api
+        )  # picks the denoiser source: bounded, never skipped
         token = getattr(api, "token", None)
         sources = VideoBackend._denoiser_prequant_source_list(
             fam,
@@ -7088,7 +7257,7 @@ class VideoBackend:
             from huggingface_hub import HfApi
 
             total = 0
-            api = HfApi(token = hf_token or None)
+            api = hub_reachability.guarded(HfApi(token = hf_token or None))
             if skip_te_override is not None:
                 # The encoder fetches already ran: plan around what they actually staged.
                 skip_te_components = tuple(skip_te_override)
@@ -7291,7 +7460,7 @@ class VideoBackend:
             return required
 
         try:
-            api = HfApi(token = hf_token or None)
+            api = hub_reachability.guarded(HfApi(token = hf_token or None))
             listings = _OneCommitListings(api)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 listing = _video_listing_repo(repo_id)
@@ -7575,7 +7744,7 @@ class VideoBackend:
         required_total = 0
         checkpoint_bytes = 0
         try:
-            api = HfApi(token = hf_token or None)
+            api = hub_reachability.guarded(HfApi(token = hf_token or None))
             for repo, filename in wanted:
                 if Path(repo).expanduser().exists():
                     continue
@@ -7824,7 +7993,8 @@ class VideoBackend:
             # Listed from the mirror (byte identical, so the same names and sizes), then the fetch repo is settled
             # against the EXACT names: an upstream snapshot that already holds every one of them keeps being used.
             listing = _video_listing_repo(base)
-            info = HfApi(token = hf_token or None).model_info(
+            info = hub_reachability.model_info(
+                HfApi(token = hf_token or None),
                 listing,
                 files_metadata = True,
                 # The plan's commit describes the listing only when the plan reads the listing repo; an upstream kept for
@@ -8516,16 +8686,19 @@ class VideoBackend:
             # pins the VAE to fp32 either way, so scaling it counts those bytes twice (2.8 GB on Wan TI2V-5B) against a
             # hard refusal.
             vae_gb = components[2] if components is not None else 0.0
+            worker_gb = 0.0
             if components is not None and fam.name == "ltx-2.5":
                 from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
                 # The encoder worker is a second process on the card: its CUDA context and allocator slack stay
                 # resident on every tier, even when its weights are off the card. The latent upsampler a dev (single
                 # stage) load never attaches is already out of components[2] (video_components_gb(dev=...)).
-                vae_gb += LTX25_WORKER_RESIDENT_GB
+                worker_gb = LTX25_WORKER_RESIDENT_GB
+                vae_gb += worker_gb
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
+            worker_mib = int(worker_gb * vae_scale * mib_per_gb)
             scaled_companions_gb = scaled_te_gb + scaled_vae_gb if components is not None else 0.0
             if log and scale != 1.0 and components is not None:
                 logger.info(
@@ -8575,8 +8748,9 @@ class VideoBackend:
                 ),
                 denoiser_mib = None if dit_mib is None else dit_mib // experts,
                 text_encoder_mib = text_encoder_mib,
-                vae_mib = vae_mib,
+                vae_mib = None if vae_mib is None else vae_mib - worker_mib,
                 runtime_mib = runtime_mib,
+                resident_mib = worker_mib,
             )
             # Re-plan with the scheme factor: the bf16-table plan can offload a DiT the quantised one would not.
             dense_plan = planned
@@ -8638,8 +8812,9 @@ class VideoBackend:
                         ),
                         denoiser_mib = int(components[0] * factor * mib_per_gb) // experts,
                         text_encoder_mib = text_encoder_mib,
-                        vae_mib = vae_mib,
+                        vae_mib = None if vae_mib is None else vae_mib - worker_mib,
                         runtime_mib = runtime_mib,
+                        resident_mib = worker_mib,
                     )
                     if _video_plan_rank(replanned) < _video_plan_rank(planned):
                         if log:
@@ -8898,6 +9073,36 @@ class VideoBackend:
                 raise_on_unified_memory_shortfall(
                     plan, family = getattr(fam, "name", None), logger = logger
                 )
+        # Offloaded: no hosted checkpoint matches the native build; replay this machine's own (all experts or none).
+        native_cache_spec = (
+            _video_native_cache_spec(
+                fam,
+                target = target,
+                transformer_quant = transformer_quant,
+                plan = plan,
+                kind = kind,
+                source_dir = _base_local_dir or repo_id,
+            )
+            if kind == "pipeline" and not denoiser_injected
+            else None
+        )
+        native_cache_hits = _read_native_quant_from_cache(
+            fam,
+            native_cache_spec,
+            base = base,
+            source = _base_local_dir or fetch_base,
+            config_kwargs = {}
+            if _base_local_dir
+            else {
+                "cache_dir": hub_cache_dir(),
+                "local_files_only": local_files_only,
+                **({"token": hf_token} if hf_token else {}),
+                **_pinned_base_kwargs(),
+            },
+            cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+        )
+        self._raise_if_video_load_superseded(_load_token)
+        pipe_kwargs.update(native_cache_hits)
         # Injection is best-effort (a missing checkpoint falls back to the dense encoder), but the scoped pre-download
         # already dropped those shards and from_pretrained cannot re-fetch from a local snapshot dir, so top them up
         # here. ltx23 never reaches this: it gets the hub id.
@@ -9284,6 +9489,45 @@ class VideoBackend:
             if native_scheme is not None
             else {}
         )
+        native_cached = (
+            bool(native_cache_hits)
+            and native_cache_spec is not None
+            and video_offload
+            and native_scheme == native_cache_spec.get("scheme")
+            and bool(native_kwargs.get("act_int8")) == bool(native_cache_spec.get("act_int8"))
+            and _video_native_cache_spec(
+                fam,
+                target = target,
+                transformer_quant = transformer_quant,
+                plan = plan,
+                kind = kind,
+                source_dir = _base_local_dir or repo_id,
+            )
+            == native_cache_spec
+        )
+        if native_cache_hits and not native_cached:
+            # Not the build this load makes after all: put the dense experts back and let the quant below run.
+            logger.warning(
+                "video.transformer_quant: the cached native denoiser(s) do not match this load's "
+                "build; loading the dense denoiser shards instead"
+            )
+            dense_cls = getattr(diffusers, fam.transformer_class)
+            for component in native_cache_hits:
+                pipe.register_modules(
+                    **{
+                        component: dense_cls.from_pretrained(
+                            _base_local_dir or fetch_base,
+                            subfolder = component,
+                            torch_dtype = dtype,
+                            cache_dir = hub_cache_dir(),
+                            local_files_only = local_files_only,
+                            **({"token": hf_token} if hf_token else {}),
+                            **_pinned_base_kwargs(),
+                        )
+                    }
+                )
+            native_cache_hits = {}
+            views = _views_for(pipe, fam)
         # Auto quantises a video DiT only to keep it resident: with bf16 resident, int8 fails the default LPIPS bar.
         if (
             kind == "pipeline"
@@ -9338,6 +9582,18 @@ class VideoBackend:
                 "video.transformer_quant: %s pre-quantized denoiser(s) seeded for %s; skipping "
                 "the runtime quantise",
                 denoiser_seed_scheme,
+                fam.name,
+            )
+        elif native_cached:
+            transformer_quant_engaged = native_scheme
+            transformer_quant_source = (
+                native_quant_reason(getattr(pipe, "transformer", None), native_scheme)
+                + "; read back from this machine's prequant cache of the same build"
+            )
+            logger.info(
+                "video.transformer_quant: %s native denoiser(s) read from the local prequant cache "
+                "for %s; skipping the runtime quantise",
+                native_scheme,
                 fam.name,
             )
         elif (
@@ -9427,8 +9683,24 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
+                if (
+                    native_cache_spec is not None
+                    and native_scheme == engaged[0]
+                    and native_cache_spec
+                    == _native_spec_for(native_scheme, fam, native_kwargs.get("act_int8"))
+                ):
+                    # The native build is read back under auto too: the cache replays the pick, never makes it.
+                    _save_native_quant_to_cache(
+                        fam,
+                        views,
+                        native_cache_spec,
+                        base = base,
+                        source = _base_local_dir or fetch_base,
+                        cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+                    )
+                    self._raise_if_video_load_superseded(_load_token)
                 # Only explicit schemes read the cache back, so an auto save would be a write nothing opens.
-                if transformer_quant_pinned is not None:
+                elif transformer_quant_pinned is not None:
                     _save_runtime_quant_to_cache(
                         fam,
                         views,
@@ -9828,9 +10100,9 @@ class VideoBackend:
                         speed_optims += ("vae_wide_tiles",)
                 except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
                     logger.warning("video.vae_wide_tiles: not installed: %s", exc)
-            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
+            # Untiled when it fits (free memory read at decode time); not on SPEED_OFF (bit-identical) or sequential offload.
             if (
-                offload_policy == "none"
+                offload_policy in (OFFLOAD_NONE, OFFLOAD_MODEL, OFFLOAD_GROUP, OFFLOAD_STREAMING)
                 and target.device == "cuda"
                 and effective_speed != SPEED_OFF
             ):
@@ -10003,7 +10275,11 @@ class VideoBackend:
             )
             install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
             install_cfg_batch(
-                pipe, offload_policy = offload_policy, speed_mode = speed_mode, logger = logger
+                pipe,
+                offload_policy = offload_policy,
+                speed_mode = speed_mode,
+                transformer_quant = transformer_quant_engaged,
+                logger = logger,
             )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
@@ -10847,6 +11123,17 @@ class VideoBackend:
                                 pin_streamed_top_level_group(denoiser, logger = logger)
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_top_group: %s", exc)
+                            if denoiser_streamed == "stream_lazy":
+                                from .video_minimax_h3_residency import pin_streamed_block_groups
+                                try:
+                                    done, total = pin_streamed_block_groups(denoiser, logger = logger)
+                                except Exception as exc:  # noqa: BLE001 -- a speed-up only
+                                    done, total = 0, 0
+                                    logger.warning("video.h3_block_pin: %s", exc)
+                                if total and done == total:
+                                    # every group now holds one pinned copy: the prefetch below engages
+                                    denoiser_streamed = "stream"
+                                    denoiser_single_host_copy = True
                             # after the top-level pin (it becomes one of the prefetched groups), before the residency fit
                             from .video_minimax_h3_residency import install_h3_stream_prefetch
 
@@ -12525,12 +12812,14 @@ class VideoBackend:
                     # the step's latent update is already submitted when the marker goes down.
                     if cancel.is_set():
                         p._interrupt = True
+                        cross_forward_step(p, step_index, timestep = timestep)
                         return callback_kwargs
                     _tick(step_index + 1)
                     if previewer is not None:
                         previewer.on_step(
                             callback_kwargs.get("latents"), getattr(p, "scheduler", None)
                         )
+                    cross_forward_step(p, step_index, timestep = timestep)
                     return callback_kwargs
 
                 def _on_scheduler_step_cancel(done: int) -> None:
@@ -12663,7 +12952,7 @@ class VideoBackend:
                             "video",
                             ltx25_render_call
                             if ltx25_render_call is not None
-                            else (lambda: pipe(**kwargs)),
+                            else (lambda: _carried_call(pipe, kwargs, has_step_callback)),
                         )
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would
@@ -13636,8 +13925,16 @@ class VideoBackend:
             reclaim_host_memory(logger = logger)
 
     @_invalidates_gpu_memory("video unload")
-    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict[str, Any]]:
         with self._lock:
+            # Rechecked under the load worker's lock, so a load that ended since costs nothing.
+            if only_if is not None and not only_if():
+                return None
             if expected_account is not None:
                 from .gpu_arbiter import VIDEO, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control

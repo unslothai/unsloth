@@ -1391,7 +1391,11 @@ class MaskSegmenter:
                 self._timer = None
         started = time.perf_counter()
         model = self._model
-        host = self._host or _HostWeights(pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1")
+        from .host_pinning import host_pinning_allowed
+
+        host = self._host or _HostWeights(
+            pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1" and host_pinning_allowed()
+        )
         try:
             host.park(model)
             copied = time.perf_counter() - started
