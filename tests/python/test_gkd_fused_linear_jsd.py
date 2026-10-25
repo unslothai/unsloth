@@ -103,10 +103,17 @@ def _trl_reference(
     shift,
     num_items = None,
 ):
+    prior = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-    s = student(inputs["input_ids"], inputs["attention_mask"]).logits
-    with torch.no_grad():
-        t = teacher(inputs["input_ids"], inputs["attention_mask"]).logits
+    try:
+        s = student(inputs["input_ids"], inputs["attention_mask"]).logits
+        with torch.no_grad():
+            t = teacher(inputs["input_ids"], inputs["attention_mask"]).logits
+    finally:
+        if prior is None:
+            os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
+        else:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = prior
     if shift == "prompt":
         s, t, labels = s[:, 6:-1], t[:, 6:-1], inputs["labels"][:, 7:]
     else:
