@@ -2995,34 +2995,35 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         needed = over if over > 0 else (int(occupancy.get("resident") or 0) if waiting else 0)
         _gguf_slots_seen["reclaim_tried"] = needed > 0
         if needed > 0 and occupancy.get("idle"):
-            _maybe_erased: list = []
-            freed = reclaim_idle_slots(
-                occupancy,
-                lambda slot_id: erase_llama_slot(
-                    base, slot_id, headers = _llama_slot_headers(llama_backend)
-                ),
-                needed = needed,
-                recheck = lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend)),
-                ambiguous = _maybe_erased,
-            )
-            if _maybe_erased:
-                controller.note_cells_possibly_erased(parked_before)
-            if freed:
-                _llama_preemption_log(
-                    "reclaimed-idle-early",
-                    freed = freed,
-                    over = over,
-                    waiting = waiting,
-                    resident = occupancy.get("resident"),
+            with _openai_llama_slot_reclaim_lock(llama_backend):
+                _maybe_erased: list = []
+                freed = reclaim_idle_slots(
+                    occupancy,
+                    lambda slot_id: erase_llama_slot(
+                        base, slot_id, headers = _llama_slot_headers(llama_backend)
+                    ),
+                    needed = needed,
+                    recheck = lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend)),
+                    ambiguous = _maybe_erased,
                 )
-                controller.note_erased_since(
-                    recorded_seq,
-                    max(0, int(occupancy.get("resident") or 0) - freed),
-                    max(0, int(occupancy.get("idle_tokens") or 0) - freed),
-                )
-                if freed >= int(occupancy.get("idle_tokens") or 0):
-                    controller.note_cells_reclaimed(parked_before)
-                _gguf_slots_seen["occupancy"] = None
+                if _maybe_erased:
+                    controller.note_cells_possibly_erased(parked_before)
+                if freed:
+                    _llama_preemption_log(
+                        "reclaimed-idle-early",
+                        freed = freed,
+                        over = over,
+                        waiting = waiting,
+                        resident = occupancy.get("resident"),
+                    )
+                    controller.note_erased_since(
+                        recorded_seq,
+                        max(0, int(occupancy.get("resident") or 0) - freed),
+                        max(0, int(occupancy.get("idle_tokens") or 0) - freed),
+                    )
+                    if freed >= int(occupancy.get("idle_tokens") or 0):
+                        controller.note_cells_reclaimed(parked_before)
+                    _gguf_slots_seen["occupancy"] = None
 
     def _gguf_idle_residue_wanted(controller) -> bool:
         """Whether the cached reading holds idle residue it never offered, and the ledger is
@@ -3079,25 +3080,26 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                 occupancy = _gguf_slots_seen.get("occupancy")
                 if base and occupancy:
                     _idle_tokens = int(occupancy.get("idle_tokens") or 0)
-                    _maybe_erased: list = []
-                    freed = reclaim_idle_slots(
-                        occupancy,
-                        lambda slot_id: erase_llama_slot(
-                            base, slot_id, headers = _llama_slot_headers(llama_backend)
-                        ),
-                        needed = sum(v.tokens for v in victims),
-                        recheck = lambda: fetch_llama_slots(
-                            base, headers = _llama_slot_headers(llama_backend)
-                        ),
-                        ambiguous = _maybe_erased,
-                    )
-                    if _maybe_erased:
-                        controller.note_cells_possibly_erased(_gguf_slots_seen.get("parked"))
-                    if freed:
-                        _llama_preemption_log("reclaimed-idle", freed = freed, gen_id = completion_id)
-                        if freed >= _idle_tokens:
-                            controller.note_cells_reclaimed(_gguf_slots_seen.get("parked"))
-                        _gguf_slots_seen["at"] = 0.0
+                    with _openai_llama_slot_reclaim_lock(llama_backend):
+                        _maybe_erased: list = []
+                        freed = reclaim_idle_slots(
+                            occupancy,
+                            lambda slot_id: erase_llama_slot(
+                                base, slot_id, headers = _llama_slot_headers(llama_backend)
+                            ),
+                            needed = sum(v.tokens for v in victims),
+                            recheck = lambda: fetch_llama_slots(
+                                base, headers = _llama_slot_headers(llama_backend)
+                            ),
+                            ambiguous = _maybe_erased,
+                        )
+                        if _maybe_erased:
+                            controller.note_cells_possibly_erased(_gguf_slots_seen.get("parked"))
+                        if freed:
+                            _llama_preemption_log("reclaimed-idle", freed = freed, gen_id = completion_id)
+                            if freed >= _idle_tokens:
+                                controller.note_cells_reclaimed(_gguf_slots_seen.get("parked"))
+                            _gguf_slots_seen["at"] = 0.0
         except Exception:
             pass
 
@@ -3155,6 +3157,23 @@ def _openai_llama_self_erased(llama_backend, gen_id: str) -> bool:
     return participant is not None and bool(
         participant.cells_reclaimed or participant.replay_pending
     )
+
+
+_SLOT_RECLAIM_LOCKS_GUARD = threading.Lock()
+_SLOT_RECLAIM_LOCKS: dict = {}
+
+
+def _openai_llama_slot_reclaim_lock(llama_backend):
+    """One lock per model load around every Studio erase of an idle slot and what it records.
+    The approval worker and the idle-slot reclaimer both erase a parked chat's slot: unserialised,
+    the second erase reached a slot already handed to the chat the first one admitted, and
+    llama-server defers an erase aimed at a processing slot onto that chat's cache."""
+    key = _preempt_key(llama_backend)
+    with _SLOT_RECLAIM_LOCKS_GUARD:
+        lock = _SLOT_RECLAIM_LOCKS.get(key)
+        if lock is None:
+            lock = _SLOT_RECLAIM_LOCKS[key] = threading.RLock()
+        return lock
 
 
 def _openai_llama_publish_round_charge(
@@ -3742,35 +3761,36 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                 )
                 if not occupancy or not occupancy.get("idle"):
                     return
-                _maybe_erased: list = []
-                freed = reclaim_idle_slots(
-                    occupancy,
-                    lambda slot_id: erase_llama_slot(
-                        base, slot_id, headers = _llama_slot_headers(llama_backend)
-                    ),
-                    needed = int(occupancy.get("resident") or 0),
-                    recheck = lambda: fetch_llama_slots(
-                        base, headers = _llama_slot_headers(llama_backend)
-                    ),
-                    ambiguous = _maybe_erased,
-                )
-                if _maybe_erased:
-                    get_preemption_controller(key).note_cells_possibly_erased(parked_before)
-                if freed:
-                    _llama_preemption_log("released-cells", gen_id = gen_id, freed = freed)
-                    _controller = get_preemption_controller(key)
-                    after_epoch = _controller.residency_epoch()
-                    after = read_slot_occupancy(
-                        lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
+                with _openai_llama_slot_reclaim_lock(llama_backend):
+                    _maybe_erased: list = []
+                    freed = reclaim_idle_slots(
+                        occupancy,
+                        lambda slot_id: erase_llama_slot(
+                            base, slot_id, headers = _llama_slot_headers(llama_backend)
+                        ),
+                        needed = int(occupancy.get("resident") or 0),
+                        recheck = lambda: fetch_llama_slots(
+                            base, headers = _llama_slot_headers(llama_backend)
+                        ),
+                        ambiguous = _maybe_erased,
                     )
-                    if after is not None:
-                        _controller.note_resident(
-                            int(after.get("resident") or 0),
-                            int(after.get("idle_tokens") or 0),
-                            started_at_seq = after_epoch,
+                    if _maybe_erased:
+                        get_preemption_controller(key).note_cells_possibly_erased(parked_before)
+                    if freed:
+                        _llama_preemption_log("released-cells", gen_id = gen_id, freed = freed)
+                        _controller = get_preemption_controller(key)
+                        after_epoch = _controller.residency_epoch()
+                        after = read_slot_occupancy(
+                            lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
                         )
-                    if freed >= int(occupancy.get("idle_tokens") or 0):
-                        _controller.note_cells_reclaimed(parked_before)
+                        if after is not None:
+                            _controller.note_resident(
+                                int(after.get("resident") or 0),
+                                int(after.get("idle_tokens") or 0),
+                                started_at_seq = after_epoch,
+                            )
+                        if freed >= int(occupancy.get("idle_tokens") or 0):
+                            _controller.note_cells_reclaimed(parked_before)
             except Exception:
                 pass
 
@@ -36701,11 +36721,27 @@ async def produce_openai_chat_completions(
                 _reclaim_stop = asyncio.Event()
 
                 def _erase_and_record(target) -> bool:
-                    if not llama_backend.release_idle_chat_slot(*target):
-                        return False
-                    with _gguf_decode_lock:
-                        _gguf_decode["erased"] = True
-                    return True
+                    with _openai_llama_slot_reclaim_lock(llama_backend):
+                        # The idle-slot reclaimer got there first: the cells and the commitment
+                        # are already gone, and the slot may now hold the chat it admitted.
+                        if _openai_llama_self_erased(llama_backend, completion_id):
+                            return False
+                        # Another request is decoding in the slot: llama-server would defer
+                        # the erase onto that chat's cache.
+                        _slot_base, _slot_id = target
+                        _slots_now = fetch_llama_slots(
+                            _slot_base, headers = _llama_slot_headers(llama_backend)
+                        )
+                        if any(
+                            isinstance(s, dict) and s.get("id") == _slot_id and s.get("is_processing")
+                            for s in _slots_now or ()
+                        ):
+                            return False
+                        if not llama_backend.release_idle_chat_slot(*target):
+                            return False
+                        with _gguf_decode_lock:
+                            _gguf_decode["erased"] = True
+                        return True
 
                 async def _reclaim_approval_cache(lease):
                     """Erase this round's cached context once a queued chat needs its room.
