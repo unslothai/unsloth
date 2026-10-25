@@ -255,7 +255,14 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setSttGgufVariant: (sttGgufVariant) => set({ sttGgufVariant }),
 
       sttDevice: DEFAULT_STT_DEVICE,
-      setSttDevice: (value) => set({ sttDevice: normalizeSttDevice(value) }),
+      setSttDevice: (value) => {
+        const sttDevice = normalizeSttDevice(value);
+        set({ sttDevice });
+        // Server default for cold /v1/audio/transcriptions loads (#15280).
+        void import("../api/stt-device").then(({ syncSttDevicePreference }) => {
+          syncSttDevicePreference(sttDevice);
+        });
+      },
 
       sttProviderId: "",
       setSttProviderId: (sttProviderId) => set({ sttProviderId }),
@@ -430,6 +437,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),
           ttsVolume: clampNumber(saved?.ttsVolume, 0, 1, 1),
         };
+      },
+      onRehydrateStorage: () => (state) => {
+        // Push the browser-local "Load into" choice so API cold loads match Settings (#15280).
+        if (!state) return;
+        void import("../api/stt-device").then(({ syncSttDevicePreference }) => {
+          syncSttDevicePreference(state.sttDevice);
+        });
       },
     },
   ),

@@ -26670,6 +26670,7 @@ async def openai_audio_transcriptions(
     provider_id: Optional[str] = Form(None),
     encrypted_api_key: Optional[str] = Form(None),
     timestamp_granularities: Optional[list[str]] = Form(None, alias = "timestamp_granularities[]"),
+    device: Optional[str] = Form(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """OpenAI-compatible speech-to-text (POST /v1/audio/transcriptions).
@@ -26678,7 +26679,8 @@ async def openai_audio_transcriptions(
     Otherwise ``model`` maps to a sidecar model id, with ``whisper-1`` or nothing
     selecting the default. ``response_format`` supports ``json``, ``text`` and
     ``verbose_json``; an audio.cpp model also gives segments, words (``timestamp_granularities``)
-    and ``diarized_json``."""
+    and ``diarized_json``. Optional ``device`` (``auto``/``cpu``/``gpu``) places a cold
+    load; when omitted, Voice Settings "Load into" / ``UNSLOTH_AUDIO_DEVICE`` apply (#15280)."""
     fmt = (response_format or "json").strip().lower()
     if fmt not in ("json", "text", "verbose_json", "diarized_json"):
         raise HTTPException(
@@ -26792,6 +26794,7 @@ async def openai_audio_transcriptions(
                 fast = False,
                 engine = engine,
                 request = request,
+                device = device,
                 source_path = path,
                 timestamps = bool(granularities),
             )
@@ -26873,13 +26876,15 @@ async def openai_audio_translations(
     model: Optional[str] = Form(None),
     response_format: str = Form("json"),
     provider_id: Optional[str] = Form(None),
+    device: Optional[str] = Form(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """OpenAI-compatible speech translation to English (POST /v1/audio/translations).
 
     Runs on the local Whisper sidecar; ``whisper-1`` or nothing selects the default model.
     ``response_format`` supports ``json``, ``text`` and ``verbose_json``. ``prompt`` and
-    ``temperature`` are accepted and ignored."""
+    ``temperature`` are accepted and ignored. Optional ``device`` (``auto``/``cpu``/``gpu``)
+    matches Voice Settings "Load into" on a cold load (#15280)."""
     fmt = (response_format or "json").strip().lower()
     if fmt not in ("json", "text", "verbose_json"):
         _raise_unsupported_openai_parameter(
@@ -26914,7 +26919,13 @@ async def openai_audio_translations(
         subject = current_subject,
     ) as monitor_id:
         result = await _transcribe_audio_result(
-            raw, sidecar_model, None, fast = False, request = request, translate = True
+            raw,
+            sidecar_model,
+            None,
+            fast = False,
+            request = request,
+            device = device,
+            translate = True,
         )
         text = str(result.get("text", ""))
         _served_model = str(result.get("model") or "")
@@ -27568,6 +27579,17 @@ async def stt_load(
         await asyncio.to_thread(
             functools.partial(load_stt, payload.model, engine, cancel_event, device = payload.device)
         )
+        # Mirror an explicit Settings Load into the server default so a later
+        # device-less /v1/audio/transcriptions cold load keeps the same placement (#15280).
+        if payload.device is not None:
+            try:
+                from core.inference.audio_device import audio_device_env_locked, normalize_audio_device
+                from utils.stt_device_settings import set_stt_device
+
+                if not audio_device_env_locked():
+                    set_stt_device(normalize_audio_device(payload.device))
+            except Exception:  # noqa: BLE001 - preference sync must not fail the load
+                logger.debug("stt_device_preference_sync_failed", exc_info = True)
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttUnavailableError as e:

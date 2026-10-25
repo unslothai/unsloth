@@ -68,6 +68,27 @@ def test_without_the_environment_variable_nothing_is_forced_to_cpu(monkeypatch):
     assert not audio_device_forces_cpu(None)
 
 
+def test_saved_voice_settings_device_is_the_default_when_env_is_unset(monkeypatch, tmp_path):
+    """Cold /v1/audio/transcriptions must honour Voice Settings "Load into" (#15280)."""
+    from storage import studio_db
+    from utils import stt_device_settings as sds
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    sds.forget_cached_stt_device()
+
+    assert audio_device_default() == "auto"
+    sds.set_stt_device("cpu")
+    assert audio_device_default() == "cpu"
+    assert audio_device_forces_cpu(None)
+
+    # Env still outranks the saved choice (headless/CLI).
+    monkeypatch.setenv("UNSLOTH_AUDIO_DEVICE", "auto")
+    assert audio_device_default() == "auto"
+    assert not audio_device_forces_cpu(None)
+
+
 def _torch_with_cuda(monkeypatch):
     """A torch whose CUDA is available, so anything but CPU is a real choice."""
     torch = types.SimpleNamespace(
