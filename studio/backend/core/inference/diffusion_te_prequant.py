@@ -1975,7 +1975,10 @@ def te_prequant_hub_files(
             found[component] = [(mirrored[0], os.path.getsize(mirrored[1]))]
             continue
         try:
-            info = api.model_info(source.location, files_metadata = True)
+            from .hub_reachability import always_asked
+
+            # Picks the encoder: always asked, only bounded.
+            info = always_asked(api).model_info(source.location, files_metadata = True)
         except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
             _warn(logger, f"hub_files:{source.location}", exc)
             continue

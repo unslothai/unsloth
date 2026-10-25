@@ -113,7 +113,7 @@ export function HiresControls({
         />
       </div>
       {choice.enabled && (
-        <div className="flex flex-col gap-2 rounded-md border border-border/60 p-2">
+        <div className="flex flex-col gap-2 rounded-lg border border-border/60 p-2">
           <div className="flex items-center justify-between gap-2">
             <Label label="Upscale by" hint="Output size is the base size times this factor, rounded to a multiple of 16." />
             <NumberInput

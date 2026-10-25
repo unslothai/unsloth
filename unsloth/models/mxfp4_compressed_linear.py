@@ -64,6 +64,12 @@ _FP4_VALUES = (
     -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
 )  # fmt: skip
 _LUT_CACHE = {}
+# torch < 2.12's ldexp forms 2^e in the input dtype: in fp16 2^16 is inf (0 * 2^16 -> NaN, 2^-10 * 2^20 -> inf)
+# and 2^-25 is 0. Decode fp16 in fp32 there, then round once.
+_LDEXP_IN_INPUT_DTYPE = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (
+    2,
+    12,
+)
 
 
 def mxfp4_keep_packed_enabled() -> bool:
@@ -71,12 +77,13 @@ def mxfp4_keep_packed_enabled() -> bool:
 
 
 def _dequantize_torch(blocks, scales, dtype):
-    key = (blocks.device, dtype)
+    work = torch.float32 if dtype == torch.float16 and _LDEXP_IN_INPUT_DTYPE else dtype
+    key = (blocks.device, work)
     lut = _LUT_CACHE.get(key)
     if lut is None:
-        lut = _LUT_CACHE[key] = torch.tensor(_FP4_VALUES, dtype = dtype, device = blocks.device)
+        lut = _LUT_CACHE[key] = torch.tensor(_FP4_VALUES, dtype = work, device = blocks.device)
     *prefix, G, B = blocks.shape
-    out = torch.empty(*prefix, G, B * 2, dtype = dtype, device = blocks.device)
+    out = torch.empty(*prefix, G, B * 2, dtype = work, device = blocks.device)
     out[..., 0::2] = lut[(blocks & 0x0F).long()]
     out[..., 1::2] = lut[(blocks >> 4).long()]
     out = torch.ldexp(out, (scales.to(torch.int32) - 127).unsqueeze(-1)).to(dtype)
@@ -122,7 +129,20 @@ def mxfp4_packed_matmul(
 ):
     """``x @ W^T (+ bias)`` (``transpose=False``) or ``x @ W`` for the packed ``[out, in / 2]`` weight, in x's dtype.
     Skinny forward inputs (decode, small batches) never build the 16-bit weight on sm_80+; below sm_80 they decode it
-    for cuBLAS only as far as memory allows (row chunks, else the tile kernel); the rest decode it once for cuBLAS."""
+    for cuBLAS only as far as memory allows (row chunks, else the tile kernel); the rest decode it once for cuBLAS.
+    Differentiable in ``x`` / ``bias``: the kernels and the reused chunk buffer have no autograd of their own."""
+    if torch.is_grad_enabled() and (
+        x.requires_grad or (bias is not None and not transpose and bias.requires_grad)
+    ):
+        y = _Mxfp4PackedMatmulFunction.apply(x, packed, scale, transpose, bias)
+        # As _linear: a used bias never writes out.
+        if out is None or (bias is not None and not transpose):
+            return y
+        return out.copy_(y)
+    return _mxfp4_packed_matmul(x, packed, scale, transpose, out, bias)
+
+
+def _mxfp4_packed_matmul(x, packed, scale, transpose, out, bias):
     rows = x.numel() // x.shape[-1] if x.shape[-1] else 0
     # dX (transpose) stays on decode + cuBLAS: the fused kernel only wins it for a few wide shapes.
     if not transpose and _zoo_mxfp4_matmul is not None and rows <= _FUSED_MAX_ROWS and x.is_cuda:
@@ -136,6 +156,26 @@ def mxfp4_packed_matmul(
     if transpose:
         return torch.matmul(x, weight, out = out)
     return _linear(x, weight, out, bias)
+
+
+class _Mxfp4PackedMatmulFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, packed, scale, transpose, bias):
+        ctx.save_for_backward(packed, scale)
+        ctx.transpose, ctx.x_dtype = transpose, x.dtype
+        return _mxfp4_packed_matmul(x, packed, scale, transpose, None, None if transpose else bias)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        packed, scale = ctx.saved_tensors
+        grad_x = grad_bias = None
+        if ctx.needs_input_grad[0]:
+            grad_x = _mxfp4_packed_matmul(
+                grad_output, packed, scale, not ctx.transpose, None, None
+            ).to(ctx.x_dtype)
+        if ctx.needs_input_grad[4] and not ctx.transpose:
+            grad_bias = grad_output.reshape(-1, grad_output.shape[-1]).sum(0)
+        return grad_x, None, None, None, grad_bias
 
 
 def _linear(x, weight, out, bias):
@@ -578,6 +618,33 @@ def _full_finetuning() -> bool:
     return os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
 
+def _unwrap_offload_after_lazy_decompress(model) -> bool:
+    """A plain transformers load (e.g. reloading a checkpoint Unsloth saved, in the same process) keeps
+    the weights compressed and decompresses them in compressed-tensors' first-forward hook, which also
+    wraps every module's parameters in an OffloadCache. Unsloth's compiled forwards cannot trace that
+    cache ("Unsupported: Data pointer comparison"), so unwrap the same-device ones right after the
+    hook, as Unsloth's own loads do. Real CPU / disk offload is left alone."""
+    if not hasattr(model, "ct_decompress_hook") or hasattr(model, "_unsloth_ct_unwrap_hook"):
+        return False
+
+    def _unsloth_ct_unwrap_hook(module, args):
+        # Pre-hooks run in registration order: still present means the decompress hook did not run.
+        if hasattr(module, "ct_decompress_hook"):
+            return None
+        handle = module.__dict__.pop("_unsloth_ct_unwrap_hook", None)
+        if handle is not None:
+            handle.remove()
+        try:
+            from .loader_utils import _remove_same_device_compressed_tensors_offload
+            _remove_same_device_compressed_tensors_offload(module)
+        except Exception:
+            pass
+        return None
+
+    model._unsloth_ct_unwrap_hook = model.register_forward_pre_hook(_unsloth_ct_unwrap_hook)
+    return True
+
+
 def install_compressed_tensors_keep_packed() -> bool:
     """Stock compressed-tensors loader keeps MXFP4 packed (adopt, then stack experts) under the same
     all-or-nothing plan; declined, full finetuning or explicit dequantize = stock. Idempotent."""
@@ -645,6 +712,7 @@ def install_compressed_tensors_keep_packed() -> bool:
 
     def _process_model_after_weight_loading(self, model, **kwargs):
         result = original_after(self, model, **kwargs)
+        _unwrap_offload_after_lazy_decompress(model)
         blocks = getattr(self, "_unsloth_mxfp4_blocks", None)
         if blocks:
             self._unsloth_mxfp4_blocks = []

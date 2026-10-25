@@ -46,9 +46,12 @@ test("search engines' click-tracking hops are skipped, only to another web page"
     "https://unsloth.ai/docs",
   );
   assert.equal(unwrapRedirect("https://www.google.com/url?q=https://unsloth.ai/&sa=U"), "https://unsloth.ai/");
+  assert.equal(unwrapRedirect("https://www.google.co.uk/url?q=https://unsloth.ai/"), "https://unsloth.ai/");
+  assert.equal(unwrapRedirect("https://google.com.au/url?q=https://unsloth.ai/"), "https://unsloth.ai/");
   for (const hop of [
     "https://unsloth.ai/l/?uddg=x",
     "https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2F",
+    "https://google.com.evil.example/url?q=https://phish.example/",
     ...["javascript:alert(1)", "file:///etc/passwd"].map(
       (target) => `https://duckduckgo.com/l/?uddg=${encodeURIComponent(target)}`,
     ),
@@ -61,6 +64,7 @@ test("a document without a title is named by its path", () => {
   assert.equal(fileNameFromUrl("https://arxiv.org/pdf/1706.03762"), "1706.03762");
   assert.equal(fileNameFromUrl("https://example.com/files/My%20Report.pdf"), "My Report.pdf");
   assert.equal(fileNameFromUrl("https://example.com/"), "example.com");
+  assert.equal(fileNameFromUrl("https://cdn.example.com/files/report%zz.pdf"), "report%zz.pdf");
 });
 
 test("a saved page gets its base URL back", () => {

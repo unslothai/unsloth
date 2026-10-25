@@ -36,6 +36,7 @@ from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
+from . import _decode_graphs
 from .rl_replacements import (
     _unsloth_get_model_config,
     _unsloth_text_configs,
@@ -89,6 +90,17 @@ try:
     torch_version = Version(torch.__version__.split("+")[0].split("a")[0].split("b")[0])
 except Exception:
     torch_version = Version("0.0.0")
+
+
+def _persistent_tma_matmul_ok():
+    # zoo's gate: torch 2.12+ guards every GEMM size once Inductor considers TMA templates
+    # (pytorch/pytorch#172925), so a compiled matmul recompiles per token count.
+    try:
+        from unsloth_zoo.temporary_patches.common import _persistent_tma_matmul_ok as zoo_gate
+    except Exception:
+        return tuple(torch_version.release[:2]) < (2, 12)  # 2.12 nightlies count as 2.12
+    return bool(zoo_gate())
+
 
 try:
     from transformers import __version__ as _transformers_version_raw
@@ -281,7 +293,10 @@ def PatchRL(FastLanguageModel):
             def generate_with_clone(*args, **kwargs):
                 if generating_model is not unwrapped_model:
                     kwargs = _caller_sampling_only(generating_model, kwargs)
-                out = original_generate(*args, **kwargs)
+                # RL rollouts on the training model: CUDA-graph decode defaults on here
+                # (UNSLOTH_DECODE_CUDA_GRAPHS=0 opts out), off for plain model.generate().
+                with _decode_graphs.rl_generation():
+                    out = original_generate(*args, **kwargs)
                 if isinstance(out, torch.Tensor):
                     return out.clone()
                 return out
@@ -292,6 +307,9 @@ def PatchRL(FastLanguageModel):
                 yield unwrapped_model
             finally:
                 generating_model.generate = original_generate
+                # Back to training: the next optimizer step invalidates the decode graphs, so free
+                # them and their decode buffers (KV cache) for the backward pass now.
+                _decode_graphs.release_for_training(model)
                 FastLanguageModel.for_training(
                     model,
                     use_gradient_checkpointing = use_gradient_checkpointing,
@@ -632,6 +650,12 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         if getattr(args, "parallel_mode", None) == ParallelMode.NOT_DISTRIBUTED and args.n_gpu > 1:
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
+        if "model" in locals():
+            try:
+                from unsloth.models._gc_config_default import honour_gradient_checkpointing_off
+                honour_gradient_checkpointing_off(args, model)
+            except Exception:
+                pass
         if "model" in locals() and hasattr(model, "for_training"):
             _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)
             model.for_training(use_gradient_checkpointing=_use_gc)
@@ -642,7 +666,9 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             except Exception:
                 pass
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
-        if "model" in locals() and hasattr(model, "for_inference"):
+        # A tensor parallel model (tp_native.tp_trainer_setup) stays on its training path: for_inference would
+        # route the decoder layers onto decode paths outside the tensor parallel regions.
+        if "model" in locals() and hasattr(model, "for_inference") and not getattr(self, "_unsloth_tensor_parallel", False):
             model.for_inference()
 {RLTrainer_post}
 pass
@@ -866,6 +892,35 @@ def _wrap_ppo_train(trainer_cls):
     functools.update_wrapper(wrapped, original)
     wrapped._unsloth_ppo_train_wrapped = True
     trainer_cls.train = wrapped
+
+
+def _wrap_distillation_padding_mask(trainer_cls):
+    original = getattr(trainer_cls, "_get_last_hidden_state", None)
+    if original is None or getattr(original, "_unsloth_padding_mask_wrapped", False):
+        return
+
+    @functools.wraps(original)
+    def wrapped(self, unwrapped_model, *args, **kwargs):
+        # Distillation calls the backbone directly, bypassing CausalLM's _has_no_labels update.
+        missing = object()
+        states = [
+            (module, getattr(module, "_unsloth_keep_padding_mask", missing))
+            for module in unwrapped_model.modules()
+            if hasattr(module, "embed_tokens")
+        ]
+        for module, _ in states:
+            module._unsloth_keep_padding_mask = True
+        try:
+            return original(self, unwrapped_model, *args, **kwargs)
+        finally:
+            for module, previous in states:
+                if previous is missing:
+                    del module._unsloth_keep_padding_mask
+                else:
+                    module._unsloth_keep_padding_mask = previous
+
+    wrapped._unsloth_padding_mask_wrapped = True
+    trainer_cls._get_last_hidden_state = wrapped
 
 
 def _park_optimizer_enabled(trainer):
@@ -1381,14 +1436,16 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
-# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs (every expert count 0, e.g.
-# granite-4.0-h-350m) return no router logits and crash on `aux_loss.to`. Real MoE keeps its aux loss.
+# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs return no router logits and
+# crash (`aux_loss.to`, or Jamba's load_balancing_loss_func indexing an empty tuple). Dense = every expert count
+# 0 (granite-4.0-h-350m) or 1 (AI21-Jamba-Reasoning-3B builds a plain MLP for 1 expert; a 1-expert router's aux
+# loss is a constant with no gradient anyway). Real MoE keeps its aux loss.
 _DENSE_ROUTER_AUX_LOSS_OFF = (
     "if getattr(self, 'aux_loss_enabled', False) and hasattr(getattr(self, 'model', None), 'config'):\n"
     "    _text_config = self.model.config\n"
     "    if hasattr(_text_config, 'get_text_config'): _text_config = _text_config.get_text_config()\n"
     "    _n_experts = [getattr(_text_config, _k) for _k in ('num_local_experts', 'num_experts', 'n_routed_experts', 'moe_num_experts') if isinstance(getattr(_text_config, _k, None), int)]\n"
-    "    if _n_experts and all(_n == 0 for _n in _n_experts):\n"
+    "    if _n_experts and all(_n <= 1 for _n in _n_experts):\n"
     "        self.aux_loss_enabled = False\n"
     "        _text_config.output_router_logits = False\n"
     "pass\n"
@@ -2197,7 +2254,12 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
     if world_size <= 1 or len(params) == 0:
         return
     device = params[0].device
-    present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8, device = device)
+    present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8, device = "cpu")
+    # torch.tensor(..., device = cuda) is a pageable, stream-draining copy; pinned + non_blocking is not.
+    if device.type == "cuda":
+        present = present.pin_memory().to(device, non_blocking = True)
+    else:
+        present = present.to(device)
     dist.all_reduce(present, op = dist.ReduceOp.MAX, group = group)
     buckets = {}
     for p, has_grad in zip(params, present.tolist()):
@@ -3429,6 +3491,23 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "\n        self.context_parallel_backend = context_parallel_backend"
             "\n        self.context_parallel_rotate_method = context_parallel_rotate_method"
         )
+    elif (
+        trainer_file in ("dpo_trainer", "grpo_trainer") and "context_parallel_size" not in call_args
+    ):
+        max_seq_length_pre += """
+    context_parallel_size : Optional[int] = field(
+        default = 1,
+        metadata = {'help': 'Ranks per context parallel group (training forwards only). 1 disables it.'},
+    )
+    context_parallel_backend : Optional[str] = field(
+        default = 'ulysses',
+        metadata = {'help': 'Context parallel attention backend; preference and RL trainers support ulysses.'},
+    )"""
+        max_seq_length_call += "context_parallel_size = 1,context_parallel_backend = 'ulysses',"
+        max_seq_length_post += (
+            "\n        self.context_parallel_size = context_parallel_size"
+            "\n        self.context_parallel_backend = context_parallel_backend"
+        )
 
     if "output_dir" in call_args:
         saving_check = (
@@ -3725,8 +3804,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 '(__import__("unsloth.device_type", fromlist = ["cuda_visible_capabilities"])'
                 ".cuda_visible_capabilities())"
             )
+            # The sm90+ check only applies where zoo would request TMA at all; otherwise emit False.
+            tma_matmul = all_sm90 if _persistent_tma_matmul_ok() else "False"
             cuda_options = f"""
-            "triton.enable_persistent_tma_matmul": {all_sm90},"""
+            "triton.enable_persistent_tma_matmul": {tma_matmul},"""
             # cutlass options were added in PyTorch 2.8.0.
             if torch_version >= Version("2.8.0"):
                 cuda_options += f"""
@@ -3963,6 +4044,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     _patched_config = getattr(created_module, f"Unsloth{RLConfig_name}", None)
     _patch_config_pickle_identity(RLConfig, _patched_config)
     if _patched_config is not None:
+        try:
+            from ._gc_config_default import track_explicit_gradient_checkpointing
+            track_explicit_gradient_checkpointing(_patched_config)
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not track explicit gradient_checkpointing on {RLConfig_name}: {e}"
+            )
+    if _patched_config is not None:
         _register_config_pickle_fallback(_displaced_config, _patched_config)
 
     if trainer_file == "sft_trainer":
@@ -4012,11 +4101,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_grpo_ddp_gradient_sync(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap GRPO DDP gradient sync for {RLTrainer_name}: {e}")
+    if trainer_file in ("dpo_trainer", "grpo_trainer"):
+        try:
+            from ..context_parallel import patch_rl_trainer
+            patch_rl_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"), trainer_file)
+        except Exception as e:
+            logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
     if trainer_file == "ppo_trainer":
         try:
             _wrap_ppo_train(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap PPO rollouts for {RLTrainer_name}: {e}")
+    if trainer_file in ("distillation_trainer", "server_distillation_trainer"):
+        _wrap_distillation_padding_mask(getattr(created_module, f"Unsloth{RLTrainer_name}"))
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
         try:
             _wrap_grpo_hidden_states_fallback(
