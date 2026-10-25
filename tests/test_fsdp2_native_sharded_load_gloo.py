@@ -81,11 +81,16 @@ def _prep(model, mode):
 
         torch.manual_seed(1)
         if mode == "lora":
-            config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+            config = LoraConfig(
+                r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False
+            )
         else:
             # modules_to_save deep-copies a sharded-loaded linear (its chunk and its forward guard).
             config = LoraConfig(
-                r = 4, lora_alpha = 8, target_modules = ["q_proj"], modules_to_save = ["down_proj"],
+                r = 4,
+                lora_alpha = 8,
+                target_modules = ["q_proj"],
+                modules_to_save = ["down_proj"],
                 init_lora_weights = False,
             )
         return get_peft_model(model, config)
