@@ -35,7 +35,7 @@ export function MediaApiButton({
               model: model ? publicModelId(model) : null,
             })
           }
-          className="flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex h-[calc(34px*var(--ui-space-scale,1))] w-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center justify-center gap-1.5 rounded-full text-ui-13 @[84rem]:w-auto @[84rem]:px-2.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <HugeiconsIcon icon={ApiIcon} className="size-4 shrink-0" />
           <span className="hidden whitespace-nowrap @[84rem]:inline">

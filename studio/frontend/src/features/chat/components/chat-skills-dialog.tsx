@@ -557,6 +557,8 @@ export function ChatSkillsDialog({
                 size="sm"
                 variant="outline"
                 disabled={importing}
+                // Icon-only below sm, where the icon sets no height: a circle as tall as New skill.
+                className="max-sm:size-[calc(1lh_+_14px*var(--ui-space-scale,1)_+_2px)] max-sm:p-0"
                 aria-label={t("skills.import")}
                 title={t("skills.import")}
                 onClick={() => fileInputRef.current?.click()}
