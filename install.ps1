@@ -9571,6 +9571,8 @@ main()
         # silent, so a supported Radeon named only by Windows took the CPU path there, and
         # the report-only peer scan cannot undo that. Same class and fields as every other
         # adapter scan in this file, and identical output under Windows PowerShell 5.1.
+        # Both AMD scans below ask WMI the same question; the peer scan reuses this answer.
+        $amdWmiScanned = $false
         if (-not $HasROCm) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
@@ -9581,8 +9583,11 @@ main()
                 # If the filter leaves none, keep the full list: code 45 ("not connected") is
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
-                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                $amdWmiErr = $null
+                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue -ErrorVariable amdWmiErr |
                     Where-Object { $_.Name -match "AMD|Radeon" })
+                # A scan that reported an error may be partial: the peer scan then asks again, as before.
+                $amdWmiScanned = (-not $amdWmiErr)
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
                 $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
@@ -9594,8 +9599,9 @@ main()
         $wmiAmdNames = @()
         if (-not $ROCmGfxArch) {
             try {
-                $peerAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -match "AMD|Radeon" })
+                $peerAdapters = @(if ($amdWmiScanned) { $amdAdapters } else {
+                    Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -match "AMD|Radeon" } })
                 $healthyPeers = @($peerAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
                 $usePeers = @(if ($healthyPeers.Count -gt 0) { $healthyPeers } else { $peerAdapters })

@@ -132,7 +132,7 @@ VULKAN_PREFERRED_GFX_TARGETS = frozenset({"gfx1150", "gfx1151"})
 
 # No ROCm torch wheel and no linux-rocm bundle covers these, so a HIP source build has no
 # rocBLAS kernels for them. Mirrors install_python_stack._LINUX_UNCOVERED_AMD_GFX.
-LINUX_NO_ROCM_GFX_TARGETS = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803"})
+LINUX_NO_ROCM_GFX_TARGETS = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803", "gfx90c"})
 
 # APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
 # install_python_stack.py / setup.ps1 (TestShadowingIntegratedGfxParity keeps them in step);
@@ -7405,6 +7405,29 @@ def resolve_install_attempts(
     return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
 
 
+def _hipcc_available() -> bool:
+    """hipcc where setup.sh's HIP source build looks: PATH, /opt/rocm/bin, /opt/rocm-*/bin."""
+    return bool(
+        shutil.which("hipcc")
+        or os.access("/opt/rocm/bin/hipcc", os.X_OK)
+        or glob.glob("/opt/rocm-*/bin/hipcc")
+    )
+
+
+def _uncovered_rocm_gpu_takes_vulkan(host: HostInfo) -> bool:
+    """No hipcc means a CPU-only source build; Vulkan ignores HIP masks and would reach an NVIDIA card."""
+    return (
+        host.is_linux
+        and host.is_x86_64
+        and not host.has_physical_nvidia
+        # Following ROCm torch clears has_physical_nvidia but keeps the card's evidence.
+        and not (host.nvidia_smi or host.physical_compute_caps or host.driver_cuda_version)
+        and not _hip_visible_device_mask_set()
+        and not _vulkan_visible_device_mask_set()
+        and not _hipcc_available()
+    )
+
+
 def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) -> list[AssetChoice]:
     """Build the install attempts for a fork Linux host from a manifest-described
     bundle: CUDA, per-gfx ROCm, Vulkan, or CPU. Same selection the upstream filename
@@ -7433,6 +7456,14 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         published_rocm = published_rocm_choice_for_host(bundle, host, "linux-rocm")
         if published_rocm is not None:
             attempts.append(published_rocm)
+        elif _uncovered_rocm_gpu_takes_vulkan(host):
+            vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
+            if vulkan_choice is not None:
+                log(
+                    f"no ROCm prebuilt covers {_active_rocm_gfx_target(host) or 'this AMD GPU'} "
+                    "and hipcc is not installed -- using the Vulkan prebuilt"
+                )
+                attempts.append(vulkan_choice)
     else:
         # Same condition as direct_upstream_release_plan and resolve_upstream_asset_choice,
         # which all three must state; this is the normal published-bundle branch. Reaching here
@@ -11106,8 +11137,8 @@ def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
 
 def _should_auto_vulkan_for_amd_linux(host: HostInfo) -> bool:
     """Linux counterpart of _should_auto_vulkan_for_amd_windows: ROCm userspace is installed
-    but no AMD GPU here has ROCm kernels (RDNA 1, Polaris), so HIP would source-build into a
-    binary that cannot run. Same guards as the integrated-GPU preference, plus an explicit
+    but no AMD GPU here has ROCm kernels (RDNA 1, Polaris, gfx90c), so HIP would source-build
+    into a binary that cannot run. Same guards as the integrated-GPU preference, plus an explicit
     HSA_OVERRIDE_GFX_VERSION, which means the user runs this card on ROCm on purpose."""
     active = _active_rocm_gfx_target(host)
     if not active:

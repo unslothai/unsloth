@@ -9177,11 +9177,8 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
         from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
         extra_gb = LTX25_WORKER_RESIDENT_GB if fam.name == "ltx-2.5" else 0.0
+        # LTX-2.5's unset request keeps its bf16 encoder (int8 is opt-in), so it is priced at the table too.
         components = list(fam.bf16_components_gb)
-        if fam.name == "ltx-2.5":
-            # LTX-2.5's unset request is its int8 ConvRot encoder (ComfyUI's), so the table's encoder is priced int8.
-            from core.inference.video_ltx25 import LTX25_TE_INT8_GB
-            components[1] = LTX25_TE_INT8_GB
         assert calls[0]["model_dense_mib"] == int(
             (sum(components) + extra_gb) * _MIB_PER_GB
         ), fam.name
