@@ -2583,7 +2583,13 @@ def _local_weights_are_complete(component: Path, library_name: str) -> bool:
         sizes = [w.stat().st_size for s in stems if (w := component / f"{s}.{ext}").is_file()]
         if sizes:
             return any(sizes)
-    return False
+    # A single-file .fp16 twin with no default beside it: the snapshot an fp16 load staged, read with variant="fp16"
+    # (diffusion_fp16_variant).
+    return any(
+        _nonempty_file(component / f"{s}.fp16.safetensors")
+        for s in ("diffusion_pytorch_model", "model")
+        if library_name != "transformers" or s != "diffusion_pytorch_model"
+    )
 
 
 def _local_pipeline_component_is_complete(
