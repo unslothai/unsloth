@@ -460,6 +460,21 @@ export interface WorldSpec {
   style?: string | null;
   entry_points?: Record<string, string>;
   simulation?: WorldSimulation;
+  render?: "2d" | "3d";
+  view3d?: World3dView;
+}
+
+export interface World3dView {
+  time_of_day?: "dawn" | "day" | "dusk" | "night";
+  sky?: string;
+  /** 0 = clear, 1 = thick. */
+  fog?: number;
+  /** Eye height in tiles. */
+  camera_height?: number;
+  /** Tiles per second. */
+  walk_speed?: number;
+  terrain?: number;
+  ambient?: MediaValue;
 }
 
 export type RunStatus =

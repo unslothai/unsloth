@@ -4,6 +4,8 @@
 import {
   ArrowLeftIcon,
   BackpackIcon,
+  BoxIcon,
+  MapIcon,
   MapPinIcon,
   RotateCcwIcon,
   SaveIcon,
@@ -51,6 +53,7 @@ import {
   startQuestsOf,
   withMind,
 } from "./world-state";
+import { webglAvailable } from "./world3d";
 
 export interface WorldPlayerProps {
   flowId: string;
@@ -185,6 +188,16 @@ export function WorldPlayer({
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   const [region, setRegion] = useState<string | null>(null);
   const [mount, setMount] = useState(0);
+  const can3d = useMemo(() => webglAvailable(), []);
+  const [view, setView] = useState<"2d" | "3d">(() =>
+    spec.render === "3d" && webglAvailable() ? "3d" : "2d",
+  );
+  const lastTile = useRef<{ x: number; y: number } | null>(null);
+  const bootedView = useRef<"2d" | "3d" | null>(null);
+  const ambientUrl = useMediaUrl(
+    api,
+    view === "3d" ? spec.view3d?.ambient : null,
+  );
   const lockedRef = useRef(true);
   lockedRef.current = !started || talking !== null || panel === "save";
 
@@ -275,21 +288,26 @@ export function WorldPlayer({
   useEffect(() => {
     let live = true;
     let handle: WorldGameHandle | null = null;
+    const switched = bootedView.current !== null && bootedView.current !== view;
+    bootedView.current = view;
+    const startAt = switched ? lastTile.current : wsRef.current.player;
     setReady(false);
     (async () => {
       try {
-        const [art, mod] = await Promise.all([
+        const [art, create] = await Promise.all([
           loadArt(api, spec, (f) => live && setLoadProgress(f)),
-          import("./phaser-game"),
+          view === "3d"
+            ? import("./three-world").then((m) => m.createWorld3d)
+            : import("./phaser-game").then((m) => m.createWorldGame),
         ]);
         if (!live || !host.current) return;
-        handle = mod.createWorldGame(
+        handle = create(
           host.current,
           spec,
           map,
           art,
           wsRef.current.picked,
-          wsRef.current.player,
+          startAt,
           {
             onNearby: (t) => setNearby(t),
             onInteract,
@@ -313,11 +331,12 @@ export function WorldPlayer({
     })();
     return () => {
       live = false;
+      if (handle) lastTile.current = handle.playerTile();
       handle?.destroy();
       game.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, spec, map, mount]);
+  }, [api, spec, map, mount, view]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -748,6 +767,18 @@ export function WorldPlayer({
       data-testid="world-player"
     >
       <PlayerKeyframes />
+      {ambientUrl && started ? (
+        // biome-ignore lint/a11y/useMediaCaption: background sound with no speech
+        <audio
+          src={ambientUrl}
+          autoPlay
+          loop
+          data-testid="world-ambient"
+          ref={(a) => {
+            if (a) a.volume = 0.35;
+          }}
+        />
+      ) : null}
       <div ref={host} className="absolute inset-0" data-testid="world-canvas" />
 
       {!ready && !failed ? (
@@ -826,6 +857,26 @@ export function WorldPlayer({
                 ) : null}
               </button>
             ))}
+            {can3d ? (
+              <button
+                type="button"
+                title={view === "3d" ? "Map view" : "3D view"}
+                aria-label={view === "3d" ? "Map view" : "3D view"}
+                data-testid="world-view-toggle"
+                onClick={() => setView((v) => (v === "3d" ? "2d" : "3d"))}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-white/75 text-xs hover:bg-white/15 hover:text-white",
+                  view === "3d" && "bg-white/20 text-white",
+                )}
+              >
+                {view === "3d" ? (
+                  <MapIcon className="size-4" />
+                ) : (
+                  <BoxIcon className="size-4" />
+                )}
+                {view === "3d" ? "Map" : "3D"}
+              </button>
+            ) : null}
             {canReroll && onReroll ? (
               <button
                 type="button"
@@ -1082,8 +1133,9 @@ export function WorldPlayer({
               </p>
             ) : null}
             <p className="mb-6 text-white/45 text-xs">
-              WASD / arrows or click to walk · E or Space to talk and pick up ·
-              I inventory · Q quests
+              {view === "3d"
+                ? "Click to look with the mouse · WASD to walk, arrows to turn · E or Space to talk and pick up · I inventory · Q quests"
+                : "WASD / arrows or click to walk · E or Space to talk and pick up · I inventory · Q quests"}
             </p>
             <button
               type="button"
