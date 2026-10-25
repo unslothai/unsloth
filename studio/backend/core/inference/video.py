@@ -2694,7 +2694,7 @@ def _h3_card_memory_bytes(
     *,
     allow_context: bool = True,
 ) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) VRAM of the H3 render card, or (None, None). No pin = ordinal 0. nvidia-smi / amd-smi / sysfs
+    """(free, total) VRAM of the H3 render card, or (None, None). No pin = ordinal 0. nvidia-smi / ROCm KFD + sysfs
     first (no CUDA context); torch only when none answers and ``allow_context``, as the residency and pressure reads
     always did. The pre-spawn budget passes False: it never pays for a context. Free is less the user's VRAM Budget
     reserve (raw at the default), so the sd.cpp resident-vs-offload pick, its ``--max-vram`` probe and the
