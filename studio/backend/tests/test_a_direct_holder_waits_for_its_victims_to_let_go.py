@@ -96,8 +96,9 @@ def test_every_unpausable_route_waits_before_it_sends():
         "_tts_holder",
     ):
         assert f"await_openai_llama_let_victims_go(" in source
-        assert f"_openai_llama_let_victims_go(llama_backend,{gen_id})" in source or (
-            f"_openai_llama_let_victims_go(get_llama_cpp_backend(),{gen_id})" in source
+        # Followed by the request's cancel event: test_every_eviction_wait_answers_stop.py.
+        assert f"_openai_llama_let_victims_go(llama_backend,{gen_id}," in source or (
+            f"_openai_llama_let_victims_go(get_llama_cpp_backend(),{gen_id}," in source
         ), gen_id
 
 

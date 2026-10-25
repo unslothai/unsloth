@@ -300,16 +300,7 @@ def test_every_arm_given_stop_answers_it_as_a_cancellation():
         items = kind.elts if isinstance(kind, ast.Tuple) else [kind]
         return {getattr(item, "id", getattr(item, "attr", None)) for item in items}
 
-    sites = 0
-    for node in ast.walk(tree):
-        if not (
-            isinstance(node, ast.Call)
-            and getattr(node.func, "id", None) == "_openai_llama_preemption_arm_async"
-            and any(kw.arg == "cancel_event" for kw in node.keywords)
-        ):
-            continue
-        sites += 1
-        handled = False
+    def _handled(node, seen = ()):
         child, parent = node, parents.get(node)
         while parent is not None and not isinstance(
             parent, (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -319,8 +310,27 @@ def test_every_arm_given_stop_answers_it_as_a_cancellation():
                     h.type is not None and "LlamaAdmissionCancelled" in _names(h)
                     for h in parent.handlers
                 ):
-                    handled = True
-                    break
+                    return True
             child, parent = parent, parents.get(parent)
-        assert handled, f"the arm at line {node.lineno} lets a Stop escape as a 500"
-    assert sites >= 5, "the chat arms are not handed the cancel event"
+        # An arm inside a nested helper (the Anthropic route's `_arm_anthropic`) is answered
+        # around every call of that helper.
+        if parent is None or parent.name in seen:
+            return False
+        callers = [
+            call
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call) and getattr(call.func, "id", None) == parent.name
+        ]
+        return bool(callers) and all(_handled(call, (*seen, parent.name)) for call in callers)
+
+    sites = 0
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "_openai_llama_preemption_arm_async"
+            and any(kw.arg == "cancel_event" for kw in node.keywords)
+        ):
+            continue
+        sites += 1
+        assert _handled(node), f"the arm at line {node.lineno} lets a Stop escape as a 500"
+    assert sites >= 6, "the chat and Anthropic arms are not handed the cancel event"

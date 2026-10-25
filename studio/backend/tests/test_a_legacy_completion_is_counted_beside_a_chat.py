@@ -76,7 +76,10 @@ def test_both_unpausable_registrations_plan():
         inference._openai_llama_count_raw_holder,
         inference._openai_llama_count_direct_holder,
     ):
-        assert "_plan_for_unpausable_holder(controller, gen_id)" in inspect.getsource(helper)
+        assert (
+            "_plan_for_unpausable_holder(controller, gen_id, cancel_event = cancel_event)"
+            in inspect.getsource(helper)
+        )
     assert "_openai_llama_count_direct_holder(" in inspect.getsource(
         inference._openai_llama_count_completions_holder
     )
@@ -139,7 +142,9 @@ def test_the_embeddings_route_counts_waits_and_releases():
     count = source.index(
         '_openai_llama_count_embeddings_holder(llama_backend,body.get("input",""))'
     )
-    wait = source.index("await_openai_llama_let_victims_go(llama_backend,_embd_holder)")
+    wait = source.index(
+        "await_openai_llama_let_victims_go(llama_backend,_embd_holder,_cancel_event)"
+    )
     post = source.index("await_client.post(")
     assert count < wait < post, "room is planned and freed before the prefill goes out"
     assert "_openai_llama_release_completions_holder(llama_backend,_embd_holder)" in source

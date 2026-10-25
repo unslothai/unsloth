@@ -42729,6 +42729,10 @@ class LlamaCppBackend:
                             "finish_reason": "length",
                         }
                         return
+                    except LlamaAdmissionCancelled:
+                        # Stopped while the fitted prompt waited for cache room: nothing was
+                        # sent, so the turn ends as a Stop does.
+                        return
                     except Exception:  # accounting must never break a run in progress
                         logger.debug("fitted prompt recost failed", exc_info = True)
                     if admission_output_allowance is not None:

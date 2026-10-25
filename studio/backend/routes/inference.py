@@ -3228,8 +3228,11 @@ def _openai_llama_publish_round_charge(
     rendered_tools,
     observe_tokens,
     counted_prompt_tokens: Optional[int] = None,
+    cancel_event = None,
 ) -> None:
-    """Hand a tool round's re-costed charge to the preemptor, then sweep on it."""
+    """Hand a tool round's re-costed charge to the preemptor, then sweep on it. A set
+    ``cancel_event`` (Stop) ends the wait for its victims with ``LlamaAdmissionCancelled``, which
+    the tool loop answers as a Stop, not as a refused round."""
     if not preemption_enabled():
         return
     try:
@@ -3264,7 +3267,9 @@ def _openai_llama_publish_round_charge(
             ]
             if awaited and participant is not None:
                 participant.awaiting_victims = awaited
-                _openai_llama_wait_for_armed_victims(controller, gen_id)
+                _openai_llama_wait_for_armed_victims(controller, gen_id, cancel_event)
+    except LlamaAdmissionCancelled:
+        raise
     except LlamaAdmissionTimeout as exc:
         # The round's prompt would land beside a victim still decoding: refused as a round with no
         # room is, the tool loop ending the turn on its partial answer.
@@ -3324,13 +3329,17 @@ def _openai_llama_enrol_raw_holder(
     return None
 
 
-def _openai_llama_count_raw_holder(*, gen_id: str, **kwargs) -> None:
-    """Count a raw holder and plan room for it, for a caller off the event loop."""
+def _openai_llama_count_raw_holder(*, gen_id: str, cancel_event = None, **kwargs) -> None:
+    """Count a raw holder and plan room for it, for a caller off the event loop. A set
+    ``cancel_event`` ends the wait for its victims with ``LlamaAdmissionCancelled``, uncounted."""
     controller = _openai_llama_enrol_raw_holder(gen_id = gen_id, **kwargs)
     if controller is None:
         return
     try:
-        _plan_for_unpausable_holder(controller, gen_id)
+        _plan_for_unpausable_holder(controller, gen_id, cancel_event = cancel_event)
+    except LlamaAdmissionCancelled:
+        controller.unregister(gen_id)
+        raise
     except Exception:
         logger.debug("could not count the raw holder", exc_info = True)
 
@@ -3357,8 +3366,11 @@ def _plan_for_unpausable_holder(
     gen_id: str,
     *,
     refresh: bool = True,
+    cancel_event = None,
 ) -> None:
-    """Make room for a holder that cannot be paused, before its request goes upstream."""
+    """Make room for a holder that cannot be paused, before its request goes upstream. Off the
+    event loop it waits for its victims here, and a set ``cancel_event`` ends that wait with
+    ``LlamaAdmissionCancelled``."""
     if refresh:
         _refresh_residency_before_planning(controller)
     victims = controller.plan_preemptions(needed = 0)
@@ -3381,7 +3393,7 @@ def _plan_for_unpausable_holder(
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            if not _openai_llama_wait_for_victims(controller, gen_id):
+            if not _openai_llama_wait_for_victims(controller, gen_id, cancel_event):
                 raise LlamaAdmissionTimeout(
                     "Timed out waiting for the local llama-server cache to free room for this "
                     "request"
@@ -3468,15 +3480,73 @@ def _openai_llama_wait_for_armed_victims(
         )
 
 
-async def _openai_llama_let_victims_go(llama_backend, gen_id: Optional[str]) -> None:
-    """Before an unpausable request goes upstream, wait for the chats its plan paused."""
+class _EitherStop:
+    """Set once any of its events is: the request's own Stop, or the client gone."""
+
+    __slots__ = ("_events",)
+
+    def __init__(self, *events):
+        self._events = tuple(event for event in events if event is not None)
+
+    def is_set(self) -> bool:
+        return any(event.is_set() for event in self._events)
+
+
+async def _set_on_disconnect(request, event) -> None:
+    try:
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.1)
+        event.set()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.debug("could not watch the client while waiting for cache room", exc_info = True)
+
+
+async def _await_victims_in_worker(wait, controller, gen_id: str, *, cancel_event, request):
+    """Run a blocking victim wait in a worker. ``cancel_event`` (Stop), the client disconnecting
+    (``request``, as the admission wait checks it) or this task being cancelled ends it within a
+    poll slice, the first two with ``LlamaAdmissionCancelled``: the worker would otherwise keep
+    waiting up to a minute for a victim still prefilling."""
+    gone = threading.Event()
+    watcher = None
+    if request is not None and callable(getattr(request, "is_disconnected", None)):
+        watcher = asyncio.create_task(_set_on_disconnect(request, gone))
+    try:
+        return await asyncio.to_thread(wait, controller, gen_id, _EitherStop(cancel_event, gone))
+    except asyncio.CancelledError:
+        gone.set()
+        raise
+    finally:
+        if watcher is not None:
+            await _stop_local_disconnect_cancel_watcher(watcher)
+
+
+async def _openai_llama_let_victims_go(
+    llama_backend,
+    gen_id: Optional[str],
+    cancel_event = None,
+    *,
+    request = None,
+) -> None:
+    """Before an unpausable request goes upstream, wait for the chats its plan paused. A set
+    ``cancel_event`` or a disconnect of ``request`` ends the wait with ``LlamaAdmissionCancelled``;
+    the caller answers it as its own cancellation and releases the holder."""
     if gen_id is None or not preemption_enabled():
         return
     try:
         controller = get_preemption_controller(_preempt_key(llama_backend))
-        if controller.participant(gen_id) is None:
+        if not _openai_llama_armed_victims_pending(controller, gen_id):
             return
-        released = await asyncio.to_thread(_openai_llama_wait_for_victims, controller, gen_id)
+        released = await _await_victims_in_worker(
+            _openai_llama_wait_for_victims,
+            controller,
+            gen_id,
+            cancel_event = cancel_event,
+            request = request,
+        )
+    except LlamaAdmissionCancelled:
+        raise
     except Exception:
         logger.debug("could not wait for the unpausable holder's victims", exc_info = True)
         return
@@ -3500,9 +3570,12 @@ def _prompt_kv_tokens(prompt) -> int:
     return len(str(prompt or "").encode("utf-8", "surrogatepass"))
 
 
-def _openai_llama_count_direct_holder(llama_backend, tokens: int, prefix: str) -> Optional[str]:
+def _openai_llama_count_direct_holder(
+    llama_backend, tokens: int, prefix: str, cancel_event = None
+) -> Optional[str]:
     """Count a request that reaches llama-server outside admission as a holder the controller
-    cannot pause, and plan room for it. Returns the id to release, or None when not counted."""
+    cannot pause, and plan room for it. Returns the id to release, or None when not counted. A set
+    ``cancel_event`` ends a worker thread's wait for the victims with ``LlamaAdmissionCancelled``."""
     try:
         if not preemption_enabled() or not _openai_llama_preemption_will_apply(
             llama_backend, _openai_llama_admission_budget(llama_backend)
@@ -3516,12 +3589,12 @@ def _openai_llama_count_direct_holder(llama_backend, tokens: int, prefix: str) -
             state = ParticipantState.STREAMING_RAW,
         )
         try:
-            _plan_for_unpausable_holder(controller, gen_id)
-        except LlamaAdmissionTimeout:
+            _plan_for_unpausable_holder(controller, gen_id, cancel_event = cancel_event)
+        except (LlamaAdmissionTimeout, LlamaAdmissionCancelled):
             controller.unregister(gen_id)
             raise
         return gen_id
-    except LlamaAdmissionTimeout:
+    except (LlamaAdmissionTimeout, LlamaAdmissionCancelled):
         raise
     except Exception:
         logger.debug("could not count the direct holder", exc_info = True)
@@ -3638,8 +3711,12 @@ async def _openai_llama_preemption_arm_async(
         await _refresh_residency_before_planning_async(controller)
         policy = _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
         if _openai_llama_armed_victims_pending(controller, gen_id):
-            await asyncio.to_thread(
-                _openai_llama_wait_for_armed_victims, controller, gen_id, cancel_event
+            await _await_victims_in_worker(
+                _openai_llama_wait_for_armed_victims,
+                controller,
+                gen_id,
+                cancel_event = cancel_event,
+                request = kwargs.get("request"),
             )
         return policy
     except BaseException:
@@ -10484,14 +10561,15 @@ def _direct_llama_request_finished() -> None:
 
 
 @contextmanager
-def _direct_llama_request(counted: bool = True, *, kv_tokens: int = 0):
+def _direct_llama_request(counted: bool = True, *, kv_tokens: int = 0, cancel_event = None):
     """Hold the direct-call count for the duration of the block.
 
     The increment is the last statement before the try that decrements it, so no
     caller can leak a permanent +1 by placing the pair itself. ``counted`` False is
     a no-op, for callers that pick their backend at runtime. ``kv_tokens`` is what the
     call can occupy in the cache: given, it is also counted with the preemptor, so a chat
-    decoding beside a caption or OCR call is contended and reads the cache.
+    decoding beside a caption or OCR call is contended and reads the cache. ``cancel_event``
+    ends a worker thread's wait for the chats that count paused with ``LlamaAdmissionCancelled``.
     """
     if not counted:
         yield
@@ -10510,7 +10588,9 @@ def _direct_llama_request(counted: bool = True, *, kv_tokens: int = 0):
         holder = None
         if kv_tokens:
             backend = get_llama_cpp_backend()
-            holder = _openai_llama_count_direct_holder(backend, kv_tokens, "direct-holder")
+            holder = _openai_llama_count_direct_holder(
+                backend, kv_tokens, "direct-holder", cancel_event
+            )
         _direct_llama_request_started()
         try:
             yield holder
@@ -26837,11 +26917,17 @@ async def _generate_tts_wav(
             with _direct_llama_request(
                 _direct_llama_tts, kv_tokens = _direct_llama_kv_tokens
             ) as _tts_holder:
-                await _openai_llama_let_victims_go(get_llama_cpp_backend(), _tts_holder)
+                # The disconnect watcher above sets _audio_cancel, so Stop ends this wait too.
+                await _openai_llama_let_victims_go(
+                    get_llama_cpp_backend(), _tts_holder, _audio_cancel
+                )
                 wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:
             # An idle auto-unload cancels through the backend without setting this route's event.
-            if _audio_cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
+            if (
+                _audio_cancel.is_set()
+                or isinstance(e, (AudioGenerationCancelledError, LlamaAdmissionCancelled))
+            ):
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
             if isinstance(e, LlamaAdmissionTimeout):
                 raise HTTPException(status_code = 503, detail = str(e))
@@ -36623,6 +36709,8 @@ async def produce_openai_chat_completions(
                     rendered_tools = round_tools,
                     observe_tokens = _gguf_observe_tokens,
                     counted_prompt_tokens = _round_counted.get("prompt"),
+                    # Stop ends the wait for its victims; the tool loop ends the turn on it.
+                    cancel_event = cancel_event,
                 )
                 return _recosted_allowance
 
@@ -37823,10 +37911,12 @@ async def produce_openai_chat_completions(
                         rendered_tools = None,
                         observe_tokens = _plain_observe_tokens,
                         counted_prompt_tokens = counted if exact else None,
+                        cancel_event = cancel_event,
                     )
-            except LlamaAdmissionRecostRefused:
+            except (LlamaAdmissionRecostRefused, LlamaAdmissionCancelled):
                 # No room beside a victim still decoding: the generator ends the turn as a
-                # refused tool round does, rather than sending the prompt into its cells.
+                # refused tool round does, rather than sending the prompt into its cells. Stop
+                # while it waited for that victim ends the turn as a Stop.
                 raise
             except Exception:  # accounting must never break a run in progress
                 logger.debug("fitted prompt recost failed", exc_info = True)
@@ -43065,7 +43155,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 _cmpl_holder = _openai_llama_count_completions_holder(
                     llama_backend, body.get("prompt", "")
                 )
-                await _openai_llama_let_victims_go(llama_backend, _cmpl_holder)
+                # No watcher runs before the upstream response, so the disconnect is checked
+                # here, as _send_stream_with_preheader_cancel does next.
+                await _openai_llama_let_victims_go(
+                    llama_backend, _cmpl_holder, disconnect_event, request = request
+                )
                 req = client.build_request(
                     "POST",
                     target_url,
@@ -43209,6 +43303,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 disconnect_event.set()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
+            except LlamaAdmissionCancelled:
+                # Gone while it waited for cache room: nothing went upstream.
+                mark_response_failed(getattr(request, "scope", None))
+                api_monitor.finish(monitor_id, "cancelled")
+                return
             except Exception as e:
                 if disconnect_event.is_set():
                     mark_response_failed(getattr(request, "scope", None))
@@ -43257,7 +43356,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _cmpl_holder = _openai_llama_count_completions_holder(
                 llama_backend, body.get("prompt", "")
             )
-            await _openai_llama_let_victims_go(llama_backend, _cmpl_holder)
+            # _cancel_watcher sets _cancel_event on a disconnect, so either ends the wait.
+            await _openai_llama_let_victims_go(llama_backend, _cmpl_holder, _cancel_event)
             try:
                 resp = await _nonstreaming_post_through_park(
                     _client,
@@ -43273,7 +43373,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 _raise_if_nonstreaming_request_cancelled(_cancel_event)
                 raise
             _raise_if_nonstreaming_request_cancelled(_cancel_event)
-        except _NonStreamingRequestCancelled as exc:
+        except (_NonStreamingRequestCancelled, LlamaAdmissionCancelled) as exc:
             api_monitor.finish(monitor_id, "cancelled")
             raise _openai_admission_http_exception(exc, status_code = 499)
         except asyncio.CancelledError:
@@ -43984,7 +44084,8 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             _embd_holder = _openai_llama_count_embeddings_holder(
                 llama_backend, body.get("input", "")
             )
-            await _openai_llama_let_victims_go(llama_backend, _embd_holder)
+            # _cancel_watcher sets _cancel_event on a disconnect, so either ends the wait.
+            await _openai_llama_let_victims_go(llama_backend, _embd_holder, _cancel_event)
             upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
             resp = await _client.post(
                 target_url,
@@ -44018,7 +44119,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             _raise_if_nonstreaming_request_cancelled(_cancel_event)
             raise
         _raise_if_nonstreaming_request_cancelled(_cancel_event)
-    except _NonStreamingRequestCancelled as exc:
+    except (_NonStreamingRequestCancelled, LlamaAdmissionCancelled) as exc:
         api_monitor.finish(monitor_id, "cancelled")
         raise _openai_admission_http_exception(exc, status_code = 499)
     except asyncio.CancelledError:
@@ -46560,7 +46661,9 @@ async def _responses_stream(
                 gen_id = resp_id,
                 payload = chat_req,
             )
-            await _openai_llama_let_victims_go(llama_backend, resp_id)
+            await _openai_llama_let_victims_go(
+                llama_backend, resp_id, cancel_event, request = request
+            )
             iterator = event_generator()
             stream_started = True
             try:
@@ -49898,6 +50001,8 @@ async def anthropic_messages(
                 # What the ledger must keep apart from the output it reserved.
                 payload = payload,
                 conversation = openai_messages,
+                # Stop or a disconnect ends the wait for its victims, as on the chat route.
+                cancel_event = cancel_event,
             )
         )
 
@@ -49944,7 +50049,9 @@ async def anthropic_messages(
                 return
             await _arm_anthropic(reservation, raw = raw)
             if raw:
-                await _openai_llama_let_victims_go(llama_backend, message_id)
+                await _openai_llama_let_victims_go(
+                    llama_backend, message_id, cancel_event, request = request
+                )
             body_started = True
             async for chunk in orig_body:
                 yield chunk
@@ -50036,6 +50143,7 @@ async def anthropic_messages(
             rendered_tools = round_tools,
             observe_tokens = _anthropic_observe_tokens,
             counted_prompt_tokens = _anthropic_counted.get("prompt"),
+            cancel_event = cancel_event,
         )
         return _recosted_allowance
 
@@ -50125,7 +50233,9 @@ async def anthropic_messages(
             )
             await _arm_anthropic(reservation, raw = raw)
             if raw:
-                await _openai_llama_let_victims_go(llama_backend, message_id)
+                await _openai_llama_let_victims_go(
+                    llama_backend, message_id, cancel_event, request = request
+                )
             # Registered only once admitted: a queued request is not holding
             # llama-server, so it has no business blocking a swap.
             monitored = await _tracked_anthropic_non_streaming(coro)
@@ -52976,6 +53086,10 @@ async def _openai_passthrough_stream(
             raise
         except HTTPException as exc:
             status_code = getattr(exc, "status_code", 500) or 500
+            if status_code == 499:
+                # Stopped while it waited for cache room, as the cancellation above.
+                api_monitor.finish(monitor_id, "cancelled")
+                return
             detail = exc.detail
             error = (
                 detail
@@ -53070,9 +53184,14 @@ async def _openai_passthrough_stream_admitted(
             payload = payload,
         )
         try:
-            await _openai_llama_let_victims_go(llama_backend, completion_id)
+            await _openai_llama_let_victims_go(
+                llama_backend, completion_id, cancel_event, request = request
+            )
         except LlamaAdmissionTimeout as exc:
             raise _openai_admission_http_exception(exc, status_code = 503) from exc
+        except LlamaAdmissionCancelled as exc:
+            # Stopped while it waited for cache room: the admission 499, nothing sent upstream.
+            raise _openai_admission_http_exception(exc, status_code = 499) from exc
         body = await _build_openai_passthrough_body_async(
             payload,
             backend_ctx = llama_backend.context_length,
@@ -53953,6 +54072,8 @@ async def _openai_passthrough_stream_admitted(
             if cancel_event is not None:
                 cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
+        elif isinstance(exc, HTTPException) and exc.status_code == 499:
+            api_monitor.finish(monitor_id, "cancelled")
         else:
             detail = exc.detail if isinstance(exc, HTTPException) else _friendly_error(exc)
             api_monitor.fail(monitor_id, str(detail))
@@ -54041,7 +54162,9 @@ async def _openai_passthrough_non_streaming(
             gen_id = _raw_gen_id,
             payload = payload,
         )
-        await _openai_llama_let_victims_go(llama_backend, _raw_gen_id)
+        await _openai_llama_let_victims_go(
+            llama_backend, _raw_gen_id, cancel_event, request = request
+        )
         return await _openai_passthrough_non_streaming_upstream(
             llama_backend,
             payload,

@@ -105,7 +105,7 @@ def test_an_admitted_passthrough_that_fails_its_wait_gives_its_slot_back(monkeyp
     async def counted(**_kwargs):
         return None
 
-    async def wait(*_args):
+    async def wait(*_args, **_kwargs):
         if failure == "timeout":
             raise LlamaAdmissionTimeout("no room")
         raise asyncio.CancelledError
