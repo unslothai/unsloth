@@ -91,9 +91,7 @@ def fake_torchcodec(monkeypatch):
     torchcodec.decoders = decoders
     monkeypatch.setitem(sys.modules, "torchcodec", torchcodec)
     monkeypatch.setitem(sys.modules, "torchcodec.decoders", decoders)
-    monkeypatch.setitem(
-        sys.modules, "torchaudio", types.SimpleNamespace(info = info, load = None)
-    )
+    monkeypatch.setitem(sys.modules, "torchaudio", types.SimpleNamespace(info = info, load = None))
     monkeypatch.setattr(inference_route, "_decode_audio_mono", no_decoder)
     return calls
 
