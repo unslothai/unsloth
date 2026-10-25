@@ -60,6 +60,7 @@ QWEN3_MOE = "trl-internal-testing/tiny-Qwen3MoeForCausalLM"
 DEEPSEEK_V3 = "trl-internal-testing/tiny-DeepseekV3ForCausalLM"
 
 ARCHS = {"llama": LLAMA, "qwen3": QWEN3, "gemma2": GEMMA2, "gemma3": GEMMA3, "mistral": MISTRAL}
+BLOOM = "trl-internal-testing/tiny-BloomForCausalLM"  # a norm before the layer list (word_embeddings_layernorm)
 N_LAYERS = 6
 
 
@@ -200,18 +201,21 @@ def _case_parity(
     steps = 3,
     tie = None,
     output_attentions = False,
+    trainable_norms = False,
 ):
     from torch.distributed.device_mesh import init_device_mesh
 
-    repo = ARCHS[arch]
-    ref = build(repo, tie = tie)
+    repo = ARCHS.get(arch) or {"bloom": BLOOM}[arch]
+
+    extra = {"modules_to_save": ["word_embeddings_layernorm", "ln_f"]} if trainable_norms else {}
+    ref = build(repo, tie = tie, **extra)
     ids, labels = batch(ref)
     if gc:
         ref.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     ref_res = _reference(ref, ids, labels, steps)
     if rank == 0:
         ref.save_pretrained(os.path.join(tmp, "ref"))
-    model = build(repo, tie = tie)
+    model = build(repo, tie = tie, **extra)
     if gc:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
@@ -246,7 +250,7 @@ def _case_parity(
         direct_error = str(exc)
     owned = {n for n, p in model.named_parameters() if p.requires_grad}
     trained = {
-        n.replace(".default.", "."): p.detach().clone()
+        n.replace(".default.", ".").replace(".modules_to_save.", "."): p.detach().clone()
         for n, p in model.named_parameters()
         if p.requires_grad
     }
@@ -648,6 +652,16 @@ def test_pp2_stage_forward_turns_off_attention_outputs():
     for res in results:
         assert res["seen_output_attentions"], res
         assert all(v is False for v in res["seen_output_attentions"]), res["seen_output_attentions"]
+
+
+def test_pp2_trainable_input_and_final_norms_train_on_their_owner():
+    # Bloom: word_embeddings_layernorm before the layer list (first stage), ln_f after it (last stage).
+    saved = {}
+    results = _spawn("parity", 2, keep = saved, arch = "bloom", trainable_norms = True)
+    _check_parity(results, saved, 2)
+    owned = [{n for n in r["owned"] if "word_embeddings_layernorm" in n or "ln_f" in n} for r in results]
+    assert any("word_embeddings_layernorm" in n for n in owned[0]), owned
+    assert any("ln_f" in n for n in owned[1]), owned
 
 
 def test_pp2_tied_embeddings_kept_on_both_ends():

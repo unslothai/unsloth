@@ -226,8 +226,9 @@ def _find_parts(model) -> _Parts:
     hidden = getattr(text, "hidden_size", None)
     others = []
     for name, child in norms:
-        norm_like = "norm" in name.lower() or "Norm" in type(child).__name__
-        too_big = bool(hidden) and sum(p.numel() for p in child.parameters()) > 4 * hidden
+        base = getattr(child, "original_module", child)  # PEFT modules_to_save wraps it
+        norm_like = "norm" in name.lower() or "Norm" in type(base).__name__
+        too_big = bool(hidden) and sum(p.numel() for p in base.parameters()) > 4 * hidden
         if not norm_like or too_big:
             others.append(name)
     if others:
@@ -730,6 +731,7 @@ class PipelineParallel:
         self.schedule = schedule
         self.config = config
         self.parts = parts
+        self._foreign_prefixes = ()  # set by apply_pipeline_parallel
         self.activation_dtype = dtype
         self.ctx = _StageContext(self.start, self.end, self.is_first, self.is_last, tuple_format)
         hidden = getattr(_text_config(model), "hidden_size", None) or parts.embed.weight.shape[-1]
@@ -964,7 +966,11 @@ class PipelineParallel:
                     adapter_name = adapter,
                     save_embedding_layers = kwargs.get("save_embedding_layers", "auto"),
                 )
-                local[adapter] = {k: v.detach().cpu().clone() for k, v in selected.items()}
+                local[adapter] = {
+                    k: v.detach().cpu().clone()
+                    for k, v in selected.items()
+                    if not k.startswith(self._foreign_prefixes)
+                }
         if self.num_stages == 1:
             return local
         gathered = [None] * self.num_stages if self.is_first else None
@@ -1091,9 +1097,20 @@ def apply_pipeline_parallel(
         parent, attr = _owner(parts.inner, parts.lm_head)
         lm_head = _PPHeadStub(parts.lm_head)
         setattr(parent, attr, lm_head)
-        for _, norm in parts.norms:
+    # A norm registered before the layer list (Bloom's word_embeddings_layernorm) feeds the first stage; one
+    # after it (the final norm) the last. Other stages keep it frozen, so it trains on its owner only.
+    order = list(parts.decoder._modules)
+    foreign = []
+    for name, norm in parts.norms:
+        input_side = order.index(name) < order.index(parts.layers_name)
+        if not (is_first if input_side else is_last):
             for p in norm.parameters():
-                p.requires_grad_(False)  # used by the last stage only
+                p.requires_grad_(False)
+            foreign.append(norm)
+    # Adapter keys of norms another stage trains (modules_to_save): that stage's copy is the one saved.
+    pp_stage._foreign_prefixes = tuple(
+        name + "." for name, module in model.named_modules() if any(module is f for f in foreign)
+    )
     # The stage object must not pin a dropped embedding / lm_head (vocabulary-sized) alive.
     parts = pp_stage.parts = dataclasses.replace(parts, embed = embed, lm_head = lm_head)
     info = {
