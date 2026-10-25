@@ -1323,6 +1323,10 @@ def _content_fingerprint(p):
     return out
 
 
+def _is_strided_shard(placement):
+    return any(c.__name__ in ("_StridedShard", "StridedShard") for c in type(placement).__mro__)
+
+
 def _tp_local_view(p):
     """The local tensor of an Unsloth tensor parallel DTensor parameter; anything else unchanged."""
     to_local = getattr(p, "to_local", None)
@@ -1679,13 +1683,9 @@ def native_clip_grad_norm_(
             local = getattr(g, "_local_tensor", None)
             if local is None:
                 local = g.to_local()
-            # FSDP2 over a tensor parallel DTensor shards it as _StridedShard, which newer torch does not
+            # FSDP2 over a tensor parallel DTensor shards it as (_)StridedShard, which newer torch does not
             # report as is_shard().
-            dims = tuple(
-                i
-                for i, pl in enumerate(g.placements)
-                if pl.is_shard() or type(pl).__name__ == "_StridedShard"
-            )
+            dims = tuple(i for i, pl in enumerate(g.placements) if pl.is_shard() or _is_strided_shard(pl))
             groups.setdefault((g.device_mesh, dims), []).append(local)
             sharded.append(local)
             device = device or local.device
