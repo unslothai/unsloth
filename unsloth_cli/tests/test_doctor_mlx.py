@@ -98,14 +98,20 @@ def test_verdict_mlx_reports_stack_blockers():
     assert "unsloth studio update" in hints[0]
 
 
-def test_verdict_mlx_healthy_when_stack_check_could_not_run():
-    healthy, _ = doctor_mod.verdict_mlx(_healthy_info(stack_blockers = None))
-    assert healthy is True
+def test_verdict_mlx_fails_when_stack_check_could_not_run():
+    healthy, hints = doctor_mod.verdict_mlx(_healthy_info(stack_blockers = None))
+    assert healthy is False
+    assert "could not run" in hints[0]
 
 
 @pytest.mark.parametrize(
     "overrides",
-    [{"mlx": None}, {"zoo_mlx": False}, {"stack_blockers": ["mlx-vlm 0.4.0 is older than 0.4.4"]}],
+    [
+        {"mlx": None},
+        {"zoo_mlx": False},
+        {"stack_blockers": ["mlx-vlm 0.4.0 is older than 0.4.4"]},
+        {"stack_blockers": None},
+    ],
 )
 def test_verdict_mlx_never_suggests_a_bare_pip_install(overrides):
     # A plain pip resolve can move Transformers and leave Train/Export disabled.

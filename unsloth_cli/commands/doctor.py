@@ -664,6 +664,12 @@ def verdict_mlx(info: dict) -> Tuple[bool, List[str]]:
             "`unsloth studio update` to upgrade it."
         ]
     blockers = info.get("stack_blockers")
+    if blockers is None:
+        # It needs the same modules training does, so a check that cannot run is a failure.
+        return False, [
+            "The MLX stack check could not run (see the note above). Run "
+            "`unsloth studio update` to repair the install."
+        ]
     if blockers:
         return False, [
             "The MLX stack cannot train: "
