@@ -1055,6 +1055,13 @@ export function createWorld3d(
         }
       }
     }
+    const safe = (x: number, y: number) =>
+      bridge.safeAt?.({ x: Math.floor(x), y: Math.floor(y) }) ?? false;
+    // Safe places hold for both sides: no shots out of one, none at anyone inside one.
+    if (firePressed && safe(body.x, body.y)) {
+      firePressed = false;
+      bridge.onEvent?.("No fighting in a safe place");
+    }
     if (firePressed) {
       firePressed = false;
       const dir = new three.Vector3();
@@ -1064,7 +1071,7 @@ export function createWorld3d(
         combat,
         { x: camera.position.x, y: camera.position.z, z: camera.position.y },
         { x: dir.x, y: dir.z, z: dir.y },
-        targets(),
+        targets().filter((t) => !safe(t.x, t.y)),
       );
       if (perf)
         perf.shot = {
@@ -1094,8 +1101,7 @@ export function createWorld3d(
       combat,
       { x: body.x, y: body.y, z: body.z },
       targets().filter((t) => t.hostile),
-      (x, y) =>
-        bridge.safeAt?.({ x: Math.floor(x), y: Math.floor(y) }) ?? false,
+      safe,
     );
     for (const id of fired) {
       const n = npcs.find((x) => x.id === id);

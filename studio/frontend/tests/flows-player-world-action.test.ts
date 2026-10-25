@@ -386,3 +386,12 @@ test("a prop the player stands on keeps holding them up when colliders are rebui
   assert.match(src, /b\.top > z \+ 1e-3 &&\s*b\.bottom < z \+ STAND_H &&\s*circleHitsBox\(b, me\.x, me\.y, RADIUS\)/);
   assert.match(src, /let aw: ActionWorld \| null = action \? collide\(feet\) : null;/);
 });
+
+test("safe places hold for the player's shots as well as the hostiles'", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/player/world/three-world.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /if \(firePressed && safe\(body\.x, body\.y\)\) \{\s*firePressed = false;/);
+  assert.match(src, /targets\(\)\.filter\(\(t\) => !safe\(t\.x, t\.y\)\)/);
+});
