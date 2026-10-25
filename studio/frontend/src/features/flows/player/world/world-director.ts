@@ -85,7 +85,6 @@ export function directorRequest(
   };
 }
 
-/** A new villager may be a rival or a hostile one only in a world that opted in, and only a couple of each. */
 export function roleAllowed(spec: WorldSpec, s: WorldState, role: NpcRole) {
   const flags = autonomyOf(spec);
   const on = role === "rival" ? flags.rivals : flags.enemies;

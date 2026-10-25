@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Villagers acting on their own: making and trading goods, finding a home, racing the player for quest items and,
-// for hostile ones, chasing and robbing them. One beat a second, decided here with no model call and seeded by
-// world, villager and beat, so a run replays the same; the renderers only carry out the commands it returns.
+// Village life with no model call, seeded per world, villager and beat so a run replays.
 
 import { seedFrom } from "../../expr";
 import type { WorldSpec } from "../../types";
@@ -28,7 +26,6 @@ export const GOOD_IDS = Object.keys(GOODS) as Good[];
 const isGood = (g: unknown): g is Good =>
   typeof g === "string" && Object.hasOwn(GOODS, g);
 
-/** What a villager makes, read from their name and persona; anyone else gets a good picked by seed. */
 const MAKES: [RegExp, Good][] = [
   [/bak|bread|cafe|cook|chef/, "bread"],
   [/fish|pier|sail|boat|harbo/, "fish"],
@@ -47,11 +44,9 @@ const NPC_COINS = 20;
 const PLAYER_COINS = 15;
 const STOCK_START = 3;
 const STOCK_CAP = 5;
-/** Beats between a villager making one more of their good, and between shopping trips. */
 const MAKE_EVERY = 20;
 const SHOP_EVERY = 25;
 const SHOP_GIVE_UP = 30;
-/** Beats of head start the player gets on a rival. */
 const RACE_DELAY = 25;
 const CHASE = 6;
 const LEASH = 12;
@@ -64,19 +59,13 @@ export type Stock = Partial<Record<Good, number>>;
 
 export interface AutoState {
   beat: number;
-  /** "player" and villager ids. */
   coins: Record<string, number>;
   goods: Record<string, Stock>;
-  /** A world item a villager got to first -> that villager. */
   held: Record<string, string>;
   homes: Record<string, { place?: string; at?: Point }>;
-  /** A villager on their way to buy something. */
   shop: Record<string, { seller: string; good: Good; until: number }>;
-  /** Quest id -> the beat its rival sets off. */
   race: Record<string, number>;
-  /** Villager -> beat their next encounter may start. */
   cool: Record<string, number>;
-  /** What each hostile villager took from the player, given back when the player stands up to them. */
   stolen: Record<string, { coins: number; goods: Stock }>;
   encounter: string | null;
 }
@@ -95,7 +84,6 @@ export function makesOf(spec: WorldSpec, npcId: string): Good {
   return GOOD_IDS[seedFrom(spec.seed, "makes", npcId) % GOOD_IDS.length];
 }
 
-/** Every villager (including ones added while playing) has a purse and a stock; idempotent. */
 function withVillagers(spec: WorldSpec, a: AutoState): AutoState {
   const missing = spec.npcs.filter((n) => !(n.id in a.coins));
   if (!missing.length && PLAYER in a.coins) return a;
@@ -140,7 +128,6 @@ const pointOf = (v: unknown): Point | undefined => {
     : undefined;
 };
 
-/** A save's autonomy state; anything that does not fit the world is dropped. */
 export function autoOf(raw: unknown, spec: WorldSpec): AutoState {
   const r = (raw ?? {}) as Partial<AutoState>;
   const npcs = new Set(spec.npcs.map((n) => n.id));
@@ -169,11 +156,9 @@ export function autoOf(raw: unknown, spec: WorldSpec): AutoState {
   for (const [id, t] of Object.entries(r.shop ?? {}))
     if (npcs.has(id) && t && npcs.has(t.seller) && isGood(t.good))
       a.shop[id] = { seller: t.seller, good: t.good, until: count(t.until) };
-  // An encounter open when saving is dropped: the player loads into a calm world.
   return a;
 }
 
-/** Bounded scarcity: a seller low on stock asks more, one with plenty asks less (half to double the base). */
 export function priceOf(good: Good, sellerStock: number): number {
   const base = GOODS[good].price;
   const p = Math.round(base * (1 + 0.15 * (2 - sellerStock)));
@@ -201,7 +186,6 @@ function pay(a: AutoState, from: string, to: string, n: number): AutoState {
   };
 }
 
-/** One unit of a good changes hands for coins; null when the seller has none or the buyer cannot pay. */
 export function trade(
   a: AutoState,
   seller: string,
@@ -227,7 +211,6 @@ const npcName = (spec: WorldSpec, id: string) =>
 const itemName = (spec: WorldSpec, id: string) =>
   spec.items.find((i) => i.id === id)?.name ?? id;
 
-/** The player buys one unit from a villager (a trade panel button). */
 export function playerBuy(
   spec: WorldSpec,
   s: WorldState,
@@ -260,7 +243,6 @@ export function playerSell(
     : null;
 }
 
-/** What buying back an item from the villager holding it costs: never more than the player has. */
 export const buyBackPrice = (s: WorldState) =>
   Math.min(ITEM_PRICE, s.auto?.coins[PLAYER] ?? 0);
 
@@ -287,11 +269,8 @@ export function buyBack(
 export interface Ground {
   spec: WorldSpec;
   map: WorldMap;
-  /** Places and regions by id. */
   areas: Map<string, Area>;
-  /** Where each world item lies. */
   items: Record<string, Point>;
-  /** Where each villager started, which a hostile one never strays far from. */
   homes: Record<string, Point>;
 }
 
@@ -324,17 +303,12 @@ function namedAreas(g: Ground): { id: string; name: string; area: Area }[] {
   return out;
 }
 
-/** Homes, the inn, the square and the like, plus every home a villager built: no hostile follows the player in. */
 export function safeAt(g: Ground, a: AutoState, p: Point): boolean {
   if (namedAreas(g).some((n) => SAFE_RE.test(n.name) && inside(n.area, p)))
     return true;
   return Object.values(a.homes).some((h) => h.at && dist(h.at, p) <= 1);
 }
 
-/**
- * One beat of village life. Pure: the same world, state and positions give the same result, and the renderer is
- * only told what to do through the returned commands. `steered` lists the villagers this beat walks somewhere.
- */
 export function autoStep(
   g: Ground,
   s: WorldState,
@@ -353,7 +327,6 @@ export function autoStep(
   const villagers = spec.npcs.filter((n) => n.id in seen.npcs);
   const at = (id: string) => seen.npcs[id];
 
-  // Making: each villager adds one of their good now and then, up to a small stock.
   if (flags.trade || flags.homes)
     for (const n of villagers) {
       if ((beat + (seedFrom(n.id) % MAKE_EVERY)) % MAKE_EVERY) continue;
@@ -361,7 +334,6 @@ export function autoStep(
       if (have(a, n.id, good) < STOCK_CAP) a = addGood(a, n.id, good, 1);
     }
 
-  // Homes: claim a free house; without one, build on a free plot once the materials are in hand.
   if (flags.homes) {
     const houses = namedAreas(g).filter((n) => HOME_RE.test(n.name));
     const claimed = new Set(
@@ -406,7 +378,6 @@ export function autoStep(
     }
   }
 
-  // Shopping: a villager who wants something walks to the nearest seller and buys it there.
   if (flags.trade || flags.homes) {
     const shop = { ...a.shop };
     for (const n of villagers) {
@@ -471,7 +442,6 @@ export function autoStep(
     a = { ...a, shop };
   }
 
-  // Rivals: after a head start, a rival walks to an open quest's item; whoever reaches it first keeps it.
   if (flags.quests)
     for (const q of spec.quests) {
       const it = q.requires_item;
@@ -514,7 +484,6 @@ export function autoStep(
       cmds.push({ do: "status", id: rival, icon: "🏁" });
     }
 
-  // Hostiles: chase a player who comes close, never far from home and never into a safe place.
   if (flags.enemies && !a.encounter) {
     const safe = safeAt(g, a, seen.player);
     let chasers = 0;
@@ -545,7 +514,6 @@ export function autoStep(
       cmds.push({ do: "status", id, icon: "💢" });
     }
   }
-  // A villager following the player or on an errand they asked for keeps walking where the player sent them.
   const directed = new Set([
     ...(s.following ?? []),
     ...Object.keys(s.errands ?? {}),
@@ -583,7 +551,6 @@ function feed(s: WorldState, npcId: string): WorldState {
   };
 }
 
-/** What a villager goes out to buy: food when hungry, materials for a home, else now and then something nice. */
 function wantOf(
   g: Ground,
   a: AutoState,
@@ -612,10 +579,6 @@ function wantOf(
 
 export type Stand = "evade" | "defend" | "negotiate";
 
-/**
- * The player's answer to a hostile villager, resolved here: slipping away or standing firm can fail and cost
- * coins or a good (never a quest item); standing firm gets back what they took before; paying always ends it.
- */
 export function resolveEncounter(
   spec: WorldSpec,
   s: WorldState,
@@ -701,7 +664,6 @@ export function resolveEncounter(
   };
 }
 
-/** Everything the player and villagers own, for conservation checks. */
 export function totals(a: AutoState): { coins: number; goods: Stock } {
   let coins = 0;
   const goods: Stock = {};

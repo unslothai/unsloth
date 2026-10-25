@@ -73,9 +73,7 @@ export interface WorldState {
   errands?: Record<string, Errand>;
   /** Quests, items and villagers added while playing; optional so older saves load. */
   additions?: WorldAdditions;
-  /** Coins, goods, homes, rivals and hostiles; only in worlds with autonomy on. */
   auto?: AutoState;
-  /** Where each villager stood when saved; only in worlds with autonomy on. */
   npcAt?: Record<string, Point>;
 }
 
@@ -94,7 +92,6 @@ export interface NpcReply {
   recalled?: string[];
   action?: ReplyAction;
   place?: string;
-  /** A good the villager offers to sell; the trade panel shows it, the player decides. */
   offer_trade?: string;
 }
 
@@ -285,7 +282,6 @@ export function applyReply(
     };
     notes.push(`Gave away ${itemName(reply.take_item)}`);
   }
-  // An item a villager got to first is only theirs to give.
   const holder = reply.give_item ? st.auto?.held[reply.give_item] : undefined;
   if (holder && st.auto) {
     const { [reply.give_item as string]: _, ...held } = st.auto.held;

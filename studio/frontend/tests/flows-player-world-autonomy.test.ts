@@ -67,7 +67,6 @@ function ground(s: Spec) {
   };
 }
 
-/** Villagers standing side by side in the open, the player far away (no chase, no race reached). */
 function crowd(g: ReturnType<typeof ground>): { player: Point; npcs: Record<string, Point> } {
   const spot = P.reachable(g.map, g.map.spawn);
   const open: Point[] = [];
@@ -90,7 +89,6 @@ function play(s: Spec, beats: number, start?: State, seen?: ReturnType<typeof cr
     const out = A.autoStep(g, st, at);
     st = out.state;
     notes.push(...out.notes);
-    // Coins are only ever moved, never made or lost.
     assert.equal(A.totals(st.auto!).coins, coins);
     for (const stock of Object.values(st.auto!.goods))
       for (const n of Object.values(stock)) assert.ok((n ?? 0) > 0);
@@ -109,7 +107,6 @@ test("autonomy is off unless the world opts in, and old saves load as before", (
   assert.equal(back?.npcAt, undefined);
   assert.deepEqual(R.hostilesOf(plain), []);
   assert.equal(R.rivalFor(plain, plain.quests[0]), null);
-  // An opted-in world reading a save from before autonomy starts fresh.
   const on = W.deserialize(spec(), JSON.parse(JSON.stringify(W.serialize(s))));
   assert.equal(on?.auto?.coins.player, 15);
 });
@@ -121,7 +118,6 @@ test("villagers make goods, shop from each other and claim or build homes, with 
   assert.ok(notes.some((n) => /built a home/.test(n)), notes.join("\n"));
   const built = Object.values(st.auto!.homes).find((h) => h.at);
   assert.ok(built?.at);
-  // A home is built on open ground the player can reach.
   const g = ground(spec());
   const reach = P.reachable(g.map, g.map.spawn);
   assert.equal(reach[built.at.y * g.map.width + built.at.x], 1);
@@ -134,7 +130,6 @@ test("a run replays the same, and a save and load in the middle changes nothing"
   assert.deepEqual(a.st.auto, b.st.auto);
   assert.deepEqual(a.notes, b.notes);
   const half = play(s, 150);
-  // Coins have changed hands by the time of the save.
   assert.ok(half.notes.some((n) => / bought /.test(n)), half.notes.join("\n"));
   const saved = W.deserialize(s, JSON.parse(JSON.stringify(W.serialize(half.st))));
   assert.ok(saved);
@@ -149,7 +144,6 @@ test("a rival races for an open quest's item; the first to reach it keeps it, an
   assert.ok(rival && rival !== "tom");
   let st: State = { ...W.initialWorldState(s), activeQuests: ["lost_rod"] };
   const seen = crowd(g);
-  // Head start: nothing happens to the item for a while.
   for (let i = 0; i < 20; i++) st = A.autoStep(g, st, seen).state;
   assert.equal(st.auto!.held.rod, undefined);
   let out = A.autoStep(g, st, seen);
@@ -158,13 +152,10 @@ test("a rival races for an open quest's item; the first to reach it keeps it, an
   }
   assert.ok(out.cmds.some((c) => c.do === "place" && c.id === rival));
   const racing = out.state;
-  // The rival reaches the item.
   out = A.autoStep(g, out.state, { ...seen, npcs: { ...seen.npcs, [rival]: g.items.rod } });
   assert.equal(out.state.auto!.held.rod, rival);
   assert.ok(out.cmds.some((c) => c.do === "remove" && c.id === "rod"));
-  // Too late for the player: picking it up does nothing.
   assert.deepEqual(W.pickUp(out.state, "rod").inventory, []);
-  // Buying back works even when the player is short of coins.
   const poor = { ...out.state, auto: { ...out.state.auto!, coins: { ...out.state.auto!.coins, player: 2 } } };
   const total = A.totals(poor.auto).coins;
   const back = A.buyBack(s, poor, rival, "rod");
@@ -173,7 +164,6 @@ test("a rival races for an open quest's item; the first to reach it keeps it, an
   assert.equal(back.state.auto!.held.rod, undefined);
   assert.equal(back.state.auto!.coins.player, 0);
   assert.equal(A.totals(back.state.auto!).coins, total);
-  // The player got there first: the rival never takes it.
   const mine = W.pickUp(racing, "rod");
   const after = A.autoStep(g, mine, { ...seen, npcs: { ...seen.npcs, [rival]: g.items.rod } });
   assert.equal(after.state.auto!.held.rod, undefined);
@@ -189,10 +179,8 @@ test("a hostile villager chases only nearby and never into a safe place; the enc
   const st: State = { ...W.initialWorldState(s), inventory: ["rod"] };
   const near = { x: home.x + 2, y: home.y };
   const seen = (player: Point, me: Point) => ({ player, npcs: { ...g.homes, [enemy]: me } });
-  // Close by: the hostile gives chase.
   let out = A.autoStep(g, st, seen({ x: home.x + 5, y: home.y }, home));
   assert.ok(out.cmds.some((c) => c.do === "status" && c.id === enemy && c.icon === "💢"));
-  // Following the player or on an errand they asked for: the player's request wins.
   for (const directed of [
     { ...st, following: [enemy] },
     { ...st, errands: { [enemy]: { place: "square", until: null } } },
@@ -201,27 +189,21 @@ test("a hostile villager chases only nearby and never into a safe place; the enc
     assert.ok(!mine.cmds.some((c) => (c.do === "place" || c.do === "status") && c.id === enemy));
     assert.ok(!mine.steered.includes(enemy));
   }
-  // Far beyond the leash: they stay home.
   out = A.autoStep(g, st, seen({ x: home.x + 30, y: home.y }, { x: home.x + 25, y: home.y }));
   assert.ok(out.cmds.some((c) => c.do === "status" && c.id === enemy && c.icon === "😠"));
   assert.ok(!out.cmds.some((c) => c.do === "status" && c.id === enemy && c.icon === "💢"));
-  // In the town square nobody chases.
   const square = { x: 30, y: 22 };
   const bySquare = { ...g, homes: { ...g.homes, [enemy]: { x: 30, y: 18 } } };
   out = A.autoStep(bySquare, st, { player: square, npcs: { ...g.homes, [enemy]: { x: 29, y: 22 } } });
   assert.equal(out.state.auto!.encounter, null);
-  // Just outside the square the same spot is fair game.
   out = A.autoStep(bySquare, st, { player: { x: 30, y: 19 }, npcs: { ...g.homes, [enemy]: { x: 29, y: 19 } } });
   assert.equal(out.state.auto!.encounter, enemy);
-  // Right next to the player outside: an encounter.
   out = A.autoStep(g, st, seen(near, home));
   assert.equal(out.state.auto!.encounter, enemy);
   const total = A.totals(out.state.auto!).coins;
-  // Paying them off always ends it.
   const paid = A.resolveEncounter(s, out.state, "negotiate");
   assert.equal(paid.state.auto!.encounter, null);
   assert.equal(paid.state.auto!.coins.player, 12);
-  // Losing costs coins, never the quest item; standing firm later gets them back.
   let lost = out.state;
   for (let beat = 0; beat < 200; beat++) {
     const tryEvade = A.resolveEncounter(s, { ...out.state, auto: { ...out.state.auto!, beat } }, "evade");
@@ -240,7 +222,6 @@ test("a hostile villager chases only nearby and never into a safe place; the enc
   }
   assert.ok(won);
   assert.equal(won.auto!.coins.player, 15);
-  // Once it is over the hostile waits a while before trying again.
   const again = A.autoStep(g, { ...out.state, auto: { ...paid.state.auto! } }, seen(near, home));
   assert.equal(again.state.auto!.encounter, null);
 });
@@ -293,12 +274,10 @@ test("the player drives autonomy through the game handle and pauses it while tal
     new URL("../src/features/flows/player/world/phaser-game.ts", import.meta.url),
     "utf8",
   );
-  // Wandering is seeded per world and villager, not Math.random.
   const wander = game.slice(game.indexOf("n.rest -= dt"), game.indexOf("this.animate(\n          n,"));
   assert.ok(wander.length > 100);
   assert.doesNotMatch(wander, /Math\.random/);
   assert.match(game, /new Prng\(seedFrom\(spec\.seed, "wander", id\)\)/);
-  // Home signs restored from a save before the scene exists are kept and drawn once it is created.
   assert.match(game, /if \(sceneRef\) drawMarker\(sceneRef, id, at, icon, label\);\s*else pendingMarkers\.set\(id, \[at, icon, label\]\);/);
   assert.match(game, /for \(const \[id, m\] of pendingMarkers\) drawMarker\(this, id, \.\.\.m\);/);
 });
@@ -322,7 +301,6 @@ test("the director's new villager keeps a rival or hostile role only when the wo
   assert.equal(asRival?.npcs[0].role, undefined);
   const plain = D.applyPatch(BASE, g.map, { ...W.initialWorldState(BASE), completedQuests: ["lost_rod"] }, patch as never, occupied);
   assert.equal(plain?.npcs[0].role, undefined);
-  // A marked hostile replaces the one picked by seed.
   const played = D.withAdditions(s, ok!.state.additions);
   assert.deepEqual(R.hostilesOf(played), ["kit"]);
 });

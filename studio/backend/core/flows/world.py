@@ -46,7 +46,6 @@ TILE_PROMPTS = {
 }
 # Turns of conversation a reply reads; the world player sends exactly these (MAX_HISTORY in world-state.ts).
 MAX_HISTORY = 24
-# What villagers may do on their own (roles.ts), and the NPC Reply setting that turns them on.
 AUTONOMY_FLAGS = ("trade", "homes", "quests", "rivals", "enemies")
 AUTONOMY_LEVELS = {
     "off": (),
@@ -55,7 +54,6 @@ AUTONOMY_LEVELS = {
     "full": AUTONOMY_FLAGS,
 }
 NPC_ROLES = ("rival", "hostile")
-# Rivals or hostiles the quest director may add, each (MAX_ADDED_ROLE in roles.ts).
 MAX_ADDED_ROLE = 2
 SUMMARY_CHARS = 600
 
@@ -568,7 +566,6 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
         out["action"], out["place"] = action, place
     elif action in ("follow_player", "stop_following"):
         out["action"] = action
-    # A villager only offers what they have; asked to trade, one who forgot to offer offers their first good.
     goods = [g["id"] for g in state.get("goods") or [] if isinstance(g, dict) and g.get("id")]
     offer = str(raw.get("offer_trade") or "").strip().lower()
     if offer in goods:
@@ -824,13 +821,11 @@ ROLE_LINES = {
 
 
 def role_line(state: dict) -> str:
-    """The villager's role, read before the persona so a small model keeps to it (empty without one)."""
     role = state.get("role")
     return f"{ROLE_LINES[role]}\n" if role in ROLE_LINES else ""
 
 
 def trade_rules(state: dict) -> str:
-    """What the villager sells, for a world with trading on (empty otherwise)."""
     goods = [g for g in state.get("goods") or [] if isinstance(g, dict) and g.get("id")]
     if not goods:
         return ""

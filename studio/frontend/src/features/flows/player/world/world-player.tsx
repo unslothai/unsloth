@@ -151,7 +151,6 @@ async function loadArt(
   return art;
 }
 
-/** Carry out what a beat of village life decided, through the game handle (2D and 3D alike). */
 function run(g: WorldGameHandle, cmds: Cmd[]): void {
   for (const c of cmds) {
     if (c.do === "place") g.setNpcPlace(c.id, c.area);
@@ -349,8 +348,6 @@ export function WorldPlayer({
           import("./phaser-game"),
         ]);
         if (!live || !host.current) return;
-        // Things added while playing (from a save) stand where they were placed, and with autonomy on villagers
-        // stand where they were when saved.
         const added = wsRef.current.additions ?? noAdditions();
         const saved = wsRef.current.npcAt ?? {};
         handle = mod.createWorldGame(
@@ -851,7 +848,6 @@ export function WorldPlayer({
     return () => window.clearInterval(timer);
   }, [ready, started, areas]);
 
-  // Villagers acting on their own (opt-in per world): one beat a second, paused while the player talks or reads.
   const flags = useMemo(() => autonomyOf(baseSpec), [baseSpec]);
   const autoOn = useMemo(() => autonomyOn(baseSpec), [baseSpec]);
   const autoSteered = useRef(new Set<string>());
@@ -911,7 +907,6 @@ export function WorldPlayer({
     return () => window.clearInterval(timer);
   }, [autoOn, ready, started, map, areas, toast]);
 
-  // Player decisions go through the same pure rules, applied to the latest state.
   const deal = (
     fn: (st: WorldState) => { state: WorldState; note: string } | null,
     refused: string,
