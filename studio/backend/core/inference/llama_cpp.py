@@ -19383,13 +19383,22 @@ class LlamaCppBackend:
             # extra mask copies like every other arch.
             ub_scale = ub / self._DEFAULT_N_UBATCH
             per_tok = self._DSV41_CTX_COMPUTE_BYTES_PER_TOK * ub_scale + split_extra
+            flat = self._DSV41_CTX_COMPUTE_FLAT_BYTES
             if not flash_attn:
                 # Without flash attention the graph takes the dense branch, which materializes
-                # float32 KQ scores ([n_kv, n_ubatch, n_head]); the measured rate is flash only.
+                # float32 KQ scores ([window + n_comp, n_ubatch, n_head]); the measured rate is
+                # flash only. The layers' score sizes differ (window-only, ratio 2, ratio 1), so
+                # the allocator fragments and keeps two copies live: measured 1.07-2.01x one copy
+                # on the reserve graph, 2x from ~96k up.
                 n_head = getattr(self, "_n_heads", None) or max(1, n_embd // 64)
+                score_rate = 2 * ub * n_head * 4
+                window_cells = _pad_kv_cells(
+                    self._effective_sliding_window() * max(1, int(n_parallel)) + ub
+                )
                 # The measured rate holds one f16 KQ mask; without flash attention it is f32.
-                per_tok += ub * n_head * 4 + ub * 2
-            return int(self._DSV41_CTX_COMPUTE_FLAT_BYTES + per_tok * n_ctx)
+                per_tok += score_rate + ub * 2
+                flat += score_rate * window_cells
+            return int(flat + per_tok * n_ctx)
         if getattr(self, "_architecture", None) == "inkling":
             ub_scale = ub / self._DEFAULT_N_UBATCH
             # The fused banded path requires an f32/f16/bf16 KV cache. A quantized

@@ -522,15 +522,21 @@ class TestContextBufferDSV41:
         assert split - one == (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * 512 * 2 * 262144
 
     def test_flash_attention_off_charges_dense_scores(self):
-        # The dense branch holds float32 KQ scores for every head; the flash rate does not.
+        # The dense branch holds two float32 KQ score buffers for every head over the
+        # window and the compressed rows; the flash rate holds none.
         b = _backend(embd = 5120, arch = "deepseek41")
         b._n_heads = 64
+        b._sliding_window = 128
+        b._context_length = 1048576
         n_ctx = 262144
         on = b._compute_buffer_ctx_bytes(n_ctx, 512, "f16")
         off = b._compute_buffer_ctx_bytes(n_ctx, 512, "f16", flash_attn = False)
-        # Dense float32 scores plus the f32 mask in place of the measured f16 one.
-        assert off - on == (512 * 64 * 4 + 512 * 2) * n_ctx
-        assert off >= 512 * 64 * 4 * n_ctx
+        scores = 2 * 512 * 64 * 4
+        # Two score copies plus the f32 mask in place of the measured f16 one, and the
+        # window columns (128 + 512 padded to 768 cells).
+        assert off - on == (scores + 512 * 2) * n_ctx + scores * 768
+        # Reserve graph of a CPU build at these attention shapes: 64945 MiB past flash.
+        assert off - on >= 64945 * 1024**2
 
 
 class TestContextBufferLayerSplit:
