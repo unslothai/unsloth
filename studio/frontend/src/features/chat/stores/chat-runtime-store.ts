@@ -45,6 +45,8 @@ import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
+  applyPresetForProvider,
+  getLinkedPreset,
   getPresetOwnedParams,
   getPresetSource,
 } from "../presets/preset-policy";
@@ -484,6 +486,7 @@ let hasShownSettingsPersistenceWarning = false;
 let customPresetsMutationVersion = 0;
 let activePresetMutationVersion = 0;
 let activePresetSourceMutationVersion = 0;
+let modelPresetsMutationVersion = 0;
 let settingsHydrationPromise: Promise<void> | null = null;
 
 function warnSettingsPersistenceFailure(): void {
@@ -2532,6 +2535,8 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
+  /** Per model id, the custom preset applied whenever that model becomes the active one. */
+  modelPresets: Record<string, string>;
   models: ChatModelRow[];
   loras: ChatLoraSummary[];
   loraInventorySettled: boolean;
@@ -2879,6 +2884,8 @@ type ChatRuntimeStore = {
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
+  /** Link `modelId` to the named preset, or with null remove its link. */
+  setModelPreset: (modelId: string, presetName: string | null) => void;
   setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   /** `local` defaults true so an unqualified caller still counts for the model-swap gate.
@@ -3094,6 +3101,7 @@ type PresetHydrationVersions = {
   customPresets: number;
   activePreset: number;
   activePresetSource: number;
+  modelPresets: number;
 };
 
 type SettingsHydrationVersions = {
@@ -3230,6 +3238,7 @@ function getSettingsHydrationVersions(): SettingsHydrationVersions {
       customPresets: customPresetsMutationVersion,
       activePreset: activePresetMutationVersion,
       activePresetSource: activePresetSourceMutationVersion,
+      modelPresets: modelPresetsMutationVersion,
     },
   };
 }
@@ -3564,15 +3573,25 @@ function getHydratedPresetState(
 ): Partial<
   Pick<
     ChatRuntimeStore,
-    "customPresets" | "activePreset" | "activePresetSource"
+    "customPresets" | "activePreset" | "activePresetSource" | "modelPresets"
   >
 > {
   const nextState: Partial<
     Pick<
       ChatRuntimeStore,
-      "customPresets" | "activePreset" | "activePresetSource"
+      "customPresets" | "activePreset" | "activePresetSource" | "modelPresets"
     >
   > = {};
+  if (
+    settings.modelPresets !== undefined &&
+    modelPresetsMutationVersion === versions.modelPresets
+  ) {
+    nextState.modelPresets = Object.fromEntries(
+      Object.entries(settings.modelPresets).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+  }
   if (customPresetsMutationVersion === versions.customPresets) {
     nextState.customPresets = getHydratedCustomPresets(settings, state);
   }
@@ -4570,6 +4589,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   customPresets: [],
   activePreset: "Default",
   activePresetSource: getPresetSource("Default"),
+  modelPresets: {},
   models: [],
   loras: [],
   loraInventorySettled: false,
@@ -5111,6 +5131,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activePresetMutationVersion += 1;
       saveSettingsPatch({ activePreset });
       return { activePreset };
+    }),
+  setModelPreset: (modelId, presetName) =>
+    set((state) => {
+      if (!modelId || (state.modelPresets[modelId] ?? null) === presetName) {
+        return state;
+      }
+      modelPresetsMutationVersion += 1;
+      saveSettingsPatch({ modelPresets: { [modelId]: presetName } });
+      const modelPresets = { ...state.modelPresets };
+      if (presetName === null) {
+        delete modelPresets[modelId];
+      } else {
+        modelPresets[modelId] = presetName;
+      }
+      return { modelPresets };
     }),
   setActivePresetSource: (activePresetSource) => {
     let returnedToBuiltInDefault = false;
@@ -6619,3 +6654,39 @@ export function syncKeepModelsLoaded(mode: unknown): void {
     useChatRuntimeStore.getState().setKeepModelsLoaded(keep);
   }
 }
+
+/** Put a model's linked preset on, as picking it in Run settings would. `onHydration` is the
+ *  settings landing under a model already resident: there the restored pick stands if it is the
+ *  linked one, edits included, so a reload does not throw away a temporary override. */
+function applyLinkedPreset(modelId: string, onHydration: boolean): void {
+  const state = useChatRuntimeStore.getState();
+  if (!state.settingsHydrated || !modelId || state.params.checkpoint !== modelId) {
+    return;
+  }
+  const preset = getLinkedPreset(modelId, state.modelPresets, state.customPresets);
+  if (!preset || (onHydration && state.activePreset === preset.name)) return;
+  const external = isExternalModelId(modelId) ? parseExternalModelId(modelId) : null;
+  const providerType = external
+    ? (useExternalProvidersStore
+        .getState()
+        .providers.find((provider) => provider.id === external.providerId)
+        ?.providerType ?? null)
+    : null;
+  state.setParams(applyPresetForProvider(state.params, preset, providerType), {
+    minPChoiceEdited: true,
+    fromPreset: true,
+  });
+  state.setActivePreset(preset.name);
+  state.setActivePresetSource(getPresetSource(preset.name));
+}
+
+// Deferred a microtask: a switch moves the checkpoint inside the load path's own setParams, and
+// the preset goes on after that call has filed the model's defaults, as a pick right after would.
+useChatRuntimeStore.subscribe((state, previous) => {
+  const modelId = state.params.checkpoint;
+  if (modelId !== previous.params.checkpoint) {
+    queueMicrotask(() => applyLinkedPreset(modelId, false));
+  } else if (state.settingsHydrated && !previous.settingsHydrated) {
+    queueMicrotask(() => applyLinkedPreset(modelId, true));
+  }
+});
