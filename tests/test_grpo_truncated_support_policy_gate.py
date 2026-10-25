@@ -49,7 +49,9 @@ def _sources():
         starts = [
             i
             for i, s in enumerate(stmts)
-            if isinstance(s, ast.Try) and "grpo_truncated_support_kwargs" in ast.unparse(s)
+            # The assignment, not the scorer-selection try above it that also names the helper (#14185).
+            if isinstance(s, ast.Try)
+            and "_support_kwargs = grpo_truncated_support_kwargs" in ast.unparse(s)
         ]
         if not starts:
             continue
