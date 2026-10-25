@@ -40,6 +40,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -99,6 +100,11 @@ _TERMINAL_CANCELLED = "cancelled"
 # Grace for the best-effort native cancel to show in job status; without the cap a lost cancel would hold the generate
 # lock until the job ends.
 _CANCEL_GRACE_S = 5.0
+
+
+def _socket_owner_is_always_named() -> bool:
+    """Windows names every socket's owner: an unnamed one there is a psutil quirk (#15022)."""
+    return sys.platform == "win32"
 
 
 def _has_ancestor(
@@ -383,6 +389,22 @@ class SdCppServer:
             import psutil
         except Exception:  # noqa: BLE001 -- optional dependency
             return True
+        windows = _socket_owner_is_always_named()
+
+        def _listens(conn) -> bool:
+            laddr = getattr(conn, "laddr", None)
+            if not laddr or getattr(laddr, "port", None) != self.port:
+                return False
+            if conn.status == psutil.CONN_LISTEN:
+                return True
+            # psutil maps a TCP state it cannot decode to NONE, seen on live Windows listeners (#15022).
+            return (
+                windows
+                and conn.status == getattr(psutil, "CONN_NONE", "NONE")
+                and not getattr(conn, "raddr", None)
+                and getattr(conn, "type", socket.SOCK_STREAM) == socket.SOCK_STREAM
+            )
+
         # Another user's socket shows no pid on Linux/macOS: our readable tree not listening = foreign.
         tree_says_foreign = False
         try:
@@ -394,31 +416,23 @@ class SdCppServer:
             for member in tree:
                 try:
                     read = getattr(member, "net_connections", None) or member.connections
-                    for conn in read(kind = "inet"):
-                        laddr = getattr(conn, "laddr", None)
-                        if (
-                            laddr
-                            and getattr(laddr, "port", None) == self.port
-                            and conn.status == psutil.CONN_LISTEN
-                        ):
-                            return True
+                    if any(_listens(conn) for conn in read(kind = "inet")):
+                        return True
                 except psutil.NoSuchProcess:
                     continue
                 except Exception:  # noqa: BLE001 -- access denied / platform quirk
                     readable = False
-            tree_says_foreign = readable
+            tree_says_foreign = readable and not windows
         except Exception as exc:  # noqa: BLE001 -- platform quirk: fall back below
             if isinstance(exc, getattr(psutil, "NoSuchProcess", ())):
                 return False
         try:
             for conn in psutil.net_connections(kind = "inet"):
-                laddr = getattr(conn, "laddr", None)
-                if not laddr or getattr(laddr, "port", None) != self.port:
-                    continue
-                if conn.status != psutil.CONN_LISTEN:
+                if not _listens(conn):
                     continue
                 owner = conn.pid
-                if owner is None:
+                # pid 0 is the System Idle Process on Windows: psutil's other "unknown owner".
+                if owner is None or (windows and owner == 0):
                     continue  # not visible to us; do not punish a healthy start
                 if owner == proc.pid or _has_ancestor(owner, proc.pid):
                     return True

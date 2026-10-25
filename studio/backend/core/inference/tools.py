@@ -145,6 +145,13 @@ _DDGS_RESET_MARKERS = (
     "forcibly closed",  # Windows WSAECONNRESET (10054)
 )
 _DDGS_HTTP1_RETRY_LOCK = threading.Lock()
+# Connect cap per engine: a blocked tier 1 otherwise spent the whole tool budget, so tier 2 and the
+# Wikipedia fallback never ran (#15143). A connected engine keeps the full budget to answer.
+_SEARCH_CONNECT_TIMEOUT = 10
+# primp's and httpx's wording for a connect timeout; a read timeout is "operation timed out".
+_DDGS_CONNECT_TIMEOUT_MARKERS = ("connection timed out", "connecttimeout")
+_DDGS_CONNECT_TIMEOUT_LOCK = threading.Lock()
+_DDGS_PENDING = threading.local()
 
 # Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
 # an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
@@ -18226,6 +18233,15 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
             "Search failed: the search engines are rate limiting this machine. Wait a minute "
             'before searching again, or read a known page directly with {"url": "<URL>"}.'
         )
+    if name == "TimeoutException" and any(
+        marker in str(exc).lower() for marker in _DDGS_CONNECT_TIMEOUT_MARKERS
+    ):
+        return (
+            "Search failed: the search engines could not be reached within "
+            f"{_search_connect_timeout(timeout):g}s, so they may be blocked on this network. "
+            "Start Studio with HTTPS_PROXY set to a working proxy, or read a known page "
+            'directly with {"url": "<URL>"}.'
+        )
     if name == "TimeoutException":
         budget = f" within {timeout}s" if timeout else ""
         return f"Search failed: the search engines did not respond{budget}."
@@ -18233,6 +18249,111 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     if name == "DDGSException" and _DDGS_EMPTY_SWEEP in str(exc):
         return EMPTY_SEARCH_RESULTS[0]
     return f"Search failed: {exc}"
+
+
+def _search_connect_timeout(timeout) -> float:
+    return min(timeout, _SEARCH_CONNECT_TIMEOUT) if timeout else _SEARCH_CONNECT_TIMEOUT
+
+
+class _PrimpWithConnectTimeout:
+    """``primp`` as ddgs's ``http_client`` sees it, with a connect timeout on every ``Client``."""
+
+    _unsloth_connect_timeout = True
+
+    def __init__(self, module):
+        self._module = module
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+    def Client(self, *args, **kwargs):
+        connect = _search_connect_timeout(kwargs.get("timeout"))
+        try:
+            return self._module.Client(*args, **{"connect_timeout": connect, **kwargs})
+        except TypeError:  # primp 0.15 (ddgs 9.8.0) has no connect_timeout
+            return self._module.Client(*args, **kwargs)
+
+
+def _ddgs_wait_recording(
+    fs,
+    timeout = None,
+    return_when = "ALL_COMPLETED",
+):
+    """ddgs's batch ``wait``, unchanged, remembering what was still running after the last batch."""
+    import concurrent.futures
+
+    done, not_done = concurrent.futures.wait(fs, timeout = timeout, return_when = return_when)
+    _DDGS_PENDING.futures = list(not_done)
+    return done, not_done
+
+
+def _ddgs_text(client, query, max_results, backend) -> list:
+    """``client.text`` plus answers ddgs dropped: its batch wait returns at the first failure and
+    never reads engines still running after the last batch, so an engine failing its connect cap
+    discarded a slower engine's results (#15143). Its executor has joined them by return."""
+    _DDGS_PENDING.futures = []
+    try:
+        results, error = client.text(query, max_results = max_results, backend = backend), None
+    except Exception as exc:  # noqa: BLE001 - re-raised below unless a dropped engine answered
+        results, error = [], exc
+    pending, _DDGS_PENDING.futures = getattr(_DDGS_PENDING, "futures", []), []
+    late = []
+    if len(results) < max_results:
+        for future in pending:
+            if future.done() and not future.cancelled() and future.exception() is None:
+                late.extend(future.result() or [])
+    if late:
+        from ddgs.results import ResultsAggregator
+
+        seen = {r.get("href") for r in results if isinstance(r, dict)}
+        aggregator = ResultsAggregator({"href", "image", "url", "embed_url"})
+        aggregator.extend(late)
+        results = list(results) + [
+            r for r in aggregator.extract_dicts() if r.get("href") not in seen
+        ]
+    if not results and error is not None:
+        raise error
+    return results[:max_results]
+
+
+def _install_ddgs_connect_timeout() -> None:
+    """Cap how long a ddgs engine may take to connect (#15143), leaving the read on the caller's
+    timeout so a slow engine that did connect can still answer late. Applies once; never raises."""
+    try:
+        import concurrent.futures
+
+        from ddgs import ddgs as ddgs_module, http_client
+        with _DDGS_CONNECT_TIMEOUT_LOCK:
+            if not getattr(http_client.primp, "_unsloth_connect_timeout", False):
+                http_client.primp = _PrimpWithConnectTimeout(http_client.primp)
+            if getattr(ddgs_module, "wait", None) is concurrent.futures.wait:
+                ddgs_module.wait = _ddgs_wait_recording
+            try:
+                from ddgs import http_client2
+            except ImportError:
+                return
+            cls = getattr(http_client2, "HttpClient2", None)
+            if cls is None or cls.__dict__.get("_unsloth_connect_timeout"):
+                return
+            orig_init = cls.__init__
+
+            @functools.wraps(orig_init)
+            def __init__(self, *args, **kwargs):
+                orig_init(self, *args, **kwargs)
+                import httpx
+
+                current = self.client.timeout
+                self.client.timeout = httpx.Timeout(
+                    connect = _search_connect_timeout(current.connect),
+                    read = current.read,
+                    write = current.write,
+                    pool = current.pool,
+                )
+
+            cls.__init__ = __init__
+            cls._unsloth_connect_timeout = True
+    except Exception:  # noqa: BLE001 - a hardening layer, never a reason to fail a search
+        logger.debug("ddgs connect timeout not installed", exc_info = True)
 
 
 def _resolve_engine_tiers(text_engines) -> list:
@@ -18561,6 +18682,7 @@ def _web_search(
             text_engines = ENGINES.get("text") or {}
             _install_yahoo_layout_parser(text_engines)
             _install_ddgs_http1_retry()
+            _install_ddgs_connect_timeout()
             engine_tiers = _resolve_engine_tiers(text_engines)
             if not engine_tiers:
                 raise RuntimeError("no approved search engine is available.")
@@ -18577,7 +18699,7 @@ def _web_search(
                         break
                     client = DDGS(timeout = remaining)
                 try:
-                    candidates = client.text(effective_query, max_results = wanted, backend = backend)
+                    candidates = _ddgs_text(client, effective_query, wanted, backend)
                     results = _usable_search_results(candidates, website_policy)
                     rejected_results = rejected_results or bool(candidates and not results)
                 except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
@@ -18741,6 +18863,7 @@ def _image_search(
     except Exception as e:
         return _search_failure_message(e, timeout)
     _install_ddgs_http1_retry()
+    _install_ddgs_connect_timeout()
     if not callable(getattr(DDGS, "images", None)):
         return "Image search is unavailable in this install."
 
