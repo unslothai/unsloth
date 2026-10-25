@@ -259,7 +259,7 @@ def test_a_dequantized_fp8_load_gets_no_bitsandbytes_stamp():
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth/models/loader.py"
     )
-    tree = ast.parse(open(path).read())
+    tree = ast.parse(open(path, encoding = "utf-8").read())
 
     def assigned(name):
         return [
