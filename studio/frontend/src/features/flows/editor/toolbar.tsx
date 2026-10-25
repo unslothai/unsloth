@@ -9,6 +9,7 @@ import { newId, useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import {
+  DownloadRunDialog,
   PlanDialog,
   RunDialog,
   ShareDialog,
@@ -266,6 +267,7 @@ function ToolbarImpl({
         open={dialog === "share"}
         onOpenChange={(open) => setDialog(open ? "share" : null)}
       />
+      <DownloadRunDialog />
     </div>
   );
 }
