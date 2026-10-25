@@ -68,7 +68,9 @@ def _run(native, layout, graphs):
     opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr = 0.5)
     losses, gathered = [], []
     for step in range(STEPS):
-        ids = torch.randint(3, 1000, (2, 16), generator = torch.Generator().manual_seed(100 * rank + step))
+        ids = torch.randint(
+            3, 1000, (2, 16), generator = torch.Generator().manual_seed(100 * rank + step)
+        )
         loss = model(input_ids = ids, labels = ids, use_cache = False).loss
         loss.backward()
         opt.step()
