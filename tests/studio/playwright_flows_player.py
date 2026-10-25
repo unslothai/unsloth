@@ -153,7 +153,6 @@ def play_world_3d(page: Page) -> None:
     page.wait_for_function("window.__flowsPlayerSmoke.world !== null")
     page.wait_for_timeout(1500)
     shot(page, "world3d_explore")
-    # Arrows turn the view, WASD walk: the picture changes and the player leaves spawn.
     still = page.screenshot()
     page.keyboard.down("ArrowLeft")
     page.wait_for_timeout(700)
@@ -171,13 +170,11 @@ def play_world_3d(page: Page) -> None:
             break
     assert moved, f"the keyboard never moved the player from {before}"
 
-    # Grandma Fern has no sprite: she is drawn as a capsule with her name over her head.
     walk_to(page, "npcs", "fern", "Talk to Grandma Fern")
     for _ in range(2):
         page.keyboard.down("s")
         page.wait_for_timeout(300)
         page.keyboard.up("s")
-    # Speech bubbles and status icons, as the village simulation sets them.
     page.evaluate("window.__flowsPlayerSmoke.world.setNpcStatus('fern', 'zz')")
     page.evaluate("window.__flowsPlayerSmoke.world.say('fern', 'Have you eaten? Sit, sit.', 6000)")
     page.wait_for_timeout(500)
@@ -201,7 +198,6 @@ def play_world_3d(page: Page) -> None:
     page.get_by_text("Quest complete: The Lucky Rod", exact = False).wait_for()
     page.get_by_role("button", name = "Bye").click()
 
-    # Map and back: the renderer swaps, the player stays put and the picked-up rod stays gone.
     here = page.evaluate("window.__flowsPlayerSmoke.world.playerTile()")
     page.click("[data-testid=world-view-toggle]")
     page.wait_for_function("!document.querySelector('[data-testid=world3d-canvas]')")

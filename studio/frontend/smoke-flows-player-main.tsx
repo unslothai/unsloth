@@ -28,7 +28,6 @@ const picnic = JSON.parse(picnicJson) as StoryManifest;
 
 const params = new URLSearchParams(location.search);
 const kind = params.get("flow") === "world" ? "world" : "story";
-// `&render=3d` opens the world in the first-person view; `&time=dusk` picks its time of day.
 const time = params.get("time");
 
 const WORLD: WorldSpec = {

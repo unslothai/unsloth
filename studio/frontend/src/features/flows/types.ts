@@ -470,15 +470,12 @@ export interface WorldSpec {
   style?: string | null;
   entry_points?: Record<string, string>;
   simulation?: WorldSimulation;
-  /** Which player draws the world; the top-down map when unset. */
   render?: "2d" | "3d";
   view3d?: World3dView;
 }
 
-/** How the first-person 3D player draws a world. Every field is optional; the player fills in defaults. */
 export interface World3dView {
   time_of_day?: "dawn" | "day" | "dusk" | "night";
-  /** "#rrggbb"; the time of day picks one when unset. */
   sky?: string;
   /** 0 = clear, 1 = thick. */
   fog?: number;
@@ -486,7 +483,6 @@ export interface World3dView {
   camera_height?: number;
   /** Tiles per second. */
   walk_speed?: number;
-  /** Hill height scale. */
   terrain?: number;
   ambient?: MediaValue;
 }

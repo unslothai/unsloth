@@ -168,7 +168,6 @@ test("every NPC, item and the spawn stand where the 3D player can walk", () => {
           `${biome}/${seed} ${p.x},${p.y}`,
         );
       }
-      // Houses replace a tree or rock, never a walkable cell or the border ring.
       const taken = new Set(spots.map((p) => `${p.x},${p.y}`));
       for (const h of V.houseCells(s, map)) {
         assert.ok(

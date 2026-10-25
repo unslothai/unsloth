@@ -383,8 +383,6 @@ class WorldSimulation(_Strict):
 
 
 class World3dView(_Strict):
-    """How the first-person 3D player draws a world. Every field is optional; the player fills in defaults."""
-
     time_of_day: Optional[Literal["dawn", "day", "dusk", "night"]] = None
     sky: Optional[str] = None  # "#rrggbb"; the time of day picks one when unset
     fog: Optional[float] = Field(default = None, ge = 0, le = 1)  # 0 = clear, 1 = thick
@@ -413,7 +411,6 @@ class WorldSpec(_Strict):
     style: Optional[str] = None
     entry_points: dict[str, str] = Field(default_factory = dict)  # e.g. {"npc_reply": "<node id>"}
     simulation: Optional[WorldSimulation] = None
-    # Which player draws the world: the top-down 2D map (default) or the first-person 3D view.
     render: Optional[Literal["2d", "3d"]] = None
     view3d: Optional[World3dView] = None
 
