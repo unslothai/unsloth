@@ -314,14 +314,12 @@ def edit_world_3d(page: Page) -> None:
     page.wait_for_selector("[data-testid=world-editor]", state = "detached")
     saved = page.evaluate("JSON.parse(sessionStorage.getItem('flows-smoke-props3d'))")
     assert [p["kind"] for p in saved] == ["house", "well", "stall", "lamp", "tree", "model"], saved
-    # The 2D map marks every prop and walks around the solid ones.
     page.click("[data-testid=world-view-toggle]")
     page.wait_for_function(
         "window.__flowsPlayerSmoke.world && document.querySelector('[data-testid=world-canvas] canvas')"
     )
     page.wait_for_timeout(900)
     shot(page, "world_props_2d")
-    # Saved scenery, model included, comes back on the next visit.
     page.goto(f"{BASE}?flow=world&render=3d&time=dusk")
     arm(page)
     page.click("[data-testid=world-start]")

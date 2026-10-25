@@ -74,7 +74,6 @@ export interface Area {
   h: number;
 }
 
-/** Marker colours for 3D editor props on the 2D map. */
 const PROP_MARKS: Record<string, number> = {
   house: 0xe9d7b5,
   tree: 0x3f8a3a,

@@ -10,7 +10,6 @@ import type { WorldProp3d, WorldPropKind } from "../../types";
 
 type Part = [three.BufferGeometry, string, [number, number, number], number?];
 
-/** Release every geometry, material and texture under `root`. */
 export function disposeTree(root: three.Object3D): void {
   root.traverse((o) => {
     const mesh = o as three.Mesh;
@@ -33,7 +32,6 @@ export interface PropLayer {
   root: three.Group;
   sync(props: readonly WorldProp3d[]): void;
   objectOf(id: string): three.Object3D | undefined;
-  /** The prop an intersected object belongs to. */
   idOf(obj: three.Object3D | null): string | null;
   /** Hand over a model's file (an import, or one fetched for a saved world); loads it and redraws its props. */
   addModel(ref: string, data: ArrayBuffer): Promise<void>;

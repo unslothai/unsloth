@@ -220,7 +220,6 @@ export function WorldPlayer({
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
   const [region, setRegion] = useState<string | null>(null);
   const [mount, setMount] = useState(0);
-  // The 3D scene editor, while it is open.
   const [editor, setEditor] = useState<WorldEditor | null>(null);
   const [edState, setEdState] = useState<EditorState | null>(null);
   const [edStatus, setEdStatus] = useState("");

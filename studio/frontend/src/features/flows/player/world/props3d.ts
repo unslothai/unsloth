@@ -41,7 +41,6 @@ export const MAX_PROPS = 400;
 export const MAX_GLB_BYTES = 20 * 1024 * 1024;
 export const MAX_TRIANGLES = 150_000;
 
-/** The tile a prop stands on. */
 export const propTile = (p: Pick<WorldProp3d, "x" | "y">): Point => ({
   x: Math.floor(p.x),
   y: Math.floor(p.y),

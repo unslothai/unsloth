@@ -73,7 +73,6 @@ test("a solid prop blocks its tile for walking (3D) and paths (2D and villagers)
   // 3D walking: the collision circle cannot stand on the prop's tile.
   assert.equal(V.canStand(base, at.x + 0.5, at.y + 0.5), true);
   assert.equal(V.canStand(map, at.x + 0.5, at.y + 0.5), false);
-  // Click to walk and villager paths go around it.
   const path = P.findPath(map, map.spawn, at);
   assert.ok(!path.some((p) => p.x === at.x && p.y === at.y));
 });
@@ -169,7 +168,6 @@ test("Done keeps saving until an edit made during a save is saved too", async ()
   const saves: string[] = [];
   const save = async () => {
     saves.push(shown);
-    // The player edits again while this save is in flight.
     if (saves.length === 1) shown = "b";
     return true;
   };
@@ -209,7 +207,6 @@ test("saves run one at a time, so an older save never lands after a newer one", 
   releaseFirst();
   await Promise.all([first, second]);
   assert.deepEqual(landed, ["old", "new"]);
-  // A failed save does not block the next.
   await q
     .run(async () => {
       throw new Error("offline");

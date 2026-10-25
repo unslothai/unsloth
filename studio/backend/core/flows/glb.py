@@ -110,7 +110,6 @@ def inspect_glb(data: bytes) -> dict:
 
 
 def check(data: bytes) -> Optional[str]:
-    """The reason a model is refused, or None when it is fine."""
     try:
         inspect_glb(data)
     except GlbError as exc:

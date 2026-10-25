@@ -491,7 +491,6 @@ export type WorldPropKind =
   | "stall"
   | "model";
 
-/** A GLB model stored as a flow asset. */
 export interface ModelAsset {
   kind: "model";
   ref: string;
@@ -502,7 +501,6 @@ export interface ModelAsset {
 export interface WorldProp3d {
   id: string;
   kind: WorldPropKind;
-  /** The model of a "model" prop. */
   asset?: ModelAsset;
   name?: string;
   /** Tile units; a prop on a tile stands at its centre (x + 0.5). */

@@ -522,7 +522,6 @@ export function createWorld3d(
       );
   }
 
-  // Scenery placed with the editor.
   const props = createPropLayer(
     (x, y) => heightAt(terrain, x, y),
     art.models ?? {},

@@ -296,7 +296,6 @@ def test_the_world_player_fed_by_the_chosen_world_sets_the_view():
     }
     w, _ = resolve_world_report(d, {})
     assert w["render"] == "3d" and w["view3d"]["time_of_day"] == "night"
-    # The editor saves scenery back onto the player the world was played with.
     assert w["player_node"] == "play"
 
 
