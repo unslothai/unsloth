@@ -10,7 +10,7 @@ const hook = readSrc("features/api-monitor/use-api-model-reload.ts");
 const page = readSrc("features/api-monitor/api-monitor-page.tsx");
 
 test("a served row reloads its checkpoint, not the public alias a kept slot is listed under", () => {
-  assert.match(hook, /id: model\.checkpoint === model\.name \? id : model\.checkpoint,/);
+  assert.match(hook, /const target = model\.checkpoint === model\.name \? id : model\.checkpoint;[\s\S]*?id: target,/);
   assert.doesNotMatch(hook, /id: standalone \? model\.checkpoint : id,/);
   assert.match(page, /checkpoint: model\.checkpoint \?\? model\.id,/);
 });
@@ -23,7 +23,9 @@ test("the Context fact finds requests logged as <id>:<quant>, and shows chat's p
 
 test("an MLX precision folder reloads as a model with its folder, not as a GGUF quant", () => {
   assert.match(hook, /const variant = model\.quant \?\? ggufVariant;/);
-  assert.match(hook, /kind: variant != null && !model\.isMlx \? "gguf" : "model",/);
+  assert.match(hook, /kind: variant != null && !mlxFolder \? "gguf" : "model",/);
+  // A kept row has no backend flag: a precision folder name on a non-GGUF repo is MLX too.
+  assert.match(hook, /model\.isMlx \|\|\s*\(variant != null && isPrecisionFolderName\(variant\) && !\/gguf\/i\.test\(target\)\)/);
   assert.match(page, /const loadedIsMlx = useChatRuntimeStore\(\(s\) => s\.loadedIsMlx\);/);
   assert.match(page, /isMlx: index === activeIndex && loadedIsMlx === true,/);
 });
@@ -31,4 +33,11 @@ test("an MLX precision folder reloads as a model with its folder, not as a GGUF 
 test("a served NPU model reloads through the NPU loader, as the picker routes it", () => {
   assert.match(hook, /if \(isNpuModelId\(target\.id\)\) \{\s*await loadNpuModel\(target\.id, \{\s*forceReload: true,/);
   assert.match(page, /loadNpuModel: runtime\.loadNpuModel,/);
+});
+
+test("a row reload asks to stop only the reloaded model's chats, not the selected model's", () => {
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(runtime, /const touchesOnlySelected =\s*forceReload && !isExternalModelId\(modelId\) && loadedNow\.length > 1;/);
+  assert.match(runtime, /touchesOnlySelected \? modelId : undefined,/);
+  assert.doesNotMatch(runtime, /touchesOnlySelected \? \(paramsNow\.checkpoint/);
 });

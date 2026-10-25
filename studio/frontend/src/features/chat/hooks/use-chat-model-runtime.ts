@@ -1893,9 +1893,10 @@ export function useChatModelRuntime() {
       let keepsOthers =
         keepModelsLoaded && !forceReload && (paramsNow.engine ?? "auto") === "auto";
       let switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
-      // Reloading one of several touches only its own slot, so only its chats stop.
+      // Reloading one of several touches only its own slot, so only its chats stop. The target, not
+      // the selected model: the API page reloads any served row.
       const touchesOnlySelected =
-        forceReload && !isExternalModelId(paramsNow.checkpoint) && loadedNow.length > 1;
+        forceReload && !isExternalModelId(modelId) && loadedNow.length > 1;
       try {
         stopDecision = keepsOthers
           ? {
@@ -1907,7 +1908,7 @@ export function useChatModelRuntime() {
           : await confirmStopRunningChatsIfNeeded(
               forceReload ? "Applying these settings" : "Loading a different model",
               "reload",
-              touchesOnlySelected ? (paramsNow.checkpoint ?? undefined) : undefined,
+              touchesOnlySelected ? modelId : undefined,
             );
       } catch (error) {
         releasePreflightLifecycleLease();

@@ -6,6 +6,7 @@ import {
   type useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { isPrecisionFolderName } from "@/features/hub/lib/dataset-size";
 import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
 import { isNpuModelId } from "@/features/npu";
 import {
@@ -46,10 +47,15 @@ function servedTarget(model: ReloadableModel): LastLoadRecord {
   // The checkpoint, not a kept slot's public alias; only the synthetic primary row's is its label.
   const { id, ggufVariant } = monitorSelection(model.name);
   const variant = model.quant ?? ggufVariant;
+  const target = model.checkpoint === model.name ? id : model.checkpoint;
+  // MLX reports its precision folder as the quant but loads as a model. Status says MLX only for the
+  // primary; a kept row's folder is told by name, and names both formats use (bf16) by a GGUF repo.
+  const mlxFolder =
+    model.isMlx ||
+    (variant != null && isPrecisionFolderName(variant) && !/gguf/i.test(target));
   return {
-    id: model.checkpoint === model.name ? id : model.checkpoint,
-    // MLX reports its precision folder as the quant, but it loads as a model, not a GGUF.
-    kind: variant != null && !model.isMlx ? "gguf" : "model",
+    id: target,
+    kind: variant != null && !mlxFolder ? "gguf" : "model",
     ggufVariant: variant,
   };
 }
