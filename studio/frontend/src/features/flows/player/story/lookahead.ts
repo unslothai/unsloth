@@ -15,7 +15,6 @@ import {
   visibleChoices,
 } from "./reducer";
 
-/** The body the Next Scene entry point is called with. */
 export type NextSceneRequest = {
   state: {
     story: {
