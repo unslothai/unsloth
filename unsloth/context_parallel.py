@@ -1263,7 +1263,11 @@ def _recount_completion_tokens(trainer, result):
     return (*result[:index], total, *result[index + 1 :])
 
 
-def _refuse_transformers_cp(self, config_name: str, backend_hint: str = "") -> None:
+def _refuse_transformers_cp(
+    self,
+    config_name: str,
+    backend_hint: str = "",
+) -> None:
     # Unsloth's attention ignores transformers / accelerate CP: it would stay local to each shard.
     # `accelerate launch` with parallelism_config_cp_size builds it from the environment
     # (ACCELERATE_USE_PARALLELISM_CONFIG), leaving args.parallelism_config None.
