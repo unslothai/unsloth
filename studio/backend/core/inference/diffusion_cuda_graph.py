@@ -1013,7 +1013,6 @@ SPEED_GAIN = 0.01
 SPEED_CHECK_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_GRAPH_SPEED_CHECK"
 
 
-# A streamed key whose timed eager steps are already bound by their copies is not recorded at all (_copy_bound).
 COPY_CHECK_ENV = "UNSLOTH_DIFFUSION_STREAMED_GRAPH_COPY_CHECK"
 
 
@@ -1542,7 +1541,6 @@ class GraphedForward:
         return out
 
     def _streaming_prefetcher(self) -> Any:
-        """The block-offload prefetcher whose copies this step streams, or None (resident, pinned, model offload)."""
         placement = getattr(self, "placement", None)
         if placement is None or placement.mode != "group" or not placement.streams():
             return None
@@ -1552,12 +1550,8 @@ class GraphedForward:
             return None
 
     def _copy_bound(self, key: Any, state: dict) -> Optional[str]:
-        """Why recording ``key`` cannot pay before it records, from its timed eager steps, or None.
-
-        A block-streamed replay records the same host-to-device copies on the same copy stream, so it cannot run
-        faster than their measured total. When that total already fills the eager step to within SPEED_GAIN, the
-        streamed speed check (_judge_keys) is certain to drop the recording, after a capture that holds a ring and a
-        pool and costs a forward or more. Judged once per key, only before any key of this placement recorded."""
+        """Reason to skip recording ``key``: a streamed replay cannot beat its copy total, so copies filling the
+        eager step within SPEED_GAIN guarantee _judge_keys drops it after a costly capture. Else None."""
         if "copy_verdict" in state:
             return state["copy_verdict"]
         state["copy_verdict"] = None
@@ -1574,7 +1568,6 @@ class GraphedForward:
                 state.pop("copy_verdict", None)  # judged at the next call
                 return None
             try:
-                # the capture that would follow synchronizes anyway
                 state["eager"][-1][1].synchronize()
                 for copy in pairs:
                     copy[-1][1].synchronize()
@@ -1601,7 +1594,6 @@ class GraphedForward:
         return reason
 
     def _decline_unrecorded(self, key: Any, reason: str) -> None:
-        """Stop recording this placement for the load before anything recorded (the drop _judge_keys would make)."""
         state = self._judge.get(key)
         if state is not None:
             state["verdict"] = reason
@@ -1612,7 +1604,7 @@ class GraphedForward:
             and getattr(self, "fallback_handle", None) is None
         ):
             _retire_stable_placement(placement)
-            # Nothing replays on this placement: its forwards may carry copies across again, as the eager tier does.
+            # nothing replays: forwards may carry copies across again
             hold = getattr(placement, "_hold_carry", None)
             if callable(hold):
                 hold(False)
@@ -2361,8 +2353,7 @@ class OffloadPlacement:
         recorded: bool = True,
     ) -> bool:
         """No more recording on this placement for the load; hand the slot ring back after the current forward.
-        True when that drop is scheduled (it then also releases the dropped graphs' pool). ``recorded=False``: nothing
-        was ever recorded on it, so there is no pool or capture workspace to flush."""
+        True when that drop is scheduled (it then also releases the dropped graphs' pool)."""
         self._declined = reason
         if not self._slots:
             return False

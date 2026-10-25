@@ -477,7 +477,6 @@ class GroupPrefetcher:
         return True
 
     def _copy_timer(self, stream: Any) -> Any:
-        """A start event on the copy stream while a speed probe times this forward's copies (``copy_times``)."""
         times = self.__dict__.get("copy_times")
         if times is None or getattr(self, "capturing", False):
             return None
@@ -505,7 +504,7 @@ class GroupPrefetcher:
             from .diffusion_cuda_graph import hold_off_capture
             with hold_off_capture() as safe:
                 if not safe:
-                    self.copy_times = None  # one copy missing: no total for this forward
+                    self.copy_times = None
                     return
                 end = torch.cuda.Event(enable_timing = True)
                 end.record(stream)
@@ -783,8 +782,8 @@ class GroupPrefetcher:
                 self._alloc_slot(where)
 
     def drop_slots_after_forward(self, flush: bool = True) -> None:
-        """Drop the ring once the current forward ends (``end``), or now between forwards. ``flush=False`` when
-        nothing recorded into it: the ring's bytes stay in the allocator's cache for the eager steps that follow."""
+        """Drop the ring once the current forward ends (``end``), or now between forwards. ``flush=False``: nothing
+        recorded into it, so keep its bytes cached for the eager steps."""
         if not flush:
             self._drop_slots_unflushed = True
         if self.active:

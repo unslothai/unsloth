@@ -105,7 +105,7 @@ def test_copies_that_fill_the_eager_step_decline_the_placement_before_it_records
     retired = []
     monkeypatch.setattr(cg, "_retire_stable_placement", lambda p: retired.append(p))
     placement = _Placement()
-    # 4 copies of 58 ms in a 234 ms step: the replay records the same copies, so it cannot be 1% faster
+    # 4x58 ms copies in a 234 ms step: a replay cannot be 1% faster
     handle = _handle(placement, [_step(234.0, [58.0] * 4), _step(235.0, [58.5] * 4)])
     state = handle._judge["k"]
     why = handle._copy_bound("k", state)
@@ -114,12 +114,10 @@ def test_copies_that_fill_the_eager_step_decline_the_placement_before_it_records
     assert state["eager"][-1][1].synced == 1
     handle._decline_unrecorded("k", why)
     assert placement.declined == why and state["verdict"] == why
-    # nothing recorded: no pool to flush, and the forwards carry copies across again
     assert placement.recorded is False and placement.hold is False
     assert handle._dropped == {"k"} and handle._slower == why
     assert handle.capture_error == {"type": "Refused", "msg": why}
     assert retired == [placement] and handle.stats["copy_declines"] == 1
-    # judged once: a second look returns the stored verdict without reading the events again
     assert handle._copy_bound("k", state) == why and state["eager"][-1][1].synced == 1
 
 
@@ -132,10 +130,8 @@ def test_a_step_with_room_beside_its_copies_still_records():
 
 
 def test_the_bound_compares_the_best_eager_step_with_the_least_copy_time():
-    # best eager 100 ms, least copy total 99.5 ms (from the other step): bound
     handle = _handle(_Placement(), [_step(100.0, [50.0, 49.5]), _step(140.0, [70.0, 69.0])])
     assert handle._copy_bound("k", handle._judge["k"])
-    # least copy total 98.0 ms in a 100 ms best step: 2% of room, records
     handle = _handle(_Placement(), [_step(100.0, [49.0, 49.0]), _step(140.0, [70.0, 69.0])])
     assert handle._copy_bound("k", handle._judge["k"]) is None
 
@@ -145,7 +141,6 @@ def test_an_untimed_copy_or_a_recorded_key_leaves_the_check_to_the_replay_judge(
     # one step's copies went untimed (another thread recorded): no verdict
     handle = _handle(_Placement(), [full[0], _step(100.0, None)])
     assert handle._copy_bound("k", handle._judge["k"]) is None
-    # no copies at all (nothing streamed in the step)
     handle = _handle(_Placement(), [_step(100.0, []), _step(100.0, [])])
     assert handle._copy_bound("k", handle._judge["k"]) is None
     # a key of this placement already recorded: the judge's per-placement verdict stands
@@ -203,7 +198,6 @@ def test_a_timed_eager_step_collects_its_copies_and_unhooks_the_prefetcher(monke
     for _ in range(3):
         assert torch.equal(handle._timed_eager(step, (x,), {}, "k"), x + 1)
     state = handle._judge["k"]
-    # the untimed warm-up issues no timed copies; each timed step keeps its own list
     assert issued == [1, 1] and len(state["eager"]) == 2
     assert [len(c) for c in state["copies"]] == [1, 1]
     assert pf.copy_times is None
@@ -250,7 +244,6 @@ def test_an_unrecorded_decline_drops_the_ring_without_a_flush(monkeypatch):
     # a recorded placement's drop still hands the pool and the capture workspace back
     pf.drop_slots_after_forward()
     assert dropped == [1, 1] and flushes == [{"clear_cublas": True}]
-    # mid-forward: dropped at the forward's end, still unflushed
     pf.active = True
     pf.drop_slots_after_forward(flush = False)
     assert pf._drop_slots_at_end and dropped == [1, 1]
