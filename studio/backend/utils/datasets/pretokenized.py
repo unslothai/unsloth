@@ -282,7 +282,10 @@ def prepare_pretokenized_dataset(
     if table is None or not hasattr(table, "column"):
         # Streaming: nothing to scan up front, so rows are checked, trimmed and truncated as they are read.
         def _prepare(batch, indices):
-            out = {c: list(batch[c]) for c in columns}
+            # A formatted stream (numpy, torch) hands over arrays: work on plain lists.
+            out = {
+                c: [v.tolist() if hasattr(v, "tolist") else v for v in batch[c]] for c in columns
+            }
             for i, row_index in enumerate(indices):
                 for c in columns:
                     if isinstance(out[c][i], (list, tuple)) and None in out[c][i]:

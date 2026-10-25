@@ -3,6 +3,7 @@
 
 """Pre-tokenized datasets (input_ids / attention_mask / labels) route to training as-is (#7139), and nothing else moves."""
 
+import importlib.util
 import inspect
 import sys
 from pathlib import Path
@@ -343,7 +344,16 @@ def test_prepare_rejects_non_list_masks_with_the_mask_error(mask):
         prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
 
 
-@pytest.mark.parametrize("fmt", [None, "numpy", "torch"])
+# The torch formatter needs torch, which the CPU-only CI legs do not install.
+_TORCH_FMT = pytest.param(
+    "torch",
+    marks = pytest.mark.skipif(
+        importlib.util.find_spec("torch") is None, reason = "torch is not installed"
+    ),
+)
+
+
+@pytest.mark.parametrize("fmt", [None, "numpy", _TORCH_FMT])
 @pytest.mark.parametrize("mask", [0, 1.0, True])
 def test_prepare_rejects_streamed_scalar_masks_with_the_mask_error(mask, fmt, monkeypatch):
     # Streamed rows skip the Arrow type check: a scalar mask must not surface as len()'s TypeError.
@@ -360,7 +370,7 @@ def test_prepare_rejects_streamed_scalar_masks_with_the_mask_error(mask, fmt, mo
         list(out)
 
 
-@pytest.mark.parametrize("fmt", ["numpy", "torch"])
+@pytest.mark.parametrize("fmt", ["numpy", _TORCH_FMT])
 def test_prepare_truncates_streamed_array_masks(fmt, monkeypatch):
     monkeypatch.setattr("datasets.config.TORCHVISION_AVAILABLE", False)
     ds = (
@@ -843,3 +853,18 @@ def test_eval_packing_is_a_field_on_every_supported_trl():
     # eval_packing exists from TRL 0.22.2 (the floor) on, so setting it never breaks SFTConfig construction.
     from trl import SFTConfig
     assert "eval_packing" in SFTConfig.__dataclass_fields__
+
+
+@pytest.mark.parametrize("fmt", ["numpy", _TORCH_FMT])
+@pytest.mark.parametrize("with_labels", [False, True])
+def test_prepare_trims_formatted_streams(fmt, with_labels):
+    # A formatted stream hands the mapper arrays, not lists.
+    rows = {"input_ids": [[0, 2, 3], [4, 5, 6]], "attention_mask": [[0, 1, 1], [1, 1, 1]]}
+    if with_labels:
+        rows["labels"] = [[-100, 2, 3], [4, 5, 6]]
+    ds = Dataset.from_dict(rows).to_iterable_dataset().with_format(fmt)
+    out = list(prepare_pretokenized_dataset(ds, max_seq_length = 2, vocab_size = 100))
+    assert [[int(x) for x in r["input_ids"]] for r in out] == [[2, 3], [4, 5]]
+    assert [[int(x) for x in r["attention_mask"]] for r in out] == [[1, 1], [1, 1]]
+    if with_labels:
+        assert [[int(x) for x in r["labels"]] for r in out] == [[2, 3], [4, 5]]
