@@ -144,8 +144,7 @@ def test_model_utils_bf16_follows_the_current_device(monkeypatch, caps, current)
 @pytest.mark.parametrize("chain", ["gpu_init", "model_utils"])
 @pytest.mark.parametrize("world_size,bf16", [("2", False), ("1", True), ("", True)])
 def test_a_distributed_launch_keeps_the_weakest_card_for_bf16(monkeypatch, chain, world_size, bf16):
-    # Every DDP rank must pick one dtype, and a rank's own card is not current yet at import: a mixed
-    # host keeps the weakest visible card there, as before. One process follows the current device.
+    # DDP ranks import before set_device and must agree on one dtype: the weakest visible card decides.
     monkeypatch.setenv("WORLD_SIZE", world_size)
     fake = _fake_torch([SM86, SM75])
     run = _run_gpu_init_chain if chain == "gpu_init" else _run_model_utils_chain
@@ -154,8 +153,7 @@ def test_a_distributed_launch_keeps_the_weakest_card_for_bf16(monkeypatch, chain
 
 @pytest.mark.parametrize("current", [0, 1])
 def test_a_distributed_launch_keeps_the_public_bf16_probe_on_the_weakest_card(monkeypatch, current):
-    # torch.cuda.is_bf16_supported() must agree with SUPPORTS_BFLOAT16 on every rank (save.py reads
-    # it for merged 16-bit saves), whichever card is current. One process stays dynamic.
+    # save.py reads torch.cuda.is_bf16_supported() for merged 16-bit saves: every rank must agree.
     monkeypatch.setenv("WORLD_SIZE", "2")
     fake = _fake_torch([SM90, SM75])
     fake.cuda.set_device(current)
@@ -278,8 +276,7 @@ def test_pre_volta_switch_reads_the_current_device(monkeypatch, capsys, caps, cu
 def test_a_distributed_launch_keeps_the_weakest_card_for_the_compile_switch(
     monkeypatch, capsys, world_size, major
 ):
-    # Ranks import before set_device and the Trainer may place a rank on the GTX 1080 later
-    # (device_map = None): keep the weakest card there, the same rule as bf16.
+    # A rank may be placed on the GTX 1080 after import: keep the weakest card, as for bf16.
     monkeypatch.setenv("WORLD_SIZE", world_size)
     fake = _fake_torch([SM90, SM61])
     applied, _ = _run_pre_volta(fake, monkeypatch, capsys)
@@ -824,8 +821,7 @@ def test_sentence_transformer_trainer_checks_the_placement_before_the_deferred_c
     assert compiled == ["default"]
     if moved == "before_train":
         model.place("cuda:1")
-    # Compile is off before the first forward, which runs inside train(). The stubbed switch leaves
-    # Dynamo on, so the train() re-check may fire again after the __init__ one.
+    # The stubbed switch leaves Dynamo on, so the train() re-check may fire again after __init__'s.
     assert set(trainer.train()) == {0}
     assert "GPU 1 (card1)" in capsys.readouterr().out
 
@@ -846,9 +842,7 @@ def _public_bf16_helper(
 
 @pytest.mark.parametrize("caps,start", [([SM61, SM86], 0), ([SM90, SM75], 0), ([SM75, SM86], 1)])
 def test_public_bf16_helper_follows_set_device_after_import(monkeypatch, caps, start):
-    # import unsloth on one card, then torch.cuda.set_device onto a card of the other kind: the helper
-    # notebooks pass as fp16 = not is_bfloat16_supported() and the loader's auto dtype must agree with
-    # the card the model now runs on, or Trainer rejects bf16 / fp16 rides on a bf16 model.
+    # set_device after import: notebooks' fp16 = not is_bfloat16_supported() must match the new card.
     fake = _fake_torch(caps)
     fake.cuda.set_device(start)
     helper = _public_bf16_helper(fake, monkeypatch)
@@ -872,7 +866,6 @@ def test_public_bf16_helper_keeps_the_weakest_card_on_a_distributed_launch(monke
 
 @pytest.mark.parametrize("caps", [[SM86], [SM90, SM90, SM90]], ids = ["one_gpu", "same_cards"])
 def test_public_bf16_helper_is_the_constant_on_homogeneous_hosts(monkeypatch, caps):
-    # One GPU or identical cards: no per-call work, the import-time answer as before.
     fake = _fake_torch(caps)
     helper = _public_bf16_helper(fake, monkeypatch)
     calls = []
@@ -889,8 +882,7 @@ LOADER_FILES = [
 
 @pytest.mark.parametrize("path", LOADER_FILES, ids = lambda p: p.name)
 def test_loader_dtype_choices_ask_the_helper_at_call_time(path):
-    # The module-level SUPPORTS_BFLOAT16 is the import-time answer; a loader reading it picks the dtype
-    # for the card that was current at import, not the one the model loads on.
+    # The module-level constant is the import-time answer, wrong after a set_device.
     import ast
 
     stale = []
