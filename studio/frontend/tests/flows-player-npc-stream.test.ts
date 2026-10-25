@@ -61,3 +61,13 @@ test("a streamed answer that fails or stops early is an error", async () => {
     /stopped before it finished/,
   );
 });
+
+test("loading a save stops the reply still being written", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL("../src/features/flows/player/world/world-player.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /signal: run\.signal,\s*\/\/ The line appears/);
+  assert.match(src, /loads\.current \+= 1;\s*replyRun\.current\?\.abort\(\);/);
+});

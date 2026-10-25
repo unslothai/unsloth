@@ -295,7 +295,7 @@ test("the player keeps the map from the generated world and adds through the gam
   assert.match(src, /const s = from \?\? wsRef\.current;/);
   // A summary cancelled by a new message or a load does not go on to start the director.
   assert.match(src, /if \(turn === messages\.current\) await direct/);
-  assert.match(src, /loads\.current \+= 1;\n\s+messages\.current \+= 1;/);
+  assert.match(src, /loads\.current \+= 1;[^}]*messages\.current \+= 1;/);
   // Villagers added while playing take part in the village day like the others.
   assert.match(src, /for \(const n of specRef\.current\.npcs\)/);
 });
