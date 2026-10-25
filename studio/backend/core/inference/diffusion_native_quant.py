@@ -31,6 +31,13 @@ _INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
 _INT_MM_CHUNK_ELEMS = 1 << 25
+# The compiled linear keeps no fp32 [rows, features] temporaries, only the int32 accumulator: 4x the rows per chunk
+# holds its peak near the eager chunk's.
+_INT_MM_FUSED_CHUNK_ELEMS = 1 << 27
+# An eager W8A8 linear on CUDA (a streamed or offloaded DiT the speed layer leaves uncompiled) runs its rotation,
+# activation quantisation, ``torch._int_mm`` and rescale as one compiled function instead of ~10 eager kernels with
+# fp32 temporaries. ``0`` keeps the eager kernels. A compiled block traces the eager body instead (one graph).
+NATIVE_INT8_FUSED_ENV = "UNSLOTH_NATIVE_INT8_FUSED"
 # fp8 codes a native fp8 layer may hold; e5m2 only from a checkpoint (the quantise path writes e4m3fn).
 NATIVE_FP8_FORMATS = ("float8_e4m3fn", "float8_e5m2")
 
@@ -247,6 +254,90 @@ def _row_major_op() -> Any:
     return torch.ops.unsloth_studio.native_row_major
 
 
+def int8_fused_disabled() -> bool:
+    import os
+    return os.environ.get(NATIVE_INT8_FUSED_ENV, "").strip().lower() in ("0", "false", "no", "off")
+
+
+def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any) -> Any:
+    """``[rows, in]`` -> ``[rows, out]`` in ``x2``'s dtype: the eager ``_rotate`` + ``_int_mm_rows`` maths on
+    tensors only (no module, so the offload hooks moving the buffers never invalidate a compiled graph).
+    ``rot_h`` None: no rotation, the int8 activation goes through the row-major op."""
+    import torch
+
+    if rot_h is not None:
+        g = rot_h.shape[0]
+        x2 = (x2.reshape(x2.shape[0], -1, g) @ rot_h.to(x2.dtype)).reshape(x2.shape)
+    x_scale = torch.linalg.vector_norm(
+        x2, ord = float("inf"), dim = 1, keepdim = True, dtype = torch.float32
+    ).clamp(min = 1e-12)
+    # Bit-for-bit the eager CUDA scale: a division by a scalar runs there as a multiply by its fp32 reciprocal, and
+    # the reciprocal is IEEE. Triton's fp32 reciprocal is approximate (an ulp off moves the codes sitting on a
+    # rounding boundary, ~1 in 10^4, enough to drift the image); in fp64 it is IEEE, and an fp64 quotient of fp32
+    # operands rounds to the correctly rounded fp32 one.
+    x_scale = x_scale * (1.0 / 127.0)
+    x_recip = (1.0 / x_scale.double()).float()
+    xq = torch.mul(x2, x_recip).round().clamp(-127, 127).to(torch.int8)
+    if rot_h is None:
+        op = _FUSED_STATE.get("row_major")
+        xq = op(xq) if op is not None else xq.contiguous()
+    acc = torch._int_mm(xq, weight_q.t())
+    out = torch.mul(acc, x_scale)
+    w_scale = weight_scale.view(torch.float32)
+    if bias is not None:
+        out = torch.addcmul(bias.float(), out, w_scale)
+    else:
+        out = out * w_scale
+    return out.to(x2.dtype)
+
+
+_FUSED_STATE: dict = {"fn": None, "failed": None}
+
+
+def _fused_w8a8() -> Optional[Callable[..., Any]]:
+    """The compiled ``_w8a8_rows`` (dynamic shapes: one graph for every layer and row count), or None where it
+    cannot run: switched off, no inductor runtime (Windows without Triton), ROCm (Studio does not compile there),
+    or a compile that already failed in this process."""
+    if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
+        return None
+    fn = _FUSED_STATE["fn"]
+    if fn is not None:
+        return fn
+    import torch
+
+    try:
+        from .diffusion_speed import torch_compile_runtime_available
+        runtime = torch_compile_runtime_available()
+    except Exception:  # noqa: BLE001 - unknown runtime: stay eager
+        runtime = False
+    if not runtime or getattr(torch.version, "hip", None):
+        _FUSED_STATE["failed"] = "no inductor runtime" if not runtime else "ROCm"
+        return None
+    # Registered in eager, before any trace reads the handle.
+    _FUSED_STATE["row_major"] = _row_major_op()
+    fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
+    _FUSED_STATE["fn"] = fn
+    return fn
+
+
+def _fused_w8a8_failed(exc: BaseException) -> None:
+    import logging
+
+    _FUSED_STATE["failed"] = repr(exc)
+    _FUSED_STATE["fn"] = None
+    logging.getLogger(__name__).warning(
+        "diffusion.native_quant: the compiled int8 W8A8 linear failed (%s); eager kernels from here on "
+        "(set %s=0 to skip it)",
+        exc,
+        NATIVE_INT8_FUSED_ENV,
+    )
+
+
+def fused_w8a8_state() -> dict:
+    """Engagement for status / tests: ``calls`` through the compiled linear, ``failed`` reason or None."""
+    return {"calls": _FUSED_STATE.get("calls", 0), "failed": _FUSED_STATE["failed"]}
+
+
 @lru_cache(maxsize = 1)
 def native_linear_class():
     """``NativeWeightOnlyLinear``, defined on first use so this module imports torch-free."""
@@ -419,6 +510,43 @@ def native_linear_class():
                 )
             return out.reshape(*x.shape[:-1], self.out_features)
 
+        def _forward_fused(self, x: Any) -> Any:
+            """The eager CUDA forward through the compiled ``_w8a8_rows``, chunked so the int32 accumulator stays
+            capped. None: take the eager kernels (too few rows, switched off, failed, or
+            inside a CUDA graph capture, where a first compile must not run)."""
+            in_f = self.in_features
+            rows = x.numel() // max(1, in_f)
+            if not self._int_mm_ok(rows) or (
+                x.is_cuda and torch.cuda.is_current_stream_capturing()
+            ):
+                return None
+            fn = _fused_w8a8()
+            if fn is None:
+                return None
+            # Detached: a view's base shapes are guarded too, so every caller's layout would recompile.
+            x2 = x.reshape(-1, in_f).detach()
+            rot_h = self.rot_h if self.rot_group else None
+            # A Parameter's shape is guarded static: detached, one graph serves every layer's bias.
+            bias = self.bias.detach() if self.bias is not None else None
+            chunk = _INT_MM_FUSED_CHUNK_ELEMS // max(in_f, self.out_features)
+            try:
+                if rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS:
+                    out = fn(x2, rot_h, self.weight_q, self.weight_scale, bias)
+                else:
+                    out = torch.cat(
+                        [
+                            fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
+                            for part in torch.tensor_split(x2, -(-rows // chunk))
+                        ]
+                    )
+            except torch.cuda.OutOfMemoryError:
+                raise  # the caller's OOM handling decides, as for the eager kernels
+            except Exception as exc:  # noqa: BLE001 - a compile failure falls back to the eager kernels
+                _fused_w8a8_failed(exc)
+                return None
+            _FUSED_STATE["calls"] = _FUSED_STATE.get("calls", 0) + 1
+            return out.reshape(*x.shape[:-1], self.out_features)
+
         def _int8pack_scale(self, dtype: Any, device: Any) -> Any:
             """Per-row scale in ``dtype`` if that cast is exact (cached), else None: keep dequantise."""
             key = (dtype, str(device))
@@ -482,6 +610,10 @@ def native_linear_class():
         def forward(self, x: Any) -> Any:
             if self._int8pack_ok(x):
                 out = self._forward_int8pack(x)
+                if out is not None:
+                    return out
+            if self.act_int8 and x.is_cuda and not torch.compiler.is_compiling():
+                out = self._forward_fused(x)
                 if out is not None:
                     return out
             if self.rot_group:
