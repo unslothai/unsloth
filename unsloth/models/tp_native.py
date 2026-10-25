@@ -2046,9 +2046,18 @@ def tp_trainer_setup(
         # A trainable outside the tp regions (modules_to_save) is a plain tensor next to the LoRA DTensors:
         # foreach / fused kernels take one kind per group. Split before create_scheduler records the groups.
         optimizer = create_optimizer(*args, **kwargs)
-        from .fsdp2_native import _inner_optimizer, _split_mixed_param_groups
+        from .fsdp2_native import _inner_optimizer, _mixed_param_groups, _split_mixed_param_groups
 
-        _split_mixed_param_groups(_inner_optimizer(optimizer))
+        inner = _inner_optimizer(optimizer)
+        if getattr(trainer, "lr_scheduler", None) is not None and _mixed_param_groups(inner):
+            # A prebuilt scheduler keeps one base LR / lambda per original group: split groups would go unscheduled.
+            raise ValueError(
+                "Unsloth: this tensor parallel model mixes DTensor (tensor parallel) and plain trainable parameters "
+                "in one optimizer group, which foreach / fused optimizers cannot step, and Trainer(optimizers = "
+                "(optimizer, scheduler)) already built the scheduler over those groups. Build the optimizer over "
+                "`unsloth.models.fsdp2_native.split_param_groups(...)` before the scheduler, or pass only the optimizer."
+            )
+        _split_mixed_param_groups(inner)
         return optimizer
 
     trainer.__dict__["create_optimizer"] = create_optimizer_tp

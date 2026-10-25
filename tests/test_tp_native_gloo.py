@@ -710,6 +710,18 @@ def _case_trainer(
                     eval_dataset = data,
                 )
             )
+    if tp > 1 and lora_kwargs:
+        # A prebuilt scheduler already recorded the mixed groups: refused, not split under it.
+        opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-2)
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda step: 1.0)
+        refusals["prebuilt_scheduler"] = _raised(
+            lambda: SequentialTrainer(
+                model = model,
+                args = _trainer_args(tmp, 2),
+                train_dataset = data,
+                optimizers = (opt, sched),
+            ).train()
+        )
     trainer = SequentialTrainer(
         model = model, args = _trainer_args(tmp, 2 * dp if tp == 1 else 2), train_dataset = data
     )
@@ -1124,6 +1136,7 @@ def test_trainer_splits_mixed_optimizer_groups_for_tp_only():
         pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
     for rank, res in enumerate(_spawn("trainer", 2, dp = 1, tp = 2, lora_kwargs = kw)):
         assert res["mixed_groups"] == 0, rank
+        assert "already built the scheduler" in (res["refusals"]["prebuilt_scheduler"] or ""), res["refusals"]
         assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (
             rank,
             res["losses"],
