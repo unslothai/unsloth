@@ -103,7 +103,7 @@ from ..utils.attention_dispatch import (
     select_attention_backend,
     resolve_prefix_seg_info,
 )
-from torch.nn.functional import scaled_dot_product_attention
+from torch.nn.functional import scaled_dot_product_attention as _torch_sdpa
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import (
@@ -266,7 +266,11 @@ from math import sqrt as math_sqrt
 KV_CACHE_INCREMENT = 512
 torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally.
-SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
+SDPA_HAS_GQA = "enable_gqa" in (_torch_sdpa.__doc__ or "")
+# Decode paths here and in models importing this name avoid cuDNN on sm90 / sm100.
+from ..utils.attention_dispatch import (
+    decode_scaled_dot_product_attention as scaled_dot_product_attention,
+)
 
 from peft.utils.other import ModulesToSaveWrapper
 
