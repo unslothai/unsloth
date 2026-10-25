@@ -13,7 +13,6 @@ LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
     "deepseek41": ("per_layer_token_embd.weight",),
 }
 LAZY_READ_AUTO_MIN_BYTES = 4 * 1024**3
-HOST_FORCED_TABLE_ARCHS = frozenset({"deepseek41"})
 PER_LAYER_EMBD_PREFIX = "per_layer_token_embd"
 
 

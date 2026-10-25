@@ -82,7 +82,6 @@ from core.inference.context_window import (
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.lookup_tables import (
-    HOST_FORCED_TABLE_ARCHS as _HOST_FORCED_TABLE_ARCHS,
     LAZY_READ_AUTO_MIN_BYTES as _LOOKUP_LAZY_READ_AUTO_MIN_BYTES,
     LAZY_READ_TENSORS as _LOOKUP_LAZY_READ_TENSORS,
     is_per_layer_embedding as _is_per_layer_embedding,
@@ -7983,11 +7982,7 @@ def _host_pinned_input_bytes(
     total = 0
     for name, size in (named or {}).items():
         if _is_per_layer_embedding(name):
-            if (
-                name in streamed
-                or architecture in _HOST_FORCED_TABLE_ARCHS
-                or not _override_places_tensor_on_device(name, extra_args, env)
-            ):
+            if name in streamed or not _override_places_tensor_on_device(name, extra_args, env):
                 total += int(size)
     token_embd = int((named or {}).get("token_embd.weight") or 0)
     if token_embd and int((named or {}).get("output.weight") or 0):
@@ -12106,12 +12101,18 @@ class LlamaCppBackend:
             )
             if mode != "auto":
                 return mode == "on"
-            vulkan = self._is_vulkan_backend(binary)
-            with _without_torch_gpu_probe():
-                rows = list(self._get_gpu_memory(binary, for_llama_server = True) or ())
-            # An empty Vulkan inventory is a failed probe: it may be an iGPU, where auto is off.
-            if not rows and (vulkan or _gpu_device_node_present()):
-                return False
+            # A CPU child has no model device to turn auto off (RPC aside, read below).
+            cpu_child = self._binary_ships_no_gpu_backend(binary, _env) or _device_selection_is_cpu(
+                extra_args, _env
+            )
+            vulkan = not cpu_child and self._is_vulkan_backend(binary)
+            rows = []
+            if not cpu_child:
+                with _without_torch_gpu_probe():
+                    rows = list(self._get_gpu_memory(binary, for_llama_server = True) or ())
+                # An empty Vulkan inventory is a failed probe: it may be an iGPU, where auto is off.
+                if not rows and (vulkan or _gpu_device_node_present()):
+                    return False
             shared = {idx for idx, _free, total in rows if total <= 0} if vulkan else set()
             picked = [int(i) for i in gpu_ids] if gpu_ids else None
             return not self._lazy_auto_resolves_off(
@@ -12158,13 +12159,10 @@ class LlamaCppBackend:
         if table <= 0:
             return []
         scan = self._gguf_tensor_scan(model_path)
-        if scan is None or (
-            scan[0] not in _HOST_FORCED_TABLE_ARCHS
-            and any(
-                _override_places_tensor_on_device(name, extra_args, source_env)
-                for name in scan[1]
-                if _is_per_layer_embedding(name)
-            )
+        if scan is None or any(
+            _override_places_tensor_on_device(name, extra_args, source_env)
+            for name in scan[1]
+            if _is_per_layer_embedding(name)
         ):
             return []
         try:
@@ -12239,14 +12237,10 @@ class LlamaCppBackend:
             if scan is not None
             else frozenset()
         )
-        if (
-            scan is not None
-            and scan[0] not in _HOST_FORCED_TABLE_ARCHS
-            and any(
-                _override_places_tensor_on_device(name, extra_args, source_env)
-                for name in scan[1]
-                if _is_per_layer_embedding(name) and name not in streamed
-            )
+        if scan is not None and any(
+            _override_places_tensor_on_device(name, extra_args, source_env)
+            for name in scan[1]
+            if _is_per_layer_embedding(name) and name not in streamed
         ):
             return probe_discount
 
@@ -34004,14 +33998,10 @@ class LlamaCppBackend:
                         need -= int(getattr(layout, "token_embd_bytes", 0) or 0)
                     per_layer = int(getattr(layout, "per_layer_embd_bytes", 0) or 0)
                     scan = self._gguf_tensor_scan(model_path) if per_layer else None
-                    if (
-                        scan is not None
-                        and scan[0] not in _HOST_FORCED_TABLE_ARCHS
-                        and any(
-                            _override_places_tensor_on_device(name, run_argv, env)
-                            for name in scan[1]
-                            if _is_per_layer_embedding(name)
-                        )
+                    if scan is not None and any(
+                        _override_places_tensor_on_device(name, run_argv, env)
+                        for name in scan[1]
+                        if _is_per_layer_embedding(name)
                     ):
                         per_layer = 0
                     need -= per_layer

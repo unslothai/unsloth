@@ -214,7 +214,7 @@ def test_host_pinned_inputs_for_the_three_families():
     assert _host_pinned_input_bytes(None) == 0
 
 
-def test_an_override_onto_a_device_keeps_the_table_charged_except_on_deepseek41():
+def test_an_override_onto_a_device_keeps_a_resident_table_charged():
     ot = ["-ot", "per_layer_token_embd=CUDA0"]
     assert _override_places_tensor_on_device(PLE, ot)
     assert not _override_places_tensor_on_device(PLE, ["-ot", "per_layer=CPU"])
@@ -222,7 +222,8 @@ def test_an_override_onto_a_device_keeps_the_table_charged_except_on_deepseek41(
     assert not _override_places_tensor_on_device(PLE, ["-ot", "exps=CPU"])
     assert _override_places_tensor_on_device(PLE, [], {"LLAMA_ARG_OVERRIDE_TENSOR": "embd=CUDA0"})
     assert _host_pinned_input_bytes(("qwen4exp", {PLE: FLASH_NEXT_PLE}, 0), ot, {}) == 0
-    assert _host_pinned_input_bytes(("deepseek41", {PLE: DSV41_ENGRAM}, 0), ot, {}) == DSV41_ENGRAM
+    # Upstream b11870 gathers the Engram rows in the graph, so -ot places it like any other table.
+    assert _host_pinned_input_bytes(("deepseek41", {PLE: DSV41_ENGRAM}, 0), ot, {}) == 0
 
 
 def _gemma3n_named():
@@ -739,3 +740,18 @@ def test_a_streamed_table_under_an_override_keeps_the_resident_embedding_host_on
     _flash_next_on_two_cards(tmp_path, ["-ot", "per_layer_token_embd=CUDA0"])
     assert seen and seen[-1]["lazy_read_bytes"] == FLASH_NEXT_PLE
     assert seen[-1]["host_only_bytes"] >= FLASH_NEXT_TOKEN_EMBD, seen[-1]
+
+
+def test_a_device_override_on_deepseek41_keeps_studio_from_turning_lazy_reads_off():
+    """-lzm off would make the overridden Engram table GPU-resident while it is priced on the host."""
+    backend = _scan_backend("deepseek41", {PLE: DSV41_ENGRAM})
+    assert (
+        backend._managed_lazy_mode_flags(
+            "/m.gguf",
+            caps = _CAPS,
+            extra_args = ["-ot", "per_layer_token_embd=CUDA0"],
+            env = {},
+            resident_fits = lambda _t: True,
+        )
+        == []
+    )
