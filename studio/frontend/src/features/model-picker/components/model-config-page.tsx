@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
 import {
   AlertDialog,
@@ -67,7 +68,7 @@ import {
   resolveFreeGpuCapacityGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ChevronDownStandardIcon, ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   DRAFTER_MODEL_SPEC_TYPES,
   MLX_SPECULATIVE_TYPES,
@@ -77,6 +78,7 @@ import {
   resolveSpeculativeType,
 } from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   type ReactNode,
   type Ref,
@@ -102,7 +104,7 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
-import { type MemoryEstimate } from "../api/memory-estimate";
+import { type MemoryEstimate, type MlxOffloadablePart } from "../api/memory-estimate";
 import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
   resolveEstimateContext,
@@ -110,7 +112,14 @@ import {
   resolveMlxServedWindow,
   shouldRequestMemoryEstimate,
 } from "../model-config/estimate-context";
-import { resolveReclaimableMemoryCredit } from "../model-config/memory-fit";
+import {
+  MLX_OFFLOAD_SLIDER_AUTO,
+  mlxOffloadDecided,
+  mlxOffloadFromSlider,
+  mlxOffloadModePatch,
+  mlxOffloadSliderValue,
+  resolveReclaimableMemoryCredit,
+} from "../model-config/memory-fit";
 import {
   resolveResidentEstimateRequest,
   selectResidentEstimateSettings,
@@ -178,6 +187,7 @@ import {
   MLX_KV_QUANTS,
   mlxKvQuantLabel,
   type MlxKvQuant,
+  type MlxOffload,
   N_BATCH_LLAMA_DEFAULT,
   N_BATCH_MAX,
   N_BATCH_MIN,
@@ -220,6 +230,7 @@ import {
 } from "../sharing";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
+import { LoadedPlacementRow } from "./loaded-placement-row";
 import type { ModelPickTarget } from "./model-selector/types";
 import type { ModelConfigFocus } from "../model-config/model-config-handoff";
 import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
@@ -227,9 +238,6 @@ import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -249,10 +257,6 @@ const SELECT_TRIGGER_CLASS = `panel-select-trigger grid h-8! min-w-0 grid-cols-[
 // .panel-field carries the surface and the value's alignment; the field adds its size.
 const NUMBER_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS}`;
 const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
-// Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
-// Width is the label plus this padding, so a pill is never wider than what it says.
-const FOOTER_BUTTON_CLASS =
-  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav";
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
@@ -1216,6 +1220,115 @@ function GpuMemorySettings({
 
 const MLX_KV_QUANT_AUTO = "auto";
 
+const MLX_OFFLOAD_SLIDERS = [
+  {
+    part: "experts",
+    key: "mlxExpertOffload",
+    label: "Experts on Disk",
+    hint: "Share of the MoE experts read from disk as they are needed instead of held in memory. Saves memory but slows generation a lot. 0% keeps every expert in memory; Auto leaves it to Unsloth.",
+  },
+  {
+    part: "ple",
+    key: "mlxPleOffload",
+    label: "PLE on Disk",
+    hint: "Share of the per-layer embedding tables read from disk instead of held in memory. Saves memory at a small cost to generation speed. 0% keeps them all in memory; Auto leaves it to Unsloth.",
+  },
+] as const satisfies readonly {
+  part: MlxOffloadablePart;
+  key: "mlxPleOffload" | "mlxExpertOffload";
+  label: string;
+  hint: string;
+}[];
+
+function MlxOffloadSettings({
+  config,
+  update,
+  offloadable,
+  decided,
+  notes,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  offloadable: readonly MlxOffloadablePart[];
+  decided: Record<MlxOffloadablePart, number | null> | null;
+  notes: Record<MlxOffloadablePart, string | null>;
+}) {
+  const sliders = MLX_OFFLOAD_SLIDERS.filter(
+    ({ part, key }) => offloadable.includes(part) || config[key] != null,
+  );
+  if (sliders.length === 0) return null;
+  const isManual = sliders.some(({ key }) => config[key] != null);
+  const shownNotes = sliders.map(({ part }) => notes[part]).filter(Boolean);
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Disk Offload</span>
+          <InfoHint>
+            <div className="flex flex-col gap-1.5">
+              <div>
+                <span className="font-medium">Default:</span> Unsloth reads
+                parts of the model from disk only when it would not otherwise
+                fit in memory.
+              </div>
+              <div>
+                <span className="font-medium">Manual:</span> set how much of
+                each part stays on disk.
+              </div>
+            </div>
+          </InfoHint>
+        </div>
+        <Select
+          value={isManual ? "manual" : "auto"}
+          onValueChange={(v) => {
+            if (v === "manual" && !decided) return;
+            update(
+              mlxOffloadModePatch(
+                v === "manual",
+                sliders.map(({ part, key }) => ({ key, decided: decided?.[part] ?? null })),
+              ),
+            );
+          }}
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value="auto">Default</SelectItem>
+            <SelectItem value="manual" disabled={!isManual && !decided}>
+              Manual
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {isManual &&
+        sliders.map(({ part, key, label, hint }) => (
+          <AdvancedGpuSlider
+            key={part}
+            label={label}
+            value={mlxOffloadSliderValue(config[key])}
+            min={MLX_OFFLOAD_SLIDER_AUTO}
+            max={100}
+            step={5}
+            onChange={(v) => update({ [key]: mlxOffloadFromSlider(v) })}
+            format={(v) => (v < 0 ? "Auto" : `${v}%`)}
+            info={hint}
+          />
+        ))}
+      {shownNotes.map((note) => (
+        <p key={note} className="text-ui-11 text-muted-foreground">
+          {note}
+        </p>
+      ))}
+    </>
+  );
+}
+
 function AdvancedSettingsToggle({
   checked,
   onCheckedChange,
@@ -1511,6 +1624,9 @@ function MlxAdvancedSettings({
   servedByMlx,
   int8PrefillAvailable,
   onInt8PrefillChange,
+  offloadable,
+  offloadDecided,
+  offloadNotes,
   speculativeFallback,
   modelPath,
   onEditTemplate,
@@ -1524,6 +1640,9 @@ function MlxAdvancedSettings({
   servedByMlx: boolean;
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
+  offloadable: readonly MlxOffloadablePart[];
+  offloadDecided: Record<MlxOffloadablePart, number | null> | null;
+  offloadNotes: Record<MlxOffloadablePart, string | null>;
   speculativeFallback: string;
   modelPath: string;
   onEditTemplate: () => void;
@@ -1605,6 +1724,15 @@ function MlxAdvancedSettings({
       )}
       {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
+      )}
+      {servedByMlx && (
+        <MlxOffloadSettings
+          config={config}
+          update={update}
+          offloadable={offloadable}
+          decided={offloadDecided}
+          notes={offloadNotes}
+        />
       )}
       <div className="space-y-1">
         <ChatTemplateSetting
@@ -2443,6 +2571,16 @@ export function ModelConfigPage({
     useShallow(selectResidentEstimateSettings),
   );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
+  const loadedMlxPleOffloadRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxPleOffloadRequested,
+  );
+  const loadedMlxExpertOffloadRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxExpertOffloadRequested,
+  );
+  const loadedMlxPleOffload = useChatRuntimeStore((s) => s.loadedMlxPleOffload);
+  const loadedMlxExpertOffload = useChatRuntimeStore((s) => s.loadedMlxExpertOffload);
+  const mlxPleOffloadReason = useChatRuntimeStore((s) => s.mlxPleOffloadReason);
+  const mlxExpertOffloadReason = useChatRuntimeStore((s) => s.mlxExpertOffloadReason);
   const loadedMlxKvQuantRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvQuantRequested,
   );
@@ -2630,16 +2768,23 @@ export function ModelConfigPage({
   const [initialMlxInt8Prefill] = useState(
     () => configState.mlxInt8Prefill ?? false,
   );
+  const [initialMlxOffload] = useState(
+    () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
+  );
   // Applicability stays live, unlike the snapshot above: MLX can become available after mount,
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
+  const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
   // Opened to change one field: show its section for this visit, leaving the saved switch alone.
   const [revealForFocus, setRevealForFocus] = useState(focusField != null);
   const showAdvanced =
     revealForFocus ||
     (advancedPreference ??
-      (autoOpenAdvanced || autoOpenForMlxKvQuant || autoOpenForMlxInt8Prefill));
+      (autoOpenAdvanced ||
+        autoOpenForMlxKvQuant ||
+        autoOpenForMlxInt8Prefill ||
+        autoOpenForMlxOffload));
   const toggleAdvanced = (open: boolean) => {
     setRevealForFocus(false);
     saveAdvancedSettingsOpen(open);
@@ -3257,6 +3402,8 @@ export function ModelConfigPage({
             ? null
             : resolveMlxEstimateContext(savedContextPin(config)),
           mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
+          mlxPleOffload: targetIsMlx ? (runtimeConfig.mlxPleOffload ?? null) : null,
+          mlxExpertOffload: targetIsMlx ? (runtimeConfig.mlxExpertOffload ?? null) : null,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
@@ -3287,6 +3434,24 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  // The loaded model's reason answers only the request it was given.
+  const mlxOffloadNote = (
+    value: MlxOffload | undefined,
+    loadedRequested: MlxOffload,
+    reason: string | null,
+  ): string | null =>
+    isActiveModel && reason && (value ?? null) === (loadedRequested ?? null)
+      ? reason
+      : null;
+  const mlxOffloadNotes = {
+    ple: mlxOffloadNote(config.mlxPleOffload, loadedMlxPleOffloadRequested, mlxPleOffloadReason),
+    experts: mlxOffloadNote(
+      config.mlxExpertOffload,
+      loadedMlxExpertOffloadRequested,
+      mlxExpertOffloadReason,
+    ),
+  };
+  const mlxOffloadDecidedNow = mlxOffloadDecided(memoryEstimate);
   const mlxFittedWindow = targetIsMlx
     ? servedWindow(memoryEstimate.estimate?.contextFitted)
     : null;
@@ -3318,7 +3483,11 @@ export function ModelConfigPage({
     residentEstimateSettings,
     residentContext,
     targetIsMlx && !residentModelLoading
-      ? { kvQuant: loadedMlxKvQuantRequested ?? null }
+      ? {
+          kvQuant: loadedMlxKvQuantRequested ?? null,
+          pleOffload: loadedMlxPleOffload,
+          expertOffload: loadedMlxExpertOffload,
+        }
       : undefined,
   );
   const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
@@ -3489,18 +3658,16 @@ export function ModelConfigPage({
       normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
       storedRecord.config,
     );
-  // Never mounted on demand: the click that saves would move Load.
+  // Always mounted: a status appearing on save would move Load.
   const saveStatus = savedRemember
     ? remember
       ? matchesStored
         ? "Saved for this model"
         : "Unsaved changes"
       : "Saved settings will be forgotten"
-    : remember
-      ? "Not saved yet"
-      : atDefault
-        ? "Using default settings"
-        : "Not remembered for this model";
+    : !remember && atDefault
+      ? "Using default settings"
+      : "";
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
     ? remember
@@ -3759,17 +3926,17 @@ export function ModelConfigPage({
       }}
     >
       {variant === "page" && showHeader && (
-        // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
-        // the same left edge as the rows below.
+        // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
         <div className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="nav-icon-btn -ml-1.5 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+              className="nav-icon-btn -ml-2.75 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
-              <ChevronLeftIcon
+              <HugeiconsIcon
+                icon={ChevronLeftStandardIcon}
                 className="size-4"
                 strokeWidth={1.75}
               />
@@ -3846,6 +4013,12 @@ export function ModelConfigPage({
             onExpandedChange={setMemoryBreakdownOpen}
           />
         )}
+        {isActiveModel && target.isGguf && !audioRuntimeGguf ? (
+          // The same pool the estimate above names: "Unified" on Apple Silicon, "Shared" on other one-pool machines.
+          <LoadedPlacementRow
+            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified memory" : "shared memory") : null}
+          />
+        ) : null}
         {target.isGguf && !audioRuntimeGguf && (
           <>
             <GgufContextLengthSetting
@@ -3958,6 +4131,9 @@ export function ModelConfigPage({
                         ? setInt8PrefillConfirmOpen(true)
                         : update({ mlxInt8Prefill: false })
                     }
+                    offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
+                    offloadDecided={mlxOffloadDecidedNow}
+                    offloadNotes={mlxOffloadNotes}
                     speculativeFallback={speculativeFallback}
                     modelPath={target.id}
                     onEditTemplate={() => setTemplateOpen(true)}
@@ -3972,8 +4148,17 @@ export function ModelConfigPage({
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
-      <div className="mt-5 flex flex-col gap-3.5 border-t border-border pt-5">
-        <div className="flex min-w-0 flex-col gap-1">
+      <div
+        className={cn(
+          "mt-5",
+          // Sticky offsets start inside the scroller's 18px padding: -bottom-4.5 reaches the panel edge,
+          // and the negative margins cover that padding with the panel's fill.
+          variant === "page" &&
+            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4.5 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
+        )}
+      >
+      {/* pt-3.25: Remember's cap top 18px under the rule, as under the buttons. */}
+      <div className="flex flex-col gap-3.5 border-t border-border pt-3.25">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
@@ -3992,22 +4177,22 @@ export function ModelConfigPage({
           >
             Remember for this model
           </label>
-        </div>
-        <p
-          id={saveStatusId}
-          aria-live="polite"
-          data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
-          className="truncate pl-6 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
-        >
-          {saveStatus}
-        </p>
+          {/* On this row so a status change never moves the buttons. */}
+          <p
+            id={saveStatusId}
+            aria-live="polite"
+            data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
+            className="ml-auto min-w-0 truncate text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+          >
+            {saveStatus}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
+            variant="dark"
             type="button"
             size="sm"
-            className={FOOTER_BUTTON_CLASS}
             disabled={
               sharedVariantUnresolved ||
               ((config.engine ?? "auto") !== "auto" && !engineReady) ||
@@ -4031,7 +4216,6 @@ export function ModelConfigPage({
               type="button"
               variant="outline"
               size="sm"
-              className={FOOTER_BUTTON_CLASS}
               // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
               // settings the load path strips or has already captured. Forget stores nothing, so
               // broken saved arguments must not lock it.
@@ -4053,7 +4237,7 @@ export function ModelConfigPage({
             type="button"
             variant="outline"
             size="sm"
-            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
+            className="text-muted-foreground"
             disabled={atDefault}
             onClick={() => {
               handleSharedConfigEdit();
@@ -4074,7 +4258,7 @@ export function ModelConfigPage({
           </Button>
           {target.isGguf && (
             <SharedRunConfigControls
-              className={FOOTER_BUTTON_CLASS}
+              className="text-muted-foreground"
               target={target}
               config={config}
               ready={!extraArgsHydrating}
@@ -4088,6 +4272,7 @@ export function ModelConfigPage({
             />
           )}
         </div>
+      </div>
       </div>
 
       <ChatTemplateEditorDialog
@@ -4116,7 +4301,6 @@ export function ModelConfigPage({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
               onClick={() => {
                 update({ mlxInt8Prefill: true });
                 setInt8PrefillConfirmOpen(false);

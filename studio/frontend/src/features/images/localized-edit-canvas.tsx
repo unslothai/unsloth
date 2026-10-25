@@ -211,7 +211,7 @@ export function LocalizedEditCanvas({
 
   return (
     <div
-      className="relative overflow-hidden rounded-[10px] border border-border"
+      className="relative overflow-hidden rounded-lg border border-border"
       style={TRANSPARENCY_CHECKER}
     >
       <img

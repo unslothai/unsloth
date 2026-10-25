@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Restart survival for the Anthropic /v1/messages passthrough.
-
-A crashed llama-server relaunches on a NEW ephemeral port. Before the retry the
-passthrough kept posting to the dead port, so a Claude Code session stayed broken
-until the next explicit load. These cover the respawn-and-retry on both the
-streaming and non-streaming passthroughs.
-"""
+"""A crashed llama-server relaunches on a new port, so the passthrough must respawn and retry."""
 
 from __future__ import annotations
 
@@ -150,9 +144,6 @@ async def _run_non_streaming(backend, **kwargs):
     )
 
 
-# ── Helper ────────────────────────────────────────────────────
-
-
 def test_retry_url_rebuilds_from_the_respawned_base_url():
     backend = _Backend()
 
@@ -188,9 +179,6 @@ def test_retry_url_tolerates_a_backend_without_respawn_hooks():
     assert url is None
 
 
-# ── Non-streaming ─────────────────────────────────────────────
-
-
 def test_non_streaming_retries_against_the_new_port(monkeypatch):
     client = _FakeNonStreamingClient()
     monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
@@ -211,7 +199,7 @@ def test_non_streaming_raises_when_the_server_stays_dead(monkeypatch):
     with pytest.raises(httpx.ConnectError):
         asyncio.run(_run_non_streaming(backend))
 
-    assert client.urls == [f"{_DEAD}/v1/chat/completions"]  # no blind retry
+    assert client.urls == [f"{_DEAD}/v1/chat/completions"]
 
 
 def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
@@ -298,9 +286,6 @@ def test_non_streaming_cancel_wins_response_race(monkeypatch):
     asyncio.run(_run())
 
 
-# ── Streaming ─────────────────────────────────────────────────
-
-
 def test_streaming_retries_against_the_new_port(monkeypatch):
     calls = []
     _install_stream_transport(monkeypatch, calls)
@@ -310,7 +295,6 @@ def test_streaming_retries_against_the_new_port(monkeypatch):
 
     assert backend.respawn_calls == 1
     assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
-    # The retried stream really produced the turn, not just a clean-looking stop.
     assert "event: message_start" in blob
     assert "event: message_stop" in blob
     assert "hi" in blob
@@ -323,7 +307,7 @@ def test_streaming_emits_an_error_event_when_the_server_stays_dead(monkeypatch):
 
     blob = asyncio.run(_run_stream(backend))
 
-    assert calls == [f"{_DEAD}/v1/chat/completions"]  # no blind retry
+    assert calls == [f"{_DEAD}/v1/chat/completions"]
     assert "event: error" in blob
 
 

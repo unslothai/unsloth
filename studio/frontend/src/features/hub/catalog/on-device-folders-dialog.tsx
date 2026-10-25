@@ -307,7 +307,7 @@ export function OnDeviceFoldersDialog({
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
             <section
               aria-labelledby="models-folder-heading"
-              className="rounded-[14px] border border-border/70 bg-muted/20 p-3"
+              className="rounded-lg border border-border/70 bg-muted/20 p-3"
             >
               <div
                 id="models-folder-heading"
@@ -407,7 +407,7 @@ export function OnDeviceFoldersDialog({
 
             <section
               aria-labelledby="custom-folders-heading"
-              className="overflow-hidden rounded-[14px] border border-border/70"
+              className="overflow-hidden rounded-xl border border-border/70"
             >
               <div className="flex h-10 items-center justify-between gap-2 border-b border-border/60 px-3">
                 <div className="flex min-w-0 items-center gap-1.5">
@@ -630,7 +630,7 @@ function FolderRow({
   const switchId = `scan-folder-recursive-${folder.id}`;
   return (
     <li className="flex min-h-14 items-center gap-3 border-b border-border/50 px-3 py-2.5 last:border-b-0">
-      <div className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-muted text-muted-foreground">
+      <div className="flex size-8 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
         <HugeiconsIcon
           icon={FolderOpenIcon}
           strokeWidth={1.75}

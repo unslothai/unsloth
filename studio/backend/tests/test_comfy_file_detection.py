@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI file detection: separator-insensitive family names and header-based DiT recognition.
-
-The fixture holds the real tensor names/shapes (trimmed to the first block of each stack) of 216
-ComfyUI-ecosystem files (Comfy-Org repackages, Kijai fp8, Lightricks, BFL, city96 / QuantStack /
-unsloth GGUFs) plus the diffusers layout of every supported transformer class. Expectations are
-reviewed per file; the name columns also record what main detected before this change."""
+"""ComfyUI detection: separator-insensitive family names and header-based DiT recognition."""
 
 from __future__ import annotations
 
