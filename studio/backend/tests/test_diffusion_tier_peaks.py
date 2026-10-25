@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A deferred profile's compiled tier is priced from its own learned peak once it has one. Before that (and with the
-kill switch) the flat estimate stands in, as it always did. FLUX.1-schnell bf16 numbers from a Colab L4. CPU only."""
+"""Deferred profile's compiled tier priced from its own learned peak, else flat. FLUX.1-schnell bf16 L4 numbers."""
 
 from __future__ import annotations
 
@@ -122,8 +121,6 @@ def test_kill_switch(store, monkeypatch):
     assert not dm.tier_peaks_enabled()
 
 
-# --- diffusion.py: which key prices the compiled request, and the graph-captured placement ---
-
 
 def _state(
     pipe,
@@ -218,7 +215,6 @@ def test_the_identity_follows_the_graph_mode_the_session_keeps(live):
     assert pipe._unsloth_peak_identity == ("flux.1", blocks, "default")
     dif._follow_live_graph_mode(_state(pipe, graph_mode = "off"))
     assert pipe._unsloth_peak_identity == ("flux.1", COMPILED, "default")
-    # the load's own identity (no profile engaged) is left alone
     eager = _pipe(_unsloth_peak_identity = ("flux.1", EAGER, "off"))
     delattr(eager, dm.TIER_MOVED_ATTR)
     dif._follow_live_graph_mode(_state(eager, graph_mode = "blocks"))
@@ -226,8 +222,7 @@ def test_the_identity_follows_the_graph_mode_the_session_keeps(live):
 
 
 def test_a_live_graph_keeps_the_release_it_was_captured_over(live, monkeypatch):
-    """The first compiled render captured its graph over the flat release: later renders keep that placement (no
-    re-capture) until no graph is live, then the measured compiled peak places them."""
+    """Placement a graph was captured over is held until no graph is live."""
     graphs = {"live": 0, "gen": 0}
     monkeypatch.setattr(dif.cuda_graph, "live_graph_count", lambda index: graphs["live"])
     monkeypatch.setattr(dif.cuda_graph, "capture_generation", lambda index: graphs["gen"])
@@ -238,7 +233,6 @@ def test_a_live_graph_keeps_the_release_it_was_captured_over(live, monkeypatch):
     dif._note_captured_release(state, 3840, before)
     assert dif._hold_captured_release(state, 0) == 3840
     assert dif._hold_captured_release(state, 5000) == 5000
-    # a render that captured nothing leaves the held release alone
     dif._note_captured_release(state, 0, graphs["gen"])
     assert dif._hold_captured_release(state, 0) == 3840
     graphs["live"] = 0  # dropped

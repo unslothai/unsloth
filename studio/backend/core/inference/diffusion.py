@@ -3125,10 +3125,8 @@ def _learned_peak_keys(
     *,
     eager_stand_in: bool = True,
 ) -> list:
-    """``(label, speed tier)`` keys a learned peak for the live configuration may sit under, most specific first.
-    ``eager_stand_in``: the eager tier's keys also answer for a compiled tier (the whole-module per-request path, which
-    runs the denoiser outside compiled code). Without it only the live key answers, CUDA graph mode included: on
-    FLUX.1-schnell bf16 the renders after a dropped graph peaked 1.1 GiB above the render that captured it."""
+    """Learned-peak keys for the live config, most specific first. ``eager_stand_in=False``: only the live key (graph
+    mode included); after a dropped graph FLUX.1-schnell peaked 1.1 GiB above the capturing render."""
     pipe = getattr(state, "pipe", None)
     cfg_off = CFG_OFF_PART in str(label).split("|")
     keys = [(label, speed)]
@@ -3161,7 +3159,6 @@ def _learned_peak_for_keys(
     workflow: Optional[str] = None,
     phase: Optional[str] = None,
 ) -> Optional[int]:
-    """The first learned peak (margin included) found under ``keys`` for this request, keyed for ``workflow``."""
     for key_label, tier in keys:
         found = measured_image_runtime_mib(
             family,
@@ -3179,8 +3176,7 @@ def _learned_peak_for_keys(
 
 
 def _follow_live_graph_mode(state: Any) -> None:
-    """A deferred profile's identity follows the CUDA graph mode the session keeps (a graph armed at the engagement,
-    then dropped as not worth its memory): later renders record, and the guard prices, the mode that runs."""
+    """Keep a deferred profile's identity on the CUDA graph mode actually running (armed, then possibly dropped)."""
     pipe = getattr(state, "pipe", None)
     identity = getattr(pipe, "_unsloth_peak_identity", None)
     if not getattr(pipe, TIER_MOVED_ATTR, False) or not isinstance(identity, tuple):
@@ -3204,8 +3200,7 @@ def _tier_request_peak(
     cfg: Optional[bool],
     workflow: Optional[str] = None,
 ) -> Optional[int]:
-    """Learned peak (margin included) of the tier a deferred profile engaged, for the request guard; None while that
-    tier has no measurement of its own (the first compiled render, a pending background compile, LoRA adapters)."""
+    """Learned peak of a deferred profile's engaged tier; None until that tier has its own measurement."""
     pipe = getattr(state, "pipe", None)
     if not getattr(pipe, TIER_MOVED_ATTR, False):
         return None
@@ -3233,8 +3228,8 @@ def _tier_request_peak(
 
 
 def _hold_captured_release(state: Any, extra_mib: int) -> int:
-    """At least the release a still-live CUDA graph was captured over: graphs key on weight addresses, so pinning
-    more groups again would re-capture it on the next render. Cleared once no graph is live."""
+    """At least the release a live CUDA graph was captured over: graphs key on weight addresses, so re-pinning
+    groups would re-capture."""
     pipe = getattr(state, "pipe", None)
     held = getattr(pipe, "_unsloth_captured_release_mib", None)
     if held is None:
@@ -3249,7 +3244,6 @@ def _hold_captured_release(state: Any, extra_mib: int) -> int:
 
 
 def _note_captured_release(state: Any, extra_mib: int, generation_before: Optional[int]) -> None:
-    """Remember the release a render captured a CUDA graph over (``_hold_captured_release``)."""
     pipe = getattr(state, "pipe", None)
     if generation_before is None or not getattr(pipe, TIER_MOVED_ATTR, False):
         return
@@ -3404,9 +3398,7 @@ def _live_graph_mode(state: Any) -> str:
 
 
 def _tier_graph_mode(state: Any) -> str:
-    """The CUDA graph mode a deferred profile's renders run under, stable across its first capture: the armed mode
-    (``_engaged_graph_mode``) until the graphs are captured then dropped, or settle eager, then ``off``. Unlike
-    ``_live_graph_mode`` it does not read ``off`` before the first capture, so the render that captures records."""
+    """Like ``_live_graph_mode`` but reads the armed mode (not ``off``) before the first capture, so it records."""
     try:
         if "cuda_graph" not in tuple(getattr(state, "speed_optims", ()) or ()):
             return "off"
@@ -13277,9 +13269,7 @@ class DiffusionBackend:
                 )
             except Exception:  # noqa: BLE001 - recording is optional
                 pass
-            # the reserve was placed for the load's tier: until this tier records a peak of its own (its first
-            # completed render), or with the kill switch until a reload re-places it, requests size from the flat
-            # estimate
+            # reserve was placed for the load's tier: flat estimate until this tier records its own peak
             if tier_peaks_enabled():
                 setattr(state.pipe, TIER_MOVED_ATTR, True)
             else:
@@ -13380,7 +13370,6 @@ class DiffusionBackend:
         object.__setattr__(
             state, "cuda_graphs", tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
         )
-        # the renders of this tier record under the graph mode it armed
         _follow_live_graph_mode(state)
         entry = (state.resolved or {}).get("speed_mode")
         if isinstance(entry, dict):

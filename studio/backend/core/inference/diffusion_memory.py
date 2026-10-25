@@ -3644,9 +3644,7 @@ def cfg_off_peaks_enabled() -> bool:
     return not _env_off(LEARNED_PEAKS_CFG_OFF_ENV)
 
 
-# A deferred profile that engages after the load records its own learned peak (the tier it runs, the CUDA graph mode
-# it keeps) and the request guard prices compiled renders from it; 0 restores the flat estimate for every compiled
-# render of the session.
+# Deferred profiles record and price their own tier's learned peak; 0 = flat estimate for compiled renders.
 TIER_PEAKS_ENV = "UNSLOTH_DIFFUSION_TIER_PEAKS"
 TIER_MOVED_ATTR = "_unsloth_peak_tier_moved"
 
@@ -5549,9 +5547,8 @@ def measured_request_extra_mib(
     workflow: Optional[str] = None,
     tier_peak_mib: Optional[int] = None,
 ) -> int:
-    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made). ``tier_peak_mib``:
-    the peak (margin included) learned under the key a deferred profile's tier runs (``TIER_MOVED_ATTR``), which then
-    raises the eager pricing instead of the flat estimate standing in; None keeps the flat estimate. ``workflow``:
+    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made).  ``tier_peak_mib``:
+    a deferred profile's tier peak (``TIER_MOVED_ATTR``), raising eager pricing; None keeps the flat estimate. ``workflow``:
     a workflow other than text-to-image also reads the peak recorded under its own key (``with_workflow``). ``cfg``:
     whether the request runs classifier-free guidance (None: unknown, treated as running it). ``unpriced_references``:
     the request carries reference images whose latents join the denoiser's sequence but are not in
@@ -5587,7 +5584,6 @@ def measured_request_extra_mib(
         (dense_mib is not None and sized["dense_tier_seeds"])
         or (dense_mib is None and sized["phase_seeds"])
     )
-    # a deferred profile moved the tier after the load: priced from the tier's own learned peak, else flat
     tier_moved = bool(getattr(pipe, TIER_MOVED_ATTR, False))
     tier_peak = int(tier_peak_mib) if tier_moved and tier_peak_mib else None
     if (unpriced_references and tier_seeded) or (
@@ -5643,7 +5639,7 @@ def measured_request_extra_mib(
     if need is None and isinstance(identity, tuple) and len(identity) == 3:
         need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
     if tier_peak is not None:
-        # never below the eager pricing the load reserved: a compiled render measured lower keeps it
+        # never below the eager pricing the load reserved
         need = tier_peak if need is None else max(int(need), tier_peak)
     cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
     allowance = int(
