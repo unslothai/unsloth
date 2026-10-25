@@ -10,7 +10,6 @@ fp32 modules (would upcast fp16-rounded weights). Kill switch: ``UNSLOTH_DIFFUSI
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import re
@@ -74,7 +73,11 @@ def _class_pins_fp32(library: Any, class_name: Any) -> bool:
     if library not in _WEIGHT_LIBRARIES or not isinstance(class_name, str) or not class_name:
         return True
     try:
-        cls = getattr(importlib.import_module(library), class_name, None)
+        if library == "diffusers":
+            import diffusers as module
+        else:
+            import transformers as module
+        cls = getattr(module, class_name, None)
     except Exception:  # noqa: BLE001 - an unimportable class decides nothing: keep the defaults
         return True
     if cls is None:
