@@ -235,12 +235,16 @@ export const MAX_TAB_TITLE_CHARS = 120;
 function copyTab(tab: BrowserTab): BrowserTab {
   return {
     ...createTab({ kind: "newtab" }),
-    history: tab.history.map((entry) => {
+    history: tab.history.map((entry, index) => {
       const copy = { ...entry };
       // The original keeps its key; a copy going Back must not claim it.
       if (copy.kind === "file") delete copy.openKey;
       // A form result is not sent again unasked just because the tab was copied.
       if (entry.kind === "web" && entry.method === "POST") sentPosts.add(copy);
+      // Open where the tab got to: native-view clicks and router moves update only displayUrl.
+      if (index === tab.index && copy.kind === "web" && copy.method !== "POST" && tab.displayUrl && isWeb(tab.displayUrl)) {
+        copy.url = tab.displayUrl;
+      }
       return copy;
     }),
     index: tab.index,
@@ -274,7 +278,14 @@ async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
   if (!a || a.size !== b.size) return false;
   for (let start = 0; start < b.size; start += COMPARE_CHUNK_BYTES) {
     const end = start + COMPARE_CHUNK_BYTES;
-    const [x, y] = await Promise.all([a.slice(start, end).arrayBuffer(), b.slice(start, end).arrayBuffer()]);
+    let x: ArrayBuffer;
+    let y: ArrayBuffer;
+    try {
+      [x, y] = await Promise.all([a.slice(start, end).arrayBuffer(), b.slice(start, end).arrayBuffer()]);
+    } catch {
+      // A File changed on disk can't be read: treat as different, so it is replaced.
+      return false;
+    }
     if (!sameBuffer(x, y)) return false;
   }
   return true;
@@ -691,8 +702,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (openKey && existing) {
         focusExisting(openKey);
         if (page) get().setFileView(existing.id, { pageTarget: { page } });
-        // refresh changed files in order per tab so the last reopen wins.
-        const previous = refreshes.get(existing.id) ?? Promise.resolve();
+        // refresh changed files in order per tab so the last reopen wins; one that failed doesn't skip the next.
+        const previous = (refreshes.get(existing.id) ?? Promise.resolve()).catch(() => undefined);
         queuedFiles.add(fileId);
         const next = previous.then(async () => {
           const tab = get().tabs.find((candidate) => candidate.id === existing.id);

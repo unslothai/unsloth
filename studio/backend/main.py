@@ -336,6 +336,9 @@ del _guard_dataset_media
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+# Studio decides training / export / chat-only from its own hardware detection, so keep
+# `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 # Same rule as unsloth/__init__.py, reached through Studio's own copy because this parent must
 # not import unsloth: that runs unsloth/__init__.py, whose GPU branch pulls torch, Triton,
@@ -449,6 +452,7 @@ from routes.sandbox_capability import router as sandbox_capability_router
 from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
+from routes.scheduled_tasks import router as scheduled_tasks_router
 from routes.library import router as library_router
 from routes.profile_stats import router as profile_stats_router
 from auth import policy as auth_policy, storage
@@ -1010,6 +1014,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("re-arming unattended research runs failed: %s", exc)
 
+    from core.scheduled_tasks.scheduler import ScheduledTaskScheduler
+
+    app.state.scheduled_task_scheduler = ScheduledTaskScheduler(app)
+    app.state.scheduled_task_scheduler.start()
+
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
 
     app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
@@ -1131,6 +1140,10 @@ async def lifespan(app: FastAPI):
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
         await _research_supervisor.stop()
+
+    _scheduled_task_scheduler = getattr(app.state, "scheduled_task_scheduler", None)
+    if _scheduled_task_scheduler is not None:
+        await _scheduled_task_scheduler.stop()
 
     _chat_generation_supervisor = getattr(app.state, "chat_generation_supervisor", None)
     if _chat_generation_supervisor is not None:
@@ -1979,6 +1992,7 @@ app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
+app.include_router(scheduled_tasks_router, prefix = "/api/scheduled-tasks", tags = ["scheduled-tasks"])
 app.include_router(library_router, prefix = "/api/library", tags = ["library"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
@@ -2376,7 +2390,7 @@ async def health_check(request: Request):
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
-        # A closed AMD device node (#14067): Repair installation cannot fix group membership.
+        # Why the repair cannot enable Train: a closed AMD device node (#14067), or a --no-torch Mac the MLX wheels skip.
         try:
             authed["chat_only_hint"] = (
                 _hw_module.chat_only_permission_hint(snapshot[1], snapshot[2])

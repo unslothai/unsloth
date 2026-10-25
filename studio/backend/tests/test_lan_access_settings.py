@@ -28,6 +28,7 @@ import lan_access  # noqa: E402
 import routes.settings as routes  # noqa: E402
 import utils.host_policy as host_policy  # noqa: E402
 import utils.lan_access_settings as lan_settings  # noqa: E402
+import utils.paths.file_manager as file_manager  # noqa: E402
 from storage import studio_db  # noqa: E402
 
 # captured before the autouse fixture swaps in the dict stand-in
@@ -702,6 +703,7 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 ):
     """The status refreshes every LAN address instead of relying on server_url's
     single direct base, and never leaks an obsolete public-address value."""
+    monkeypatch.setattr(file_manager, "_in_container", lambda: False)
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
     state = _app(
         lan_access_launch_managed = True,
@@ -714,6 +716,78 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["10.0.0.7"])
     assert lan_settings.lan_access_status(state)["urls"] == ["http://10.0.0.7:8888"]
+
+
+def test_a_wildcard_launch_in_a_container_advertises_no_bridge_address(monkeypatch):
+    monkeypatch.setattr(file_manager, "_in_container", lambda: True)
+    monkeypatch.setattr(lan_settings, "_veth_addresses", lambda: {"172.17.0.2"})
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["172.17.0.2"])
+    state = _app(lan_access_launch_managed = True, lan_access_wildcard_bind = True)
+    assert lan_settings.lan_access_status(state)["urls"] == []
+
+    # --network host sees the host's own NICs, no veth, even on a 172.16/12 office LAN.
+    monkeypatch.setattr(lan_settings, "_veth_addresses", lambda: set())
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["172.20.1.5"])
+    assert lan_settings.lan_access_status(state)["urls"] == ["http://172.20.1.5:8888"]
+
+
+def test_veth_addresses_reads_the_peer_link_from_sysfs(monkeypatch, tmp_path):
+    entry = lambda address: SimpleNamespace(address = address)
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        SimpleNamespace(
+            net_if_addrs = lambda: {
+                "eth0": [entry("172.17.0.2")],
+                "enp3s0": [entry("172.20.1.5")],
+                "enp3s0.100": [entry("172.21.0.5")],
+            }
+        ),
+    )
+    # eth0's peer (index 12) is the host-side veth, outside this namespace; a NIC and its VLAN link to index 2.
+    for name, (iflink, ifindex) in {
+        "eth0": ("12", "11"),
+        "enp3s0": ("2", "2"),
+        "enp3s0.100": ("2", "3"),
+    }.items():
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "iflink").write_text(iflink + "\n")
+        (tmp_path / name / "ifindex").write_text(ifindex + "\n")
+    assert lan_settings._veth_addresses(str(tmp_path)) == {"172.17.0.2"}
+
+
+def test_lan_status_reports_keyless_off_while_a_managed_account_exists(monkeypatch):
+    import auth.policy as policy
+    import utils.keyless_api_access as keyless
+
+    monkeypatch.setattr(keyless, "get_keyless_api_access_settings", lambda: ("inference", True))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    status = lan_settings.lan_access_status(_app())
+    assert (status["keyless_scope"], status["keyless_tools"]) == ("off", False)
+
+
+@pytest.mark.parametrize(
+    ("name", "host_only"),
+    [
+        ("docker0", True),
+        ("br-0123456789ab", True),
+        ("virbr0", True),
+        ("vboxnet0", True),
+        ("vmnet8", True),
+        ("br0", False),
+        ("en0", False),
+        ("eth0", False),
+    ],
+)
+def test_virtual_switches_are_not_offered_as_lan_addresses(name, host_only):
+    assert lan_access._is_host_only_interface(name) is host_only
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "BSD SO_REUSEADDR semantics")
+def test_lan_bind_does_not_take_a_port_another_app_serves(monkeypatch):
+    monkeypatch.setattr(lan_access, "_already_served", lambda address, port: True)
+    with pytest.raises(OSError):
+        lan_access._bind_listener("127.0.0.1", 0)
 
 
 def test_listener_urls_bracket_ipv6_literals():

@@ -13,6 +13,9 @@ name: Unsloth Update CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
       - 'scripts/uninstall.sh'
@@ -432,6 +435,7 @@ jobs:
           retention-days: 7
 
   idempotency-macos:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth Updating Tests (macOS)
     runs-on: macos-15
     # The install is the expensive half; the harness itself is three updates that are
@@ -493,6 +497,7 @@ jobs:
           retention-days: 7
 
   idempotency-windows:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth Updating Tests (Windows)
     runs-on: windows-latest
     # Windows installs are 3x the Linux ones (268-292s against 88s in the API smoke),

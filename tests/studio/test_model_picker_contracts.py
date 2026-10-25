@@ -1423,10 +1423,22 @@ def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     before = src.split("<Checkbox id={rememberId}", 1)[0]
-    # Footer is the third <div back: the status line sits in the Remember column.
-    footer = before.rsplit("<div", 3)[1]
-    assert "flex-wrap" not in footer, footer[:200]
-    assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]
+    # Opening tags of the divs enclosing Remember, nearest first. The footer column is the one
+    # under the rule. A wrapper just outside it (the picker's sticky pin) may vary by variant, but
+    # only in placement: it must not make the footer wrap either.
+    attr = r"""(?:[^>"'{]|"[^"]*"|'[^']*'|\{(?:[^{}]|\{[^{}]*\})*\})*"""
+    stack = []
+    for match in re.finditer(r"<div\b(" + attr + r")>|</div>", before):
+        if match.group(0) == "</div>":
+            stack.pop()
+        elif not match.group(1).rstrip().endswith("/"):
+            stack.append(match.group(1))
+    tags = stack[::-1]
+    footer = next((i for i, tag in enumerate(tags) if "border-t" in tag), None)
+    assert footer is not None, tags[:4]
+    assert "flex flex-col" in tags[footer] and "variant ===" not in tags[footer], tags[footer]
+    for tag in tags[: footer + 2]:
+        assert "flex-wrap" not in tag, tag
 
 
 def test_save_settings_is_not_rendered_when_it_could_do_nothing():
@@ -2818,14 +2830,10 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert "_BPW_SUFFIX" in backend and "bpw" in identity
     assert "extract_quant_label(filename).casefold()" in backend, "the label rule"
     # The known-quant pattern itself, not tokens from it: #13899 widened MXFP to (?:MX|NV)FP in all
-    # three places, which a literal "MXFP" check read as a drift. What has to hold is that the
-    # frontend, the hub scanner and the llama.cpp backend spell one pattern, and that it still
-    # recognises each quant family.
+    # three places, which a literal "MXFP" check read as a drift. The frontend must spell the
+    # backend's pattern (utils/gguf_names.py) and still recognise each quant family.
     patterns = {
-        "llama_cpp.py": _python_regex_source(
-            _read_backend("core/inference/llama_cpp.py"), "_GGUF_KNOWN_QUANT_RE"
-        ),
-        "gguf.py": _python_regex_source(_read_backend("hub/utils/gguf.py"), "_GGUF_QUANT_RE"),
+        "gguf.py": _python_regex_source(_read_backend("utils/gguf_names.py"), "GGUF_QUANT_RE"),
         "model-identity.ts": re.search(r'const QUANT_TOKEN_SOURCE =\s*"([^"]+)";', identity).group(
             1
         ),
