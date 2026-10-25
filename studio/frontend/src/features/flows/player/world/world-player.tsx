@@ -319,7 +319,6 @@ export function WorldPlayer({
           import("./phaser-game"),
         ]);
         if (!live || !host.current) return;
-        // Things added while playing (from a save) stand where they were placed.
         const added = wsRef.current.additions ?? noAdditions();
         handle = mod.createWorldGame(
           host.current,
@@ -436,7 +435,6 @@ export function WorldPlayer({
   // Bumped on every message and load: a summary cancelled by either must not go on to start the director.
   const messages = useRef(0);
 
-  // Long conversations are summarised in the background, one at a time, and never while the player waits on a reply.
   const summarising = spec.summarise !== false;
   const summaryRun = useRef<AbortController | null>(null);
   const summarise = useCallback(
@@ -466,7 +464,6 @@ export function WorldPlayer({
         if (text && !run.signal.aborted && generation === loads.current)
           setWs((st) => foldSummary(st, npcId, text, due.upto));
       } catch {
-        // A failed summary keeps every turn; the next reply tries again.
       } finally {
         if (summaryRun.current === run) summaryRun.current = null;
       }
@@ -474,8 +471,6 @@ export function WorldPlayer({
     [api, flowId, replyEntry, spec, summarising],
   );
 
-  // The world keeps growing: once a quest is finished (or none is left) the NPC Reply node writes the next one in
-  // the background, one at a time; a message from the player or a load cancels it.
   const growing = baseSpec.new_quests !== false;
   const directorRun = useRef<AbortController | null>(null);
   const events = useRef<string[]>([]);
@@ -526,14 +521,12 @@ export function WorldPlayer({
           `New quest: ${patch.quest.title}${giver ? ` · ask ${giver.name}` : ""}`,
         );
       } catch {
-        // No new quest this time; the next finished quest tries again.
       } finally {
         if (directorRun.current === run) directorRun.current = null;
       }
     },
     [api, baseSpec, flowId, growing, map, replyEntry, toast],
   );
-  // A world with no quest left (or none at all) gets one as soon as play starts.
   useEffect(() => {
     if (ready && started) void direct(false);
   }, [ready, started, direct]);
@@ -709,7 +702,6 @@ export function WorldPlayer({
             kind: "plan",
             run: (signal) => planDay(n.id, day, signal),
           });
-        // Followers and NPCs on an errand are walked by the conversation's action instead; their needs still drop.
         if (steered.current.has(n.id)) {
           const needs = withNeeds
             ? steeredNeeds(mind, sim.minutes_per_second)
@@ -786,7 +778,6 @@ export function WorldPlayer({
     areas,
   ]);
 
-  // Conversation actions in any world: followers walk with the player, errands run until their time is up.
   useEffect(() => {
     if (!ready || !started) return;
     const timer = window.setInterval(() => {
@@ -809,7 +800,6 @@ export function WorldPlayer({
     return () => window.clearInterval(timer);
   }, [ready, started, areas]);
 
-  // The reply being written; a load stops it so the old game's answer does not keep the model busy.
   const replyRun = useRef<AbortController | null>(null);
   const send = async () => {
     const text = draft.trim();
@@ -923,7 +913,6 @@ export function WorldPlayer({
       if (generation !== loads.current) return;
       setLive(null);
       setWs((s) =>
-        // A failed reply keeps the unsummarised turns too, so nothing waiting for a summary is lost.
         addTurn(
           s,
           npcId,

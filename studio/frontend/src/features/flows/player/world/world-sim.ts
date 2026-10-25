@@ -34,7 +34,6 @@ export interface NpcMind {
   planDay: number;
   /** Other NPC id -> game minute of their last chat. */
   lastChat: Record<string, number>;
-  /** Sims-style needs and the current action; absent when the world turns needs off. */
   needs?: Needs;
   doing?: Doing | null;
 }

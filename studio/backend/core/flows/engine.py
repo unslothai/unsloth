@@ -854,7 +854,6 @@ class FlowEngine:
             try:
                 await asyncio.wait({scope})
             except asyncio.CancelledError:
-                # The caller left: stop the model call through its hooks while they are registered.
                 rs.marks["cancel"] = time.monotonic()
                 rs.cancel_event.set()
                 await asyncio.shield(self._fire_cancel_hooks(rs))
