@@ -7823,7 +7823,7 @@ const ComposerRightControls: FC<{
         <AuiIf condition={({ thread }) => thread.isRunning}>
           {/* Classed so the narrow-screen rules can treat this like the
               sibling send/stop buttons; it is the flex item, not the button. */}
-          {/* One button: Queue while the composer holds a prompt, else Stop (the shortcut stops either way). */}
+          {/* With a draft only the stop shortcut stops the reply. */}
           <div className="aui-composer-run-controls ml-1.5 flex items-center gap-1.5">
             {queueDisabled ? (
               <ComposerPrimitive.Cancel asChild={true}>
