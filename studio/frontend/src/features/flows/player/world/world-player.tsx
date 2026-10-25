@@ -757,10 +757,12 @@ export function WorldPlayer({
           (t) => t.role === "npc",
         ).length;
         setWs((s) =>
-          addTurn(s, npcId, {
-            role: "npc",
-            text: offlineLine(npc?.greeting, spoken),
-          }),
+          addTurn(
+            s,
+            npcId,
+            { role: "npc", text: offlineLine(npc?.greeting, spoken) },
+            summarising,
+          ),
         );
         if (!offlineNoted.current) {
           offlineNoted.current = true;
