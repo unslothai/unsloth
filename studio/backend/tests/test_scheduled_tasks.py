@@ -1419,6 +1419,32 @@ def test_a_scheduled_run_while_away_switches_back_to_the_earlier_model(monkeypat
     assert world.loaded == SwapWorld.EARLIER
 
 
+def test_switching_back_unloads_only_a_task_model_loaded_beside_the_primary(monkeypatch):
+    world = SwapWorld(monkeypatch)
+    kept = []
+    monkeypatch.setattr(
+        scheduler_module,
+        "_model_is_loaded",
+        lambda model: model in kept or (world.loaded is not None and world.loaded[2] == model),
+    )
+
+    class LoadsBeside(FakeProducer):
+        async def __call__(self, payload, request, current_subject, *, cancel_on_disconnect):
+            kept.append(SwapWorld.TASK_MODEL)
+            return await super().__call__(
+                payload, request, current_subject, cancel_on_disconnect = cancel_on_disconnect
+            )
+
+    async def unload(request, subject):
+        world.unloaded.append(request.model_path)
+        kept.remove(request.model_path)
+
+    monkeypatch.setattr(inference_routes, "_unload_model_impl", unload)
+    world.run(monkeypatch, {"id": "run-1", "source": "schedule"}, LoadsBeside(completion("Ok.")))
+    assert world.unloaded == [SwapWorld.TASK_MODEL] and kept == []
+    assert world.loaded == SwapWorld.EARLIER and world.reloads == []
+
+
 def test_a_run_that_found_nothing_loaded_leaves_nothing_loaded(monkeypatch):
     world = SwapWorld(monkeypatch, earlier = None)
     world.run(monkeypatch, {"id": "run-1", "source": "schedule"})

@@ -382,6 +382,8 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         _maybe_auto_switch_model,
         _unload_model_impl,
         allow_model_switch_for_request,
+        _loaded_identity_satisfies,
+        _loaded_satisfies,
         get_inference_backend,
     )
 
@@ -390,6 +392,12 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
             return
         with unattended_activity():
             current = loaded_identity()
+            on_primary = _loaded_satisfies(swap.model) or _loaded_identity_satisfies(swap.model)
+            if not on_primary and _model_is_loaded(swap.model):
+                # Loaded beside the primary (Keep multiple models loaded with a speech model in it): the primary
+                # was never replaced, so only the task model goes.
+                await _unload_model_impl(UnloadRequest(model_path = swap.model), swap.subject)
+                return
             if _model_is_loaded(swap.model):
                 # A Transformers or MLX task model has no GGUF identity; it holds the primary all the same.
                 target = (
