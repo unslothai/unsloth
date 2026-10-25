@@ -162,7 +162,10 @@ class _PoolMatmul(torch.autograd.Function):
         g_w = (grad.reshape(-1, grad.shape[-1]).t() @ x.reshape(-1, x.shape[-1])).contiguous()
         buf = _POOL.setdefault(tuple(g_w.shape), torch.empty_like(g_w))
         buf.copy_(g_w)
-        return grad @ weight, buf.detach()  # fresh tensor on the shared storage, like a replay output
+        return (
+            grad @ weight,
+            buf.detach(),
+        )  # fresh tensor on the shared storage, like a replay output
 
 
 def _pool_layers(monkeypatch, graphs):
