@@ -298,6 +298,9 @@ test("the player drives autonomy through the game handle and pauses it while tal
   assert.ok(wander.length > 100);
   assert.doesNotMatch(wander, /Math\.random/);
   assert.match(game, /new Prng\(seedFrom\(spec\.seed, "wander", id\)\)/);
+  // Home signs restored from a save before the scene exists are kept and drawn once it is created.
+  assert.match(game, /if \(sceneRef\) drawMarker\(sceneRef, id, at, icon, label\);\s*else pendingMarkers\.set\(id, \[at, icon, label\]\);/);
+  assert.match(game, /for \(const \[id, m\] of pendingMarkers\) drawMarker\(this, id, \.\.\.m\);/);
 });
 
 test("the director's new villager keeps a rival or hostile role only when the world allows it", async () => {

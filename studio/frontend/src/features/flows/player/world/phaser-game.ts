@@ -116,6 +116,7 @@ export function createWorldGame(
           ? "snow"
           : "grass";
   let sceneRef: WorldScene | null = null;
+  const pendingMarkers = new Map<string, [Point, string, string]>();
 
   class WorldScene extends Phaser.Scene {
     player!: Actor;
@@ -259,6 +260,9 @@ export function createWorldGame(
         }
         this.route = findPath(map, this.tileOf(this.player), { x: tx, y: ty });
       });
+      // Signs asked for before the scene existed (a save restored right after the game was created).
+      for (const [id, m] of pendingMarkers) drawMarker(this, id, ...m);
+      pendingMarkers.clear();
     }
 
     buildTextures() {
@@ -644,6 +648,37 @@ export function createWorldGame(
   };
   document.addEventListener("visibilitychange", onVisibility);
 
+  function drawMarker(
+    scene: WorldScene,
+    id: string,
+    at: Point,
+    icon: string,
+    label: string,
+  ): void {
+    if (scene.markers.has(id)) return;
+    const cx = at.x * T + T / 2;
+    const cy = at.y * T + T / 2;
+    const sign = scene.add
+      .text(cx, cy, icon, {
+        fontFamily: "Inter, system-ui, sans-serif",
+        fontSize: `${Math.round(T * 0.8)}px`,
+      })
+      .setOrigin(0.5, 0.75)
+      .setDepth(cy);
+    const name = scene.add
+      .text(cx, cy - T * 0.55, label, {
+        fontFamily: "Inter, system-ui, sans-serif",
+        fontSize: `${Math.max(9, Math.round(T * 0.28))}px`,
+        color: "#fff7d6",
+        stroke: "#1b1b28",
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(cy + 1)
+      .setAlpha(0.85);
+    scene.markers.set(id, [sign, name]);
+  }
+
   return {
     destroy() {
       document.removeEventListener("visibilitychange", onVisibility);
@@ -680,29 +715,8 @@ export function createWorldGame(
       sceneRef.spawnItem(item, at);
     },
     addMarker(id: string, at: Point, icon: string, label: string) {
-      const scene = sceneRef;
-      if (!scene || scene.markers.has(id)) return;
-      const cx = at.x * T + T / 2;
-      const cy = at.y * T + T / 2;
-      const sign = scene.add
-        .text(cx, cy, icon, {
-          fontFamily: "Inter, system-ui, sans-serif",
-          fontSize: `${Math.round(T * 0.8)}px`,
-        })
-        .setOrigin(0.5, 0.75)
-        .setDepth(cy);
-      const name = scene.add
-        .text(cx, cy - T * 0.55, label, {
-          fontFamily: "Inter, system-ui, sans-serif",
-          fontSize: `${Math.max(9, Math.round(T * 0.28))}px`,
-          color: "#fff7d6",
-          stroke: "#1b1b28",
-          strokeThickness: 3,
-        })
-        .setOrigin(0.5, 1)
-        .setDepth(cy + 1)
-        .setAlpha(0.85);
-      scene.markers.set(id, [sign, name]);
+      if (sceneRef) drawMarker(sceneRef, id, at, icon, label);
+      else pendingMarkers.set(id, [at, icon, label]);
     },
     faceNpc(id: string | null) {
       if (sceneRef) {
