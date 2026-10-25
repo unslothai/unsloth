@@ -249,6 +249,9 @@ def validate_rule(rule: dict) -> dict:
                 f"compare_to cannot be '{column}': TRL reserves that name. Map the column as "
                 "the answer role and compare to 'answer' instead."
             )
+        # GRPO prompt rendering drops tools and writes the prefill column before rewards run.
+        if column in ("tools", PREFILL_COLUMN):
+            raise RewardError(f"compare_to cannot be '{column}': Studio uses that column itself.")
         out["compare_to"] = column
         # GSM8K-style references ("...reasoning #### 72") need their answer pulled out too.
         out["reference_extract"] = _validate_extract(rule.get("reference_extract"))
