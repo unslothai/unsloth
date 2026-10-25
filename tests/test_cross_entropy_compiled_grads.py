@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""torch.compile of fast_cross_entropy_loss must give the eager gradients for chunked vocabs
-(> 65536): mutating the forward output in place after the kernel made compiled grads zero."""
+"""Chunked vocabs (> 65536): in-place ops on the forward output zeroed compiled grads (torch 2.11)."""
 
 import pytest
 import torch
