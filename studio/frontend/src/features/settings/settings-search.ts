@@ -24,7 +24,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.language.title",
     "settings.appearance.language.label",
     "settings.appearance.language.spellCheck",
-    "settings.about.engines.title",
     "settings.general.notifications.sectionTitle",
     "settings.general.notifications.showLoadedModels",
     "settings.general.notifications.updateReminders",
@@ -35,8 +34,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
-    "settings.general.developerMode.sectionTitle",
-    "settings.general.developerMode.videoCpu",
     "settings.general.hub.sectionTitle",
     "settings.general.hub.source",
     "settings.general.hub.endpoint",
@@ -113,6 +110,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.environment.torch",
     "settings.resources.environment.transformers",
     "settings.resources.liveUpdates",
+    "settings.about.engines.title",
+    "settings.general.developerMode.sectionTitle",
+    "settings.general.developerMode.videoCpu",
   ],
   chat: [
     "settings.general.chatDefaults",
@@ -147,6 +147,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.modelDisclaimer",
     "settings.chat.inlineEditResponse",
     "settings.chat.showReplyTimes",
+    "settings.chat.showGenerationDetails",
     "settings.chat.groups.menu.title",
   ],
   browser: [
@@ -478,6 +479,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
   "settings.chat.replyNotification": "settings.chat.replyNotificationKeywords",
   "settings.chat.showReplyTimes": "settings.chat.showReplyTimesKeywords",
+  "settings.chat.showGenerationDetails": "settings.chat.showGenerationDetailsKeywords",
   // match protocol and agent names omitted from the title.
   "settings.apiKeys.mcp.title": "settings.apiKeys.mcp.keywords",
   // the intro names only some agents; every listed one has to find this page.

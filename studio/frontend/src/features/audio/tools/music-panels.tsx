@@ -135,7 +135,7 @@ export const aceStepMusicalPanel: AudioToolPanel<AceStepMusicalValue> = {
           onChange={(event) =>
             onChange({ ...value, avoid: event.target.value })
           }
-          className="min-h-12 rounded-lg"
+          className="min-h-12"
         />
       </Field>
       <Field label="Sampler" htmlFor="music-ace-sampler">
