@@ -1341,13 +1341,6 @@ export function ApiMonitorPage(): ReactElement {
       ) : null}
     </>
   );
-  const activeFacts = (
-    <>
-      {contextFact}
-      {slotsFact}
-    </>
-  );
-
   return (
     <>
       {/* Model picker top left, where Chat, Images, Video and Audio keep theirs. Sticky: the log scrolls under it. */}
@@ -1468,20 +1461,13 @@ export function ApiMonitorPage(): ReactElement {
                 <Button
                   type="button"
                   variant="outline"
-                  size="icon"
-                  aria-label={
-                    reload.reloadingKey === "*"
-                      ? "Reloading"
-                      : served.length > 1
-                        ? "Reload all"
-                        : "Reload"
-                  }
+                  size="sm"
                   onClick={() => void reload.reloadAll(served)}
                   disabled={
                     reloadBusy ||
                     (served.length === 0 && reload.lastLoadLabel == null)
                   }
-                  className="size-control rounded-full"
+                  className="gap-1.5 rounded-full"
                 >
                   <HugeiconsIcon
                     icon={ReloadIcon}
@@ -1491,6 +1477,7 @@ export function ApiMonitorPage(): ReactElement {
                       reload.reloadingKey === "*" && "animate-spin",
                     )}
                   />
+                  {reload.reloadingKey === "*" ? "Reloading" : "Reload all"}
                 </Button>
               </ToolbarTooltip>
               <ToolbarTooltip label={ejectLabel}>
@@ -1511,11 +1498,7 @@ export function ApiMonitorPage(): ReactElement {
                     strokeWidth={1.75}
                     className={cn("size-4", ejecting && "animate-pulse")}
                   />
-                  {ejecting
-                    ? "Ejecting"
-                    : served.length > 1
-                      ? "Eject all"
-                      : "Eject"}
+                  {ejecting ? "Ejecting" : "Eject all"}
                 </Button>
               </ToolbarTooltip>
             </div>
@@ -1529,28 +1512,27 @@ export function ApiMonitorPage(): ReactElement {
             ) : null}
           </div>
           <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>
-            {served.length > 1 ? (
+            {served.length === 0 ? (
+              <p className="text-ui-12 text-muted-foreground">
+                No models loaded
+              </p>
+            ) : (
               <div className="flex flex-col gap-2">
                 <p className="text-ui-12 text-muted-foreground">
-                  {served.length} models answering requests
+                  {served.length === 1
+                    ? "1 model answering requests"
+                    : `${served.length} models answering requests`}
                 </p>
                 <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
                   {served.map((model) => (
                     <div key={model.checkpoint} className="contents">
-                      <span className="flex min-w-0 items-center gap-1">
-                        <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
-                          <span
-                            className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                            aria-hidden={true}
-                          />
-                          <span className="ml-1 truncate font-mono text-foreground">
-                            {model.name}
-                          </span>
-                          <CopyButton
-                            value={model.name}
-                            label="Copy model name"
-                            revealOnHover={true}
-                          />
+                      <span className="flex min-w-0 items-center gap-1 text-ui-12">
+                        <span
+                          className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                          aria-hidden={true}
+                        />
+                        <span className="ml-1 truncate font-mono text-foreground">
+                          {model.name}
                         </span>
                         {exampleButton(model)}
                       </span>
@@ -1570,37 +1552,6 @@ export function ApiMonitorPage(): ReactElement {
                   ))}
                 </div>
               </div>
-            ) : (
-              <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
-                <Fact label="Model" className="max-w-full">
-                  {served.length === 1 ? (
-                    <>
-                      {/* Its own reveal group: hovering settings or code must not show Copy. */}
-                      <span className="group/copy flex min-w-0 items-center gap-1">
-                        <span className="truncate font-mono">
-                          {served[0].name}
-                        </span>
-                        <CopyButton
-                          value={served[0].name}
-                          label="Copy model name"
-                          revealOnHover={true}
-                        />
-                      </span>
-                      {exampleButton(served[0])}
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground">None loaded</span>
-                  )}
-                </Fact>
-                {served[0]?.active ? activeFacts : null}
-                {served.length === 1 ? (
-                  <div className="ml-auto flex items-center gap-0.5">
-                    {settingsButton(served[0])}
-                    {reloadButton(served[0])}
-                    {ejectButton(served[0])}
-                  </div>
-                ) : null}
-              </dl>
             )}
           </div>
         </section>
