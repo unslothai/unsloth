@@ -785,8 +785,7 @@ def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
 
 
 def _cached_hub_adapter_commit(checkpoint_path: str) -> Optional[str]:
-    """The commit of a Hub adapter's cached snapshot (the one its load just used), read from the
-    local cache only; None for a local folder or when it cannot be told."""
+    """The commit of a Hub adapter's cached snapshot (the one its load just used), else None."""
     if not checkpoint_path or os.path.isdir(checkpoint_path):
         return None
     if os.path.isabs(checkpoint_path) or checkpoint_path.count("/") != 1:
@@ -1148,8 +1147,7 @@ class ExportBackend:
             self.current_checkpoint = checkpoint_path
             self._checkpoint_token = token
             self._checkpoint_local_files_only = bool(local_files_only)
-            # The base config's _commit_hash names the base repo: a Hub adapter's own commit is the
-            # snapshot its adapter_config.json was just cached in.
+            # The base config's _commit_hash names the base repo, not the adapter's.
             self._adapter_commit = (
                 (checkpoint_path, _cached_hub_adapter_commit(checkpoint_path))
                 if self.is_peft
@@ -2196,8 +2194,6 @@ class ExportBackend:
             from core.export.drafter_export import training_manifest
 
             token = getattr(self, "_checkpoint_token", None)
-            # A Hub id reads its manifest with the load's credential, at the commit the load
-            # resolved (the shards below come from it too), and stays offline when the load did.
             manifest = training_manifest(
                 checkpoint_path,
                 token,
@@ -2208,7 +2204,6 @@ class ExportBackend:
                 return
             source = checkpoint_path
             if not os.path.isdir(source):
-                # The head's shards are in the snapshot the load just cached, at the loaded commit.
                 source = self._loaded_hub_snapshot(checkpoint_path, token)
                 if source is None:
                     logger.warning(
@@ -2225,8 +2220,8 @@ class ExportBackend:
             logger.warning(f"Could not attach the trained MTP head: {exception}")
 
     def _loaded_commit(self) -> Optional[str]:
-        """The Hub commit of the repo current_checkpoint names, as the load resolved it (None for a
-        local folder, or a Hub adapter whose commit is unknown: no pin beats the base's commit)."""
+        """The Hub commit current_checkpoint was loaded at; None for a local folder, or a Hub adapter
+        whose commit is unknown (no pin beats the base's commit)."""
         if getattr(self, "is_peft", False):
             recorded = getattr(self, "_adapter_commit", None)
             if recorded and recorded[0] == getattr(self, "current_checkpoint", None):
@@ -2235,8 +2230,7 @@ class ExportBackend:
         return getattr(getattr(self.current_model, "config", None), "_commit_hash", None)
 
     def _loaded_manifest_kwargs(self) -> dict:
-        """The load's commit and offline decision, so a Hub id's drafter manifest is read where the
-        exported weights came from (only the ones that are set)."""
+        """The load's commit and offline decision for a Hub id's drafter manifest read."""
         kwargs = {}
         revision = self._loaded_commit()
         if revision:
@@ -2251,8 +2245,7 @@ class ExportBackend:
         try:
             from huggingface_hub import hf_hub_download
 
-            # Every load caches config.json beside the shards (a cached snapshot can still lack
-            # files the load never needed, which snapshot_download refuses offline).
+            # Not snapshot_download: offline it refuses a snapshot lacking files the load never needed.
             config = hf_hub_download(
                 repo_id, "config.json", revision = revision, token = token, local_files_only = True
             )

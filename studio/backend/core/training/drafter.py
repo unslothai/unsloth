@@ -336,9 +336,8 @@ def _row_examples(row: dict, max_len: int) -> list[tuple[list[int], list[int]]]:
         labels = [t if m else -100 for t, m in zip(ids, row["assistant_masks"])]
     else:
         labels = list(ids)
-    # Split packed rows at every example boundary so no draft crosses one. TRL's packed dataset
-    # records the boundaries as `seq_lengths` (its collator builds position_ids later); older
-    # layouts restart `position_ids` at 0 instead.
+    # Split packed rows so no draft crosses an example: TRL's packed dataset records `seq_lengths`
+    # (its collator builds position_ids later); older layouts restart `position_ids` at 0.
     cuts = [0]
     lengths = row.get("seq_lengths")
     positions = row.get("position_ids")

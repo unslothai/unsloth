@@ -39,9 +39,7 @@ def _hub_adapter_snapshot(
     revision = None,
     local_files_only = False,
 ) -> Optional[str]:
-    """A Hub adapter's cached files (its manifest and MTP head): the loader re-attached that head.
-    `revision` pins the reads to the commit the load resolved; `local_files_only` keeps them in the
-    cache when the load was offline."""
+    """A Hub adapter's cached files (its manifest and MTP head), read at the load's commit."""
     if os.path.isabs(repo_id) or repo_id.count("/") != 1:
         return None
     kwargs = {"token": token}
@@ -70,8 +68,7 @@ def training_manifest(
     local_files_only = False,
 ) -> Optional[dict]:
     """The manifest the training run wrote, when its drafter is still complete on disk. `token` is
-    the credential the checkpoint was loaded with (a private Hub adapter); `revision` and
-    `local_files_only` match a Hub id's reads to the load (its commit, its offline decision)."""
+    the credential the checkpoint was loaded with (a private Hub adapter)."""
     if checkpoint_dir and not os.path.isdir(checkpoint_dir):
         checkpoint_dir = _hub_adapter_snapshot(checkpoint_dir, token, revision, local_files_only)
     if not checkpoint_dir or not os.path.isdir(checkpoint_dir):
@@ -169,8 +166,7 @@ def package_merged(
     trained no drafter. `verifier` is what the drafter's config names as its target: the Hub repo on a
     push, else the base model id (vLLM refuses a local verifier path inside a speculators config, so
     local serving passes the target explicitly). `allow_mtp` is False for exports that cannot carry
-    a stitched head (compressed-tensors, torchao): only an EAGLE-3 drafter ships with those.
-    `revision` / `local_files_only` pin a Hub id's manifest read to the load (see training_manifest)."""
+    a stitched head (compressed-tensors, torchao): only an EAGLE-3 drafter ships with those."""
     manifest = training_manifest(checkpoint_dir, token, revision, local_files_only)
     if manifest is None or (manifest["strategy"] == "mtp" and not allow_mtp):
         clear_stale(final_dir)
