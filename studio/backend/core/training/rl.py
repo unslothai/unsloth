@@ -380,6 +380,7 @@ def render_grpo_prompts(
     tokenizer,
     enable_thinking: Optional[bool],
     num_proc: Optional[int] = None,
+    keep_turns: bool = False,
 ):
     """Render GRPO prompts to text when TRL's own templating would get them wrong. TRL applies the
     chat template with no kwargs, so a Qwen3-style template always opens a thinking block; and
@@ -397,7 +398,7 @@ def render_grpo_prompts(
     drop = ["tools"] if "tools" in columns else []
     if not (thinking or nulls or tools or _has_tool_ended_prompts(dataset)):
         return (dataset.remove_columns(drop) if drop else dataset), False
-    from core.training.rewards import PREFILL_COLUMN
+    from core.training.rewards import PREFILL_COLUMN, PROMPT_TURNS_COLUMN
 
     kwargs = {"enable_thinking": bool(enable_thinking)} if thinking else {}
     # TRL continues an assistant-ended prompt and puts it back in front of the completion before
@@ -430,8 +431,10 @@ def render_grpo_prompts(
             )
         }
         if prefills:
-            from core.training.rewards import PREFILL_COLUMN
             out[PREFILL_COLUMN] = (prompt[-1].get("content") or "") if prefill else ""
+        if keep_turns:
+            # Python rewards read roles and the last user turn, as Try it gives them.
+            out[PROMPT_TURNS_COLUMN] = prompt
         return out
 
     map_kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}
@@ -925,12 +928,14 @@ def build_rl_trainer(
         if not reward_specs:
             raise ValueError("GRPO needs at least one reward selected.")
         if tokenizer is not None:
+            thinking = settings.get("enable_thinking")
+            keep_turns = any(s.get("kind") == "python" for s in reward_specs)
             train_dataset, _ = render_grpo_prompts(
-                train_dataset, tokenizer, settings.get("enable_thinking")
+                train_dataset, tokenizer, thinking, keep_turns = keep_turns
             )
             if eval_dataset is not None:
                 eval_dataset, _ = render_grpo_prompts(
-                    eval_dataset, tokenizer, settings.get("enable_thinking")
+                    eval_dataset, tokenizer, thinking, keep_turns = keep_turns
                 )
         loss_type, sampling_level = GRPO_VARIANTS.get(
             settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"]

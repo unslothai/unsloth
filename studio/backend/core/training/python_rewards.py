@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.training import reward_worker_main as _worker_io
+from core.training.rewards import PREFILL_COLUMN, PROMPT_TURNS_COLUMN
 
 try:
     import resource as _resource
@@ -349,6 +350,17 @@ def make_python_reward_funcs(
             completions = None,
             **kwargs,
         ):
+            # A prompt rendered to text (render_grpo_prompts) comes back as its turns, with the
+            # assistant prefill TRL would have put in front of the completion.
+            turns = kwargs.pop(PROMPT_TURNS_COLUMN, None)
+            prefills = kwargs.pop(PREFILL_COLUMN, None)
+            if isinstance(turns, list) and isinstance(prompts, list) and len(turns) == len(prompts):
+                prompts = turns
+            if isinstance(prefills, list) and isinstance(completions, list):
+                completions = [
+                    p + c if isinstance(c, str) and isinstance(p, str) else c
+                    for p, c in zip(prefills, completions)
+                ] + completions[len(prefills) :]
             return worker.score(
                 [name], _as_turns(prompts, "user"), _as_turns(completions, "assistant"), kwargs
             )[name]
