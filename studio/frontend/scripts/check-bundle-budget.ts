@@ -446,8 +446,10 @@ export const BUDGET = {
   // transfer (Node 24, 99 chunks), set to that plus about 600 B raw / 250 B transfer.
   // Merged with main at abfe8dc5cd: measured 6,780.8 KB raw / 2,043.2 KB transfer (Node 24, 99 chunks). Main keeps
   // moving under this branch, so set to that plus about 1.4 KB raw / 1.1 KB transfer.
-  transferBytes: 2_093_400,
-  rawBytes: 6_945_000,
+  // Merged with main at ec0895c9f3: measured 6,789.4 KB raw / 2,048.7 KB transfer (Node 24, 105 chunks), set to that
+  // plus about 1.4 KB raw / 1.1 KB transfer.
+  transferBytes: 2_099_000,
+  rawBytes: 6_953_800,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

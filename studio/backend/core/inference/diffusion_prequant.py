@@ -349,8 +349,25 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
         ckpt = load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
     else:
         ckpt = _torch_load_prequant(path, **kwargs)
-    _install_fp8_unit_scale()
+    if not _int8_only(ckpt):
+        _install_fp8_unit_scale()
     return ckpt
+
+
+def _int8_only(ckpt: Any) -> bool:
+    """True if every quantized tensor is int8: the fp8 dispatcher's compile cache tag would miss the runtime entry."""
+    try:
+        state_dict = ckpt.get("state_dict") if isinstance(ckpt, dict) else None
+        if not isinstance(state_dict, dict):
+            return False
+        quantized = [
+            type(v).__name__
+            for v in state_dict.values()
+            if type(v).__name__ not in ("Tensor", "Parameter")
+        ]
+        return bool(quantized) and all(name.startswith("Int8") for name in quantized)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _install_fp8_unit_scale() -> None:

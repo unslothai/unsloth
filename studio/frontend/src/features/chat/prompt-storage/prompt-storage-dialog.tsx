@@ -2589,7 +2589,7 @@ export function PromptStorageDialog({
                   variant="outline"
                   size="sm"
                   onClick={() => importRef.current?.click()}
-                  className="h-8 gap-1.5 text-xs"
+                  className="gap-1.5 text-xs"
                   title="Import from JSONL, CSV, or collection JSONL"
                 >
                   <UploadIcon className="size-3.5" />
@@ -2600,7 +2600,7 @@ export function PromptStorageDialog({
                   size="sm"
                   disabled={bulkExportDisabled}
                   onClick={openBulkExport}
-                  className="h-8 gap-1.5 text-xs"
+                  className="gap-1.5 text-xs"
                 >
                   <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
                   Export

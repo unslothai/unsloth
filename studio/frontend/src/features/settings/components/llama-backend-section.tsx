@@ -175,7 +175,6 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
           <Button
             variant="outline"
             size="sm"
-            className="h-8"
             disabled={!pathDirty || saving}
             onClick={() => void save(draftPath.trim() || null)}
             data-testid="llama-cpp-path-save"
@@ -185,7 +184,6 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
           <Button
             variant="outline"
             size="sm"
-            className="h-8"
             disabled={!settings?.editable || saving}
             onClick={() => setBrowserOpen(true)}
             data-testid="llama-cpp-path-change"
