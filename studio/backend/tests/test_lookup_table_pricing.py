@@ -45,6 +45,7 @@ def _header(
     arch: str,
     tensors: list[tuple[str, list[int], int]],
     ints: dict | None = None,
+    offsets: list[int] | None = None,
 ):
     """A GGUF v3 header: the architecture, uint32 metadata, and tensor infos with no data."""
     kv: list[tuple[str, object]] = [("general.architecture", arch)]
@@ -61,12 +62,12 @@ def _header(
         else:
             buf.write(struct.pack("<II", 4, value))
     offset = 0
-    for name, dims, ggml_type in tensors:
+    for i, (name, dims, ggml_type) in enumerate(tensors):
         raw = name.encode()
         buf.write(struct.pack("<Q", len(raw)) + raw)
         buf.write(struct.pack("<I", len(dims)))
         buf.write(struct.pack(f"<{len(dims)}Q", *dims))
-        buf.write(struct.pack("<IQ", ggml_type, offset))
+        buf.write(struct.pack("<IQ", ggml_type, offsets[i] if offsets else offset))
         offset += 1024
     return buf.getvalue()
 
@@ -345,7 +346,7 @@ class TestListing:
             lambda repo, name, token, identity = None, **k: ("qwen4exp", FLASH_NEXT_TABLE),
         )
         rows = [
-            GgufVariantDetail(filename = "Q2/a-00001-of-00003.gguf", quant = "Q2", size_bytes = 1),
+            GgufVariantDetail(filename = "Q2/a-00001-of-00003.gguf", quant = "Q2", size_bytes = 40 * GIB),
             GgufVariantDetail(filename = "README.md", quant = "x", size_bytes = 1),
         ]
         out = asyncio.run(
@@ -1331,3 +1332,290 @@ class TestEstimate:
         )
         assert out["weights_bytes"] == int(self.WEIGHTS)
         assert out["lookup_table_bytes"] == FLASH_NEXT_TABLE
+
+
+def _blob_fetcher(
+    blobs: dict,
+    calls: list,
+    delay: float = 0.0,
+):
+    """A Range fetcher over in-memory files that reports each file's size like Content-Range."""
+    import time
+
+    def fetcher(
+        repo_id,
+        name,
+        token,
+        revision = None,
+    ):
+        blob, size = blobs[name]
+
+        def fetch(start, end):
+            calls.append((name, start, end))
+            if delay:
+                time.sleep(delay)
+            fetch.file_size = size
+            return blob[start : end + 1]
+
+        return fetch
+
+    return fetcher
+
+
+class TestHubDiscovery:
+    """Hub and local discovery of the streamed table, as the launch scanner finds it."""
+
+    # Engram stored in a quant type gguf predates (ggml type 43); the next tensor bounds it.
+    UNKNOWN_TYPE = 43
+
+    def test_an_unknown_quant_type_is_sized_from_the_next_offset(self, tmp_path):
+        from hub.utils.gguf_lookup_tables import local_lookup_info
+        path = _write(
+            tmp_path / "dsv41-unknown.gguf",
+            _header(
+                "deepseek41",
+                [
+                    ("per_layer_token_embd.weight", [256, 768022850], self.UNKNOWN_TYPE),
+                    ("blk.0.attn_q.weight", [256, 256], F16),
+                ],
+                offsets = [0, DSV41_TABLE],
+            ),
+        )
+        assert local_lookup_info(path) == ("deepseek41", DSV41_TABLE)
+
+    def test_an_unknown_quant_type_last_in_the_file_is_sized_from_the_file(self, tmp_path):
+        from hub.utils import gguf_lookup_tables as glt
+
+        header = _header(
+            "deepseek41",
+            [
+                ("token_embd.weight", [4096, 129280], IQ4_NL),
+                ("per_layer_token_embd.weight", [256, 768022850], self.UNKNOWN_TYPE),
+            ],
+            offsets = [0, 4096],
+        )
+        data_start = -(-len(header) // 32) * 32
+        size = data_start + 4096 + DSV41_TABLE
+        path = tmp_path / "dsv41-last.gguf"
+        with open(path, "wb") as f:
+            f.write(header)
+            f.truncate(size)  # sparse
+        assert glt.local_lookup_info(str(path)) == ("deepseek41", DSV41_TABLE)
+        calls = []
+        got = glt.remote_lookup_info(
+            "o/unknown-type",
+            "m.gguf",
+            identity = size,
+            fetcher_fn = _blob_fetcher({"m.gguf": (header, size)}, calls),
+        )
+        assert got == ("deepseek41", DSV41_TABLE)
+
+    def test_local_discovery_reads_every_shard(self, tmp_path):
+        from hub.utils.gguf_lookup_tables import local_lookup_table_bytes
+
+        first = _write(
+            tmp_path / "big-00001-of-00010.gguf",
+            _header("deepseek41", [("token_embd.weight", [4096, 129280], IQ4_NL)]),
+        )
+        for i in range(2, 10):
+            _write(
+                tmp_path / f"big-{i:05d}-of-00010.gguf",
+                _header("", [(f"blk.{i}.attn_q.weight", [256, 256], F16)]),
+            )
+        _write(
+            tmp_path / "big-00010-of-00010.gguf",
+            _header("", [("per_layer_token_embd.weight", [256, 768022850], IQ4_NL)]),
+        )
+        assert local_lookup_table_bytes(first) == DSV41_TABLE
+
+    def _split(self):
+        names = [f"Q4/m-{i:05d}-of-00003.gguf" for i in (1, 2, 3)]
+        first = _header("qwen4exp", [("token_embd.weight", [2048, 151936], IQ4_NL)], _ATTN)
+        table = _header("", [("per_layer_token_embd.weight", [160, 320001536], IQ4_NL)])
+        rest = _header("", [("blk.3.attn_q.weight", [256, 256], F16)])
+        return names, {
+            names[0]: (first, 40 * GIB),
+            names[1]: (table, 40 * GIB),
+            names[2]: (rest, 40 * GIB),
+        }
+
+    def test_a_later_split_shard_starts_with_a_small_range(self):
+        from hub.utils import gguf_lookup_tables as glt
+
+        names, blobs = self._split()
+        calls = []
+        got = glt.remote_lookup_info(
+            "o/small-range", names[0], identity = 1, fetcher_fn = _blob_fetcher(blobs, calls)
+        )
+        assert got == ("qwen4exp", FLASH_NEXT_TABLE)
+        later = [end + 1 for name, _start, end in calls if name != names[0]]
+        assert later and max(later) <= 64 << 10, calls
+
+    def test_a_known_architecture_reads_the_later_shards_before_the_tokenizer(self):
+        from hub.utils import gguf_lookup_tables as glt
+
+        names, blobs = self._split()
+        calls = []
+        got = glt.remote_lookup_info(
+            "o/known-arch",
+            names[0],
+            identity = 1,
+            fetcher_fn = _blob_fetcher(blobs, calls),
+            known_arch = "qwen4exp",
+        )
+        assert got == ("qwen4exp", FLASH_NEXT_TABLE)
+        assert [name for name, _s, _e in calls] == [names[1]]
+
+    def test_the_listing_forwards_the_known_architecture(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        seen = []
+
+        def read(
+            repo,
+            name,
+            token,
+            identity = None,
+            **k,
+        ):
+            seen.append(k.get("known_arch"))
+            return ("qwen4exp", FLASH_NEXT_TABLE)
+
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: True)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(glt, "remote_lookup_info", read)
+        rows = [GgufVariantDetail(filename = "Q4/m.gguf", quant = "Q4", size_bytes = 40 * GIB)]
+        asyncio.run(
+            gv._with_lookup_tables(
+                _answer(rows),
+                "o/forward",
+                hf_token = None,
+                offline = False,
+                prefer_local_cache = False,
+            )
+        )
+        assert seen == ["qwen4exp"]
+
+    def test_auto_mode_skips_files_too_small_to_hold_a_streamed_table(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        read_names = []
+
+        def read(
+            repo,
+            name,
+            token,
+            identity = None,
+            **k,
+        ):
+            read_names.append(name)
+            return ("gemma4", 5 * GIB if name == "BF16.gguf" else 0)
+
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: True)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "gemma4"))
+        monkeypatch.setattr(glt, "remote_lookup_info", read)
+        rows = [
+            GgufVariantDetail(filename = "Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 3 * GIB),
+            GgufVariantDetail(filename = "BF16.gguf", quant = "BF16", size_bytes = 15 * GIB),
+        ]
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                _answer(rows),
+                "o/small-files",
+                hf_token = None,
+                offline = False,
+                prefer_local_cache = False,
+            )
+        )
+        assert read_names == ["BF16.gguf"]
+        assert [v.lookup_table_bytes for v in out.response.variants] == [0, 5 * GIB]
+
+    def test_a_listing_shares_a_table_read_already_in_flight(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_header_delta
+        from hub.utils import gguf_lookup_tables as glt
+
+        blob = _header(
+            "qwen4exp", [("per_layer_token_embd.weight", [160, 320001536], IQ4_NL)], _ATTN
+        )
+        calls = []
+        monkeypatch.setattr(
+            gguf_header_delta,
+            "hub_range_fetcher",
+            _blob_fetcher({"Q4/shared.gguf": (blob, 40 * GIB)}, calls, delay = 0.3),
+        )
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: True)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        glt._REMOTE_CACHE.clear()
+        rows = [GgufVariantDetail(filename = "Q4/shared.gguf", quant = "Q4", size_bytes = 40 * GIB)]
+
+        def listing():
+            return gv._with_lookup_tables(
+                _answer(rows),
+                "o/shared-read",
+                hf_token = None,
+                offline = False,
+                prefer_local_cache = False,
+            )
+
+        async def both():
+            first = asyncio.ensure_future(listing())
+            await asyncio.sleep(0.1)
+            return await asyncio.gather(first, listing())
+
+        outs = asyncio.run(both())
+        assert [o.response.variants[0].lookup_table_bytes for o in outs] == [FLASH_NEXT_TABLE] * 2
+        assert len(calls) == 1
+
+    def test_a_listing_shares_an_architecture_lookup_already_in_flight(self, monkeypatch):
+        import threading
+        import time
+
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        cache: dict = {}
+        lock = threading.Lock()
+        asked = []
+
+        def arch(repo, token):
+            with lock:
+                if repo in cache:
+                    return cache[repo]
+            asked.append(repo)
+            time.sleep(0.3)
+            with lock:
+                cache[repo] = "qwen4exp"
+            return "qwen4exp"
+
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: True)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (False, None))
+        monkeypatch.setattr(gv, "_hub_repo_architecture", arch)
+        monkeypatch.setattr(
+            glt, "remote_lookup_info", lambda *a, **k: ("qwen4exp", FLASH_NEXT_TABLE)
+        )
+        rows = [GgufVariantDetail(filename = "a.gguf", quant = "Q2", size_bytes = 40 * GIB)]
+
+        def listing():
+            return gv._with_lookup_tables(
+                _answer(rows),
+                "o/shared-arch",
+                hf_token = "hf_same",
+                offline = False,
+                prefer_local_cache = False,
+            )
+
+        async def both():
+            first = asyncio.ensure_future(listing())
+            await asyncio.sleep(0.1)
+            return await asyncio.gather(first, listing())
+
+        outs = asyncio.run(both())
+        assert [o.response.variants[0].lookup_table_bytes for o in outs] == [FLASH_NEXT_TABLE] * 2
+        assert asked == ["o/shared-arch"]

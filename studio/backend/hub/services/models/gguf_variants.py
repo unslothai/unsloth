@@ -1368,7 +1368,8 @@ _LOOKUP_ARCH_TTL_S = 6 * 3600.0
 _LOOKUP_ARCH_FAIL_TTL_S = 600.0
 _lookup_arch_cache: dict[tuple[str, str], tuple[Optional[str], float]] = {}
 _lookup_arch_lock = threading.Lock()
-_lookup_inflight: set = set()
+# Key of a read in flight -> its done event, so a second listing waits for it instead of skipping.
+_lookup_inflight: dict = {}
 _LOOKUP_POOL = ThreadPoolExecutor(
     max_workers = _LOOKUP_CONCURRENCY, thread_name_prefix = "gguf-lookup-tables"
 )
@@ -1380,19 +1381,44 @@ async def _lookup_thread(fn, /, *args):
     return await loop.run_in_executor(_LOOKUP_POOL, call)
 
 
+def _claim_lookup(key) -> Optional[threading.Event]:
+    """None once ``key`` is claimed here, else the done event of the read already holding it."""
+    with _lookup_arch_lock:
+        held = _lookup_inflight.get(key)
+        if held is None:
+            _lookup_inflight[key] = threading.Event()
+        return held
+
+
+def _release_lookup(key) -> None:
+    with _lookup_arch_lock:
+        done = _lookup_inflight.pop(key, None)
+    if done is not None:
+        done.set()
+
+
+async def _wait_for_lookup(done: threading.Event, deadline: float) -> bool:
+    """Whether another listing's read of the same key ended before ``deadline`` (loop time)."""
+    loop = asyncio.get_running_loop()
+    while not done.is_set():
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
+
 def _release_unrun_lookup(started: list, key, task: "asyncio.Future") -> None:
     """Release the inflight key of a read that never ran."""
     if not started and (task.cancelled() or task.exception() is not None):
-        with _lookup_arch_lock:
-            _lookup_inflight.discard(key)
+        _release_lookup(key)
 
 
 async def _lookup_await_once(key, deadline: float, fn, /, *args):
-    """``fn(*args)`` on the lookup pool, awaited until ``deadline`` (loop time)."""
-    with _lookup_arch_lock:
-        if key in _lookup_inflight:
+    """``fn(*args)`` on the lookup pool, awaited until ``deadline`` (loop time). A call
+    already in flight under ``key`` is waited for, then ``fn`` reruns on its cached answer."""
+    while (held := _claim_lookup(key)) is not None:
+        if not await _wait_for_lookup(held, deadline):
             return None
-        _lookup_inflight.add(key)
 
     started: list = []
     # Set at the deadline: a worker freeing up mid-cancel skips the call instead of running late.
@@ -1403,8 +1429,7 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
         try:
             return None if expired.is_set() else fn(*args)
         finally:
-            with _lookup_arch_lock:
-                _lookup_inflight.discard(key)
+            _release_lookup(key)
 
     task = asyncio.ensure_future(_lookup_thread(_run))
     task.add_done_callback(functools.partial(_release_unrun_lookup, started, key))
@@ -1542,9 +1567,12 @@ def _remote_lookup_bytes(
     hf_token,
     identity,
     mode = "auto",
+    known_arch: Optional[str] = None,
 ) -> int:
     from hub.utils.gguf_lookup_tables import remote_lookup_info
-    return remote_lookup_info(repo_id, filename, hf_token, identity = identity, mode = mode)[1]
+    return remote_lookup_info(
+        repo_id, filename, hf_token, identity = identity, mode = mode, known_arch = known_arch
+    )[1]
 
 
 async def _with_lookup_tables(
@@ -1623,16 +1651,28 @@ async def _with_lookup_tables(
                     tasks = {}
                     for index, v in unresolved:
                         identity = int(v.size_bytes or 0)
+                        # Under auto only a tensor over the threshold streams.
+                        if mode != "on" and 0 < identity <= LAZY_READ_AUTO_MIN_BYTES:
+                            continue
                         cached = remote_cached(repo_id, v.filename, None, identity, mode = mode)
                         if cached is not None:
                             found[index] = cached[1]
                             continue
                         key = ("table", repo_id, v.filename, identity, mode, _fingerprint)
-                        with _lookup_arch_lock:
-                            busy = key in _lookup_inflight
-                            if not busy:
-                                _lookup_inflight.add(key)
-                        if busy:
+                        held = _claim_lookup(key)
+                        if held is not None:
+                            # Another listing is reading this header: take its cached answer.
+                            async def _shared(
+                                done = held,
+                                name = v.filename,
+                                ident = identity,
+                            ):
+                                if not await _wait_for_lookup(done, deadline):
+                                    return 0
+                                hit = remote_cached(repo_id, name, None, ident, mode = mode)
+                                return hit[1] if hit is not None else 0
+
+                            tasks[asyncio.ensure_future(_shared())] = index
                             continue
 
                         started: list = []
@@ -1647,10 +1687,11 @@ async def _with_lookup_tables(
                             try:
                                 if expired.is_set():
                                     return 0
-                                return _remote_lookup_bytes(repo_id, name, hf_token, ident, mode)
+                                return _remote_lookup_bytes(
+                                    repo_id, name, hf_token, ident, mode, arch
+                                )
                             finally:
-                                with _lookup_arch_lock:
-                                    _lookup_inflight.discard(k)
+                                _release_lookup(k)
 
                         task = asyncio.ensure_future(_lookup_thread(_read))
                         task.add_done_callback(

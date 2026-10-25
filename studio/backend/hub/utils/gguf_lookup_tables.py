@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import bisect
 import os
 import re
 import struct
@@ -19,6 +20,8 @@ _SPLIT_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})(\.gguf)$", re.IGNORECASE)
 _SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 _STRING, _ARRAY, _UINT32 = 8, 9, 4
 _FIRST_READ = 8 << 20
+# A later split shard carries only the split keys: its header is a few KiB.
+_SPLIT_SHARD_FIRST_READ = 64 << 10
 MAX_HEADER_BYTES = 64 << 20
 
 _WANTED = {name.encode() for names in LAZY_READ_TENSORS.values() for name in names}
@@ -33,8 +36,12 @@ def lazy_architecture(arch: Optional[str]) -> bool:
     return bool(arch) and arch in LAZY_READ_TENSORS
 
 
-def parse_header(buf: bytes) -> tuple[Optional[str], dict[str, int]]:
-    """(architecture, {lazy-candidate tensor name: bytes}) from a GGUF v2/v3 header."""
+def parse_header(
+    buf: bytes, file_size: Optional[int] = None
+) -> tuple[Optional[str], dict[str, int]]:
+    """(architecture, {lazy-candidate tensor name: bytes}) from a GGUF v2/v3 header. A quant
+    type gguf predates is sized from the next tensor's offset (or ``file_size``), as the
+    launch scanner does."""
     from gguf.constants import GGML_QUANT_SIZES
 
     pos = 0
@@ -86,14 +93,19 @@ def parse_header(buf: bytes) -> tuple[Optional[str], dict[str, int]]:
     if n_tensors > 10_000_000 or n_kv > 10_000_000:
         raise ValueError("implausible header counts")
     arch: Optional[str] = None
+    alignment = 32  # GGUF's default when general.alignment is absent
     for _ in range(n_kv):
         key = string()
         vtype = u32()
         if key == b"general.architecture" and vtype == _STRING:
             arch = string().decode("utf-8", "replace")
+        elif key == b"general.alignment" and vtype == _UINT32:
+            alignment = max(1, u32())
         else:
             skip_value(vtype)
     named: dict[str, int] = {}
+    offsets: list[int] = []
+    unsized: list[tuple[str, int]] = []
     for _ in range(n_tensors):
         name = string()
         n_dims = u32()
@@ -101,25 +113,42 @@ def parse_header(buf: bytes) -> tuple[Optional[str], dict[str, int]]:
             raise ValueError("implausible tensor rank")
         dims = [u64() for _ in range(n_dims)]
         ggml_type = u32()
-        u64()  # offset
+        offset = u64()
+        offsets.append(offset)
         if name not in _WANTED:
             continue
         block = GGML_QUANT_SIZES.get(ggml_type)
         if block is None:
+            unsized.append((name.decode("utf-8", "replace"), offset))
             continue
         n = 1
         for d in dims:
             n *= int(d)
         named[name.decode("utf-8", "replace")] = n // block[0] * block[1]
+    if unsized:
+        data_start = -(-pos // alignment) * alignment
+        ordered = sorted(offsets)
+        for name, offset in unsized:
+            later = ordered[bisect.bisect_right(ordered, offset) :]
+            if later:
+                named[name] = later[0] - offset
+            elif file_size is not None:
+                named[name] = max(0, file_size - data_start - offset)
     return arch, named
 
 
-def _read_growing(read: Callable[[int], bytes], cap: int = MAX_HEADER_BYTES):
-    want = _FIRST_READ
+def _read_growing(
+    read: Callable[[int], bytes],
+    cap: int = MAX_HEADER_BYTES,
+    *,
+    first_read: int = _FIRST_READ,
+    file_size: Optional[Callable[[], Optional[int]]] = None,
+):
+    want = min(first_read, cap)
     while True:
         buf = read(want)
         try:
-            return parse_header(buf)
+            return parse_header(buf, file_size() if file_size is not None else None)
         except _NeedMore:
             if len(buf) < want or want >= cap:
                 raise ValueError("GGUF header unreadable within the cap")
@@ -128,12 +157,13 @@ def _read_growing(read: Callable[[int], bytes], cap: int = MAX_HEADER_BYTES):
 
 def header_of_local(path: str) -> tuple[Optional[str], dict[str, int]]:
     with open(path, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
 
         def read(n: int) -> bytes:
             f.seek(0)
             return f.read(n)
 
-        return _read_growing(read)
+        return _read_growing(read, file_size = lambda: size)
 
 
 def shard_names(filename: str) -> list[str]:
@@ -170,12 +200,21 @@ def _scan_shards(
     read_header: Callable[[str], tuple],
     names: list[str],
     mode: str = "auto",
+    max_shards: Optional[int] = MAX_SHARDS_READ,
+    known_arch: Optional[str] = None,
 ):
-    """(architecture, lazy table bytes under ``mode``) over ``names``, stopping at the first shard that carries the table."""
+    """(architecture, lazy table bytes under ``mode``) over ``names``, stopping at the first shard that carries the table.
+
+    With the architecture already known the small later-shard headers go first and the
+    first shard, which carries the tokenizer, last."""
     arch: Optional[str] = None
-    for name in names[:MAX_SHARDS_READ]:
+    order = names[:max_shards]
+    if lazy_architecture(known_arch) and len(names) > 1:
+        arch = known_arch
+        order = names[1:max_shards] + names[:1]
+    for name in order:
         part_arch, named = read_header(name)
-        arch = arch or part_arch
+        arch = part_arch or arch
         if not lazy_architecture(arch):
             return arch, 0
         found = lazy_read_bytes(arch, named, mode)
@@ -200,7 +239,8 @@ def local_lookup_info(path: Optional[str], mode: str = "auto") -> tuple[Optional
     if hit is not None:
         return hit
     try:
-        answer = _scan_shards(header_of_local, names, mode)
+        # Local headers are cheap: every shard, as the launch scanner reads them.
+        answer = _scan_shards(header_of_local, names, mode, max_shards = None)
     except Exception:  # noqa: BLE001 -- unreadable header: price the whole file, as before
         answer = (None, 0)
     _remember(_LOCAL_CACHE, key, answer)
@@ -236,6 +276,7 @@ def remote_lookup_info(
     identity = None,
     fetcher_fn: Optional[Callable] = None,
     mode: str = "auto",
+    known_arch: Optional[str] = None,
 ) -> tuple[Optional[str], int]:
     """(architecture, lazily read table bytes) from Range reads of a Hub GGUF's header(s)."""
     key = (repo_id, filename, revision or "", identity, mode)
@@ -244,6 +285,8 @@ def remote_lookup_info(
         return hit
     if fetcher_fn is None:
         from hub.utils.gguf_header_delta import hub_range_fetcher as fetcher_fn
+
+    names = shard_names(filename)
 
     def read_header(name: str):
         fetch = fetcher_fn(repo_id, name, token, revision = revision)
@@ -255,10 +298,14 @@ def remote_lookup_info(
                 buf += fetch(len(buf), n - 1)
             return buf[:n]
 
-        return _read_growing(read)
+        return _read_growing(
+            read,
+            first_read = _FIRST_READ if name == names[0] else _SPLIT_SHARD_FIRST_READ,
+            file_size = lambda: getattr(fetch, "file_size", None),
+        )
 
     try:
-        answer = _scan_shards(read_header, shard_names(filename), mode)
+        answer = _scan_shards(read_header, names, mode, known_arch = known_arch)
     except Exception:  # noqa: BLE001 -- unreachable or unreadable: today's behaviour
         return None, 0
     _remember(_REMOTE_CACHE, key, (answer, time.monotonic() + _REMOTE_TTL_S))
