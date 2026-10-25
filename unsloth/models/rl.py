@@ -36,6 +36,7 @@ from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
+from . import _decode_graphs
 from .rl_replacements import (
     _unsloth_get_model_config,
     _unsloth_text_configs,
@@ -292,7 +293,10 @@ def PatchRL(FastLanguageModel):
             def generate_with_clone(*args, **kwargs):
                 if generating_model is not unwrapped_model:
                     kwargs = _caller_sampling_only(generating_model, kwargs)
-                out = original_generate(*args, **kwargs)
+                # RL rollouts on the training model: CUDA-graph decode defaults on here
+                # (UNSLOTH_DECODE_CUDA_GRAPHS=0 opts out), off for plain model.generate().
+                with _decode_graphs.rl_generation():
+                    out = original_generate(*args, **kwargs)
                 if isinstance(out, torch.Tensor):
                     return out.clone()
                 return out
@@ -303,6 +307,9 @@ def PatchRL(FastLanguageModel):
                 yield unwrapped_model
             finally:
                 generating_model.generate = original_generate
+                # Back to training: the next optimizer step invalidates the decode graphs, so free
+                # them and their decode buffers (KV cache) for the backward pass now.
+                _decode_graphs.release_for_training(model)
                 FastLanguageModel.for_training(
                     model,
                     use_gradient_checkpointing = use_gradient_checkpointing,
@@ -659,7 +666,9 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             except Exception:
                 pass
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
-        if "model" in locals() and hasattr(model, "for_inference"):
+        # A tensor parallel model (tp_native.tp_trainer_setup) stays on its training path: for_inference would
+        # route the decoder layers onto decode paths outside the tensor parallel regions.
+        if "model" in locals() and hasattr(model, "for_inference") and not getattr(self, "_unsloth_tensor_parallel", False):
             model.for_inference()
 {RLTrainer_post}
 pass

@@ -497,7 +497,6 @@ export function ChatTab() {
         >
           <Button
             variant="outline"
-            className="px-3.5"
             onClick={() => {
               useSettingsDialogStore.getState().closeDialog();
               void navigate({ to: "/library", search: { show: "chats" } });

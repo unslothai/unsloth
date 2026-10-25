@@ -1009,7 +1009,7 @@ export function ChatsLibrary({
             action={
               <Button
                 variant="muted"
-                className="rounded-full px-5"
+                className="rounded-full"
                 onClick={() => newChatInSection(openSectionId)}
               >
                 {t("library.chats.toolbar.newChat")}
@@ -1024,7 +1024,7 @@ export function ChatsLibrary({
           title={t("library.chats.empty.chatsTitle")}
           description={t("library.chats.empty.chatsDescription")}
           action={
-            <Button variant="muted" className="rounded-full px-5" onClick={() => newChatIn(null)}>
+            <Button variant="muted" className="rounded-full" onClick={() => newChatIn(null)}>
               {t("library.chats.toolbar.newChat")}
             </Button>
           }
@@ -1140,7 +1140,7 @@ export function ChatsLibrary({
           <div className="mt-6 flex justify-center">
             <Button
               variant="muted"
-              className="rounded-full px-5"
+              className="rounded-full"
               onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
             >
               {t("library.chats.list.showMore", { count: total - visibleCount })}
@@ -1168,7 +1168,7 @@ export function ChatsLibrary({
           action={
             <Button
               variant="dark"
-              className="rounded-full px-5"
+              className="rounded-full"
               onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
             >
               {t("shell.sections.newSection")}
@@ -1265,7 +1265,7 @@ export function ChatsLibrary({
           title={t("library.chats.empty.projectsTitle")}
           description={t("library.chats.empty.projectsDescription")}
           action={
-            <Button variant="dark" className="rounded-full px-5" onClick={() => setCreatingProject(true)}>
+            <Button variant="dark" className="rounded-full" onClick={() => setCreatingProject(true)}>
               {t("library.chats.toolbar.newProject")}
             </Button>
           }
@@ -1340,7 +1340,7 @@ export function ChatsLibrary({
       onParent={() => go({ chatView: "sections" })}
       actions={
         <>
-          <Button variant="muted" className="rounded-full px-4" onClick={() => newChatInSection(currentSection.id)}>
+          <Button variant="muted" className="rounded-full" onClick={() => newChatInSection(currentSection.id)}>
             <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
             {t("library.chats.toolbar.newChat")}
           </Button>
