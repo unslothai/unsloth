@@ -2557,7 +2557,11 @@ def _safe_relative_parts(text: str) -> Optional[tuple[str, ...]]:
     return relative.parts
 
 
-def _local_weights_are_complete(component: Path, library_name: str) -> bool:
+def _local_weights_are_complete(
+    component: Path,
+    library_name: str,
+    accept_twin: bool = True,
+) -> bool:
     # The first format with any weights present decides: a leftover .bin index cannot veto safetensors.
     for stems, ext in _LOCAL_PIPELINE_WEIGHT_FORMATS:
         # Transformers never reads diffusion_pytorch_model* (LTX-2's text_encoder ships both shard sets).
@@ -2584,7 +2588,7 @@ def _local_weights_are_complete(component: Path, library_name: str) -> bool:
         if sizes:
             return any(sizes)
     # A lone single-file .fp16 twin: a snapshot an fp16 load staged, read with variant="fp16".
-    return any(
+    return accept_twin and any(
         _nonempty_file(component / f"{s}.fp16.safetensors")
         for s in ("diffusion_pytorch_model", "model")
         if library_name != "transformers" or s != "diffusion_pytorch_model"
@@ -2592,7 +2596,11 @@ def _local_weights_are_complete(component: Path, library_name: str) -> bool:
 
 
 def _local_pipeline_component_is_complete(
-    component: Path, library_name: str, class_name: str, config_only_model_components: bool
+    component: Path,
+    library_name: str,
+    class_name: str,
+    config_only_model_components: bool,
+    accept_twin: bool = True,
 ) -> bool:
     if not component.is_dir():
         return False
@@ -2615,7 +2623,8 @@ def _local_pipeline_component_is_complete(
             _nonempty_file(component / a) for a in ("vocab.json", "merges.txt")
         )
     return _json_dict(component / "config.json") is not None and (
-        config_only_model_components or _local_weights_are_complete(component, library_name)
+        config_only_model_components
+        or _local_weights_are_complete(component, library_name, accept_twin)
     )
 
 
@@ -2653,6 +2662,8 @@ def local_pipeline_components_are_complete(
                     library,
                     cls,
                     config_only_model_components or name in excluded_components,
+                    # Fixed-folder assemblers (FLUX.3) open each component without a variant: no twins.
+                    accept_twin = False,
                 )
                 for name, (folder, library, cls) in fixed_component_folders.items()
             )

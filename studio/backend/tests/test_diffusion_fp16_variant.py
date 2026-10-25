@@ -384,3 +384,20 @@ def test_the_load_recomputes_the_variant_with_the_final_kwargs_even_after_a_firs
         "if _fp16_variant is not None:\n                                        # Final kwargs"
         not in source
     )
+
+
+def test_a_fixed_folder_assembler_never_accepts_a_lone_twin(tmp_path):
+    # FLUX.3's assembler opens each folder without a variant: an fp16-only vae cannot load there.
+    snap = _snapshot(tmp_path, [*SDXL_CONFIGS, *SDXL_DEFAULTS])
+    folders = {
+        "vae": ("vae", "diffusers", "AutoencoderKL"),
+        "unet": ("unet", "diffusers", "UNet2DConditionModel"),
+    }
+    assert local_pipeline_components_are_complete(
+        snap, "model_index.json", fixed_component_folders = folders
+    )
+    (snap / "vae" / "diffusion_pytorch_model.safetensors").unlink()
+    (snap / "vae" / "diffusion_pytorch_model.fp16.safetensors").write_bytes(b"x" * 8)
+    assert not local_pipeline_components_are_complete(
+        snap, "model_index.json", fixed_component_folders = folders
+    )
