@@ -300,6 +300,28 @@ def test_ppo_kill_switch_keeps_trl(monkeypatch):
     assert fused_linear.CALLS["logprobs"] == calls
 
 
+def test_ppo_reference_with_hooked_head_keeps_trl():
+    module = _ppo_module()
+    T = 0.9 + 1e-7
+    route, trainer = _route(_wrapper(module, _Policy()))
+    assert route is not None
+    ref = _Policy()
+    ref.lm_head.register_forward_hook(lambda *a: None)
+    qr = _query_responses()
+    with torch.no_grad():
+        out = frl.ppo_forward(route, module.forward, ref, qr, 0)
+        assert ref.forwards == ["logits"] and out.logits.shape[-1] == V
+        assert frl.ppo_score(route, ref, out.logits[:, CL - 1 : -1], qr[:, CL:], T) is None
+        got = frl.ppo_policy_logprobs(
+            route, module.forward, module.selective_log_softmax, ref, qr, qr[:, CL:], CL, 0, T
+        )
+        want = module.selective_log_softmax(
+            module.forward(ref, qr, 0).logits[:, CL - 1 : -1] / T, qr[:, CL:]
+        )
+    torch.testing.assert_close(got, want)
+    assert "output head has hooks or a patched forward" in trainer._unsloth_ppo_fused_fallbacks
+
+
 def test_ppo_hooked_head_keeps_trl():
     module = _ppo_module()
     model = _wrapper(module, _Policy())

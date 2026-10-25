@@ -210,8 +210,10 @@ def ppo_batch_generation(
 
 
 def ppo_forward(route, forward, model, query_responses, pad_token_id):
-    """TRL's ``forward(model, query_responses, pad_token_id)``, with Unsloth's forwards returning hidden states."""
-    with hidden_states_forward(route is not None):
+    """TRL's ``forward(model, query_responses, pad_token_id)``, with Unsloth's forwards returning hidden states
+    only when ``ppo_score`` will score this model's head (a reference model is not checked by ``ppo_route``)."""
+    enabled = route is not None and fused_head(_ppo_policy(route, model))[0] is not None
+    with hidden_states_forward(enabled):
         return forward(model, query_responses, pad_token_id)
 
 
