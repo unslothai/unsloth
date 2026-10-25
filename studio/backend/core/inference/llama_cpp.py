@@ -19385,17 +19385,14 @@ class LlamaCppBackend:
             per_tok = self._DSV41_CTX_COMPUTE_BYTES_PER_TOK * ub_scale + split_extra
             flat = self._DSV41_CTX_COMPUTE_FLAT_BYTES
             if not flash_attn:
-                # Without flash attention the graph takes the dense branch, which materializes
-                # float32 KQ scores ([window + n_comp, n_ubatch, n_head]); the measured rate is
-                # flash only. The layers' score sizes differ (window-only, ratio 2, ratio 1), so
-                # the allocator fragments and keeps two copies live: measured 1.07-2.01x one copy
-                # on the reserve graph, 2x from ~96k up.
+                # Dense branch: f32 KQ scores [window + n_comp, ub, n_head]. Layer score sizes
+                # differ, so the allocator fragments and keeps two copies live (one undercounts).
                 n_head = getattr(self, "_n_heads", None) or max(1, n_embd // 64)
                 score_rate = 2 * ub * n_head * 4
                 window_cells = _pad_kv_cells(
                     self._effective_sliding_window() * max(1, int(n_parallel)) + ub
                 )
-                # The measured rate holds one f16 KQ mask; without flash attention it is f32.
+                # The measured rate holds one f16 KQ mask; here it is f32.
                 per_tok += score_rate + ub * 2
                 flat += score_rate * window_cells
             return int(flat + per_tok * n_ctx)
