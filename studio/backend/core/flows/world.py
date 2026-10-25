@@ -811,30 +811,36 @@ def action_rules(world: dict) -> str:
     )
 
 
-def role_rules(state: dict, npc: dict) -> str:
-    """Lines for a world with autonomy on: the villager's role and what they sell (empty otherwise)."""
-    role = state.get("role") if state.get("role") in NPC_ROLES else None
-    out = ""
-    if role == "rival":
-        out += (
-            "\nYou are the player's rival: competitive and a little smug, racing them for the things they look "
-            "for, but never cruel."
-        )
-    elif role == "hostile":
-        out += (
-            "\nYou are hostile to the player: gruff and threatening, you may demand coins, but you never hurt "
-            "anyone."
-        )
+ROLE_LINES = {
+    "rival": (
+        "Your role: the player's RIVAL. You want the same quest items they want and mean to find them first: brag "
+        "about it, tease them, and never help them with a quest or tell them where an item is. Never cruel."
+    ),
+    "hostile": (
+        "Your role: HOSTILE to the player. Speak gruffly and threateningly, refuse to help them, and demand coins "
+        "to leave them alone. You never hurt anyone."
+    ),
+}
+
+
+def role_line(state: dict) -> str:
+    """The villager's role, read before the persona so a small model keeps to it (empty without one)."""
+    role = state.get("role")
+    return f"{ROLE_LINES[role]}\n" if role in ROLE_LINES else ""
+
+
+def trade_rules(state: dict) -> str:
+    """What the villager sells, for a world with trading on (empty otherwise)."""
     goods = [g for g in state.get("goods") or [] if isinstance(g, dict) and g.get("id")]
-    if goods:
-        wares = ", ".join(
-            f"{g.get('name') or g['id']} (id {g['id']}, {g.get('price')} coins)" for g in goods[:7]
-        )
-        out += (
-            f"\nYou sell: {wares}. When the player wants to buy, set `offer_trade` to one of those ids; the "
-            "player decides in the trade panel."
-        )
-    return out
+    if not goods:
+        return ""
+    wares = ", ".join(
+        f"{g.get('name') or g['id']} (id {g['id']}, {g.get('price')} coins)" for g in goods[:7]
+    )
+    return (
+        f"\nYou sell: {wares}. When the player wants to buy, set `offer_trade` to one of those ids; the "
+        "player decides in the trade panel."
+    )
 
 
 def npc_prompt(
@@ -856,7 +862,8 @@ def npc_prompt(
     ]
     system = (
         f"You are {npc['name']}, a character in the game world \"{world.get('title')}\".\n"
-        f"Persona: {npc.get('persona') or 'a friendly local'}\n"
+        + role_line(state)
+        + f"Persona: {npc.get('persona') or 'a friendly local'}\n"
         f"World: {world.get('intro_text') or ''}\n"
         + (
             f"Earlier conversations with the player, as you remember them: {summary}\n"
@@ -870,7 +877,9 @@ def npc_prompt(
     )
     if npc.get("wander") is not False:
         system += action_rules(world)
-    system += role_rules(state, npc)
+    system += trade_rules(state)
+    # Said again last: small models follow the end of the prompt most closely.
+    system += f"\n{role_line(state)}" if role_line(state) else ""
     # Turns already folded into the summary are left out; the summary sits in the system prompt, which changes
     # only when turns are folded, so llama-server keeps reusing the cached prefix.
     history = [

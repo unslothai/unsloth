@@ -84,10 +84,11 @@ def test_role_and_wares_reach_the_prompt_only_with_autonomy():
     plain, _ = npc_prompt(reply_state(), "Stay in character.")
     assert "rival" not in plain and "You sell" not in plain
     hostile, _ = npc_prompt(reply_state(role = "hostile", goods = GOODS), "Stay in character.")
-    assert "hostile to the player" in hostile and "never hurt" in hostile
+    assert "HOSTILE to the player" in hostile and "never hurt" in hostile
+    assert hostile.index("Your role") < hostile.index("Persona:")
     assert "Bread (id bread, 3 coins)" in hostile and "offer_trade" in hostile
     rival, _ = npc_prompt(reply_state(role = "rival"), "Stay in character.")
-    assert "rival" in rival
+    assert "RIVAL" in rival and rival.index("Your role") < rival.index("Persona:")
 
 
 def test_the_director_adds_rivals_and_hostiles_only_when_allowed():
