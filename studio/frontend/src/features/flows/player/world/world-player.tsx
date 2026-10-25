@@ -386,7 +386,6 @@ export function WorldPlayer({
   // Bumped on every load, so a reply to a conversation from before the load is dropped.
   const loads = useRef(0);
 
-  // Long conversations are summarised in the background, one at a time, and never while the player waits on a reply.
   const summarising = spec.summarise !== false;
   const summaryRun = useRef<AbortController | null>(null);
   const summarise = useCallback(
@@ -416,7 +415,6 @@ export function WorldPlayer({
         if (text && !run.signal.aborted && generation === loads.current)
           setWs((st) => foldSummary(st, npcId, text, due.upto));
       } catch {
-        // A failed summary keeps every turn; the next reply tries again.
       } finally {
         if (summaryRun.current === run) summaryRun.current = null;
       }
@@ -735,7 +733,6 @@ export function WorldPlayer({
       if (generation !== loads.current) return;
       setLive(null);
       setWs((s) =>
-        // A failed reply keeps the unsummarised turns too, so nothing waiting for a summary is lost.
         addTurn(
           s,
           npcId,

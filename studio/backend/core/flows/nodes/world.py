@@ -330,7 +330,6 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
 
 
 async def _summarise(ctx: NodeContext, state: dict) -> dict:
-    """Fold the oldest turns of a long conversation into what the NPC remembers, so nothing said is lost."""
     try:
         system, prompt = compact_prompt(state)
     except WorldError as exc:

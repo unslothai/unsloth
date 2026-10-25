@@ -17,24 +17,19 @@ import {
 } from "./world-sim";
 
 export const WORLD_SAVE_VERSION = 2;
-/** Turns kept per NPC for the conversation panel. */
 const MAX_TURNS = 40;
-/** Turns a reply reads, as MAX_HISTORY in the backend's world.py; older ones live on in the NPC's summary. */
+/** Keep in sync with MAX_HISTORY in backend world.py. */
 export const MAX_HISTORY = 24;
-/** Unsummarised turns that start a summary, and how many of the oldest it folds in. */
 export const SUMMARY_AFTER = 16;
 const SUMMARY_FOLD = 10;
-/** Unsummarised turns are kept while summaries fail, up to this many. */
 const MAX_KEPT = 120;
 
 export interface ChatTurn {
   role: "player" | "npc";
   text: string;
-  /** Position in the whole conversation; saves from before summaries have none. */
   seq?: number;
 }
 
-/** What an NPC remembers of turns folded away: `upto` is the seq of the last turn it covers. */
 export interface NpcSummary {
   text: string;
   upto: number;
@@ -118,7 +113,6 @@ export function withMind(
   return { ...s, npc: { ...s.npc, [npcId]: fn(s.npc[npcId] ?? emptyMind()) } };
 }
 
-/** Turns with their seq; a save from before summaries numbers them in order. */
 function numbered(turns: ChatTurn[]): (ChatTurn & { seq: number })[] {
   return turns.every((t) => typeof t.seq === "number")
     ? (turns as (ChatTurn & { seq: number })[])
@@ -128,7 +122,6 @@ function numbered(turns: ChatTurn[]): (ChatTurn & { seq: number })[] {
 const uptoOf = (s: WorldState, npcId: string) =>
   s.summaries?.[npcId]?.upto ?? -1;
 
-/** Without summaries the oldest turns go; with them only turns already summarised do, unless far too many pile up. */
 function trimTalk(
   turns: (ChatTurn & { seq: number })[],
   upto: number,
@@ -160,7 +153,6 @@ export function addTurn(
   return { ...s, talks: { ...s.talks, [npcId]: next } };
 }
 
-/** The turns a reply reads: those not yet summarised, newest last. */
 export function talkHistory(s: WorldState, npcId: string): ChatTurn[] {
   const upto = uptoOf(s, npcId);
   return numbered(s.talks[npcId] ?? [])
@@ -168,7 +160,6 @@ export function talkHistory(s: WorldState, npcId: string): ChatTurn[] {
     .slice(-MAX_HISTORY);
 }
 
-/** The oldest turns to fold into the NPC's summary once enough have piled up, or null. */
 export function summaryDue(
   s: WorldState,
   npcId: string,
@@ -183,7 +174,6 @@ export function summaryDue(
   };
 }
 
-/** Store a new summary covering turns up to `upto`; a stale one (from before a newer summary) is ignored. */
 export function foldSummary(
   s: WorldState,
   npcId: string,
