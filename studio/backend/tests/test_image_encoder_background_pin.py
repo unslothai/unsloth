@@ -84,7 +84,6 @@ def wanted(monkeypatch):
 def test_a_requested_pipe_defers_its_encoder_pins(wanted):
     assert dm._encoder_background_pin_wanted(wanted)
     assert not dm._encoder_background_pin_wanted(types.SimpleNamespace())
-    # the video request alone (denoisers too) is a different ask
     video = types.SimpleNamespace()
     dm.request_background_pins(video)
     assert not dm._encoder_background_pin_wanted(video)
@@ -151,7 +150,6 @@ def test_a_capped_pinner_pins_the_prefix_that_fits_and_never_blocks_the_rest(mon
         for tensor, src in group.cpu_param_dict.items():
             pinned = getattr(src, "_fake_pin", False)
             assert pinned is (group in groups[:2])
-            # the parameter reads its host copy, pinned or not
             assert tensor.data_ptr() == src.data_ptr()
             if not pinned:
                 assert src is before[tensor]

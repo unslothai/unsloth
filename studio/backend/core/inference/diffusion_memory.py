@@ -6193,20 +6193,16 @@ def _background_pin_enabled() -> bool:
     ) and host_pinning_allowed()
 
 
-# Image loads: the streamed text encoders pin on a worker (registered host memory, 8 threads) that overlaps the rest of
-# the load, instead of into slabs one tensor at a time. "0" restores the slabs.
+# "0": image-load streamed encoders pin into slabs up front instead of on a background worker.
 ENCODER_BACKGROUND_PIN_ENV = "UNSLOTH_DIFFUSION_ENCODER_BACKGROUND_PIN"
-# Streamed text encoders that do not fit the pin budget whole pin a prefix of their offload groups that does. "0"
-# restores all-or-nothing.
+# "0": an encoder that does not fit the pin budget whole pins nothing instead of a fitting prefix.
 PARTIAL_ENCODER_PIN_ENV = "UNSLOTH_DIFFUSION_PARTIAL_ENCODER_PIN"
 _ENCODER_PIN_REQUEST_ATTR = "_unsloth_background_encoder_pin_requested"
-# A remainder under this is not worth a pinner.
 _PARTIAL_PIN_MIN_MIB = 256
 
 
 def request_background_encoder_pins(pipe: Any) -> None:
-    """Ask the next group offload apply on ``pipe`` to pin its streamed text encoders off the load path; the denoisers
-    keep their up-front pin. ``start_background_pins`` starts them once the load commits."""
+    """Mark ``pipe`` so the next group offload defers its streamed encoder pins; denoisers still pin up front."""
     try:
         setattr(pipe, _ENCODER_PIN_REQUEST_ATTR, True)
     except Exception:  # noqa: BLE001 - a pipe refusing attributes pins eagerly, as before
@@ -6214,10 +6210,7 @@ def request_background_encoder_pins(pipe: Any) -> None:
 
 
 def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
-    """Wait for the encoder pins the load started; returns the seconds waited.
-
-    Left running into the first prompt instead, the pin slowed it by as much as it saved (FLUX.1 bf16 on a B200:
-    first encode 1.1 -> 3.7 s, the T5 pin 2.0 -> 3.5 s), so the load finishes it."""
+    """Wait for the encoder pins; left running into the first prompt they cost what they saved (FLUX.1 B200)."""
     if pipe is None:
         return 0.0
     start_background_pins(pipe)
@@ -6228,8 +6221,7 @@ def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
 
 
 def _encoder_background_pin_wanted(pipe: Any) -> bool:
-    """Deferred encoder pins need the registered pin: the allocator's per-tensor ``pin_memory()`` rounds each tensor up
-    to a power of two, which the budget (priced at weight bytes) does not cover."""
+    # Needs the registered pin: per-tensor pin_memory() rounds to a power of two, past the weight-byte budget.
     return (
         bool(getattr(pipe, _ENCODER_PIN_REQUEST_ATTR, False))
         and not _env_off(ENCODER_BACKGROUND_PIN_ENV)
@@ -6239,8 +6231,7 @@ def _encoder_background_pin_wanted(pipe: Any) -> bool:
 
 
 def _streamed_pin_leftover_mib(transformer_mib: int, pin_transformer: bool) -> int:
-    """Pinnable host MiB ``_streamed_pin_plan`` leaves after the transformer, for a partial encoder pin. 0 wherever the
-    plan would not pin by budget (forced either way, integrated GPU, capped pinned memory, unreadable RAM)."""
+    """Pin budget MiB left after the transformer; 0 wherever ``_streamed_pin_plan`` would not pin by budget."""
     if _env_off(PARTIAL_ENCODER_PIN_ENV) or not host_pinning_allowed():
         return 0
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
@@ -6512,7 +6503,6 @@ class _GroupPinner:
             return src.pin_memory()
 
     def _capped_groups(self) -> list:
-        """The prefix of ``groups`` whose unpinned bytes fit ``byte_cap`` (all of them without a cap)."""
         if self.byte_cap is None:
             return list(self.groups)
         left = self.byte_cap
@@ -7939,7 +7929,6 @@ def _apply_streaming_offload(
                 leaf_pin_mib(n, m, t) for n, (m, t) in streamed.items() if t != "block_level"
             )
             pin_dits, pin_encoders = _streamed_pin_plan(dit_pin_mib, leaf_mib, logger)
-        # Encoders that do not fit whole pin the prefix the budget leaves, as on the group tier.
         encoder_left_mib = 0
         if encoders_defer and not pin_encoders:
             encoder_left_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_dits)
