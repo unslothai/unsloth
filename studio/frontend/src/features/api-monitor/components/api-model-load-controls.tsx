@@ -382,7 +382,7 @@ export function ApiModelLoadControls({
         }}
         deleteDisabled={modelLoading}
         variant="ghost"
-        placeholder="Load model"
+        placeholder="Load models"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
         className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"

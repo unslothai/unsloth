@@ -6,7 +6,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { CSSProperties, FC } from "react";
+import { type CSSProperties, type FC, useEffect, useRef, useState } from "react";
 import {
   type ContextUsageBarInput,
   deriveContextUsageBar,
@@ -100,9 +100,50 @@ const Face: FC<{ face: string }> = ({ face }) => {
   );
 };
 
+// A mouse click pins the breakdown open (the shared Tooltip pins only on touch) until a press
+// outside it or Escape.
+function useClickPin(enabled: boolean) {
+  const [hovered, setHovered] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!pinned) return;
+    const release = (event: Event) => {
+      const target = event.target as Element | null;
+      if (triggerRef.current?.contains(target) || target?.closest?.('[data-slot="tooltip-content"]')) {
+        return;
+      }
+      setPinned(false);
+    };
+    const releaseOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPinned(false);
+    };
+    document.addEventListener("pointerdown", release, true);
+    document.addEventListener("keydown", releaseOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("keydown", releaseOnEscape, true);
+    };
+  }, [pinned]);
+  if (!enabled) return null;
+  return {
+    root: { open: hovered || pinned, onOpenChange: setHovered },
+    trigger: {
+      ref: triggerRef,
+      onClick: () => setPinned((was) => !was),
+      "aria-expanded": pinned,
+    },
+  };
+}
+
 export const ContextUsageBar: FC<
-  ContextUsageBarInput & { className?: string; compactUnknownAsIcon?: boolean }
-> = ({ className, compactUnknownAsIcon = false, ...input }) => {
+  ContextUsageBarInput & {
+    className?: string;
+    compactUnknownAsIcon?: boolean;
+    pinOnClick?: boolean;
+  }
+> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, ...input }) => {
+  const pin = useClickPin(pinOnClick);
   const state = deriveContextUsageBar(input);
   if (!state) return null;
 
@@ -125,7 +166,7 @@ export const ContextUsageBar: FC<
   const hover = "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
 
   return (
-    <Tooltip>
+    <Tooltip {...pin?.root}>
       {/* The header squeezes this wrapper; the button inside takes only the face it shows. */}
       <div
         style={
@@ -141,6 +182,7 @@ export const ContextUsageBar: FC<
         <TooltipTrigger asChild>
           <button
             type="button"
+            {...pin?.trigger}
             aria-label={state.label}
             // The full face where it fits, else the compact one, right-aligned against the icons.
             style={{

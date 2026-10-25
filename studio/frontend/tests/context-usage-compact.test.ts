@@ -16,7 +16,10 @@ test("the compact face is the ring, unless there is no window to fill", () => {
 
 test("the bar hands every input to the state, batching flags included", () => {
   const bar = readSrc("features/chat/components/context-usage-bar.tsx");
-  assert.match(bar, /\(\{ className, compactUnknownAsIcon = false, \.\.\.input \}\) => \{\s*const state = deriveContextUsageBar\(input\);/);
+  assert.match(
+    bar,
+    /\(\{ className, compactUnknownAsIcon = false, pinOnClick = false, \.\.\.input \}\) => \{\s*const pin = useClickPin\(pinOnClick\);\s*const state = deriveContextUsageBar\(input\);/,
+  );
 });
 
 test("the header shrinks the context bar before the model name", () => {

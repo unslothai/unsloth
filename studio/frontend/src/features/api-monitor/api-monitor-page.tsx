@@ -54,6 +54,7 @@ import {
   PauseIcon,
   PlayIcon,
   PlusSignIcon,
+  Refresh01Icon,
   ReloadIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -88,7 +89,7 @@ import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
 import { useApiModelReload } from "./use-api-model-reload";
-import { UsageRing } from "@/features/chat/components/context-usage-bar";
+import { ContextUsageBar as ContextUsageChip } from "@/features/chat/components/context-usage-bar";
 import {
   residentHasRunSettings,
   residentHasSlotsSetting,
@@ -1326,7 +1327,8 @@ export function ApiMonitorPage(): ReactElement {
         entry.total_tokens != null &&
         entry.context_length &&
         entry.started_at >= loadedAt &&
-        modelIdsMatch(entry.model, id) &&
+        // Requests can be logged as "<id>:<quant>", the id here has the quant stripped.
+        modelIdsMatch(monitorSelection(entry.model).id, id) &&
         (last == null || entry.started_at > last.started_at)
       ) {
         last = entry;
@@ -1339,24 +1341,17 @@ export function ApiMonitorPage(): ReactElement {
     if (used == null || !windowSize) {
       return null;
     }
-    const percent = Math.min(100, (used / windowSize) * 100);
     return (
       <Fact label="Context">
-        <ToolbarTooltip label="Tokens the last request held: its prompt and its reply">
-          <span className="flex items-center gap-1.5 tabular-nums [--track:rgb(0_0_0_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]">
-            <UsageRing
-              percent={percent}
-              stroke={
-                percent > 85
-                  ? "stroke-red-500"
-                  : percent > 65
-                    ? "stroke-amber-500"
-                    : "stroke-control-accent"
-              }
-            />
-            {formatCount(used)}{"\u2009/\u2009"}{formatCount(windowSize)}
-          </span>
-        </ToolbarTooltip>
+        {/* Chat's header chip; hover, or click to pin, for the prompt and reply split. */}
+        <ContextUsageChip
+          pinOnClick={true}
+          className="-my-1.5 -ml-2.5"
+          used={used}
+          total={windowSize}
+          promptTokens={last?.prompt_tokens ?? undefined}
+          completionTokens={last?.completion_tokens ?? undefined}
+        />
       </Fact>
     );
   };
@@ -1794,7 +1789,7 @@ export function ApiMonitorPage(): ReactElement {
                   className="rounded-full"
                 >
                   <HugeiconsIcon
-                    icon={ReloadIcon}
+                    icon={Refresh01Icon}
                     strokeWidth={1.75}
                     className={cn("size-4", refreshing && "animate-spin")}
                   />
