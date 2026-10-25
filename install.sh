@@ -8691,9 +8691,19 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         if [ "$PACKAGE_NAME" = "unsloth" ] && [ -n "$_unsloth_desktop_install_spec" ]; then
             _unsloth_install_pkg="$_unsloth_desktop_install_spec"
         fi
-        run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
-            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth -- "$_unsloth_install_pkg"
+        # A bundled fork wheel carries unsloth-zoo only under extras, so the pass that
+        # follows (told the core packages are already in) would find no zoo and abort.
+        # Name the zoo floor alongside, as the migrated and no-torch branches do.
+        if [ "$_unsloth_install_pkg" = "$_unsloth_bundled_wheel" ]; then
+            run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
+                ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
+                --upgrade-package unsloth --upgrade-package unsloth-zoo -- \
+                "$_unsloth_install_pkg" "$_unsloth_zoo_install_spec"
+        else
+            run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
+                ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
+                --upgrade-package unsloth -- "$_unsloth_install_pkg"
+        fi
     fi
     [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
     _UNSLOTH_TORCH_OVERRIDES=""
