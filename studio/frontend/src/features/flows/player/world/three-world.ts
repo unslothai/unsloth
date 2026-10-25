@@ -27,6 +27,25 @@ import {
 import { createPropLayer } from "./props-scene3d";
 import { type WorldEditor, setMapProps } from "./props3d";
 import { canvas, fitImage, paintItem } from "./sprites";
+import {
+  type ActionWorld,
+  type Body,
+  type Combat,
+  type Pickup,
+  type Target,
+  advance,
+  buildActionWorld,
+  combatOf,
+  enemiesAct,
+  newBody,
+  newCombat,
+  placePickups,
+  respawn,
+  shoot,
+  takePickup,
+  tick,
+} from "./action3d";
+import { hostilesOf } from "./roles";
 import type { WorldEditorRuntime } from "./world-editor3d";
 import {
   TILE_COLORS,
@@ -673,6 +692,81 @@ export function createWorld3d(
 
   const spawn = start && !isSolid(map, start.x, start.y) ? start : map.spawn;
   const me = { x: spawn.x + 0.5, y: spawn.y + 0.5 };
+
+  // Action play (World Player "Gameplay"): a capsule with gravity against terrain, walls and props; a shooter adds
+  // a hitscan weapon and hostiles that shoot back. Off, walking is the tile slide it always was.
+  const action = spec.action?.movement === true;
+  const shooter = action && spec.action?.shooter === true;
+  const wallTile = (x: number, y: number) =>
+    x < 0 ||
+    y < 0 ||
+    x >= map.width ||
+    y >= map.height ||
+    SOLID.has(kindAt(map, x, y));
+  const collide = (): ActionWorld =>
+    buildActionWorld(
+      map.width,
+      map.height,
+      (x, y) => heightAt(terrain, x, y),
+      wallTile,
+      map.props ?? [],
+    );
+  let aw: ActionWorld | null = action ? collide() : null;
+  const saved = (bridge.action ?? {}) as { combat?: unknown; pose?: unknown };
+  let body: Body | null = aw ? newBody(aw, me.x, me.y) : null;
+  {
+    const pose = saved.pose as { z?: number } | undefined;
+    if (body && typeof pose?.z === "number" && Number.isFinite(pose.z))
+      body.z = Math.max(body.z, pose.z);
+  }
+  const combat: Combat = shooter ? combatOf(saved.combat) : newCombat();
+  const hostile = new Set([
+    ...hostilesOf(spec),
+    ...spec.npcs.filter((n) => n.role === "hostile").map((n) => n.id),
+  ]);
+  let jumpPressed = false;
+  let firePressed = false;
+  const pickups: Pickup[] = [];
+  const pickupSprites = new Map<string, three.Sprite>();
+  if (shooter) {
+    const open: Point[] = [];
+    for (let y = 1; y < map.height - 1; y++)
+      for (let x = 1; x < map.width - 1; x++)
+        if (!isSolid(map, x, y) && Math.hypot(x - spawn.x, y - spawn.y) > 3)
+          open.push({ x, y });
+    for (const p of placePickups(open, spec.seed)) {
+      pickups.push(p);
+      if (combat.taken.includes(p.id)) continue;
+      const s = tagSprite(
+        p.kind === "health" ? "\u2764 +" : "\u2022\u2022\u2022 ammo",
+        0.2,
+      );
+      s.position.set(p.x, heightAt(terrain, p.x, p.y) + 0.25, p.y);
+      scene.add(s);
+      pickupSprites.set(p.id, s);
+    }
+  }
+  const hud = document.createElement("div");
+  hud.dataset.testid = "world3d-hud";
+  Object.assign(hud.style, {
+    position: "absolute",
+    left: "16px",
+    bottom: "16px",
+    padding: "6px 12px",
+    borderRadius: "999px",
+    background: "rgba(10,12,20,0.66)",
+    color: "white",
+    font: "600 13px Inter, system-ui, sans-serif",
+    zIndex: "5",
+    pointerEvents: "none",
+    display: shooter ? "block" : "none",
+  });
+  let hudText = "";
+  const perf = (
+    window as unknown as {
+      __flowsWorldPerf?: { frame: number[]; sim: number[] };
+    }
+  ).__flowsWorldPerf;
   {
     // Face the nearest villager so the first frame shows somebody.
     let best: Npc | null = null;
@@ -695,8 +789,11 @@ export function createWorld3d(
   const overlay = document.createElement("button");
   overlay.type = "button";
   overlay.dataset.testid = "world3d-lock";
-  overlay.textContent =
-    "Click to look around · WASD to walk · E to talk · Esc for the mouse";
+  overlay.textContent = shooter
+    ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · Click or F to shoot · E to talk"
+    : action
+      ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · E to talk"
+      : "Click to look around · WASD to walk · E to talk · Esc for the mouse";
   Object.assign(overlay.style, {
     position: "absolute",
     left: "50%",
@@ -729,7 +826,7 @@ export function createWorld3d(
   });
   if (getComputedStyle(parent).position === "static")
     parent.style.position = "relative";
-  parent.append(overlay, cross);
+  parent.append(overlay, cross, hud);
   let dragLook = false;
   const requestLock = () => {
     const el = renderer.domElement as HTMLCanvasElement & {
@@ -779,6 +876,20 @@ export function createWorld3d(
   };
   const onKeyDown = (e: KeyboardEvent) => {
     if (typing(e) || bridge.locked()) return;
+    if (action && e.code === "Space") {
+      if (!e.repeat) jumpPressed = true;
+      e.preventDefault();
+      return;
+    }
+    if (action && /^(ShiftLeft|ShiftRight|KeyC|ControlLeft)$/.test(e.code)) {
+      keys.add(e.code);
+      e.preventDefault();
+      return;
+    }
+    if (shooter && e.code === "KeyF") {
+      if (!e.repeat) firePressed = true;
+      return;
+    }
     if (e.code === "KeyE" || e.code === "Space") {
       if (nearby) {
         e.preventDefault();
@@ -803,6 +914,10 @@ export function createWorld3d(
 
   const raycaster = new three.Raycaster();
   const onPointerDown = (e: PointerEvent) => {
+    if (shooter && controls.isLocked && !bridge.locked() && e.button === 0) {
+      firePressed = true;
+      return;
+    }
     if (controls.isLocked || bridge.locked()) return;
     drag = { x: e.clientX, y: e.clientY };
     const rect = renderer.domElement.getBoundingClientRect();
@@ -894,6 +1009,90 @@ export function createWorld3d(
         Math.hypot(n.pos.x - me.x, n.pos.y - me.y) >= 0.42,
     );
 
+  const targets = (): Target[] =>
+    npcs
+      .filter((n) => n.group.visible)
+      .map((n) => ({
+        id: n.id,
+        x: n.pos.x,
+        y: n.pos.y,
+        z: heightAt(terrain, n.pos.x, n.pos.y),
+        hostile: hostile.has(n.id),
+      }));
+  const say = (n: Npc, text: string) => handle.say(n.id, text, 1600);
+  function fight(dt: number) {
+    if (!aw || !body) return;
+    tick(combat, dt);
+    // Knocked-out hostiles are gone until they get back up at home.
+    for (const n of npcs) {
+      const down = (combat.enemies[n.id]?.down ?? 0) > combat.clock;
+      if (n.group.visible === down) {
+        n.group.visible = !down;
+        if (!down) {
+          n.pos = { x: n.home.x + 0.5, y: n.home.y + 0.5 };
+          n.path = [];
+        }
+      }
+    }
+    if (firePressed) {
+      firePressed = false;
+      const dir = new three.Vector3();
+      camera.getWorldDirection(dir);
+      const shot = shoot(
+        aw,
+        combat,
+        { x: camera.position.x, y: camera.position.z, z: camera.position.y },
+        { x: dir.x, y: dir.z, z: dir.y },
+        targets(),
+      );
+      if (shot.fired) {
+        cross.style.transform = "scale(2.2)";
+        window.setTimeout(() => {
+          cross.style.transform = "";
+        }, 90);
+      }
+      const n = shot.hit ? npcs.find((x) => x.id === shot.hit) : null;
+      if (n) {
+        say(n, shot.downed ? "Ugh..." : "Ow!");
+        if (shot.downed) bridge.onEvent?.(`${n.name} is knocked out`);
+      }
+    }
+    const fired = enemiesAct(
+      aw,
+      combat,
+      { x: body.x, y: body.y, z: body.z },
+      targets().filter((t) => t.hostile),
+      (x, y) =>
+        bridge.safeAt?.({ x: Math.floor(x), y: Math.floor(y) }) ?? false,
+    );
+    for (const id of fired) {
+      const n = npcs.find((x) => x.id === id);
+      if (n) say(n, "Bang!");
+    }
+    if (combat.health <= 0) {
+      respawn(combat);
+      body = newBody(aw, map.spawn.x + 0.5, map.spawn.y + 0.5);
+      me.x = body.x;
+      me.y = body.y;
+      route = [];
+      bridge.onEvent?.("You were knocked out and woke up at the start");
+    }
+    const got = takePickup(combat, pickups, body.x, body.y);
+    if (got) {
+      const s = pickupSprites.get(got.id);
+      if (s) {
+        dropSprite(s);
+        pickupSprites.delete(got.id);
+      }
+      bridge.onEvent?.(got.kind === "health" ? "Health +" : "Ammo +");
+    }
+    const text = `\u2764 ${Math.round(combat.health)}   \u2022 ${combat.ammo}`;
+    if (text !== hudText) {
+      hudText = text;
+      hud.textContent = text;
+    }
+  }
+
   let last = performance.now();
   let raf = 0;
   const frame = (now: number) => {
@@ -935,7 +1134,41 @@ export function createWorld3d(
     }
     let moving = false;
     const speed = view.walk_speed;
-    if (locked) route = [];
+    const simStart = performance.now();
+    if (action && body && aw) {
+      if (locked) route = [];
+      let ix = mx;
+      let iy = mz;
+      if (!ix && !iy && route.length && !locked) {
+        while (
+          route.length &&
+          Math.hypot(route[0].x + 0.5 - me.x, route[0].y + 0.5 - me.y) < 0.15
+        )
+          route.shift();
+        if (route.length) {
+          ix = route[0].x + 0.5 - me.x;
+          iy = route[0].y + 0.5 - me.y;
+          faceYaw = Math.atan2(-ix, -iy);
+        }
+      }
+      advance(
+        aw,
+        body,
+        {
+          dx: locked ? 0 : ix,
+          dy: locked ? 0 : iy,
+          sprint: keys.has("ShiftLeft") || keys.has("ShiftRight"),
+          crouch: !locked && (keys.has("KeyC") || keys.has("ControlLeft")),
+          jump: !locked && jumpPressed,
+        },
+        dt,
+        speed,
+      );
+      jumpPressed = false;
+      moving = Boolean(ix || iy) && !locked;
+      me.x = body.x;
+      me.y = body.y;
+    } else if (locked) route = [];
     else if (mx || mz) {
       const len = Math.hypot(mx, mz);
       const nx = me.x + (mx / len) * speed * dt;
@@ -952,13 +1185,22 @@ export function createWorld3d(
     }
     walkPhase += moving ? dt * 9 : 0;
     const ground = heightAt(terrain, me.x, me.y);
+    const feet = action && body ? body.z : ground;
+    const eye = view.camera_height * (body?.crouched ? 0.6 : 1);
     if (editor) editor.frame();
     else
       camera.position.set(
         me.x,
-        ground + view.camera_height + (moving ? Math.sin(walkPhase) * 0.03 : 0),
+        feet +
+          eye +
+          (moving && (!body || body.grounded) ? Math.sin(walkPhase) * 0.03 : 0),
         me.y,
       );
+    if (shooter && body && aw && !locked) fight(dt);
+    if (perf) {
+      perf.frame.push(dt * 1000);
+      perf.sim.push(performance.now() - simStart);
+    }
     skyDome?.position.copy(camera.position);
 
     for (const n of npcs) {
@@ -1094,7 +1336,15 @@ export function createWorld3d(
   raf = requestAnimationFrame(frame);
 
   const npcById = (id: string) => npcs.find((n) => n.id === id);
-  return {
+  const handle: WorldGameHandle = {
+    actionState() {
+      return action
+        ? {
+            combat: shooter ? JSON.parse(JSON.stringify(combat)) : undefined,
+            pose: body ? { z: body.z } : undefined,
+          }
+        : undefined;
+    },
     destroy() {
       destroyed = true;
       editor?.close();
@@ -1115,6 +1365,7 @@ export function createWorld3d(
       renderer.domElement.remove();
       overlay.remove();
       cross.remove();
+      hud.remove();
     },
     playerTile() {
       return tileOf(me);
@@ -1135,7 +1386,10 @@ export function createWorld3d(
           groundAt: (x, y) => heightAt(terrain, x, y),
           player: () => ({ x: me.x, y: me.y, yaw: camera.rotation.y }),
           openTile: (x, y) => !SOLID.has(kindAt(map, x, y)),
-          onProps: (next) => setMapProps(map, next, standTiles(me.x, me.y)),
+          onProps: (next) => {
+            setMapProps(map, next, standTiles(me.x, me.y));
+            if (action) aw = collide();
+          },
         });
         const close = ed.close;
         ed.close = () => {
@@ -1226,4 +1480,5 @@ export function createWorld3d(
       n.speech = { sprite: s, until: performance.now() + ms };
     },
   };
+  return handle;
 }

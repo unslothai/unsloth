@@ -39,6 +39,10 @@ export interface WorldBridge {
   onRegion(regionId: string | null): void;
   /** True while a dialogue or menu has the keyboard. */
   locked(): boolean;
+  /** Action play (3D): what a save kept (health, ammo, height), messages for a toast, and safe places. */
+  action?: unknown;
+  onEvent?(text: string): void;
+  safeAt?(p: Point): boolean;
 }
 
 export interface WorldArt {
@@ -71,6 +75,8 @@ export interface WorldGameHandle {
   say(id: string, text: string, ms?: number): void;
   /** The 3D view's scene editor (loaded on first use); the 2D map has none. */
   openEditor?(): Promise<WorldEditor>;
+  /** Action play state to save (3D with action on); undefined otherwise. */
+  actionState?(): unknown;
 }
 
 export interface Area {

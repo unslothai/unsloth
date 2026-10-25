@@ -1,0 +1,271 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const A = await import("../src/features/flows/player/world/action3d.ts");
+type Prop = import("../src/features/flows/types.ts").WorldProp3d;
+
+const flat = () => 0;
+// A 20 x 20 field with a wall column at x = 10 (rows 0..19 except a gap at y = 18).
+const wallAt = (x: number, y: number) =>
+  x < 0 || y < 0 || x >= 20 || y >= 20 || (x === 10 && y !== 18);
+const world = (props: Prop[] = [], solid = (x: number, y: number) => x < 0 || y < 0 || x >= 20 || y >= 20) =>
+  A.buildActionWorld(20, 20, flat, solid, props);
+const crate = (x: number, y: number, extra: Partial<Prop> = {}): Prop => ({
+  id: `crate-${x}-${y}`,
+  kind: "crate",
+  x,
+  y,
+  rot: 0,
+  scale: 1,
+  solid: true,
+  ...extra,
+});
+const still = { dx: 0, dy: 0, sprint: false, crouch: false, jump: false };
+const east = { ...still, dx: 1 };
+
+function run(w: ReturnType<typeof world>, b: ReturnType<typeof A.newBody>, fps: number, seconds: number, input = east) {
+  for (let i = 0; i < Math.round(fps * seconds); i++) A.advance(w, b, input, 1 / fps, 3);
+}
+
+test("the same input moves the same distance at 30, 60 and 144 frames a second", () => {
+  const w = world();
+  const ends = [30, 60, 144].map((fps) => {
+    const b = A.newBody(w, 2.5, 5.5);
+    run(w, b, fps, 1.5);
+    return b.x;
+  });
+  for (const x of ends) assert.ok(Math.abs(x - ends[1]) < 0.06, `${ends}`);
+  assert.ok(Math.abs(ends[1] - (2.5 + 4.5)) < 0.06, `${ends[1]}`);
+});
+
+test("a jump needs the ground (or a moment after leaving it), and gravity brings the body back", () => {
+  const w = world();
+  const b = A.newBody(w, 5.5, 5.5);
+  A.advance(w, b, { ...still, jump: true }, A.STEP_S, 3);
+  assert.ok(b.vz > 0 && !b.grounded);
+  let peak = 0;
+  for (let i = 0; i < 20; i++) {
+    A.advance(w, b, still, A.STEP_S, 3);
+    peak = Math.max(peak, b.z);
+  }
+  const vz = b.vz;
+  // A second press mid-air does nothing.
+  A.advance(w, b, { ...still, jump: true }, A.STEP_S, 3);
+  assert.ok(b.vz < vz, "no jump in mid-air");
+  for (let i = 0; i < 120; i++) A.advance(w, b, still, A.STEP_S, 3);
+  assert.ok(peak > 0.6 && peak < 1.2, `${peak}`);
+  assert.equal(b.z, 0);
+  assert.ok(b.grounded);
+});
+
+test("sprinting into a wall never passes through it, and the body slides along it", () => {
+  const w = world([], wallAt);
+  const b = A.newBody(w, 8.5, 5.5);
+  run(w, b, 20, 3, { ...still, dx: 1, dy: 0.3, sprint: true });
+  assert.ok(b.x < 10 - A.RADIUS + 1e-6, `${b.x}`);
+  assert.ok(b.y > 6.5, "slid along the wall");
+  // Even with long frames (stalls) the fixed step does not tunnel.
+  const c = A.newBody(w, 9.5, 2.5);
+  for (let i = 0; i < 30; i++) A.advance(w, c, { ...still, dx: 1, sprint: true }, 0.25, 3);
+  assert.ok(c.x < 10, `${c.x}`);
+});
+
+test("a low step is climbed, a tall box blocks, and a jump gets onto a crate", () => {
+  const rock = world([{ ...crate(6.5, 5.5), kind: "rock", scale: 0.8 }]);
+  const b = A.newBody(rock, 4.5, 5.5);
+  run(rock, b, 60, 1.2);
+  assert.ok(b.x > 7, "walked over the 0.36 rock");
+  const tall = world([{ ...crate(6.5, 5.5), scale: 2 }]);
+  const c = A.newBody(tall, 4.5, 5.5);
+  run(tall, c, 60, 2);
+  assert.ok(c.x < 6.5 - 0.7 - A.RADIUS + 0.05, `${c.x}`);
+  // A 0.6 crate is too high to step but a jump lands on top of it.
+  const box = world([crate(6.5, 5.5)]);
+  const d = A.newBody(box, 4.5, 5.5);
+  run(box, d, 60, 1);
+  assert.ok(d.x < 6.5, "blocked without a jump");
+  A.advance(box, d, { ...east, jump: true }, A.STEP_S, 3);
+  for (let i = 0; i < 25; i++) A.advance(box, d, east, A.STEP_S, 3);
+  for (let i = 0; i < 6 && d.x < 6.5; i++) A.advance(box, d, east, A.STEP_S, 3);
+  for (let i = 0; i < 60; i++) A.advance(box, d, still, A.STEP_S, 3);
+  assert.ok(Math.abs(d.z - 0.6) < 1e-6 && d.grounded, `${d.x},${d.z}`);
+});
+
+test("crouching passes under a low roof, and standing up waits for headroom", () => {
+  // A slab from 1.0 to 1.4 overhead: too low to stand under, fine crouched.
+  const slab = A.buildActionWorld(20, 20, flat, (x, y) => x < 0 || y < 0 || x >= 20 || y >= 20, []);
+  const roof: import("../src/features/flows/player/world/action3d.ts").Box = {
+    cx: 7.5,
+    cy: 5.5,
+    hx: 1,
+    hy: 1,
+    cos: 1,
+    sin: 0,
+    bottom: 1,
+    top: 1.4,
+  };
+  slab.boxes.push(roof);
+  for (let y = 3; y <= 8; y++) for (let x = 5; x <= 10; x++) slab.cells.set(y * 20 + x, [roof]);
+  const b = A.newBody(slab, 4.5, 5.5);
+  run(slab, b, 60, 1);
+  assert.ok(b.x < 6.5 - A.RADIUS + 0.01, `standing is blocked at ${b.x}`);
+  run(slab, b, 60, 0.6, { ...east, crouch: true });
+  assert.ok(b.x > 7, `crouched under at ${b.x}`);
+  assert.ok(b.crouched);
+  // Letting go of crouch under the roof keeps the body crouched.
+  run(slab, b, 60, 0.1, still);
+  assert.ok(b.crouched);
+  run(slab, b, 60, 1.5, east);
+  assert.ok(b.x > 8.6 && !b.crouched, `stood up past the roof at ${b.x}`);
+});
+
+test("rotated props block along their rotated footprint", () => {
+  const fence = (rot: number) => world([{ ...crate(6.5, 5.5), kind: "fence", rot }]);
+  // A fence along x (rot 0) is thin in y: walking south across it at x = 7.2 is blocked.
+  const south = { ...still, dy: 1 };
+  const a = A.newBody(fence(0), 7.2, 4.5);
+  run(fence(0), a, 60, 1, south);
+  assert.ok(a.y < 5.5, `${a.y}`);
+  // Turned 90 degrees it runs along y and leaves x = 7.2 open.
+  const b = A.newBody(fence(90), 7.2, 4.5);
+  run(fence(90), b, 60, 1, south);
+  assert.ok(b.y > 6.5, `${b.y}`);
+});
+
+test("shots hit the first hostile in line, walls stop them, friendlies are never hurt", () => {
+  const w = world([], wallAt);
+  const c = A.newCombat();
+  const eye = { x: 2.5, y: 5.5, z: 1.4 };
+  const dir = { x: 1, y: 0, z: -0.12 };
+  const grim = { id: "grim", x: 6.5, y: 5.5, z: 0, hostile: true };
+  const tom = { id: "tom", x: 4.5, y: 5.5, z: 0, hostile: false };
+  // A friendly in the way stops the shot and takes nothing.
+  assert.deepEqual(A.shoot(w, c, eye, dir, [grim, tom]), { fired: true, hit: null, downed: false });
+  assert.equal(c.enemies.tom, undefined);
+  A.tick(c, 1);
+  const hit = A.shoot(w, c, eye, dir, [grim]);
+  assert.equal(hit.hit, "grim");
+  assert.equal(c.enemies.grim.health, A.ENEMY_HEALTH - A.SHOT_DAMAGE);
+  // Cooldown, then ammo.
+  assert.equal(A.shoot(w, c, eye, dir, [grim]).fired, false);
+  // Behind the wall at x = 10: missed.
+  A.tick(c, 1);
+  const behind = { ...grim, x: 12.5 };
+  assert.equal(A.shoot(w, c, eye, dir, [behind]).hit, null);
+  // Three more hits knock him out; he is up again after the knockout.
+  let downed = false;
+  for (let i = 0; i < 3; i++) {
+    A.tick(c, 1);
+    downed = A.shoot(w, c, eye, dir, [grim]).downed || downed;
+  }
+  assert.ok(downed);
+  A.tick(c, 1);
+  assert.equal(A.shoot(w, c, eye, dir, [grim]).hit, null, "a knocked-out villager is not a target");
+  A.tick(c, A.KNOCKOUT_S);
+  assert.equal(A.shoot(w, c, eye, dir, [grim]).hit, "grim");
+  c.ammo = 0;
+  A.tick(c, 1);
+  assert.equal(A.shoot(w, c, eye, dir, [grim]).fired, false);
+});
+
+test("hostiles shoot back only in range, in sight and outside safe places; defeat costs only ammo", () => {
+  const w = world([], wallAt);
+  const c = A.newCombat();
+  const me = { x: 8.5, y: 5.5, z: 0 };
+  const grim = { id: "grim", x: 5.5, y: 5.5, z: 0, hostile: true };
+  const none = () => false;
+  assert.deepEqual(A.enemiesAct(w, c, me, [grim], none), ["grim"]);
+  assert.equal(c.health, A.MAX_HEALTH - A.ENEMY_DAMAGE);
+  assert.deepEqual(A.enemiesAct(w, c, me, [grim], none), [], "cooldown");
+  A.tick(c, A.ENEMY_COOLDOWN_S + 0.01);
+  assert.deepEqual(A.enemiesAct(w, c, { ...me, x: 12.5 }, [grim], none), [], "wall in between");
+  assert.deepEqual(A.enemiesAct(w, c, { ...me, x: 5.5 + A.ENEMY_RANGE + 1, y: 18.5 }, [{ ...grim, y: 18.5 }], none), [], "out of range");
+  // The player in a safe place, or the hostile standing in one: no shot either way.
+  assert.deepEqual(A.enemiesAct(w, c, me, [grim], (x) => x > 8), [], "player safe");
+  assert.deepEqual(A.enemiesAct(w, c, me, [grim], (x) => x < 6), [], "hostile in a safe place");
+  assert.deepEqual(A.enemiesAct(w, c, me, [{ ...grim, hostile: false }], none), []);
+  c.ammo = 17;
+  A.respawn(c);
+  assert.equal(c.health, A.MAX_HEALTH);
+  assert.equal(c.ammo, 0);
+});
+
+test("pickups are taken once, only when useful, from fixed seeded spots", () => {
+  const open = Array.from({ length: 50 }, (_, i) => ({ x: i % 10, y: Math.floor(i / 10) }));
+  const a = A.placePickups(open, 7);
+  assert.deepEqual(a, A.placePickups(open, 7));
+  assert.equal(new Set(a.map((p) => `${p.x},${p.y}`)).size, a.length);
+  const c = A.newCombat();
+  const health = a.find((p) => p.kind === "health")!;
+  assert.equal(A.takePickup(c, a, health.x, health.y), null, "full health leaves it");
+  c.health = 50;
+  assert.equal(A.takePickup(c, a, health.x, health.y)?.id, health.id);
+  assert.equal(c.health, 50 + A.PICKUP_HEALTH);
+  assert.equal(A.takePickup(c, a, health.x, health.y), null, "taken once");
+});
+
+test("combat saves round-trip and anything else starts fresh", () => {
+  const c = A.newCombat();
+  c.health = 40;
+  c.ammo = 7;
+  c.taken = ["pickup-1"];
+  c.enemies.grim = { health: 30, down: 120, cooldown: 99 };
+  c.clock = 100;
+  const back = A.combatOf(JSON.parse(JSON.stringify(c)));
+  assert.equal(back.health, 40);
+  assert.equal(back.ammo, 7);
+  assert.deepEqual(back.taken, ["pickup-1"]);
+  assert.equal(back.enemies.grim.down, 120);
+  assert.deepEqual(A.combatOf(undefined), A.newCombat());
+  assert.equal(A.combatOf({ health: -5, ammo: 1e9 }).ammo, A.MAX_AMMO);
+});
+
+test("action play is wired only when the world turns it on", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/player/world/three-world.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /const action = spec\.action\?\.movement === true;/);
+  assert.match(src, /const shooter = action && spec\.action\?\.shooter === true;/);
+  // Without it, walking is the tile slide it always was.
+  assert.match(src, /if \(action && body && aw\) \{/);
+  assert.match(src, /\[me\.x, me\.y\] = slide\(map, me\.x, me\.y, nx - me\.x, ny - me\.y\);/);
+});
+
+test("a save keeps action state only for a world with action play on; old saves load as before", async () => {
+  const W = await import("../src/features/flows/player/world/world-state.ts");
+  type Spec = import("../src/features/flows/types.ts").WorldSpec;
+  const spec = {
+    title: "Arena",
+    seed: 3,
+    width: 24,
+    height: 18,
+    tile_size: 32,
+    biome: "meadow",
+    tileset: {},
+    player: { name: "Pip" },
+    npcs: [],
+    items: [],
+    quests: [],
+    regions: [],
+    vars: {},
+    intro_text: "",
+  } as unknown as Spec;
+  const armed = { ...spec, action: { movement: true, shooter: true } } as Spec;
+  const action = { combat: { health: 40, ammo: 3 }, pose: { z: 0.6 } };
+  const saved = { ...W.serialize(W.initialWorldState(armed)), action };
+  assert.deepEqual(W.deserialize(armed, JSON.parse(JSON.stringify(saved)))?.action, action);
+  // The same save in a world without action play, and an old save, carry none.
+  assert.equal(W.deserialize(spec, saved)?.action, undefined);
+  const old = W.serialize(W.initialWorldState(armed)) as unknown as Record<string, unknown>;
+  delete old.action;
+  assert.equal(W.deserialize(armed, old)?.action, undefined);
+});

@@ -47,11 +47,12 @@ import {
   playerSell,
   priceOf,
   resolveEncounter,
+  safeAt,
 } from "./autonomy";
 import { type LiveReply, appendReplyDelta } from "./live-reply";
 import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
-import { type TileKind, generateMap } from "./procgen";
+import { type Point, type TileKind, generateMap } from "./procgen";
 import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
   placeAreas,
@@ -459,6 +460,9 @@ export function WorldPlayer({
                 );
             },
             locked: () => lockedRef.current,
+            action: wsRef.current.action,
+            onEvent: (text) => toast(text),
+            safeAt: (p) => safeRef.current(p),
           },
         );
         game.current = handle;
@@ -1038,6 +1042,9 @@ export function WorldPlayer({
   // Villagers acting on their own (opt-in per world): one beat a second, paused while the player talks or reads.
   const flags = useMemo(() => autonomyOf(baseSpec), [baseSpec]);
   const autoOn = useMemo(() => autonomyOn(baseSpec), [baseSpec]);
+  const shooterOn = baseSpec.action?.shooter === true;
+  // Safe places for the 3D shooter: refreshed by each village beat (none without autonomy).
+  const safeRef = useRef<(p: Point) => boolean>(() => false);
   const autoSteered = useRef(new Set<string>());
   useEffect(() => {
     if (!autoOn || !ready || !started) return;
@@ -1068,6 +1075,15 @@ export function WorldPlayer({
         player: g.playerTile(),
         npcs: g.npcTiles(),
       });
+      safeRef.current = (p) => safeAt(ground, out.state.auto ?? base.auto!, p);
+      // In a shooter the hostiles fight instead of stopping the player for an encounter.
+      if (shooterOn && out.state.auto?.encounter && !base.auto?.encounter) {
+        out.state = {
+          ...out.state,
+          auto: { ...out.state.auto, encounter: null },
+        };
+        out.notes = out.notes.filter((n) => !n.endsWith("blocks your way!"));
+      }
       run(g, out.cmds);
       const now = new Set(out.steered);
       for (const id of autoSteered.current)
@@ -1265,8 +1281,10 @@ export function WorldPlayer({
   };
 
   const save = async (slot: string) => {
+    const action = game.current?.actionState?.() as WorldState["action"];
     const state = serialize({
       ...wsRef.current,
+      ...(action ? { action } : {}),
       player: game.current?.playerTile() ?? null,
       ...(autoOn && game.current ? { npcAt: game.current.npcTiles() } : {}),
     });

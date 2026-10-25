@@ -133,7 +133,7 @@ test("a solid prop dropped where the player stands never traps them", async () =
   );
   assert.match(
     src,
-    /onProps: \(next\) => setMapProps\(map, next, standTiles\(me\.x, me\.y\)\)/,
+    /onProps: \(next\) => \{\s*setMapProps\(map, next, standTiles\(me\.x, me\.y\)\);/,
   );
   // Standing at a tile edge, the player also touches the next tile: a prop there must not trap them either.
   const edge = { x: at.x + 0.99, y: at.y + 0.5 };
