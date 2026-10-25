@@ -94,8 +94,6 @@ def _snapshot(
     return snap
 
 
-
-
 def test_every_sdxl_component_maps_to_its_twin():
     names = [*SDXL_CONFIGS, *SDXL_DEFAULTS, *SDXL_TWINS]
     assert fv.plan_fp16_twins(names, SDXL_INDEX) == {
@@ -154,8 +152,6 @@ def test_twin_names():
     assert not fv.is_fp16_twin("vae/diffusion_pytorch_model.fp16.bin")
 
 
-
-
 def test_an_fp16_load_reads_the_twins_and_a_bf16_load_the_defaults(tmp_path):
     snap = _snapshot(tmp_path, [*SDXL_CONFIGS, *SDXL_DEFAULTS, *SDXL_TWINS])
     assert fv.local_fp16_variant(str(snap), load_dtype = "torch.float16") == "fp16"
@@ -204,8 +200,6 @@ def test_kill_switch(tmp_path, monkeypatch):
     snap = _snapshot(tmp_path, [*SDXL_CONFIGS, *SDXL_DEFAULTS, *SDXL_TWINS])
     monkeypatch.setenv(fv.FP16_VARIANT_ENV, "0")
     assert fv.local_fp16_variant(str(snap), load_dtype = "torch.float16") is None
-
-
 
 
 def _stub_hub(
@@ -291,8 +285,6 @@ def test_resident_estimate_ignores_a_twin_beside_its_default():
     )
     twins_te = {k: v for k, v in SDXL_TWINS.items() if not k.startswith("unet/")}
     assert companion_bytes_from_declared(SDXL, twins_te.items()) == sum(twins_te.values())
-
-
 
 
 def test_prefetch_reads_the_twins_the_load_reads(tmp_path):
