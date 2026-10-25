@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -126,6 +127,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
+  DEFAULT_INFERENCE_PARAMS,
   MAX_SAMPLING_SEED,
   modelReadsSamplingSeed,
   type InferenceParams,
@@ -133,10 +135,9 @@ import {
 
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
+import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 
-const SaveForModelButton = lazy(
-  () => import("./components/save-for-model-button"),
-);
+const SamplingFooter = lazy(() => import("./components/sampling-footer"));
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -339,7 +340,8 @@ function CollapsibleSection({
 
   const headerClasses = cn(
     "flex w-full items-center justify-between text-ui-12 font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
-    first ? "pt-4 pb-5" : "py-5",
+    // pt-2 centers the first label on the sidebar's New chat row.
+    first ? "pt-2 pb-5" : "py-5",
   );
 
   return (
@@ -1302,15 +1304,8 @@ export function ChatSettingsPanel({
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
                 disabled={!(settingsHydrated && presetSaveState.canSubmit)}
-                    variant={
-                      presetSaveState.isSaveReady ? "default" : "outline"
-                    }
+                variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
-                className={cn(
-                  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav",
-                  presetSaveState.isSaveReady &&
-                    "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-                )}
                 title={presetSaveState.title}
                 aria-label={presetSaveState.title}
               >
@@ -1320,9 +1315,9 @@ export function ChatSettingsPanel({
                 type="button"
                 onClick={() => deletePreset(activePreset)}
                 disabled={!(settingsHydrated && activeCustomPreset)}
-                variant="destructive"
+                variant="ghost"
                 size="sm"
-                className="h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
+                className="text-muted-foreground hover:text-destructive"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -1448,7 +1443,8 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={openSystemPromptEditor}
-                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                  // 28px target laid out at the chevron's 14px.
+                  className="nav-icon-btn -my-1.75 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
                   aria-label="Edit system prompt"
                 >
                   <HugeiconsIcon
@@ -1660,6 +1656,17 @@ export function ChatSettingsPanel({
                 />
               </div>
             ) : null}
+            {!isExternalModel && currentCheckpoint ? (
+              <Suspense fallback={null}>
+                <SamplingFooter
+                  store={useChatRuntimeStore}
+                  notify={toast}
+                  Checkbox={Checkbox}
+                  defaults={DEFAULT_INFERENCE_PARAMS}
+                  qwenThinking={resolveQwenThinkingParams}
+                />
+              </Suspense>
+            ) : null}
           </div>
         </CollapsibleSection>
 
@@ -1691,11 +1698,6 @@ export function ChatSettingsPanel({
           </CollapsibleSection>
             )}
 
-            {!isExternalModel && currentCheckpoint ? (
-          <Suspense fallback={null}>
-            <SaveForModelButton store={useChatRuntimeStore} notify={toast} />
-          </Suspense>
-            ) : null}
       </div>
       </div>
       </div>

@@ -1460,8 +1460,16 @@ class MlxDiffusionBackend:
     # ── Unload / status ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("mlx diffusion unload")
-    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict[str, Any]]:
         with self._lock:
+            # Rechecked under the load worker's lock, so a load that ended since costs nothing.
+            if only_if is not None and not only_if():
+                return None
             if expected_account is not None:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control

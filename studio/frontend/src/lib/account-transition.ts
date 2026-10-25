@@ -18,6 +18,40 @@ export const OWNER_BROWSER_ACCOUNT = "unsloth";
 
 export const APPEARANCE_KEY = "unsloth_appearance_customization";
 
+const CHAT_PREFERENCES_KEY = "unsloth_chat_preferences";
+// Only chat UI preferences survive here, never credentials, drafts or chat content.
+const ACCOUNT_CHAT_PREFERENCES_PREFIX = "unsloth.account-chat-preferences.v1:";
+
+function chatPreferencesKey(account: MarkedAccount): string {
+  const identity = isOwnerAccount(account)
+    ? ["id", "owner"]
+    : account.accountId
+      ? ["id", account.accountId]
+      : ["username", account.username];
+  return ACCOUNT_CHAT_PREFERENCES_PREFIX + JSON.stringify(identity);
+}
+
+/** Keep the active key compatible with the preference store, migrations and Reset preferences. */
+function switchChatPreferences(
+  storage: Storage,
+  previous: MarkedAccount,
+  next: MarkedAccount,
+): void {
+  try {
+    const current = storage.getItem(CHAT_PREFERENCES_KEY);
+    const saved = storage.getItem(chatPreferencesKey(next));
+    if (current === null) {
+      if (storage.getItem(chatPreferencesKey(previous)) !== null)
+        storage.removeItem(chatPreferencesKey(previous));
+    } else storage.setItem(chatPreferencesKey(previous), current);
+    if (saved === null && current !== null) storage.removeItem(CHAT_PREFERENCES_KEY);
+    else if (saved !== null) storage.setItem(CHAT_PREFERENCES_KEY, saved);
+  } catch {
+    // Optional, so a full storage never fails a sign-in; defaults beat the previous account's.
+    storage.removeItem(CHAT_PREFERENCES_KEY);
+  }
+}
+
 /** Browser chrome only. Never add credentials, content, model choices or profile data. */
 export const ACCOUNT_CHROME_KEYS = new Set([
   "theme",
@@ -79,13 +113,18 @@ export function accountDatabaseName(
   const account = parseAccountMarker(
     storage?.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
   );
-  const owner =
-    account.accountId === "owner" ||
-    (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT);
-  return owner ? name : `${name}:${account.accountId ?? account.username}`;
+  return isOwnerAccount(account)
+    ? name
+    : `${name}:${account.accountId ?? account.username}`;
 }
 
 type MarkedAccount = { accountId: string | null; username: string };
+function isOwnerAccount(account: MarkedAccount): boolean {
+  return (
+    account.accountId === "owner" ||
+    (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT)
+  );
+}
 function parseAccountMarker(marker: string): MarkedAccount {
   const legacy = {
     accountId: null,
@@ -192,12 +231,11 @@ export async function transitionBrowserAccount(
 ): Promise<boolean> {
   const marker = browserAccountMarker(account);
   const storage = browser.localStorage;
-  const changed = !isSameAccount(
-    parseAccountMarker(
-      storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
-    ),
-    parseAccountMarker(marker),
+  const previous = parseAccountMarker(
+    storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
   );
+  const next = parseAccountMarker(marker);
+  const changed = !isSameAccount(previous, next);
   if (changed) {
     // First, since it can fail: a failure then leaves this account's data intact.
     await clearSiteData();
@@ -208,6 +246,8 @@ export async function transitionBrowserAccount(
       if (
         !key ||
         key === BROWSER_ACCOUNT_KEY ||
+        key === CHAT_PREFERENCES_KEY ||
+        key.startsWith(ACCOUNT_CHAT_PREFERENCES_PREFIX) ||
         ACCOUNT_CHROME_KEYS.has(key) ||
         // About this machine's install, not the account.
         key === RUNTIME_REPAIR_KEY ||
@@ -230,6 +270,8 @@ export async function transitionBrowserAccount(
   commitSession();
   if (storage.getItem(BROWSER_ACCOUNT_KEY) !== marker)
     storage.setItem(BROWSER_ACCOUNT_KEY, marker);
+  // After the marker: until then the active preferences stay the account it names, so a retry is safe.
+  if (changed) switchChatPreferences(storage, previous, next);
   if (changed) storage.removeItem(BROWSER_ACCOUNT_FENCE_KEY);
   if (changed) browser.location.replace(postAuthRoute);
   return changed;

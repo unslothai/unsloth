@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
 import { RefreshGlyph } from "@/lib/refresh-icon";
-import { FolderSyncIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useState } from "react";
@@ -277,7 +277,10 @@ export function LinkedFoldersManager({
                     className="size-4 shrink-0 text-muted-foreground"
                   />
                   <div className="min-w-0 flex-1">
-                    <span className="block truncate text-sm">
+                    <span
+                      className="block truncate text-sm"
+                      title={folder.displayName}
+                    >
                       {folder.displayName}
                     </span>
                     {detail ? (
@@ -326,7 +329,7 @@ export function LinkedFoldersManager({
                 <Spinner className="size-4 shrink-0" />
               ) : (
                 <HugeiconsIcon
-                  icon={PlusSignIcon}
+                  icon={FolderAddIcon}
                   strokeWidth={1.75}
                   className="size-4 shrink-0 text-muted-foreground"
                 />
@@ -376,7 +379,7 @@ export function LinkedFoldersManager({
             {manager.mutating ? (
               <Spinner className="size-3.5" />
             ) : (
-              <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="size-3.5" />
+              <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-3.5" />
             )}
             Add folder
           </Button>
@@ -389,7 +392,10 @@ export function LinkedFoldersManager({
         </div>
       ) : manager.folders.length === 0 ? (
         <div className="rounded-lg border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
-          No source folders.
+          {/* The unscoped list has no Add: a folder is linked to one project or knowledge base. */}
+          {scope
+            ? "No source folders."
+            : "No source folders. Link one from a project or knowledge base."}
         </div>
       ) : (
         <ul className="flex flex-col gap-1.5">

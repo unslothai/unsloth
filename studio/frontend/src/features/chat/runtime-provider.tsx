@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { readGenerationProgress } from "./lib/generation-progress";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { isMcpToolOnly, mcpImageMappingsEnabled } from "./api/mcp-image";
@@ -1740,6 +1741,7 @@ function scheduleGenerationRecovery(
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
+                _generationProgress?: unknown;
                 _reasoningDurationMs?: unknown;
                 usage?: {
                   prompt_tokens?: unknown;
@@ -1759,6 +1761,19 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
                 quote_cut?: boolean;
               };
+              // Live figures only once caught up: a replayed backlog would flash every old sample.
+              if ("_generationProgress" in chunk) {
+                if (caughtUp(update.run)) {
+                  const progress = readGenerationProgress(chunk._generationProgress);
+                  const store = useChatRuntimeStore.getState();
+                  if (progress?.phase === "prefill") {
+                    store.setLivePrefill(threadId, progress.prefill);
+                  } else if (progress?.phase === "decode") {
+                    store.setLiveDecode(threadId, progress.decode);
+                  }
+                }
+                continue;
+              }
               if ("_reasoningDurationMs" in chunk) {
                 currentMetadata = recoveredReasoningSummaryMetadata(
                   currentMetadata,
@@ -1894,7 +1909,13 @@ function scheduleGenerationRecovery(
         );
       }
     } finally {
-      // Every exit, not just terminal: a leftover seeded card breaks later chords. Join the arm first.
+      useChatRuntimeStore.getState().clearLiveGenerationForThread(threadId);
+      // EVERY exit, not just the terminal one: a permanent follower error (another tab deletes the
+      // thread, the run row cascades, the request 404s) throws past the terminal branch into the
+      // outer catch, leaving a seeded card in the global store for the session. `soleRequest` counts
+      // entries, so a later real approval reads as non-sole and loses its Enter/Escape chords.
+      // Joined first because the arming is no longer awaited at its call site, so without this a
+      // late arm lands after the disarm and leaves the card up on a finished run.
       unregisterStop();
       if (seededApprovals) await seededApprovals.catch(() => {});
       toolRecovery.disarmAll();

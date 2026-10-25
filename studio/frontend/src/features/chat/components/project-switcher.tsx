@@ -68,7 +68,7 @@ export function ProjectSwitcher({
                 ? "Loading project"
                 : "Pick a project"
           }
-          className="-mx-1 flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full pl-3 pr-2.5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="-mx-1 flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-[10px] pl-3 pr-2.5 transition-colors hover:bg-nav-surface-hover data-[state=open]:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <HugeiconsIcon
             icon={Folder01Icon}
@@ -95,7 +95,7 @@ export function ProjectSwitcher({
         side="bottom"
         align="start"
         sideOffset={0}
-        className="unsloth-plus-menu ring-0 min-w-56 max-w-72 font-heading"
+        className="min-w-56 max-w-72"
       >
         <div className="max-h-72 overflow-y-auto">
         {showLoadingRow ? (

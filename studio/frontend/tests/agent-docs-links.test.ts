@@ -127,7 +127,7 @@ test("the example code box starts short, drags taller, and its copy button is ic
   // the cap is lifted so a drag can grow it; a height is set, from the drag once there is one
   assert.match(
     src,
-    /"relative \[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:pr-8 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
+    /"relative \[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:pr-8 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? fitContent\s*\? "\[&>section\]:max-h-\[60dvh\]"\s*: tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
   );
   // our own handle: CSS resize draws a native grabber the rounded corner clips into an arc
   assert.doesNotMatch(src, /resize-y|webkit-resizer/);

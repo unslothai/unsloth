@@ -29,8 +29,10 @@ export const buttonVariants = cva(
           "hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 aria-expanded:bg-muted aria-expanded:text-foreground",
         // Neutral grey at rest, unlike `secondary`, whose token carries a hue in some themes.
         muted: "bg-muted text-foreground hover:bg-muted/80",
+        // Rebinds --destructive on the button itself, so callers' own text-/bg-destructive
+        // classes land on the same shade.
         destructive:
-          "bg-destructive/10 hover:bg-destructive/20 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/20 text-destructive focus-visible:border-destructive/40 dark:hover:bg-destructive/30",
+          "[--destructive:var(--destructive-button)] bg-destructive/10 hover:bg-destructive/15 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 text-destructive focus-visible:border-destructive/40",
         link: "text-foreground underline-offset-4 hover:underline",
       },
       size: {

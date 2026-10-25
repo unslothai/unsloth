@@ -471,17 +471,44 @@ def rename_optimizer_state_for(optimizer, full_state):
     to_torch = isinstance(optimizer, (torch.optim.Adam, torch.optim.AdamW))
     if not (to_bnb or to_torch):
         return full_state
+    renamed = False
     for entry in states.values():
         if not isinstance(entry, dict):
             continue
         for bnb_key, torch_key in _TORCH_ADAM_KEYS.items():
             if to_bnb and torch_key in entry and bnb_key not in entry:
                 entry[bnb_key] = entry.pop(torch_key).float()
+                renamed = True
             elif to_torch and bnb_key in entry and torch_key not in entry:
                 entry[torch_key] = entry.pop(bnb_key)
+                renamed = True
         step = entry.get("step")
         if to_bnb and torch.is_tensor(step):
             entry["step"] = int(step.item())
         elif to_torch and step is not None and not torch.is_tensor(step):
             entry["step"] = torch.tensor(float(step))
+    if renamed:
+        _align_param_group_keys(optimizer, full_state)
     return full_state
+
+
+def _align_param_group_keys(optimizer, full_state):
+    """Saved param groups from the other optimizer carry its own hyperparameter keys (torch AdamW's
+    amsgrad / foreach / ..., bitsandbytes' alpha / t_alpha / ...), which torch's state dict loaders
+    refuse. Keep the keys both optimizers have (lr, betas, eps, weight_decay: the saved values), drop
+    the saved-only ones and take this optimizer's own value for the rest. Only called for a
+    checkpoint of the other optimizer (its state keys were renamed)."""
+    saved_groups = full_state.get("param_groups")
+    live_groups = getattr(optimizer, "param_groups", None)
+    if not isinstance(saved_groups, list) or not live_groups:
+        return
+    if len(saved_groups) != len(live_groups):
+        return  # torch's loader reports the group mismatch itself
+    for saved, live in zip(saved_groups, live_groups):
+        if not isinstance(saved, dict):
+            continue
+        for key in [k for k in saved if k != "params" and k not in live]:
+            del saved[key]
+        for key, value in live.items():
+            if key != "params" and key not in saved:
+                saved[key] = value

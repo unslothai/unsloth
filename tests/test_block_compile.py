@@ -53,6 +53,74 @@ def test_mark_seq_dynamic_skips_widths(monkeypatch):
     assert sorted(marked) == [(2, 1), (3, 1), (3, 2), (4, 2), (4, 3)]
 
 
+def test_mark_batch_dynamic_marks_dim0_only(monkeypatch):
+    M = _load()
+    marked = []
+    monkeypatch.setattr(
+        torch._dynamo, "maybe_mark_dynamic", lambda t, d: marked.append((t.dim(), d))
+    )
+    B, L = 4, 16
+    hidden = torch.zeros(B, L, 8)
+    mask4d = torch.zeros(B, 1, L, L)
+    pos = torch.zeros(1, L, dtype = torch.long)  # broadcast over the batch: not marked
+    scale = torch.zeros(B)  # 1D: not marked
+    M._mark_batch_dynamic(B, (hidden, {"m": mask4d}, [pos, scale, "x", None]))
+    assert sorted(marked) == [(3, 0), (4, 0)]
+
+
+@pytest.mark.parametrize("dynamic_batch", ["1", "0"])
+def test_batch_change_does_not_recompile(monkeypatch, dynamic_batch):
+    """An uneven last batch recompiled every compiled block (+8 graphs, 40 s on a 4-bit Qwen3-0.6B, B200)."""
+    monkeypatch.setenv("UNSLOTH_BLOCK_COMPILE_DYNAMIC_BATCH", dynamic_batch)
+    M = _load()
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = counter, fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+
+    class BatchDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+            position_ids = None,
+            **kwargs,
+        ):
+            out = self.proj(hidden_states) + position_ids[..., None].to(hidden_states.dtype)
+            return out * attention_mask[:, 0, :, :1]
+
+    M._wrap(BatchDecoderLayer, {})
+    layer = BatchDecoderLayer().train()
+
+    def step(B, L):
+        x = torch.randn(B, L, 8, requires_grad = True)
+        mask = torch.ones(B, 1, L, L)
+        pos = torch.arange(L)[None].expand(B, -1)
+        layer(x, attention_mask = mask, position_ids = pos).sum().backward()
+
+    step(4, 16)
+    step(4, 24)  # sequence dim is dynamic: no recompile
+    before = counter.frame_count
+    step(3, 20)  # uneven last batch
+    step(6, 12)
+    extra = counter.frame_count - before
+    torch._dynamo.reset()
+    if dynamic_batch == "1":
+        assert extra == 0
+    else:
+        assert extra >= 1  # the control: without the batch mark the batch change recompiles
+
+
 def test_rebind_globals_resolves():
     M = _load()
     ns = {"__name__": "not_a_registered_module", "OFFSET": 3}
@@ -1483,3 +1551,74 @@ def test_training_flex_options_keep_a_callers_backend(backend):
         return
     q = torch.randn(1, 1, 16, 16)
     flex._apply_kernel_options(q, q, q, False, M._training_flex_options(options))
+
+
+@pytest.mark.skipif(
+    "isolate_recompiles" not in __import__("inspect").signature(torch.compile).parameters,
+    reason = "torch < 2.13: no isolate_recompiles",
+)
+def test_recompile_storm_stops_at_the_region_limit(monkeypatch):
+    """A recompile storm stops at _region_recompile_limit (not the global 1024) and runs eager."""
+    M = _load()
+    from torch._dynamo.testing import CompileCounter
+
+    config = torch._dynamo.config
+    monkeypatch.setattr(config, "recompile_limit", 1024)
+    monkeypatch.setattr(config, "accumulated_recompile_limit", 1024)
+    counter, seen = CompileCounter(), []
+    real_compile = torch.compile
+
+    def counting_compile(fn, **kwargs):
+        seen.append(kwargs)
+        return real_compile(
+            fn,
+            backend = counter,
+            fullgraph = False,
+            dynamic = None,
+            isolate_recompiles = kwargs["isolate_recompiles"],
+            recompile_limit = kwargs["recompile_limit"],
+        )
+
+    monkeypatch.setattr(torch, "compile", counting_compile)
+    torch._dynamo.reset()
+
+    class StormDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+            self.tag = "a"
+
+        def forward(self, hidden_states, **kwargs):
+            # A str attribute is guarded by value: a new value every call recompiles.
+            return self.proj(hidden_states) + len(self.tag)
+
+    M._wrap(StormDecoderLayer, {}, 1)
+    layer = StormDecoderLayer().train()
+    for k in range(60):
+        layer.tag = "a" * (k + 1)
+        x = torch.randn(2, 5, 8, requires_grad = True)
+        out = layer(x)
+        torch.testing.assert_close(out, layer.proj(x) + (k + 1))
+        out.sum().backward()
+    torch._dynamo.reset()
+    assert seen[0]["isolate_recompiles"] is True
+    assert counter.frame_count == seen[0]["recompile_limit"] == M._region_recompile_limit(1) == 32
+
+
+def test_graphs_off_compile_gets_the_same_region_limit(monkeypatch):
+    # The graphs-off compile from UNSLOTH_BLOCK_CUDAGRAPHS needs the same isolation options.
+    M = _load()
+    if not M._ISOLATE_RECOMPILES:
+        pytest.skip("torch < 2.13: no per-region recompile limit")
+    seen = []
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: seen.append(kwargs) or fn)
+
+    class GraphsDecoderLayer(torch.nn.Module):
+        def forward(self, hidden_states, **kwargs):
+            return hidden_states
+
+    M._wrap(GraphsDecoderLayer, {"triton.cudagraphs": True}, 2)
+    assert len(seen) == 2
+    for kwargs in seen:
+        assert kwargs["isolate_recompiles"] is True
+        assert kwargs["recompile_limit"] == M._region_recompile_limit(2) == 48

@@ -10,7 +10,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { LineBox } from "@/components/ui/line-box";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { useLoginMode } from "@/features/auth/account-session";
@@ -30,19 +29,14 @@ import {
   remoteAccessStopDisconnectsOrigin,
 } from "@/features/settings/api/remote-access-state";
 import { isTauri } from "@/lib/api-base";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import {
-  Copy01Icon,
-  HomeWifiIcon,
-  QrCodeIcon,
-} from "@hugeicons/core-free-icons";
+import { HomeWifiIcon, QrCode01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { ChangePasswordDialog } from "./change-password-dialog";
 import { SettingsRow } from "./settings-row";
+import { UrlPill } from "./url-pill";
 
 type RemoteAccessOperation = "start" | "stop" | "auto";
 
@@ -89,48 +83,12 @@ function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
   );
 }
 
-function CopyRemoteUrlButton({ url }: { url: string }) {
-  const [copied, setCopied] = useState(false);
-  const copyTimer = useRef<number | null>(null);
-  useEffect(() => {
-    return () => {
-      if (copyTimer.current !== null) {
-        window.clearTimeout(copyTimer.current);
-      }
-    };
-  }, []);
-  return (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className="gap-1.5"
-      onClick={async () => {
-        if (!(await copyToClipboard(url))) {
-          return;
-        }
-        setCopied(true);
-        if (copyTimer.current !== null) {
-          window.clearTimeout(copyTimer.current);
-        }
-        copyTimer.current = window.setTimeout(() => setCopied(false), 1800);
-      }}
-    >
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        className="size-3.5"
-      />
-      {copied ? "Copied" : "Copy URL"}
-    </Button>
-  );
-}
-
 function RemoteUrlQrButton({ url }: { url: string }) {
   return (
     <Dialog>
       <DialogTrigger asChild={true}>
         <Button type="button" size="sm" variant="outline" className="gap-1.5">
-          <HugeiconsIcon icon={QrCodeIcon} className="size-3.5" />
+          <HugeiconsIcon icon={QrCode01Icon} className="size-3.5" />
           QR
         </Button>
       </DialogTrigger>
@@ -183,17 +141,9 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
     <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium text-foreground">Remote URL</span>
-        <div className="flex items-center gap-2">
-          <RemoteUrlQrButton url={url} />
-          <CopyRemoteUrlButton url={url} />
-        </div>
+        <RemoteUrlQrButton url={url} />
       </div>
-      <LineBox
-        as="code"
-        className="block w-full break-all border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground"
-      >
-        {url}
-      </LineBox>
+      <UrlPill url={url} />
       <span className="text-xs text-muted-foreground leading-snug">
         {multi
           ? "Anyone with this URL reaches the sign-in page, and every account and API key works here. Signing in as the owner gives full control, including running code on this computer through tools."
