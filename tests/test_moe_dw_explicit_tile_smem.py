@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""An explicit dW tile the legacy kernel launched must still launch with the per-expert kernel as default.
+"""An explicit dW tile the legacy kernel launched must still launch with the per-expert kernel as default, and
+a tile too big for this card (T4: 64 KiB) launches with a fitted copy instead of raising OutOfResources.
 
 128x256x256 at 4 stages needs 131,584 B (sm_80/86/89/120) / 262,656 B (sm_90) per-expert vs 69,632 /
 131,072 B legacy (Triton 3.8 metadata.shared), over the 101,376 / 232,448 B limits."""
@@ -128,3 +129,81 @@ def test_explicit_tile_launches_on_this_gpu(monkeypatch, gg):
     gg._grouped_gemm_dW_accumulate_impl(X, dY, m_sizes, gather, acc, topk, **kw)
     torch.cuda.synchronize()
     torch.testing.assert_close(acc, 2 * default.float(), rtol = 1e-2, atol = 1e-2)
+
+
+# Triton 3.6 and 3.8 metadata.shared (identical) of the per-expert dW kernel, bf16, unpermuted operands: its one
+# M loop is software pipelined, so X is buffered num_stages - 1 times (sm_80-class) / both tiles per stage (sm_90).
+PIPELINED_SHARED = {
+    (8, 9): {
+        (64, 64, 256, 2): 40960,
+        (64, 64, 256, 3): 73728,
+        (64, 64, 256, 4): 106496,
+        (32, 64, 256, 4): 53248,
+        (128, 128, 64, 3): 65536,
+        (128, 128, 64, 4): 81920,
+    },
+    (9, 0): {
+        (64, 64, 256, 2): 81920,
+        (64, 64, 256, 4): 163840,
+        (32, 64, 256, 3): 61440,
+        (128, 128, 64, 4): 196608,
+    },
+}
+
+
+@pytest.mark.parametrize("capability", list(PIPELINED_SHARED))
+def test_pipelined_estimate_covers_compiled_shared_memory(gg, capability):
+    from unsloth.kernels.moe.autotune_cache import _estimate_smem
+    for (M, N, K, stages), shared in PIPELINED_SHARED[capability].items():
+        tile = types.SimpleNamespace(
+            BLOCK_SIZE_M = M, BLOCK_SIZE_N = N, BLOCK_SIZE_K = K, num_stages = stages
+        )
+        need = _estimate_smem("dW", tile, 2, 2, capability, True)
+        assert shared <= need <= shared + 2048, (capability, M, N, K, stages, need, shared)
+
+
+@pytest.mark.parametrize("gpu", ["A10", "L4", "RTX5090"])
+def test_unpermuted_heuristic_tile_drops_a_stage(monkeypatch, gg, gpu):
+    # 64x64x256 x 4 stages unpermuted needs 106,496 B on a 101,376 B card: run 3 stages, same tile.
+    capability, smem = GPUS[gpu]
+    _card(monkeypatch, gg, capability, smem)
+    device = torch.device("cuda", 0)
+    assert gg._per_expert_dW_stages(device, 2, *HEURISTIC, pipelined = True) == 3
+    assert gg._per_expert_dW_stages(device, 2, *HEURISTIC) == 4  # gathered loads do not pipeline
+
+
+@pytest.mark.parametrize("gpu", ["A100", "H100", "B200"])
+def test_unpermuted_heuristic_tile_unchanged_with_enough_smem(monkeypatch, gg, gpu):
+    capability, smem = GPUS[gpu]
+    _card(monkeypatch, gg, capability, smem)
+    device = torch.device("cuda", 0)
+    assert gg._per_expert_dW_stages(device, 2, *HEURISTIC, pipelined = True) == 4
+
+
+def _ref(X, dY, m_sizes, E, N, K):
+    X, dY = X.double(), dY.double()
+    out = torch.zeros(E, N, K, dtype = torch.float64, device = X.device)
+    start = 0
+    for e, m in enumerate(m_sizes.tolist()):
+        out[e] = dY[start : start + m].T @ X[start : start + m]
+        start += m
+    return out
+
+
+def test_unpermuted_heuristic_tile_launches_on_this_gpu(gg):
+    # L4 / A10 on main: OutOfResources(106496, 101376) for the Qwen3-30B gate_up dW (UNSLOTH_MOE_DISABLE_AUTOTUNE=1).
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    E, N, K, T, topk = 128, 1536, 2048, 256, 8
+    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    g = torch.Generator(device = "cuda").manual_seed(5)
+    X = torch.randn(T * topk, K, device = "cuda", dtype = dtype, generator = g)
+    dY = torch.randn(T * topk, N, device = "cuda", dtype = dtype, generator = g)
+    m_sizes = torch.full((E,), T * topk // E, device = "cuda", dtype = torch.int32)
+    gather = torch.arange(T * topk, device = "cuda", dtype = torch.int32)
+    M, BN, BK, stages = HEURISTIC
+    kw = dict(BLOCK_SIZE_M = M, BLOCK_SIZE_N = BN, BLOCK_SIZE_K = BK, num_warps = 8, num_stages = stages)
+    out = gg._grouped_gemm_dW_impl(X, dY, m_sizes, gather, topk, **kw)
+    torch.cuda.synchronize()
+    ref = _ref(X, dY, m_sizes, E, N, K)
+    assert ((out.double() - ref).norm() / ref.norm()) < 5e-3

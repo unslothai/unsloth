@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -296,6 +297,144 @@ def _case_merge_offload(rank, world_size, m):
     return out
 
 
+class _QLoraBlock(torch.nn.Module):
+    def __init__(self, seed):
+        super().__init__()
+        bnb = pytest.importorskip("bitsandbytes")
+        torch.manual_seed(seed)
+        self.q = bnb.nn.Linear4bit(
+            128,
+            128,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+        )
+        self.q.weight = bnb.nn.Params4bit(
+            torch.randn(128, 128) * 0.05,
+            requires_grad = False,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = 64,
+            module = self.q,
+        )
+        self.o = torch.nn.Linear(128, 128, bias = False).requires_grad_(False)
+
+    def forward(self, x):
+        return x + self.o(self.q(x))
+
+
+class _QLoraModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.ModuleList([_QLoraBlock(7 * i + 1) for i in range(N_LAYERS)])
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+
+def _qlora_peft(seed = 5):
+    from peft import LoraConfig, get_peft_model
+
+    model = _QLoraModel().to("cpu")  # quantizes the Params4bit
+    model.is_loaded_in_4bit = True  # what PEFT reads to give Linear4bit its 4-bit LoRA layer
+    torch.manual_seed(seed)
+    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q", "o"], init_lora_weights = False)
+    return get_peft_model(model, config)
+
+
+def _packed_bytes(sd):
+    return {
+        k: v.detach().reshape(-1).view(torch.uint8).clone() if isinstance(v, torch.Tensor) else v
+        for k, v in sd.items()
+    }
+
+
+def _case_merged_4bit_streamed(rank, world_size, m):
+    """merged_4bit of a sharded NF4 QLoRA, as save_pretrained_merged runs it: the gather with the
+    merged save's options, the streamed layer by layer merge, then PEFT's merge_and_unload and the
+    state dict the export writes. `head` is #14739's placement (every packed weight stays on its
+    device, PEFT merges them all there); `streamed` stages them on the CPU and brings one back at a
+    time. Both must write the bytes an unsharded merge writes."""
+    import warnings
+
+    q = _load("fsdp2_qlora")
+    from peft.tuners.lora import bnb as peft_bnb
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    warnings.filterwarnings("ignore")
+    reference = _packed_bytes(_qlora_peft().base_model.merge_and_unload().state_dict())
+    out = {}
+    original_cpu = torch.Tensor.cpu
+    original_merge = peft_bnb.Linear4bit.merge
+    original_restage = getattr(m, "_restage_4bit", None)
+    for mode in ("head", "streamed"):
+        model = _qlora_peft()
+        q.prepare_fsdp2_qlora(model)
+        mesh = init_device_mesh("cpu", (world_size,))
+        for layer in model.base_model.model.layers:
+            fully_shard(layer, mesh = mesh)
+        fully_shard(model, mesh = mesh)
+        if mode == "head":
+            options = dict(offload_to_cpu = m.offload_all_but_4bit_merge_operands(model))
+        else:
+            options = m.merged_save_gather_options(model, "merged_4bit")
+        events = []
+        moved = []
+
+        def recording_cpu(self, *args, **kwargs):
+            moved.append(tuple(self.shape))
+            return original_cpu(self, *args, **kwargs)
+
+        def recording_merge(self, *args, **kwargs):
+            events.append("merge")
+            return original_merge(self, *args, **kwargs)
+
+        def recording_restage(weight, device):
+            events.append("restage")
+            return original_restage(weight, device)
+
+        torch.Tensor.cpu = recording_cpu
+        peft_bnb.Linear4bit.merge = recording_merge
+        if original_restage is not None:
+            m._restage_4bit = recording_restage
+        try:
+            with m.fsdp2_gathered(model, **options) as writer:
+                torch.Tensor.cpu = original_cpu
+                packed_moved = sum(len(s) == 2 and s[-1] == 1 for s in moved)
+                if writer:
+                    staged = m.merge_4bit_lora_layer_by_layer(model) if mode == "streamed" else []
+                    on_cpu_before_unload = [
+                        layer.q.base_layer.weight.quant_state.absmax.device.type
+                        for layer in model.base_model.model.layers
+                    ]
+                    events.append("unload")
+                    merged = model.base_model.merge_and_unload()
+                    sd = _packed_bytes(merged.state_dict())
+                    out[mode] = dict(
+                        packed_moved = packed_moved,
+                        streamed_layers = len(staged),
+                        events = events,
+                        states_cpu = on_cpu_before_unload,
+                        same_keys = sorted(sd) == sorted(reference),
+                        same_bytes = all(
+                            torch.equal(sd[k], reference[k])
+                            if isinstance(sd[k], torch.Tensor)
+                            else sd[k] == reference[k]
+                            for k in reference
+                        ),
+                    )
+        finally:
+            torch.Tensor.cpu = original_cpu
+            peft_bnb.Linear4bit.merge = original_merge
+            if original_restage is not None:
+                m._restage_4bit = original_restage
+    return out
+
+
 def _case_replicated(rank, world_size, m, hooked):
     import torch.distributed as dist
 
@@ -468,6 +607,193 @@ def _case_dcp_bnb(rank, world_size, m):
         sd_options = StateDictOptions(full_state_dict = True, cpu_offload = True),
     )
     out["adapter_keys"] = sorted(k.split("q.", 1)[-1] for k in sd)
+    return out
+
+
+def _case_dcp_restore(rank, world_size, m):
+    """A full DCP checkpoint loaded into a 4-bit model whose QuantState differs from the one it was
+    saved from: the packed bytes come from the checkpoint, so their scales must too."""
+    bnb = pytest.importorskip("bitsandbytes")
+    q = _load("fsdp2_qlora")
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    def model(
+        scale,
+        nested,
+        blocksize = 64,
+    ):
+        torch.manual_seed(0)
+        layer = bnb.nn.Linear4bit(
+            128,
+            64,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+        )
+        layer.weight = bnb.nn.Params4bit(
+            torch.randn(64, 128) * scale,
+            requires_grad = False,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = blocksize,
+            compress_statistics = nested,
+            module = layer,
+        )
+        net = torch.nn.Sequential(layer.to("cpu"), torch.nn.Linear(64, 8))
+        reference = bnb.functional.dequantize_4bit(net[0].weight.data, net[0].weight.quant_state)
+        q.prepare_fsdp2_qlora(net)
+        fully_shard(net, mesh = init_device_mesh("cpu", (world_size,)))
+        return net, reference
+
+    def scales(quant_state):
+        tensors = [quant_state.absmax, quant_state.code]
+        if quant_state.state2 is not None:
+            tensors += [quant_state.state2.absmax, quant_state.state2.code, quant_state.offset]
+        return [t.detach().cpu().clone() for t in tensors]
+
+    def restored(net, reference):
+        out = {}
+        with m.fsdp2_gathered(net) as writer:
+            if writer:
+                weight = net[0].weight
+                actual = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)
+                out["dequant_equal"] = torch.equal(actual, reference)
+        return out
+
+    m.install_dcp_bnb_state_dict()
+    out = {}
+    full = StateDictOptions(full_state_dict = True, cpu_offload = True)
+    for nested in (False, True):
+        src, reference = model(0.1, nested)
+        expected = scales(src[0].weight.quant_state)
+        sd = dcp.get_model_state_dict(src, options = full)
+        dst, _ = model(0.05, nested)
+        dcp.set_model_state_dict(
+            dst,
+            sd if rank == 0 else {},
+            options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True),
+        )
+        live = scales(dst[0].weight.quant_state)
+        out[f"broadcast_{nested}"] = dict(
+            restored(dst, reference),
+            scales = all(torch.equal(a, b) for a, b in zip(live, expected)),
+        )
+        sharded = dcp.get_model_state_dict(src)
+        dst, _ = model(0.05, nested)
+        dcp.set_model_state_dict(dst, sharded)
+        live = scales(dst[0].weight.quant_state)
+        out[f"sharded_{nested}"] = dict(
+            restored(dst, reference),
+            scales = all(torch.equal(a, b) for a, b in zip(live, expected)),
+        )
+    src, _ = model(0.1, False, blocksize = 128)
+    sd = dcp.get_model_state_dict(src, options = full)
+    dst, _ = model(0.05, False)
+    try:
+        dcp.set_model_state_dict(
+            dst,
+            sd if rank == 0 else {},
+            options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True, strict = False),
+        )
+        out["mismatch"] = "loaded"
+    except ValueError as error:
+        out["mismatch"] = "ValueError" if "4-bit quantization state" in str(error) else str(error)
+    except Exception as error:
+        out["mismatch"] = f"{type(error).__name__}: {error}"
+    return out
+
+
+def _case_dcp_restore_guard(rank, world_size, m):
+    """Checkpoint quantization metadata that cannot be applied: entries without their packed weight
+    (a partial state dict under strict=False) and a nested checkpoint loaded into a non-nested model."""
+    bnb = pytest.importorskip("bitsandbytes")
+    q = _load("fsdp2_qlora")
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    def model(scale, nested):
+        torch.manual_seed(0)
+        layer = bnb.nn.Linear4bit(
+            128,
+            64,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+        )
+        layer.weight = bnb.nn.Params4bit(
+            torch.randn(64, 128) * scale,
+            requires_grad = False,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = 64,
+            compress_statistics = nested,
+            module = layer,
+        )
+        net = torch.nn.Sequential(layer.to("cpu"), torch.nn.Linear(64, 8))
+        reference = bnb.functional.dequantize_4bit(net[0].weight.data, net[0].weight.quant_state)
+        q.prepare_fsdp2_qlora(net)
+        fully_shard(net, mesh = init_device_mesh("cpu", (world_size,)))
+        return net, reference
+
+    def scales(quant_state):
+        tensors = [quant_state.absmax, quant_state.code]
+        if quant_state.state2 is not None:
+            tensors += [quant_state.state2.absmax, quant_state.state2.code, quant_state.offset]
+        return [t.detach().cpu().clone() for t in tensors]
+
+    def dequant_equal(net, reference):
+        out = None
+        with m.fsdp2_gathered(net) as writer:
+            if writer:
+                weight = net[0].weight
+                actual = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)
+                out = torch.equal(actual, reference)
+        return out
+
+    m.install_dcp_bnb_state_dict()
+    out = {}
+    full = StateDictOptions(full_state_dict = True, cpu_offload = True)
+    loose = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True, strict = False)
+    src, _ = model(0.1, False)
+    for mode in ("broadcast", "sharded"):
+        if mode == "broadcast":
+            sd = dcp.get_model_state_dict(src, options = full)
+        else:
+            sd = dcp.get_model_state_dict(src)
+        sd = {k: v for k, v in sd.items() if k != "0.weight"}
+        dst, reference = model(0.05, False)
+        expected = scales(dst[0].weight.quant_state)
+        if mode == "broadcast":
+            dcp.set_model_state_dict(dst, sd if rank == 0 else {}, options = loose)
+        else:
+            dcp.set_model_state_dict(dst, sd, options = StateDictOptions(strict = False))
+        live = scales(dst[0].weight.quant_state)
+        out[f"partial_{mode}"] = dict(
+            scales = all(torch.equal(a, b) for a, b in zip(live, expected)),
+            dequant_equal = dequant_equal(dst, reference),
+        )
+    src, _ = model(0.1, True)
+    for mode in ("broadcast", "sharded"):
+        dst, _ = model(0.05, False)
+        try:
+            if mode == "broadcast":
+                sd = dcp.get_model_state_dict(src, options = full)
+                dcp.set_model_state_dict(dst, sd if rank == 0 else {}, options = loose)
+            else:
+                sd = dcp.get_model_state_dict(src)
+                dcp.set_model_state_dict(dst, sd, options = StateDictOptions(strict = False))
+            out[f"nested_{mode}"] = "loaded"
+        except ValueError as error:
+            out[f"nested_{mode}"] = str(error)
+        except Exception as error:
+            out[f"nested_{mode}"] = f"{type(error).__name__}: {error}"
     return out
 
 
@@ -786,7 +1112,9 @@ def _worker(rank, world_size, port, case, queue):
 
         import datetime
 
-        timeout = datetime.timedelta(seconds = 4) if case == "slow_writer" else None
+        # dcp_restore_guard: a rank left waiting on a collective fails in 60 s instead of hanging.
+        timeout = {"slow_writer": 4, "dcp_restore_guard": 60}.get(case)
+        timeout = datetime.timedelta(seconds = timeout) if timeout else None
         dist.init_process_group(
             "nccl" if nccl else "gloo",
             rank = rank,
@@ -804,6 +1132,12 @@ def _worker(rank, world_size, port, case, queue):
             result = _case_merge_offload(rank, world_size, m)
         elif case == "gather_4bit":
             result = _case_gather_4bit(rank, world_size, m)
+        elif case == "dcp_restore":
+            result = _case_dcp_restore(rank, world_size, m)
+        elif case == "dcp_restore_guard":
+            result = _case_dcp_restore_guard(rank, world_size, m)
+        elif case == "merged_4bit_streamed":
+            result = _case_merged_4bit_streamed(rank, world_size, m)
         elif case == "gather_4bit_offload":
             result = _case_gather_4bit_offload(rank, world_size, m)
         elif case == "dcp_quant_state":
@@ -850,11 +1184,15 @@ def _run(
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = saved
     results = {}
-    for _ in procs:
-        rank, result = queue.get(timeout = 240)
-        results[rank] = result
-    for p in procs:
-        p.join(timeout = 60)
+    try:
+        for _ in procs:
+            rank, result = queue.get(timeout = 240)
+            results[rank] = result
+    finally:
+        for p in procs:
+            p.join(timeout = 60)
+            if p.is_alive():
+                p.terminate()
     for r in results.values():
         assert "error" not in r, r.get("error")
     return results
@@ -930,6 +1268,35 @@ def test_dcp_state_dict_of_bitsandbytes_4bit():
     ]
 
 
+def test_full_dcp_load_restores_the_checkpoint_quant_state():
+    """Full and sharded DCP loads take the checkpoint's QuantState with its packed bytes."""
+    pytest.importorskip("bitsandbytes")
+    results = _run("dcp_restore")
+    for rank, r in results.items():
+        for nested in (False, True):
+            for mode in ("broadcast", "sharded"):
+                got = r[f"{mode}_{nested}"]
+                assert got["scales"], (rank, mode, nested, r)
+                if rank == 0:
+                    assert got["dequant_equal"], (mode, nested, r)
+        assert r["mismatch"] == "ValueError", (rank, r)
+
+
+def test_full_dcp_load_skips_or_rejects_quant_state_it_cannot_apply():
+    """QuantState without its packed weight keeps the live scales (it used to apply the checkpoint's),
+    and a nested checkpoint into a non-nested model raises on every rank."""
+    pytest.importorskip("bitsandbytes")
+    results = _run("dcp_restore_guard")
+    for rank, r in results.items():
+        for mode in ("broadcast", "sharded"):
+            assert r[f"partial_{mode}"]["scales"], (rank, mode, r)
+            if rank == 0:
+                assert r[f"partial_{mode}"]["dequant_equal"], (mode, r)
+            message = r[f"nested_{mode}"]
+            assert "nested" in message and "does not match" in message, (rank, mode, r)
+        assert r["nested_broadcast"] == results[0]["nested_broadcast"], results
+
+
 def test_a_slow_writer_does_not_time_out_the_other_ranks():
     results = _run("slow_writer")
     assert all(r["ok"] for r in results.values()), results
@@ -1000,7 +1367,8 @@ def test_full_dcp_load_refuses_a_packed_4bit_weight_without_its_quant_state():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available()
+    not has_real_cuda()
+    or not torch.cuda.is_available()
     or torch.cuda.device_count() < 2
     or not torch.distributed.is_nccl_available(),
     reason = "needs two CUDA GPUs and NCCL",
@@ -1013,3 +1381,28 @@ def test_full_dcp_broadcast_load_restores_quant_state_over_nccl():
         for broadcast in (False, True):
             assert r[f"legacy_{broadcast}"] is True, r
             assert r[f"mismatch_{broadcast}"] == "ValueError", r
+
+
+def test_merged_4bit_save_streams_the_packed_base_one_layer_at_a_time():
+    """merged_4bit of a sharded NF4 QLoRA kept every gathered packed weight on rank 0's accelerator
+    until PEFT merged them all, so the whole quantized base had to fit on one GPU next to its shards.
+    The gather now stages each packed weight on the CPU right after gathering it, and the merge
+    brings one layer back at a time (restage, merge, restage), writing the same bytes as an unsharded
+    merge and as the previous placement."""
+    pytest.importorskip("bitsandbytes")
+    pytest.importorskip("peft")
+    r0 = _run("merged_4bit_streamed")[0]
+    head, streamed = r0["head"], r0["streamed"]
+    for r in (head, streamed):
+        assert r["same_keys"] and r["same_bytes"], r
+    assert head["packed_moved"] == 0, head
+    # Every packed weight left the gathering device as soon as it was gathered.
+    assert streamed["packed_moved"] == N_LAYERS, streamed
+    assert streamed["streamed_layers"] == N_LAYERS, streamed
+    assert all(device == "cpu" for device in streamed["states_cpu"]), streamed
+    # One layer on its device at a time: each merge is bracketed by its own two restages, and PEFT's
+    # unload merges nothing more.
+    assert (
+        streamed["events"]
+        == ["restage", "merge", "restage"] * N_LAYERS + ["unload"] + ["merge"] * N_LAYERS
+    ), streamed["events"]

@@ -5,6 +5,7 @@
 
 from dataclasses import dataclass, replace as _dataclass_replace
 from typing import Optional, Dict, Any
+from utils import gguf_names as _gguf_names
 from utils.paths.storage_roots import own_entry, within_account
 from utils.paths import (
     normalize_path,
@@ -1920,62 +1921,22 @@ def _detect_audio_from_tokenizer(
 
 def _is_mmproj(filename: str) -> bool:
     """Check if a GGUF filename is a vision projection (mmproj) file."""
-    return "mmproj" in filename.lower()
+    return _gguf_names.is_mmproj_filename(filename)
 
 
-# Mirrors hub.utils.gguf._IMATRIX_TOKEN_RE (utils cannot import hub).
-_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+_IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
 
 
 def _is_imatrix_path(path: str) -> bool:
-    """True for a calibration imatrix published beside the weights
-    (``imatrix_unsloth.gguf``, ``imatrix.gguf``, ``<model>.imatrix``).
-
-    Activation statistics for llama-quantize, not a model, so it is excluded
-    everywhere mmproj is: a GGUF-suffixed one is a valid container that a
-    size-ranked scan would otherwise hand to llama-server.
-
-    Mirrors hub.utils.gguf.is_imatrix_filename.
-    """
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
-    stem = name.rsplit(".", 1)[0] if "." in name else name
-    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
+    return _gguf_names.is_imatrix_filename(path)
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
-_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+_DRAFTER_KINDS = _gguf_names.DRAFTER_KINDS
+_DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
 
 
 def _is_mtp_drafter(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather
-    than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
-    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the
-    ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai), the
-    ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss) or the ``lilicorr-*.gguf``
-    drafters (NVIDIA Nemotron 3.5).
-
-    Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
-    excluded everywhere mmproj is, or the drafter leaks into variant menus (a
-    phantom quant) and quant-matched file lookups -- a ``Q8_0`` request must not
-    resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight,
-    or to ``dspark/dspark-...-Q8_0.gguf``.
-
-    Prefix, an exact directory for ``_DRAFTER_DIR_KINDS``, or
-    ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names
-    double as family names (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model,
-    as is anything in a user's ``dflash/`` folder).
-    """
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return False
-    parts = [segment for segment in p.split("/") if segment]
-    name, parents = parts[-1], parts[:-1]
-    return (
-        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
-        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
-        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
-    )
+    return _gguf_names.is_mtp_drafter_path(path)
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.
@@ -2893,7 +2854,9 @@ def _extract_quant_label(filename: str) -> str:
     stem = re.sub(r"-\d{3,}-of-\d{3,}", "", basename.rsplit(".", 1)[0])
     quant_re = (
         r"(UD-)?"  # Optional UD- prefix (Ultra Discrete)
-        r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
+        r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
+        r"|NVFP[0-9]+(?:_[A-Z0-9]+)*"  # NVFP4, last in the name only
+        r"(?=(?:-[0-9]+(?:[.][0-9]+)?bpw)?(?:-[0-9]{3,}-of-[0-9]{3,})?(?:[.]gguf)?$)"
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
         r"|P?TQ[0-9]+_[0-9]+"  # Ternary quant: TQ1_0, TQ2_0
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
@@ -2923,22 +2886,8 @@ def _extract_quant_label(filename: str) -> str:
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
-_GGUF_KNOWN_QUANT_RE = re.compile(
-    r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
-    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|P?TQ[0-9]+_[0-9]+"
-    r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
-    r"|Q[0-9]+_K"
-    r"|BF16|F16|F32)",
-    re.IGNORECASE,
-)
-# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_mtp_drafter.
-_DSPARK_BEFORE_QUANT_RE = re.compile(
-    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
-    re.IGNORECASE,
-)
+_GGUF_KNOWN_QUANT_RE = _gguf_names.GGUF_QUANT_RE
+_DSPARK_BEFORE_QUANT_RE = _gguf_names.DSPARK_BEFORE_QUANT_RE
 
 
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})

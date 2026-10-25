@@ -289,6 +289,10 @@ export type SelectedModelInput = {
   /** Keep the current speculative-decoding choice across the model switch instead of resetting it
    *  to the standing preference. */
   keepSpeculative?: boolean;
+  /** Only take a model already serving exactly as this pick would load it; never reach /load. */
+  adoptOnly?: boolean;
+  /** For an adoptOnly pick: false once the chat that asked for it is no longer open. */
+  stillWanted?: () => boolean;
   config?: PerModelConfig;
   previousConfig?: PerModelConfig;
 };
@@ -901,6 +905,17 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
   notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
 }
 
+/** Off unloads idle kept models after the reply: wait for them to go, or the picker keeps listing them. */
+export async function resyncInferenceStatusAfterKeptModelsUnload(): Promise<void> {
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const status = await getInferenceStatus().catch(() => null);
+    if (!status || (status.serving?.length ?? 0) <= 1) break;
+  }
+  await syncInferenceStatusToStore({ includeLoras: false, quiet: true });
+  notifyModelLifecycle({ runtime: "chat", loading: false, model: null });
+}
+
 function pickOf(info: {
   id: string;
   ggufVariant?: string | null;
@@ -1320,6 +1335,19 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.throwOnError ?? false;
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
+      const adoptOnly =
+        typeof selection === "string" ? false : selection.adoptOnly ?? false;
+      const stillWanted =
+        (typeof selection === "string" ? undefined : selection.stillWanted) ??
+        (() => true);
+      // An automatic pick never displaces a load, running or still in preflight: that pick is newer.
+      const loadInFlight = () =>
+        Boolean(
+          activeLoadRunRef.current ||
+            loadingModelRef.current ||
+            useChatRuntimeStore.getState().loadingModelPick ||
+            useChatRuntimeStore.getState().modelLoading,
+        );
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       const initiallyLoadingSamePick =
         loadingModelRef.current?.id === modelId &&
@@ -1348,6 +1376,10 @@ export function useChatModelRuntime() {
         restorePreviousConfig();
         return;
       }
+      if (adoptOnly && (loadInFlight() || !stillWanted())) {
+        restorePreviousConfig();
+        return;
+      }
       dismissStartToastsForModelSelection();
 
       // Register the user's intent before awaiting cancellation. A superseded run's
@@ -1360,8 +1392,9 @@ export function useChatModelRuntime() {
       let hfToken = useChatRuntimeStore.getState().hfToken || null;
       // Credential prompts must complete before cancelling a pending run: a decline must not
       // strand the resident that run already unloaded while preparing its own Hub load.
+      // An adopt-only pick downloads nothing, so it never opens the token prompt.
       const mayReachHub =
-        !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
+        !adoptOnly && !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
       if (mayReachHub) {
         const preparedToken = await prepareHfTokenForUse(hfToken);
         if (!preparedToken.proceed) {
@@ -1517,6 +1550,10 @@ export function useChatModelRuntime() {
         const inFlightLoad =
           loadingModelRef.current ??
           useChatRuntimeStore.getState().loadingModelPick;
+        if (adoptOnly && (inFlightLoad || activeRun)) {
+          restorePreviousConfig();
+          return;
+        }
         // Cancellation clears the picker before its unload settles, yet the run keeps
         // the slot and the lifecycle lease until then. Break only when neither is left:
         // a pick arriving mid-cancel would otherwise find the lease held and be dropped.
@@ -1732,6 +1769,10 @@ export function useChatModelRuntime() {
             // Same window as the confirmation below: a newer pick that could not take the
             // lease still supersedes the status this preflight was about to adopt.
             if (modelSelectionIntentEpoch !== loadIntentId) return;
+            if (adoptOnly && (loadInFlight() || !stillWanted())) {
+              restorePreviousConfig();
+              return;
+            }
             // Roll back the config pre-applied for the load that is not happening, before hydrating, so the
             // resident status wins over the staged snapshot. The helper carries the diffusion flag.
             restorePreviousConfig();
@@ -1792,6 +1833,16 @@ export function useChatModelRuntime() {
             return;
           }
         }
+      }
+      if (adoptOnly) {
+        // Same unwind as a declined confirmation: nothing was unloaded.
+        if (modelSelectionIntentEpoch === loadIntentId) {
+          restorePreviousConfig();
+          if (pendingReplacementRollback?.residentUnloaded === false) {
+            pendingReplacementRollback = null;
+          }
+        }
+        return;
       }
 
       // Hold the lifecycle lease through confirmation and loading. A PREFLIGHT holder (parked on
@@ -3667,7 +3718,8 @@ export function useChatModelRuntime() {
             const totalGb = prog.bytes_total / 1e9;
             const pct = Math.min(99, Math.round(prog.fraction * 100));
             const est = estimate(mmapSamples, prog.bytes_loaded, prog.bytes_total);
-            const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB in memory`;
+            // Bytes the server has read or paged in, not bytes resident in RAM: weights headed for VRAM pass through.
+            const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB loaded`;
             const label = est.stable
               ? `${base} • ${formatRate(est.rate)}${
                   formatEta(est.eta) !== "--" ? ` • ${formatEta(est.eta)} left` : ""
@@ -3688,7 +3740,7 @@ export function useChatModelRuntime() {
               ...modelLoadToastOptions(
                 renderLoadDescription(
                   "Starting model…",
-                  "Paging weights into memory.",
+                  "Loading model weights.",
                   pct,
                   label,
                 ),

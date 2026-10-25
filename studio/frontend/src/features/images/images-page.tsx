@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -23,9 +23,7 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Refresh01Icon,
   Delete02Icon,
-  DiceFaces03Icon,
   Download01Icon,
   Edit03Icon,
   FolderAddIcon,
@@ -33,9 +31,12 @@ import {
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
+  PlusSignIcon,
+  Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
@@ -181,7 +182,6 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
-import { ChevronDown, Recycle } from "lucide-react";
 import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
 import {
   ASPECT_RATIOS,
@@ -224,7 +224,7 @@ import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
-import { watchSavingPhase } from "@/lib/swap-save-phase";
+import { isLoadInFlightPhase, watchSavingPhase } from "@/lib/swap-save-phase";
 import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
 import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
@@ -267,6 +267,21 @@ import { LocalizedEditCanvas } from "./localized-edit-canvas";
 import type { AppliedMask } from "./lib/mask-from-text";
 import { applyMaskToLayer } from "./mask-apply";
 import { MaskFromTextPanel } from "./mask-from-text-panel";
+import { DetailerField, useDetailerSegmenter } from "./detailer-field";
+import {
+  detailerAvailable,
+  detailerNotApplied,
+  detailerEngagesNegative,
+  detailerErrors,
+  detailerModelCapable,
+  detailerRecordOf,
+  detailerRequestField,
+  detailerSummary,
+  readDetailerOptions,
+  restoredDetailer,
+  saveDetailerOptions,
+  type DetailerOptions,
+} from "./lib/detailer";
 
 import {
   type ControlNetSpecInput,
@@ -926,7 +941,7 @@ function ResolvedBadge({
   const badge = (
     <span
       className={cn(
-        "shrink-0 rounded-sm px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
+        "shrink-0 rounded-full px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
         info.tone === "warn"
           ? "bg-destructive/15 text-destructive"
           : "bg-muted text-muted-foreground",
@@ -1184,7 +1199,7 @@ function MaskCanvas({
   };
 
   return (
-    <div className="relative overflow-hidden rounded-[10px] border border-border bg-muted/30">
+    <div className="relative overflow-hidden rounded-lg border border-border bg-muted/30">
       <img
         src={image}
         alt="Inpaint source"
@@ -1466,6 +1481,9 @@ function RecipePopover({
             <RecipeRow key={label} label={label} value={value} />
           ))}
           {!viaConnection && <RecipeRow label="Seed" value={String(image.seed)} mono />}
+          {detailerSummary(detailerRecordOf(image.detailer)) ? (
+            <RecipeRow label="Detailer" value={detailerSummary(detailerRecordOf(image.detailer)) ?? ""} />
+          ) : null}
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
@@ -1508,7 +1526,7 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   return (
-    <div className="flex flex-col gap-1 rounded-md border border-border/60 px-2.5 py-2 text-ui-11">
+    <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
         Loaded build
         <InfoHint>
@@ -1587,7 +1605,9 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
 type Busy = "loading" | "unloading" | "generating" | null;
 // baseRepo: only a reload of a resident model the page did not load sends one, to rebuild the same companions.
 type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string; baseRepo?: string };
-type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
+type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile"> & {
+  fieldFiles?: ImageComponentFiles;
+};
 
 // What a pick optimistically replaced, so a load that never takes can put it all back. The
 // quant label and the recipe move together at pick time, so they roll back together.
@@ -1888,8 +1908,41 @@ export function ImagesPage({
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  const [textEncoderFiles, setTextEncoderFiles] = useState("");
-  const [vaeFile, setVaeFile] = useState("");
+  const [initialComponents] = useState<ImageComponentFiles>(() =>
+    rememberedModel ? seedImageComponents(rememberedModel) : {},
+  );
+  const componentFieldsOwner = useRef(initialComponents);
+  const [textEncoderFiles, setTextEncoderFiles] = useState((initialComponents.textEncoderFiles ?? []).join("\n"));
+  const [vaeFile, setVaeFile] = useState(initialComponents.vaeFile ?? "");
+  const componentFieldsShown = useRef(initialComponents);
+  useEffect(() => {
+    componentFieldsShown.current = { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() };
+  }, [textEncoderFiles, vaeFile]);
+  const pickComponentFiles = useCallback(
+    (model: ImageModelKey): ImageComponentFiles => {
+      const typed = { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() };
+      const pick = componentFilesForModel(typed, componentFieldsOwner.current, model);
+      componentFieldsOwner.current = pick.owner;
+      if (pick.replaceEncoders) setTextEncoderFiles((pick.files.textEncoderFiles ?? []).join("\n"));
+      if (pick.replaceVae) setVaeFile(pick.files.vaeFile ?? "");
+      return pick.files;
+    },
+    [textEncoderFiles, vaeFile],
+  );
+  const componentsReconciled = useRef(false);
+  const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
+  const reconcileInitialComponents = useCallback(
+    (loaded: DiffusionStatus) => {
+      if (componentsReconciled.current || initialLoadProbe === "pending") return;
+      componentsReconciled.current = true;
+      if (initialLoadProbe === "loading" || !rememberedModel) return;
+      const bare = reconcileRememberedComponents(rememberedModel, loaded);
+      if (!bare) return;
+      setRememberedModel(bare);
+      pickComponentFiles(bare);
+    },
+    [rememberedModel, pickComponentFiles, initialLoadProbe],
+  );
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
   // but not which card, so a refresh would reset it to Auto. A stale id is dropped on send.
@@ -1925,6 +1978,22 @@ export function ImagesPage({
   // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const residentReconciledFor = useRef<DiffusionStatus | null>(null);
+  const reconcileResidentComponents = useCallback(
+    (loaded: DiffusionStatus) => {
+      if (initialLoadProbe === "pending" || busy === "loading") return;
+      if (residentReconciledFor.current === loaded) return;
+      residentReconciledFor.current = loaded;
+      const bare = forgetStaleResidentComponents(loaded);
+      if (bare) setRememberedModel(bare);
+    },
+    [initialLoadProbe, busy],
+  );
+  useEffect(() => {
+    if (!status?.loaded) return;
+    reconcileInitialComponents(status);
+    reconcileResidentComponents(status);
+  }, [status, reconcileInitialComponents, reconcileResidentComponents]);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // A connection is not bound by the resident model's size grid or presets.
   const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
@@ -2179,6 +2248,7 @@ export function ImagesPage({
     lastLoadSig.current = null;
     // Leaving this set would let Reapply reload the model that was just freed.
     lastLoad.current = null;
+    clearPendingImageLoad();
     setCanReapply(false);
     // Stopping the poll also stops its "cancelled or evicted" branch, which is what hands back a
     // pick that never became resident, so do it here exactly as that branch would.
@@ -2284,12 +2354,6 @@ export function ImagesPage({
   // A connection runs none of the local engine's Hires fix / model upscalers (the route refuses both).
   const hiresCapability = !external && status?.loaded ? (status.hires ?? null) : null;
   const upscaleModels = !external && status?.loaded ? status.upscale_models : undefined;
-  // Hires CFG can turn CFG on for the refine pass alone; that pass then reads the negative prompt.
-  const negativeEngaged =
-    negativeCapable &&
-    (negativeMinGuidance === null ||
-      effectiveGuidance > negativeMinGuidance ||
-      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance));
   const livePreviewUnavailable =
     !external && status?.loaded === true && status.supports_live_preview === false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
@@ -2324,6 +2388,23 @@ export function ImagesPage({
     [samplerModelKey],
   );
   const embeddingsEnabled = !external && status?.loaded === true && !!status.textual_inversion;
+  // Detailer (face fix): off by default; its options persist, the switch does not.
+  const [detailerOn, setDetailerOn] = useState(false);
+  const [detailerOptions, setDetailerOptionsState] = useState<DetailerOptions>(readDetailerOptions);
+  const setDetailerOptions = useCallback((next: DetailerOptions) => {
+    setDetailerOptionsState(next);
+    saveDetailerOptions(next);
+  }, []);
+  const detailerCapable = detailerModelCapable(status, Boolean(external));
+  const detailerSegmenter = useDetailerSegmenter(detailerCapable, loadedModelKey(status) ?? "");
+  const detailerReady = detailerAvailable(status, Boolean(external), detailerSegmenter);
+  // Hires CFG or the Detailer's CFG can turn CFG on for that pass alone; it then reads the negative prompt.
+  const negativeEngaged =
+    negativeCapable &&
+    (negativeMinGuidance === null ||
+      effectiveGuidance > negativeMinGuidance ||
+      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance) ||
+      detailerEngagesNegative(detailerOn, detailerReady, detailerOptions, negativeMinGuidance));
   const insertEmbedding = useCallback((trigger: string, target: "prompt" | "negative") => {
     if (target === "negative") setNegativePrompt((p) => withEmbeddingTrigger(p, trigger));
     else setPrompt((p) => withEmbeddingTrigger(p, trigger));
@@ -2918,6 +2999,9 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
+    const detail = restoredDetailer(image);
+    setDetailerOn(detail.enabled);
+    if (detail.enabled) setDetailerOptions({ ...readDetailerOptions(), ...detail.options });
     const maskOptions = restoredInpaintMaskOptions(image);
     if (maskOptions.maskBlur !== undefined) setMaskBlur(maskOptions.maskBlur);
     if (maskOptions.onlyMasked !== undefined) setInpaintOnlyMasked(maskOptions.onlyMasked);
@@ -2972,13 +3056,15 @@ export function ImagesPage({
     const notApplied = [
       ...(literal ? [literal] : []),
       ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
+      // Restored into the hidden control, which Generate omits: say so, as an import does.
+      ...(via === "restore" ? detailerNotApplied(detail.enabled, detailerReady) : []),
     ];
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status, detailerReady]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -3105,6 +3191,8 @@ export function ImagesPage({
         ...hiresNotApplied(hiresFromRecipe(settings), status?.loaded ? status.hires : null),
         ...unknownRecipeKeys(recipe),
       ];
+      // Restored into the hidden control when this model cannot inpaint or SAM 3 is missing: say so.
+      notApplied.unshift(...detailerNotApplied(Boolean(settings.detailer), detailerReady));
       if (tiMatch) {
         const { installed, missing } = tiMatch;
         const resolved = new Map<string, string | null>([
@@ -3166,7 +3254,7 @@ export function ImagesPage({
       }
       return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl, detailerReady],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -3371,6 +3459,21 @@ export function ImagesPage({
   );
 
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
+  const rememberFinishedLoad = useCallback((target: LastLoad, loaded: DiffusionStatus, recovered = false) => {
+    if (!matchesRememberedModel(target, loaded)) return;
+    const remembered = withEngagedFamily(target, loaded);
+    rememberImageModel(remembered);
+    setRememberedModel(remembered);
+    const files = rememberLoadedImageComponents(target, loaded);
+    if (files && recovered) {
+      const fill = recoveredComponentFields(componentFieldsShown.current, componentFieldsOwner.current, files, target.kind);
+      if (fill.replaceEncoders) setTextEncoderFiles((fill.shown.textEncoderFiles ?? []).join("\n"));
+      if (fill.replaceVae) setVaeFile(fill.shown.vaeFile ?? "");
+      componentFieldsShown.current = fill.shown;
+    }
+    if (files) componentFieldsOwner.current = componentFieldsOwnerAfterLoad(componentFieldsShown.current, files, componentFieldsOwner.current, target.kind);
+  }, []);
+
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
     const seq = cancelSeq.current;
@@ -3394,11 +3497,11 @@ export function ImagesPage({
         const evicted = pendingEvicted.current;
         pendingEvicted.current = [];
         toast.success("Model loaded", evictedToastOptions(evicted));
-        if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
-          const remembered = withEngagedFamily(lastLoad.current, loaded);
-          rememberImageModel(remembered);
-          setRememberedModel(remembered);
-        }
+        const started = lastLoad.current;
+        const finished = finishedLoadTarget(started, loaded);
+        // An incomplete retired-copy snapshot loaded as the base it copies: Reapply and the recall name that base now.
+        lastLoad.current = finished ? retiredSnapshotAsLoaded(finished, loaded) : finished;
+        if (lastLoad.current) rememberFinishedLoad(lastLoad.current, loaded, finished !== started);
         setBusy(null);
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
         const loadedRecipe = loadedRecipeFor(
@@ -3426,6 +3529,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === "error") {
+        clearPendingImageLoad();
         pendingRecalledGeneration.current = null;
         pendingEvicted.current = [];
         dismissLoadToast();
@@ -3451,6 +3555,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === null) {
+        clearPendingImageLoad();
         pendingRecalledGeneration.current = null;
         pendingEvicted.current = [];
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
@@ -3482,7 +3587,7 @@ export function ImagesPage({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor, rememberFinishedLoad]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
   // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
@@ -3544,18 +3649,31 @@ export function ImagesPage({
     void (async () => {
       await refreshStatus();
       // A load runs on the backend as a daemon thread that survives navigation, so resume tracking one still in flight.
+      let inFlight = false;
       try {
         const p = await getDiffusionLoadProgress();
-        if (p.phase === "downloading" || p.phase === "finalizing") {
+        inFlight = isLoadInFlightPhase(p.phase);
+        if (inFlight) {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
           loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
           void pollLoadProgress();
+        } else if (p.phase === "ready") {
+          const ticket = ++statusTicket.current;
+          const loaded = await getDiffusionStatus();
+          setStatusIfNewest(ticket, loaded);
+          const resumed = finishedLoadTarget<LastLoad>(null, loaded);
+          if (resumed) {
+            lastLoad.current = resumed;
+            rememberFinishedLoad(resumed, loaded, true);
+          }
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      if (!inFlight) clearPendingImageLoad();
+      setInitialLoadProbe(inFlight ? "loading" : "idle");
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
         const g = await getGenerateProgress();
@@ -3579,7 +3697,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast]);
+  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
 
   // Seed the sliders from a resident model's recipe when the page finds one it did not load,
   // else a resident flux.1-dev generates garbage at 9 steps. Guarded by a per-repo ref.
@@ -3819,18 +3937,8 @@ export function ImagesPage({
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
-      // A retired FLUX.3 full copy (named, or a downloaded snapshot of one) loads the base it copies, as the backend
-      // redirects it, so the load, Reapply and the remembered model all name the id the status will report.
-      const redirected = redirectRetiredImagePick({
-        repoId,
-        ...opts,
-        textEncoderFiles: componentFiles.text_encoder_file,
-        vaeFile: componentFiles.vae_file,
-      });
-      // A redirect loads another checkpoint, whose base the backend infers.
-      const baseRepo = redirected.repoId === repoId ? opts.baseRepo : undefined;
-      repoId = redirected.repoId;
-      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId, baseRepo };
+      const fieldFiles = componentFileFields(opts.kind, picked.text_encoder_file, picked.vae_file);
+      opts = { kind: opts.kind, filename: opts.filename, displayRepoId: opts.displayRepoId, baseRepo: opts.baseRepo };
       lastLoad.current = {
         repoId,
         kind: opts.kind,
@@ -3839,7 +3947,9 @@ export function ImagesPage({
         baseRepo: opts.baseRepo,
         textEncoderFiles: componentFiles.text_encoder_file,
         vaeFile: componentFiles.vae_file,
+        fieldFiles: { textEncoderFiles: fieldFiles.text_encoder_file, vaeFile: fieldFiles.vae_file },
       };
+      rememberPendingImageLoad(lastLoad.current);
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -3847,7 +3957,7 @@ export function ImagesPage({
       const retryPick = pickSeq.current;
       const retryOversized = retryWhileCurrent(
         () => retryPick === pickSeq.current && startLoad === loadSeq.current,
-        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+        () => void retryLoadRef.current?.(repoId, opts, { ...picked, allow_oversized_load: true }),
       );
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
@@ -3888,6 +3998,7 @@ export function ImagesPage({
         resyncEvicted(pendingEvicted.current, "image");
       } catch (err) {
         pendingEvicted.current = [];
+        clearPendingImageLoad();
         lastLoad.current = prevLastLoad;
         setCanReapply(prevLastLoad != null);
         lastLoadRevert.current = null;
@@ -4164,6 +4275,7 @@ export function ImagesPage({
       repoId: string,
       opts: ImageLoadOptions,
       picked: LoadAdvanced,
+      displayRepoId?: string,
     ) => {
       // Normalised exactly as handleLoad does, so the plan describes the load that will run.
       const advanced = nativeLoadAdvanced(
@@ -4174,6 +4286,8 @@ export function ImagesPage({
       );
       return getDiffusionDownloadPlan({
         model_path: repoId,
+        // A retired copy's snapshot plans as its path: the display id lets the plan redirect it as the load will.
+        ...(displayRepoId ? { display_repo_id: displayRepoId } : {}),
         gguf_filename: opts.filename,
         base_repo: opts.baseRepo,
         model_kind: opts.kind,
@@ -4242,24 +4356,20 @@ export function ImagesPage({
         pickToast.dismissAll();
         if (!owns()) return true;
       }
+      const picked = downloadSnapshot || downloadOnly ? null : pickComponentFiles({ repoId, ...opts });
+      const withPicked = (a: LoadAdvanced): LoadAdvanced =>
+        picked
+          ? {
+              ...a,
+              text_encoder_file: picked.textEncoderFiles?.length ? picked.textEncoderFiles : undefined,
+              vae_file: picked.vaeFile || undefined,
+            }
+          : a;
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      let advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
-      // A retired FLUX.3 full copy is planned, staged and loaded as the base it copies, so the staged
-      // checkpoint is the one the load opens (the backend redirects the same picks).
-      const component = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
-      const redirected = redirectRetiredImagePick({
-        repoId,
-        ...opts,
-        textEncoderFiles: component.text_encoder_file,
-        vaeFile: component.vae_file,
-      });
-      if (redirected.repoId !== repoId) {
-        repoId = redirected.repoId;
-        opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
-        advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
-        // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
-        source = "hub";
-      }
+      let advanced = downloadSnapshot ?? withPicked(currentLoadAdvanced(repoId, familyOverrideRequired));
+      // Only the backend knows if a retired FLUX.3 copy is complete: plan it so an incomplete one stages its base.
+      const retiredSnapshot = isRetiredCopySnapshot({ repoId, displayRepoId: opts.displayRepoId });
+      if (retiredSnapshot) source = "hub";
       // The retry's override rides the same snapshot, so its plan and its load both carry it.
       if (oversizedRetry) advanced = { ...advanced, allow_oversized_load: true };
       // Resolve the engine into the snapshot, so the plan and the load it fires cannot read different selects.
@@ -4280,7 +4390,9 @@ export function ImagesPage({
       let incompatible: string | null = null;
       let incompatibleCode: string | null = null;
       try {
-        const plan = await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
+        const plan = retiredSnapshot
+          ? await requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
+          : await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);
@@ -4302,7 +4414,10 @@ export function ImagesPage({
             };
             stagedQuantRevert.current = ownRevert;
           }
-          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
+          // Every entry of a retired snapshot's plan is to fetch: the snapshot's own files are not in it.
+          const entries = retiredSnapshot
+            ? diffusionStagingEntries(plan.entries, repoId, { filename: opts.filename })
+            : diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) {
             pickToast.dismiss(pickToastId);
             if (downloadOnly) return true;
@@ -4369,7 +4484,7 @@ export function ImagesPage({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
+    [stage, currentLoadAdvanced, pickComponentFiles, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
   );
   const loadOrStageRef = useRef(loadOrStage);
   useEffect(() => {
@@ -4379,10 +4494,23 @@ export function ImagesPage({
   const resolveDownloadFootprint = useCallback(
     async (repoId: string, meta: ModelSelectorChangeMeta) => {
       if (!meta.ggufFilename) return null;
+      const opts = { kind: "gguf", filename: meta.ggufFilename } as const;
+      const advanced = currentLoadAdvanced(repoId, false);
+      const { files } = componentFilesForModel(
+        { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() },
+        componentFieldsOwner.current,
+        { repoId, ...opts },
+      );
       const plan = await requestDownloadPlan(
         repoId,
-        { kind: "gguf", filename: meta.ggufFilename },
-        currentLoadAdvanced(repoId, false),
+        opts,
+        modelSelectionAction === "download"
+          ? advanced
+          : {
+              ...advanced,
+              text_encoder_file: files.textEncoderFiles?.length ? files.textEncoderFiles : undefined,
+              vae_file: files.vaeFile || undefined,
+            },
       );
       const requiredBytes = plan.required_bytes ?? 0;
       if (requiredBytes <= 0) return null;
@@ -4392,7 +4520,7 @@ export function ImagesPage({
           plan.checkpoint_bytes ?? meta.expectedBytes ?? 0,
       };
     },
-    [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage],
+    [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage, modelSelectionAction, textEncoderFiles, vaeFile],
   );
 
   const beginPick = useCallback(() => {
@@ -4601,8 +4729,13 @@ export function ImagesPage({
       void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
       return;
     }
-    void handleLoad(l.repoId, opts);
-  }, [engineChoice, handleLoad, loadOrStage, status]);
+    const files = pickComponentFiles({ repoId: l.repoId, kind: l.kind, filename: l.filename });
+    void handleLoad(l.repoId, opts, {
+      ...currentLoadAdvanced(l.repoId),
+      text_encoder_file: files.textEncoderFiles?.length ? files.textEncoderFiles : undefined,
+      vae_file: files.vaeFile || undefined,
+    });
+  }, [currentLoadAdvanced, engineChoice, handleLoad, loadOrStage, pickComponentFiles, status]);
 
   // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
   // reloads from its status, which names the checkpoint.
@@ -5061,12 +5194,11 @@ export function ImagesPage({
           type="button"
           variant="secondary"
           size="sm"
-          className="w-full"
+          className="w-fit self-start"
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
-          Add image {numberOf(referenceImages.length)}
+          Add image
         </Button>
       )}
     </>
@@ -5469,6 +5601,7 @@ export function ImagesPage({
             ...shiftRequestFields(shiftControl, shiftValue),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
+            ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
             loras: (() => {
@@ -5526,6 +5659,13 @@ export function ImagesPage({
           if (notice) toast.info(notice.title, { id: "prompt-enhancement-notice", description: notice.description });
         }
         res.images.forEach((image) => void ensureSrc(image));
+        const detailFailed = detailerErrors(res.images);
+        if (detailFailed.length > 0) {
+          toast.warning("The Detailer did not run on this image", {
+            id: "images-detailer-error",
+            description: detailFailed.join("; "),
+          });
+        }
         compare?.onImages(i, res.images);
         setGenDone(i + 1);
       }
@@ -5577,7 +5717,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5652,12 +5792,13 @@ export function ImagesPage({
           label: availableLoras.find((a) => a.id === l.id)?.display_name ?? l.id.split(/[\\/]/).pop() ?? l.id,
         })),
       sdControls: compareSdControls,
+      hiresEngagesNegative: hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance),
       // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
       controlnetEngaged,
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {
@@ -5685,6 +5826,7 @@ export function ImagesPage({
               : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
           status,
         );
+        forgetStaleImageComponents(model, status);
         rememberImageModel(model);
         setRememberedModel(model);
       }
@@ -5706,6 +5848,7 @@ export function ImagesPage({
       // "Generate anyway" on an unloaded model: the retry's finally clears the one-shot before this runs.
       allowOversized: oversizedOnce.current,
     };
+    const recalled = recalledComponentFiles(rememberedModel);
     const started = await handleLoad(
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
@@ -5714,8 +5857,8 @@ export function ImagesPage({
         ...currentLoadAdvanced(rememberedModel.repoId, false, true),
         family_override: rememberedModel.familyOverride,
         // The recalled build's own encoder / VAE files, not whatever the fields hold now.
-        text_encoder_file: rememberedModel.textEncoderFiles,
-        vae_file: rememberedModel.vaeFile,
+        text_encoder_file: recalled.textEncoderFiles,
+        vae_file: recalled.vaeFile,
       },
     );
     if (!started) pendingRecalledGeneration.current = null;
@@ -6467,9 +6610,9 @@ export function ImagesPage({
                           className={cn(
                             // No border in either mode: the fill alone marks the state, and a ring would not survive
                             // mouse focus anyway (index.css blanks it).
-                            "rounded-lg px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            "rounded-full px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             on
-                              ? "bg-primary/15 text-foreground hover:bg-primary/20 dark:bg-primary/25 dark:hover:bg-primary/30"
+                              ? "bg-wash-15 text-foreground hover:bg-wash-20 dark:bg-wash-25 dark:hover:bg-wash-30"
                               : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
                           )}
                         >
@@ -6677,6 +6820,7 @@ export function ImagesPage({
                           setPrompt((p) => withLocalizedHint(p, localizedMode, localizedColors))
                         }
                       >
+                        <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                         Add region wording
                       </Button>
                     </div>
@@ -6812,18 +6956,18 @@ export function ImagesPage({
               />
             )}
             {!external && !loraCapable && offersNativeLoraReload(status) && (
-              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
-                <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
+                <Button size="sm" variant="secondary" className="shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
                 </Button>
               </div>
             )}
             {!external && !loraCapable && offersCompiledLoraReload(status) && (
-              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <span>Speed compiled this model after a few images, so LoRAs are off. Reload it to add LoRAs.</span>
                 {(canReapply || residentReloadTarget(status) !== null) && (
-                  <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleReapply}>
+                  <Button size="sm" variant="secondary" className="shrink-0 text-xs" disabled={busy !== null} onClick={handleReapply}>
                     Reload model
                   </Button>
                 )}
@@ -6909,7 +7053,7 @@ export function ImagesPage({
                           ]);
                         }}
                       >
-                        <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                         Add LoRA
                       </Button>
                     )}
@@ -7088,6 +7232,13 @@ export function ImagesPage({
               enabled={embeddingsEnabled}
               onInsert={insertEmbedding}
             />
+            <DetailerField
+              available={detailerReady}
+              enabled={detailerOn}
+              onEnabledChange={setDetailerOn}
+              options={detailerOptions}
+              onOptionsChange={setDetailerOptions}
+            />
             {!external && (
               <>
                 <Field
@@ -7095,30 +7246,31 @@ export function ImagesPage({
                   hint="Leave empty for a fresh random seed each run."
                   className="pt-2"
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <Input
                       placeholder="Random if empty"
                       value={seed}
                       onChange={(e) => setSeed(e.target.value)}
                       className="flex-1"
                     />
+                    <div className="flex shrink-0 items-center">
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-8 shrink-0"
+                      className="size-9 rounded-full text-muted-foreground hover:text-foreground"
                       aria-label="Random seed"
                       title="Random seed each run"
                       disabled={seed === ""}
                       onClick={() => setSeed("")}
                     >
-                      <HugeiconsIcon icon={DiceFaces03Icon} className="size-4" />
+                      <Shuffle className="size-4" strokeWidth={1.5} />
                     </Button>
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-8 shrink-0"
+                      className="size-9 rounded-full text-muted-foreground hover:text-foreground"
                       aria-label="Reuse last seed"
                       title={lastSeed === null ? "No image generated yet" : `Reuse last seed (${lastSeed})`}
                       disabled={lastSeed === null}
@@ -7126,8 +7278,9 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <Recycle className="size-4" strokeWidth={1.5} />
+                      <HistoryIcon className="size-4" strokeWidth={1.5} />
                     </Button>
+                    </div>
                   </div>
                 </Field>
 
@@ -7154,12 +7307,12 @@ export function ImagesPage({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-4">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
               <Button
-                className="relative z-10 h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
@@ -7168,8 +7321,8 @@ export function ImagesPage({
               </Button>
             ) : (
               <>
-                <Button
-                  className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                <Button variant="dark"
+                  className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
@@ -7181,7 +7334,7 @@ export function ImagesPage({
                       {/* A disabled button gets no pointer events; the span keeps the reason reachable. */}
                       <span className="relative z-10 inline-flex">
                         <Button
-                          className="h-11 px-5"
+                          className="text-ui-13"
                           variant="secondary"
                           disabled={busy !== null || varyBlocked !== null}
                           onClick={handleVary}
@@ -7204,7 +7357,7 @@ export function ImagesPage({
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button
-                        className="relative z-10 h-11 px-5"
+                        className="relative z-10 text-ui-13"
                         variant="secondary"
                         disabled={busy !== null}
                         onClick={handleReapply}
@@ -7309,7 +7462,7 @@ export function ImagesPage({
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   <Button
                     size="icon-sm"
                     variant="ghost"
@@ -7385,7 +7538,7 @@ export function ImagesPage({
                     className="size-full object-contain"
                   />
                 )}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   {srcErrors[selected.id] ? (
                     <>
                       <span role="alert" className="sr-only">Full-resolution download failed.</span>
@@ -7469,7 +7622,7 @@ export function ImagesPage({
               {/* In-progress generation: a placeholder tile at the front so past images stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-primary/30">
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-wash-30">
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (
@@ -7497,7 +7650,7 @@ export function ImagesPage({
                   <button
                     type="button"
                     onClick={() => setSelectedId(image.id)}
-                    className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                    className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {(thumbById[image.id] ?? srcById[image.id]) ? (
                       <img
@@ -7513,7 +7666,7 @@ export function ImagesPage({
                     )}
                     {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
                     {image.id === selected?.id && (
-                      <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+                      <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                     )}
                   </button>
                   {/* Pin marker and Unpin button, bottom-left so it clears the menu. */}

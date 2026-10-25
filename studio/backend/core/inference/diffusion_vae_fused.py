@@ -1486,12 +1486,15 @@ _TILE_PEAK_FACTOR = 24
 
 
 def _tile_batch_cap(vae: Any, z: Any) -> int:
-    """Tiles per decoder call: env override, else what half the free VRAM holds, at most 4."""
+    """Tiles per decoder call."""
     raw = os.environ.get(TILE_BATCH_ENV, "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw)
     try:
-        free, _ = _torch().cuda.mem_get_info(z.device)
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = _torch().cuda.mem_get_info(z.device)
+        free = max(0, int(free) - user_budget_reserve_bytes(z.device, total))
         norm_out = getattr(getattr(vae, "decoder", None), "norm_out", None)
         c_last = int(norm_out.gamma.numel()) if norm_out is not None else 128
         px = int(vae.tile_sample_min_height) * int(vae.tile_sample_min_width)

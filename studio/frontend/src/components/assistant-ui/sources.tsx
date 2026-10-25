@@ -102,7 +102,7 @@ function Source({
       variant={variant}
       size={size}
       className={cn(
-        "rounded-full cursor-pointer outline-none hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring",
+        "btn-fill rounded-full cursor-pointer border-transparent outline-none hover:text-chat-icon-fg-hover! focus-visible:border-ring",
         className,
       )}
     >
@@ -302,7 +302,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
             onClick={() => setExpanded(true)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
+              "btn-fill rounded-full cursor-pointer border-transparent text-muted-foreground hover:text-chat-icon-fg-hover!",
             )}
           >
             +{hiddenCount} more
@@ -314,7 +314,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
             onClick={() => setExpanded(false)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
+              "btn-fill rounded-full cursor-pointer border-transparent text-muted-foreground hover:text-chat-icon-fg-hover!",
             )}
           >
             Show less

@@ -45,6 +45,7 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_upscale_command,
     build_sd_cpp_video_command,
     native_speed_flags,
+    speed_flags_without,
     sd_cli_output_paths,
 )
 
@@ -823,13 +824,12 @@ class SdCppEngine:
         """
         offload = list(offload or [])
         binary = self._require_binary()
-        speed = [
-            f
-            for f in native_speed_flags(
-                native_speed, [*offload, *(extra_args or ())], binary_accelerator(binary)
-            )
-            if f not in offload
-        ]
+        speed = speed_flags_without(
+            native_speed_flags(
+                native_speed, [*offload, *(extra_args or ())], binary_accelerator(binary), binary
+            ),
+            offload,
+        )
         merged_extra = speed + list(extra_args or [])
         cmd = build_sd_cpp_command(
             binary,

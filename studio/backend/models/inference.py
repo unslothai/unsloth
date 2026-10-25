@@ -1938,6 +1938,33 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = "Total layers in the model, alongside offloaded_layers.",
     )
+    overflow_layers: Optional[int] = Field(
+        None,
+        description = (
+            "Layers with MoE expert weights that llama.cpp's --fit left in system memory: their "
+            "routed experts, or part of the FFN for the first partial layer on a device. "
+            "offloaded_layers still counts them as on the GPU, so a spill shows only here. Every "
+            "MoE layer when expert_cache_mib is set. None when --fit did not run."
+        ),
+    )
+    expert_cache_mib: Optional[float] = Field(
+        None,
+        description = (
+            "--moe-cache-mib auto: every routed expert is in system memory and this many MiB of "
+            "the most used ones are cached on the GPU. None when no MoE cache is in use."
+        ),
+    )
+    gpu_weights_mib: Optional[float] = Field(
+        None,
+        description = "MiB of model weights llama.cpp placed in GPU buffers, from its load log.",
+    )
+    host_weights_mib: Optional[float] = Field(
+        None,
+        description = (
+            "MiB of model weights in system memory (CPU, memory-mapped or pinned host buffers). "
+            "Token embeddings stay here even when every layer is on the GPU."
+        ),
+    )
     gpu_backend_unavailable: bool = Field(
         False,
         description = (
@@ -1954,12 +1981,17 @@ class _InferenceRuntimeFields(BaseModel):
             "deliberate placement can arrive with gpu_memory_mode still 'auto'."
         ),
     )
-    cpu_fallback_reason: Optional[Literal["vulkan_startup_crash"]] = Field(
+    cpu_fallback_reason: Optional[
+        Literal["vulkan_startup_crash", "vulkan_startup_stall", "vulkan_no_device"]
+    ] = Field(
         None,
         description = (
             "Why an automatic GGUF load was downgraded to CPU. "
             "'vulkan_startup_crash' means a managed, auto-selected Vulkan launch "
-            "hard-crashed and the same launch became healthy with GPU devices disabled."
+            "hard-crashed and the same launch became healthy with GPU devices disabled. "
+            "'vulkan_startup_stall' means that launch stopped making startup progress. "
+            "'vulkan_no_device' means the Vulkan probe found no usable device, so the "
+            "load started on CPU without initialising the Vulkan runtime."
         ),
     )
 
@@ -4612,9 +4644,42 @@ class AnthropicMessagesResponse(BaseModel):
     usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
 
 
+class MediaUnloadRequest(BaseModel):
+    """Optional body of POST /images/unload and /video/unload."""
+
+    expected_load_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Unload only the load started with this load_token, and only while it is in "
+        "flight or resident. A load that ended or was replaced is left alone (outcome superseded); "
+        "one that has not started yet is refused when it arrives (outcome cancelled). Omit to "
+        "unload whatever is loaded.",
+    )
+
+
+class MediaUnloadOutcome(BaseModel):
+    """POST /images/unload or /video/unload with expected_load_id that touched nothing.
+
+    Nothing of the slot is described: the load in it may be another account's.
+    """
+
+    unloaded: Literal[False] = Field(..., description = "Always false: nothing was unloaded")
+    outcome: Literal["superseded", "cancelled"] = Field(
+        ...,
+        description = "superseded: that load ended or a newer one replaced it. cancelled: it has "
+        "not started yet, and is refused when it arrives.",
+    )
+
+
 class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
+    load_token: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Opaque id the client picks for this load; POST /images/unload with "
+        "expected_load_id set to it unloads this load only, and cancels it if it has not started yet.",
+    )
     model_path: str = Field(..., description = "Diffusion repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)
@@ -4862,17 +4927,18 @@ class DiffusionLoadRequest(BaseModel):
         # id), loads the base it copies, exactly as the picker's own row does, so the load fetches what the plan prices
         # (hosted encoder, mirror folders) instead of the whole bf16 repo. Its root bf16 ``model.safetensors`` is that
         # base's transformer, so a single-file pick of it is the pipeline load; supplied encoder / VAE files or another
-        # companion base make it a different build, which stays on the copy.
-        from core.inference.diffusion_families import retired_full_copy_base
+        # companion base make it a different build, which stays on the copy. A copy complete on disk loads from disk.
+        from core.inference.diffusion_families import (
+            retired_copy_loads_from_disk,
+            retired_full_copy_base,
+        )
 
         base = retired_full_copy_base(self.model_path) or retired_full_copy_base(
             self.display_repo_id
         )
         if base is not None:
             single = (self.gguf_filename or "").strip().replace("\\", "/")
-            if not single:
-                self.model_path, self.display_repo_id = base, None
-            elif (
+            root_pick = (
                 single == "model.safetensors"
                 and self.text_encoder_file is None
                 and self.vae_file is None
@@ -4881,10 +4947,18 @@ class DiffusionLoadRequest(BaseModel):
                     not (self.base_repo or "").strip()
                     or (retired_full_copy_base(self.base_repo) or self.base_repo) == base
                 )
-            ):
+            )
+            if (not single or root_pick) and retired_copy_loads_from_disk(self.model_path):
+                # As a pipeline: a cached snapshot's root file links into blobs/, which single-file validation refuses.
+                if root_pick:
+                    self.gguf_filename, self.model_kind = None, "pipeline"
+            elif not single or root_pick:
                 self.model_path, self.display_repo_id = base, None
                 self.gguf_filename, self.model_kind = None, "pipeline"
-        if retired_full_copy_base(self.base_repo) is not None:
+        # A companion base serving a single file only needs the transformer config; a pipeline opens its weights.
+        if retired_full_copy_base(self.base_repo) is not None and not retired_copy_loads_from_disk(
+            self.base_repo, companion = bool((self.gguf_filename or "").strip())
+        ):
             self.base_repo = retired_full_copy_base(self.base_repo)
         return self
 
@@ -4999,6 +5073,70 @@ class LocalizedEditSpec(BaseModel):
 
 # All images of one request, base64: ten maximal uploads would otherwise buffer ~320 MiB.
 _MAX_CONDITION_PAYLOAD = 128 * 1024 * 1024
+
+
+class DiffusionDetailerSpec(BaseModel):
+    """Detailer (face fix) post-pass, after ADetailer and ComfyUI-Impact-Pack's FaceDetailer: SAM 3 finds the targets,
+    each is inpainted in an enlarged crop and pasted back through a feathered mask. Defaults follow FaceDetailer
+    (core/inference/diffusion_detailer.py). Needs a model whose status `workflows` has 'inpaint' and a downloaded SAM 3."""
+
+    targets: str = Field(
+        "face",
+        min_length = 1,
+        max_length = 500,
+        description = "What to fix, as Mask from text takes it: comma-separated, `:N` caps a target "
+        "(default 8 each, at most 20), e.g. 'face' or 'face, hand:2'",
+    )
+    prompt: Optional[str] = Field(
+        None,
+        max_length = 20000,
+        description = "Prompt for the detail pass; omitted = the image's prompt. [PROMPT] inserts it, [SEP] gives "
+        "later detections their own text (ADetailer).",
+    )
+    negative_prompt: Optional[str] = Field(
+        None, max_length = 20000, description = "Negative prompt for the pass; omitted = the image's"
+    )
+    confidence: float = Field(
+        0.5, ge = 0.0, le = 1.0, description = "SAM 3 score a detection must exceed"
+    )
+    denoise: float = Field(
+        0.5,
+        ge = 0.01,
+        le = 1.0,
+        description = "Inpaint strength of the pass (the UI request builder's floor)",
+    )
+    crop_factor: float = Field(
+        3.0, ge = 1.0, le = 10.0, description = "Crop around each detection, times its box"
+    )
+    guide_size: int = Field(
+        512, ge = 64, le = 2048, description = "The box's (or crop's) short side is enlarged to this"
+    )
+    guide_size_for: Literal["bbox", "crop_region"] = Field(
+        "bbox", description = "What guide_size measures: the detection box or the whole crop"
+    )
+    max_size: int = Field(
+        1024,
+        ge = 64,
+        le = 2048,
+        description = "Caps the enlargement: an enlarged crop's sides stay within this. A crop "
+        "already larger renders at its own size, never shrunk (FaceDetailer's force_inpaint)",
+    )
+    dilation: int = Field(
+        10, ge = -128, le = 128, description = "Grow (or, negative, shrink) each mask by this many px"
+    )
+    feather: int = Field(5, ge = 0, le = 100, description = "Paste-back blur (px) at the mask's edge")
+    drop_size: int = Field(
+        10,
+        ge = 1,
+        le = 1024,
+        description = "Detections with a box side at or below this (px) are skipped",
+    )
+    steps: Optional[int] = Field(
+        None, ge = 1, le = 200, description = "Steps for the pass; omitted = the image's"
+    )
+    guidance: Optional[float] = Field(
+        None, ge = 0.0, le = 100.0, description = "Guidance for the pass; omitted = the image's"
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -5265,6 +5403,11 @@ class DiffusionGenerateRequest(BaseModel):
         le = 256,
         description = "Padding (px) around the mask when `inpaint_only_masked` is set; omitted = 32.",
     )
+    detailer: Optional[DiffusionDetailerSpec] = Field(
+        None,
+        description = "Detailer (face fix) post-pass on every image of the run. Omitted = off. Refused (400) "
+        "when the loaded model has no inpaint pipeline or SAM 3 is not downloaded.",
+    )
     hires: Optional[HiresSpec] = Field(
         None,
         description = "Hires fix for text to image: upscale the render and refine it in the same request. "
@@ -5524,6 +5667,11 @@ class GalleryImage(BaseModel):
     )
     inpaint_padding: Optional[int] = Field(
         None, description = "Padding (px) around the mask for an only-masked inpaint"
+    )
+    detailer: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "The Detailer pass this image ran: its settings, each detection (target, score, box, crop, "
+        "size, seed) and timing, or `error` when it did not run; null = no pass",
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
@@ -5802,6 +5950,16 @@ class DiffusionDownloadPlanResponse(BaseModel):
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
+    load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the load in flight or resident (one Studio made up for a "
+        "load sent without one); POST unload with expected_load_id set to it unloads that load only.",
+    )
+    resident_load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the model resident in the slot, also while another load is "
+        "in flight over it (equal to load_id when none is); a failed replacement leaves this model loaded.",
+    )
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
@@ -5934,8 +6092,14 @@ class DiffusionStatusResponse(BaseModel):
     )
     mlx_fallback_reason: Optional[str] = Field(
         None,
-        description = "Why UNSLOTH_DIFFUSION_MLX=1 did not get the MLX engine on the last load (null when "
-        "MLX was not requested or is in use)",
+        description = "Why an Apple Silicon load did not get the MLX engine (null when MLX is off, the host is "
+        "not an Apple Silicon Mac, or MLX is in use)",
+    )
+    engine_routing: Optional[dict[str, Any]] = Field(
+        None,
+        description = "Per-request routing of the default Apple Silicon MLX engine: mode, default_engine, resident "
+        "engines, txt2img_engine (where plain text-to-image runs next), engines_fit_together, last_served_by and "
+        "last_reason. Null for every other engine.",
     )
     engine_forced: Optional[str] = Field(
         None,
@@ -6053,6 +6217,20 @@ class DiffusionStatusResponse(BaseModel):
         description = "Default steps and guidance for the loaded model (file header before base repo); "
         "null when unloaded or on an engine that does not report it.",
     )
+
+
+class DiffusionLoadUnloadedResponse(DiffusionStatusResponse):
+    """POST /images/unload with expected_load_id that unloaded that load: the state it left behind."""
+
+    unloaded: Literal[True] = Field(..., description = "Always true: that load was unloaded")
+    outcome: Literal["unloaded"] = Field(..., description = "Always unloaded")
+
+
+# What POST /images/unload answers: the state it left behind without expected_load_id, and with it
+# either that, marked unloaded, or the outcome alone.
+DiffusionUnloadResponse = Union[
+    DiffusionLoadUnloadedResponse, MediaUnloadOutcome, DiffusionStatusResponse
+]
 
 
 class DiffusionInferenceInfo(BaseModel):
@@ -6937,6 +7115,12 @@ class VideoJobDeleteResponse(BaseModel):
 class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
+    load_token: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Opaque id the client picks for this load; POST /video/unload with "
+        "expected_load_id set to it unloads this load only, and cancels it if it has not started yet.",
+    )
     model_path: str = Field(..., description = "Video repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)
@@ -7483,6 +7667,16 @@ class VideoGenerationDefaults(BaseModel):
 class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
+    load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the load in flight or resident (one Studio made up for a "
+        "load sent without one); POST unload with expected_load_id set to it unloads that load only.",
+    )
+    resident_load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the model resident in the slot, also while another load is "
+        "in flight over it (equal to load_id when none is); a failed replacement leaves this model loaded.",
+    )
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
@@ -7627,3 +7821,15 @@ class VideoStatusResponse(BaseModel):
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
         "keyed by Advanced control name; null when unloaded or unavailable.",
     )
+
+
+class VideoLoadUnloadedResponse(VideoStatusResponse):
+    """POST /video/unload with expected_load_id that unloaded that load: the state it left behind."""
+
+    unloaded: Literal[True] = Field(..., description = "Always true: that load was unloaded")
+    outcome: Literal["unloaded"] = Field(..., description = "Always unloaded")
+
+
+# What POST /video/unload answers: the state it left behind without expected_load_id, and with it
+# either that, marked unloaded, or the outcome alone.
+VideoUnloadResponse = Union[VideoLoadUnloadedResponse, MediaUnloadOutcome, VideoStatusResponse]
