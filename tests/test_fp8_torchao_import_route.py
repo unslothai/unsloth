@@ -10,6 +10,8 @@ import pytest
 import torch
 from real_accelerator import has_real_cuda
 
+from real_accelerator import has_real_cuda
+
 from unsloth.kernels import fp8 as F8
 
 OLD = "torchao.prototype.blockwise_fp8_inference.blockwise_quantization"
