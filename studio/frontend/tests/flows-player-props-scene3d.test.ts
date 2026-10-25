@@ -144,6 +144,32 @@ test("an imported model is kept until it is placed, released when its last prop 
   assert.equal(layer.modelCount(), 0);
 });
 
+test("a prop keeps its object when its model finishes loading, so a selection stays attached", async () => {
+  const layer = S.createPropLayer(() => 0, { "sha256:boat": boxGlb() });
+  layer.sync([model("m-1")]);
+  const selected = layer.objectOf("m-1");
+  for (let i = 0; i < 50 && layer.modelCount() === 0; i++)
+    await new Promise((r) => setTimeout(r, 20));
+  assert.equal(layer.modelCount(), 1);
+  assert.equal(
+    layer.objectOf("m-1"),
+    selected,
+    "the same object the gizmo holds",
+  );
+  assert.equal(
+    meshes(selected as import("three").Object3D)[0].geometry.getAttribute(
+      "position",
+    ).count,
+    8,
+    "now drawing the model, not the placeholder",
+  );
+  assert.equal(
+    layer.idOf(meshes(selected as import("three").Object3D)[0]),
+    "m-1",
+  );
+  layer.dispose();
+});
+
 test("a saved world's models load from the files handed in; an unknown one stays a placeholder", async () => {
   const layer = S.createPropLayer(() => 0, { "sha256:boat": boxGlb() });
   layer.sync([model("m-1"), model("m-2", "sha256:missing")]);

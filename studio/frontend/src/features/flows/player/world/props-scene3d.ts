@@ -226,22 +226,25 @@ export function createPropLayer(
         live.add(p.id);
         const key = keyOf(p);
         let cur = objects.get(p.id);
-        if (cur && cur.key !== key) {
-          cur.obj.removeFromParent();
-          objects.delete(p.id);
-          cur = undefined;
-        }
-        if (!cur) {
-          let obj: three.Object3D;
+        if (!cur || cur.key !== key) {
+          let shape: three.Object3D;
           if (p.kind === "model") {
             const ref = p.asset?.ref ?? "";
             const tpl = templates.get(ref);
-            obj = tpl ? tpl.clone(true) : placeholder();
+            shape = tpl ? tpl.clone(true) : placeholder();
             if (!tpl && pending[ref])
               void load(ref, pending[ref]).catch(() => undefined);
-          } else obj = build(p.kind);
-          obj.userData.propId = p.id;
-          root.add(obj);
+          } else shape = build(p.kind);
+          // Each prop keeps one outer object for its life; only what it holds is swapped (a model replacing its
+          // placeholder), so the gizmo stays attached to what the player sees.
+          let obj = cur?.obj;
+          if (obj) obj.clear();
+          else {
+            obj = new three.Group();
+            obj.userData.propId = p.id;
+            root.add(obj);
+          }
+          obj.add(shape);
           cur = { obj, key };
           objects.set(p.id, cur);
         }
