@@ -1011,8 +1011,7 @@ def _socket_owner_is_always_named() -> bool:
     return sys.platform == "win32"
 
 
-# Left in the startup output when /health answered from a listener we could not attribute to
-# our child, so the failure is not reported as a bad GGUF or low memory.
+# Left in startup output when the ownership gate refuses, so it is not reported as a bad GGUF.
 _PORT_OWNER_REFUSED_MARKER = "llama-server port ownership check refused the listener"
 
 
@@ -19812,11 +19811,8 @@ class LlamaCppBackend:
         _find_free_port releases the port before llama-server binds it, so another local user could
         answer /health and receive every prompt plus the per-launch key. Their socket shows no pid
         on Linux/macOS, so our own (readable) tree not listening counts as foreign. Unreadable
-        ownership keeps today's behaviour.
-
-        Windows names every socket's owner, but psutil can describe a live listener there as
-        status NONE and/or pid 0 (#15022), so only a listener attributed to a real foreign pid
-        refuses on Windows."""
+        ownership keeps today's behaviour. On Windows psutil can report our live listener as NONE
+        and/or pid 0 (#15022), so only a named foreign pid refuses there."""
         port = getattr(self, "_port", None)
         pid = getattr(process, "pid", None)
         if not isinstance(pid, int) or not isinstance(port, int):

@@ -103,8 +103,7 @@ _CANCEL_GRACE_S = 5.0
 
 
 def _socket_owner_is_always_named() -> bool:
-    """Windows' connection tables carry every socket's owning pid, so an unnamed one there is a
-    psutil quirk rather than another user's listener (#15022)."""
+    """Windows names every socket's owner: an unnamed one there is a psutil quirk (#15022)."""
     return sys.platform == "win32"
 
 
