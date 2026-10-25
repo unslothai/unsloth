@@ -27,3 +27,19 @@ export const TauriRepairContext = createContext<TauriRepairController | null>(
 export function useTauriRepairController(): TauriRepairController | null {
   return useContext(TauriRepairContext);
 }
+
+/** Off Mac the backend reports `no_torch` only with a usable GPU; `chat_only_hint` marks a Mac the MLX wheels skip. */
+export function canUpgradeToFullInstall(
+  chatOnlyReason: string | null,
+  chatOnlyHint: string | null,
+  verdictMeasured: boolean,
+  repair: TauriRepairController | null,
+): boolean {
+  return (
+    verdictMeasured &&
+    chatOnlyReason === "no_torch" &&
+    chatOnlyHint === null &&
+    repair !== null &&
+    !repair.isExternalServer
+  );
+}

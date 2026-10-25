@@ -1548,7 +1548,7 @@ export function ChatProvidersSettings({
         </header>
 
         <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
-          <section className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
+          <section className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
             <div className="divide-y divide-border/60">
               <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                 <div className="flex min-w-0 flex-col gap-0.5">
@@ -1675,7 +1675,7 @@ export function ChatProvidersSettings({
                     <button
                       type="button"
                       onClick={() => setShowApiKey((visible) => !visible)}
-                      className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={showApiKey ? "Hide API key" : "Show API key"}
                       aria-pressed={showApiKey}
                     >
@@ -2045,7 +2045,7 @@ export function ChatProvidersSettings({
             />
           ) : null}
 
-          <section className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
+          <section className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
             <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={modelsPanelKey}
@@ -2386,7 +2386,7 @@ export function ChatProvidersSettings({
       </div>
 
       <section className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2">
-        <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
+        <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
           <button
             type="button"
             onClick={openAddProvider}
@@ -2427,7 +2427,7 @@ export function ChatProvidersSettings({
                     className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-border/60 border-b px-3 py-3 transition-colors last:border-b-0 hover:bg-muted/35 max-sm:grid-cols-1"
                   >
                     <div className="flex min-w-0 items-start gap-3">
-                      <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/80">
+                      <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-sm border border-border/70 bg-background/80">
                         <ApiProviderLogo
                           providerType={provider.providerType}
                           className="size-5"

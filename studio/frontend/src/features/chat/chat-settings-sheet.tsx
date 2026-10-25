@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -67,10 +68,12 @@ import { cornerInsets, watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
 import { Edit03Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Braces, ChevronDown, ExternalLink } from "lucide-react";
+import { Braces, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -124,6 +127,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
+  DEFAULT_INFERENCE_PARAMS,
   MAX_SAMPLING_SEED,
   modelReadsSamplingSeed,
   type InferenceParams,
@@ -131,6 +135,9 @@ import {
 
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
+import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
+
+const SamplingFooter = lazy(() => import("./components/sampling-footer"));
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -339,7 +346,8 @@ function CollapsibleSection({
 
   const headerClasses = cn(
     "flex w-full items-center justify-between text-ui-12 font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
-    first ? "pt-4 pb-5" : "py-5",
+    // pt-2 centers the first label on the sidebar's New chat row.
+    first ? "pt-2 pb-5" : "py-5",
   );
 
   return (
@@ -365,7 +373,8 @@ function CollapsibleSection({
             aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
             className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
           >
-            <ChevronDown
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
               className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
             />
           </button>
@@ -387,7 +396,8 @@ function CollapsibleSection({
               aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
               className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
             >
-              <ChevronDown
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
                 className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
               />
             </button>
@@ -401,7 +411,8 @@ function CollapsibleSection({
         >
           <span className="leading-none">{label}</span>
           <span className="flex shrink-0 items-center leading-none">
-            <ChevronDown
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
               className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
             />
           </span>
@@ -1287,7 +1298,7 @@ export function ChatSettingsPanel({
                       className={cn(
                         "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13",
                         presetSaveState.isSaveReady &&
-                          "placeholder:text-primary/50",
+                          "placeholder:text-foreground/50",
                       )}
                       aria-label="Inference preset name"
                     />
@@ -1312,7 +1323,7 @@ export function ChatSettingsPanel({
               <DropdownMenuContent
                 align="start"
                 sideOffset={0}
-                className="menu-soft-surface ring-0 border-0 rounded-lg p-1.5"
+                className="menu-soft-surface ring-0 border-0 rounded-lg p-1"
               >
                 {presets.map((p, index) => (
                   <Fragment key={p.name}>
@@ -1343,15 +1354,8 @@ export function ChatSettingsPanel({
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
                 disabled={!(settingsHydrated && presetSaveState.canSubmit)}
-                    variant={
-                      presetSaveState.isSaveReady ? "default" : "outline"
-                    }
+                variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
-                className={cn(
-                  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav",
-                  presetSaveState.isSaveReady &&
-                    "bg-primary text-primary-foreground hover:bg-primary/90",
-                )}
                 title={presetSaveState.title}
                 aria-label={presetSaveState.title}
               >
@@ -1361,9 +1365,9 @@ export function ChatSettingsPanel({
                 type="button"
                 onClick={() => deletePreset(activePreset)}
                 disabled={!(settingsHydrated && activeCustomPreset)}
-                variant="outline"
+                variant="ghost"
                 size="sm"
-                className="h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
+                className="text-muted-foreground hover:text-destructive"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -1489,7 +1493,8 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={openSystemPromptEditor}
-                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                  // 28px target laid out at the chevron's 14px.
+                  className="nav-icon-btn -my-1.75 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
                   aria-label="Edit system prompt"
                 >
                   <HugeiconsIcon
@@ -1706,6 +1711,17 @@ export function ChatSettingsPanel({
                 />
               </div>
             ) : null}
+            {!isExternalModel && currentCheckpoint ? (
+              <Suspense fallback={null}>
+                <SamplingFooter
+                  store={useChatRuntimeStore}
+                  notify={toast}
+                  Checkbox={Checkbox}
+                  defaults={DEFAULT_INFERENCE_PARAMS}
+                  qwenThinking={resolveQwenThinkingParams}
+                />
+              </Suspense>
+            ) : null}
           </div>
         </CollapsibleSection>
 
@@ -1736,6 +1752,7 @@ export function ChatSettingsPanel({
             <RetrievalSettingsSection />
           </CollapsibleSection>
             )}
+
       </div>
       </div>
       </div>
@@ -1767,7 +1784,8 @@ export function ChatSettingsPanel({
                 >
                   <Braces className="size-3.5" />
                   Variables
-                  <ChevronDown
+                  <HugeiconsIcon
+                    icon={ChevronDownStandardIcon}
                     className={cn(
                       "size-3.5 transition-transform",
                       systemVariablesOpen && "rotate-180",
@@ -1817,7 +1835,7 @@ export function ChatSettingsPanel({
                   placeholder='{ "env": "staging", "version": "v2.3.1" }'
                   fieldSizing="fixed"
                   className={cn(
-                    "min-h-24 border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
+                    "min-h-24 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
                     systemVariablesError &&
                       "ring-1 ring-destructive focus-visible:ring-destructive",
                   )}
@@ -1839,7 +1857,7 @@ export function ChatSettingsPanel({
             ) : null}
             {/* Squircle on the wrapper: Chrome leaves a scroll area's own
                 corners square. */}
-            <div className="corner-squircle overflow-hidden rounded-xl">
+            <div className="corner-squircle overflow-hidden rounded-xl border border-border transition-colors focus-within:border-ring dark:border-transparent dark:focus-within:border-transparent">
               <Textarea
                 value={systemPromptDraft}
                 onChange={(event) => setSystemPromptDraft(event.target.value)}

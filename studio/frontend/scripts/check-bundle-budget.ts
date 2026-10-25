@@ -365,12 +365,70 @@ export const BUDGET = {
   // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
   // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
+  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
   // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
   // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
-  transferBytes: 2_076_193,
-  rawBytes: 6_891_324,
+  // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
+  // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
+  // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
+  // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
+  // (a CI build measured about 100 B over a local one). Raised by that.
+  // Install Training button under the greyed Train row's hint: +424 B raw / +141 B transfer against ee55c3c9a
+  // (6,920,512 -> 6,920,936 B raw, 2,084,382 -> 2,084,523 B transfer, Node 24, 97 chunks). Raised by that.
+  // MOSS-Image (#14552): its two image catalog groups, family label and generation defaults sit in the eager
+  // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
+  // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
+  // at 97). Raised by that growth so main's margin stays where it was.
+  // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
+  // adopt-only pick in the chat runtime, +1,970 B raw / +627 B transfer (6,922,858 -> 6,924,828 B raw,
+  // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24, 98 chunks), where main was already 315 B raw /
+  // 239 B transfer over. Set to the measured build plus about 300 B raw / 100 B transfer (CI builds measure
+  // about 100 B over a local one).
+  // Hub metadata caching and hidden-row filtering (#14265): +548 B raw / +146 B transfer (6,925,639 ->
+  // 6,926,187 B raw, 2,086,290 -> 2,086,436 B transfer against 0ee5cfc58, Node 24, 98 chunks), where main
+  // was already over the line above. Set to the merged build plus about 200 B.
+  // macOS Desktop stray key text guard (#14815), eager in main.tsx: +278 B raw / +114 B transfer
+  // (6,925,639 -> 6,925,917 B raw, 2,086,290 -> 2,086,404 B transfer against 14e0178e0, Node 24, chunk count
+  // unchanged at 98). Raised by +278 B raw / +129 B transfer so main's margin stays where it was.
+  // Browser use step names, docs link and card fence strip (#14681): +1,089 B raw / +298 B transfer (6,925,028 ->
+  // 6,926,117 B raw, 2,086,327 -> 2,086,625 B transfer against 394aff8545, Node 26, 99 chunks). Raised by that.
+  // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
+  // 6,929,942 B raw / 2,087,788 B transfer merged with main at b3004af53 (Node 24, 99 chunks). Set to
+  // that plus about 300 B raw / 100 B transfer, as for #14568.
+  // Skill ZIP import/export (#14181) adds 2,721 B raw / 758 B transfer to the eager Skills dialog
+  // and locale strings (6,929,934 -> 6,932,655 B raw, 2,087,782 -> 2,088,540 B transfer against
+  // fb104d2b57, one machine and build, Node 22.23.2, unchanged at 99 chunks). Raised by that growth.
+  // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
+  // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
+  // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
+  // Per-account chat preferences (#15025): +338 B raw / +93 B transfer over the line above (Node 22.23.2, 99 chunks).
+  // Live prefill progress, the Generation details setting and the loaded placement readout (#14582): the
+  // stream frame reader, live store slice, reply footer line and timing tooltip rows in the eager chat
+  // chunk, +8,585 B raw / +2,268 B transfer over main (6,932,829 -> 6,941,414 B raw, 2,088,586 ->
+  // 2,090,854 B transfer against 1492952a09, Node 22, 99 chunks). Raised by that on top of #15084 and #15025.
+  // The pinned Run settings footer adds 25 B raw / 49 B transfer to the eager model picker (6,932,829 -> 6,932,854 B
+  // raw, 2,088,616 -> 2,088,665 B transfer against 2c2e04474b, Node 26, unchanged at 99 chunks). Raised by that.
+  // Storage overview in Library and System settings (#15083) adds 360 B raw / 56 B transfer, its strings in the
+  // eager en locale plus 46 B in the settings chunk; the overview itself is a lazy chunk (6,932,829 -> 6,933,189 B
+  // raw, 2,088,616 -> 2,088,672 B transfer against cfc593f0bd, Node 26, unchanged at 99 chunks). Raised by that.
+  // Its "System and Engine" page title adds 11 B raw / 34 B transfer to the eager en locale (6,933,189 -> 6,933,200 B
+  // raw, 2,088,699 -> 2,088,733 B transfer merged with f49cbdf535, Node 26, 99 chunks). Raised by that.
+  transferBytes: 2_091_207,
+  rawBytes: 6_942_431,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

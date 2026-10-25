@@ -86,7 +86,7 @@ def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
             raise RuntimeError("no operator found for memory_efficient_attention with fp32")
         return torch.zeros_like(Q)
 
-    monkeypatch.setattr(ad, "_XFORMERS_FP32_UNSUPPORTED", fp32_unsupported, raising = False)
+    monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: fp32_unsupported)
     monkeypatch.setattr(ad, "xformers_attention", fake_xformers_attention, raising = False)
     monkeypatch.setattr(
         ad, "build_xformers_block_causal_mask", lambda *a, **k: object(), raising = False

@@ -42,8 +42,7 @@ test("interface scale is searchable on every build", () => {
   );
 });
 
-// The words a user types for this feature are not substrings of any of its
-// labels, so without keywords the rows it is named after were unfindable.
+// The feature's search terms are not substrings of its labels.
 test("model memory rows are reachable by the terms the feature is about", () => {
   const index = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
   const rows = [

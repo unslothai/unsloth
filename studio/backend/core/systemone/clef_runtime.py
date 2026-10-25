@@ -138,27 +138,44 @@ class ClefAgent:
         folder: Path,
         cancelled: Callable[[], bool] | None = None,
     ):
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
+        )
+        from utils.process_lifetime import (
+            adopt_pid,
+            is_process_shutting_down,
+            spawn_on_lifetime_thread,
+        )
+
+        if is_process_shutting_down():
+            raise ClefWorkerError("Unsloth is shutting down; the Clef worker was not started.")
         self._lock = threading.Lock()
         self._broken: str | None = None
         self._conn, child = _CTX.Pipe()
         env = os.environ.get("UNSLOTH_IS_PRESENT")
         os.environ["UNSLOTH_IS_PRESENT"] = "1"
         try:
-            self._process = _CTX.Process(
-                target = run_clef_worker,
-                args = (child, str(folder)),
-                name = "systemone-clef",
-                daemon = True,
-            )
-            self._process.start()
+            with native_path_secret_removed_for_child_start():
+                self._process = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_clef_worker, child, str(folder)),
+                    name = "systemone-clef",
+                    daemon = True,
+                )
+                # Linux PDEATHSIG follows the spawning thread, and this runs on a loader thread that ends after the load.
+                spawn_on_lifetime_thread(self._process.start)
         finally:
             if env is None:
                 os.environ.pop("UNSLOTH_IS_PRESENT", None)
+        adopt_pid(self._process.pid)
         child.close()
         try:
             # Polled in slices so a training run starting mid-load stops the worker before both need the GPU.
             deadline = time.monotonic() + LOAD_TIMEOUT_S
             while time.monotonic() < deadline and not self._conn.poll(1.0):
+                if is_process_shutting_down():
+                    raise ClefWorkerError("The Clef worker was stopped while it loaded.")
                 if cancelled is not None and cancelled():
                     raise ClefWorkerError("A training run took the GPU while Clef loaded.")
             if not self._conn.poll(0):
@@ -215,3 +232,6 @@ class ClefAgent:
             self._process.kill()
             self._process.join(CLOSE_TIMEOUT_S)
         self._conn.close()
+        if not self._process.is_alive():
+            from utils.process_lifetime import forget_pid
+            forget_pid(self._process.pid)
