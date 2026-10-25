@@ -182,6 +182,17 @@ def test_npc_reply_actions_are_a_fixed_validated_set():
     assert "walking with" not in npc_prompt(_state(), "")[1]
 
 
+def test_a_villager_who_stays_put_takes_no_movement_action():
+    s = _state(player_message = "Could you follow me?")
+    w = s["world"]
+    s["world"] = {
+        **w,
+        "npcs": [{**n, "wander": False} if n["id"] == "bea" else n for n in w["npcs"]],
+    }
+    assert "action" not in validate_npc_reply({"text": "Sure", "action": "follow_player"}, s)
+    assert "follow_player" not in npc_prompt(s, "")[0]
+
+
 def test_simulation_needs_flag_defaults_on():
     w = normalize_world({**RAW, "simulation": True}, seed = 1)
     assert w["simulation"]["needs"] is True

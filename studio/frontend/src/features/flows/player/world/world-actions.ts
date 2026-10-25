@@ -113,3 +113,8 @@ export function villagerStep(opts: {
   );
   return { needs, doing };
 }
+
+/** Needs keep running down while a villager follows the player or runs an errand (no routine action restores them). */
+export function steeredNeeds(mind: NpcMind, minutes: number): Needs | null {
+  return mind.needs ? tickNeeds(mind.needs, minutes, null, false) : null;
+}

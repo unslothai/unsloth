@@ -540,7 +540,9 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
             for w in re.findall(r"[a-z]+", str(p.get("name") or "").lower())
         )
     }
-    if FOLLOW_STOP.search(asked):
+    if npc.get("wander") is False:
+        pass  # A villager who stays put (a shopkeeper at their stall) takes no movement action.
+    elif FOLLOW_STOP.search(asked):
         out["action"] = "stop_following"
     elif FOLLOW_ASK.search(asked):
         out["action"] = "follow_player"
@@ -797,7 +799,8 @@ def npc_prompt(
         "earned it (they carry the needed item). Use `give_item` only for an item id from the world list that fits the "
         "story; use empty strings when nothing happens."
     )
-    system += action_rules(world)
+    if npc.get("wander") is not False:
+        system += action_rules(world)
     # Turns already folded into the summary are left out; the summary sits in the system prompt, which changes
     # only when turns are folded, so llama-server keeps reusing the cached prefix.
     history = [

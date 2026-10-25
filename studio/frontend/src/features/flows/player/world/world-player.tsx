@@ -21,10 +21,15 @@ import { type PlayerApi, mediaObjectUrl } from "../player-api";
 import { PlayerKeyframes } from "../story/backdrop";
 import { useMediaUrl } from "../use-media-url";
 import { type LiveReply, appendReplyDelta } from "./live-reply";
-import { ACTIONS, NEEDS, advertisements } from "./needs";
+import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import { type TileKind, generateMap } from "./procgen";
-import { placeAreas, steerActions, villagerStep } from "./world-actions";
+import {
+  placeAreas,
+  steerActions,
+  steeredNeeds,
+  villagerStep,
+} from "./world-actions";
 import {
   type DirectorPatch,
   applyPatch,
@@ -287,10 +292,12 @@ export function WorldPlayer({
           }
         }
         if (!next.talks[npc.id]?.length)
-          next = addTurn(next, npc.id, {
-            role: "npc",
-            text: npc.greeting || "Hello!",
-          });
+          next = addTurn(
+            next,
+            npc.id,
+            { role: "npc", text: npc.greeting || "Hello!" },
+            summarising,
+          );
         return next;
       });
       game.current?.faceNpc(npc.id);
@@ -691,6 +698,7 @@ export function WorldPlayer({
         string,
         NonNullable<ReturnType<typeof villagerStep>>
       > = {};
+      const ticked: Record<string, Needs> = {};
       for (const n of baseSpec.npcs) {
         const mind = s.npc[n.id] ?? emptyMind();
         if (planEntry && mind.planDay !== day)
@@ -699,8 +707,14 @@ export function WorldPlayer({
             kind: "plan",
             run: (signal) => planDay(n.id, day, signal),
           });
-        // Followers and NPCs on an errand are walked by the conversation's action instead.
-        if (steered.current.has(n.id)) continue;
+        // Followers and NPCs on an errand are walked by the conversation's action instead; their needs still drop.
+        if (steered.current.has(n.id)) {
+          const needs = withNeeds
+            ? steeredNeeds(mind, sim.minutes_per_second)
+            : null;
+          if (needs) ticked[n.id] = needs;
+          continue;
+        }
         const life = withNeeds
           ? villagerStep({
               g,
@@ -722,11 +736,13 @@ export function WorldPlayer({
         g.setNpcPlace(n.id, block ? (places.get(block.place) ?? null) : null);
         g.setNpcStatus(n.id, block ? activityEmoji(block.activity) : "");
       }
-      if (Object.keys(lives).length)
+      if (Object.keys(lives).length || Object.keys(ticked).length)
         setWs((st) => {
           const npc = { ...st.npc };
           for (const [id, life] of Object.entries(lives))
             if (npc[id]) npc[id] = { ...npc[id], ...life };
+          for (const [id, needs] of Object.entries(ticked))
+            if (npc[id]) npc[id] = { ...npc[id], needs };
           return { ...st, npc };
         });
       // Only look for a chat when nothing else waits, so an encounter is never stale by the time it runs.
@@ -809,7 +825,9 @@ export function WorldPlayer({
     );
     setWs(before);
     if (!replyEntry) {
-      setWs((s) => addTurn(s, npcId, { role: "npc", text: "..." }));
+      setWs((s) =>
+        addTurn(s, npcId, { role: "npc", text: "..." }, summarising),
+      );
       toast(
         "Add an NPC Reply (live) node to the flow so villagers can answer.",
       );
@@ -897,10 +915,13 @@ export function WorldPlayer({
       if (generation !== loads.current) return;
       setLive(null);
       setWs((s) =>
-        addTurn(s, npcId, {
-          role: "npc",
-          text: "(They seem lost in thought. Try again.)",
-        }),
+        // A failed reply keeps the unsummarised turns too, so nothing waiting for a summary is lost.
+        addTurn(
+          s,
+          npcId,
+          { role: "npc", text: "(They seem lost in thought. Try again.)" },
+          summarising,
+        ),
       );
       toast(e instanceof Error ? e.message : String(e));
     } finally {
