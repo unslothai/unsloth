@@ -273,7 +273,13 @@ _GIB = 1024
 _KREA2_WIDENED_MIB = 24 * _GIB  # Krea 2 fp8 widened to bf16
 
 
-def _budget(tmp_path, monkeypatch, total_mib, available_mib, fp8_widen_chosen = False):
+def _budget(
+    tmp_path,
+    monkeypatch,
+    total_mib,
+    available_mib,
+    fp8_widen_chosen = False,
+):
     monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
     _host(monkeypatch, available_mib, total_mib)
     path = tmp_path / "krea2.safetensors"
@@ -291,9 +297,7 @@ def test_big_host_loads_what_the_fp8_storage_rule_widens(tmp_path, monkeypatch, 
     available = int(available_gib * _GIB)
     cuda = type("T", (), {"device": "cuda", "dtype": torch.bfloat16})()
     assert (
-        cq.fp8_storage_wanted(
-            cuda, widened_mib = _KREA2_WIDENED_MIB, host_available_mib = available
-        )
+        cq.fp8_storage_wanted(cuda, widened_mib = _KREA2_WIDENED_MIB, host_available_mib = available)
         is False
     )
     chosen = cq.fp8_widen_chosen(cuda, widened_mib = _KREA2_WIDENED_MIB, host_available_mib = available)
@@ -309,7 +313,11 @@ def test_big_host_keeps_the_proportional_reserve_without_an_fp8_widen_choice(
     """No fp8-storage choice was made (int8 / nvfp4 file, LoRA, kill switch): the same load keeps the 10% reserve of
     #14510 and is refused, as before the cap."""
     budget = _budget(tmp_path, monkeypatch, 64 * _GIB, int(available_gib * _GIB))
-    assert budget.reserve_mib == small_host.host_reserve_mib(64 * _GIB) > cq.FP8_STORAGE_HOST_RESERVE_MIB
+    assert (
+        budget.reserve_mib
+        == small_host.host_reserve_mib(64 * _GIB)
+        > cq.FP8_STORAGE_HOST_RESERVE_MIB
+    )
     with pytest.raises(RuntimeError, match = "Not enough system RAM"):
         budget.check(_KREA2_WIDENED_MIB * conv._MIB)
 
