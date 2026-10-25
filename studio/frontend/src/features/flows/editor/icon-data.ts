@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Local copies of the Hugeicons glyphs Flows draws (generated from @hugeicons/core-free-icons; tests/flows-editor-icons.test.ts keeps them equal).
-// Importing the package modules from this lazy chunk lets the bundler hoist every icon Flows shares with another
-// lazy page into the startup HugeiconsIcon chunk (+26 KB raw); own copies keep them in the Flows chunk.
+// Own copies keep the icons Flows shares with other lazy pages out of the startup chunk (+26 KB raw).
 
 import type { IconSvgElement } from "@hugeicons/react";
 

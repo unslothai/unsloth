@@ -104,7 +104,6 @@ export async function stopFlow(): Promise<void> {
   }
 }
 
-/** On open: show the latest outputs and re-attach to a run still in progress. */
 export async function hydrateRuntime(flowId: string): Promise<void> {
   const runtime = useRuntimeStore.getState();
   runtime.clear();
@@ -146,6 +145,5 @@ export async function hydrateRuntime(flowId: string): Promise<void> {
       attachRun(active.id, 0);
     }
   } catch {
-    // Previews are a nicety; the editor works without them.
   }
 }

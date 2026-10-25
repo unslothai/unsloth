@@ -22,7 +22,6 @@ WORLD_ENTRY_TYPES = {
     "world.npc_chat": "npc_chat",
 }
 BIOMES = ("meadow", "forest", "desert", "snow", "town", "dungeon", "beach")
-# Tile kinds each biome's map uses (procgen.ts draws the same kinds).
 BIOME_TILES = {
     "meadow": ("grass", "path", "water", "flowers", "tree", "rock"),
     "forest": ("grass", "path", "water", "tree", "rock", "flowers"),
@@ -227,7 +226,6 @@ def _memory_items(raw: Any) -> list[dict]:
 
 
 def _npc_life(n: dict, ref: Any, npc_ids: set[str]) -> dict:
-    """The optional simulation fields, present only when the source has them so other worlds stay identical."""
     out: dict[str, Any] = {}
     if isinstance(n.get("routine"), str) and n["routine"].strip():
         out["routine"] = n["routine"].strip()[:600]
@@ -648,7 +646,6 @@ def resolve_world_report(
     if raw is None:
         return None, ["This flow has no world yet: add a World node, or run a World Generator."]
     raw = dict(raw)
-    # NPC nodes wired anywhere in the flow join the world.
     extra = []
     for n in doc.get("nodes") or []:
         if n["type"] == "world.npc" and not n.get("disabled"):

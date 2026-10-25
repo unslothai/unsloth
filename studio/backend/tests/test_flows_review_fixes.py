@@ -148,7 +148,6 @@ def test_finetune_waits_out_a_trainer_that_is_still_shutting_down(monkeypatch):
         if path == "/api/train/start":
             starts.append(body)
             if len(starts) < 3:
-                # The route's refusal names the run that is still active, not a new one.
                 return {"job_id": "old", "status": "error", "error": "Training already active"}
             raise RuntimeError("started")
         raise AssertionError(path)
@@ -408,7 +407,7 @@ async def test_a_hook_registered_after_cancel_still_fires():
 
     async def starts_a_job(ctx):
         started.set()
-        await release.wait()  # the job start request is still in flight when Stop is pressed
+        await release.wait()
 
         async def hook():
             fired.append(ctx.node_id)
@@ -586,7 +585,6 @@ def test_an_empty_segmentation_mask_never_leaves_an_invisible_character(monkeypa
 
     from core.flows.nodes import _common
 
-    # A character on a plain background, and a segmenter that finds nothing.
     im = Image.new("RGB", (64, 96), (240, 240, 240))
     for x in range(20, 44):
         for y in range(20, 80):
@@ -708,7 +706,6 @@ def test_cached_media_the_user_deleted_is_not_served(monkeypatch):
     gone = {"clip": {"kind": "audio", "ref": "audio:gone"}}
     assert _common.gallery_media_present(kept)
     assert not _common.gallery_media_present(gone)
-    # Embedded flow assets and plain values are not gallery entries.
     assert _common.gallery_media_present({"image": {"kind": "image", "ref": "sha256:abc"}, "n": 3})
 
 
@@ -799,7 +796,6 @@ def test_speak_sends_the_reference_transcript_for_cloning(monkeypatch):
     )
     assert sent[0]["workflow"] == "clone" and sent[0]["inputs"]["reference_text"] == "Hello there"
     assert sent[1]["workflow"] == "speak" and "inputs" not in sent[1]
-    # The body must pass the route's own request model (extra fields are refused there).
     from models.inference import AudioRunRequest
 
     sent[0]["inputs"]["reference"] = {"clip_id": "abc"}
@@ -819,7 +815,6 @@ def test_streamed_text_hides_thinking_split_across_pieces():
         shown = visible
     assert shown == "Hello there <b>x"
     assert "plan" not in shown and "<th" not in shown
-    # A closing tag and the answer in one piece: the answer is shown.
     assert visible_so_far("<think>x</think>Answer") == "Answer"
 
 
@@ -831,6 +826,5 @@ def test_first_json_returns_a_list_of_objects_whole():
         {"q": "a"},
         {"q": "b"},
     ]
-    # An object that comes first is still the answer.
     assert first_json('{"rows": [1, 2]} and [3]') == {"rows": [1, 2]}
     assert first_json("no braces [1, 2]") == [1, 2]

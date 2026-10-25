@@ -1042,7 +1042,6 @@ async def lifespan(app: FastAPI):
     sweep_slot_save_dir()
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
-    # Flow schedule triggers fire only while Studio runs.
     from core.flows.triggers import SCHEDULER as _flow_trigger_scheduler
 
     _flow_trigger_scheduler.start(app)

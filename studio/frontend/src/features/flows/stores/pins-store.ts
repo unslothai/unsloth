@@ -25,7 +25,6 @@ function write(flowId: string, pins: Pins): void {
       globalThis.localStorage?.setItem(KEY(flowId), JSON.stringify(pins));
     else globalThis.localStorage?.removeItem(KEY(flowId));
   } catch {
-    // Storage full or blocked: the pin lasts for this page only.
   }
 }
 
@@ -51,7 +50,6 @@ export const usePinsStore = create<PinsState>((set, get) => ({
   },
 }));
 
-/** Pins for the nodes still in the flow; a pin on a deleted node is dropped. */
 export function pinsForRun(nodeIds: Iterable<string>): Pins {
   const { pins } = usePinsStore.getState();
   const live = new Set(nodeIds);
@@ -75,7 +73,6 @@ function isMedia(value: unknown): value is MediaValue {
   );
 }
 
-/** What a history cell shows: the first media value in the outputs, else a short text. */
 export function historyPreview(
   outputs: Record<string, unknown>,
 ): { media: MediaValue } | { text: string } {

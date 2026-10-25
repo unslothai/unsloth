@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_flows_player.py: the real Flows players (story and world) against a
-// mock backend. `?flow=story` plays the compiled Lantern Picnic example; `?flow=world` walks a fixture
-// village whose NPCs answer from a scripted reply. No Studio, no models.
+// Harness for tests/studio/playwright_flows_player.py against a mock backend (`?flow=story` / `?flow=world`).
 
 /* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
 import { FlowPlayerPage } from "@/features/flows/player/flow-player-page";

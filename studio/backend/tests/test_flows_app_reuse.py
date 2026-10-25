@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""App inputs, Run Flow (flow.call) and per-node output history with pins."""
-
 import asyncio
 
 from core.flows.compiler import parse_document
@@ -64,7 +62,6 @@ def test_input_values_fill_flow_inputs_and_blocks_by_label():
     assert by_id["img"]["params"]["asset"] == media
     assert by_id["n"]["params"]["value"] == 7
     assert by_id["s"]["params"] == {"value": 42, "randomize": False}
-    # The stored flow is never touched.
     assert d["nodes"][1]["params"] == {}
 
 
@@ -79,7 +76,6 @@ async def test_run_flow_returns_the_called_flows_outputs():
 
 @run_async
 async def test_run_flow_refuses_cycles_and_deep_chains():
-    # a -> b -> a is a cycle.
     for fid, target in (("a", "b"), ("b", "a")):
         d = _caller_doc(target, {})
         d["id"] = fid
@@ -89,7 +85,6 @@ async def test_run_flow_refuses_cycles_and_deep_chains():
     assert rs.status == "failed"
     assert "already running" in (rs.nodes["call"].error or "")
 
-    # d1 -> d2 -> d3 -> d4 -> leaf: the fourth hop is refused.
     _child("leaf")
     chain = ["d1", "d2", "d3", "d4"]
     for fid, target in zip(chain, chain[1:] + ["leaf"]):
@@ -172,7 +167,6 @@ async def test_history_keeps_distinct_outputs_and_pins_feed_downstream():
     rs = await _run(eng, d, pinned = {"a": {"text": "pinned!"}})
     assert rs.outputs["r"] == "pinned!" and rs.nodes["a"].status == "cached"
     assert len(calls) == 12
-    # Regenerate (force) ignores the pin.
     rs = await _run(eng, d, force_nodes = ["a"], pinned = {"a": {"text": "pinned!"}})
     assert rs.outputs["r"] == "v13"
 
@@ -182,7 +176,7 @@ def test_run_flow_is_in_the_catalog_and_never_cached():
 
     s = SPECS_BY_TYPE["flow.call"]
     assert s["lane"] == "cpu" and not s["cacheable"]
-    assert _ret  # helper import kept for parity with the engine tests
+    assert _ret
 
 
 def test_an_exact_id_wins_over_another_blocks_label():

@@ -60,12 +60,10 @@ def test_unknown_directions_warn_and_are_skipped():
     assert len(warnings) == 6
     assert any("not a direction" in w for w in warnings)
     assert any("sparkle" in w for w in warnings) and any("nowhere" in w for w in warnings)
-    # Old stage notes stay narration without a warning; no warnings list never crashes.
     w2 = []
     assert parse_lines("[Thunder rumbles]", CHARS, warnings = w2)[0]["text"] == "[Thunder rumbles]"
     assert w2 == []
     assert [ln["text"] for ln in parse_lines("[dance]\n[scene with fade]", CHARS)] == ["[dance]"]
-    # A bracket inside a sentence is dialogue, not a direction.
     assert parse_lines("Mo: I [really] mean it.", CHARS)[0]["text"] == "I [really] mean it."
 
 
@@ -100,7 +98,6 @@ def test_authored_scene_compiles_stage_sounds_and_expressions():
     StoryManifest.model_validate(m)
     s1 = next(s for s in m["scenes"] if s["id"] == "s1")
     assert s1["transition"] == "flash"
-    # Mo is wired in; Pip comes on by direction, so is not on stage from the start.
     assert s1["on_stage"] == ["mo"]
     stages = [ln["stage"] for ln in s1["lines"] if "stage" in ln]
     assert stages == [
@@ -186,7 +183,6 @@ def test_illustrate_makes_expression_portraits_from_the_uncut_base():
     refs = [i for i in ctx.images if i.get("workflow") == "reference"]
     assert len(refs) == len(out["characters"])
     assert all(not r["init_image"]["ref"].endswith("-cut") for r in refs)
-    # Off by default: no extra images.
     ctx2 = FakeCtx("story.illustrate", inputs = {"story": story})
     run(story_nodes.story_illustrate(ctx2))
     assert not any(i.get("workflow") for i in ctx2.images)
