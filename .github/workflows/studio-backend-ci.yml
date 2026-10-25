@@ -467,6 +467,8 @@ jobs:
               --ignore=tests/vllm_compat
               --ignore=tests/version_compat
               --ignore-glob=tests/test_fsdp2*.py
+              --ignore-glob=tests/test_[!f]*gloo*.py
+              --ignore-glob=tests/test_f[!s]*gloo*.py
               --deselect tests/test_model_registry.py::test_model_registration
               --deselect tests/test_model_registry.py::test_all_model_registration
           # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
@@ -475,6 +477,16 @@ jobs:
           - shard: fsdp2
             selection: >-
               tests/test_fsdp2*.py
+          # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
+          # fp8 under FSDP2) did the same again: with them the catch-all hit the 2100 s cap and was
+          # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
+          # catch-all's 1258 s. The two globs are every *gloo* file except test_fs*, which is
+          # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
+          # the globs themselves.
+          - shard: gloo
+            selection: >-
+              tests/test_[!f]*gloo*.py
+              tests/test_f[!s]*gloo*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
