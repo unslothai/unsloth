@@ -271,7 +271,7 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
   // No pick or Reset before the server copy is read: it could not forget a row it has not seen.
   assert.match(
     page,
-    /disabled=\{sharedVariantUnresolved \|\| extraArgsHydrating\}/,
+    /disabled=\{sharedVariantUnresolved \|\| extraArgsHydrating \|\| budgetSettling\}/,
   );
   // Editing Default shows the name it will be saved under; Save uses it without asking.
   assert.match(
@@ -282,7 +282,22 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
   // Reset goes back to Default settings at once, not just the panel values.
   assert.match(
     page,
-    /disabled=\{\(atDefault && selectedSet === null\) \|\| extraArgsHydrating\}[\s\S]{0,160}onClick=\{\(\) => pickSet\(null\)\}/,
+    /disabled=\{\(atDefault && selectedSet === null\) \|\| extraArgsHydrating \|\| budgetSettling\}[\s\S]{0,160}onClick=\{\(\) => pickSet\(null\)\}/,
+  );
+  // A number the Save or Load click itself committed is not in customName yet, so both name the
+  // new set from the committed config.
+  assert.match(
+    page,
+    /const target = into \?\? committedCustomName\(effectiveRuntimeConfig\);/,
+  );
+  assert.match(
+    page,
+    /let loadSet = selectedSet \?\? committedCustomName\(effectiveRuntimeConfig\);/,
+  );
+  // A load settling its budget captured its config already; a pick then would disagree with it.
+  assert.match(
+    page,
+    /const pickSet = [\s\S]{0,200}if \(budgetSettling\) \{\s*return;/,
   );
   // The pencil beside the dropdown renames a set, or names an edited Default before it exists.
   assert.match(

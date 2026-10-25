@@ -3890,6 +3890,11 @@ export function ModelConfigPage({
     setPickedSet(undefined);
   };
 
+  // From the committed config, not customName: an edit this click committed (a number blurred by
+  // the click) is not in the render that built customName yet.
+  const committedCustomName = (committed: PerModelConfig) =>
+    isDefaultConfig(forSetStore(committed)) ? null : newRunSettingsName(savedSets, modelName);
+
   /** Saves the panel into ``into`` (null: Default, forgetting what was remembered) without loading. */
   const handleSave = (into: string | null = selectedSet, message?: string): boolean => {
     if (sharedVariantUnresolved) {
@@ -3899,13 +3904,14 @@ export function ModelConfigPage({
     if (stagedMetadataPending || budgetSettling) {
       return false;
     }
-    const keep = into !== null;
+    const { effectiveRuntimeConfig } = commitDraft();
+    const target = into ?? committedCustomName(effectiveRuntimeConfig);
+    const keep = target !== null;
     if (keep && extraArgsBlocked) {
       toast.error("Fix the extra arguments before saving.");
       return false;
     }
-    const { effectiveRuntimeConfig } = commitDraft();
-    if (keep && !saveRunSettings(configId, into, forSetStore(effectiveRuntimeConfig))) {
+    if (keep && !saveRunSettings(configId, target, forSetStore(effectiveRuntimeConfig))) {
       toast.error("Couldn't save these settings.");
       return false;
     }
@@ -3914,7 +3920,7 @@ export function ModelConfigPage({
       toast.error("Couldn't save settings for this model.");
       return false;
     }
-    keepSelection(into);
+    keepSelection(target);
     // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
     // Not on a forget: that stored nothing, and pinning here would change the next load.
     // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
@@ -3927,7 +3933,7 @@ export function ModelConfigPage({
         customContextLength: effectiveRuntimeConfig.customContextLength,
       }));
     }
-    finishPersist(defaultConfig, keep, message ?? (keep ? `Saved "${into}".` : undefined));
+    finishPersist(defaultConfig, keep, message ?? (keep ? `Saved "${target}".` : undefined));
     return true;
   };
 
@@ -3946,6 +3952,10 @@ export function ModelConfigPage({
 
   // The model loads with whatever was picked last: picking takes effect without a Save.
   const pickSet = (name: string | null) => {
+    // A load settling its budget already captured its config; a pick now would disagree with it.
+    if (budgetSettling) {
+      return;
+    }
     setNaming(null);
     const entry = name === null ? null : findSavedRunSettings(savedSets, name);
     const next = entry?.config ?? DEFAULT_PER_MODEL_CONFIG;
@@ -4037,11 +4047,7 @@ export function ModelConfigPage({
       rememberChanged;
     // Load saves into the selected set too (an edited Default becomes one), so the set and what
     // loads never drift apart.
-    let loadSet =
-      selectedSet ??
-      (customName !== null && !isDefaultConfig(forSetStore(effectiveRuntimeConfig))
-        ? customName
-        : null);
+    let loadSet = selectedSet ?? committedCustomName(effectiveRuntimeConfig);
     if (loadSet !== null && !saveRunSettings(configId, loadSet, forSetStore(effectiveRuntimeConfig))) {
       toast.error("Couldn't save these settings, loading with them anyway.");
       // Never select a set that was not created.
@@ -4356,7 +4362,7 @@ export function ModelConfigPage({
           onEditName={editName}
           naming={naming}
           // Until the server copy is read: a pick before then could not forget a row it has not seen.
-          disabled={sharedVariantUnresolved || extraArgsHydrating}
+          disabled={sharedVariantUnresolved || extraArgsHydrating || budgetSettling}
           onPick={pickSet}
           onNamingChange={setNaming}
           onNamingSubmit={submitNaming}
@@ -4419,7 +4425,7 @@ export function ModelConfigPage({
             variant="outline"
             size="sm"
             className="text-muted-foreground"
-            disabled={(atDefault && selectedSet === null) || extraArgsHydrating}
+            disabled={(atDefault && selectedSet === null) || extraArgsHydrating || budgetSettling}
             // Back to Default settings, effective at once like picking it in the dropdown.
             onClick={() => pickSet(null)}
           >

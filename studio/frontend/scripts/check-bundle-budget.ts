@@ -430,8 +430,11 @@ export const BUDGET = {
   // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
   // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
   // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
-  transferBytes: 2_096_327,
-  rawBytes: 6_958_713,
+  // The run settings dropdown per model (#15247: saved settings store, dropdown, pencil and Reset to Default)
+  // adds 8.8 KB raw / 2.8 KB transfer inside the eager model config page: 6,782.5 -> 6,791.3 KB raw, 2,046.6 ->
+  // 2,049.4 KB transfer against cdd0900c6, one machine and build, Node 26, 105 chunks. Raised by that growth.
+  transferBytes: 2_099_195,
+  rawBytes: 6_967_725,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
