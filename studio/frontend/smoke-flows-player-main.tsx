@@ -12,7 +12,7 @@ import type {
   SessionRecord,
 } from "@/features/flows/player/player-api";
 import type { WorldGameHandle } from "@/features/flows/player/world/phaser-game";
-import { generateMap } from "@/features/flows/player/world/procgen";
+import { generateMap, isSolid } from "@/features/flows/player/world/procgen";
 import type {
   MediaValue,
   ModelAsset,
@@ -144,7 +144,41 @@ const LIVELY: WorldSpec = {
     },
   ],
 };
-const PLAYED = params.get("autonomy") ? LIVELY : WORLD;
+const LIVED = params.get("autonomy") ? LIVELY : WORLD;
+// `&action=action|shooter`: action play in the 3D view; `&course=1` puts a crate, a rock, a fence and a house
+// around the spawn to jump on and run into.
+const gameplay = params.get("action");
+const course = (spec: WorldSpec): WorldProp3d[] => {
+  const m = generateMap(spec);
+  const s = m.spawn;
+  const spots: [number, number, WorldProp3d["kind"]][] = [
+    [3, 0, "crate"],
+    [-3, 0, "rock"],
+    [0, 3, "fence"],
+    [0, -4, "house"],
+  ];
+  return spots
+    .filter(([dx, dy]) => !isSolid(m, s.x + dx, s.y + dy))
+    .map(([dx, dy, kind]) => ({
+      id: `course-${kind}`,
+      kind,
+      x: s.x + dx + 0.5,
+      y: s.y + dy + 0.5,
+      rot: 0,
+      scale: 1,
+      solid: true,
+    }));
+};
+const PLAYED: WorldSpec =
+  gameplay === "action" || gameplay === "shooter"
+    ? {
+        ...LIVED,
+        action: { movement: true, shooter: gameplay === "shooter" },
+        ...(params.get("course") ? { props3d: course(LIVED) } : {}),
+      }
+    : params.get("course")
+      ? { ...LIVED, props3d: course(LIVED) }
+      : LIVED;
 // Scenery saved by the 3D editor and uploaded models outlive a page load (sessionStorage), like the flow does.
 const PROPS_KEY = "flows-smoke-props3d";
 const MODELS_KEY = "flows-smoke-models";

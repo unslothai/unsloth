@@ -176,6 +176,18 @@ test("shots hit the first hostile in line, walls stop them, friendlies are never
   assert.equal(A.shoot(w, c, eye, dir, [grim]).fired, false);
 });
 
+test("level aim still hits a hostile a little below or above, not one far overhead", () => {
+  // Ground falling away to the east: the hostile stands 1.5 lower, down the slope.
+  const slope = (x: number) => -Math.max(0, x - 2.5) * 0.25;
+  const w = A.buildActionWorld(20, 20, slope, (x, y) => x < 0 || y < 0 || x >= 20 || y >= 20, []);
+  const level = { x: 1, y: 0, z: 0 };
+  const eye = { x: 2.5, y: 5.5, z: 1.1 };
+  const c = A.newCombat();
+  assert.equal(A.shoot(w, c, eye, level, [{ id: "g", x: 8.5, y: 5.5, z: slope(8.5), hostile: true }]).hit, "g");
+  A.tick(c, 1);
+  assert.equal(A.shoot(w, c, eye, level, [{ id: "g", x: 8.5, y: 5.5, z: 4, hostile: true }]).hit, null);
+});
+
 test("hostiles shoot back only in range, in sight and outside safe places; defeat costs only ammo", () => {
   const w = world([], wallAt);
   const c = A.newCombat();
@@ -192,10 +204,14 @@ test("hostiles shoot back only in range, in sight and outside safe places; defea
   assert.deepEqual(A.enemiesAct(w, c, me, [grim], (x) => x > 8), [], "player safe");
   assert.deepEqual(A.enemiesAct(w, c, me, [grim], (x) => x < 6), [], "hostile in a safe place");
   assert.deepEqual(A.enemiesAct(w, c, me, [{ ...grim, hostile: false }], none), []);
-  c.ammo = 17;
+  c.health = 0;
+  c.ammo = A.START_AMMO + 12;
   A.respawn(c);
   assert.equal(c.health, A.MAX_HEALTH);
-  assert.equal(c.ammo, 0);
+  assert.equal(c.ammo, A.START_AMMO, "picked-up ammo is lost");
+  c.ammo = 0;
+  A.respawn(c);
+  assert.equal(c.ammo, A.START_AMMO, "never left unable to fight");
 });
 
 test("pickups are taken once, only when useful, from fixed seeded spots", () => {

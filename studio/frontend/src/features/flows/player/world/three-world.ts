@@ -764,7 +764,13 @@ export function createWorld3d(
   let hudText = "";
   const perf = (
     window as unknown as {
-      __flowsWorldPerf?: { frame: number[]; sim: number[] };
+      __flowsWorldPerf?: {
+        frame: number[];
+        sim: number[];
+        pose?: unknown;
+        combat?: unknown;
+        shot?: unknown;
+      };
     }
   ).__flowsWorldPerf;
   {
@@ -1045,6 +1051,17 @@ export function createWorld3d(
         { x: dir.x, y: dir.z, z: dir.y },
         targets(),
       );
+      if (perf)
+        perf.shot = {
+          ...shot,
+          eye: {
+            x: camera.position.x,
+            y: camera.position.z,
+            z: camera.position.y,
+          },
+          dir: { x: dir.x, y: dir.z, z: dir.y },
+          targets: targets().filter((t) => t.hostile),
+        };
       if (shot.fired) {
         cross.style.transform = "scale(2.2)";
         window.setTimeout(() => {
@@ -1198,8 +1215,24 @@ export function createWorld3d(
       );
     if (shooter && body && aw && !locked) fight(dt);
     if (perf) {
+      // A test hook (set on window before the world opens): frame and simulation times, pose and fight state.
       perf.frame.push(dt * 1000);
       perf.sim.push(performance.now() - simStart);
+      perf.pose = body
+        ? {
+            x: body.x,
+            y: body.y,
+            z: body.z,
+            crouched: body.crouched,
+            grounded: body.grounded,
+          }
+        : { x: me.x, y: me.y, z: ground };
+      if (shooter)
+        perf.combat = {
+          health: combat.health,
+          ammo: combat.ammo,
+          enemies: combat.enemies,
+        };
     }
     skyDome?.position.copy(camera.position);
 

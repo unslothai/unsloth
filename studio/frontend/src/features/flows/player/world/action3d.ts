@@ -314,6 +314,8 @@ export const ENEMY_RANGE = 9;
 export const KNOCKOUT_S = 45;
 export const PICKUP_HEALTH = 35;
 export const PICKUP_AMMO = 12;
+const BODY_MID = 0.6;
+const AIM_ASSIST_RAD = 0.35;
 
 export interface Combat {
   health: number;
@@ -396,15 +398,25 @@ export function shoot(
     if (along <= 0 || along > SHOT_RANGE) continue;
     const off = Math.abs((t.x - eye.x) * uy - (t.y - eye.y) * ux);
     if (off > 0.32) continue;
-    const zAt = eye.z + (dir.z / flat) * along;
-    if (zAt < t.z || zAt > t.z + 1.25) continue;
+    // Up and down the aim is forgiving (as in classic shooters), so a villager in a dip or up a slope is hittable.
+    const need = Math.atan2(t.z + BODY_MID - eye.z, along);
+    if (Math.abs(need - Math.atan2(dir.z, flat)) > AIM_ASSIST_RAD) continue;
     if (along < bestT) {
       best = t;
       bestT = along;
     }
   }
   if (!best) return { fired: true, hit: null, downed: false };
-  const wall = wallDistance(w, eye.x, eye.y, eye.z, dir.x, dir.y, dir.z, bestT);
+  const wall = wallDistance(
+    w,
+    eye.x,
+    eye.y,
+    eye.z,
+    best.x - eye.x,
+    best.y - eye.y,
+    best.z + BODY_MID - eye.z,
+    bestT,
+  );
   if (wall < bestT || !best.hostile)
     return { fired: true, hit: null, downed: false };
   const e = (c.enemies[best.id] ??= {
@@ -472,10 +484,10 @@ export function tick(c: Combat, dt: number): void {
   c.cooldown = Math.max(0, c.cooldown - dt);
 }
 
-/** Defeat: back to full health at the start; only ammo is lost. */
+/** Defeat: back to full health at the start with the starting clip; ammo picked up is lost. */
 export function respawn(c: Combat): void {
   c.health = MAX_HEALTH;
-  c.ammo = 0;
+  c.ammo = START_AMMO;
 }
 
 export interface Pickup {
