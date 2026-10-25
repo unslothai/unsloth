@@ -32169,6 +32169,9 @@ class LlamaCppBackend:
                     def _restore(argv):
                         if _extra_args_n_parallel(argv, env = {}) != _cut:
                             return argv
+                        # The slots come back because the cache is gone: an argv relaunched
+                        # without _spawn_and_wait (the text-only retry) must not keep it.
+                        argv = self._drop_moe_cache(argv)
                         argv = _with_parallel_slots(
                             argv,
                             n_parallel,
@@ -32208,39 +32211,58 @@ class LlamaCppBackend:
                         )
                     return run_cmd
 
-                def _cpu_replay_at_asked_slots(argv: list[str]) -> list[str]:
-                    """``argv`` back at the asked slots for a --device none replay. A CPU
+                def _cpu_replay_at_asked_slots(argv: list[str]):
+                    """``argv`` back at the asked slots for a --device none replay, and the
+                    commit to run once that replay is up (None when nothing changed). A CPU
                     fallback streams no experts, so the spilled-MoE cut never applies to
                     one (intent.cpu_fallback at _moe_experts_on_host), as the micro-batch
-                    raise and the cache _prepare_cpu_fallback_launch strips do not."""
-                    nonlocal n_parallel, _spill_cut_needs_cache
-                    nonlocal _auto_ctx_checkpoints, _auto_ckpt_emitted
+                    raise and the cache _prepare_cpu_fallback_launch strips do not. Nothing
+                    is committed before: a replay that cannot be staged or started leaves
+                    the GPU ladder, and a second replay, at the cut."""
+                    nonlocal n_parallel, _auto_ctx_checkpoints
                     if (
                         _spill_slots_asked is None
                         or _extra_args_n_parallel(argv, env = {}) != _MOE_SPILL_DEFAULT_SLOTS
                     ):
-                        return argv
-                    logger.info(
-                        "CPU fallback: no experts to stream, so the serving slots go back "
-                        "%d -> %d.",
-                        _MOE_SPILL_DEFAULT_SLOTS,
-                        _spill_slots_asked,
-                    )
-                    # _spill_slots_asked stays: the slot-cut marker then reads no cut, and
-                    # a second replay (the drafterless argv) is rewritten the same way.
-                    n_parallel = _spill_slots_asked
-                    _spill_cut_needs_cache = False
+                        return argv, None
+                    _asked = _spill_slots_asked
                     argv = _with_parallel_slots(
                         argv,
-                        n_parallel,
+                        _asked,
                         n_batch = n_batch,
                         supports_kv_unified = bool(server_caps.get("supports_kv_unified")),
                     )
                     if _auto_ckpt_emitted:
                         argv = self._without_flag_pairs(argv, _auto_ckpt_emitted)
-                    _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
-                    _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(argv)
-                    return argv
+                    # The cap for the asked count, decided as every respawn does but
+                    # handed back unset until the replay is up.
+                    _held_slots, _held_cap = n_parallel, _auto_ctx_checkpoints
+                    try:
+                        n_parallel = _asked
+                        _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                        _cap = _auto_ctx_checkpoints
+                        _pair = _emit_auto_ctx_checkpoints(argv)
+                    finally:
+                        n_parallel = _held_slots
+                        _auto_ctx_checkpoints = _held_cap
+
+                    def _commit() -> None:
+                        nonlocal n_parallel, _spill_slots_asked, _spill_cut_needs_cache
+                        nonlocal _auto_ctx_checkpoints, _auto_ckpt_emitted
+                        logger.info(
+                            "CPU fallback: no experts to stream, so the serving slots go "
+                            "back %d -> %d.",
+                            _MOE_SPILL_DEFAULT_SLOTS,
+                            _asked,
+                        )
+                        n_parallel = _asked
+                        # The cut is gone, as in _undo_cache_only_spill_cut.
+                        _spill_slots_asked = None
+                        _spill_cut_needs_cache = False
+                        _auto_ctx_checkpoints = _cap
+                        _auto_ckpt_emitted = _pair
+
+                    return argv, _commit
 
                 # Pinned loads only: under mmap the cache measured slower than none.
                 self._moe_cache_flags = []
@@ -33707,7 +33729,7 @@ class LlamaCppBackend:
                     if not _crashed or not _cpu_fallback_eligible or _load_cancelled():
                         return False
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
-                    failed_cmd = _cpu_replay_at_asked_slots(failed_cmd)
+                    failed_cmd, _commit_cpu_slots = _cpu_replay_at_asked_slots(failed_cmd)
                     prepared = self._prepare_cpu_fallback_launch(
                         binary,
                         failed_cmd,
@@ -33769,6 +33791,8 @@ class LlamaCppBackend:
                         self._cleanup_failed_cpu_fallback()
                         self._vram_fraction_pending = None
                         raise RuntimeError(detail)
+                    if _commit_cpu_slots is not None:
+                        _commit_cpu_slots()
 
                     # The replay dropped the fit's --load-mode none, so a record taken
                     # off the launch argv describes a reservation this child does not
@@ -33955,7 +33979,7 @@ class LlamaCppBackend:
                     if self._auto_vulkan_cpu_fallback_eligible(
                         binary, intent, extra_args, env, allow_manual_cpu = True
                     ):
-                        cmd = _cpu_replay_at_asked_slots(cmd)
+                        cmd, _commit_cpu_slots = _cpu_replay_at_asked_slots(cmd)
                         prepared = self._prepare_cpu_fallback_launch(
                             binary,
                             cmd,
@@ -33975,6 +33999,8 @@ class LlamaCppBackend:
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
                             )
                         cmd, _spawn_cwd, _replay_pageable_note = prepared
+                        if _commit_cpu_slots is not None:
+                            _commit_cpu_slots()
                         # Same reason as the crash path, recomputed from the stripped
                         # `cmd` before anything spawns. The arch-crash rung re-derives it
                         # from `cmd` too, so the _mem_policy_for_cmd snapshot it restores
@@ -34816,7 +34842,7 @@ class LlamaCppBackend:
                             _auto_ctx_checkpoints,
                             _auto_ckpt_emitted,
                         )
-                        if _fb_slots_asked is not None
+                        if _fb_slots_asked is not None and n_parallel < _fb_slots_asked
                         else None
                     )
                     if _fb_cut is not None:

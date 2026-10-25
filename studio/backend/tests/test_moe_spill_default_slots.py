@@ -663,10 +663,18 @@ def test_a_first_launch_that_turns_unpinned_logs_its_own_stage(
     ], lines
 
 
-def _scripted_launch(tmp_path, monkeypatch, *, outcome, **load_kw):
+def _scripted_launch(
+    tmp_path,
+    monkeypatch,
+    *,
+    outcome,
+    spawned = None,
+    **load_kw,
+):
     """A spilled MoE with a drafter whose spawns ``outcome(cmd)`` scripts as (exit code,
-    or None for healthy, output lines)."""
-    spawned = []
+    None for healthy or "stall" for no loading progress, output lines). ``spawned``
+    collects every argv, for a load expected to raise."""
+    spawned = [] if spawned is None else spawned
 
     def launch(
         backend,
@@ -679,6 +687,7 @@ def _scripted_launch(tmp_path, monkeypatch, *, outcome, **load_kw):
                 return placement._REAL_POPEN(cmd, **kwargs)
             spawned.append(list(cmd))
             rc, _lines = outcome(cmd)
+            rc = None if rc == "stall" else rc
             return type(
                 "Process",
                 (),
@@ -696,6 +705,8 @@ def _scripted_launch(tmp_path, monkeypatch, *, outcome, **load_kw):
         def health(timeout = None, **_kw):
             rc, lines = outcome(spawned[-1])
             backend._stdout_lines = list(lines)
+            backend._health_wait_stalled = rc == "stall"
+            backend._health_wait_stall_kind = "no_progress" if rc == "stall" else None
             return rc is None
 
         backend._wait_for_health = health
@@ -764,6 +775,9 @@ def test_the_text_only_retry_after_a_failed_cpu_projector_runs_the_restored_slot
     assert "--mmproj" not in text_only, text_only
     assert _flag(text_only, "--parallel") == str(backend.effective_parallel_slots), text_only
     assert backend.effective_parallel_slots == 4
+    # The slots came back because the cache went; four over the cache is the launch the
+    # cut exists to avoid.
+    assert "--moe-cache-mib" not in text_only, text_only
 
 
 def test_auto_standing_a_hybrid_head_down_keeps_the_slots_beside_a_bare_draft_model(
@@ -904,3 +918,113 @@ def test_a_vulkan_with_no_device_starts_on_cpu_at_the_asked_count(
     assert only[only.index("--device") + 1] == "none", only
     assert _flag(only, "--parallel") == "4", only
     assert backend.effective_parallel_slots == 4
+
+
+def _vulkan_cpu_host(monkeypatch, *, staged = True):
+    """Auto-selected Vulkan with a staged CPU runtime (``staged`` off: none to stage)."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_vulkan_prebuilt_was_auto_selected", staticmethod(lambda _binary: True)
+    )
+    make = placement._moe_backend
+
+    def staged_cpu_runtime(*args, **kwargs):
+        backend, gguf = make(*args, **kwargs)
+        # The fixture answers "not Vulkan" on the instance.
+        backend._is_vulkan_backend = lambda _binary = None: True
+        backend._cpu_isolated_binary = lambda _binary: "/fake/llama-server" if staged else None
+        backend._llama_server_env_for_binary = lambda _binary: {placement._loader_path_var(): ""}
+        # Checkpoints big enough that the host caps them below the build's default.
+        backend._ctx_checkpoint_bytes = lambda *_a, **_k: _GIB // 4
+        backend._host_memory_capacity_mib = lambda: 32 * 1024
+        return backend, gguf
+
+    monkeypatch.setattr(placement, "_moe_backend", staged_cpu_runtime)
+    # Checkpoints emitted, and a drafter the CPU replay can pin.
+    monkeypatch.setitem(_CAPS, "ctx_checkpoints_flag", "--ctx-checkpoints")
+    monkeypatch.setitem(_CAPS, "spec_draft_ngl_flag", "--gpu-layers-draft")
+
+
+def _on_cpu(cmd):
+    return "--device" in cmd and cmd[cmd.index("--device") + 1] == "none"
+
+
+def test_a_failed_cpu_drafter_replay_leaves_the_drafterless_one_one_checkpoint_cap(
+    tmp_path, _moe_cache_host, _hybrid_head, monkeypatch
+):
+    """The drafter CPU replay fails; the drafterless one, saved at the cut, still sheds
+    the cap it launched with instead of carrying two."""
+    _vulkan_cpu_host(monkeypatch)
+
+    def outcome(cmd):
+        if not _on_cpu(cmd):
+            return -11, ["ggml_vulkan: crash"]
+        return (1, ["mtp failed"]) if _flag(cmd, "--spec-type") == "draft-mtp" else (None, [])
+
+    backend, spawned = _scripted_launch(
+        tmp_path, monkeypatch, outcome = outcome, drafter = False, speculative_type = "mtp"
+    )
+
+    replay = spawned[-1]
+    assert any(_on_cpu(c) and _flag(c, "--spec-type") == "draft-mtp" for c in spawned), spawned
+    assert _on_cpu(replay) and _flag(replay, "--spec-type") != "draft-mtp", replay
+    assert replay.count("--ctx-checkpoints") == 1, replay
+    assert _flag(replay, "--parallel") == "4", replay
+    assert backend.effective_parallel_slots == 4
+
+
+def test_a_cpu_replay_that_cannot_stage_leaves_the_gpu_ladder_at_the_cut(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """A stalled suspect Vulkan with no CPU runtime to stage goes on down the GPU
+    rungs, which must still launch and report the cut count."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    if not hasattr(LlamaCppBackend, "_vulkan_probe_outcome"):
+        pytest.skip("the Vulkan stall replay lands with main's #14521")
+    _vulkan_cpu_host(monkeypatch, staged = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_vulkan_probe_outcome", staticmethod(lambda _binary = None: "timeout")
+    )
+
+    def outcome(cmd):
+        if not spawned_before[0]:
+            spawned_before[0] = cmd
+        if cmd is spawned_before[0] or cmd == spawned_before[0]:
+            return "stall", []
+        return (1, ["boom"]) if _flag(cmd, "--parallel") == "4" else (None, [])
+
+    spawned_before = [None]
+    backend, spawned = _scripted_launch(tmp_path, monkeypatch, outcome = outcome)
+
+    final = spawned[-1]
+    assert len(spawned) > 2 and not _on_cpu(final), spawned
+    assert _flag(final, "--parallel") == "2", final
+    assert backend.effective_parallel_slots == 2
+    assert backend._slots_cut_for_drafter
+
+
+def test_a_cpu_start_at_the_asked_count_is_not_retried_as_a_cut(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """The zero-device route already runs the asked count, so a failing drafter fallback
+    has no cut to retry at: no identical relaunch."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    if not hasattr(LlamaCppBackend, "_vulkan_probe_outcome"):
+        pytest.skip("the zero-device CPU route lands with main's #14521")
+    _vulkan_cpu_host(monkeypatch)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_vulkan_probe_outcome", staticmethod(lambda _binary = None: "none")
+    )
+    seen = []
+    with pytest.raises(RuntimeError):
+        _scripted_launch(tmp_path, monkeypatch, outcome = lambda cmd: (1, ["boom"]), spawned = seen)
+
+    assert all(_flag(c, "--parallel") == "4" for c in seen), seen
+    # One drafterless launch: a "-retry-cut" would run the same four slots again.
+    assert sum("--spec-default" in c for c in seen) == 1, seen
