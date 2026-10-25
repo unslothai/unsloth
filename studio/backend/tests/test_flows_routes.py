@@ -230,6 +230,16 @@ def test_import_export_assets_round_trip(client, monkeypatch):
     ).json()
     assert imported["flow"]["id"] != "withimg" and imported["flow"]["name"] == "Copy"
     assert imported["report"]["baked_nodes"] == ["i"]
+    assert imported["report"]["replication"] == [] and "live_note" not in imported["report"]
+    world = doc(
+        [node("r", "world.npc_reply"), node("i", "input.image", asset = uploaded)],
+        id = "baked_world",
+        baked = {"i": {"image": uploaded}},
+    )
+    client.post("/api/flows", json = {"doc": world})
+    exported = client.get("/api/flows/baked_world/export", params = {"mode": "baked"})
+    report = client.post("/api/flows/import", content = exported.content).json()["report"]
+    assert "need a model" in report["live_note"]
     assert client.post("/api/flows/import", content = b"PK\x03\x04garbage").status_code == 400
     assert client.get("/api/flows/withimg/export", params = {"mode": "evil"}).status_code == 400
 
