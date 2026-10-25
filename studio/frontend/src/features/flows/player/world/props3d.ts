@@ -110,9 +110,11 @@ function reserved(map: WorldMap): Set<number> {
 export function blockedCells(
   map: WorldMap,
   props: readonly WorldProp3d[],
+  open: readonly Point[] = [],
 ): Uint8Array {
   const out = new Uint8Array(map.width * map.height);
   const keep = reserved(map);
+  for (const p of open) keep.add(p.y * map.width + p.x);
   for (const p of props) {
     if (p.solid === false) continue;
     const t = propTile(p);
@@ -123,13 +125,17 @@ export function blockedCells(
   return out;
 }
 
-/** Put `props` on the map in place: both renderers read map.props and walk around map.blocked. */
+/**
+ * Put `props` on the map in place: both renderers read map.props and walk around map.blocked. `open` tiles stay
+ * walkable whatever stands on them (the tile the player is on while editing, so a prop never traps them).
+ */
 export function setMapProps(
   map: WorldMap,
   props: readonly WorldProp3d[],
+  open: readonly Point[] = [],
 ): void {
   map.props = props.slice();
-  map.blocked = props.length ? blockedCells(map, props) : undefined;
+  map.blocked = props.length ? blockedCells(map, props, open) : undefined;
 }
 
 /** A free tile near `from` (not solid, no prop on it) for a new prop, searching outwards. */
@@ -344,4 +350,22 @@ export interface WorldEditor {
   /** The ground, water, scenery and props as one binary glTF, for Blender and other tools. */
   exportGlb(): Promise<Blob>;
   close(): void;
+}
+
+/**
+ * Save until what is saved is what the editor shows, so an edit made while a save is in flight is saved too.
+ * `save` writes the editor's state at the time it is called. False when a save fails or edits keep coming.
+ */
+export async function saveUntilCurrent(
+  current: () => string,
+  saved: string,
+  save: () => Promise<boolean>,
+): Promise<boolean> {
+  for (let i = 0; i < 5; i++) {
+    const now = current();
+    if (now === saved) return true;
+    if (!(await save())) return false;
+    saved = now;
+  }
+  return current() === saved;
 }

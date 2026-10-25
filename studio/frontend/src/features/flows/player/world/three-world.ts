@@ -1130,7 +1130,7 @@ export function createWorld3d(
           groundAt: (x, y) => heightAt(terrain, x, y),
           player: () => ({ x: me.x, y: me.y, yaw: camera.rotation.y }),
           openTile: (x, y) => !SOLID.has(kindAt(map, x, y)),
-          onProps: (next) => setMapProps(map, next),
+          onProps: (next) => setMapProps(map, next, [tileOf(me)]),
         });
         const close = ed.close;
         ed.close = () => {

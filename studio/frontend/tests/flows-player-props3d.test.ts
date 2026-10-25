@@ -113,6 +113,65 @@ test("setMapProps updates collision in place, so a live edit and a view switch s
   assert.equal(map.blocked, undefined);
 });
 
+test("a solid prop dropped where the player stands never traps them", async () => {
+  const map = P.generateMap(spec());
+  const at = openNear(map);
+  E.setMapProps(map, [E.makeProp("well", at, [])], [at]);
+  assert.equal(P.isSolid(map, at.x, at.y), false);
+  E.setMapProps(map, [E.makeProp("well", at, [])]);
+  assert.equal(
+    P.isSolid(map, at.x, at.y),
+    true,
+    "once the player has left it blocks again",
+  );
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL(
+      "../src/features/flows/player/world/three-world.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /onProps: \(next\) => setMapProps\(map, next, \[tileOf\(me\)\]\)/,
+  );
+  const player = readFileSync(
+    new URL(
+      "../src/features/flows/player/world/world-player.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    player,
+    /await saveUntilCurrent\(current, savedProps, saveScene\)/,
+  );
+});
+
+test("Done keeps saving until an edit made during a save is saved too", async () => {
+  let shown = "a";
+  const saves: string[] = [];
+  const save = async () => {
+    saves.push(shown);
+    // The player edits again while this save is in flight.
+    if (saves.length === 1) shown = "b";
+    return true;
+  };
+  assert.equal(await E.saveUntilCurrent(() => shown, "", save), true);
+  assert.deepEqual(saves, ["a", "b"]);
+  assert.equal(
+    await E.saveUntilCurrent(
+      () => "x",
+      "",
+      async () => false,
+    ),
+    false,
+  );
+  assert.equal(await E.saveUntilCurrent(() => "same", "same", save), true);
+  assert.equal(saves.length, 2, "nothing to save, no call");
+});
+
 test("new props get unique ids and land on a free tile, never on another prop", () => {
   const map = P.generateMap(spec());
   const a = E.makeProp("tree", openNear(map), []);

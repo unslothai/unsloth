@@ -39,6 +39,7 @@ import {
   GlbError,
   type WorldEditor,
   inspectGlb,
+  saveUntilCurrent,
 } from "./props3d";
 import {
   BackgroundQueue,
@@ -463,11 +464,12 @@ export function WorldPlayer({
   }, [api, editor, flowId]);
   const closeEditor = useCallback(async () => {
     if (!editor) return;
-    if (edDirty && !(await saveScene())) return;
+    const current = () => JSON.stringify(editor.state().props);
+    if (!(await saveUntilCurrent(current, savedProps, saveScene))) return;
     editor.close();
     setEditor(null);
     setEdState(null);
-  }, [edDirty, editor, saveScene]);
+  }, [editor, saveScene, savedProps]);
   const importModel = useCallback(
     async (file: File) => {
       if (!editor || !api.uploadModel) return;
