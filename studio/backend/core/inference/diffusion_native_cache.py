@@ -478,7 +478,12 @@ class NativePendingWrite:
     exit wait for it (``diffusion_prequant_cache.finish_background_writes``). It writes the live host tensors the
     build already holds: no snapshot copy."""
 
-    def __init__(self, run: Any, key: str, logger: Any = None) -> None:
+    def __init__(
+        self,
+        run: Any,
+        key: str,
+        logger: Any = None,
+    ) -> None:
         import threading
 
         self._run_fn = run
@@ -567,7 +572,11 @@ def save_deferred(
         recorded_base = str(base_repo or getattr(fam, "base_repo", "") or "")
         keyed = _key_for(fam, spec, source_base or base_repo, component, base_id = recorded_base)
         if keyed is None:
-            _cache._log(logger, "info", f"native {component}: skipped (dense source shards not found locally)")
+            _cache._log(
+                logger,
+                "info",
+                f"native {component}: skipped (dense source shards not found locally)",
+            )
             return None
 
         def run(check: Optional[Any] = None) -> Optional[str]:
@@ -592,7 +601,9 @@ def save_deferred(
             return run()
         return NativePendingWrite(run, keyed[0], logger)
     except Exception as exc:  # noqa: BLE001
-        _cache._log(logger, "warning", f"native {component}: save skipped ({type(exc).__name__}: {exc})")
+        _cache._log(
+            logger, "warning", f"native {component}: save skipped ({type(exc).__name__}: {exc})"
+        )
         return None
 
 
@@ -611,7 +622,9 @@ def read_for_load(
     """``lookup`` + ``load`` of the cached native ``component``, or None (a miss). Never raises."""
     if spec is None or transformer_cls is None:
         return None
-    path = lookup(fam, spec, base_repo = base_repo, source_base = source_base, component = component, logger = logger)
+    path = lookup(
+        fam, spec, base_repo = base_repo, source_base = source_base, component = component, logger = logger
+    )
     if path is None:
         return None
     return load(

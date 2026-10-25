@@ -72,7 +72,12 @@ def _fresh_build(base_dir, act_int8 = True):
     view = types.SimpleNamespace(transformer = model)
     assert (
         tq._quantize_native(
-            view, "int8", family = FAMILY, min_features = tq.DEFAULT_MIN_LINEAR_FEATURES, act_int8 = act_int8, logger = None
+            view,
+            "int8",
+            family = FAMILY,
+            min_features = tq.DEFAULT_MIN_LINEAR_FEATURES,
+            act_int8 = act_int8,
+            logger = None,
         )
         == "int8"
     )
@@ -86,8 +91,14 @@ def _assert_same(a, b):
         assert sa[k].dtype == sb[k].dtype and torch.equal(sa[k], sb[k]), k
 
 
-def _write(base_dir, model, fam = None):
-    pending = NC.save_deferred(model, fam or _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir)
+def _write(
+    base_dir,
+    model,
+    fam = None,
+):
+    pending = NC.save_deferred(
+        model, fam or _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir
+    )
     assert isinstance(pending, NC.NativePendingWrite)
     assert pending in C._BACKGROUND
     assert pending.start()
@@ -103,11 +114,17 @@ def test_background_write_round_trips_bit_identical(base_dir, act_int8):
     spec = NC.native_spec("int8", FAMILY, act_int8 = act_int8)
     assert NC.build_spec(built, FAMILY) == spec
     read = NC.read_for_load(
-        _fam(), spec, diffusers.FluxTransformer2DModel,
-        base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir,
+        _fam(),
+        spec,
+        diffusers.FluxTransformer2DModel,
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+        source_base = base_dir,
     )
     assert read is not None
-    assert read._unsloth_runtime_quant_info["native"] and read._unsloth_runtime_quant_info["cache_path"]
+    assert (
+        read._unsloth_runtime_quant_info["native"]
+        and read._unsloth_runtime_quant_info["cache_path"]
+    )
     _assert_same(built, read)
 
 
@@ -123,24 +140,42 @@ def test_key_tracks_the_recipe(base_dir, monkeypatch):
     monkeypatch.setenv("UNSLOTH_NATIVE_INT8_ROT", "0")
     assert lookup(NC.native_spec("int8", FAMILY, act_int8 = True)) is None
     monkeypatch.delenv("UNSLOTH_NATIVE_INT8_ROT")
-    assert NC.lookup(_fam(), NC.native_spec("int8", FAMILY, act_int8 = True),
-                     base_repo = "black-forest-labs/FLUX.1-dev", source_base = base_dir) is None
+    assert (
+        NC.lookup(
+            _fam(),
+            NC.native_spec("int8", FAMILY, act_int8 = True),
+            base_repo = "black-forest-labs/FLUX.1-dev",
+            source_base = base_dir,
+        )
+        is None
+    )
     # a torchao lookup never serves the native entry
     assert C.lookup(_fam(), "int8", base_repo = "black-forest-labs/FLUX.1-schnell") is None
 
 
 def test_discarded_write_writes_nothing(base_dir):
     built = _fresh_build(base_dir, True)
-    pending = NC.save_deferred(built, _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir)
+    pending = NC.save_deferred(
+        built, _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir
+    )
     pending.discard()
     assert pending.done() and pending not in C._BACKGROUND
-    assert NC.lookup(_fam(), NC.native_spec("int8", FAMILY, act_int8 = True),
-                     base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir) is None
+    assert (
+        NC.lookup(
+            _fam(),
+            NC.native_spec("int8", FAMILY, act_int8 = True),
+            base_repo = "black-forest-labs/FLUX.1-schnell",
+            source_base = base_dir,
+        )
+        is None
+    )
 
 
 def test_finish_background_writes_waits_for_a_native_write(base_dir):
     built = _fresh_build(base_dir, True)
-    pending = NC.save_deferred(built, _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir)
+    pending = NC.save_deferred(
+        built, _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir
+    )
     assert pending.start()
     assert C.finish_background_writes(timeout = 120)
     assert pending.done() and pending.result
@@ -149,7 +184,9 @@ def test_finish_background_writes_waits_for_a_native_write(base_dir):
 def test_sync_write_when_background_writes_are_off(base_dir, monkeypatch):
     monkeypatch.setenv(C.ENV_ASYNC, "0")
     built = _fresh_build(base_dir, True)
-    out = NC.save_deferred(built, _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir)
+    out = NC.save_deferred(
+        built, _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir
+    )
     assert isinstance(out, str) and Path(out).is_file()
 
 
@@ -157,8 +194,13 @@ def test_backend_save_routes_native_builds_to_the_native_cache(base_dir):
     built = _fresh_build(base_dir, True)
     pipe = types.SimpleNamespace(transformer = built)
     pending = D.DiffusionBackend._save_pipeline_quant_to_cache(
-        pipe, _fam(), [("transformer", built)], loras = None,
-        base = "black-forest-labs/FLUX.1-schnell", source_base = base_dir, defer = True,
+        pipe,
+        _fam(),
+        [("transformer", built)],
+        loras = None,
+        base = "black-forest-labs/FLUX.1-schnell",
+        source_base = base_dir,
+        defer = True,
     )
     assert isinstance(pending, NC.NativePendingWrite)
     pending.start()
@@ -178,12 +220,21 @@ def test_backend_read_hits_after_a_write_and_misses_before(base_dir):
     _assert_same(built, hit)
     # CPU / MPS targets never read (their weight-only scale dtype is not part of the key)
     assert read(types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)) is None
-    assert read(CUDA) is not None and D.DiffusionBackend._native_quant_from_cache(
-        _fam(), diffusers.FluxTransformer2DModel, None, CUDA, **spec_args
-    ) is None
+    assert (
+        read(CUDA) is not None
+        and D.DiffusionBackend._native_quant_from_cache(
+            _fam(), diffusers.FluxTransformer2DModel, None, CUDA, **spec_args
+        )
+        is None
+    )
 
 
 def test_cache_disabled_reads_and_writes_nothing(base_dir, monkeypatch):
     monkeypatch.setenv(C.ENV_MODE, "0")
     built = _fresh_build(base_dir, True)
-    assert NC.save_deferred(built, _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir) is None
+    assert (
+        NC.save_deferred(
+            built, _fam(), base_repo = "black-forest-labs/FLUX.1-schnell", source_base = base_dir
+        )
+        is None
+    )

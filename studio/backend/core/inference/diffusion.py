@@ -11879,10 +11879,8 @@ class DiffusionBackend:
             if (getattr(transformer, "_unsloth_runtime_quant_info", None) or {}).get("native"):
                 # torchao-free layers: the native cache's own layout (codes + scales + layer facts)
                 from .diffusion_native_cache import save_deferred
-
                 if not defer:
                     from .diffusion_native_cache import build_spec, save
-
                     spec = build_spec(transformer, getattr(fam, "name", None))
                     return (
                         None
