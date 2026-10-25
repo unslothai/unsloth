@@ -12913,9 +12913,8 @@ def _idle_kept_chat_on_target_gpus(placement) -> bool:
 
 
 def _primary_refuses_partial_fit(serving: bool, policy: str, placement) -> bool:
-    """Whether a primary GGUF load refuses a partial GPU fit beside an image or video model, or under When they fit
-    beside an idle kept chat model, to retry once room is made. Not under Always while a primary serves: the refusal
-    lands after its teardown, leaving nothing loaded."""
+    """Whether a primary GGUF load refuses a partial fit so room can be made first. Not under Always while a primary
+    serves: the refusal lands after its teardown, leaving nothing loaded."""
     return (
         _primary_can_retry_fit.get()
         and not (serving and policy == "always")
@@ -13010,9 +13009,8 @@ def _outgoing_chat_credit_gb(
 async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> LoadRequest:
     """A primary chat load refused a partial GPU fit beside other models: return the request to retry.
 
-    When they fit frees the cheapest residents (image or video first, then idle kept chat models), else lets
-    llama-server fit what it can. Always only accepts a smaller context or a host RAM spill; otherwise it refuses,
-    since nothing may be unloaded.
+    When they fit frees the cheapest residents, else lets llama-server fit what it can. Always only accepts a
+    smaller context or a host RAM spill, else refuses.
     """
     from core.inference import gpu_arbiter, gpu_residency
 
@@ -19355,8 +19353,7 @@ async def load_model_gated(
                         from utils.multi_model_settings import get_multi_model_mode
 
                         if await asyncio.to_thread(get_multi_model_mode) == "always":
-                            # Always unloads nothing: try once more beside the others (a host RAM spill loads
-                            # with its warning, as alone), else refuse.
+                            # Always unloads nothing: try once more beside the others, else refuse.
                             if (
                                 exc.capped or getattr(exc, "host", False)
                             ) and not request.force_alongside:
@@ -19429,7 +19426,6 @@ async def load_model_gated(
                                         force = request.force_cancel_active,
                                         action = "Loading a model",
                                     )
-                                # Idle kept models that make room together with the active one go too.
                                 victims = await asyncio.to_thread(
                                     model_slots.in_slot,
                                     None,
@@ -19596,8 +19592,7 @@ def _active_model_holds_none_of(exc) -> bool:
 
 
 def _kept_victims_beside_primary(exc) -> list:
-    """Idle kept slots that, unloaded with the active llama-server, cover ``exc``'s shortfall; call via
-    ``in_slot(None, ...)``. [] when the active model alone covers it or nothing priced does."""
+    """Idle kept slots that cover ``exc``'s shortfall together with the active server; call via ``in_slot(None, ...)``."""
     if getattr(exc, "host", False) or not exc.short_mib:
         return []
     gpus = exc.gpu_indices or None

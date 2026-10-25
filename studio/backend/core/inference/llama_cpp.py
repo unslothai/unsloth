@@ -638,7 +638,7 @@ class GpuMemoryShortError(RuntimeError):
     """A load that must fit next to the loaded models does not. ``capped``: it would, at a
     smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on.
     ``discrete``: none of them shares host RAM, so a server off them or on the CPU frees nothing there.
-    ``host``: short on free VRAM plus system RAM together, so any other model's memory counts."""
+    ``host``: short on free VRAM and RAM together."""
 
     __slots__ = ("capped", "short_mib", "gpu_indices", "discrete", "host")
 
@@ -33779,7 +33779,6 @@ class LlamaCppBackend:
                     avail_mib = _preflight_avail_mib,
                     shared_gpu_ids = _shared_gpu_ids,
                 )
-                # Beside other models the spill pages against their memory: the route frees one and retries.
                 if (
                     _offload_msg
                     and intent.refuse_partial_gpu_fit
@@ -37664,7 +37663,7 @@ class LlamaCppBackend:
         for backend in serving:
             if backend is self or not getattr(backend, "is_active", False):
                 continue
-            # A server that died keeps _process until a respawn or kill, but its VRAM is already back.
+            # A dead server keeps _process until respawned, but its VRAM is free.
             poll = getattr(getattr(backend, "_process", None), "poll", None)
             if callable(poll) and poll() is not None:
                 continue

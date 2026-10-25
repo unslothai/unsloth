@@ -500,8 +500,7 @@ def _short_load_fakes(monkeypatch, errors):
 def test_idle_kept_models_go_with_the_active_one_when_only_together_they_make_room(
     backends, monkeypatch
 ):
-    # 24 GB card: A (active) and idle B and C hold 6 GB each, D needs 14 GB more. B and C alone free 12 GB, so
-    # replacing A alone left D partly on the CPU beside two idle models.
+    # B and C alone free 12 of the 14 GB D is short; with A they cover it.
     primary, extra = backends
     primary._planned_vram_mib = {0: 6000}
     extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF"), 1.0

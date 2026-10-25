@@ -410,7 +410,6 @@ def test_always_loads_a_primary_that_spills_to_host_ram_without_refusing(env):
 def test_a_primary_reload_under_fit_refuses_a_partial_fit_beside_an_idle_kept_chat_model(
     monkeypatch, policy, kept_on, placement, expected
 ):
-    # Reloading the active model at a larger size spilled layers to the CPU while an idle kept model held the VRAM.
     monkeypatch.setattr(gpu_residency, "media_held_mib", lambda: {})
     kept = model_slots.ExtraSlot(FakeLlama("org/B-GGUF"), FakeOrchestrator(), "owner")
     kept.llama._planned_vram_mib = kept_on or {}
