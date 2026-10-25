@@ -396,8 +396,7 @@ def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
         if (
             cached is None
             or cached[2] != static_gen
-            # A card attached, removed or swapped beside one that stays, or a first readable walk after an
-            # unreadable one (no baseline yet); only an unreadable current walk keeps the map.
+            # Cards changed, or the first readable walk (no baseline); an unreadable walk keeps the map.
             or (topology is not None and cached[3] != topology)
             or (cached[1] is None and time.monotonic() - cached[0] >= _HIP_ID_MAP_NONE_TTL_S)
         ):
@@ -411,8 +410,7 @@ def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
 
 
 def invalidate_hip_id_map() -> None:
-    """Drop the HIP id map (forced hardware detection). Under the map's lock: a read in flight holds it while
-    amd-smi runs, so it finishes first and this clear wins, rather than the old answer landing after it."""
+    """Drop the HIP id map, under its lock so a read in flight cannot land after the clear."""
     global _hip_id_map_cache
     with _hip_id_map_lock:
         _hip_id_map_cache = None
@@ -428,7 +426,6 @@ def _static_generation() -> Optional[int]:
 
 
 def _amd_pci_topology() -> Optional[tuple]:
-    """hardware's sysfs view of the bound AMD cards, or None when it cannot be read."""
     try:
         from utils.hardware.hardware import _linux_amd_pci_topology
         return _linux_amd_pci_topology()

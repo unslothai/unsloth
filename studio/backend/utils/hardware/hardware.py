@@ -440,10 +440,8 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
     return found
 
 
-# The gfx target is the silicon's, so the answer is kept until hardware re-detection (gpu_query's static
-# generation) instead of re-running rocminfo, which brings up the whole HSA runtime, on every 60 s
-# inventory pass. Keyed on everything else the CLIs read: the resolved binaries (a ROCm install that
-# lands mid-session) and the device masks / gfx override in the environment they inherit.
+# The gfx target is the silicon's: kept until re-detection rather than re-running rocminfo (it starts HSA)
+# every 60 s inventory pass. Keyed on the resolved binaries and the masks / overrides the CLIs inherit.
 _GFX_CANDIDATE_ENV = (
     "ROCR_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -452,10 +450,9 @@ _GFX_CANDIDATE_ENV = (
     "HSA_OVERRIDE_GFX_VERSION",
 )
 _gfx_candidates_cache: Optional[tuple[tuple, list[str], float]] = None
-# A CLI that answered with no gfx target (a GPU runtime still coming up) is asked again after this long.
+# An empty answer (GPU runtime still coming up) is asked again after this long.
 _GFX_EMPTY_TTL_S = 300.0
-# Bumped by forced detection and part of the key, so a probe that started before it publishes under a key
-# no later read matches (no lock held across a rocminfo that can take seconds).
+# In the key: a probe started before a forced detection publishes under a key no later read matches.
 _gfx_detect_epoch = 0
 
 
@@ -474,7 +471,7 @@ def _gfx_candidates_key() -> Optional[tuple]:
         return None
     topology = _linux_amd_pci_topology()
     if topology is None:
-        # An unreadable walk cannot tell a swapped card apart: probe every pass, as before.
+        # An unreadable walk cannot see a swapped card: probe every pass, as before.
         return None
     # The runner object, as gpu_query keys it, so a swapped fake never shares an answer.
     return (
@@ -494,9 +491,8 @@ def _gfx_candidates_key() -> Optional[tuple]:
 
 
 def _linux_amd_pci_topology(root: str = "/sys/class/drm") -> "tuple | None":
-    """(PCI address, device id) of every AMD card DRM has bound, sorted. A card attached, removed or swapped
-    beside one that stays changes it, which hardware re-detection (a GPU / no-GPU flip) would not notice.
-    sysfs reads only; () with no DRM class (not Linux), None when the walk could not be read."""
+    """Sorted (PCI address, device id) of every bound AMD card: sees a card swapped beside one that stays,
+    which re-detection misses. () with no DRM class (not Linux), None when the walk is unreadable."""
     try:
         entries = os.listdir(root)
     except FileNotFoundError:
@@ -535,15 +531,13 @@ def _linux_amd_gfx_candidates() -> list[str]:
     ):
         return list(cached[1])
     found, settled = _probe_linux_amd_gfx_candidates()
-    # A timed-out or failing CLI is not an answer about the silicon: ask again next pass.
     if key is not None and settled:
         _gfx_candidates_cache = (key, list(found), time.monotonic())
     return found
 
 
 def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
-    """(targets, settled). ``settled`` is False when a CLI that exists timed out, could not start or failed,
-    even if the next one answered."""
+    """(targets, settled); not settled when an existing CLI timed out, could not start or failed."""
     import shutil
 
     settled = True
@@ -572,10 +566,9 @@ def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
             continue
         found = {match.group(0).lower() for match in re.finditer(pattern, result.stdout or "")}
         if found:
-            # Used but not kept when this CLI exited non-zero (possibly partial output) or rocminfo failed
-            # before the fallback answered: the next pass asks again.
+            # Used, not kept, after a non-zero exit (maybe partial output) or a failed rocminfo.
             return sorted(found), settled and result.returncode == 0
-        # A CLI that ran and failed (no /dev/kfd access yet, driver still loading) said nothing about the silicon.
+        # Ran and failed (no /dev/kfd access yet, driver loading): not an answer.
         if result.returncode != 0:
             settled = False
     return [], settled
@@ -1691,7 +1684,7 @@ def _detect_hardware_locked() -> DeviceType:
     _gfx_candidates_cache = None
     try:
         from . import amd as _amd
-        _amd.invalidate_hip_id_map()  # and re-reads the HIP id map
+        _amd.invalidate_hip_id_map()
     except Exception:
         pass
     CHAT_ONLY_REASON = None
