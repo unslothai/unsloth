@@ -3125,8 +3125,8 @@ def _learned_peak_keys(
     *,
     eager_stand_in: bool = True,
 ) -> list:
-    """Learned-peak keys for the live config, most specific first. ``eager_stand_in=False``: only the live key (graph
-    mode included); after a dropped graph FLUX.1-schnell peaked 1.1 GiB above the capturing render."""
+    """Learned-peak keys, most specific first. ``eager_stand_in=False``: live key only (a dropped graph can peak above
+    the capturing render)."""
     pipe = getattr(state, "pipe", None)
     cfg_off = CFG_OFF_PART in str(label).split("|")
     keys = [(label, speed)]
@@ -3397,12 +3397,11 @@ def _live_graph_mode(state: Any) -> str:
         return "unknown"
 
 
-# the learned-peak graph mode of a whole-step graph whose dropped calls run per-block graphs
 TIER_FALLBACK_GRAPH_MODE = "step_blocks"
 
 
 def _tier_graph_mode(state: Any) -> str:
-    """Like ``_live_graph_mode`` but reads the armed mode (not ``off``) before the first capture, so it records."""
+    """``_live_graph_mode``, but the armed mode before the first capture."""
     try:
         if "cuda_graph" not in tuple(getattr(state, "speed_optims", ()) or ()):
             return "off"
@@ -3414,9 +3413,7 @@ def _tier_graph_mode(state: Any) -> str:
         if not handles:
             return "off"
         if any(getattr(h, "fallback_handle", None) not in (None, h) for h in handles):
-            # a dropped whole-step graph handed its calls to per-block graphs
-            # (GraphedForward._engage_fallback), which stats() does not see: a mode of its own, so it neither reads
-            # nor records the step / off peaks
+            # per-block fallback (GraphedForward._engage_fallback) is invisible to stats(): its own peak mode
             return TIER_FALLBACK_GRAPH_MODE
         totals = cuda_graph.stats(handles)
         if totals.get("graphs"):

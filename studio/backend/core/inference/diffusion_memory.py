@@ -5639,7 +5639,6 @@ def measured_request_extra_mib(
     if need is None and isinstance(identity, tuple) and len(identity) == 3:
         need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
     if tier_peak is not None:
-        # never below the eager pricing the load reserved
         need = tier_peak if need is None else max(int(need), tier_peak)
     cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
     allowance = int(
