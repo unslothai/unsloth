@@ -10,8 +10,7 @@ export function QueueResumeIcon({ className = "size-6" }: { className?: string }
       className={className}
       aria-hidden="true"
     >
-      {/* Optical centre: the box (0.15 right of the middle) is centred, then moved right by 1/12 of
-          its width, since a triangle's weight sits toward its flat side and box-centred reads left. */}
+      {/* Box centred, then 1/12 of its width right: a triangle's weight sits toward its flat side. */}
       <path
         fillRule="evenodd"
         transform="translate(1.15 0)"

@@ -43,8 +43,7 @@ function servedTarget(model: ReloadableModel): LastLoadRecord {
   if (isStandaloneGgufPath(model.checkpoint)) {
     return { id: model.checkpoint, kind: "gguf", ggufVariant: null };
   }
-  // As the picker's loaded row: the checkpoint, not the public alias a kept slot is listed under.
-  // Only the synthetic primary row carries its "<id>:<quant>" label as the checkpoint.
+  // The checkpoint, not a kept slot's public alias; only the synthetic primary row's is its label.
   const { id, ggufVariant } = monitorSelection(model.name);
   const variant = model.quant ?? ggufVariant;
   return {
@@ -55,7 +54,6 @@ function servedTarget(model: ReloadableModel): LastLoadRecord {
   };
 }
 
-/** Reload for the API page: one served model, every served model, or (none served) the last local load. */
 export function useApiModelReload({
   selectModel,
   loadNpuModel,

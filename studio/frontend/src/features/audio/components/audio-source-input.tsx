@@ -455,7 +455,6 @@ export function AudioSourceInput({
                     : void source.startRecording()
                 }
               >
-                {/* The composer's mic, so recording reads the same everywhere. */}
                 {recording ? (
                   <HugeiconsIcon icon={StopIcon} className="size-4" />
                 ) : (

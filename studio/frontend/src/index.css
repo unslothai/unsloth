@@ -39,14 +39,12 @@
 	}
 }
 
-/* A field or value picker's height: a filled Button's (text-sm line, 7px padding each side, 1px
-   border), so a field, picker or icon button beside a Button lines up at every UI font size. */
+/* A filled Button's height (text-sm line, 7px padding, 1px border), for controls beside one. */
 @utility h-control {
 	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
 }
 
-/* A one-line menu row (py-2) rounded up to a whole pixel: a 34.75px row put the last hover pill and the
-   menu's bottom edge between pixels, blurring them. Taller content (a badge) still sets its own height. */
+/* A one-line menu row (py-2) rounded up to a whole pixel: a fractional one blurred the last pill. */
 @utility min-h-menu-row {
 	min-height: round(up, 1lh + 16px * var(--ui-space-scale, 1), 1px);
 }
@@ -3139,8 +3137,7 @@ html[data-chat-font] .aui-root {
 		margin-block: 2px;
 	}
 
-	/* A label's fractional line (13.75px) would shift every row below it off whole pixels too. Inside
-	   the label, not a margin: the next row's 2px margin collapses with it. */
+	/* Whole-pixel label, inside it, not a margin: the next row's 2px margin collapses with one. */
 	[data-slot="dropdown-menu-label"]::after {
 		content: "";
 		display: block;
@@ -3168,9 +3165,7 @@ html[data-chat-font] .aui-root {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
-	/* Settings only: every option picker (selects and picker-variant menus) one height, a filled
-	   Button's like h-control, and one padding, shape and type, whatever size or text class each site
-	   set. Menus that are actions (Export, Delete all) are not picker-variant and keep their own. */
+	/* Settings only: every option picker (select or picker variant) one size; action menus keep theirs. */
 	[data-settings-dialog] :is([data-slot="select-trigger"], [data-variant="picker"]) {
 		height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px) !important;
 		padding-inline: calc(14px * var(--ui-space-scale, 1)) !important;
@@ -3213,8 +3208,7 @@ html[data-chat-font] .aui-root {
 	.dark .sidebar-more-menu[data-slot] {
 		background-color: var(--sidebar) !important;
 	}
-	/* More menu only: pill rows, in a corner of half a row (h-control) plus the p-1 gutter, so the
-	   hover pill nests in it. Out-ranks the shared menu radius above. */
+	/* More menu: pill rows, corner of half a row plus the p-1 gutter so the pill nests. */
 	.sidebar-more-menu[data-slot] {
 		border-radius: calc(
 			(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px) / 2 + 4px *
@@ -3569,14 +3563,12 @@ html[data-chat-font] .aui-root {
 		padding-right: calc(2.625rem * var(--ui-space-scale, 1));
 	}
 
-	/* 6px wider than the editor, so the scrollbar sits near the composer's edge; the padding above
-	   grows by as much, so the text stays put. Out-ranks the expanded row's width: 100%. */
+	/* 6px wider (and as much more padding) so the scrollbar sits near the composer's edge. */
 	.unsloth-composer-line .unsloth-composer-editor .unsloth-composer-input {
 		width: calc(100% + 0.375rem * var(--ui-space-scale, 1));
 	}
 
-	/* Edge fades. Any text: a faint fade over the last line's lower edge. Lines below or above
-	   (markComposerScrollEdges sets the flags): a clearer fade. The scrollbar strip stays unmasked. */
+	/* Edge fades: faint on the last line, clearer past a scrolled edge (markComposerScrollEdges). */
 	.unsloth-composer-input:not(:placeholder-shown) {
 		mask-image:
 			linear-gradient(
@@ -3619,8 +3611,7 @@ html[data-chat-font] .aui-root {
 		padding-top: calc(1rem * var(--ui-space-scale, 1));
 	}
 
-	/* Mid-page welcome (its pt-[27.5dvh]): the editor grows by exactly the padding given up above, on
-	   the same curve, so the composer's bottom edge stays put and it expands upward. */
+	/* Welcome: grows by the pt-[27.5dvh] given up, so the bottom edge stays put and it expands upward. */
 	.aui-thread-welcome-center:not(:has(.unsloth-files-panel)) [data-writing-expanded="true"] .unsloth-composer-editor {
 		height: calc(
 			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))) + 27.5dvh - 1rem *
@@ -4403,8 +4394,7 @@ html[data-chat-font] .aui-root {
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
-	/* In em, so the gutter grows with the message font and digit count: a fixed 1.25rem let "1." (at a
-	   larger chat font) and "10." hang left of the column, past the composer's edge. */
+	/* In em, growing with font and digits: a fixed 1.25rem let "10." hang past the composer's edge. */
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;

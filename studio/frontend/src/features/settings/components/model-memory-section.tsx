@@ -212,7 +212,6 @@ export function ModelMemorySection({
     <SettingsSection
       title={t("settings.resources.modelMemory.title")}
       ref={ref}
-      // The API tab's copy points at the rest of the section, in System settings.
       action={
         full ? undefined : (
           <Button

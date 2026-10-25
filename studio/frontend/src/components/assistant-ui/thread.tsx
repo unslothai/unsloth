@@ -2735,7 +2735,6 @@ const ThreadScrollToBottom: FC = () => {
       variant="outline"
       onClick={() => scrollToBottom("auto")}
       className={cn(
-        // Muted in dark mode: the page background made it disappear. The hairline keeps it off text it floats over.
         "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background shadow-[0_0_0_0.5px_rgb(0_0_0/0.15)] hover:bg-accent dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.2)] dark:bg-muted dark:hover:bg-accent",
         (isAtBottom || !enabled) && "invisible pointer-events-none",
       )}
@@ -8306,8 +8305,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
           }}
         >
           <QueueResumeIcon className="size-3.5" />
-          {/* An element, not bare text: as the last element the icon lost its bottom margin to the
-              message's trailing-margin reset, and took the trailing-icon padding. */}
+          {/* Not bare text: as the last element the icon lost its margin to the message's reset. */}
           <span>Resume</span>
         </Button>
       )}

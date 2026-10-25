@@ -198,7 +198,6 @@ export function ApiModelLoadControls({
   configRequest?: ModelConfigHandoffRequest | null;
   onConfigRequestAdopted?: (requestId: string) => void;
   onEjectAll?: () => void;
-  // A pick changed the last-load record the page's Reload reads.
   onLastLoadChanged?: () => void;
 }): ReactElement {
   const { selectModel, loadNpuModel, refresh, ejectModel } = runtime;

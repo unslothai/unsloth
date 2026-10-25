@@ -1296,7 +1296,6 @@ export function ApiMonitorPage(): ReactElement {
         aria-label={`API example for ${model.name}`}
         aria-haspopup="dialog"
         onClick={() => setExampleModel(model)}
-        // Shown on its own row's hover or keyboard focus; always on touch, which has no hover.
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100 dark:hover:bg-chat-icon-bg-hover [@media(hover:none)]:opacity-100"
       >
         <HugeiconsIcon icon={CodeIcon} strokeWidth={1.75} className="size-4" />
@@ -1329,14 +1328,13 @@ export function ApiMonitorPage(): ReactElement {
         entry.total_tokens != null &&
         entry.context_length &&
         entry.started_at >= loadedAt &&
-        // Requests can be logged as "<id>:<quant>", the id here has the quant stripped.
+        // Requests may be logged as "<id>:<quant>".
         modelIdsMatch(monitorSelection(entry.model).id, id) &&
         (last == null || entry.started_at > last.started_at)
       ) {
         last = entry;
       }
     }
-    // Nothing asked since the load: an empty ring against the live window, when the page knows it.
     const used = last?.total_tokens ?? (model.active ? 0 : null);
     const windowSize =
       last?.context_length ?? (model.active ? data?.context_length : null);
@@ -1345,9 +1343,7 @@ export function ApiMonitorPage(): ReactElement {
     }
     return (
       <Fact label="Context" className="gap-0">
-        {/* Chat's header chip; hover, or click to pin, for the prompt and reply split. */}
-        {/* A pill in the row icons' light hover (the row icons take its dark hover), flush on the label:
-            its own 8px padding is the label gap, matching Slots'. */}
+        {/* Flush on the label: its 8px padding is the label gap, as Slots'. */}
         <ContextUsageChip
           pinOnClick={true}
           hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
@@ -1394,7 +1390,7 @@ export function ApiMonitorPage(): ReactElement {
   );
   return (
     <>
-      {/* Model picker top left, where Chat, Images, Video and Audio keep theirs. Sticky: the log scrolls under it. */}
+      {/* Model picker where Chat keeps it; sticky, so the log scrolls under it. */}
       <div
         className={cn(
           "sticky top-0 z-30 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
@@ -1421,7 +1417,6 @@ export function ApiMonitorPage(): ReactElement {
             onLastLoadChanged={reload.refreshLastLoad}
           />
         </div>
-        {/* Chat's header fade, so the page dissolves into the bar instead of cutting off under it. */}
         <div
           aria-hidden={true}
           className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
@@ -1476,7 +1471,6 @@ export function ApiMonitorPage(): ReactElement {
           </ToolbarTooltip>
         </header>
 
-        {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
         <section
           data-tour="api-endpoint"
           className={cn("flex flex-col", SURFACE)}

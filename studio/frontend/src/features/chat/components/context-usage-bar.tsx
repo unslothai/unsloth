@@ -100,8 +100,7 @@ const Face: FC<{ face: string }> = ({ face }) => {
   );
 };
 
-// A mouse click pins the breakdown open (the shared Tooltip pins only on touch) until a press
-// outside it or Escape.
+// A mouse click pins it open (the shared Tooltip pins only on touch) until an outside press or Escape.
 function useClickPin(enabled: boolean) {
   const [hovered, setHovered] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -225,8 +224,6 @@ export const ContextUsageBar: FC<
           </button>
         </TooltipTrigger>
       </div>
-      {/* The dropdown surface (background, radius, light shadow, dark glow via .dropdown-surface),
-          not the black tooltip, since it opens from a header control like the menus beside it. */}
       <TooltipContent
         side="bottom"
         sideOffset={8}

@@ -141,8 +141,7 @@ function Tooltip({
   // Drop what is open when a modal takes over, so closing the dialog does not
   // bring the tooltip back on its own. Owners of a controlled tooltip are told,
   // since their state (a `hovered` flag) never sees the pointerleave either.
-  // Only a tooltip the owner held open waits for its false: one already shut never sends another,
-  // so it stayed dismissed for good (the API page's Context chip after its code example dialog).
+  // Latch only a tooltip its owner held open: one already shut never sends another false.
   const controlledOpenRef = useRef(controlledOpen);
   controlledOpenRef.current = controlledOpen;
   useEffect(() => {
