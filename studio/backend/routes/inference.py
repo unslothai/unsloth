@@ -3151,6 +3151,34 @@ def _openai_llama_note_self_erased(llama_backend, parked: Optional[dict]) -> Non
         logger.debug("could not record the approval erase", exc_info = True)
 
 
+def _openai_llama_parked_before_erase(llama_backend) -> Optional[dict]:
+    """``parked_holders()`` read before an erase is sent, or None when the switch is off."""
+    if not preemption_enabled():
+        return None
+    try:
+        return get_preemption_controller(_preempt_key(llama_backend)).parked_holders()
+    except Exception:
+        return None
+
+
+def _openai_llama_note_erase_handed_on(
+    llama_backend, target, seen_task, parked_before: Optional[dict]
+) -> None:
+    """The reclaimer's postcheck for an approval erase: llama-server defers an erase that reaches
+    a slot it has since handed to another request onto that request's cache, so a slot no longer
+    idle on ``seen_task`` marks every holder not parked before the erase for a replay."""
+    if parked_before is None:
+        return
+    try:
+        after = _openai_llama_slot_reading(llama_backend, target)
+        if after is None or after[0] or after[1] != seen_task:
+            get_preemption_controller(_preempt_key(llama_backend)).note_cells_possibly_erased(
+                parked_before
+            )
+    except Exception:
+        logger.debug("could not recheck the slot after the approval erase", exc_info = True)
+
+
 def _openai_llama_self_erased(llama_backend, gen_id: str) -> bool:
     """Whether a reclaim took this holder's cells since it last decoded."""
     if not preemption_enabled():
@@ -36782,7 +36810,13 @@ async def produce_openai_chat_completions(
                         _now = _openai_llama_slot_reading(llama_backend, target)
                         if _now is None or _now[0] or _now[1] != seen_task:
                             return False
-                        if not llama_backend.release_idle_chat_slot(*target):
+                        parked_before = _openai_llama_parked_before_erase(llama_backend)
+                        released = llama_backend.release_idle_chat_slot(*target)
+                        # Also after a failed erase: one that timed out may still land.
+                        _openai_llama_note_erase_handed_on(
+                            llama_backend, target, seen_task, parked_before
+                        )
+                        if not released:
                             return False
                         with _gguf_decode_lock:
                             _gguf_decode["erased"] = True

@@ -257,3 +257,54 @@ def test_every_idle_slot_reclaim_runs_under_the_lock():
                 guarded = True
                 break
         assert guarded, f"reclaim_idle_slots at line {call.lineno} erases outside the lock"
+
+
+def _other_holder(controller) -> None:
+    """A second chat decoding beside the parked one: the chat llama-server can hand the slot to."""
+    controller.register("other", lease = _ControllerLease(), tokens = 1000)
+    controller.note_tokens("other", 1000, 1000)
+    controller.note_measured("other")
+
+
+def test_a_slot_handed_on_during_the_erase_marks_the_new_holder_for_a_replay(monkeypatch):
+    """The reading saw the slot idle on this chat's task, but llama-server started another chat's
+    task there before the erase reached it, and defers the erase onto that chat's cache. The
+    idle-slot reclaimer rechecks the slot after its erase and marks such holders for a replay;
+    the approval erase must too, or the other chat's next round is priced as growth on a cache
+    that is gone."""
+    controller = _controller()
+    _other_holder(controller)
+    state = {"slots": [{"id": SLOT, "is_processing": False, "id_task": 3}]}
+
+    class _HandedOn(_Backend):
+        def release_idle_chat_slot(self, base_url, slot):
+            # Between the reading and the erase the server admitted "other" into the slot.
+            state["slots"] = [{"id": SLOT, "is_processing": True, "id_task": 9}]
+            return super().release_idle_chat_slot(base_url, slot)
+
+    backend = _HandedOn()
+    lease = _ApprovalLease()
+    worker, _ = _worker(monkeypatch, controller, backend, lambda: state["slots"])
+
+    asyncio.run(worker(lease))
+
+    assert backend.erased == [(BASE, SLOT)]
+    assert controller.participant("other").replay_pending is True, (
+        "the erase may have landed on the chat the slot was handed to, and it was not marked"
+    )
+    assert controller.participant("chat").replay_pending is False
+
+
+def test_a_slot_still_on_the_chat_after_the_erase_marks_no_one(monkeypatch):
+    controller = _controller()
+    _other_holder(controller)
+    backend = _Backend()
+    lease = _ApprovalLease()
+    worker, _ = _worker(
+        monkeypatch, controller, backend, [{"id": SLOT, "is_processing": False, "id_task": 3}]
+    )
+
+    asyncio.run(worker(lease))
+
+    assert backend.erased == [(BASE, SLOT)]
+    assert controller.participant("other").replay_pending is False
