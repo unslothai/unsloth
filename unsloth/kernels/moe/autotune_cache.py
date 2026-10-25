@@ -186,9 +186,7 @@ def get_or_autotune_moe_kernels(
     device = _operand_cuda_device(device)
     device_capability = torch.cuda.get_device_capability(device)
     dev_kw = _device_kwargs(device)
-    device_model = _device_model(
-        torch.cuda.current_device() if device is None else _cuda_index(device)
-    )
+    device_model = _device_model(device)
     key_args = (
         num_experts,
         hidden_dim,
@@ -307,9 +305,13 @@ def _operand_cuda_device(device):
 _DEVICE_MODELS: Dict[int, Optional[Tuple[Any, ...]]] = {}
 
 
-def _device_model(index: int) -> Optional[Tuple[Any, ...]]:
-    """(name, major, minor, SM count) of card ``index``, read once per card, as
-    grouped_gemm.interface._device_model keys its tuning caches. None when the properties are unreadable."""
+def _device_model(device = None) -> Optional[Tuple[Any, ...]]:
+    """(name, major, minor, SM count) of ``device``'s card (default: current), read once per card, as
+    grouped_gemm.interface._device_model keys its tuning caches. None when the card or its properties are unreadable."""
+    try:
+        index = torch.cuda.current_device() if device is None else _cuda_index(device)
+    except Exception:
+        return None
     if index not in _DEVICE_MODELS:
         try:
             p = torch.cuda.get_device_properties(index)
