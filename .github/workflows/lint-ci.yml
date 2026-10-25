@@ -515,9 +515,9 @@ jobs:
 
           - name: ruff format drift (informational)
             # The canonical formatter is scripts/run_ruff_format.py
-            # = ruff format + scripts/enforce_kwargs_spacing.py, so plain
-            # `ruff format --check` reports the kwarg-spacing diff as
-            # drift. Surface the count for visibility but keep
+            # = ruff-unsloth format + scripts/enforce_kwargs_spacing.py
+            # --residual, so plain `ruff format --check` reports the
+            # kwarg-spacing diff as drift. Surface the count for visibility but keep
             # non-blocking until the custom pipeline is wired in here.
             continue-on-error: true
             run: |

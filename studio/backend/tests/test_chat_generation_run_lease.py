@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for the durable chat generation progress lease.
-
-A durable run sets cancel_on_disconnect=False on purpose, so a closed browser cannot kill
-a long generation. Nothing else bounded it: a producer that stopped producing left the run
-active forever, which kept the thread "generating", unmounted Send in the UI, and held the
-engine slot. The repair, reconcile_orphaned_runs, only ran at process boot, so reloading
-the page never cleared it.
-
-These cover the two halves of the fix: streamed output renews a lease on the run row, and a
-periodic sweep settles only runs whose lease has expired -- never a slow but advancing one.
-"""
+"""Durable runs skip cancel-on-disconnect, so a lease must bound a stalled producer."""
 
 from __future__ import annotations
 
@@ -164,9 +154,6 @@ def _sweeper(
     )
 
 
-# Lease writes
-
-
 def test_streamed_chunks_renew_the_lease(clock):
     token = _running_run()
     started_at, started_tokens = runs_db.get_progress("run-1")
@@ -206,9 +193,6 @@ def test_a_settled_run_stops_taking_lease_writes(clock):
     assert runs_db.get_progress("run-1") == before
 
 
-# The sweep
-
-
 @pytest.mark.asyncio
 async def test_sweep_reaps_a_run_that_stopped_producing(clock, capture):
     token = _running_run()
@@ -246,7 +230,6 @@ async def test_sweep_spares_a_slow_but_progressing_run(clock):
 
 @pytest.mark.asyncio
 async def test_sweep_reaps_a_run_wedged_before_its_first_token(clock):
-    # No lease write has ever landed, so the age comes from started_at/created_at.
     _running_run()
     clock.advance_ms(11 * _MINUTE_MS)
     assert await _sweeper(timeout_s = 600.0).sweep_once() == ["run-1"]
@@ -264,7 +247,6 @@ async def test_sweep_settles_a_stopped_run_as_cancelled(clock):
     assert await _sweeper(timeout_s = 600.0).sweep_once() == ["run-1"]
 
     run = runs_db.get_run("run-1", "alice")
-    # A Stop the user already asked for must not be reported back as a failure.
     assert (run["status"], run["finishReason"], run["error"]) == ("cancelled", "cancelled", None)
     message = studio_db.get_chat_message("thread-1", "assistant-run-1")
     assert message["metadata"]["incomplete"] == {"reason": "cancelled"}
@@ -324,12 +306,7 @@ def test_lease_settings_come_from_the_environment(monkeypatch):
 
 @pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "Infinity", "NaN"])
 def test_a_non_finite_timeout_falls_back_to_the_default(monkeypatch, raw):
-    """float() accepts these, and each then breaks the sweep in its own quiet way.
-
-    inf survives every comparison and only fails at int(timeout * 1000) inside the sweep,
-    once per pass, forever. nan loses to nothing, so max(0.0, nan) returns 0.0 and the
-    sweeper reports itself disabled. Both leave stuck runs unreaped, so neither may parse.
-    """
+    """Non-finite timeouts must fall back to default: inf breaks the sweep, nan disables it quietly."""
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", raw)
     sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
     assert sweeper._timeout == runs_mod._LEASE_TIMEOUT_SECONDS
@@ -363,7 +340,6 @@ def test_an_oversized_but_finite_timeout_is_clamped(monkeypatch, raw):
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", raw)
     sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
     assert sweeper._timeout == runs_mod._MAX_ENV_SECONDS
-    # The conversion every consumer performs must survive the applied value.
     assert isinstance(int(sweeper._timeout * 1000), int)
 
 
@@ -382,9 +358,6 @@ def test_a_non_finite_interval_falls_back_to_the_default(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_SWEEP_INTERVAL_S", "inf")
     sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
     assert sweeper._interval == runs_mod._LEASE_SWEEP_INTERVAL_SECONDS
-
-
-# Boot reconciliation and shutdown
 
 
 def test_boot_reconcile_still_settles_a_freshly_progressing_run(clock):
@@ -430,8 +403,6 @@ async def test_stop_returns_when_a_sweep_will_not_finish(capture, monkeypatch):
         try:
             await asyncio.sleep(3600)
         except asyncio.CancelledError:
-            # An engine draining its subprocess inside aclose: the cancel lands but
-            # unwinding still outlasts the budget. stop() must return regardless.
             await asyncio.sleep(0.3)
 
     sweeper.sweep_once = wedged
@@ -439,7 +410,7 @@ async def test_stop_returns_when_a_sweep_will_not_finish(capture, monkeypatch):
     await asyncio.wait_for(started.wait(), timeout = 2)
     await asyncio.wait_for(sweeper.stop(), timeout = 5)
     assert any("shutdown budget" in name for name in capture.names())
-    await asyncio.sleep(0.4)  # let the abandoned sweep unwind before the loop closes
+    await asyncio.sleep(0.4)
 
 
 @pytest.mark.asyncio
@@ -494,14 +465,7 @@ asyncio.run(main())
 
 
 def test_an_abandoned_sweep_cannot_hold_the_process_open():
-    """Asserts the PROCESS exits, not merely that stop() returned.
-
-    asyncio.to_thread runs on non-daemon executor threads that an atexit hook joins, so a
-    sweep parked on the writer lock kept the interpreter alive indefinitely after shutdown
-    had given up on it. Studio Desktop allows five seconds for a graceful backend exit
-    before force-killing, and stops the backend this way before it updates, so that hang
-    is user visible. A stop() that returns proves nothing here; only exit does.
-    """
+    """Assert process exit, not stop() returning: a parked sweep thread keeps the interpreter alive."""
     import subprocess
 
     program = _ABANDONED_SWEEP_PROGRAM.format(backend = str(Path(__file__).resolve().parent.parent))

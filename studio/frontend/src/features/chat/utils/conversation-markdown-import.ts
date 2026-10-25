@@ -34,7 +34,7 @@ function parseFramedDocument(
     const frameStart = offset + (title?.[0].length ?? 0);
     if (!text.startsWith(CONVERSATION_MARKDOWN_FRAME_PREFIX, frameStart)) {
       if (offset === 0) return;
-      throw new Error("Missing Unsloth Studio Markdown conversation framing.");
+      throw new Error("Missing Unsloth Markdown conversation framing.");
     }
     const metadataStart =
       frameStart + CONVERSATION_MARKDOWN_FRAME_PREFIX.length;
@@ -43,7 +43,7 @@ function parseFramedDocument(
     try {
       lengths = JSON.parse(text.slice(metadataStart, metadataEnd));
     } catch {
-      throw new Error("Invalid Unsloth Studio Markdown conversation framing.");
+      throw new Error("Invalid Unsloth Markdown conversation framing.");
     }
     if (
       metadataEnd < 0 ||
@@ -51,7 +51,7 @@ function parseFramedDocument(
       lengths.length === 0 ||
       !lengths.every((length) => Number.isSafeInteger(length) && length > 0)
     ) {
-      throw new Error("Invalid Unsloth Studio Markdown message lengths.");
+      throw new Error("Invalid Unsloth Markdown message lengths.");
     }
     offset = metadataEnd + FRAME_END.length;
     const messages: ConversationMarkdownMessage[] = [];
@@ -59,7 +59,7 @@ function parseFramedDocument(
       const section = text.slice(offset, offset + length);
       const heading = ROLE_LINE.exec(section);
       if (section.length !== length || !heading) {
-        throw new Error("Incomplete Unsloth Studio Markdown message.");
+        throw new Error("Incomplete Unsloth Markdown message.");
       }
       const label = heading[1];
       messages.push({
@@ -71,18 +71,18 @@ function parseFramedDocument(
       offset += length;
       const separator = index === lengths.length - 1 ? "\n" : "\n\n";
       if (!text.startsWith(separator, offset)) {
-        throw new Error("Invalid Unsloth Studio Markdown message boundary.");
+        throw new Error("Invalid Unsloth Markdown message boundary.");
       }
       offset += separator.length;
     }
     conversations.push({ title: title?.[1] ?? fallbackTitle, messages });
     if (!text.slice(offset).trim()) break;
     if (!text.startsWith(CHAT_SEPARATOR, offset)) {
-      throw new Error("Invalid Unsloth Studio Markdown conversation boundary.");
+      throw new Error("Invalid Unsloth Markdown conversation boundary.");
     }
     offset += CHAT_SEPARATOR.length;
     if (offset === text.length) {
-      throw new Error("Missing Unsloth Studio Markdown conversation framing.");
+      throw new Error("Missing Unsloth Markdown conversation framing.");
     }
   }
   return conversations;

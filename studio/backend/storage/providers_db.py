@@ -153,6 +153,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
     if "reasoning_config_json" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
+    if "shared" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
     # ALTER TABLE persists independently in SQLite, but its one-time data migration does not.
     conn.commit()
 
@@ -215,6 +217,7 @@ def create_provider(
     max_output_tokens: Optional[int] = None,
     api_type: str = "chat_completions",
     reasoning_config: Optional[dict] = None,
+    shared: bool = False,
 ) -> None:
     """Insert a new provider configuration."""
     reasoning_json = _encode_reasoning_config(reasoning_config)
@@ -226,9 +229,9 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
-                reasoning_config_json, created_at, updated_at
+                reasoning_config_json, shared, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -240,6 +243,7 @@ def create_provider(
                 max_output_tokens,
                 api_type,
                 reasoning_json,
+                1 if shared else 0,
                 now,
                 now,
             ),
@@ -261,6 +265,7 @@ def update_provider(
     connection: sqlite3.Connection | None = None,
     api_type: str | None = None,
     reasoning_config: dict | None | object = _UNSET,
+    shared: bool | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -289,6 +294,9 @@ def update_provider(
     if reasoning_config is not _UNSET:
         updates.append("reasoning_config_json = ?")
         params.append(_encode_reasoning_config(reasoning_config))
+    if shared is not None:
+        updates.append("shared = ?")
+        params.append(1 if shared else 0)
     if not updates:
         return False
     updates.append("updated_at = ?")
@@ -321,38 +329,83 @@ def delete_provider(id: str) -> bool:
         conn.close()
 
 
-def get_provider(id: str) -> Optional[dict]:
-    """Fetch a single provider by ID."""
+def _row_to_provider(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
+    models, available_models = _row_models(row)
+    data["models"] = models
+    data["available_models"] = available_models
+    data["shared"] = bool(data.get("shared"))
+    return data
+
+
+def _own_rows(where: str = "", params: tuple = ()) -> list[dict]:
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM llm_providers WHERE id = ?", (id,)).fetchone()
-        if not row:
-            return None
-        data = dict(row)
-        data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
-        models, available_models = _row_models(row)
-        data["models"] = models
-        data["available_models"] = available_models
-        return data
+        rows = conn.execute(
+            f"SELECT * FROM llm_providers {where} ORDER BY created_at", params
+        ).fetchall()
+        return [_row_to_provider(row) for row in rows]
     finally:
         conn.close()
+
+
+def base_url_carries_credential(base_url: Optional[str]) -> bool:
+    try:
+        parts = urlparse(base_url or "")
+        return bool(parts.username or parts.password or parts.query)
+    except ValueError:
+        return True
+
+
+def _owner_shared_rows(provider_id: Optional[str] = None) -> list[dict]:
+    # A ChatGPT subscription is never shared: it is one person's sign-in, not an API key.
+    from utils.account_context import OWNER, is_owner_context, run_as
+
+    if is_owner_context():
+        return []
+    where = "WHERE shared = 1 AND provider_type != 'openai_codex'"
+    params: tuple = ()
+    if provider_id is not None:
+        where += " AND id = ?"
+        params = (provider_id,)
+
+    def _read() -> list[dict]:
+        # Reading must never create the owner's database.
+        if not studio_db_path().exists():
+            return []
+        return _own_rows(where, params)
+
+    try:
+        rows = run_as(OWNER, _read)
+    except Exception:  # noqa: BLE001 - an unreadable owner store shares nothing
+        logger.warning("Could not read the owner's shared connections", exc_info = True)
+        return []
+    from hub.services.models.account_access import shared_connection_view
+
+    # Re-checked on read: an older build can edit the URL of a row it does not know is shared.
+    rows = [row for row in rows if not base_url_carries_credential(row.get("base_url"))]
+    return [view for view in (shared_connection_view(row) for row in rows) if view is not None]
+
+
+def is_owner_shared_provider(id: str) -> bool:
+    return not _own_rows("WHERE id = ?", (id,)) and bool(_owner_shared_rows(id))
+
+
+def get_own_provider(id: str) -> Optional[dict]:
+    rows = _own_rows("WHERE id = ?", (id,))
+    return rows[0] if rows else None
+
+
+def get_provider(id: str) -> Optional[dict]:
+    own = get_own_provider(id)
+    if own is not None:
+        return own
+    shared = _owner_shared_rows(id)
+    return shared[0] if shared else None
 
 
 def list_providers() -> list[dict]:
-    """List all provider configurations, ordered by creation time."""
-    conn = get_connection()
-    try:
-        rows = conn.execute("SELECT * FROM llm_providers ORDER BY created_at").fetchall()
-        providers: list[dict] = []
-        for row in rows:
-            data = dict(row)
-            data["reasoning_config"] = _decode_reasoning_config(
-                data.pop("reasoning_config_json", None)
-            )
-            models, available_models = _row_models(row)
-            data["models"] = models
-            data["available_models"] = available_models
-            providers.append(data)
-        return providers
-    finally:
-        conn.close()
+    own = _own_rows()
+    own_ids = {row["id"] for row in own}
+    return own + [row for row in _owner_shared_rows() if row["id"] not in own_ids]

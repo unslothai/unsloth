@@ -413,6 +413,7 @@ def load_ltx25_comfy_transformer(
     local_files_only: bool = False,
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
+    fp8_storage: Optional[bool] = None,
     family: Optional[str] = None,
     target: Any = None,
     logger: Any = None,
@@ -438,6 +439,7 @@ def load_ltx25_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
         family = family,
         target = target,
         logger = logger,
@@ -562,7 +564,9 @@ def ltx25_transformer_config_dir() -> str:
     import json
     import tempfile
 
-    root = Path(tempfile.gettempdir()) / "unsloth_ltx25_config"
+    from utils.paths.private_tmp import private_tmp_dir
+
+    root = private_tmp_dir("unsloth_ltx25_config")
     target = root / "transformer" / "config.json"
     payload = json.dumps(
         {"_class_name": "LTX2VideoTransformer3DModel", **LTX25_TRANSFORMER_CONFIG},
@@ -1182,6 +1186,11 @@ def start_text_encoder(
 
     # The worker is another process: the plan's commit travels in its config (absent when unpinned).
     client.config.update({"revision": revision} if revision else pinned_revision_kwargs(repo))
+    from .diffusion_memory import user_budget_reserve_share
+
+    share = user_budget_reserve_share()
+    if share > 0:
+        client.config["vram_reserve_share"] = share
     client.start()
     return client
 

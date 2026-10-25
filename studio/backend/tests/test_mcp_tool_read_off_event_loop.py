@@ -23,7 +23,6 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-# Reuse the token-count handler fixtures.
 from test_openai_auto_switch import (  # noqa: E402
     MCP_TOOL_PAYLOAD,
     _count_request,
@@ -52,12 +51,7 @@ def test_the_server_list_is_read_off_the_event_loop_thread(monkeypatch):
 
 
 def test_the_post_probe_re_read_stays_on_the_event_loop_thread(monkeypatch):
-    """The race-protection re-read must NOT leave the event loop.
-
-    It is the guard for the cache_tools / record_probe_failure writes right after it: awaiting
-    it lets an MCP edit invalidate the cache in between, and the stale probe result then
-    overwrites the invalidation and is served indefinitely.
-    """
+    """The post-probe re-read must stay on the loop thread, or a stale probe overwrites an invalidation."""
     server = {"id": "s1", "url": "http://127.0.0.1:1/mcp", "is_enabled": True, "use_oauth": False}
     threads: list[int] = []
 

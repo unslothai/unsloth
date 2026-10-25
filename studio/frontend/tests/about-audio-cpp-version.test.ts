@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings > About lists the installed audio.cpp release beside the llama.cpp build.
+// Settings > About lists the installed llama.cpp, whisper.cpp and audio.cpp releases in its Engines section.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -17,15 +17,50 @@ test("the hardware details carry the audio.cpp version to the About tab", () => 
   );
   assert.match(
     read("features/settings/tabs/about-tab.tsx"),
-    /llamaCppVersion=\{hw\.llamaCpp\}\s*audioCppVersion=\{hw\.audioCpp\}/,
+    /<EngineVersionsSection \/>/,
   );
 });
 
-test("the audio.cpp row shows only when a version is known", () => {
-  assert.match(
-    read("features/settings/components/studio-version-section.tsx"),
-    /\{audioCppVersion \? \(\s*<SettingsRow label=\{t\("settings\.about\.audioCppVersion"\)\}>\s*<code className="font-mono text-xs text-muted-foreground">\s*\{audioCppVersion\}/,
+test("the Engines section lists llama.cpp, whisper.cpp and audio.cpp", () => {
+  const section = read(
+    "features/settings/components/engine-versions-section.tsx",
   );
+  assert.match(
+    section,
+    /installed: hw\.llamaCpp \?\? status\?\.llama\.installed_tag \?\? null,/,
+  );
+  assert.match(
+    section,
+    /installed: status\?\.whisper\?\.installed_tag \?\? null,/,
+  );
+  assert.match(
+    section,
+    /installed: hw\.audioCpp \?\? status\?\.audio\?\.installed_tag \?\? null,/,
+  );
+  assert.match(
+    section,
+    /row\.installed \?\? t\("settings\.about\.engines\.notInstalled"\)/,
+  );
+});
+
+test("only the owner gets the engine Update button, which the update route requires", () => {
+  const section = read(
+    "features/settings/components/engine-versions-section.tsx",
+  );
+  assert.match(section, /const isOwner = useIsAccountOwner\(\);/);
+  assert.match(section, /\{isOwner \? \(\s*<Button[^]*?data-testid="engine-update"/);
+});
+
+test("a self-managed llama.cpp still lets Update install an offered audio.cpp release", () => {
+  const section = read(
+    "features/settings/components/engine-versions-section.tsx",
+  );
+  assert.match(
+    section,
+    /const unmanaged = status\?\.supported === false && !offered;/,
+  );
+  assert.match(section, /disabled=\{!offered \|\| applying \|\| checking\}/);
+  assert.doesNotMatch(section, /!supported/);
 });
 
 test("every locale labels the audio.cpp row", () => {

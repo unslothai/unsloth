@@ -622,8 +622,21 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 # export_metadata.json is local bookkeeping whose base model can be a local path; the GGUF push
 # keeps it out of the repo too.
 _HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
+# REAP's report: uploaded with a pruned export, and deleted from a reused repo by any other merged
+# or base upload (GGUF files carry one each) (upload_folder never removes remote files on its own; one it uploads in the
+# same commit is kept).
+_REAP_REPORT = "reap_report.json"
 
 _STAGING_PREFIX = "unsloth-hub-upload-"
+
+
+def _card_base_model(model) -> str:
+    """The base a Hub card names: after REAP the config points at a staging copy, so the id the
+    pruned model came from is used instead."""
+    source = getattr(model, "_unsloth_reap_source", None)
+    if source:
+        return source
+    return getattr(getattr(model, "config", None), "_name_or_path", "unknown") or "unknown"
 
 
 def _staging_dir(export_parent):
@@ -720,6 +733,7 @@ def _push_mlx_merged(
             repo_id = repo_id,
             repo_type = "model",
             ignore_patterns = _HUB_UPLOAD_IGNORE,
+            delete_patterns = [_REAP_REPORT],
         )
     return repo_id
 
@@ -737,7 +751,7 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         config = getattr(model, "config", None)
         if config is None:
             return
-        base_model = getattr(config, "_name_or_path", "unknown") or "unknown"
+        base_model = _card_base_model(model)
         # method/extra reproduce what upload_to_huggingface passed for this path
         # ("finetuned", "trl"): the template already carries the unsloth tag, so `extra`
         # is where trl goes, and the heading already reads "Uploaded finetuned ... model".
@@ -817,6 +831,14 @@ class ExportBackend:
         except Exception as e:
             logger.error(f"Error during memory cleanup: {e}")
             return False
+        finally:
+            # Even when an unload above failed: a later load must never inherit this load's REAP
+            # settings (they would read as "already pruned" for an unpruned model).
+            try:
+                from core.export.reap import discard_reap_staging
+                discard_reap_staging(self)
+            except Exception as e:
+                logger.warning(f"Could not clear the REAP state: {e}")
 
     def scan_checkpoints(
         self, outputs_dir: Optional[str] = None
@@ -1272,6 +1294,31 @@ class ExportBackend:
     def _decision_only_gguf(self) -> Tuple[bool, str, Optional[str]]:
         return False, "Decision models export to GGUF only.", None
 
+    def _sync_gguf_reap_reports(self, folder, ggufs) -> List[str]:
+        """One report beside each GGUF this export wrote (a reused folder keeps other files);
+        returns their names, written or removed."""
+        try:
+            from core.export.reap import gguf_report_name, sync_reap_report
+
+            names = []
+            for gguf in ggufs:
+                name = gguf_report_name(gguf)
+                sync_reap_report(self, folder, name, [os.path.basename(gguf)])
+                names.append(name)
+            return names
+        except Exception as exc:  # noqa: BLE001 - the report never blocks an export
+            logger.warning(f"Could not update the REAP reports in {folder}: {exc}")
+            return []
+
+    def _sync_reap_report(self, folder) -> None:
+        """reap_report.json in ``folder`` describes the weights it holds (written for a REAP pruned
+        model, a stale one removed otherwise); run before a folder is uploaded."""
+        try:
+            from core.export.reap import sync_reap_report
+            sync_reap_report(self, folder)
+        except Exception as exc:  # noqa: BLE001 - the report never blocks an export
+            logger.warning(f"Could not update reap_report.json in {folder}: {exc}")
+
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
         try:
@@ -1514,6 +1561,10 @@ class ExportBackend:
                     )
                 logger.info(f"Model saved successfully to {final_dir}")
                 output_path = str(Path(final_dir).resolve())
+                # Complete on disk even if the Hub upload below fails (the worker syncs REAP's report).
+                self._local_export_path = output_path
+                # Before any upload: the folder's REAP report must describe the weights it now holds.
+                self._sync_reap_report(output_path)
 
             if push_to_hub:
                 hf_token = _hub_push_token(hf_token)
@@ -1557,6 +1608,7 @@ class ExportBackend:
                                     **merged_token_kw,
                                 )
                                 self._package_drafter_merged(upload_dir, repo_id)
+                                self._sync_reap_report(upload_dir)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
                             if _holds_checkpoint_weights(upload_dir):
@@ -1572,6 +1624,7 @@ class ExportBackend:
                                     repo_id = repo_id,
                                     repo_type = "model",
                                     ignore_patterns = _HUB_UPLOAD_IGNORE,
+                                    delete_patterns = [_REAP_REPORT],
                                 )
                                 uploaded = True
                     if uploaded:
@@ -1579,9 +1632,7 @@ class ExportBackend:
                         # push_to_hub_merged does.
                         try:
                             if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
-                                base_model = getattr(
-                                    self.current_model.config, "_name_or_path", "unknown"
-                                )
+                                base_model = _card_base_model(self.current_model)
                                 content = MODEL_CARD.format(
                                     username = repo_id.split("/")[0],
                                     base_model = repo_id if os.path.isdir(base_model) else base_model,
@@ -1639,7 +1690,8 @@ class ExportBackend:
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
-        if self.is_peft:
+        # A LoRA load stays one after REAP merged its adapters in memory for a pruned export.
+        if self.is_peft or getattr(self, "_reap_merged_peft", False):
             return (
                 False,
                 "This is a PEFT model. Use 'Merged Model' export type instead.",
@@ -1671,6 +1723,8 @@ class ExportBackend:
                 self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())
+                self._local_export_path = output_path
+                self._sync_reap_report(output_path)
 
             if push_to_hub:
                 hf_token = _hub_push_token(hf_token)
@@ -1695,9 +1749,7 @@ class ExportBackend:
                         private = private,
                     )
                 else:
-                    base_model = (
-                        base_model_id or self.current_model.config._name_or_path or "unknown"
-                    )
+                    base_model = base_model_id or _card_base_model(self.current_model)
 
                     with contextlib.ExitStack() as stack:
                         upload_dir = save_directory
@@ -1710,6 +1762,7 @@ class ExportBackend:
                             self.current_model.save_pretrained(upload_dir)
                             self.current_tokenizer.save_pretrained(upload_dir)
                             self._package_drafter_merged(upload_dir, repo_id)
+                            self._sync_reap_report(upload_dir)
                         hf_api = HfApi(token = hf_token)
                         repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
                         repo_id = getattr(repo_url, "repo_id", repo_id)
@@ -1735,6 +1788,7 @@ class ExportBackend:
                                 repo_id = repo_id,
                                 repo_type = "model",
                                 ignore_patterns = _HUB_UPLOAD_IGNORE,
+                                delete_patterns = [_REAP_REPORT],
                             )
                             logger.info(f"Model pushed successfully to {repo_id}")
                         else:
@@ -1807,6 +1861,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         exported_ggufs: List[str] = []
+        gguf_reports: List[str] = []
         drafter_gguf_files: List[str] = []
         exported_modelfile = False
         exported_modelfile_bytes: Optional[bytes] = None
@@ -1979,6 +2034,13 @@ class ExportBackend:
                 # Only write metadata once an artifact is actually present.
                 self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
+                # Before the upload below, which allow-lists each file's report when there is one.
+                # The model's own GGUFs only: an EAGLE-3 drafter is converted separately, not pruned.
+                drafter_names = {os.path.basename(f) for f in drafter_gguf_files}
+                gguf_reports = self._sync_gguf_reap_reports(
+                    output_path,
+                    [f for f in exported_ggufs if os.path.basename(f) not in drafter_names],
+                )
 
                 if npu_q4nx:
                     source = q4nx.source_gguf(exported_ggufs, quant_methods)
@@ -1988,6 +2050,8 @@ class ExportBackend:
                         with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
                             q4nx.convert_gguf_to_q4nx(source, staging)
                             self._write_q4nx_companions(staging, exported_config)
+                            # The NPU folder is deployed on its own, so it carries its own report.
+                            self._sync_reap_report(staging)
                     except Exception as exception:
                         logger.error(f"Q4NX conversion failed: {exception}")
                         return (
@@ -2024,7 +2088,14 @@ class ExportBackend:
                             *(glob.escape(os.path.basename(f)) for f in exported_ggufs),
                             *(["Modelfile"] if exported_modelfile else []),
                             *(["drafter.json"] if drafter_gguf_files else []),
+                            *(
+                                glob.escape(name)
+                                for name in gguf_reports
+                                if (Path(output_path) / name).is_file()
+                            ),
                         ],
+                        # A report an earlier pruned export pushed for these same files.
+                        delete_patterns = [glob.escape(name) for name in gguf_reports] or None,
                     )
                     if exported_config is not None:
                         hf_api.upload_file(
@@ -2442,6 +2513,13 @@ class ExportBackend:
         if refusal:
             return False, refusal, None
 
+        if getattr(self, "_reap_merged_peft", False):
+            return (
+                False,
+                "The LoRA adapters were merged into the model for a REAP export. Load the "
+                "checkpoint again to export the adapter.",
+                None,
+            )
         if not self.is_peft:
             return False, "This is not a PEFT model. No adapter to export.", None
 

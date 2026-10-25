@@ -90,7 +90,11 @@ def account_path(
     if not value or not managed_account():
         return value
     raw = str(value)
-    from utils.paths.path_utils import normalize_path
+    from utils.paths.path_utils import is_network_or_device_path, normalize_path
+
+    # Before any exists()/resolve(): touching a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(raw):
+        raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
 
     normalized = normalize_path(raw)
     if normalized != raw:

@@ -6,6 +6,7 @@
 import ast, logging, os
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 transformers = pytest.importorskip("transformers")
 from transformers import Qwen3Config, Qwen3ForCausalLM
@@ -103,7 +104,7 @@ def _step(model, ids):
     }
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_plans_after_first_step_and_keeps_gradients():
     ns, found = _load()
     assert "_AutoCheckpointSkip" in found, 'checkpoint_skip_layers = "auto" is not implemented'
@@ -132,7 +133,7 @@ def test_auto_plans_after_first_step_and_keeps_gradients():
             torch.testing.assert_close(grads[name], ref_grads[name], rtol = 0, atol = 0, msg = name)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_keeps_everything_checkpointed_without_headroom(monkeypatch):
     ns, found = _load()
     ids = torch.randint(0, 128, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
@@ -148,7 +149,7 @@ def test_auto_keeps_everything_checkpointed_without_headroom(monkeypatch):
     assert _checkpointed(model) == [True] * 6
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_backs_off_without_reentrant_checkpointing():
     ns, found = _load()
     ids = torch.randint(0, 128, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
@@ -173,7 +174,7 @@ def test_auto_without_cuda_says_so_once(monkeypatch, capsys):
     assert not hasattr(model, "_unsloth_auto_skip")
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_ignores_allocation_spike_before_first_step():
     ns, found = _load()
     ids = torch.randint(0, 128, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
@@ -207,7 +208,7 @@ def _big_model():
     return model
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 @pytest.mark.parametrize("optimizer_stepped", [True, False])
 def test_auto_reserves_optimizer_state_only_when_not_allocated(optimizer_stepped):
     ns, found = _load()
@@ -253,7 +254,7 @@ def test_auto_with_model_off_cuda_on_a_cuda_host_installs_nothing(monkeypatch, c
     assert dict(getattr(torch_optimizer, "_global_optimizer_pre_hooks", {})) == global_hooks
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_reserves_state_for_params_the_optimizer_has_not_seen():
     ns, found = _load()
     ids = torch.randint(0, 32000, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
@@ -278,7 +279,7 @@ def test_auto_reserves_state_for_params_the_optimizer_has_not_seen():
     torch.cuda.empty_cache()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_does_not_scale_persistent_grads_by_sequence_length():
     ns, found = _load()
     model = _big_model()
@@ -603,3 +604,48 @@ def test_counts_apply_only_to_checkpointable_layers():
     for i in (1, 3, 5):
         model.model.layers[i] = torch.nn.Linear(4, 4)
     assert ns["skip_checkpointing"](model, 3) == [0, 2, 4]
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.parametrize("mode", ["fullgraph", "dynamic"])
+def test_auto_planner_stays_out_of_compiled_regions(mode):
+    # TrainingArguments(torch_compile = True) compiles the whole model; the planner must stay out of it.
+    from torch._dynamo.utils import counters
+
+    class Wrapped(torch.nn.Module):
+        def __init__(self, base):
+            super().__init__()
+            self.base = base
+            self.config = base.config
+            self.max_seq_length = base.max_seq_length
+
+        def forward(self, input_ids):
+            hidden = self.base.model(input_ids = input_ids, use_cache = False).last_hidden_state
+            return self.base.lm_head(hidden).float().logsumexp(-1).mean()
+
+    ns, _ = _load()
+    base = _model(layers = 4, device = "cuda")
+    model = Wrapped(base)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    torch._dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(
+        model,
+        backend = "aot_eager",
+        fullgraph = mode == "fullgraph",
+        dynamic = True if mode == "dynamic" else None,
+    )
+    try:
+        for seq in (8, 12, 16) if mode == "dynamic" else (8, 8, 8):
+            ids = torch.randint(0, 128, (2, seq), device = "cuda")
+            if mode == "dynamic":
+                torch._dynamo.mark_dynamic(ids, 1)
+            compiled(ids).backward()
+            model.zero_grad(set_to_none = True)
+        assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])
+        assert planner.started is None and planner.kept is None
+        assert _checkpointed(base) == [True] * 4
+    finally:
+        planner.remove()
+        torch._dynamo.reset()

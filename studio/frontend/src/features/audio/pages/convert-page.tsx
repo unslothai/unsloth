@@ -322,7 +322,7 @@ export function ConvertFooter({
       ? (convert.switchNotice?.before ?? null)
       : null;
   return (
-    <div className="flex w-full flex-col items-center gap-1.5">
+    <div className="flex w-full max-w-sm flex-col items-center gap-1.5">
       <TtsFooter
         {...props}
         prompt="convert"

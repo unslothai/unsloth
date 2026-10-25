@@ -38,20 +38,41 @@ def _integer(raw: Optional[str], *, limit: bool = False) -> Optional[int]:
     return value
 
 
-def _stat_integer(path: str, *keys: str) -> int:
-    """The first requested byte counter present in a ``memory.stat`` file, else 0."""
+# (inactive, active, mapped, dirty, writeback); v1 total_* pairs with usage_in_bytes, per-level is the fallback.
+_V2_FILE_KEYS = ("inactive_file", "active_file", "file_mapped", "file_dirty", "file_writeback")
+_V1_TOTAL_FILE_KEYS = (
+    "total_inactive_file",
+    "total_active_file",
+    "total_mapped_file",
+    "total_dirty",
+    "total_writeback",
+)
+_V1_LOCAL_FILE_KEYS = ("inactive_file", "active_file", "mapped_file", "dirty", "writeback")
+
+
+def _reclaimable_file_bytes(path: str, *, v1: bool) -> int:
+    """Droppable page cache in bytes: inactive_file + (active_file - mapped - dirty - writeback, conservative).
+
+    shmem/tmpfs is on the anon LRU, never counted. Not crediting active_file counted twice-read models as used."""
     values: dict[str, int] = {}
     try:
         with open(path, "r", encoding = "utf-8") as f:
             for line in f:
                 parts = line.split()
-                if len(parts) == 2 and parts[0] in keys:
+                if len(parts) == 2:
                     value = _integer(parts[1])
                     if value is not None:
                         values[parts[0]] = value
     except (OSError, UnicodeDecodeError):
         return 0
-    return next((values[key] for key in keys if key in values), 0)
+    if not v1:
+        keys = _V2_FILE_KEYS
+    elif _V1_TOTAL_FILE_KEYS[0] in values:
+        keys = _V1_TOTAL_FILE_KEYS
+    else:
+        keys = _V1_LOCAL_FILE_KEYS
+    inactive, active, mapped, dirty, writeback = (values.get(key, 0) for key in keys)
+    return inactive + max(active - mapped - dirty - writeback, 0)
 
 
 def _directories(root: str, relative: Optional[str]) -> list[str]:
@@ -75,7 +96,7 @@ def cgroup_memory_budgets(
     cgroup_root: Optional[str] = None, proc_self_cgroup: Optional[str] = None
 ) -> list[tuple[int, int]]:
     """``(remaining, limit)`` bytes per enforcing limit on this cgroup and its ancestors (an ancestor
-    can bind through sibling usage). Usage excludes ``inactive_file``; empty = no finite limit."""
+    can bind through sibling usage), less reclaimable page cache; empty = no finite limit."""
     cgroup_root = CGROUP_ROOT if cgroup_root is None else cgroup_root
     proc_self_cgroup = PROC_SELF_CGROUP if proc_self_cgroup is None else proc_self_cgroup
     try:
@@ -93,7 +114,8 @@ def cgroup_memory_budgets(
         used = _integer(_first_line(os.path.join(directory, "memory.current")))
         if used is not None:
             used = max(
-                0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file")
+                0,
+                used - _reclaimable_file_bytes(os.path.join(directory, "memory.stat"), v1 = False),
             )
         budgets.append((limit if used is None else limit - used, limit))
 
@@ -110,27 +132,19 @@ def cgroup_memory_budgets(
             continue
         used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
         if used is not None:
-            # Hierarchical v1 usage pairs with total_inactive_file.
             used = max(
-                0,
-                used
-                - _stat_integer(
-                    os.path.join(directory, "memory.stat"), "total_inactive_file", "inactive_file"
-                ),
+                0, used - _reclaimable_file_bytes(os.path.join(directory, "memory.stat"), v1 = True)
             )
         budgets.append((limit if used is None else limit - used, limit))
     return budgets
 
 
 def _v1_reclaimable_usage(directory: str, raw: Optional[int]) -> Optional[int]:
-    """A v1 ``*.usage_in_bytes`` reading less the level's inactive file cache (``total_inactive_file``, which the
-    kernel reclaims before it charges against the limit), as ``cgroup_memory_budgets`` reads RAM usage."""
+    """A v1 ``*.usage_in_bytes`` reading less reclaimable file cache, as ``cgroup_memory_budgets`` reads it."""
     if raw is None:
         return None
-    inactive = _stat_integer(
-        os.path.join(directory, "memory.stat"), "total_inactive_file", "inactive_file"
-    )
-    return max(raw - inactive, 0)
+    reclaimable = _reclaimable_file_bytes(os.path.join(directory, "memory.stat"), v1 = True)
+    return max(raw - reclaimable, 0)
 
 
 def cgroup_swap_allowance_bytes(

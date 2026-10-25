@@ -123,13 +123,25 @@ def _write_json(path: Path, meta: dict[str, Any]) -> None:
         raise
 
 
-def _av_open(av, source: str):
+def _protocol_options(source) -> dict:
+    # A probed concat or HLS playlist opens the files or URLs it names: a path may read
+    # files only, a buffer nothing.
+    local = isinstance(source, (str, os.PathLike))
+    return {"protocol_whitelist": "file" if local else "none"}
+
+
+def _av_open(av, source):
+    from utils.media_playlist import refuse_playlist
+
+    # `file` stays allowed for a path, so a playlist that names local files is refused here.
+    refuse_playlist(source)
+    options = _protocol_options(source)
     try:
-        return av.open(source, mode = "r", metadata_errors = "ignore")
+        return av.open(source, mode = "r", metadata_errors = "ignore", options = options)
     except TypeError as exc:
         if "metadata_errors" not in str(exc):
             raise
-        return av.open(source, mode = "r", format = None)
+        return av.open(source, mode = "r", format = None, options = options)
 
 
 def _decoded_frames(av, container):

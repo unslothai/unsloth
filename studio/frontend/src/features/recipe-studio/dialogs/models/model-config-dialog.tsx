@@ -92,7 +92,7 @@ export function ModelConfigDialog({
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
-      <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
+      <div className="rounded-lg border border-border/60 bg-muted/10 px-4 py-3">
         <p className="text-sm font-semibold text-foreground">
           Set up one reusable model choice for your AI steps
         </p>

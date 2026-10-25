@@ -808,3 +808,152 @@ def test_expert_only_mixtral_list_falls_back_to_the_decoders_experts():
     assert {n for n in names if re.fullmatch(regex, n)} == {
         n for n in names if ".experts." in n and n.endswith((".gate_proj", ".up_proj"))
     }
+
+
+def _expert_counts(names, regex):
+    counts = {"gate_proj": 0, "up_proj": 0, "down_proj": 0}
+    for name in names:
+        leaf = name.rpartition(".")[2]
+        if ".experts." in name and leaf in counts and re.fullmatch(regex, name):
+            counts[leaf] += 1
+    return counts
+
+
+@pytest.mark.parametrize(
+    "leaves",
+    [
+        ["gate_up_proj", "down_proj"],
+        ["q_proj", "gate_up_proj", "down_proj"],
+        ["q_proj", "o_proj", "gate_up_proj", "down_proj"],
+    ],
+)
+def test_gate_up_shorthand_with_down_proj_reaches_split_gate_and_up_experts(leaves):
+    """Zoo's regex already matches experts.<i>.down_proj; gate_proj / up_proj must still be added."""
+    U = _utils()
+    model = _native_qwen3_moe_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    regex = _explicit_list_regex(model, leaves)
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert _expert_counts(names, widened) == {"gate_proj": 8, "up_proj": 8, "down_proj": 8}
+    assert "gate_proj" in found and "up_proj" in found
+    assert "model.layers.0.mlp.gate" not in {n for n in names if re.fullmatch(widened, n)}
+    kept, _, found = U.widen_target_regex_to_expert_submodules(
+        model, widened, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert kept == widened and found == []
+
+
+def test_gate_up_shorthand_with_down_proj_peft_injects_real_hf_split_experts():
+    """Real tiny Qwen3-MoE (text and inside a Llava VLM) with per-expert nn.Linear layers."""
+    from transformers import CLIPVisionConfig, LlavaConfig, LlavaForConditionalGeneration
+    from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
+
+    peft = pytest.importorskip("peft")
+    U = _utils()
+    text_config = dict(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        moe_intermediate_size = 64,
+        num_experts = 2,
+        num_experts_per_tok = 1,
+        max_position_embeddings = 128,
+    )
+    text = Qwen3MoeForCausalLM(Qwen3MoeConfig(**text_config))
+    if not any(
+        ".experts." in n and isinstance(m, torch.nn.Linear) for n, m in text.named_modules()
+    ):
+        pytest.skip("this transformers fuses Qwen3-MoE experts into Parameters")
+    vlm = LlavaForConditionalGeneration(
+        LlavaConfig(
+            text_config = Qwen3MoeConfig(**text_config),
+            vision_config = CLIPVisionConfig(
+                hidden_size = 32,
+                intermediate_size = 64,
+                num_hidden_layers = 1,
+                num_attention_heads = 4,
+                image_size = 8,
+                patch_size = 2,
+            ),
+            image_token_index = 63,
+        )
+    )
+    for model in (text, vlm):
+        for leaves in (["gate_up_proj", "down_proj"], ["q_proj", "gate_up_proj", "down_proj"]):
+            regex = _explicit_list_regex(model, leaves)
+            widened, _, _ = U.widen_target_regex_to_expert_submodules(
+                model, regex, leaves, auto_regex = True, explicit_leaves = True
+            )
+            peft_model = peft.get_peft_model(model, peft.LoraConfig(r = 2, target_modules = widened))
+            lora = [n for n, m in peft_model.named_modules() if hasattr(m, "lora_A")]
+            assert _expert_counts(lora, r".*") == {"gate_proj": 2, "up_proj": 2, "down_proj": 2}
+            assert not any("vision_tower" in n for n in lora)
+            model = peft_model.unload()
+
+
+@pytest.mark.parametrize(
+    "leaves", [["w1", "w2", "w3", "gate"], ["q_proj", "w1", "w2", "w3", "gate"]]
+)
+def test_requested_router_sibling_is_kept_when_attention_is_also_listed(leaves):
+    """q_proj forces the widen path, which must still keep a requested router."""
+    U = _utils()
+    model = _native_mixtral_4x_model()
+    model.get_decoder = lambda: model.model
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    try:
+        regex = _explicit_list_regex(model, leaves)
+    except RuntimeError:
+        regex = U.native_expert_only_regex(model, leaves)
+    widened, _, _ = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    matched = {n for n in names if re.fullmatch(widened, n)}
+    assert matched == {n for n in names if n.rpartition(".")[2] in leaves}
+    unrequested = [leaf for leaf in leaves if leaf != "gate"]
+    regex = _explicit_list_regex(model, unrequested) if "q_proj" in leaves else None
+    if regex is not None:
+        widened, _, _ = U.widen_target_regex_to_expert_submodules(
+            model, regex, unrequested, auto_regex = True, explicit_leaves = True
+        )
+        assert not any(
+            n.endswith(".block_sparse_moe.gate") and re.fullmatch(widened, n) for n in names
+        )
+
+
+def test_requested_router_sibling_peft_injects_real_hf_mixtral():
+    from transformers import MixtralConfig, MixtralForCausalLM
+
+    peft = pytest.importorskip("peft")
+    U = _utils()
+    config = MixtralConfig(
+        vocab_size = 32,
+        hidden_size = 8,
+        intermediate_size = 16,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+    )
+    model = MixtralForCausalLM(config)
+    if not any(n.endswith(".experts.0.w1") for n, _ in model.named_modules()):
+        pytest.skip("this transformers fuses Mixtral experts into Parameters")
+    for leaves in (["w1", "w2", "w3", "gate"], ["q_proj", "w1", "w2", "w3", "gate"]):
+        try:
+            regex = _explicit_list_regex(model, leaves)
+        except RuntimeError:
+            regex = U.native_expert_only_regex(model, leaves)
+        widened, _, _ = U.widen_target_regex_to_expert_submodules(
+            model, regex, leaves, auto_regex = True, explicit_leaves = True
+        )
+        peft_model = peft.get_peft_model(model, peft.LoraConfig(r = 2, target_modules = widened))
+        lora = [n for n, m in peft_model.named_modules() if hasattr(m, "lora_A")]
+        assert sum(".experts." in n for n in lora) == 24
+        assert sum(n.endswith(".block_sparse_moe.gate") for n in lora) == 2
+        assert sum(n.endswith(".q_proj") for n in lora) == (2 if "q_proj" in leaves else 0)
+        model = peft_model.unload()
