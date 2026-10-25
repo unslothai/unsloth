@@ -200,6 +200,12 @@ def test_a_rendered_prompt_reaches_python_rewards_as_its_turns():
     assert seen["prompts"] == [turns]
     assert seen["completions"] == [[{"role": "assistant", "content": "It is 4"}]]
     assert seen["kwargs"] == {"answer": ["4"]}
+    # Arrow pads each message with every field another row's message has, as None.
+    padded = [{**m, "tool_calls": None, "name": None} for m in turns]
+    fn(prompts = ["x"], completions = ["4"], **{PROMPT_TURNS_COLUMN: [padded]})
+    assert seen["prompts"] == [turns]
+    fn(prompts = [padded], completions = [[{"role": "assistant", "content": "4"}]])
+    assert seen["prompts"] == [turns]
 
 
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
