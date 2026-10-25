@@ -356,12 +356,9 @@ async def test_unload_after_the_run_waits_for_the_gpu(studio, monkeypatch):
             break
         await asyncio.sleep(0.05)
     # Another flow's GPU step holds the GPU: unloading now could cancel its generation.
-    await lock.acquire()
-    try:
+    async with lock:
         await asyncio.sleep(1.5)
         assert studio["unloads"] == []
-    finally:
-        lock.release()
     await asyncio.wait_for(rs.task, timeout = 30)
     assert studio["unloads"] == ["m2"]
 
