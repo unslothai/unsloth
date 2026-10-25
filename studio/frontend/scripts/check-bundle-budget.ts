@@ -427,7 +427,16 @@ export const BUDGET = {
   // raw, 2,088,616 -> 2,088,672 B transfer against cfc593f0bd, Node 26, unchanged at 99 chunks). Raised by that.
   // Its "System and Engine" page title adds 11 B raw / 34 B transfer to the eager en locale (6,933,189 -> 6,933,200 B
   // raw, 2,088,699 -> 2,088,733 B transfer merged with f49cbdf535, Node 26, 99 chunks). Raised by that.
-  transferBytes: 2_091_207,
+  // The model location row under Advanced settings (#14105) adds 3,240 B raw / 1,055 B transfer (6,878,631 ->
+  // 6,881,871 B raw, 2,071,507 -> 2,072,562 B transfer against 9f303b390, one machine and build, Node 24, 97
+  // chunks): the picked model's path threads through the local pickers' change meta, and the location helper
+  // rides the eager config page (lazy-loading it was measured and lost: an extra eager chunk). Raised to that
+  // build plus the same 160 B raw / 189 B transfer margin.
+  // Reconciled with main at 3bf5e856: local measures 6,939,913 B raw / 2,090,959 B transfer (Node 24, 99
+  // chunks), inside main's limits. CI's locked install builds 105 eager chunks and 2,042.5 KB transfer, 0.3 KB
+  // over that line, while its 6,769.7 KB raw stays inside. Transfer raised by 600 B for the locked install; raw
+  // unchanged.
+  transferBytes: 2_091_807,
   rawBytes: 6_942_431,
 };
 

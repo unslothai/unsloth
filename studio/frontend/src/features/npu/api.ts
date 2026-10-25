@@ -5,17 +5,10 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
 
-/** Model paths the backend loads onto the NPU (`lemonade:<Lemonade model id>`). */
-export const NPU_MODEL_PREFIX = "lemonade:";
+export { NPU_MODEL_PREFIX, isNpuModelId } from "./model-id";
 
 /** Keep in sync with npu_backend.py's DEFAULT_CONTEXT_LENGTH. */
 export const NPU_DEFAULT_CONTEXT_LENGTH = 8192;
-
-export function isNpuModelId(
-  value: string | null | undefined,
-): value is string {
-  return typeof value === "string" && value.startsWith(NPU_MODEL_PREFIX);
-}
 
 export interface NpuValidation {
   ready: boolean;

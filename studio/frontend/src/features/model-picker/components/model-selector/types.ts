@@ -73,6 +73,8 @@ export interface ModelSelectorChangeMeta {
   forceReload?: boolean;
   /** model_path to send when the pick loads from elsewhere, e.g. a pinned snapshot dir. */
   loadId?: string | null;
+  /** On-disk file or folder behind a filesystem pick; Hub picks resolve theirs through the cache. */
+  localPath?: string;
   /** Native path token so an active-model reload can reopen a file-picked GGUF. */
   nativePathToken?: string;
   /** Hub pipeline tag for an uncurated pick, so a task page can tell which task the repo does when

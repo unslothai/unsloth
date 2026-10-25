@@ -3065,6 +3065,7 @@ function localModelMeta(
   pipelineTag?: string | null,
   audioType?: string | null,
   familyOverrideRequired = false,
+  localPath?: string,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -3074,13 +3075,15 @@ function localModelMeta(
     pipelineTag: pipelineTag ?? null,
     audioType: audioType ?? null,
     familyOverrideRequired,
+    ...(localPath ? { localPath } : {}),
   };
 }
 
 function localDirectGgufMeta(
   pipelineTag?: string | null,
+  localPath?: string,
 ): ModelSelectorChangeMeta {
-  return localModelMeta(true, pipelineTag);
+  return localModelMeta(true, pipelineTag, undefined, false, localPath);
 }
 
 /** Hugging Face address for an online/Hub row, or undefined when the repo id is missing so the
@@ -8179,14 +8182,14 @@ export function HubModelPicker({
                                     if (isDirectGguf) {
                                       onSelect(
                                         m.id,
-                                        localDirectGgufMeta(m.task),
+                                        localDirectGgufMeta(m.task, m.path),
                                       );
                                     } else if (isGguf) {
                                       toggleGgufExpanded(m.id);
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true, m.path),
                                       );
                                     }
                                   }}
@@ -8215,7 +8218,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localDirectGgufMeta(m.task),
+                                        localDirectGgufMeta(m.task, m.path),
                                       )
                                     }
                                   />
@@ -8228,7 +8231,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true, m.path),
                                       )
                                     }
                                   />
@@ -8326,14 +8329,14 @@ export function HubModelPicker({
                                     if (isGgufFile) {
                                       onSelect(
                                         m.id,
-                                        localDirectGgufMeta(m.task),
+                                        localDirectGgufMeta(m.task, m.path),
                                       );
                                     } else if (isGguf) {
                                       toggleGgufExpanded(m.id);
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true, m.path),
                                       );
                                     }
                                   }}
@@ -8362,7 +8365,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localDirectGgufMeta(m.task),
+                                        localDirectGgufMeta(m.task, m.path),
                                       )
                                     }
                                   />
@@ -8375,7 +8378,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true, m.path),
                                       )
                                     }
                                   />
@@ -8464,14 +8467,14 @@ export function HubModelPicker({
                                     if (isGgufFile) {
                                       onSelect(
                                         m.id,
-                                        localDirectGgufMeta(m.task),
+                                        localDirectGgufMeta(m.task, m.path),
                                       );
                                     } else if (isGguf) {
                                       toggleGgufExpanded(m.id);
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true, m.path),
                                       );
                                     }
                                   }}
@@ -8496,7 +8499,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localDirectGgufMeta(m.task),
+                                        localDirectGgufMeta(m.task, m.path),
                                       )
                                     }
                                   />
@@ -8509,7 +8512,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true, m.path),
                                       )
                                     }
                                   />
