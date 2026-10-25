@@ -92,10 +92,8 @@ import { useApiModelReload } from "./use-api-model-reload";
 import { ContextUsageBar as ContextUsageChip } from "@/features/chat/components/context-usage-bar";
 import {
   residentHasRunSettings,
-  residentHasSlotsSetting,
   keptRunSettingsRequest,
   runSettingsRequest,
-  slotsSettingsRequest,
 } from "./slots-settings-request";
 import {
   monitorSelection,
@@ -957,8 +955,6 @@ export function ApiMonitorPage(): ReactElement {
     useState<ModelConfigHandoffRequest | null>(null);
   const canEditSettings =
     !modelLoading && !unloading && residentHasRunSettings(resident);
-  const canEditSlots =
-    !modelLoading && !unloading && residentHasSlotsSetting(resident);
 
   useEffect(() => {
     const refreshRemoteBase = () => {
@@ -1179,15 +1175,6 @@ export function ApiMonitorPage(): ReactElement {
   // older backends omit the field, so only explicit `false` disables recording.
   const loggingDisabled = data?.logging_enabled === false;
   const queued = data?.queue?.queued ?? 0;
-  const slotsLabel = data?.queue
-    ? `${data.queue.active}/${data.queue.capacity} busy${
-        queued > 0 ? ` · ${queued} queued` : ""
-      }`
-    : "";
-  const slotsClassName = cn(
-    "tabular-nums",
-    queued > 0 && "text-amber-700 dark:text-amber-500",
-  );
 
   const ejecting = unloading || ejectingKept;
   const ejectServed = async (model: ServedModel): Promise<void> => {
@@ -1343,7 +1330,7 @@ export function ApiMonitorPage(): ReactElement {
     }
     return (
       <Fact label="Context" className="gap-0">
-        {/* Flush on the label: its 8px padding is the label gap, as Slots'. */}
+        {/* Flush on the label: its 8px padding is the label gap. */}
         <ContextUsageChip
           pinOnClick={true}
           hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
@@ -1357,37 +1344,6 @@ export function ApiMonitorPage(): ReactElement {
       </Fact>
     );
   };
-  const slotsFact = (
-    <>
-      {data?.queue ? (
-        <Fact label="Slots">
-          {canEditSlots ? (
-            <ToolbarTooltip label="Change parallel slots">
-              <button
-                type="button"
-                onClick={() =>
-                  setConfigRequest(
-                    slotsSettingsRequest(
-                      resident,
-                      createModelConfigHandoffRequestId(),
-                    ),
-                  )
-                }
-                className={cn(
-                  slotsClassName,
-                  "w-fit cursor-pointer text-left underline decoration-dotted decoration-muted-foreground/60 underline-offset-4 hover:decoration-foreground",
-                )}
-              >
-                {slotsLabel}
-              </button>
-            </ToolbarTooltip>
-          ) : (
-            <span className={slotsClassName}>{slotsLabel}</span>
-          )}
-        </Fact>
-      ) : null}
-    </>
-  );
   return (
     <>
       {/* Model picker where Chat keeps it; sticky, so the log scrolls under it. */}
@@ -1581,7 +1537,7 @@ export function ApiMonitorPage(): ReactElement {
                     ? "1 model answering requests"
                     : `${served.length} models answering requests`}
                 </p>
-                <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
+                <div className="grid grid-cols-[minmax(0,max-content)_auto_1fr] items-center gap-x-6 gap-y-1.5">
                   {served.map((model) => (
                     // A subgrid, not `contents`: the row needs a box (gaps included) to hover.
                     <div
@@ -1599,9 +1555,6 @@ export function ApiMonitorPage(): ReactElement {
                         {exampleButton(model)}
                       </span>
                       <dl className="min-w-0">{contextFact(model)}</dl>
-                      <dl className="min-w-0">
-                        {model.active ? slotsFact : null}
-                      </dl>
                       <span className="flex items-center gap-0.5 justify-self-end">
                         {settingsButton(model)}
                         {reloadButton(model)}
