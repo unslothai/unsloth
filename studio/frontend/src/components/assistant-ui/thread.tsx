@@ -8306,7 +8306,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
           }}
         >
           <QueueResumeIcon className="size-3.5" />
-          Resume
+          {/* An element, not bare text: as the last element the icon lost its bottom margin to the
+              message's trailing-margin reset, and took the trailing-icon padding. */}
+          <span>Resume</span>
         </Button>
       )}
     </div>
