@@ -301,7 +301,6 @@ export function generateMap(spec: WorldSpec): WorldMap {
     if (rng.random() < 0.5)
       carve(tiles, w, h, taken[i], taken[i + 1], pathKind, rng);
   }
-  // Clear a little plaza around spawn and every point of interest.
   for (const p of taken) {
     for (let y = p.y - 1; y <= p.y + 1; y++) {
       for (let x = p.x - 1; x <= p.x + 1; x++) {

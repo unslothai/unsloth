@@ -874,7 +874,7 @@ async def generate_image(
             "guidance_start": float(control.get("guidance_start", 0.0)),
             "guidance_end": float(control.get("guidance_end", 1.0)),
         }
-    # Only what was set is sent, so a node without these settings posts the same body as before.
+    # Only set fields are sent, so a node without these settings posts the default body.
     body.update(route_options(options))
 
     async def cancel() -> None:

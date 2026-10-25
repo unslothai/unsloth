@@ -559,7 +559,7 @@ class NodeContextImpl:
                     gpu_arbiter._lease_holder.reset(token)
 
         if self._rs.cancelled:
-            # The run was cancelled while the job was being started: stop the job now.
+            # Cancelled while the job was starting.
             task = asyncio.get_running_loop().create_task(_run_cancel_hook(fn))
             _LATE_HOOKS.add(task)
             task.add_done_callback(_LATE_HOOKS.discard)
