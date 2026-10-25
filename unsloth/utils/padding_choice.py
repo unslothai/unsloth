@@ -17,6 +17,9 @@ Rule (all estimates, every unknown keeps padding-free, the old default):
                  and the run has enough micro batches to repay the extra block compile
                      (about 25 s in 16 bit, 100 s in 4 bit) at ~_SAVED_S_PER_MICROBATCH each.
 
+Only Linux + NVIDIA CUDA is ever switched: ROCm / HIP, Windows, XPU, MPS and CPU keep padding-free
+(no measurements there yet), unless `UNSLOTH_PADDING_CHOICE=padded` is set explicitly.
+
 `UNSLOTH_PADDING_CHOICE=padding_free` restores the previous behaviour (always padding-free),
 `=padded` forces padded batches, `=auto` (default) applies the rule. An explicit
 `padding_free=True/False` on the config always wins.
@@ -26,6 +29,7 @@ import logging
 import math
 import os
 import random
+import sys
 
 __all__ = [
     "padding_choice_mode",
@@ -239,7 +243,13 @@ def _decide(model, config, train_dataset, processing_class, formatting_func):
 
     if model is None or isinstance(model, str) or not hasattr(model, "modules"):
         return True, "model not loaded"
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    # Measured only on Linux + NVIDIA CUDA. ROCm / HIP (torch.cuda.is_available() is True there),
+    # Windows (slower host, triton-windows compile), XPU, MPS and CPU keep padding-free unchanged.
+    if getattr(torch.version, "hip", None):
+        return True, "ROCm / HIP device (not measured)"
+    if sys.platform == "win32":
+        return True, "Windows (not measured)"
+    if not torch.cuda.is_available() or not getattr(torch.version, "cuda", None):
         return True, "not an NVIDIA CUDA device"
     if int(os.environ.get("WORLD_SIZE", "1") or 1) > 1:
         return True, "distributed run"

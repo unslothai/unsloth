@@ -210,3 +210,21 @@ def test_trainer_wires_the_choice():
     src = (ROOT / "unsloth" / "trainer.py").read_text()
     assert "_auto_padding_choice(" in src
     assert "from unsloth.utils.padding_choice import decide_auto_padding_free" in src
+
+
+@pytest.mark.parametrize("platform, hip, cuda, available, reason", [
+    ("linux", "6.2.41133", None, True, "ROCm"),
+    ("win32", None, "13.0", True, "Windows"),
+    ("win32", "6.2", None, True, "ROCm"),
+    ("linux", None, None, False, "not an NVIDIA CUDA device"),
+    ("darwin", None, None, False, "not an NVIDIA CUDA device"),
+])  # fmt: skip
+def test_non_cuda_linux_keeps_padding_free(monkeypatch, platform, hip, cuda, available, reason):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setenv("UNSLOTH_PADDING_CHOICE", "auto")
+    monkeypatch.setattr(pc.sys, "platform", platform)
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(torch.version, "cuda", cuda, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: available)
+    use_pf, why = pc.decide_auto_padding_free(torch.nn.Linear(2, 2), SimpleNamespace(), None, None)
+    assert use_pf is True and reason in why, why
