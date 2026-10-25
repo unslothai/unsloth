@@ -363,6 +363,16 @@ class WorldSimulation(_Strict):
     needs: bool = True  # Sims-style needs pick what villagers do between plan blocks
 
 
+class World3dView(_Strict):
+    time_of_day: Optional[Literal["dawn", "day", "dusk", "night"]] = None
+    sky: Optional[str] = None  # "#rrggbb"; the time of day picks one when unset
+    fog: Optional[float] = Field(default = None, ge = 0, le = 1)  # 0 = clear, 1 = thick
+    camera_height: Optional[float] = Field(default = None, ge = 0.3, le = 4)  # eye height in tiles
+    walk_speed: Optional[float] = Field(default = None, ge = 0.5, le = 20)  # tiles per second
+    terrain: Optional[float] = Field(default = None, ge = 0, le = 3)  # hill height scale
+    ambient: Optional[dict[str, Any]] = None  # an audio MediaValue looped while you play
+
+
 class WorldSpec(_Strict):
     title: str
     seed: int = 0
@@ -381,6 +391,8 @@ class WorldSpec(_Strict):
     style: Optional[str] = None
     entry_points: dict[str, str] = Field(default_factory = dict)
     simulation: Optional[WorldSimulation] = None
+    render: Optional[Literal["2d", "3d"]] = None
+    view3d: Optional[World3dView] = None
 
 
 RunStatus = Literal[
