@@ -5,5 +5,5 @@ description: The reply closes <end_working_out> and ends with <SOLUTION>...</SOL
 ---
 type: regex
 mode: search
-pattern: '<end_working_out>.*?<SOLUTION>.+?</SOLUTION>\s*$'
+pattern: '<end_working_out>.*?<SOLUTION>.+?</SOLUTION>\s*\Z'
 score: {match: 3.0, miss: 0.0}

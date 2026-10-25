@@ -148,6 +148,8 @@ def test_resume_payload_keeps_the_reasoning_format_and_warmup():
         ("add them<end_working_out><SOLUTION>1,234</SOLUTION>", [3.0, 3.0, 3.5]),
         ("add them<end_working_out><SOLUTION>12</SOLUTION>", [3.0, 0.0, -1.5]),
         ("no tags, 1234", [0.0, 0.0, -2.5]),
+        ("add them<end_working_out><SOLUTION>1,234</SOLUTION>\n", [3.0, 3.0, 3.5]),
+        ("add them<end_working_out><SOLUTION>1,234</SOLUTION>\nmore text", [0.0, 3.0, 3.5]),
     ],
 )
 def test_bundled_solution_rewards_read_the_reasoning_format(reply, expected):
