@@ -42,7 +42,6 @@ def test_norm_compiles_with_dynamic_width(kind, trainable, tabled, monkeypatch):
         # Make the lookup hit a table entry on this GPU, so the compiled call takes the tabled warps.
         cap = tuple(torch.cuda.get_device_capability())
         from unsloth.kernels import layernorm as LN, rms_layernorm as RMS
-
         for mod in (LN, RMS):
             for name in ("_NUM_WARPS", "_DW_NUM_WARPS"):
                 monkeypatch.setitem(getattr(mod, name), (cap, d), 4)
