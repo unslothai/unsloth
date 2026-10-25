@@ -4128,7 +4128,6 @@ class FastBaseModel:
             if fast_inference and is_vLLM_available():
                 import inspect as _inspect
                 from unsloth_zoo.vllm_utils import load_vllm as _load_vllm
-
                 _vllm_rope_scaling(
                     user_rope_scaling, "rope_scaling" in _inspect.getfullargspec(_load_vllm).args
                 )
