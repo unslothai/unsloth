@@ -72,7 +72,7 @@ export const fr = {
       cursorDescription: "Affiche un pointeur là où les modèles cliquent, saisissent et font glisser sur la page",
       askEveryTime: "Demander à chaque fois",
       permissionsTitle: "Autorisations de l'agent",
-      permissionsDescription: "Choisissez les valeurs par défaut et ajoutez des exceptions pour certains sites. Les champs de mot de passe et de paiement ne sont jamais remplis, quels que soient ces réglages.",
+      permissionsDescription: "Définissez les valeurs par défaut et des exceptions par site. Les champs de mot de passe et de paiement ne sont jamais remplis.",
       site: "Site ou motif",
       sitePlaceholder: "example.com ou *.example.com",
       default: "Par défaut",
@@ -1048,6 +1048,9 @@ export const fr = {
       storageDisk: "{free} libres sur {total} sur ce disque",
       storageEmpty: "Rien n'est encore stocké dans la Bibliothèque.",
       storageHidden: "{size} masqués dans les réglages du contenu",
+      storageHiddenLabel: "Masqué",
+      storageRefresh: "Actualiser",
+      storageOpen: "Ouvrir",
       storageError: "Impossible de lire le stockage de la Bibliothèque.",
       locationsSection: "Fichiers sur le disque",
       locationsDescription: "Où Unsloth conserve chaque type de fichier. Les dossiers de la bibliothèque sont des étiquettes dans Unsloth, pas des dossiers sur le disque. Les affinages et les exports restent en place, car l'entraînement et les chats les retrouvent par leur chemin.",
@@ -2336,7 +2339,7 @@ export const fr = {
       },
     },
     resources: {
-      title: "Système",
+      title: "Système et moteur",
       description:
         "Surveillez le matériel et le stockage de ce serveur Unsloth.",
       liveUpdates: "Mises à jour en direct",
@@ -2493,6 +2496,13 @@ export const fr = {
       storage: {
         title: "Stockage",
         systemDisk: "Disque système",
+        systemUsed: "{used} utilisés sur {total} sur le disque système",
+        modelsDiskSummary: "Disque du dossier des modèles : {used} utilisés sur {total}, {free} libres",
+        segmentModels: "Modèles",
+        segmentCaches: "Caches",
+        segmentOther: "Autres",
+        segmentFree: "Libre",
+        refreshAction: "Actualiser",
         modelsDisk: "Disque des modèles",
         diskUsage: "Espace utilisé : {used} / Total : {total}",
         diskFree: "Espace libre : {free}",
@@ -2793,6 +2803,11 @@ export const fr = {
       showReplyTimesDescription: "Afficher sous chaque réponse l'heure à laquelle elle s'est terminée.",
       showReplyTimesKeywords:
         "horodatage heure date quand terminé réponse message timestamp time clock date reply",
+      showGenerationDetails: "Détails de génération",
+      showGenerationDetailsDescription:
+        "Affiche la vitesse et le nombre de jetons en direct pendant une réponse, et où se trouvent les couches d'un modèle local.",
+      showGenerationDetailsKeywords:
+        "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
       modelDisclaimer: "Afficher l'avertissement du modèle",

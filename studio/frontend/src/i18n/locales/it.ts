@@ -71,7 +71,7 @@ export const it = {
       cursorDescription: "Mostra un puntatore dove i modelli fanno clic, scrivono e trascinano nella pagina",
       askEveryTime: "Chiedi ogni volta",
       permissionsTitle: "Autorizzazioni dell'agente",
-      permissionsDescription: "Scegli i valori predefiniti e aggiungi eccezioni per siti specifici. I campi di password e pagamento non vengono mai compilati, qualunque cosa indichino queste impostazioni.",
+      permissionsDescription: "Imposta i valori predefiniti e le eccezioni per sito. I campi di password e pagamento non vengono mai compilati.",
       site: "Sito o modello",
       sitePlaceholder: "example.com o *.example.com",
       default: "Predefinito",
@@ -949,6 +949,9 @@ export const it = {
       storageDisk: "{free} liberi su {total} in questo disco",
       storageEmpty: "Nella Libreria non c'è ancora nulla.",
       storageHidden: "{size} nascosti nelle impostazioni Contenuti",
+      storageHiddenLabel: "Nascosti",
+      storageRefresh: "Aggiorna",
+      storageOpen: "Apri",
       storageError: "Impossibile leggere lo spazio della Libreria.",
       locationsSection: "File sul disco",
       locationsDescription: "Dove Unsloth conserva ogni tipo di file. Le cartelle della libreria sono etichette dentro Unsloth, non cartelle sul disco. I fine-tuning e le esportazioni restano dove sono, perché addestramento e chat li trovano tramite il percorso.",
@@ -2241,7 +2244,7 @@ export const it = {
       },
     },
     resources: {
-      title: "Sistema",
+      title: "Sistema e motore",
       description:
         "Monitora hardware e archiviazione di questo server Unsloth.",
       liveUpdates: "Aggiornamenti in tempo reale",
@@ -2398,6 +2401,13 @@ export const it = {
       storage: {
         title: "Archiviazione",
         systemDisk: "Disco di sistema",
+        systemUsed: "{used} usati su {total} sul disco di sistema",
+        modelsDiskSummary: "Unità della cartella modelli: {used} usati su {total}, {free} liberi",
+        segmentModels: "Modelli",
+        segmentCaches: "Cache",
+        segmentOther: "Altro",
+        segmentFree: "Libero",
+        refreshAction: "Aggiorna",
         modelsDisk: "Disco dei modelli",
         diskUsage: "In uso: {used} / Totale: {total}",
         diskFree: "Disponibili: {free}",
@@ -2699,6 +2709,11 @@ export const it = {
       showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
       showReplyTimesKeywords:
         "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
+      showGenerationDetails: "Dettagli generazione",
+      showGenerationDetailsDescription:
+        "Mostra velocità e token in tempo reale mentre una risposta viene generata, e dove sono stati collocati i livelli di un modello locale.",
+      showGenerationDetailsKeywords:
+        "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       modelDisclaimer: "Mostra l'avviso sul modello",

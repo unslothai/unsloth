@@ -70,7 +70,7 @@ export const sv = {
       cursorDescription: "Visar en pekare där modeller klickar, skriver och drar på sidan",
       askEveryTime: "Fråga varje gång",
       permissionsTitle: "Agentbehörigheter",
-      permissionsDescription: "Välj standardvärden och lägg till undantag för vissa webbplatser. Lösenords- och betalningsfält fylls aldrig i, oavsett inställningarna här.",
+      permissionsDescription: "Ange standardvärden och undantag per webbplats. Lösenords- och betalningsfält fylls aldrig i.",
       site: "Webbplats eller mönster",
       sitePlaceholder: "example.com eller *.example.com",
       default: "Standard",
@@ -1154,6 +1154,9 @@ export const sv = {
       storageDisk: "{free} ledigt av {total} på den här disken",
       storageEmpty: "Inget lagras i biblioteket ännu.",
       storageHidden: "{size} dolt i innehållsinställningarna",
+      storageHiddenLabel: "Dolt",
+      storageRefresh: "Uppdatera",
+      storageOpen: "Öppna",
       storageError: "Det gick inte att läsa bibliotekets lagring.",
       locationsSection: "Filer på disk",
       locationsDescription:
@@ -2474,7 +2477,7 @@ export const sv = {
       },
     },
     resources: {
-      title: "System",
+      title: "System och motor",
       description: "Övervaka maskinvara och lagring på denna Unsloth-server.",
       liveUpdates: "Direktuppdateringar",
       floatingWindow: "Flytande fönster",
@@ -2648,6 +2651,13 @@ export const sv = {
       storage: {
         title: "Lagring",
         systemDisk: "Systemdisk",
+        systemUsed: "{used} av {total} används på systemdisken",
+        modelsDiskSummary: "Enheten för modellmappen: {used} av {total} används, {free} ledigt",
+        segmentModels: "Modeller",
+        segmentCaches: "Cacheminnen",
+        segmentOther: "Övrigt",
+        segmentFree: "Ledigt",
+        refreshAction: "Uppdatera",
         modelsDisk: "Modelldisk",
         diskUsage: "{used} används / {total}",
         diskFree: "{free} ledigt",
@@ -2954,6 +2964,11 @@ export const sv = {
       showReplyTimesDescription: "Visa under varje svar när det blev klart.",
       showReplyTimesKeywords:
         "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
+      showGenerationDetails: "Genereringsdetaljer",
+      showGenerationDetailsDescription:
+        "Visa hastighet och antal token live medan ett svar strömmas, och var en lokal modells lager placerades.",
+      showGenerationDetailsKeywords:
+        "detaljer hastighet token statistik lager avlastning verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",

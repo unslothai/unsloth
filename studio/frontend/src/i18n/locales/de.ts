@@ -72,7 +72,7 @@ export const de = {
       cursorDescription: "Zeigt einen Zeiger dort, wo Modelle auf der Seite klicken, tippen und ziehen",
       askEveryTime: "Jedes Mal fragen",
       permissionsTitle: "Agent-Berechtigungen",
-      permissionsDescription: "Lege Standardwerte fest und füge Ausnahmen für bestimmte Websites hinzu. Passwort- und Zahlungsfelder werden nie ausgefüllt, egal was hier steht.",
+      permissionsDescription: "Standardwerte und Ausnahmen pro Website festlegen. Passwort- und Zahlungsfelder werden nie ausgefüllt.",
       site: "Website oder Muster",
       sitePlaceholder: "example.com oder *.example.com",
       default: "Standard",
@@ -1048,6 +1048,9 @@ export const de = {
       storageDisk: "{free} frei von {total} auf diesem Laufwerk",
       storageEmpty: "In der Bibliothek ist noch nichts gespeichert.",
       storageHidden: "{size} in den Inhaltseinstellungen ausgeblendet",
+      storageHiddenLabel: "Ausgeblendet",
+      storageRefresh: "Aktualisieren",
+      storageOpen: "Öffnen",
       storageError: "Der Speicher der Bibliothek konnte nicht gelesen werden.",
       locationsSection: "Dateien auf dem Datenträger",
       locationsDescription: "Wo Unsloth jede Dateiart speichert. Bibliotheksordner sind Beschriftungen in Unsloth, keine Ordner auf dem Datenträger. Feinabstimmungen und Exporte bleiben, wo sie sind, da Training und Chats sie über ihren Pfad finden.",
@@ -2337,7 +2340,7 @@ export const de = {
       },
     },
     resources: {
-      title: "System",
+      title: "System und Engine",
       description:
         "Überwachen Sie Hardware und Speicher dieses Unsloth-Servers.",
       liveUpdates: "Live-Updates",
@@ -2494,6 +2497,13 @@ export const de = {
       storage: {
         title: "Speicher",
         systemDisk: "Systemfestplatte",
+        systemUsed: "{used} von {total} auf der Systemfestplatte belegt",
+        modelsDiskSummary: "Laufwerk des Modellordners: {used} von {total} belegt, {free} frei",
+        segmentModels: "Modelle",
+        segmentCaches: "Caches",
+        segmentOther: "Sonstiges",
+        segmentFree: "Frei",
+        refreshAction: "Aktualisieren",
         modelsDisk: "Modell-Datenträger",
         diskUsage: "{used} belegt / {total}",
         diskFree: "{free} frei",
@@ -2796,6 +2806,11 @@ export const de = {
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
+      showGenerationDetails: "Generierungsdetails",
+      showGenerationDetailsDescription:
+        "Tempo und Tokenzahl live anzeigen, während eine Antwort gestreamt wird, und wo die Schichten eines lokalen Modells liegen.",
+      showGenerationDetailsKeywords:
+        "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",

@@ -6,6 +6,7 @@ norms, LoRA, NF4). UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE turns it o
 
 import contextlib
 import functools
+import inspect
 import os
 import sys
 import types
@@ -21,6 +22,55 @@ _COMPILE_OPTIONS = {
     "shape_padding": True,
     "triton.cudagraphs": False,
 }
+# Opt-in per-block CUDA graphs; only pays off for static shapes.
+if os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1":
+    _COMPILE_OPTIONS["triton.cudagraphs"] = True
+# Shape cap: variable lengths recorded a graph set per length (3.5x slower, pool grew every step).
+# Past the cap graphs go off for the whole layer kind; admitted shapes alone still grew the pool.
+try:
+    _CUDAGRAPH_MAX_SHAPES = max(0, int(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "8")))
+except ValueError:
+    _CUDAGRAPH_MAX_SHAPES = 8
+
+
+class _CloneGrad(torch.autograd.Function):
+    """Identity; backward copies the input gradient out of the CUDA graph pool."""
+
+    @staticmethod
+    def forward(ctx, x):
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad.clone()
+
+
+def _clone_outputs(out):
+    import torch.utils._pytree as pytree
+    return pytree.tree_map(lambda x: x.clone() if torch.is_tensor(x) else x, out)
+
+
+def _isolate_supported():
+    # torch 2.13+: per-call recompile_limit and isolate_recompiles (own cache bucket per region).
+    try:
+        params = inspect.signature(torch.compile).parameters
+    except (TypeError, ValueError):
+        return False
+    return "isolate_recompiles" in params and "recompile_limit" in params
+
+
+_ISOLATE_RECOMPILES = _isolate_supported()
+
+
+def _region_recompile_limit(kinds):
+    """Graphs per block region before eager. Measured at most 4 per kind (Gemma3 GRPO: 20 for 2)."""
+    env = os.environ.get("UNSLOTH_BLOCK_COMPILE_RECOMPILE_LIMIT", "")
+    try:
+        if int(env) > 0:
+            return int(env)
+    except ValueError:
+        pass
+    return max(16 * kinds + 16, 32)
 
 
 # gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
@@ -702,11 +752,20 @@ def _layer_kind(layer):
     )
 
 
-def _wrap(cls, compile_options):
+def _wrap(
+    cls,
+    compile_options,
+    kinds = 1,
+):
     original = cls.forward
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
-    compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
+    isolate = {}
+    if _ISOLATE_RECOMPILES:
+        isolate = dict(isolate_recompiles = True, recompile_limit = _region_recompile_limit(kinds))
+    compiled = torch.compile(
+        original, fullgraph = False, dynamic = None, options = compile_options, **isolate
+    )
     try:
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
     except Exception:
@@ -719,6 +778,19 @@ def _wrap(cls, compile_options):
     # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
     # a failure is also the starting mode for later layers of the same kind.
     state = {"reported": set(), "start": {}}
+    # Under Unsloth checkpointing each block call is a new cudagraph generation: the next replay
+    # overwrites this block's outputs and input gradient, so both are cloned out of the pool.
+    graphs = bool(compile_options.get("triton.cudagraphs"))
+    if graphs:
+        plain = torch.compile(
+            original,
+            fullgraph = False,
+            dynamic = None,
+            options = {**compile_options, "triton.cudagraphs": False},
+            **isolate,
+        )
+    graph_shapes = set()
+    graphs_off = [False]
 
     def run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
@@ -727,6 +799,17 @@ def _wrap(cls, compile_options):
         try:
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
             with capture_scratch():
+                if graphs and not graphs_off[0]:
+                    shape = tuple(hidden_states.shape)
+                    if shape not in graph_shapes:
+                        graph_shapes.add(shape)
+                        graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
+                if graphs and graphs_off[0]:
+                    return plain(self, hidden_states, *args, **kwargs)
+                if graphs:
+                    if hidden_states.requires_grad and torch.is_grad_enabled():
+                        hidden_states = _CloneGrad.apply(hidden_states)
+                    return _clone_outputs(compiled(self, hidden_states, *args, **kwargs))
                 return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
@@ -1083,7 +1166,9 @@ def patch_block_compile(model):
     kinds = {}
     for layer in compiled_layers:
         kinds.setdefault(type(layer), set()).add(_layer_kind(layer))
-    _raise_cache_limit(max(len(k) for k in kinds.values()))
+    if not _ISOLATE_RECOMPILES:
+        # Older torch: one global per-code-object limit. 2.13+ sets a limit per region in _wrap.
+        _raise_cache_limit(max(len(k) for k in kinds.values()))
     # The wrap is per class: instances outside the decoder lists (T5 encoder) stay stock.
     found = {id(layer) for layer, _ in layers}
     for module in model.modules():
@@ -1093,7 +1178,7 @@ def patch_block_compile(model):
     for cls in classes:
         if getattr(cls.forward, _MARK, False):
             continue
-        _wrap(cls, _COMPILE_OPTIONS)
+        _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
         wrapped.append(cls.__name__)
     if wrapped:
         print(f"Unsloth: compiling each transformer block as one region ({', '.join(wrapped)}).")

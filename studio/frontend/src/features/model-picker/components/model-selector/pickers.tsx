@@ -3136,6 +3136,7 @@ export function HubModelPicker({
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
+  onDeviceInventoryChange,
   onEject,
   onEjectAll,
   task,
@@ -3173,6 +3174,7 @@ export function HubModelPicker({
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "connected";
   sectionToggle?: ReactNode;
+  onDeviceInventoryChange?: (hasModels: boolean) => void;
   onEject?: (modelId?: string) => void;
   onEjectAll?: () => void;
   /** Restrict results to a pipeline task; undefined = all tasks (the chat default). */
@@ -6246,6 +6248,28 @@ export function HubModelPicker({
     // Fine-tuned models are on-device too: do not show the empty state above a non-empty Fine-tuned section.
     unpinnedFineTunedRows.length === 0;
 
+  // Resolve against this picker's task/workflow after inventory arrives, never against a
+  // search miss or a format filter. Custom folders and fine-tuned models count too.
+  const deviceInventoryEmpty =
+    downloadedEmpty && sortedCustomFolderModels.length === 0;
+  useEffect(() => {
+    if (
+      cachedReady &&
+      !query.trim() &&
+      !debouncedQuery.trim() &&
+      formatFilter === "all"
+    ) {
+      onDeviceInventoryChange?.(!deviceInventoryEmpty);
+    }
+  }, [
+    cachedReady,
+    deviceInventoryEmpty,
+    query,
+    debouncedQuery,
+    formatFilter,
+    onDeviceInventoryChange,
+  ]);
+
   // Sort dropdown inline right of the section toggle; options depend on the tab and stay visible
   // while searching. Fixed width matches the Search Hub button.
   const sortTriggerClassName =
@@ -8983,7 +9007,7 @@ export function HubModelPicker({
             <button
               type="button"
               onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-full bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
               title={ejectsAll ? "Eject all models" : "Eject model"}
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
