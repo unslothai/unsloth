@@ -354,7 +354,6 @@ def test_simulation_without_plan_or_chat_nodes_warns():
 
 
 def test_the_memory_prompt_keeps_a_stable_prefix_across_turns():
-    # llama-server reuses only a common prefix: what changes every turn (clock, recalled memories) must come last.
     state = {
         "world": normalize_world(SIM_RAW, seed = 1),
         "npc_id": "bea",

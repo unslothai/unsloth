@@ -50,7 +50,6 @@ export interface WorldGameHandle {
   destroy(): void;
   playerTile(): Point;
   removeItem(id: string): void;
-  /** Put a villager or item added while playing on the map; the terrain stays as it is. */
   addNpc(npc: WorldNpc, at: Point): void;
   addItem(item: WorldItem, at: Point): void;
   addMarker(id: string, at: Point, icon: string, label: string): void;

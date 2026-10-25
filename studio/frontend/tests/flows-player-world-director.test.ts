@@ -99,7 +99,6 @@ test("a patch adds a quest, item and villager on reachable free tiles, and the m
     for (const o of occupied())
       assert.ok(Math.abs(o.x - p.x) + Math.abs(o.y - p.y) > 1);
   }
-  // Inside the region asked for when it has room.
   const it = out.items[0];
   assert.ok(it.x >= 2 && it.x < 10 && it.y >= 2 && it.y < 8);
   assert.deepEqual(out.state.activeQuests, ["ring_bell"]);
@@ -156,18 +155,15 @@ test("patches with dangling or reused ids, or past a limit, are dropped", () => 
       ...PATCH,
       npcs: [{ id: "tom", name: "Tom 2", persona: "", greeting: "" }],
     },
-    // One new id for both the villager and the item.
     {
       ...PATCH,
       quest: { ...PATCH.quest, requires_item: "mira" },
       items: [{ ...PATCH.items![0], id: "mira" }],
     },
-    // The rod is already what The Lost Rod asks for.
     { ...PATCH, quest: { ...PATCH.quest, requires_item: "rod" }, items: [] },
   ];
   for (const p of bad)
     assert.equal(D.applyPatch(SPEC, map, s, p, occupied()), null);
-  // An item the player carries or picked up is not asked for again.
   const cup = {
     ...SPEC,
     items: [...SPEC.items, { id: "cup", name: "Cup", description: "" }],
@@ -217,7 +213,6 @@ test("additions survive save and load, and keep their quests and items", () => {
     additions: undefined,
   });
   assert.deepEqual(old?.additions, D.noAdditions());
-  // Junk in a save is dropped: a quest whose giver is gone, an item off the map.
   const junk = D.additionsOf(
     {
       quests: [{ ...PATCH.quest, giver: "ghost" }],
@@ -243,7 +238,6 @@ test("an added villager's mind survives save and load", () => {
   const before = { ...W.initialWorldState(sim), completedQuests: ["lost_rod"] };
   const out = D.applyPatch(sim, map, before, PATCH, occupied());
   assert.ok(out);
-  // The new villager has a mind with needs from the moment it is added, not only after a reload.
   assert.ok(out.state.npc.mira?.needs);
   assert.ok(before.npc.tom);
   assert.equal(out.state.npc.tom, before.npc.tom);
@@ -296,6 +290,5 @@ test("the player keeps the map from the generated world and adds through the gam
   // A summary cancelled by a new message or a load does not go on to start the director.
   assert.match(src, /if \(turn === messages\.current\) await direct/);
   assert.match(src, /loads\.current \+= 1;[^}]*messages\.current \+= 1;/);
-  // Villagers added while playing take part in the village day like the others.
   assert.match(src, /for \(const n of specRef\.current\.npcs\)/);
 });

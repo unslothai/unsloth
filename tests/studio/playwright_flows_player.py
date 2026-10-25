@@ -139,7 +139,6 @@ def play_world(page: Page) -> None:
     page.wait_for_timeout(500)
     shot(page, "world_quest_done")
     calls = page.evaluate("window.__flowsPlayerSmoke.calls")
-    # Finishing the quest also asks the NPC Reply node for the next quest, in the background.
     assert all(c["inputs"]["state"].get("task") in (None, "director") for c in calls), calls
     replies = [c for c in calls if not c["inputs"]["state"].get("task")]
     assert [c["entry"] for c in replies] == ["reply", "reply"], calls

@@ -60,11 +60,9 @@ test("turns are numbered and a summary is due only past the threshold", () => {
 });
 
 test("with summaries on, a turn is never dropped before it is summarised", () => {
-  // Summaries keep failing: every turn stays, past the 40 the panel shows.
   let s = talk(100, true);
   assert.equal(s.talks.tom.length, 100);
   assert.equal(texts(s)[0], "t0");
-  // Once summarised, older turns go first and the history a reply reads starts after the summary.
   s = W.foldSummary(s, "tom", "Pip asked about fish.", 79);
   assert.equal(s.talks.tom.length, 40);
   assert.equal(texts(s)[0], "t60");
@@ -72,7 +70,6 @@ test("with summaries on, a turn is never dropped before it is summarised", () =>
     W.talkHistory(s, "tom").map((t) => t.text),
     Array.from({ length: 20 }, (_, i) => `t${80 + i}`),
   );
-  // A summary from before a newer one changes nothing.
   assert.equal(W.foldSummary(s, "tom", "old", 40), s);
   s = W.addTurn(s, "tom", { role: "player", text: "next" }, true);
   assert.equal(s.talks.tom.at(-1)?.seq, 100);

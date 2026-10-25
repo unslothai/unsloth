@@ -39,7 +39,6 @@ def test_summary_sits_in_the_stable_prefix():
         "Stay in character.",
     )
     assert SUMMARY["text"] in a_sys and SUMMARY["text"] not in a_prompt
-    # Same summary, later turn: the system prompt is byte for byte the same, so the cached prefix holds.
     assert a_sys == b_sys
     assert npc_prompt(_classic_state(), "Stay in character.") == (CLASSIC_SYSTEM, CLASSIC_PROMPT)
 
@@ -78,7 +77,6 @@ def test_summarise_task_folds_turns():
     call = ctx.llm_calls[0]
     assert call["schema"] is SUMMARY_SCHEMA
     assert SUMMARY["text"] in call["prompt"] and "line 19" in call["prompt"]
-    # A summary that comes back empty fails the call, so the player keeps every turn.
     ctx = FakeCtx("world.npc_reply", inputs = {"state": state}, llm = lambda **kw: {"summary": ""})
     with pytest.raises(FlowNodeError):
         run(world_nodes.world_npc_reply(ctx))
