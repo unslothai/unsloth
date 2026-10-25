@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read a pipeline's ``.fp16`` weight twins instead of its default fp32 files when the load casts to fp16 anyway.
+"""Read ``.fp16`` weight twins instead of fp32 defaults on fp16 loads (bit-identical after the cast).
 
-SDXL: 6.5 GB of twins instead of 12.9 GB fp32, bit-identical after the cast. fp16 targets only: fp16 -> bf16
-rounds differently from fp32 -> bf16. Requires a single-file twin for EVERY loaded component and no class pinning
-fp32 modules (would upcast fp16-rounded weights). Kill switch: ``UNSLOTH_DIFFUSION_FP16_VARIANT=0``.
+fp16 targets only (fp16 -> bf16 rounds differently); needs a single-file twin for EVERY component and no class
+pinning fp32 modules. Kill switch: ``UNSLOTH_DIFFUSION_FP16_VARIANT=0``.
 """
 
 from __future__ import annotations
@@ -41,7 +40,6 @@ def is_fp16_dtype(dtype: Any) -> bool:
 
 
 def is_fp16_twin(rfilename: str) -> bool:
-    """True for a single-file ``.fp16`` safetensors twin (``<component>/<stem>.fp16.safetensors``)."""
     return bool(_TWIN_SINGLE_RE.match(str(rfilename).rsplit("/", 1)[-1]))
 
 
@@ -60,7 +58,6 @@ def shadowed_twins(paths: Iterable[str]) -> set[str]:
 
 
 def twin_of(rfilename: str) -> Optional[str]:
-    """Twin path of a single-file default safetensors, else None."""
     folder, _, name = str(rfilename).rpartition("/")
     match = _DEFAULT_SINGLE_RE.match(name)
     if not folder or match is None:
@@ -94,8 +91,7 @@ def plan_fp16_twins(
     *,
     components: Optional[Iterable[str]] = None,
 ) -> Optional[dict[str, str]]:
-    """``{component: twin file}`` when every weight-bearing component in ``components`` (default: all manifest
-    entries) has a single-file fp16 twin in ``names``, else None."""
+    """``{component: twin}`` when every weight-bearing component has a single-file twin in ``names``, else None."""
     if not isinstance(model_index, Mapping):
         return None
     specs: dict[str, tuple[Any, Any]] = {}
@@ -181,8 +177,7 @@ def local_fp16_variant(
     torch_dtype: Any = None,
     supplied: Iterable[str] = (),
 ) -> Optional[str]:
-    """``"fp16"`` when every non-``supplied`` component has its twin on disk and the load is plain fp16 (no
-    per-component dtype map) or the defaults are missing (twins-only snapshot), else None."""
+    """``"fp16"`` when every non-supplied component has a twin on disk and the load is plain fp16 or twins-only."""
     if not fp16_variant_enabled() or not snapshot or not os.path.isdir(snapshot):
         return None
     index = read_model_index(snapshot)

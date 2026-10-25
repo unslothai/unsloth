@@ -15498,8 +15498,7 @@ def _pipeline_resident_weight(rfilename: str) -> bool:
 
 
 def _swap_in_fp16_twins(repo_id: str, info: Any, picked: list[Any], hf_token: Any) -> list[Any]:
-    """``picked`` with default safetensors swapped for ``.fp16`` twins when every component has one; unchanged
-    when the defaults are cached and the twins are not (cached fp32 beats a fresh download)."""
+    """``picked`` with defaults swapped for ``.fp16`` twins; unchanged when only the defaults are cached."""
     if not fp16_variant_enabled():
         return picked
     try:
