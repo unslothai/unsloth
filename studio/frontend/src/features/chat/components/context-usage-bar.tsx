@@ -141,8 +141,10 @@ export const ContextUsageBar: FC<
     className?: string;
     compactUnknownAsIcon?: boolean;
     pinOnClick?: boolean;
+    /** Replaces the hover surface's shape and colour (the API page's pill). */
+    hoverClassName?: string;
   }
-> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, ...input }) => {
+> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, ...input }) => {
   const pin = useClickPin(pinOnClick);
   const state = deriveContextUsageBar(input);
   if (!state) return null;
@@ -163,7 +165,7 @@ export const ContextUsageBar: FC<
     : `calc(${faceWidthCh(face)}ch + 5 * var(--spacing))`;
   const compactWidth =
     compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${faceWidthCh(compactFace)}ch + 5 * var(--spacing))`;
-  const hover = "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
+  const hover = hoverClassName ?? "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
 
   return (
     <Tooltip {...pin?.root}>

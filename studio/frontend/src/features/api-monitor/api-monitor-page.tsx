@@ -1233,7 +1233,7 @@ export function ApiMonitorPage(): ReactElement {
         disabled={
           ejecting || modelLoading || (model.active && !canEditSettings)
         }
-        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
           icon={Settings02Icon}
@@ -1253,7 +1253,7 @@ export function ApiMonitorPage(): ReactElement {
         aria-label={`Reload ${model.name}`}
         onClick={() => void reload.reloadServed(model)}
         disabled={reloadBusy}
-        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
           icon={ReloadIcon}
@@ -1277,7 +1277,7 @@ export function ApiMonitorPage(): ReactElement {
         aria-label={`Eject ${model.name}`}
         onClick={() => void ejectServed(model)}
         disabled={ejecting || modelLoading}
-        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
           icon={RemoveCircleIcon}
@@ -1296,7 +1296,7 @@ export function ApiMonitorPage(): ReactElement {
         aria-label={`API example for ${model.name}`}
         aria-haspopup="dialog"
         onClick={() => setExampleModel(model)}
-        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon icon={CodeIcon} strokeWidth={1.75} className="size-4" />
       </Button>
@@ -1345,9 +1345,11 @@ export function ApiMonitorPage(): ReactElement {
     return (
       <Fact label="Context">
         {/* Chat's header chip; hover, or click to pin, for the prompt and reply split. */}
+        {/* A pill in the row icons' light hover; the row icons take its dark hover in turn. */}
         <ContextUsageChip
           pinOnClick={true}
-          className="-my-1.5"
+          hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
+          className="-my-1.5 [&>button]:rounded-full"
           used={used}
           total={windowSize}
           promptTokens={last?.prompt_tokens ?? undefined}
