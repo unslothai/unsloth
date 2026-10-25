@@ -345,3 +345,65 @@ def test_simulation_without_plan_or_chat_nodes_warns():
         world["entry_points"] == {"npc_reply": "r", "npc_plan": "p", "npc_chat": "c"}
         and not warnings
     )
+
+
+def test_the_memory_prompt_keeps_a_stable_prefix_across_turns():
+    state = {
+        "world": normalize_world(SIM_RAW, seed = 1),
+        "npc_id": "bea",
+        "history": [{"role": "player", "text": "hello"}, {"role": "npc", "text": "Morning!"}],
+        "player_message": "Any party plans?",
+        "clock": 8 * 60,
+    }
+    first = npc_prompt(state, "Stay in character.", [_record(0, "I bake at dawn")])
+    later = npc_prompt(
+        {**state, "clock": 9 * 60}, "Stay in character.", [_record(1, "Tom owes me a pie")]
+    )
+    assert first[0] == later[0]
+    stable = first[1].split("It is ")[0]
+    assert stable and later[1].startswith(stable) and "Conversation so far" in stable
+
+
+def test_a_slow_embedder_never_holds_up_a_live_reply(monkeypatch):
+    import asyncio
+    import time
+
+    world_nodes._VECTORS.clear()
+    calls = []
+
+    async def slow_embed(ctx, texts):
+        calls.append(list(texts))
+        await asyncio.sleep(1.5)
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(world_nodes, "embed", slow_embed)
+    monkeypatch.setattr(world_nodes, "REPLY_RECALL_BUDGET_S", 0.2)
+    memory = [
+        _record(0, "I am hosting a party at the cafe", 8),
+        _record(1, "The weather was nice", 1),
+    ]
+    state = {
+        "world": normalize_world(SIM_RAW, seed = 1),
+        "npc_id": "bea",
+        "history": [],
+        "player_message": "Any party plans?",
+        "memory": memory,
+        "clock": 600,
+    }
+    ctx = SimCtx(
+        "world.npc_reply",
+        inputs = {"state": state},
+        llm = lambda **kw: {"text": "Come along!", "remember": []},
+    )
+
+    async def go():
+        started = time.monotonic()
+        reply = (await world_nodes.world_npc_reply(ctx))["reply"]
+        took = time.monotonic() - started
+        await asyncio.sleep(1.6)  # the embedder finishes in the background
+        return reply, took
+
+    reply, took = run(go())
+    assert reply["text"] == "Come along!" and took < 1.0
+    assert any("keywords this turn" in m for _, m in ctx.logs)
+    assert {"I am hosting a party at the cafe", "The weather was nice"} <= set(world_nodes._VECTORS)
