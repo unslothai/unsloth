@@ -26,6 +26,14 @@ import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import { type TileKind, generateMap } from "./procgen";
 import { placeAreas, steerActions, villagerStep } from "./world-actions";
 import {
+  type DirectorPatch,
+  applyPatch,
+  directorDue,
+  directorRequest,
+  noAdditions,
+  withAdditions,
+} from "./world-director";
+import {
   BackgroundQueue,
   type Note,
   type PlanBlock,
@@ -47,14 +55,14 @@ import {
   type WorldState,
   addTurn,
   applyReply,
-  foldSummary,
-  summaryDue,
-  talkHistory,
   deserialize,
+  foldSummary,
   initialWorldState,
   pickUp,
   serialize,
   startQuestsOf,
+  summaryDue,
+  talkHistory,
   withMind,
 } from "./world-state";
 
@@ -168,18 +176,25 @@ function SpriteThumb({
 export function WorldPlayer({
   flowId,
   api,
-  spec,
+  spec: baseSpec,
   canReroll,
   onReroll,
   onExit,
   onReady,
 }: WorldPlayerProps) {
-  const map = useMemo(() => generateMap(spec), [spec]);
+  // The map comes from the generated world only, so quests, items and villagers added while playing never move it.
+  const map = useMemo(() => generateMap(baseSpec), [baseSpec]);
   const host = useRef<HTMLDivElement>(null);
   const game = useRef<WorldGameHandle | null>(null);
-  const [ws, setWs] = useState<WorldState>(() => initialWorldState(spec));
+  const [ws, setWs] = useState<WorldState>(() => initialWorldState(baseSpec));
   const wsRef = useRef(ws);
   wsRef.current = ws;
+  const spec = useMemo(
+    () => withAdditions(baseSpec, ws.additions),
+    [baseSpec, ws.additions],
+  );
+  const specRef = useRef(spec);
+  specRef.current = spec;
   const [loadProgress, setLoadProgress] = useState(0);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
@@ -213,7 +228,7 @@ export function WorldPlayer({
     [spec.items],
   );
 
-  const sim = useMemo(() => simOf(spec), [spec]);
+  const sim = useMemo(() => simOf(baseSpec), [baseSpec]);
   const planEntry = sim ? spec.entry_points?.npc_plan : undefined;
   const chatEntry = sim ? spec.entry_points?.npc_chat : undefined;
   const queue = useMemo(
@@ -223,9 +238,9 @@ export function WorldPlayer({
   useEffect(() => () => queue.clear(), [queue]);
   const busy = useRef(new Set<string>());
   const steered = useRef(new Set<string>());
-  const withNeeds = useMemo(() => needsOn(spec), [spec]);
+  const withNeeds = useMemo(() => needsOn(baseSpec), [baseSpec]);
   const offers = useMemo(() => advertisements(sim?.places ?? []), [sim]);
-  const areas = useMemo(() => placeAreas(spec), [spec]);
+  const areas = useMemo(() => placeAreas(baseSpec), [baseSpec]);
   const [background, setBackground] = useState<string | null>(null);
 
   // NPCs within sight remember what the player does.
@@ -283,6 +298,8 @@ export function WorldPlayer({
     },
     [npcById, spec, toast, witness],
   );
+  const onInteractRef = useRef(onInteract);
+  onInteractRef.current = onInteract;
 
   // Load art, then boot Phaser (its own chunk).
   useEffect(() => {
@@ -292,23 +309,35 @@ export function WorldPlayer({
     (async () => {
       try {
         const [art, mod] = await Promise.all([
-          loadArt(api, spec, (f) => live && setLoadProgress(f)),
+          loadArt(api, baseSpec, (f) => live && setLoadProgress(f)),
           import("./phaser-game"),
         ]);
         if (!live || !host.current) return;
+        // Things added while playing (from a save) stand where they were placed.
+        const added = wsRef.current.additions ?? noAdditions();
         handle = mod.createWorldGame(
           host.current,
-          spec,
-          map,
+          specRef.current,
+          {
+            ...map,
+            npcs: {
+              ...map.npcs,
+              ...Object.fromEntries(added.npcs.map((n) => [n.id, n])),
+            },
+            items: {
+              ...map.items,
+              ...Object.fromEntries(added.items.map((i) => [i.id, i])),
+            },
+          },
           art,
           wsRef.current.picked,
           wsRef.current.player,
           {
             onNearby: (t) => setNearby(t),
-            onInteract,
+            onInteract: (t) => onInteractRef.current(t),
             onRegion: (id) => {
               setRegion(id);
-              const r = spec.regions.find((x) => x.id === id);
+              const r = baseSpec.regions.find((x) => x.id === id);
               if (r)
                 toast(
                   r.on_enter_text ? `${r.name} · ${r.on_enter_text}` : r.name,
@@ -331,7 +360,7 @@ export function WorldPlayer({
     };
     // `mount` re-creates the game after loading a save.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, spec, map, mount]);
+  }, [api, baseSpec, map, mount]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -436,6 +465,69 @@ export function WorldPlayer({
     },
     [api, flowId, replyEntry, spec, summarising],
   );
+
+  // The world keeps growing: once a quest is finished (or none is left) the NPC Reply node writes the next one in
+  // the background, one at a time; a message from the player or a load cancels it.
+  const growing = baseSpec.new_quests !== false;
+  const directorRun = useRef<AbortController | null>(null);
+  const events = useRef<string[]>([]);
+  const direct = useCallback(
+    async (justCompleted: boolean) => {
+      const s = wsRef.current;
+      const played = specRef.current;
+      if (
+        !growing ||
+        !replyEntry ||
+        directorRun.current ||
+        !directorDue(played, s, justCompleted)
+      )
+        return;
+      const generation = loads.current;
+      const run = new AbortController();
+      directorRun.current = run;
+      try {
+        const res = await api.invoke(
+          flowId,
+          replyEntry,
+          { state: directorRequest(played, s, events.current) },
+          { signal: run.signal },
+        );
+        const patch = (
+          res.outputs.reply as { patch?: DirectorPatch } | undefined
+        )?.patch;
+        if (!patch || run.signal.aborted || generation !== loads.current)
+          return;
+        const h = game.current;
+        const occupied = [
+          ...Object.values(h?.npcTiles() ?? map.npcs),
+          ...Object.values(map.items),
+          ...(wsRef.current.additions?.items ?? []),
+          ...(h ? [h.playerTile()] : []),
+        ];
+        const now = wsRef.current;
+        const added = applyPatch(specRef.current, map, now, patch, occupied);
+        if (!added) return;
+        setWs(added.state);
+        for (const n of added.npcs) h?.addNpc(n, n);
+        for (const i of added.items) h?.addItem(i, i);
+        const giver = withAdditions(baseSpec, added.state.additions).npcs.find(
+          (n) => n.id === patch.quest.giver,
+        );
+        toast(
+          `New quest: ${patch.quest.title}${giver ? ` · ask ${giver.name}` : ""}`,
+        );
+      } catch {
+        // No new quest this time; the next finished quest tries again.
+      } finally {
+        if (directorRun.current === run) directorRun.current = null;
+      }
+    },
+    [api, baseSpec, flowId, growing, map, replyEntry, toast],
+  );
+  // A world with no quest left (or none at all) gets one as soon as play starts.
+  useEffect(() => {
+    if (ready && started) void direct(false);
+  }, [ready, started, direct]);
 
   // Village life: no new background call while the player talks, and the one in flight is dropped.
   useEffect(() => {
@@ -599,7 +691,7 @@ export function WorldPlayer({
         string,
         NonNullable<ReturnType<typeof villagerStep>>
       > = {};
-      for (const n of spec.npcs) {
+      for (const n of baseSpec.npcs) {
         const mind = s.npc[n.id] ?? emptyMind();
         if (planEntry && mind.planDay !== day)
           queue.push({
@@ -612,7 +704,7 @@ export function WorldPlayer({
         const life = withNeeds
           ? villagerStep({
               g,
-              spec,
+              spec: baseSpec,
               sim,
               npcId: n.id,
               mind,
@@ -665,7 +757,7 @@ export function WorldPlayer({
     sim,
     ready,
     started,
-    spec,
+    baseSpec,
     planEntry,
     chatEntry,
     queue,
@@ -706,6 +798,8 @@ export function WorldPlayer({
     const npcId = talking;
     summaryRun.current?.abort();
     summaryRun.current = null;
+    directorRun.current?.abort();
+    directorRun.current = null;
     const history = talkHistory(wsRef.current, npcId);
     const before = addTurn(
       wsRef.current,
@@ -792,7 +886,13 @@ export function WorldPlayer({
       for (const id of state.picked)
         if (!prior.picked.includes(id)) game.current?.removeItem(id);
       for (const n of notes) toast(n);
-      void summarise(npcId, state);
+      events.current = [...events.current, ...notes].slice(-6);
+      const completed =
+        state.completedQuests.length > prior.completedQuests.length;
+      void (async () => {
+        await summarise(npcId, state);
+        await direct(completed);
+      })();
     } catch (e) {
       if (generation !== loads.current) return;
       setLive(null);
@@ -836,7 +936,7 @@ export function WorldPlayer({
       toast(`Could not load: ${e instanceof Error ? e.message : e}`);
       return;
     }
-    const state = rec ? deserialize(spec, rec.state) : null;
+    const state = rec ? deserialize(baseSpec, rec.state) : null;
     if (!state) {
       toast("That save is empty or from another world");
       return;
@@ -844,6 +944,8 @@ export function WorldPlayer({
     loads.current += 1;
     summaryRun.current?.abort();
     summaryRun.current = null;
+    directorRun.current?.abort();
+    directorRun.current = null;
     queue.clear();
     busy.current.clear();
     setBackground(null);

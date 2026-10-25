@@ -14,6 +14,12 @@ import {
 } from "./needs";
 import type { Point } from "./procgen";
 import {
+  type WorldAdditions,
+  additionsOf,
+  noAdditions,
+  withAdditions,
+} from "./world-director";
+import {
   type MemoryRecord,
   type NpcMind,
   type PlanBlock,
@@ -63,6 +69,8 @@ export interface WorldState {
   following?: string[];
   /** NPC id -> place they agreed to head to; `until` is a game minute, null where the clock does not run. */
   errands?: Record<string, Errand>;
+  /** Quests, items and villagers added while playing; optional so older saves load. */
+  additions?: WorldAdditions;
 }
 
 export interface Errand {
@@ -129,6 +137,7 @@ export function initialWorldState(spec: WorldSpec): WorldState {
     npc: simOf(spec) ? initialMinds(spec, clock) : {},
     following: [],
     errands: {},
+    additions: noAdditions(),
   };
 }
 
@@ -353,7 +362,9 @@ function mindOf(raw: unknown, fresh: NpcMind): NpcMind {
 
 function summariesOf(raw: unknown): Record<string, NpcSummary> {
   const out: Record<string, NpcSummary> = {};
-  for (const [id, v] of Object.entries((raw ?? {}) as Record<string, unknown>)) {
+  for (const [id, v] of Object.entries(
+    (raw ?? {}) as Record<string, unknown>,
+  )) {
     const x = v as Partial<NpcSummary> | null;
     if (x && typeof x.text === "string" && typeof x.upto === "number")
       out[id] = { text: x.text, upto: x.upto };
@@ -367,13 +378,16 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   if (!raw || typeof raw !== "object" || (v !== 1 && v !== WORLD_SAVE_VERSION))
     return null;
   const r = raw as Partial<WorldState>;
-  const itemIds = new Set(spec.items.map((i) => i.id));
-  const questIds = new Set(spec.quests.map((q) => q.id));
+  // Added quests and items come back before anything is checked against the world.
+  const additions = additionsOf(r.additions, spec);
+  const played = withAdditions(spec, additions);
+  const itemIds = new Set(played.items.map((i) => i.id));
+  const questIds = new Set(played.quests.map((q) => q.id));
   const fresh = initialWorldState(spec);
   const npc: Record<string, NpcMind> = {};
   for (const id of Object.keys(fresh.npc))
     npc[id] = r.npc?.[id] ? mindOf(r.npc[id], fresh.npc[id]) : fresh.npc[id];
-  const npcIds = new Set(spec.npcs.map((n) => n.id));
+  const npcIds = new Set(played.npcs.map((n) => n.id));
   const places = placeIds(spec);
   const errands: Record<string, Errand> = {};
   for (const [id, e] of Object.entries(
@@ -403,5 +417,6 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
       npcIds.has(id),
     ),
     errands,
+    additions,
   };
 }

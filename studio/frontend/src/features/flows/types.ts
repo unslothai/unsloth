@@ -474,6 +474,8 @@ export interface WorldSpec {
   simulation?: WorldSimulation;
   /** False when the NPC Reply node's "Summarise long conversations" is off; absent means on. */
   summarise?: boolean;
+  /** False when the NPC Reply node's "Keep generating quests" is off; absent means on. */
+  new_quests?: boolean;
 }
 
 export type RunStatus =
