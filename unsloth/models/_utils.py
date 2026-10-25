@@ -801,7 +801,12 @@ def _flex_tuned_bwd_kernel_options(head_dim, device_ok):
     return dict(_FLEX_TUNED_BWD_KERNEL_OPTIONS)
 
 
-def _flex_tuned_bwd_fits(args, kwargs, options = None, caller_prefixes = ("bwd_", "BLOCK_", "num_")):
+def _flex_tuned_bwd_fits(
+    args,
+    kwargs,
+    options = None,
+    caller_prefixes = ("bwd_", "BLOCK_", "num_"),
+):
     """Whether our tiles (default: the tuned backward ones) can join this call. Not when the caller set
     its own tiles (a partial set merged with ours can break bwd_BLOCK_N1 % bwd_BLOCK_M1 == 0), nor when
     the block mask's sparse blocks are not multiples of our tiles (Inductor's defaults shrink to fit)."""

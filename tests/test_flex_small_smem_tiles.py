@@ -63,7 +63,9 @@ def test_device_gate(devices, cards, expected):
     assert u._flex_small_smem_device_ok() is expected
 
 
-@pytest.mark.parametrize("version,expected", [("2.9.1", False), ("2.10.0", True), ("2.14.1+cu130", True)])
+@pytest.mark.parametrize(
+    "version,expected", [("2.9.1", False), ("2.10.0", True), ("2.14.1+cu130", True)]
+)
 def test_needs_torch_with_prefixed_keys(devices, monkeypatch, version, expected):
     devices(L4)
     monkeypatch.setattr(u.torch, "__version__", version)
@@ -109,7 +111,14 @@ def test_options_need_the_device():
 
 def test_tiles_divide_the_default_sparse_block():
     o = u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
-    for k in ("fwd_BLOCK_M", "fwd_BLOCK_N", "bwd_BLOCK_M1", "bwd_BLOCK_N1", "bwd_BLOCK_M2", "bwd_BLOCK_N2"):
+    for k in (
+        "fwd_BLOCK_M",
+        "fwd_BLOCK_N",
+        "bwd_BLOCK_M1",
+        "bwd_BLOCK_N1",
+        "bwd_BLOCK_M2",
+        "bwd_BLOCK_N2",
+    ):
         assert 128 % o[k] == 0
     assert o["bwd_BLOCK_N1"] % o["bwd_BLOCK_M1"] == 0
     assert o["bwd_BLOCK_M2"] % o["bwd_BLOCK_N2"] == 0
@@ -119,7 +128,11 @@ class _Causal:
     is_causal = True
 
 
-def _wrapped(monkeypatch, small_ok = True, tuned_ok = False):
+def _wrapped(
+    monkeypatch,
+    small_ok = True,
+    tuned_ok = False,
+):
     seen = {}
 
     def fake_flex(module, query, key, value, *args, **kwargs):
@@ -132,9 +145,12 @@ def _wrapped(monkeypatch, small_ok = True, tuned_ok = False):
     return u._wrap_flex_attention_forward(fake_flex), seen
 
 
-def _qkv(q_len, head_dim = 256, grad = True):
+def _qkv(
+    q_len,
+    head_dim = 256,
+    grad = True,
+):
     import torch
-
     return [torch.randn(1, 2, q_len, head_dim, requires_grad = grad) for _ in range(3)]
 
 

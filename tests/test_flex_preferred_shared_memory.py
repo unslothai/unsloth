@@ -60,9 +60,7 @@ def _resolve(config):
     return _utils.resolve_attention_implementation(SupportsFlex, config, supports_sdpa = False)
 
 
-@pytest.mark.parametrize(
-    "torch_version,env", [("2.9.1", ""), ("2.14.0", "0")]
-)
+@pytest.mark.parametrize("torch_version,env", [("2.9.1", ""), ("2.14.0", "0")])
 def test_gemma3_leaves_flex_where_the_template_does_not_fit(cards, monkeypatch, torch_version, env):
     # Without the sm8x small tiles (torch < 2.10, or switched off) the default template must not run.
     monkeypatch.setattr(_utils.torch, "__version__", torch_version)

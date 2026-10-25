@@ -70,8 +70,11 @@ def _sdpa_reference(q, k, v):
     qr, kr, vr = (t.detach().clone().requires_grad_(True) for t in (q, k, v))
     rep = qr.shape[1] // kr.shape[1]
     o = torch.nn.functional.scaled_dot_product_attention(
-        qr.float(), kr.float().repeat_interleave(rep, 1), vr.float().repeat_interleave(rep, 1),
-        is_causal = True, scale = q.shape[-1] ** -0.5,
+        qr.float(),
+        kr.float().repeat_interleave(rep, 1),
+        vr.float().repeat_interleave(rep, 1),
+        is_causal = True,
+        scale = q.shape[-1] ** -0.5,
     )
     o.transpose(1, 2).square().sum().backward()
     return o.transpose(1, 2).detach(), [t.grad.float() for t in (qr, kr, vr)]
