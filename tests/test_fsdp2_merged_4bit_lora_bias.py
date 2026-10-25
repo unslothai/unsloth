@@ -9,8 +9,8 @@ Before, it went to the CPU and `merge_and_unload` raised "Expected all tensors t
 
 - the filter decision, on CPU (modules loaded from their files: importing unsloth needs a GPU);
 - the real path on one GPU: bitsandbytes Linear4bit(bias=True) + PEFT lora_bias, FSDP2 fully_shard on a
-  one-rank NCCL mesh, `fsdp2_gathered` with the filter, then `merge_and_unload` (what unsloth_zoo's
-  merge_and_overwrite_lora runs for merged_4bit).
+  one-rank NCCL mesh, `fsdp2_gathered` with `merged_save_gather_options`, `merge_4bit_lora_layer_by_layer`,
+  then `merge_and_unload` (what save_pretrained_merged runs for merged_4bit).
 """
 
 import importlib.util
@@ -128,9 +128,11 @@ _GPU_SCRIPT = textwrap.dedent(
         fully_shard(block, mesh = mesh)
     fully_shard(model, mesh = mesh)
     out = {"units": len(m.fsdp2_units(model))}
-    offload = m.offload_all_but_4bit_merge_operands(model)
+    # merged_save_gather_options: the save path, 4-bit base staged on the CPU and merged layer by layer.
+    options = m.merged_save_gather_options(model, sys.argv[3])
     try:
-        with m.fsdp2_gathered(model, offload_to_cpu = offload) as writer:
+        with m.fsdp2_gathered(model, **options) as writer:
+            m.merge_4bit_lora_layer_by_layer(model)
             merged = model.base_model.merge_and_unload()
             got = {name: mod.bias.detach().float().cpu() for name, mod in merged.named_modules()
                    if isinstance(mod, bnb.nn.Linear4bit)}
@@ -149,12 +151,13 @@ _GPU_SCRIPT = textwrap.dedent(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU")
-def test_fsdp2_merged_4bit_merges_lora_bias_into_a_sharded_base_bias(tmp_path):
+@pytest.mark.parametrize("save_method", ["merged_4bit", "merged_4bit_forced"])
+def test_fsdp2_merged_4bit_merges_lora_bias_into_a_sharded_base_bias(tmp_path, save_method):
     pytest.importorskip("bitsandbytes")
     pytest.importorskip("peft")
     fsdp = pytest.importorskip("torch.distributed.fsdp")
     if not hasattr(fsdp, "fully_shard") or not torch.distributed.is_nccl_available():
-        pytest.skip("needs FSDP2 fully_shard and NCCL")
+        pytest.skip(reason = "torch without FSDP2 fully_shard or NCCL cannot shard the model")
     from tests._rendezvous_port import free_port
 
     script = tmp_path / "fsdp2_lora_bias_merge.py"
@@ -164,7 +167,7 @@ def test_fsdp2_merged_4bit_merges_lora_bias_into_a_sharded_base_bias(tmp_path):
     if "," in visible:
         env["CUDA_VISIBLE_DEVICES"] = visible.split(",")[0]
     proc = subprocess.run(
-        [sys.executable, str(script), str(_ROOT), str(free_port())],
+        [sys.executable, str(script), str(_ROOT), str(free_port()), save_method],
         env = env,
         capture_output = True,
         text = True,

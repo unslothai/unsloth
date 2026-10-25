@@ -341,12 +341,17 @@ def test_a_third_party_key_never_unlocks_a_saved_connection(monkeypatch):
     assert seen == [False]
 
 
+START = "Coding agents (unsloth start)"
+
+
 @pytest.mark.parametrize(
     "record, allowed",
     [
-        ({"role": "owner", "key_name": "Coding agents (unsloth start)"}, True),
-        ({"role": "owner", "key_name": "my script"}, False),
-        ({"role": "member", "key_name": "Coding agents (unsloth start)"}, False),
+        ({"role": "owner", "key_name": START, "key_purpose": "unsloth_start"}, True),
+        ({"role": "owner", "key_name": "my script", "key_purpose": None}, False),
+        # Named like the start key before the name was reserved, but never stamped.
+        ({"role": "owner", "key_name": START, "key_purpose": None}, False),
+        ({"role": "member", "key_name": START, "key_purpose": "unsloth_start"}, False),
     ],
 )
 def test_only_the_owners_unsloth_start_key_unlocks_a_saved_connection(monkeypatch, record, allowed):

@@ -97,7 +97,7 @@ const DividerRule: FC<{ children: ReactNode; className?: string }> = ({
           data-slot="compaction-divider-label"
           // negative margins keep a large target from moving the rule.
           // positioning stops the reply above from covering the target.
-          className="relative -mx-2 -my-2.5 inline-flex shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-2.5 leading-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          className="relative -mx-2 -my-2.5 inline-flex shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-2.5 leading-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
         >
           <ArchiveIcon className="size-3.5" aria-hidden={true} />
           Context compacted

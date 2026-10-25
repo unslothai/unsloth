@@ -659,6 +659,7 @@ def test_a_checkpoint_turn_the_fit_creates_still_carries_the_date(monkeypatch):
         messages,
         payload,
         tools = None,
+        **_kwargs,
     ):
         return [{"role": "system", "content": "Earlier: a summary."}, *messages], None, None
 

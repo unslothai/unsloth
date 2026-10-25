@@ -516,8 +516,10 @@ def h3_te_pin_allowed(payload_bytes: int = 0) -> bool:
 
         from .diffusion_memory import GROUP_OFFLOAD_PIN_ENV, _pin_budget_mib, _pinned_memory_capped
 
+        from .host_pinning import host_pinning_allowed
+
         forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
-        if forced in ("0", "off", "false", "no"):
+        if forced in ("0", "off", "false", "no") or not host_pinning_allowed():
             return False
         if forced in ("1", "on", "true", "yes"):
             return True
@@ -619,7 +621,8 @@ def stream_h3_text_encoder(
     """Stream MiniMax-H3's conditioner leaf by leaf via group offloading, outside the ComponentsManager rotation.
 
     Hooks go on ``text_encoder.model``, which the H3 encode step calls directly. ``pin=None`` decides from
-    ``h3_te_pin_allowed``. Returns ``"stream"`` (pinned) / ``"stream_lazy"``, or None with nothing changed."""
+    ``h3_te_pin_allowed``. Returns ``"stream"`` (pinned) / ``"stream_lazy"`` / ``"sync"`` (integrated GPU: no stream,
+    nothing pinned), or None with nothing changed."""
     import torch
 
     onload = torch.device(device)
@@ -640,8 +643,14 @@ def stream_h3_text_encoder(
     )
     from .diffusion_prequant import _evict_rotation_hook, _unhook_from_manager
 
+    from .host_pinning import host_pinning_allowed
+
     params = inspect.signature(apply_group_offloading).parameters
-    if pin is None:
+    # A stream makes diffusers pin each leaf; an integrated GPU streams synchronously from pageable memory instead.
+    stream = host_pinning_allowed(onload)
+    if not stream:
+        pin = False
+    elif pin is None:
         pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder))
     if pin:
         try:
@@ -654,17 +663,18 @@ def stream_h3_text_encoder(
         "onload_device": onload,
         "offload_device": torch.device("cpu"),
         "offload_type": "leaf_level",
-        "use_stream": True,
+        "use_stream": stream,
     }
-    if "non_blocking" in params:
-        kwargs["non_blocking"] = True
-    if "record_stream" in params:
-        kwargs["record_stream"] = True
-    if "low_cpu_mem_usage" in params:
-        # Already pinned in place, so diffusers' pin_memory() returns the same tensor: no second host copy.
-        kwargs["low_cpu_mem_usage"] = not pin
-    elif not pin:
-        return None
+    if stream:
+        if "non_blocking" in params:
+            kwargs["non_blocking"] = True
+        if "record_stream" in params:
+            kwargs["record_stream"] = True
+        if "low_cpu_mem_usage" in params:
+            # Already pinned in place, so diffusers' pin_memory() returns the same tensor: no second host copy.
+            kwargs["low_cpu_mem_usage"] = not pin
+        elif not pin:
+            return None
     try:
         text_encoder.requires_grad_(False)
         # The int8 weights are buffers, which stock diffusers leaves on the device after offload.
@@ -686,7 +696,7 @@ def stream_h3_text_encoder(
         return None
     # The manager only evicts inside a managed pre_forward; else the last decode's VAE sits beside the encode.
     target.register_forward_pre_hook(_evict_rotation_hook(manager, onload))
-    mode = "stream" if pin else "stream_lazy"
+    mode = ("stream" if pin else "stream_lazy") if stream else "sync"
     if logger is not None:
         logger.info(
             "video.h3_te_stream: conditioner streamed leaf by leaf on %s (%s host copy)",

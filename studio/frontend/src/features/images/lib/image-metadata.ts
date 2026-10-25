@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+import {
+  detailerFromInfotext,
+  detailerInfotextNotApplied,
+  detailerRecordOf,
+  type DetailerRecord,
+} from "./detailer.ts";
 import { parseHiresInfotext } from "./hires-choice.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "./sampler-choice.ts";
 import type { SdControlsCapability } from "./sd-controls.ts";
@@ -755,6 +761,9 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
   if (escaped.length > 0) out.prompt_escaped_brackets = escaped;
   const notApplied: string[] = networks.other.slice();
   const hires: Record<string, string> = {};
+  // ADetailer's own keys (adetailer/args.py), read as one Detailer pass.
+  const adetailer: Record<string, string> = {};
+  const adetailerLabels: Record<string, string> = {};
   let legacySchedule: string | undefined;
   for (const [label, value] of hasSettings ? fields : []) {
     const key = label.toLowerCase();
@@ -796,6 +805,22 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       if (names.length > 0) out.textual_inversions = names;
     }
     else if (key === "shift" && n !== undefined) out.shift = n;
+    // Studio's compare grid: its adapters by exact id (Hub ones too, which a prompt tag matches only locally) and
+    // the prompt enhancer it forced off.
+    else if (key === "loras" && value) {
+      // CSV items: an entry whose id holds a comma or quote is written "id: weight" with "" for a quote.
+      const items = [...value.matchAll(/\s*(?:"((?:[^"]|"")*)"|([^,]+))\s*(?:,|$)/g)].map((m) =>
+        m[1] !== undefined ? m[1].replace(/""/g, '"') : (m[2] ?? "").trim(),
+      );
+      const loras = items.flatMap((item) => {
+        const at = item.lastIndexOf(":");
+        return at > 0 ? [`${item.slice(0, at).trim()}:${item.slice(at + 1).trim()}`] : [];
+      });
+      if (loras.length > 0) out.loras = loras;
+    } else if (key === "prompt enhancement" && value.toLowerCase() === "off") out.prompt_enhancement = "off";
+    // Flux's resolution-dependent shift, as Studio's compare grid writes it.
+    else if (key === "base shift" && n !== undefined) out.base_shift = n;
+    else if (key === "max shift" && n !== undefined) out.max_shift = n;
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
     // "None" skips the parser entirely (brackets are prompt text): Studio's prompt weighting off.
     else if (key === "emphasis") {
@@ -803,6 +828,10 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       else if (value && value.toLowerCase() !== "original")
         notApplied.push(`${label}: ${value}`);
     } else if (key.startsWith("hires")) hires[label] = value;
+    else if (key.startsWith("adetailer ")) {
+      adetailer[key] = value;
+      adetailerLabels[key] = label;
+    }
     else if (key === "sampler") {
       out.sampler = labelId(SAMPLER_LABELS, value);
       // Before AUTOMATIC1111 1.9 the schedule rode on the sampler name: `DPM++ 2M Karras`.
@@ -833,6 +862,10 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
   if (hadHires) Object.assign(out, parseHiresInfotext(hires, typeof out.strength === "number" ? out.strength : undefined, { width: out.width, height: out.height }));
   const hiresKeys = Object.keys(hires);
   if (hiresKeys.length > 0) out.hires = hires;
+  const detailer = detailerFromInfotext(adetailer);
+  if (detailer) out.detailer = detailer;
+  for (const key of detailerInfotextNotApplied(adetailer))
+    notApplied.push(`${adetailerLabels[key]}: ${adetailer[key]}`);
   // txt2img hires fix also writes a denoising strength; without it the strength means img2img,
   // or inpaint when A1111 wrote its mask-only fields.
   if (out.strength !== undefined) {
@@ -925,6 +958,7 @@ export interface RestorableRecipe {
   mask_blur?: number;
   inpaint_only_masked?: boolean;
   inpaint_padding?: number;
+  detailer?: DetailerRecord | null;
   upscale_model?: string | null;
   hires_scale?: number;
   hires_denoise?: number;
@@ -966,6 +1000,7 @@ export const APPLIED_RECIPE_KEYS = [
   "mask_blur",
   "inpaint_only_masked",
   "inpaint_padding",
+  "detailer",
   "upscale_model",
   "hires_scale",
   "hires_denoise",
@@ -1281,6 +1316,7 @@ export function recipeSettings(
         ? r.inpaint_only_masked
         : undefined,
     inpaint_padding: bounded(r, "inpaint_padding"),
+    detailer: detailerRecordOf(r.detailer),
     ...hiresRecipeFields(r),
   };
 }
