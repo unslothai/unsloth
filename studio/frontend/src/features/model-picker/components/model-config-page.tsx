@@ -3658,8 +3658,7 @@ export function ModelConfigPage({
       normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
       storedRecord.config,
     );
-  // Never mounted on demand: the click that saves would move Load. Empty where the checkbox already
-  // says it all (nothing saved, ticked or not).
+  // Always mounted: a status appearing on save would move Load.
   const saveStatus = savedRemember
     ? remember
       ? matchesStored
@@ -3927,8 +3926,7 @@ export function ModelConfigPage({
       }}
     >
       {variant === "page" && showHeader && (
-        // -ml-2.75 cancels the icon's 6px inset in its 28px circle plus the glyph's own ~5px, so the
-        // chevron's stroke starts on the same left edge as the rows below.
+        // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
         <div className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
@@ -4153,14 +4151,13 @@ export function ModelConfigPage({
       <div
         className={cn(
           "mt-5",
-          // Pinned to the popover's scroller, so Load stays in reach however long the settings run.
-          // Sticky offsets start inside the scroller's 18px bottom padding: -bottom-4.5 puts the footer on
-          // the panel's edge, and the negative margins cover that padding with the panel's own fill.
+          // Sticky offsets start inside the scroller's 18px padding: -bottom-4.5 reaches the panel edge,
+          // and the negative margins cover that padding with the panel's fill.
           variant === "page" &&
             "sticky -bottom-4.5 z-10 -mb-4.5 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4.5 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
         )}
       >
-      {/* pt-3.25 puts the Remember text's cap top 18px under the rule, the same as the space under the buttons. */}
+      {/* pt-3.25: Remember's cap top 18px under the rule, as under the buttons. */}
       <div className="flex flex-col gap-3.5 border-t border-border pt-3.25">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
@@ -4180,7 +4177,7 @@ export function ModelConfigPage({
           >
             Remember for this model
           </label>
-          {/* On the checkbox's row, so a status appearing or clearing never moves the buttons. */}
+          {/* On this row so a status change never moves the buttons. */}
           <p
             id={saveStatusId}
             aria-live="polite"

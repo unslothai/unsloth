@@ -100,7 +100,6 @@ export function SharedRunConfigControls({
     <Button
       type="button"
       size="icon-sm"
-      // A filled circle, the same fill as Reset beside it.
       variant="outline"
       className={props.className}
       aria-label="Share"

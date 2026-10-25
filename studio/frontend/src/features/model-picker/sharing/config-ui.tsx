@@ -60,7 +60,6 @@ export function SharedRunConfigActions({
       <Button
         type="button"
         size="icon-sm"
-        // A filled circle, the same fill as Reset beside it.
         variant="outline"
         className={className}
         aria-label="Share"

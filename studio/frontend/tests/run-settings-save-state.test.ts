@@ -34,7 +34,6 @@ test("the save status covers every Remember state and is always rendered", () =>
   ]) {
     assert.ok(CONFIG_PAGE.includes(`"${label}"`), `missing status: ${label}`);
   }
-  // Nothing saved yet says nothing the checkbox does not already say.
   for (const label of ["Not saved yet", "Not remembered for this model"]) {
     assert.ok(!CONFIG_PAGE.includes(`"${label}"`), `redundant status: ${label}`);
   }

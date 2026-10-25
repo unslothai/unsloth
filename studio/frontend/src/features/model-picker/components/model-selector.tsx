@@ -652,14 +652,8 @@ function ModelSelectorContent({
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
         visibleConfigTarget
-          ? // The surface stays the surface: it clips to its own radius and never scrolls. Making
-            // the rounded box the scroller put the scrollbar inside it, running the full height
-            // and straight through the top and bottom right corners, which squared them off on
-            // any machine set to show scrollbars always. The padding moves in with the scroller so
-            // the bar sits beside the content instead of on the edge. !px-0: the list view's padding,
-            // snapped to whole pixels as an inline style when the panel opened, would otherwise stay
-            // and hold the scrollbar 8px off the edge. Same width as the list, so the panel keeps its
-            // size going in and out of Run settings.
+          ? // Clips, never scrolls: as the scroller, the always-on scrollbar squared off its corners.
+            // !px-0: the list view's snapped inline padding would hold the scrollbar 8px off the edge.
             cn(
               "max-h-[var(--radix-popover-content-available-height)] overflow-hidden p-0 !px-0",
               hasExternal
@@ -687,8 +681,7 @@ function ModelSelectorContent({
         disableHoverableContent={true}
       >
         {visibleConfigTarget ? (
-          // 28px to the content left and right, like the picker list's text and dividers, 18px top and bottom; on the right a classic bar's 8px
-          // or an overlay bar's strip capped at 8px, plus 20px.
+          // 28px sides like the list's text; the right is 20px plus the bar, an overlay strip capped at 8px.
           <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
             <ModelConfigPage
               key={modelConfigInstanceKey(
