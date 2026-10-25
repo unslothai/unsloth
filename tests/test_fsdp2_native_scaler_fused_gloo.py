@@ -5,7 +5,8 @@
 adamw_torch_fused. With gradient clipping (unscale_ before step) the stock ShardedGradScaler hands the
 fused optimizer a found_inf of shape [1], and its in-place step-count update fails on the first step.
 On a gloo CPU world of 2: fused AdamW steps through the swapped scaler, an inf on one rank skips the step
-on both ranks, and the result matches the foreach optimizer."""
+on both ranks, and the result matches the foreach optimizer. Without clipping (max_grad_norm = 0) the
+Trainer never calls unscale_, so step() runs the inf check itself: it must agree over ranks too."""
 
 import multiprocessing
 import os
@@ -31,7 +32,11 @@ class _Handler:
         return {"device": "cpu", "init_scale": 2.0**8}
 
 
-def _run(fused, both = False):
+def _run(
+    fused,
+    both = False,
+    clip = True,
+):
     native = _load_native()
     rank = torch.distributed.get_rank()
     old = torch.amp.GradScaler("cpu", init_scale = 2.0**8)
@@ -51,8 +56,9 @@ def _run(fused, both = False):
         scaler.scale(loss).backward()
         if step == 1 and (both or rank == 1):
             model.weight.grad[0, 0] = float("inf")  # one rank (or every rank) overflows: all skip
-        scaler.unscale_(opt)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if clip:
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(opt)
         scaler.update()
         opt.zero_grad(set_to_none = True)
@@ -103,10 +109,11 @@ def _worker(rank, world, port, out):
         res = {}
         for fused in (False, True):
             for both in (False, True):
-                try:
-                    res[fused, both] = _run(fused, both)
-                except Exception as e:  # recorded, asserted in the parent
-                    res[fused, both] = repr(e)
+                for clip in (True, False):
+                    try:
+                        res[fused, both, clip] = _run(fused, both, clip)
+                    except Exception as e:  # recorded, asserted in the parent
+                        res[fused, both, clip] = repr(e)
         res["device"] = _device_kept()
         try:
             res["disabled"] = _disabled()
@@ -129,21 +136,22 @@ def test_swapped_scaler_keeps_the_device(ranks):
         assert res["device"] == ("cpu", True), res["device"]
 
 
+@pytest.mark.parametrize("clip", [True, False], ids = ["clip", "no_clip"])
 @pytest.mark.parametrize("both", [False, True], ids = ["one_rank_inf", "every_rank_inf"])
-def test_fused_adamw_steps_through_the_native_fp16_scaler(ranks, both):
+def test_fused_adamw_steps_through_the_native_fp16_scaler(ranks, both, clip):
     # every_rank_inf: the all-reduced found_inf is the number of ranks that overflowed (2 here). The
     # fused AdamW kernel skips only on found_inf == 1, so a 2 stepped on inf / NaN gradients and wrote
     # NaN weights (Qwen2.5-VL on Kaggle T4x2: loss NaN from step 4 under FSDP2, finite under DDP).
     for res in ranks:
         for fused in (False, True):
-            out = res[fused, both]
+            out = res[fused, both, clip]
             assert not isinstance(out, str), f"fused={fused}: {out}"
             steps, scale, params = out
             assert steps == 2.0, (fused, steps)  # 3 steps, the overflow one skipped on every rank
             # user init_scale is kept, not divided by the ranks
             assert scale == 2.0**7, (fused, scale)
             assert all(torch.isfinite(p).all() for p in params), fused
-        for a, b in zip(res[False, both][2], res[True, both][2]):
+        for a, b in zip(res[False, both, clip][2], res[True, both, clip][2]):
             torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
 
 

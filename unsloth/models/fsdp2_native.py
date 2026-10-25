@@ -3146,6 +3146,9 @@ def _scaler_for_native(trainer):
             super().unscale_(optimizer)
             if not self.is_enabled():
                 return
+            self._clamp_found_inf(optimizer)
+
+        def _clamp_found_inf(self, optimizer):
             # The all-reduce SUMS found_inf: it is the number of ranks that overflowed. Fused
             # optimizers skip the step only on found_inf == 1 (and subtract it from their step
             # counts), so 2+ ranks overflowing stepped on inf / NaN gradients. Clamp to 0 / 1.
@@ -3153,6 +3156,18 @@ def _scaler_for_native(trainer):
             state["found_inf_per_device"] = {
                 d: t.clamp(max = 1.0).reshape(()) for d, t in state["found_inf_per_device"].items()
             }
+            return state["found_inf_per_device"]
+
+        def _check_inf_per_device(self, optimizer):
+            # GradScaler.step takes this path for a fused optimizer whose gradients were never
+            # unscaled (max_grad_norm = 0: the Trainer never calls unscale_). ShardedGradScaler
+            # all-reduces found_inf only in unscale_, so sum it over the ranks here as well.
+            for t in super()._check_inf_per_device(optimizer).values():
+                on = t.to(self._device) if self._device != "cpu" and t.device.type == "cpu" else t
+                torch.distributed.all_reduce(on, group = self.process_group)
+                if on is not t:
+                    t.copy_(on)
+            return self._clamp_found_inf(optimizer)
 
     kwargs = {}
     handler = getattr(accelerator, "scaler_handler", None)
