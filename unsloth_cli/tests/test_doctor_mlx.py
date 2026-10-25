@@ -120,7 +120,11 @@ def test_verdict_mlx_never_suggests_a_bare_pip_install(overrides):
     assert "pip install" not in hints[0]
 
 
-def _fake_mlx_repair(monkeypatch, blockers = None, broken = False):
+def _fake_mlx_repair(
+    monkeypatch,
+    blockers = None,
+    broken = False,
+):
     import unsloth_cli._inference as inference
 
     monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda **kwargs: None)
