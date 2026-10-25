@@ -22,11 +22,9 @@ export interface QuickAddState {
 
 export type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict";
 
-/** A run held back until the user agrees to download the models it needs. */
 export interface PendingRun {
   options: Record<string, unknown>;
   plan: FlowPlan;
-  /** The model picks the plan was made for: a confirmation only covers these. */
   models?: string;
 }
 

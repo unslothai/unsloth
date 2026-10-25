@@ -162,7 +162,6 @@ def main() -> int:
             # Simulated run on the pipeline
             open_flow(page, "pipeline")
             page.click('[data-testid="flows-run"]')
-            # The mock plan has an image model that is not downloaded: Run asks first, then runs.
             page.wait_for_selector('[data-testid="flows-download-run"]', timeout = 5_000)
             page.wait_for_timeout(300)
             page.screenshot(path = str(SHOTS / "editor_download_before_run.png"))

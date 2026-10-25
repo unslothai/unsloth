@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Pure rules behind the gallery filters, the "needs" line and the download check before a run. */
 
 import type { PlanModel } from "./api";
 
@@ -67,7 +66,6 @@ const NEEDS: Partial<Record<GalleryCategory, string[]>> = {
   training: ["training"],
 };
 
-/** Every category an example belongs to; an example with no match shows under All only. */
 export function categoriesOf(flow: CategorySource): GalleryCategory[] {
   const tags = new Set((flow.tags ?? []).map((t) => t.toLowerCase()));
   const needs = new Set(flow.needs ?? []);
@@ -83,7 +81,6 @@ export function categoriesOf(flow: CategorySource): GalleryCategory[] {
   return out;
 }
 
-/** Category chips worth showing: only those with at least one example, in a fixed order. */
 export function visibleCategories(
   flows: CategorySource[],
 ): { id: GalleryCategory; label: string; count: number }[] {
@@ -111,7 +108,6 @@ const NEED_LABEL: Record<string, string> = {
   training: "training (GPU)",
 };
 
-/** The card line: "No models needed", or "Needs: chat model, image model". */
 export function needsLine(needs: string[] | null | undefined): string | null {
   if (!needs) return null;
   if (needs.length === 0) return "No models needed";
@@ -131,10 +127,7 @@ export function modelsToDownload(
   );
 }
 
-/**
- * `stale`: the flow or a model pick changed while the check was out; `clear`: nothing to download (safe to
- * remember); `unchecked`: the plan had errors, so its empty model list proves nothing.
- */
+/** `unchecked`: the plan had errors, so its empty model list proves nothing (do not remember it). */
 export function planCheck(
   plan: { models?: PlanModel[] | null; errors?: unknown[] | null },
   askedFor: { flowId: string; models: string },
@@ -154,7 +147,6 @@ export function downloadBytes(models: PlanModel[]): number | null {
   return total;
 }
 
-/** Which models the enabled blocks pick, as one string (the download check's cache key). */
 export function modelSignature(
   nodes: Record<
     string,
@@ -184,7 +176,6 @@ export interface StepFailure {
   error: string;
 }
 
-/** The failed blocks of a run in graph order, named the way the canvas names them, for "X failed: why". */
 export function failedSteps(
   nodeOrder: string[],
   nodes: Record<string, { type: string; label?: string | null } | undefined>,

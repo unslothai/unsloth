@@ -528,7 +528,6 @@ export interface FlowSummary {
   cover?: string | null;
   nodeCount: number;
   example?: boolean;
-  /** Examples only: their tags, and the model kinds they need ("training" for a fine-tune). */
   tags?: string[];
   needs?: string[];
 }

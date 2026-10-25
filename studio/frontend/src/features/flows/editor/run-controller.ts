@@ -18,7 +18,6 @@ import { useUiStore } from "../stores/ui-store";
 import { failedSteps, modelSignature, planCheck } from "../ux-rules";
 
 let follower: AbortController | null = null;
-// flowId -> the model picks of the last run that had nothing to download: the same picks skip the plan request.
 const checkedModels = new Map<string, string>();
 // Bumped when the editor closes: a download check still out then belongs to an editor that is gone.
 let editorSession = 0;
@@ -48,7 +47,6 @@ export function attachRun(runId: string, afterSeq = 0): void {
     });
 }
 
-/** Name the block that failed and why, with a way to jump to it; the run error when no block failed. */
 function reportFailure(): void {
   const { graph } = useDocStore.getState();
   const runtime = useRuntimeStore.getState();
@@ -80,7 +78,6 @@ function reportFailure(): void {
 export function detachRun(): void {
   follower?.abort();
   follower = null;
-  // Leaving the editor is where models get deleted (Hub): the next visit asks the plan again.
   checkedModels.clear();
   editorSession += 1;
 }
@@ -95,7 +92,6 @@ export interface RunOptions {
 
 const PLAN_CHECK_TIMEOUT_MS = 4000;
 
-/** True when the run waits for the user to agree to downloads; a slow or failed plan never blocks the run. */
 async function heldForDownloads(
   flowId: string,
   options: RunOptions,
@@ -117,7 +113,6 @@ async function heldForDownloads(
     { flowId, models: signature },
     { flowId: now.flowId, models: modelSignature(now.graph.nodes) },
   );
-  // The editor closed, or the flow or its model picks changed meanwhile: this plan no longer describes the run.
   if (verdict === "stale" || session !== editorSession) return true;
   if (!plan) return false;
   if (verdict === "clear") checkedModels.set(flowId, signature);

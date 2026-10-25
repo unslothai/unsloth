@@ -247,7 +247,6 @@ export function PlanDialog({
   );
 }
 
-/** Shown instead of starting a run that would first download models: what, how big, one button to go ahead. */
 export function DownloadRunDialog() {
   const pending = useUiStore((s) => s.pendingRun);
   const close = () => useUiStore.getState().setPendingRun(null);
@@ -274,7 +273,6 @@ export function DownloadRunDialog() {
           <Button
             onClick={() => {
               const options = pending?.options ?? {};
-              // A pick changed while the dialog was open (undo): plan again rather than confirm unseen models.
               const same =
                 pending?.models ===
                 modelSignature(useDocStore.getState().graph.nodes);

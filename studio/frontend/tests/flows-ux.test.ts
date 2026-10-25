@@ -30,9 +30,7 @@ test("examples land in every category their kind, tags or models say", () => {
     ["audio", "training"],
   );
   assert.deepEqual(categoriesOf({ kind: "pipeline", tags: ["data", "json"], needs: [] }), ["data"]);
-  // Nothing matches: shown under All only.
   assert.deepEqual(categoriesOf({ kind: "pipeline", tags: ["misc"], needs: [] }), []);
-  // Old servers send no tags or needs.
   assert.deepEqual(categoriesOf({ kind: "pipeline" }), []);
 });
 
@@ -66,7 +64,6 @@ test("a run waits only for models that are neither loaded nor downloaded", () =>
     { kind: "image", repo: "b/image", downloaded: false, size_bytes: 8e9 },
     { kind: "video", repo: "c/video", downloaded: false, loaded: true },
     { kind: "tts", repo: "d/tts", downloaded: false, size_bytes: 3e8 },
-    // Unknown on-disk state (no downloaded field): never blocks.
     { kind: "chat", repo: "e/unknown" },
   ];
   const missing = modelsToDownload(models);
@@ -122,7 +119,6 @@ test("Run asks the plan before starting and holds the run when models must downl
   assert.match(src, /if \(await heldForDownloads\(flowId, options\)\) return;/);
   assert.match(src, /options\.downloadsConfirmed/);
   const dialogs = readSrc("features/flows/editor/dialogs.tsx");
-  // Confirming covers only the picks the plan listed: a pick changed under the dialog plans again.
   assert.match(dialogs, /pending\?\.models ===\s*modelSignature\(useDocStore\.getState\(\)\.graph\.nodes\)/);
   assert.match(dialogs, /downloadsConfirmed: same/);
   assert.match(src, /setPendingRun\(\{ options: \{ \.\.\.options \}, plan, models: signature \}\)/);
@@ -141,9 +137,7 @@ test("a download check is remembered only when it proves nothing must download",
   const asked = { flowId: "f1", models: "a/chat" };
   assert.equal(planCheck({ models: missing, errors: [] }, asked, asked), "download");
   assert.equal(planCheck({ models: [], errors: [] }, asked, asked), "clear");
-  // A graph with errors plans no models: that says nothing about downloads, so it is not remembered.
   assert.equal(planCheck({ models: [], errors: issue }, asked, asked), "unchecked");
-  // The user opened another flow, or picked another model, while the check was out: its answer is out of date.
   assert.equal(planCheck({ models: missing, errors: [] }, asked, { flowId: "f2", models: "a/chat" }), "stale");
   assert.equal(planCheck({ models: [], errors: [] }, asked, { flowId: null, models: "a/chat" }), "stale");
   assert.equal(planCheck({ models: missing, errors: [] }, asked, { flowId: "f1", models: "b/image" }), "stale");
