@@ -9388,7 +9388,15 @@ class LlamaCppBackend:
     @property
     def is_active(self) -> bool:
         """True if a llama-server process exists (loading or loaded)."""
-        return self._process is not None
+        proc = self._process
+        if proc is None:
+            return False
+        # Retired after its second Metal OOM and never respawned: nothing loads or holds memory.
+        return not (
+            not self._healthy
+            and proc is getattr(self, "_retired_process", None)
+            and getattr(self, "_metal_oom_terminal_key", None) is not None
+        )
 
     def resident_memory_mib(self) -> Optional[int]:
         """Best-effort MiB the loaded model holds: its GPU model buffers when known, else the
@@ -31108,6 +31116,47 @@ class LlamaCppBackend:
                             + _sidecar_compute_mib
                         )
 
+                        def _sidecar_child_on_discrete_gpus(
+                            run_args: List[str], child_env: Mapping[str, str]
+                        ) -> bool:
+                            """Whether every card this child runs on is discrete. Read at
+                            spawn: a GPU pin, the arch gate or a retry narrows the planned
+                            set, and one shared-memory card means host memory is its VRAM."""
+                            if _apple_budget_mib:
+                                return False
+                            active = gpu_indices
+                            if is_vulkan_backend:
+                                # Studio's own pin and a user's both reach the child as --device.
+                                names = [
+                                    d.strip()
+                                    for d in str(
+                                        _extra_args_main_device(run_args)
+                                        or child_env.get("LLAMA_ARG_DEVICE")
+                                        or ""
+                                    ).split(",")
+                                    if d.strip()
+                                ]
+                                if names and all(re.fullmatch(r"(?i)vulkan\d+", d) for d in names):
+                                    active = [int(d[6:]) for d in names]
+                            elif (
+                                _child_gpu_physical_ids is not None
+                                and _child_gpu_physical_ids is not _parent_view_gpu_ids
+                            ):
+                                # A written mask is exact (empty: a CPU child).
+                                active = list(_child_gpu_physical_ids)
+                                if not active:
+                                    return False
+                            on = (
+                                set(active)
+                                if active
+                                else {idx for idx, _free in (_detected_gpus or ())}
+                            )
+                            if on & set(_shared_gpu_ids or ()):
+                                return False
+                            return self._discrete_gpu_for_expert_spill(
+                                active or None, _detected_gpus, _shared_gpu_ids
+                            )
+
                         def _sidecar_reserve_reprice(
                             run_args: List[str],
                             child_env: Mapping[str, str],
@@ -31123,12 +31172,6 @@ class LlamaCppBackend:
                             _floor: int = _sidecar_compute_mib,
                             _flat: int = _sidecar_flat_mib,
                             _native: Optional[int] = self._context_length,
-                            _discrete: bool = (
-                                not _apple_budget_mib
-                                and self._discrete_gpu_for_expert_spill(
-                                    gpu_indices, _detected_gpus, _shared_gpu_ids
-                                )
-                            ),
                         ) -> int:
                             # A --flash-attn off respawn pads the draft cache to f16, and
                             # extras can change slots / KV layout, so read them off the argv.
@@ -31176,7 +31219,11 @@ class LlamaCppBackend:
                             )
                             # The draft context copies the target's params, so -nkvo keeps its
                             # KV in host buffers too: a discrete card does not hold it.
-                            if _v and _discrete and not _kv_offload_from_args(run_args, child_env):
+                            if (
+                                _v
+                                and not _kv_offload_from_args(run_args, child_env)
+                                and _sidecar_child_on_discrete_gpus(run_args, child_env)
+                            ):
                                 _host_kv = self._mtp_draft_kv_bytes(
                                     _ctx,
                                     drafter_path = _dp,
@@ -32670,7 +32717,12 @@ class LlamaCppBackend:
                     # Only where the spawn can price it: a server with --fit-target, no
                     # --rpc devices ahead of the local list, and an unpinned drafter only
                     # across an unnamed CUDA / ROCm list in a provable device order.
-                    _named_devices = _spec_device_pick
+                    # The spawn adds Studio's own Vulkan pin (_vulkan_pin_args) to argv.
+                    _named_devices = _spec_device_pick or (
+                        ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
+                        if is_vulkan_backend and _vulkan_pin_ids
+                        else None
+                    )
                     _rpc_devices = (
                         _extra_args_device(_spec_placement_argv, {"--rpc"}) or ""
                     ).strip() or str(_spec_placement_env.get("LLAMA_ARG_RPC", "")).strip()
@@ -32682,9 +32734,13 @@ class LlamaCppBackend:
                         _sidecar_reserve_at_spawn
                         and _fit_device_count > 1
                         and _planned_draft_pin
-                        and _distinct_device_count(_planned_draft_pin) > 1
+                        and _draft_pin_device_index(
+                            _planned_draft_pin, _named_devices, _fit_device_count
+                        )
+                        is None
                     ):
-                        # The spawn reserves only a one-card pin (_draft_pin_device_index).
+                        # The spawn reserves only a pin it resolves to one of the target's
+                        # cards (_draft_pin_device_index).
                         _sidecar_reserve_at_spawn = False
                     if (
                         _sidecar_reserve_at_spawn
@@ -32694,17 +32750,7 @@ class LlamaCppBackend:
                         _sidecar_reserve_at_spawn = (
                             not is_vulkan_backend
                             and not _named_devices
-                            and not (
-                                self._GPU_IDS_ARE_PCI_INDICES is True
-                                and (
-                                    str(_spec_placement_env.get("CUDA_DEVICE_ORDER", ""))
-                                    .strip()
-                                    .upper()
-                                    != "PCI_BUS_ID"
-                                    or self._visibility_mask_is_unmappable()
-                                )
-                                and self._smi_uuid_mask_order() is None
-                            )
+                            and not self._positional_child_order_unproven(_spec_placement_env)
                         )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
@@ -34788,22 +34834,13 @@ class LlamaCppBackend:
                                     for i in range(_spawn_device_count)
                                 ]
                                 _spawn_output_dev = _spawn_pinned_at
-                            # Free memory is keyed by nvidia-smi's PCI order; a child under
-                            # another CUDA_DEVICE_ORDER (FASTEST_FIRST is CUDA's default)
-                            # enumerates its own way, so positional shares could land on the
-                            # wrong cards. A MIG / uuid mask no resolver maps orders the
-                            # child its own way too. No reserve then, as before.
-                            _spawn_order_unproven = (
-                                self._GPU_IDS_ARE_PCI_INDICES is True
-                                and (
-                                    str(env.get("CUDA_DEVICE_ORDER", "")).strip().upper()
-                                    != "PCI_BUS_ID"
-                                    or self._visibility_mask_is_unmappable()
-                                )
-                                and self._smi_uuid_mask_order() is None
-                            )
+                            # Positional shares could land on the wrong cards when the
+                            # child enumerates in another order than the ids. No reserve
+                            # then, as before. Vulkan orders its devices its own way.
+                            _spawn_order_unproven = self._positional_child_order_unproven(env)
                             if (
-                                not _spawn_devices
+                                not is_vulkan_backend
+                                and not _spawn_devices
                                 and _extra_args_draft_device_pin(run_cmd) is None
                                 and not _spawn_order_unproven
                             ):
@@ -37025,10 +37062,12 @@ class LlamaCppBackend:
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery
                 # re-resolves the file instead of trusting a path this request verified.
                 self._last_load_intent = replace(intent, verified_gguf = None)
-                if self._metal_oom_is_terminal(self._last_load_intent):
-                    # Automatic recovery refuses a terminal intent, so a load that got
-                    # here is the user's explicit retry: it starts a fresh OOM episode.
-                    # Checked on the snapshot just committed, the one recovery replays.
+                if getattr(self, "_metal_oom_terminal_key", None) is not None:
+                    # Automatic recovery refuses a terminal intent, so while the latch is
+                    # set only the user's explicit load gets here, with the same settings
+                    # or changed ones: either way it starts a fresh OOM episode. A latch
+                    # kept for changed settings would match again once a later request
+                    # rewrites the snapshot back (_record_matching_gpu_request).
                     self._metal_oom_strikes = None
                     self._metal_oom_terminal_key = None
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
@@ -40537,6 +40576,28 @@ class LlamaCppBackend:
         if any(str(env.get(k, "")).strip() for k in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_RPC")):
             return False
         return True
+
+    def _positional_child_order_unproven(self, child_env: Mapping[str, str]) -> bool:
+        """Whether a per-card list built over the parent's GPU ids may not line up with the
+        child's CUDA enumeration (planning and spawn share it).
+
+        nvidia-smi ids follow PCI order, so the child must run under PCI_BUS_ID
+        (FASTEST_FIRST is CUDA's default) with a mask a resolver maps, unless the uuid
+        mask order is known. Torch-fallback ids are CUDA ordinals in the parent's own
+        order, so a child switched to another order (a GPU pick pins PCI_BUS_ID) counts
+        them differently. HIP ignores CUDA_DEVICE_ORDER.
+        """
+        child_order = str(child_env.get("CUDA_DEVICE_ORDER", "")).strip().upper()
+        if self._GPU_IDS_ARE_PCI_INDICES is True:
+            return (
+                child_order != "PCI_BUS_ID" or self._visibility_mask_is_unmappable()
+            ) and self._smi_uuid_mask_order() is None
+        if self._GPU_IDS_ARE_PCI_INDICES is False:
+            parent_order = (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
+            return (parent_order or "FASTEST_FIRST") != (
+                child_order or "FASTEST_FIRST"
+            ) and not self._host_torch_is_rocm()
+        return False
 
     @staticmethod
     def _per_device_fit_target_argv(
