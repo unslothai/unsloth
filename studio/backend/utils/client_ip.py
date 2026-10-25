@@ -84,7 +84,9 @@ def client_ip(request) -> str:
             if normalized:
                 return normalized
     if _is_loopback(peer):
-        if request_from_managed_tunnel(getattr(request, "scope", None), _request_app_state(request)):
+        if request_from_managed_tunnel(
+            getattr(request, "scope", None), _request_app_state(request)
+        ):
             cf = _normalize_addr(request.headers.get("cf-connecting-ip"))
             if cf:
                 return cf

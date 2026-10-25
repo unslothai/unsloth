@@ -50,7 +50,6 @@ def _clean(monkeypatch):
 
 async def _login(request):
     from models.auth import AuthLoginRequest
-
     try:
         await auth_routes.login(
             AuthLoginRequest(username = "nobody", password = "wrong-password"), request
@@ -81,7 +80,12 @@ def _served(*, is_colab = False, cloudflare_url = None):
     return config.loaded_app
 
 
-def _post_all(app, header_sets, peer = "127.0.0.1", host = "127.0.0.1:8888"):
+def _post_all(
+    app,
+    header_sets,
+    peer = "127.0.0.1",
+    host = "127.0.0.1:8888",
+):
     async def run():
         transport = httpx.ASGITransport(app = app, client = (peer, 40000))
         async with httpx.AsyncClient(transport = transport, base_url = f"http://{host}") as c:
@@ -102,7 +106,10 @@ def test_spoofed_forwarded_for_from_a_loopback_peer_does_not_pick_the_login_buck
     attempts = auth_routes._LOGIN_MAX_FAILS + 3
     seen = _post_all(
         _served(),
-        [{"x-forwarded-for": f"203.0.113.{i}", "x-forwarded-proto": "https"} for i in range(attempts)],
+        [
+            {"x-forwarded-for": f"203.0.113.{i}", "x-forwarded-proto": "https"}
+            for i in range(attempts)
+        ],
     )
     assert {r["client"] for r in seen} == {"127.0.0.1"}
     assert {tuple(r["bucket"]) for r in seen} == {("127.0.0.1", "nobody")}
@@ -138,7 +145,9 @@ def test_run_server_and_the_lan_listener_use_the_shared_arguments():
     assert "wrap_direct_server(app, app.state)" in run_src
     import lan_access
 
-    assert "uvicorn_forwarded_kwargs(is_colab = False)" in inspect.getsource(lan_access._listener_config)
+    assert "uvicorn_forwarded_kwargs(is_colab = False)" in inspect.getsource(
+        lan_access._listener_config
+    )
     config = lan_access._listener_config(Starlette(), "192.168.1.5", 8888)
     assert config.proxy_headers is False
 
@@ -164,7 +173,9 @@ def test_the_managed_tunnel_keeps_its_visitor_address_and_https_scheme(_no_user)
         (_TUNNEL_URL, _TUNNEL_HOST, "192.168.1.50"),  # not the local cloudflared
     ],
 )
-def test_cf_connecting_ip_is_ignored_outside_the_managed_tunnel(_no_user, cloudflare_url, host, peer):
+def test_cf_connecting_ip_is_ignored_outside_the_managed_tunnel(
+    _no_user, cloudflare_url, host, peer
+):
     headers = {"host": host, "cf-connecting-ip": "198.51.100.7", "x-forwarded-proto": "https"}
     seen = _post_all(_served(cloudflare_url = cloudflare_url), [headers], peer = peer, host = host)
     assert seen[0]["client"] == peer
@@ -172,7 +183,14 @@ def test_cf_connecting_ip_is_ignored_outside_the_managed_tunnel(_no_user, cloudf
     assert seen[0]["client_ip"] != "198.51.100.7"
 
 
-def _request(peer, headers = (), *, cloudflare_url = None, host = "127.0.0.1:8888", server = None):
+def _request(
+    peer,
+    headers = (),
+    *,
+    cloudflare_url = None,
+    host = "127.0.0.1:8888",
+    server = None,
+):
     raw = [(b"host", host.encode())] + [(k.encode(), v.encode()) for k, v in headers]
     state = types.SimpleNamespace(
         bind_host = "127.0.0.1", secure = False, cloudflare_url = cloudflare_url
@@ -241,7 +259,6 @@ def _lan_request(headers = ()):
 @pytest.fixture
 def _lan_listener(monkeypatch):
     import lan_access
-
     monkeypatch.setattr(
         lan_access,
         "lan_listener_status",
