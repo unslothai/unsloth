@@ -9402,6 +9402,7 @@ class DiffusionBackend:
                 load_bg_compile = None
                 state = None
                 pending_cache_write = None
+                native_streamed = False
                 try:
                     self._raise_if_load_cancelled(_load_token)
                     if (
@@ -9712,8 +9713,28 @@ class DiffusionBackend:
                                             _load_token
                                         ),
                                     )
+                                    if native_cached is None:
+                                        # Miss: build it per tensor from the shards, so the dense module is never
+                                        # resident (or mapped) beside the codes when the offload arena is built.
+                                        native_cached = self._native_quant_build_streamed(
+                                            fam,
+                                            transformer_cls,
+                                            native_offload_scheme,
+                                            target,
+                                            dtype,
+                                            source_base = _base_local_dir or fetch_base,
+                                            config_kwargs = {
+                                                "local_files_only": local_files_only,
+                                                "cache_dir": hub_cache_dir(),
+                                                **({"token": hf_token} if hf_token else {}),
+                                            },
+                                            cancel_check = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                        )
+                                        native_streamed = native_cached is not None
                                     if native_cached is not None:
-                                        # Cached native build: skips loading dense shards and re-quantizing.
+                                        # Cached or per-tensor native build: no dense transformer load or in-place quantize.
                                         pipe_kwargs["transformer"] = native_cached
                                         native_scheme = native_offload_scheme
                                         transformer_quant_engaged = native_offload_scheme
@@ -10129,6 +10150,22 @@ class DiffusionBackend:
                                         _load_token,
                                     )
 
+                    if native_streamed and pipe is not None:
+                        # Built per tensor before the pipeline: cache it as the in-place build below would.
+                        pending_cache_write = self._save_pipeline_quant_to_cache(
+                            pipe,
+                            fam,
+                            denoiser_modules(pipe),
+                            loras = loras,
+                            base = base,
+                            source_base = _base_local_dir or fetch_base,
+                            cancel_check = lambda: self._raise_if_load_cancelled(_load_token),
+                            defer = True,
+                            native_cache = native_cache_ok,
+                        )
+                        if not hasattr(pending_cache_write, "start"):
+                            pending_cache_write = None
+                        self._raise_if_load_cancelled(_load_token)
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
                     # pipelines; offloaded plans stay dense unless whole-module.
                     if (
@@ -11859,6 +11896,48 @@ class DiffusionBackend:
             return module
         except Exception as exc:  # noqa: BLE001 - a cache problem is a miss
             logger.warning("diffusion.prequant_cache: native read skipped (%s)", exc)
+            return None
+
+    @staticmethod
+    def _native_quant_build_streamed(
+        fam: Any,
+        transformer_cls: Any,
+        scheme: Optional[str],
+        target: Any,
+        dtype: Any,
+        *,
+        source_base: Optional[str],
+        config_kwargs: Optional[dict] = None,
+        cancel_check: Optional[Callable[[], None]] = None,
+    ) -> Any:
+        """The forced-offload native ``transformer`` built per tensor from its dense shards, or None (the dense
+        ``from_pretrained`` + in-place quantize then runs, as before). CUDA only. Never raises."""
+        try:
+            if (
+                fam is None
+                or scheme is None
+                or not source_base
+                or getattr(target, "device", None) != "cuda"
+            ):
+                return None
+            from .diffusion_native_cache import build_from_shards, native_spec
+
+            family = getattr(fam, "name", None)
+            spec = native_spec(
+                scheme, family, act_int8 = scheme == TQ_INT8 and native_int8_act(target)
+            )
+            return build_from_shards(
+                transformer_cls,
+                str(source_base),
+                spec,
+                family = family,
+                dtype = dtype,
+                config_kwargs = config_kwargs,
+                logger = logger,
+                cancel_check = cancel_check,
+            )
+        except Exception as exc:  # noqa: BLE001 - the dense load still runs
+            logger.warning("diffusion.transformer_quant: per-tensor native build skipped (%s)", exc)
             return None
 
     @staticmethod
