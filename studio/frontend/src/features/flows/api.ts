@@ -199,6 +199,9 @@ export interface ImportReport {
   license?: string | null;
   content_rating?: string | null;
   author?: string | null;
+  replication?: string[];
+  live_note?: string | null;
+  /** Notebook imports: why Studio cannot run it, and where it runs instead. */
   unsupported?: string[];
   colab_url?: string | null;
 }

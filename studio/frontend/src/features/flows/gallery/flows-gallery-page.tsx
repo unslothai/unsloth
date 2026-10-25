@@ -284,6 +284,19 @@ function ImportDialog({
                 pre-generated, so those parts work without models.
               </p>
             )}
+            {result.report.live_note && (
+              <p className="text-muted-foreground text-sm">
+                {result.report.live_note}
+              </p>
+            )}
+            {(result.report.replication ?? []).map((line) => (
+              <p
+                key={line}
+                className="text-amber-600 text-sm dark:text-amber-400"
+              >
+                {line}
+              </p>
+            ))}
             {(result.report.unsupported ?? []).map((line) => (
               <p key={line} className="text-destructive text-sm">
                 {line}
