@@ -355,10 +355,8 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
 
 
 def _int8_only(ckpt: Any) -> bool:
-    """Whether every quantized tensor of a checkpoint is a torchao int8 one. The sm_89 fp8 unit-scale dispatcher serves
-    fp8 GEMMs only, and installing it tags torch's compile cache key: an int8 read back from the local prequant cache
-    would key apart from the runtime quantize it is a byte copy of (a compile-cache miss on every Ada load). Anything
-    else (fp8, legacy wrappers, an unreadable layout) keeps the install."""
+    """True if every quantized tensor is torchao int8. The fp8 dispatcher tags torch's compile cache key, so installing
+    it for an int8 read-back misses the runtime-quantize cache entry; anything else keeps the install."""
     try:
         state_dict = ckpt.get("state_dict") if isinstance(ckpt, dict) else None
         if not isinstance(state_dict, dict):

@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An int8 build read back from the local prequant cache keys its compile-cache bundle exactly like the runtime
-quantize that wrote it, also where the sm_89 fp8 unit-scale dispatcher qualifies (L4: it tagged torch's cache key on
-the read-back only, so every returning load compiled from scratch). fp8 read-backs still install it.
-
-Hermetic: the tiny CPU module of test_diffusion_prequant_cache; ``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE=1`` stands in for
-an Ada card (it installs on every arch).
-"""
+"""An int8 cache read-back keys its compile cache like the runtime quantize it copies, even where the fp8 dispatcher
+qualifies (forced via ``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE=1``); fp8 read-backs still install it."""
 
 from __future__ import annotations
 
@@ -39,7 +34,6 @@ env = T.env
 
 @pytest.fixture
 def ada(monkeypatch):
-    """The dispatcher qualifies (forced), starts uninstalled, and leaves torch's cache key tag as it found it."""
     cc = pytest.importorskip("torch.compiler.config")
     if not isinstance(getattr(cc, "cache_key_tag", None), str):
         pytest.skip("torch without compiler cache_key_tag")
