@@ -420,8 +420,10 @@ export const BUDGET = {
   // stream frame reader, live store slice, reply footer line and timing tooltip rows in the eager chat
   // chunk, +8,585 B raw / +2,268 B transfer over main (6,932,829 -> 6,941,414 B raw, 2,088,586 ->
   // 2,090,854 B transfer against 1492952a09, Node 22, 99 chunks). Raised by that on top of #15084 and #15025.
-  transferBytes: 2_091_068,
-  rawBytes: 6_942_035,
+  // The pinned Run settings footer adds 25 B raw / 49 B transfer to the eager model picker (6,932,829 -> 6,932,854 B
+  // raw, 2,088,616 -> 2,088,665 B transfer against 2c2e04474b, Node 26, unchanged at 99 chunks). Raised by that.
+  transferBytes: 2_091_117,
+  rawBytes: 6_942_060,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
