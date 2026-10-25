@@ -143,3 +143,99 @@ def test_compile_disable_still_bypasses_the_block(monkeypatch):
     step = _cap_layer_step(monkeypatch)
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "1")
     assert step(16) == set()
+
+
+# Stand-in for a replayed backward: the weight gradient is written into one buffer per shape,
+# reused by the next call, as the cudagraph pool does across generations.
+_POOL = {}
+
+
+class _PoolMatmul(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, weight):
+        ctx.save_for_backward(x, weight)
+        return x @ weight.t()
+
+    @staticmethod
+    def backward(ctx, grad):
+        x, weight = ctx.saved_tensors
+        g_w = (grad.reshape(-1, grad.shape[-1]).t() @ x.reshape(-1, x.shape[-1])).contiguous()
+        buf = _POOL.setdefault(tuple(g_w.shape), torch.empty_like(g_w))
+        buf.copy_(g_w)
+        return grad @ weight, buf.detach()  # fresh tensor on the shared storage, like a replay output
+
+
+def _pool_layers(monkeypatch, graphs):
+    _POOL.clear()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+
+    class PoolDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.randn(8, 8) / 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return torch.sin(_PoolMatmul.apply(hidden_states, self.weight))
+
+    bc._wrap(PoolDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": graphs})
+    torch.manual_seed(0)
+    layers = [PoolDecoderLayer().train() for _ in range(3)]
+    refs = [torch.nn.Parameter(l.weight.detach().clone()) for l in layers]
+    return layers, refs
+
+
+def _reference_grads(refs, xs):
+    for x in xs:
+        y = x
+        for w in refs:
+            y = torch.sin(y @ w.t())
+        y.square().mean().backward()
+    return [w.grad for w in refs]
+
+
+@pytest.mark.parametrize("micro_steps", [1, 2])
+def test_param_grads_are_copied_out_of_the_graph_pool(monkeypatch, micro_steps):
+    """Reentrant checkpointing replays each block inside backward: a parameter .grad that is the
+    replay's own output buffer is overwritten by the next block's replay (torch: "accessing
+    gradient tensor output of CUDAGraphs that has been overwritten")."""
+    from torch.utils.checkpoint import checkpoint
+
+    layers, refs = _pool_layers(monkeypatch, graphs = True)
+    xs = [torch.randn(2, 4, 8) for _ in range(micro_steps)]
+    for x in xs:
+        y = x.clone().requires_grad_()
+        for layer in layers:
+            y = checkpoint(layer, y, use_reentrant = True)
+        y.square().mean().backward()
+    want = _reference_grads(refs, xs)
+    ptrs = {buf.data_ptr() for buf in _POOL.values()}
+    for layer, grad in zip(layers, want):
+        assert layer.weight.grad.data_ptr() not in ptrs
+        torch.testing.assert_close(layer.weight.grad, grad)
+
+
+def test_preallocated_grads_are_accumulated_in_place(monkeypatch):
+    # An existing .grad (zero_grad(set_to_none=False), DDP bucket views) is not replaced.
+    layers, refs = _pool_layers(monkeypatch, graphs = True)
+    for layer in layers:
+        layer.weight.grad = torch.zeros_like(layer.weight)
+    owned = [layer.weight.grad.data_ptr() for layer in layers]
+    x = torch.randn(2, 4, 8)
+    y = x
+    for layer in layers:
+        y = layer(y)
+    y.square().mean().backward()
+    want = _reference_grads(refs, [x])
+    for layer, ptr, grad in zip(layers, owned, want):
+        assert layer.weight.grad.data_ptr() == ptr
+        torch.testing.assert_close(layer.weight.grad, grad)
+
+
+def test_param_grads_hooked_only_with_graphs(monkeypatch):
+    layers, _ = _pool_layers(monkeypatch, graphs = False)
+    x = torch.randn(2, 4, 8)
+    y = x
+    for layer in layers:
+        y = layer(y)
+    y.sum().backward()
+    assert not any(l.__dict__.get("_unsloth_block_grad_hooks") for l in layers)
