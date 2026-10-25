@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`UnslothTrainer._configure_online_tokenization`: what it changes, and when.
-
-The gate itself is covered by ``test_online_tokenization.py``; this is the
-wiring. The method must apply all four parts of the mechanism or leave
-``config_args`` and the dataset wrapper exactly as it found them: half-applied is
-the dangerous state, since ``skip_prepare_dataset`` without the lazy transform
-trains on raw strings. Every degradation path gets a case, driven through the
-real method, because "silently takes the old path" is a claim about side effects.
-"""
+"""Wiring of _configure_online_tokenization: all four parts apply or none, never half-applied."""
 
 import contextlib
 import json
@@ -21,8 +13,6 @@ import pytest
 sys.path.insert(0, "studio/backend")
 
 datasets = pytest.importorskip("datasets")
-# Importing the trainer imports torch; a runner without it skips the module
-# rather than failing collection.
 pytest.importorskip("torch")
 
 from utils.datasets.online_tokenization import MIN_ROWS_FOR_ONLINE  # noqa: E402
@@ -32,12 +22,7 @@ _STUBBED: list = []
 
 
 def _stub_if_missing(name, attrs):
-    """Stand in for a dep the CPU-only test job does not install.
-
-    The real one wins whenever it imports, same rule and same ``__spec__ = None``
-    (which quiets the trainer's namespace-shadow guard) as
-    ``test_training_preflight.py``.
-    """
+    """Stub a dep the CPU-only job lacks; real module wins, and __spec__ = None quiets the shadow guard."""
     if name in sys.modules:
         return
     import importlib
@@ -82,12 +67,7 @@ ROWS = MIN_ROWS_FOR_ONLINE + 5
 
 
 def _single_process_launch(monkeypatch):
-    """Clear every launcher variable, so a run reads as Unsloth's own launch.
-
-    Same helper and same constant tuples as ``test_training_preflight.py``: the
-    two must not disagree about what counts as a launcher, or one file starts
-    passing on a set of variables the other never clears.
-    """
+    """Clear launcher env vars; must match test_training_preflight.py so both count the same launchers."""
     from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
     for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
         monkeypatch.delenv(name, raising = False)
@@ -95,14 +75,7 @@ def _single_process_launch(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_ambient_launcher(monkeypatch):
-    """Every case in this file starts from a single-process launch.
-
-    The pass count is read out of the environment, so without this a case's
-    result depends on whatever the runner's shell happens to export, and on
-    whichever earlier test last set one of these. Both were live here: the file
-    already sets ``WORLD_SIZE`` in one test, and pytest's monkeypatch undo only
-    covers variables a test itself touched.
-    """
+    """Start each case single-process: the pass count reads env vars that earlier tests can leave set."""
     _single_process_launch(monkeypatch)
 
 
@@ -170,16 +143,11 @@ def _run(
 ):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.delenv("UNSLOTH_STUDIO_ONLINE_TOKENIZATION", raising = False)
-    # Pin the TRL hook: these cover the wiring, not the runner's TRL version.
     monkeypatch.setattr(
         "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
         lambda: True,
     )
-    # Pin the worker count for the same reason: resolve_worker_count sizes itself from
-    # CPU affinity and the cgroup quota and returns 0 below MIN_ONLINE_WORKERS, vetoing
-    # before the pass count is compared. On a two-core runner every case here asserted
-    # about the runner, on the wrong veto reason. The worker gate is covered by
-    # test_online_tokenization.py.
+    # Pin worker count: it sizes from CPU affinity/cgroup and vetoes on small runners.
     monkeypatch.setattr(
         "utils.datasets.online_tokenization.resolve_worker_count",
         lambda desired = None: 4,
@@ -201,22 +169,15 @@ def _run(
     return decision, config_args, wrapper, trainer
 
 
-# ------------------------------------------------------------------ applied fully
-
-
 def test_a_qualifying_run_gets_all_four_parts_of_the_mechanism(monkeypatch):
     decision, config_args, wrapper, trainer = _run(monkeypatch)
     assert decision.enabled, decision.reason
-    # 1. lazy view in place of the eager split
     assert wrapper["dataset"].format["type"] == "custom"
     assert "input_ids" in wrapper["dataset"][0]
-    # 2. TRL told not to run its own tokenizing map
     assert config_args["dataset_kwargs"] == {"skip_prepare_dataset": True}
-    # 3. workers, overlapped with the GPU
     assert config_args["dataloader_num_workers"] >= 2
     assert config_args["dataloader_persistent_workers"] is True
     assert config_args["dataloader_prefetch_factor"] > 0
-    # 4. a prewarm depth for _preflight_first_batch to drain
     assert trainer._online_prewarm_batches == decision.prewarm_batches
 
 
@@ -262,7 +223,6 @@ def test_the_eval_split_gets_its_own_double_bos_probe(monkeypatch):
                 add_special_tokens = add_special_tokens,
             )
 
-    # train rows are plain; the eval split already carries the BOS token.
     eval_split = datasets.Dataset.from_dict(
         {"text": [f"{_Tokenizer.bos_token}row {i}" for i in range(64)]}
     )
@@ -281,9 +241,6 @@ def test_the_eval_split_gets_its_own_double_bos_probe(monkeypatch):
     tokenizer.seen.clear()
     trainer._online_eval_dataset[0]
     assert tokenizer.seen == [False], "an eval split that already has BOS must not get a second"
-
-
-# ---------------------------------------------------- degradation: nothing touched
 
 
 def _assert_untouched(config_args, wrapper, trainer, original):
@@ -413,9 +370,6 @@ def test_a_failure_while_attaching_rolls_the_dataset_back(monkeypatch):
     _assert_untouched(config_args, wrapper, trainer, original)
 
 
-# ---------------------------------------------------------------- step-capped runs
-
-
 def test_a_step_cap_is_resolved_into_passes_rather_than_guessed(monkeypatch):
     """`max_steps` alone reads as "unknown length" in the gate; Unsloth knows the
     row count and the microbatch size, so it answers the question here."""
@@ -425,7 +379,6 @@ def test_a_step_cap_is_resolved_into_passes_rather_than_guessed(monkeypatch):
 
 def test_a_step_cap_that_exceeds_one_pass_takes_the_old_path(monkeypatch):
     original = _dataset()
-    # 100_000 steps x 2 x 4 = 800k rows over a 10_005-row split: 80 passes.
     decision, config_args, wrapper, trainer = _run(
         monkeypatch,
         wrapper = {"dataset": original},
@@ -449,9 +402,7 @@ def test_world_size_scales_the_rows_a_step_consumes(monkeypatch):
     _assert_untouched(config_args, wrapper, trainer, original)
 
 
-# 200 steps x 2 x 4 = 1600 rows per replica over a 10_005-row split: 0.16 passes on
-# one process, 1.28 on eight. Every launcher below advertises the same eight, so these
-# cases differ from the control at the bottom only in whether the variable is read.
+# 0.16 passes on one process, 1.28 on eight; launchers differ only in which env is read.
 _EIGHT_RANK_STEPS = 200
 
 
@@ -491,12 +442,7 @@ def test_a_per_node_torchrun_scales_the_rows_a_step_consumes(monkeypatch):
 
 
 def test_an_mlx_hostfile_scales_the_rows_a_step_consumes(monkeypatch, tmp_path):
-    """mlx.launch's ring backend advertises its ranks as a JSON file rather than a
-    number; its NCCL backend is CUDA-only, so this path is reachable.
-
-    Written in the shape the ring backend really uses: the outer list has one entry
-    per rank, and each entry is that rank's own list of addresses, because a pair of
-    peers may hold several connections."""
+    """mlx ring hostfile: one address list per rank, since a peer pair may hold several connections."""
     hostfile = tmp_path / "hosts.json"
     hostfile.write_text(
         json.dumps([[f"10.0.0.{i}:9000", f"10.0.0.{i}:9001"] for i in range(8)]),
@@ -512,17 +458,10 @@ def test_an_inline_hosts_payload_scales_the_rows_a_step_consumes(monkeypatch):
     _eight_ranks(monkeypatch, MLX_HOSTFILE = payload)
 
 
-# Only values that RAISE: the old max(1, int(...)) already answered 1 for "0" and
-# "-4", so those would pass against the bug and belong in dataset_bounds' own tests.
+# Only values that RAISE: "0"/"-4" already gave 1 under the old max(1, int(...)).
 @pytest.mark.parametrize("junk", ["auto", "", "eight"])
 def test_a_junk_world_size_no_longer_disables_online_tokenization(monkeypatch, junk):
-    """The direction this used to fail in was not the obvious one.
-
-    `int("auto")` raises, the enclosing `except` leaves the pass count unresolved,
-    and an unresolved step-capped run reads as infinite passes, so a launcher that
-    exported a non-numeric WORLD_SIZE silently turned the feature OFF on a run that
-    qualifies. Unusable values are a single process, which is what this host is.
-    """
+    """Non-numeric WORLD_SIZE means one process; unresolved, a step-capped run reads as infinite passes."""
     monkeypatch.setenv("WORLD_SIZE", junk)
     original = _dataset()
     decision, config_args, wrapper, trainer = _run(
@@ -576,11 +515,7 @@ def _captured_logger(monkeypatch):
 
 
 def test_a_multi_rank_launch_names_the_variable_that_claimed_the_ranks(monkeypatch):
-    """A size variable left behind by an earlier mpirun, or inherited from an
-    interactive srun, reads here as a multi-rank launch on a machine running one
-    process, and its whole visible effect is this run being told it makes several
-    passes. Name the variable so that verdict is not silent. The merged row bound
-    reads the same variables, so the environment is trusted either way."""
+    """Log must name the leftover size variable that claimed several ranks on a one-process host."""
     lines = _captured_logger(monkeypatch)
     _eight_ranks(monkeypatch, OMPI_COMM_WORLD_SIZE = "8")
     reported = [line for line in lines if "data-parallel processes" in line]
@@ -602,9 +537,6 @@ def test_a_single_process_launch_still_qualifies(monkeypatch):
     variable at all. Counting a rank that is not there would veto this run."""
     decision = _eight_ranks(monkeypatch, expect_enabled = True)
     assert decision.prewarm_batches > 0
-
-
-# ------------------------------------------------------------- the prewarm barrier
 
 
 def _preflight_self(loader_calls, batches):
@@ -659,8 +591,7 @@ def test_the_prewarm_drains_the_requested_depth_and_keeps_the_loader():
     trainer = _preflight_self(calls, [batch] * 32)
     trainer._online_prewarm_batches = 16
     assert trainer._preflight_first_batch() is None
-    # The memo is what makes the barrier mean anything: transformers rebuilds the
-    # train loader every call, so without it train() forks a second worker set.
+    # transformers rebuilds the train loader each call; without the memo a second worker set forks.
     assert trainer.trainer._unsloth_online_memoized is True
     assert trainer.trainer.get_train_dataloader() is trainer.trainer.loader
     assert len(calls) == 1

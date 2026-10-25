@@ -590,12 +590,20 @@ def resolve_specs(
     return out
 
 
-def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[ResolvedLora]:
+def materialize_native_dir(
+    resolved: list[ResolvedLora],
+    dest: Path,
+    *,
+    real_files: bool = False,
+) -> list[ResolvedLora]:
     """Populate ``dest`` with symlinks (copy fallback) to the resolved LoRA files.
 
     sd-cli resolves ``<lora:ALIAS:w>`` against filenames in ``--lora-model-dir``, so each adapter
     needs a uniquely-named file in this dedicated managed directory. Returns the resolved list with
     aliases updated to the (collision-broken) stems written, so the caller injects matching tags.
+    ``real_files``: hard links (copy fallback) instead of symlinks. sd-server (master-982+) canonicalizes
+    each file under ``--lora-model-dir`` and skips one that resolves outside it, so a symlink into the
+    LoRA cache is never listed and a request naming it is rejected.
     """
     dest.mkdir(parents = True, exist_ok = True)
     used: set[str] = set()
@@ -614,10 +622,21 @@ def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[Res
         try:
             if link.exists() or link.is_symlink():
                 link.unlink()
-            os.symlink(os.path.realpath(r.path), link)
+            if real_files:
+                os.link(os.path.realpath(r.path), link)
+            else:
+                os.symlink(os.path.realpath(r.path), link)
         except OSError:
             import shutil
-            shutil.copy2(r.path, link)
+            try:
+                shutil.copy2(r.path, link)
+            except BaseException:
+                # A partial multi-GB copy (disk full, cancelled) must not outlive the failed request.
+                try:
+                    link.unlink()
+                except OSError:
+                    pass
+                raise
         out.append(ResolvedLora(r.id, alias, str(link), r.fmt, r.weight))
     return out
 
@@ -667,6 +686,19 @@ _NATIVE_LORA_FAMILY_TOKENS = (
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
+# In-tree pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights).
+_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES = ("moss-image",)
+
+
+def diffusers_lora_family_supported(family: Optional[str]) -> bool:
+    return (family or "").strip().lower() not in _DIFFUSERS_LORA_UNSUPPORTED_FAMILIES
+
+
+def diffusers_lora_family_message(family: Optional[str]) -> str:
+    return (
+        f"LoRA is not supported for {family} yet: its pipeline has no LoRA loader. "
+        "Clear the LoRA selection to load or generate."
+    )
 
 
 def supports_lora(
@@ -691,6 +723,8 @@ def supports_lora(
     fam = (family or "").lower()
     if engine == "sd_cpp":
         return any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS)
+    if not diffusers_lora_family_supported(fam):
+        return False
     quant = (transformer_quant or "").lower()
     if quant in _DIFFUSERS_LORA_BAKED_QUANT:
         return True  # load-time bake; adapters ride inside the compiled quantized build

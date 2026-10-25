@@ -20,7 +20,7 @@ type ItemMeta = { label: string; icon: ReactNode };
 // Same row as the Profile menu customizer (sidebar-menu-customizer.tsx).
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
   return (
-    <div className="flex h-9 items-center gap-2.5 rounded-lg px-2 text-muted-foreground/70">
+    <div className="flex h-9 items-center gap-2.5 rounded-md px-2 text-muted-foreground/70">
       <span className="size-4" aria-hidden="true" />
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
       <span className="text-ui-13">{label}</span>
@@ -32,7 +32,7 @@ function ToggleRow({ id, meta }: { id: PlusMenuItemId; meta: ItemMeta }) {
   const pinned = usePlusMenuPrefsStore((s) => s.pins[id]);
   const togglePin = usePlusMenuPrefsStore((s) => s.togglePin);
   return (
-    <div data-menu-item={id} className="flex h-9 items-center gap-2.5 rounded-lg px-2">
+    <div data-menu-item={id} className="flex h-9 items-center gap-2.5 rounded-md px-2">
       <span className="size-4 shrink-0" aria-hidden="true" />
       <span className="flex size-4 items-center justify-center text-foreground/80 [&_svg]:size-4">
         {meta.icon}
@@ -84,7 +84,7 @@ function MovableRow({
         boxShadow: "0 4px 16px rgb(0 0 0 / 0.18)",
         zIndex: 10,
       }}
-      className="relative flex h-9 items-center gap-2.5 rounded-lg px-2"
+      className="relative flex h-9 items-center gap-2.5 rounded-md px-2"
     >
       <button
         type="button"
@@ -153,7 +153,7 @@ export function ChatMenuOrderList({
   return (
     <div
       data-testid="chat-menu-order"
-      className="flex flex-col rounded-xl border border-border/70 p-1.5"
+      className="flex flex-col rounded-lg border border-border/70 p-1"
     >
       <FixedRow
         icon={AttachmentIcon}

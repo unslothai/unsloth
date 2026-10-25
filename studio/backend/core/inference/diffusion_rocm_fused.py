@@ -18,6 +18,7 @@ import os
 import sys
 import threading
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_FUSED_ROPE"
 FUSED_ADALN_ENV = "UNSLOTH_DIFFUSION_FUSED_ADALN"
@@ -68,7 +69,7 @@ def _is_rocm() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return bool(getattr(torch.version, "hip", None))
+    return is_rocm_torch(torch)
 
 
 def _is_nvidia_linux() -> bool:
@@ -79,9 +80,7 @@ def _is_nvidia_linux() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return getattr(torch.version, "hip", None) is None and bool(
-        getattr(torch.version, "cuda", None)
-    )
+    return not is_rocm_torch(torch) and bool(getattr(torch.version, "cuda", None))
 
 
 # gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).

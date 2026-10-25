@@ -50,6 +50,9 @@ _residents: dict[str, Optional[frozenset[int]]] = {}
 _accounts: dict[str, tuple[Optional[str], Optional[str]]] = {}
 # What each image or video resident was admitted with under When they fit / Always (gpu_residency.MediaNeed).
 _media_needs: dict[str, dict] = {}
+# The price each media owner had before its newest load started (None: unpriced), put back by
+# restore_media_need when that load fails and the model it was replacing stays loaded.
+_media_need_rollback: dict[str, Optional[dict]] = {}
 
 # Phrases the refusal copy always contains, for readers that lose the X-Unsloth-Refusal header.
 MULTI_MODEL_REFUSAL_MARKERS = ("is set to Always", "is set to keep loaded")
@@ -278,6 +281,16 @@ def _release_idle_video_servers(reason: str) -> None:
         logger.warning("gpu_arbiter: could not release the idle video sd-server: %s", exc)
 
 
+def _release_idle_decision_worker() -> None:
+    module = sys.modules.get("core.systemone.laya_runtime")
+    if module is None:
+        return
+    try:
+        module.evict_idle_worker()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_arbiter: could not release the idle decision worker: %s", exc)
+
+
 def _evict_video() -> None:
     from core.inference.video import get_video_backend
     get_video_backend().unload()
@@ -420,6 +433,9 @@ def begin_media_load(
 ) -> Any:
     """``guarded_media_begin`` for a load that takes no GPU claim, under ``_lock`` all the same."""
     register = guarded_media_begin(owner, policy, requested, begin)
+    with _lock:
+        # This load reprices nothing, so an older load's rollback must not apply to its failure.
+        _media_need_rollback.pop(owner, None)
     if register is begin:
         return begin()
     with _lock:
@@ -535,6 +551,7 @@ def _drop_resident(owner: str) -> None:
         return
     del _residents[owner]
     _media_needs.pop(owner, None)
+    _media_need_rollback.pop(owner, None)
     if owner == _owner:
         if _residents:
             _owner = next(reversed(_residents))
@@ -649,6 +666,7 @@ def acquire_for(
     gpu_ids: Optional[Iterable[int]] = None,
     need_mib: Optional[dict] = None,
     evict_first: bool = False,
+    admit: Optional[Callable[[], None]] = None,
 ) -> Any:
     """Make ``owner`` resident, evicting every other resident under the default policy.
 
@@ -664,6 +682,7 @@ def acquire_for(
     Under "fit" and "always" only residents on the same GPUs can be evicted (gpu_residency.coreside_locked):
     ``need_mib`` is what an image or video load will hold per physical GPU (None: unknown, so it evicts first),
     and ``evict_first`` makes a chat load with no estimate before launch evict as "off" does.
+    ``admit`` runs under the lock before anything is evicted; raising refuses the acquire untouched.
     """
     global _owner, _owner_epoch, _owner_account, _prior_account
     if owner not in _EVICTORS:
@@ -674,6 +693,8 @@ def acquire_for(
     # The segmenter's VRAM goes to this owner: a mask call arriving before its register returns stays off the card.
     handover = owner != DIFFUSION or register is not None or replacing
     with _lock, _handover_fence() if handover else nullcontext():
+        if admit is not None:
+            admit()
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
         coreside = policy != "off" and owner in _KEPT_UNDER_ALWAYS
@@ -729,6 +750,8 @@ def acquire_for(
         if owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
+        if owner != DECISIONS and (register is not None or replacing) and policy == "off":
+            _release_idle_decision_worker()
         if owner != DIFFUSION or register is not None or replacing:
             # A load (or another kind taking the GPU) gets the segmenter's VRAM; an image model's re-assert keeps it.
             _release_mask_segmenter(f"GPU acquired for {owner}", handover = True)
@@ -774,6 +797,7 @@ def acquire_for(
             raise
         if owner in (DIFFUSION, VIDEO) and register is not None:
             # The price media_held_mib() reports for this resident; unpriced residents are evicted to make room.
+            _media_need_rollback[owner] = _media_needs.get(owner)
             if coreside and need_mib:
                 _media_needs[owner] = need_mib
             else:
@@ -873,6 +897,19 @@ def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:
             return False
         _accounts[owner] = (prior, None)
         return True
+
+
+def restore_media_need(owner: str) -> None:
+    """Put back the price the newest load of ``owner`` overwrote, when that load failed and the
+    model it was replacing stays loaded; otherwise the kept model is priced as the failed one."""
+    with _lock:
+        if owner not in _media_need_rollback:
+            return
+        previous = _media_need_rollback.pop(owner)
+        if previous is None:
+            _media_needs.pop(owner, None)
+        else:
+            _media_needs[owner] = previous
 
 
 def release(owner: str) -> None:
