@@ -476,7 +476,6 @@ async def generate_answer(
         holder.pending = swap or carried
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _RUN_TIMEOUT_SECONDS
-    # A task with no model stays on what is loaded; one naming a model routes by name, loading it only when allowed.
     request = _producer_request(
         app, run["id"], cancel_event, task["timezone"], loaded_only = not task.get("model")
     )

@@ -2052,7 +2052,6 @@ def test_switching_back_gives_back_the_restore_requests_admission(monkeypatch):
     reload = inference_routes._maybe_auto_switch_model
 
     async def admitting_reload(model, request, subject, **kwargs):
-        # The real hook admits the request it is given.
         llama_keepwarm.note_admitted_inference(request.scope)
         await reload(model, request, subject, **kwargs)
 
@@ -2120,7 +2119,6 @@ def test_a_task_model_loaded_alongside_the_primary_answers_without_a_swap(monkey
         generate_answer(app, task, {"id": "run-1", "source": "schedule"}, threading.Event())
     )
     assert answer.content == "Dawn light." and producer.payload.model == SwapWorld.TASK_MODEL
-    # The primary stays as the user left it: nothing unloaded, nothing reloaded.
     assert world.unloaded == [] and world.reloads == [] and world.loaded == SwapWorld.EARLIER
 
 
@@ -2150,7 +2148,6 @@ def test_switching_back_unloads_a_non_gguf_task_model_first(monkeypatch):
         world.loaded = None
 
     monkeypatch.setattr(inference_routes, "_unload_model_impl", unload)
-    # Unattended: the earlier GGUF is restorable because nothing non-GGUF was loaded before.
     world.run(
         monkeypatch,
         {"id": "run-1", "source": "schedule"},
