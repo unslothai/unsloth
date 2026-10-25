@@ -203,7 +203,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_MIRROR_PAIRS) == 32
+    assert len(_MIRROR_PAIRS) == 34
     for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -223,7 +223,7 @@ def test_only_the_genuinely_gated_half_reads_as_gated():
     is mirrored, and which the Hub serves anonymously.
     """
     assert len(_GATED_MIRROR_PAIRS) == 14
-    assert len(_UNGATED_MIRROR_PAIRS) == 18
+    assert len(_UNGATED_MIRROR_PAIRS) == 20
     for upstream, _mirror in _GATED_MIRROR_PAIRS:
         assert upstream_is_gated(upstream), upstream
         assert upstream_is_gated(upstream.upper()), upstream
@@ -1204,6 +1204,35 @@ def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkey
     assert engaged == []
     backend.generate(prompt = "four")
     assert len(engaged) == 1
+
+
+def test_detailer_passes_neither_count_nor_engage_deferred_speed(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_bg_compile as bg
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    engaged: list = []
+
+    def fake_engage(self, state):
+        engaged.append(state.generation_count)
+        state.speed_deferred = False
+
+    monkeypatch.setattr(DiffusionBackend, "_engage_deferred_speed", fake_engage)
+
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    with bg.auxiliary_pass():
+        for _ in range(3):
+            backend.generate(prompt = "face")
+    assert engaged == [], "a Detailer crop engaged the compile mid-pass"
+    assert backend._state.generation_count == 2
+    backend.generate(prompt = "three")
+    assert engaged == [2]
 
 
 def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, monkeypatch):
@@ -4688,6 +4717,52 @@ def _run_te_load(monkeypatch, on_load, **run_kwargs):
     backend._load_token = 7
     backend._run_load(_load_token = 7, **run_kwargs)
     return backend
+
+
+def _forced_offline_load(monkeypatch, *, caller_offline):
+    from core.inference import diffusion as dmod
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    _stub_te_run_load(
+        monkeypatch, base = "Qwen/Qwen-Image-2.1", base_bytes = 0, cache = {}, file_bytes = {}
+    )
+    monkeypatch.setattr(dmod, "_pick_cached_while_hub_unreachable", lambda *a, **k: True)
+    prefetched, loaded = [], []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_prefetch_files",
+        lambda self, *a, **k: prefetched.append(k["local_files_only"]),
+    )
+
+    def load(self, **kw):
+        loaded.append(kw["local_files_only"])
+        if kw["local_files_only"]:
+            raise LocalEntryNotFoundError("transformer shard not in the cache")
+
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", load)
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(repo_id = "Qwen/Qwen-Image-2.1", base_repo = None)
+    backend._load_token = 7
+    backend._run_load(
+        _load_token = 7,
+        repo_id = "Qwen/Qwen-Image-2.1",
+        model_kind = "pipeline",
+        local_files_only = caller_offline,
+    )
+    return backend, prefetched, loaded
+
+
+def test_a_partly_cached_load_forced_offline_retries_online(monkeypatch):
+    # Manifest cached, a shard missing (interrupted download), Hub down moments ago: the online load still runs.
+    backend, prefetched, loaded = _forced_offline_load(monkeypatch, caller_offline = False)
+    assert prefetched == [True, False] and loaded == [True, False]
+    assert backend.load_progress()["phase"] != "error"
+
+
+def test_a_caller_offline_load_is_not_retried_online(monkeypatch):
+    backend, prefetched, loaded = _forced_offline_load(monkeypatch, caller_offline = True)
+    assert prefetched == [True] and loaded == [True]
+    assert backend.load_progress()["phase"] == "error"
 
 
 def test_run_load_reports_the_pre_cast_encoder_download_as_downloading(monkeypatch):
@@ -10269,6 +10344,9 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
         },
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
+    # The speech-pick revision HEAD is not part of this rule; unstubbed it fails to connect, and that failure would
+    # (correctly) stand for the whole endpoint and skip the stubbed listings below.
+    monkeypatch.setattr("core.inference.diffusion_compat._hub_revision", lambda *a, **k: None)
     _no_dense_prefetch(monkeypatch)
     _all_cached(monkeypatch)
     for name, size in _FLUX_BASE_SIBLINGS_BY_NAME.items():
@@ -11110,7 +11188,7 @@ def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
 def test_quadratic_attention_follows_the_engaged_backend(monkeypatch):
     from core.inference import diffusion as dmod
 
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     assert dmod._quadratic_attention(object()) is True
     assert dmod._quadratic_attention(object(), None) is True
     assert dmod._quadratic_attention(object(), "native") is True
@@ -11124,7 +11202,7 @@ def test_generate_upscale_with_an_engaged_backend_on_a_math_only_device_runs_til
     from core.inference import diffusion as dmod
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
     with pytest.raises(ValueError, match = "2048x2048"):
@@ -14325,6 +14403,63 @@ def test_untrusted_hub_single_file_header_is_checked_before_the_flux2_gguf_probe
             monkeypatch, tmp_path, lambda p: p.write_bytes(b"GGUF" + b"\x00" * 64), card_tag = None
         )
     assert probed == []
+
+
+def test_generate_holds_cudnn_benchmark_off_for_an_opted_out_family(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """cudnn.benchmark is process-wide: a family that opts out holds it off around its own render (decode included),
+    whatever a co-resident or earlier load left it at."""
+    from core.inference import diffusion as dmod
+
+    backend = _loaded_backend(tmp_path)
+    assert backend._state.family.cudnn_benchmark is False  # z-image
+    object.__setattr__(backend._state, "device", "cuda")
+    events = []
+
+    @contextlib.contextmanager
+    def scope(family, device):
+        events.append(("enter", family.name, device))
+        yield
+        events.append(("exit",))
+
+    monkeypatch.setattr(dmod, "family_render_cudnn_scope", scope)
+    pipe_cls = type(backend._state.pipe)
+    stock_call = pipe_cls.__call__
+
+    def call(self, *args, **kwargs):
+        events.append(("pipe",))
+        return stock_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipe_cls, "__call__", call)
+    backend.generate(prompt = "a sloth", steps = 4)
+    assert events == [("enter", "z-image", "cuda"), ("pipe",), ("exit",)]
+
+
+def test_family_render_cudnn_scope_overrides_an_inherited_benchmark():
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch, "backends") or not hasattr(torch.backends, "cudnn"):
+        pytest.skip("torch without cudnn backend flags")
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_speed import family_render_cudnn_scope
+
+    cudnn = torch.backends.cudnn
+    before = cudnn.benchmark
+    try:
+        cudnn.benchmark = True  # left on by another load in this process
+        with family_render_cudnn_scope(
+            detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cuda:0"
+        ):
+            assert cudnn.benchmark is False
+        assert cudnn.benchmark is True
+        with family_render_cudnn_scope(detect_family("krea/Krea-2-Turbo"), "cuda"):
+            assert cudnn.benchmark is True  # a family that keeps the benchmark is left alone
+        with family_render_cudnn_scope(
+            detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cpu"
+        ):
+            assert cudnn.benchmark is True
+    finally:
+        cudnn.benchmark = before
 
 
 def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):

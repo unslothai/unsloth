@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * One place that knows how to show structured results. Node cards get a one-line summary (no chart code
- * loaded); the inspector and run drawer get the full viewer, loaded on first use. Values of any other kind
- * return null here so callers keep their existing media / text / JSON rendering.
- */
+/** Structured results: a one-line summary on node cards, the lazy full viewer elsewhere; null for other values. */
 
 import { type ReactElement, Suspense, lazy } from "react";
 import {
@@ -33,7 +29,6 @@ export function isStructuredValue(value: unknown): value is StructuredValue {
   return structuredKind(value) !== null;
 }
 
-/** Full viewer for a structured value, or null when `value` is not one. */
 export function StructuredOutput({
   value,
 }: { value: unknown }): ReactElement | null {
@@ -53,7 +48,6 @@ export function StructuredOutput({
   );
 }
 
-/** Compact badge for node cards. */
 export function StructuredBadge({
   value,
 }: { value: unknown }): ReactElement | null {

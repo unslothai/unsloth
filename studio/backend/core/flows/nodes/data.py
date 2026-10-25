@@ -215,7 +215,11 @@ def local_seed_path(ref: Any) -> str:
 @handler("data.rows_to_dataset")
 async def rows_to_dataset(ctx: NodeContext) -> dict:
     rows = ctx.inputs.get("rows")
-    if isinstance(rows, dict):
+    if isinstance(rows, dict) and rows.get("kind") == "table":
+        # A big table carries only a preview inline; the dataset gets every row.
+        from core.flows.nodes.table import read_table
+        rows = (await read_table(ctx, rows))["rows"]
+    elif isinstance(rows, dict):
         rows = rows.get("rows") or rows.get("data") or [rows]
     if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
         raise FlowNodeError("Rows to Dataset takes a JSON list of objects")

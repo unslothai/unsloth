@@ -119,3 +119,36 @@ def test_the_uncached_precast_price_of_an_auto_int8_pick_is_the_int8_file(cuda_e
         fam, fam.base_repo, cuda_env, "int8"
     )
     assert explicit == int(encoders * 1000**3 * tpq.TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024)
+
+
+# Hosted int8 ConvRot file bytes of every automatic int8 pick, from the Hub listing of the family's FP8 repo.
+_AUTO_INT8_FILE_BYTES = {
+    "qwen-image": 8_974_915_168,
+    "qwen-image-edit": 8_974_915_168,
+    "hunyuanimage-2.1": 8_974_915_168,
+    "krea-2": 5_247_054_376,
+    "flux.2-dev": 24_464_184_096,
+    "flux.3-klein": 5_247_076_320,
+    "flux.3-klein-base": 5_247_076_320,
+    "qwen-image-2.1": 9_349_769_248,
+    "moss-image": 11_488_171_720,
+}
+
+
+def test_every_auto_int8_family_is_listed():
+    auto = {f.name for f in _FAMILIES if getattr(f, "te_quant_auto", None) == "int8"}
+    assert auto <= set(_AUTO_INT8_FILE_BYTES)
+
+
+@pytest.mark.parametrize("name", sorted(_AUTO_INT8_FILE_BYTES))
+def test_the_auto_int8_budget_covers_the_file_and_dense_siblings(name, cuda_env):
+    # table bf16 term * scale must cover the int8 file plus dense siblings, or an oversized load slips through.
+    from core.inference.diffusion_auto_policy import family_bf16_components_gb
+
+    fam = _fam(name)
+    scale = tpq.te_prequant_budget_scale(
+        fam, te_quant_mode = _auto_mode(fam), target = cuda_env, base = fam.base_repo
+    )
+    table_gb = family_bf16_components_gb(fam, fam.base_repo)[1]
+    sibling_gb = tpq._TE_DENSE_SIBLING_GB.get(name, 0.0)
+    assert table_gb * 1e9 * scale >= _AUTO_INT8_FILE_BYTES[name] + sibling_gb * 1e9
