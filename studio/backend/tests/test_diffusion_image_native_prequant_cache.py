@@ -221,8 +221,15 @@ def test_backend_save_skips_a_native_build_the_load_cannot_read_back(base_dir):
         defer = True,
     )
     assert pending is None
-    assert NC.lookup(_fam(), NC.build_spec(built, _fam().name), base_repo = "black-forest-labs/FLUX.1-schnell",
-                     source_base = base_dir) is None
+    assert (
+        NC.lookup(
+            _fam(),
+            NC.build_spec(built, _fam().name),
+            base_repo = "black-forest-labs/FLUX.1-schnell",
+            source_base = base_dir,
+        )
+        is None
+    )
 
 
 def test_backend_read_hits_after_a_write_and_misses_before(base_dir):
