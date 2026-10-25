@@ -387,3 +387,35 @@ def test_chat_slots_follow_the_loaded_llama_server(monkeypatch):
     # A Transformers model (no llama-server running) serves one request at a time, whatever queues linger.
     backend.is_loaded = False
     assert chat_slots() == 1
+
+
+def test_slots_are_read_again_after_a_model_switch():
+    async def go():
+        lease = GpuLease()
+        slots = {"n": 4}
+        inside = []
+        switched, done = asyncio.Event(), asyncio.Event()
+
+        async def switch():
+            async with lease:
+                await switched.wait()
+                # The four-slot model is replaced by one that serves a single request.
+                slots["n"] = 1
+
+        async def background(name):
+            async with lease.shared(background = True, slots = lambda: slots["n"]):
+                inside.append(name)
+                await done.wait()
+
+        sw = asyncio.create_task(switch())
+        await asyncio.sleep(0.01)
+        bgs = [asyncio.create_task(background(n)) for n in ("a", "b", "c")]
+        await asyncio.sleep(0.01)
+        switched.set()
+        await asyncio.sleep(0.05)
+        assert inside == ["a"]
+        done.set()
+        await asyncio.gather(sw, *bgs)
+        assert sorted(inside) == ["a", "b", "c"]
+
+    asyncio.run(go())

@@ -25,7 +25,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 from core.flows import assets as asset_store
 from core.flows import capabilities
@@ -661,18 +661,22 @@ class GpuLease:
         self,
         *,
         background: bool = False,
-        slots: int = 1,
+        slots: Union[int, Callable[[], int]] = 1,
     ):
-        slots = max(1, int(slots))
-        # One slot is the player's: background calls take at most the others (all of one when there is only one).
-        cap = max(1, slots - 1) if background else slots
-        async with self._cond:
-            await self._cond.wait_for(
-                lambda: not self._exclusive
+        def admit() -> bool:
+            # Read on every check: an exclusive holder may have swapped the model (and its slot count) meanwhile.
+            n = max(1, int(slots() if callable(slots) else slots))
+            # One slot is the player's: background calls take at most the others (all of one when there is only one).
+            cap = max(1, n - 1) if background else n
+            return (
+                not self._exclusive
                 and self._waiting == 0
-                and self._shared < slots
+                and self._shared < n
                 and (not background or self._background < cap)
             )
+
+        async with self._cond:
+            await self._cond.wait_for(admit)
             self._shared += 1
             self._background += background
         try:
@@ -1418,7 +1422,7 @@ class FlowEngine:
                 shared = spec["type"] in SHARED_CHAT_NODES and not spec.get("exclusive_gpu")
                 if shared:
                     try:
-                        async with lock.shared(background = rs.background, slots = chat_slots()):
+                        async with lock.shared(background = rs.background, slots = chat_slots):
                             rs.marks.setdefault("gpu_held", time.monotonic())
                             ctx.check_cancelled()
                             ctx.count_gpu_op()
