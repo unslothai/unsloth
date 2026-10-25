@@ -272,3 +272,42 @@ def test_the_kill_switch_pins_the_encoder_into_slabs_during_the_apply(budget, mo
     )
     assert dm.start_background_pins(pipe) == 0
     assert all(t.is_pinned() for t in _host_copies(pipe.text_encoder))
+
+
+def test_an_uncommitted_load_stops_the_pinners_it_started():
+    import ast
+    import inspect
+
+    from core.inference import diffusion
+
+    tree = ast.parse(inspect.getsource(diffusion))
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = {
+            node.func.id
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        if "start_background_pins" not in calls:
+            continue
+        rollbacks = [
+            node
+            for node in ast.walk(fn)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Name)
+            and node.test.operand.id == "state_committed"
+        ]
+        assert rollbacks, fn.name
+        stopped = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "stop_background_pins"
+            for rollback in rollbacks
+            for node in ast.walk(rollback)
+        )
+        assert (
+            stopped
+        ), f"{fn.name} starts encoder pinners but its uncommitted-load rollback never stops them"
