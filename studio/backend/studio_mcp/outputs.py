@@ -654,7 +654,6 @@ class ExportInfo(ToolOutput):
 
 class FlowRunInfo(ToolOutput):
     flow_id: Optional[RouteText] = None
-    # Named results from the flow's Flow Output nodes; media come back as id + URL.
     outputs: Optional[dict[str, Any]] = None
     nodes_done: Optional[int] = None
     nodes_total: Optional[int] = None

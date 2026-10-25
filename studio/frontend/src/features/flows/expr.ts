@@ -19,7 +19,6 @@ export interface Rng {
   random(): number;
 }
 
-/** mulberry32; `state` is a uint32 that can be saved and restored. */
 export class Prng implements Rng {
   state: number;
   constructor(seed = 0) {
@@ -38,7 +37,6 @@ export class Prng implements Rng {
   }
 }
 
-/** FNV-1a 32 over the parts joined by "|". */
 export function seedFrom(...parts: unknown[]): number {
   let h = 0x811c9dc5;
   const bytes = new TextEncoder().encode(parts.map(fmt).join("|"));
@@ -332,7 +330,6 @@ export function evalExpr(
   return new Evaluator(vars, rng).ev(expr);
 }
 
-/** Evaluate every `{var: expr}` against the vars as they were before; returns the updated copy. */
 export function applySets(
   sets: Record<string, Expr> | null | undefined,
   vars: Record<string, unknown>,

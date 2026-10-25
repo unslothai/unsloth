@@ -3,7 +3,6 @@
 
 import type { NotebookEntry } from "../api";
 
-/** Notebooks that ship as a ready flow (backend `build_examples.py` notebook templates). */
 export const NOTEBOOK_TEMPLATES: Record<string, string> = {
   "Llama3.1_(8B)-Alpaca.ipynb": "notebook-text-sft",
   "Qwen2.5_VL_(7B)-Vision.ipynb": "notebook-vision-sft",
@@ -12,9 +11,7 @@ export const NOTEBOOK_TEMPLATES: Record<string, string> = {
 };
 
 export interface NotebookActions {
-  /** Example id to copy, when the notebook ships as a flow. */
   template: string | null;
-  /** Studio can train this kind of notebook: download it and import the .ipynb. */
   importable: boolean;
   colab: string;
   download: string;
@@ -32,7 +29,6 @@ export function notebookActions(entry: NotebookEntry): NotebookActions {
   };
 }
 
-/** Templates first, then what Studio can train, then Colab-only; search matches title, file and category. */
 export function visibleNotebooks(
   entries: NotebookEntry[],
   query: string,
@@ -54,7 +50,6 @@ export function visibleNotebooks(
     .sort((a, b) => rank(a) - rank(b));
 }
 
-/** The filename to import as an Unsloth notebook (a picked or dropped `.ipynb` file), else null. */
 export function notebookName(
   data: Blob | string,
   name?: string,

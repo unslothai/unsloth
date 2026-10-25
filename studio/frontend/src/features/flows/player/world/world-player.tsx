@@ -119,7 +119,6 @@ export interface WorldPlayerProps {
   canReroll?: boolean;
   onReroll?: () => void;
   onExit?: () => void;
-  /** Called with the running game (the smoke harness drives it). */
   onReady?: (game: WorldGameHandle) => void;
 }
 
@@ -176,7 +175,6 @@ async function loadArt(
         if (kind === "tile") art.tiles[id as TileKind] = img;
         else art.sprites[id] = img;
       } catch {
-        // Missing art falls back to procedural tiles and sprites.
       } finally {
         onProgress(++done / Math.max(1, jobs.length));
       }
@@ -333,7 +331,6 @@ export function WorldPlayer({
   const areas = useMemo(() => placeAreas(baseSpec), [baseSpec]);
   const [background, setBackground] = useState<string | null>(null);
 
-  // NPCs within sight remember what the player does.
   const witness = useCallback(
     (s: WorldState, what: string, importance: number): WorldState => {
       const tiles = sim ? game.current?.npcTiles() : undefined;
@@ -492,7 +489,6 @@ export function WorldPlayer({
       setEditor(null);
       setEdState(null);
     };
-    // `mount` re-creates the game after loading a save.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, baseSpec, map, mount, view]);
 
@@ -628,7 +624,6 @@ export function WorldPlayer({
   const [thinking, setThinking] = useState(false);
   const [live, setLive] = useState<LiveReply | null>(null);
   const replyEntry = spec.entry_points?.npc_reply;
-  // Load the villagers' chat model while the intro shows, so the first conversation does not wait for it.
   const [warmed, setWarmed] = useState(true);
   useEffect(() => {
     if (!replyEntry || !api.warm) return;
@@ -816,7 +811,6 @@ export function WorldPlayer({
           ),
         );
       } catch (e) {
-        // A failed plan leaves the NPC wandering for the day instead of retrying on every tick.
         if (!signal.aborted && generation === loads.current)
           setWs((st) =>
             withMind(st, npcId, (m) => ({ ...m, plan: [], planDay: day })),
@@ -1183,7 +1177,6 @@ export function WorldPlayer({
         },
         {
           signal: run.signal,
-          // The line appears as it is written; items and quests apply once the whole reply is in.
           onDelta: (piece) =>
             setLive((l) =>
               appendReplyDelta(l, npcId, generation, loads.current, piece),
@@ -1227,7 +1220,6 @@ export function WorldPlayer({
         );
       }
       setWs(state);
-      // An item handed over in conversation leaves the map too, like one picked up by walking to it.
       for (const id of state.picked)
         if (!prior.picked.includes(id)) game.current?.removeItem(id);
       for (const n of notes) toast(n);
@@ -1314,7 +1306,6 @@ export function WorldPlayer({
     queue.clear();
     busy.current.clear();
     setBackground(null);
-    // The reply in flight belongs to the old game; let the loaded one talk at once.
     setThinking(false);
     setLive(null);
     setWs(state);

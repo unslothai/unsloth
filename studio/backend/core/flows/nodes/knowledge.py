@@ -36,8 +36,7 @@ async def _upload(ctx: NodeContext) -> tuple[str, bytes, str]:
     ext = asset_store.MIME_EXT.get(mime.split(";", 1)[0])
     if ext is None or mime.split(";", 1)[0] not in asset_store.DOCUMENT_MIMES:
         raise FlowNodeError("Load Document reads PDF, Word (.docx), Markdown, HTML and text files")
-    # The parsers choose by extension, so the name keeps the upload's base name (it labels search results)
-    # but always carries the sniffed type, never the uploader's extension.
+    # The parsers choose by extension: keep the upload's base name but always the sniffed type's extension.
     stem = re.sub(r"[^\w .-]+", "_", PurePath(str(value.get("name") or "")).stem).strip(" ._")[:100]
     return f"{stem or 'document'}.{ext}", data, mime
 

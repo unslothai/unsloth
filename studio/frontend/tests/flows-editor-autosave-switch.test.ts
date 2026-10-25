@@ -16,7 +16,6 @@ const { useDocStore, documentFromState, documentSignature } = await import(
 const A = await import("../src/features/flows/editor/use-autosave.ts");
 
 test("switching flows while a save is in flight still saves the last edit", async () => {
-  // The server refuses a save whose baseUpdatedAt is not the stored one, as the real PUT does.
   const stored = { updatedAt: 1, doc: null as unknown };
   const saved: unknown[] = [];
   let release: () => void = () => undefined;
@@ -49,7 +48,6 @@ test("switching flows while a save is in flight still saves the last edit", asyn
   first.id = "a";
   useDocStore.getState().load(first);
   A.beginSaveSession("a", 1, documentSignature(first));
-  // An edit is being saved...
   useDocStore
     .getState()
     .load({
@@ -58,7 +56,6 @@ test("switching flows while a save is in flight still saves the last edit", asyn
     });
   const flushing = A.flushSave();
   while (puts === 0) await new Promise((r) => setTimeout(r, 1));
-  // ...another edit lands, then the user opens another flow before the first save returns.
   useDocStore
     .getState()
     .load({

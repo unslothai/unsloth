@@ -9,7 +9,6 @@ import { webhookUrl } from "../capability-items";
 import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 
-/** Trigger settings beyond the params: the webhook URL (copy, new secret) and when it runs. */
 export function TriggerPanel({
   nodeId,
   kind,

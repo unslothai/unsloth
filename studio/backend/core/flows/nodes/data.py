@@ -136,7 +136,6 @@ async def recipe(ctx: NodeContext) -> dict:
     rows = status.get("rows") if isinstance(status, dict) else None
     artifact = status.get("artifact_path") if isinstance(status, dict) else None
     if isinstance(artifact, str) and artifact.strip():
-        # The saved parquet outlives this job, unlike the job id, which only pages while it is the current job.
         ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"
         dataset = {
             "kind": "dataset",
@@ -216,7 +215,6 @@ def local_seed_path(ref: Any) -> str:
 async def rows_to_dataset(ctx: NodeContext) -> dict:
     rows = ctx.inputs.get("rows")
     if isinstance(rows, dict) and rows.get("kind") == "table":
-        # A big table carries only a preview inline; the dataset gets every row.
         from core.flows.nodes.table import read_table
         rows = (await read_table(ctx, rows))["rows"]
     elif isinstance(rows, dict):

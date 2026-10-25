@@ -124,10 +124,8 @@ def port_compatible(src: dict, dst: dict) -> bool:
         return True
     if d == "json" and s in JSON_LIKE:
         return True
-    # A mask is a grayscale image, so the two connect either way.
     if {s, d} == {"image", "mask"}:
         return True
-    # One value into a list port arrives as a one-item list.
     if d == "list" and dst.get("item") in (None, "any", s):
         return True
     return False
@@ -138,20 +136,13 @@ class Plan:
     doc: dict
     nodes: dict[str, dict]
     specs: dict[str, dict]
-    # Nodes the engine may execute (known, not player-only, not disabled).
     executable: set[str]
-    # Data inputs: node -> port -> [(source node, source port)], in edge order. Collect edges excluded.
     inputs: dict[str, dict[str, list[tuple[str, str]]]]
-    # For Each collect edges: for_each node -> (source node, source port).
     collect: dict[str, tuple[str, str]]
-    # Direct downstream data consumers, collect edges excluded.
     consumers: dict[str, set[str]]
-    # For Each node -> its direct body members (nested bodies excluded); member -> owning For Each.
     bodies: dict[str, list[str]]
     owner: dict[str, Optional[str]]
-    # Topological order of every executable node.
     order: list[str]
-    # For Each node -> nodes outside its body that the body reads; the For Each waits for them before it starts.
     waits: dict[str, set[str]] = field(default_factory = dict)
     flow_edges: list[dict] = field(default_factory = list)
     warnings: list[dict] = field(default_factory = list)
@@ -425,8 +416,6 @@ def _topo(
     owner: dict[str, Optional[str]],
     collect: dict[str, tuple[str, str]],
 ) -> Optional[list[str]]:
-    """Kahn's order over data edges, plus: a For Each comes after everything its body needs from outside, and every
-    body member comes after its For Each. Stable by document order. None on a cycle."""
     deps: dict[str, set[str]] = {nid: set() for nid in nodes}
     for nid, ports in inputs.items():
         for sources in ports.values():
@@ -435,7 +424,6 @@ def _topo(
     for nid, fid in owner.items():
         if fid is not None:
             deps[nid].add(fid)
-    # The For Each runs its body itself, so it also waits for the outside inputs of its body.
     for nid, fid in owner.items():
         cursor = fid
         while cursor is not None:
