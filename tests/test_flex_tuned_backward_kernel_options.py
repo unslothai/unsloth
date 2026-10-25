@@ -195,6 +195,14 @@ def test_tuned_backward_compiles_for_small_blocks_and_partial_caller_tiles(monke
         torch.randn(1, 2, S, 256, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
         for _ in range(3)
     )
+    if case == "block16":
+        # torch 2.10's Inductor cannot compile 16-wide sparse blocks at all (2.14 shrinks its tiles).
+        try:
+            flex(q, k, v, block_mask = mask).float().sum().backward()
+        except Exception as error:
+            pytest.skip(f"this torch cannot compile 16-wide sparse blocks without Unsloth: {type(error).__name__}")
+        q.grad = k.grad = v.grad = None
+        torch._dynamo.reset()
     extra = {"kernel_options": {"bwd_BLOCK_M1": 64}} if case == "caller_m1_64" else {}
     out = wrapped(M(), q, k, v, mask, **extra)
     out.float().sum().backward()
