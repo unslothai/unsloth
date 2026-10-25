@@ -366,3 +366,23 @@ test("hostile encounters give way to combat only in the 3D view", () => {
   );
   assert.match(src, /const shooterOn = baseSpec\.action\?\.shooter === true && view === "3d";/);
 });
+
+test("a route step stops on its waypoint instead of overshooting at high walk speeds", () => {
+  const w = world();
+  const b = A.newBody(w, 2.5, 5.5);
+  for (let i = 0; i < 30; i++) {
+    const dx = 3.5 - b.x;
+    if (Math.abs(dx) < 0.15) break;
+    A.advance(w, b, { ...still, dx, limit: Math.abs(dx) }, 1 / 30, 20);
+  }
+  assert.ok(Math.abs(b.x - 3.5) < 0.15, `${b.x}`);
+});
+
+test("a prop the player stands on keeps holding them up when colliders are rebuilt", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/player/world/three-world.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /b\.top > z \+ 1e-3 &&\s*b\.bottom < z \+ STAND_H &&\s*circleHitsBox\(b, me\.x, me\.y, RADIUS\)/);
+  assert.match(src, /let aw: ActionWorld \| null = action \? collide\(feet\) : null;/);
+});

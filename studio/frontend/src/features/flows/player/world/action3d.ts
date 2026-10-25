@@ -200,6 +200,8 @@ export interface MoveInput {
   crouch: boolean;
   /** True on the frame Jump was pressed. */
   jump: boolean;
+  /** Tiles left to go (a route waypoint): the move stops there instead of overshooting it. */
+  limit?: number;
 }
 
 export const newBody = (w: ActionWorld, x: number, y: number): Body => ({
@@ -219,7 +221,7 @@ export const bodyHeight = (b: Body) => (b.crouched ? CROUCH_H : STAND_H);
 /** Thinner than the thinnest collider (a fence, 0.1) plus the body's diameter. */
 const SUB_MOVE = 0.2;
 
-function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): void {
+function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): number {
   const dt = STEP_S;
   // Standing up needs room overhead.
   if (input.crouch) b.crouched = true;
@@ -228,8 +230,9 @@ function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): void {
   const h = bodyHeight(b);
   const speed = walk * (b.crouched ? 0.5 : input.sprint ? 1.75 : 1);
   const len = Math.hypot(input.dx, input.dy);
-  const mx = len > 0 ? (input.dx / len) * speed * dt : 0;
-  const my = len > 0 ? (input.dy / len) * speed * dt : 0;
+  const go = Math.min(speed * dt, input.limit ?? Number.POSITIVE_INFINITY);
+  const mx = len > 0 ? (input.dx / len) * go : 0;
+  const my = len > 0 ? (input.dy / len) * go : 0;
   // Sub-moves no longer than SUB_MOVE, so a fast sprint cannot pass through a thin prop between two steps.
   const subs = Math.max(
     1,
@@ -293,6 +296,7 @@ function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): void {
     b.grounded = false;
     b.z = z;
   }
+  return len > 0 ? go : 0;
 }
 
 /** Advance by `dt` seconds of real time in fixed steps; a jump press counts once. Returns the steps taken. */
@@ -307,8 +311,10 @@ export function advance(
   let n = 0;
   let jump = input.jump || Boolean(b.jumpQueued);
   b.jumpQueued = false;
+  let limit = input.limit;
   while (b.acc >= STEP_S - 1e-9) {
-    step(w, b, { ...input, jump }, walk);
+    const moved = step(w, b, { ...input, jump, limit }, walk);
+    if (limit !== undefined) limit = Math.max(0, limit - moved);
     jump = false;
     b.acc -= STEP_S;
     n++;

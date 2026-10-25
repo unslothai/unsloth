@@ -33,6 +33,7 @@ import {
   type Pickup,
   type Target,
   RADIUS,
+  STAND_H,
   advance,
   buildActionWorld,
   circleHitsBox,
@@ -699,14 +700,21 @@ export function createWorld3d(
     x >= map.width ||
     y >= map.height ||
     SOLID.has(kindAt(map, x, y));
-  // A prop placed over the player stays passable for them, like the tiles setMapProps keeps open.
-  const collide = (): ActionWorld => {
+  // A prop placed over the player (around their feet at height z) stays passable for them, like the tiles
+  // setMapProps keeps open; one they stand on still holds them up.
+  const collide = (z: number): ActionWorld => {
     const ground = (x: number, y: number) => heightAt(terrain, x, y);
     const all = map.props ?? [];
     const over = new Set(
       all
         .map((p) => propBox(p, ground))
-        .filter((b) => b && circleHitsBox(b, me.x, me.y, RADIUS))
+        .filter(
+          (b) =>
+            b &&
+            b.top > z + 1e-3 &&
+            b.bottom < z + STAND_H &&
+            circleHitsBox(b, me.x, me.y, RADIUS),
+        )
         .map((b) => b?.id),
     );
     return buildActionWorld(
@@ -717,14 +725,15 @@ export function createWorld3d(
       all.filter((p) => !over.has(p.id)),
     );
   };
-  let aw: ActionWorld | null = action ? collide() : null;
   const saved = (bridge.action ?? {}) as { combat?: unknown; pose?: unknown };
+  const poseZ = (saved.pose as { z?: number } | undefined)?.z;
+  const feet = Math.max(
+    heightAt(terrain, me.x, me.y),
+    typeof poseZ === "number" && Number.isFinite(poseZ) ? poseZ : -Infinity,
+  );
+  let aw: ActionWorld | null = action ? collide(feet) : null;
   let body: Body | null = aw ? newBody(aw, me.x, me.y) : null;
-  {
-    const pose = saved.pose as { z?: number } | undefined;
-    if (body && typeof pose?.z === "number" && Number.isFinite(pose.z))
-      body.z = Math.max(body.z, pose.z);
-  }
+  if (body) body.z = Math.max(body.z, feet);
   const combat: Combat = shooter ? combatOf(saved.combat) : newCombat();
   const hostile = new Set([
     ...hostilesOf(spec),
@@ -1162,6 +1171,7 @@ export function createWorld3d(
       if (locked) route = [];
       let ix = mx;
       let iy = mz;
+      let limit: number | undefined;
       if (!ix && !iy && route.length && !locked) {
         while (
           route.length &&
@@ -1172,6 +1182,8 @@ export function createWorld3d(
           ix = route[0].x + 0.5 - me.x;
           iy = route[0].y + 0.5 - me.y;
           faceYaw = Math.atan2(-ix, -iy);
+          // Stop on the waypoint instead of stepping past it at high walk speeds.
+          limit = Math.hypot(ix, iy);
         }
       }
       advance(
@@ -1183,6 +1195,7 @@ export function createWorld3d(
           sprint: keys.has("ShiftLeft") || keys.has("ShiftRight"),
           crouch: !locked && (keys.has("KeyC") || keys.has("ControlLeft")),
           jump: !locked && jumpPressed,
+          limit,
         },
         dt,
         speed,
@@ -1428,7 +1441,7 @@ export function createWorld3d(
           openTile: (x, y) => !SOLID.has(kindAt(map, x, y)),
           onProps: (next) => {
             setMapProps(map, next, standTiles(me.x, me.y));
-            if (action) aw = collide();
+            if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
           },
         });
         const close = ed.close;
