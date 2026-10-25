@@ -76,11 +76,18 @@ def _raised(fn):
 
 
 def _prep(model, mode):
-    if mode == "lora":
+    if mode in ("lora", "lora_mts"):
         from peft import LoraConfig, get_peft_model
 
         torch.manual_seed(1)
-        config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+        if mode == "lora":
+            config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+        else:
+            # modules_to_save deep-copies a sharded-loaded linear (its chunk and its forward guard).
+            config = LoraConfig(
+                r = 4, lora_alpha = 8, target_modules = ["q_proj"], modules_to_save = ["down_proj"],
+                init_lora_weights = False,
+            )
         return get_peft_model(model, config)
     for p in model.parameters():
         p.requires_grad_(True)
@@ -326,6 +333,7 @@ def _spawn(
         # FSDP2Config.ignored_params naming a sharded-loaded weight: gathered whole and kept replicated.
         ("llama", {"intermediate_size": 37}, "full", "ignore"),
         ("llama", {"intermediate_size": 37}, "lora", "ignore"),
+        ("llama", {"intermediate_size": 37}, "lora_mts", False),
     ],
 )
 def test_sharded_loading_matches_full_load_shard_model(arch, overrides, mode, fit):

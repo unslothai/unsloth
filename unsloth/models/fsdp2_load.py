@@ -310,11 +310,29 @@ def _refuse_weight_dependent_lora_init(model):
         )
 
 
+def _tag_modules_to_save_copies(model):
+    """PEFT modules_to_save deep-copies a sharded-loaded linear, but Parameter.__deepcopy__ drops the chunk's
+    tag: give each still-identical copy its original's, so it is sharded like the full load's copy."""
+    for module in model.modules():
+        original = getattr(module, "original_module", None)
+        copies = getattr(module, "modules_to_save", None)
+        if not isinstance(original, nn.Module) or not isinstance(copies, nn.ModuleDict):
+            continue
+        params = dict(original.named_parameters())
+        for copy in copies.values():
+            for name, q in copy.named_parameters():
+                p = params.get(name)
+                info = _preload(p)
+                if info is not None and _preload(q) is None and q.shape == p.shape:
+                    q.__dict__[_PRELOAD] = info
+
+
 def begin_shard(model, mesh, config):
     """Before shard_model's layout: check the preloaded chunks match `mesh`, drop the forward guards and
     replace every chunk by a meta Parameter of the full shape. Returns ({(id(module), name): (local, info)}
     (empty without preloaded chunks), config): FSDP2Config.ignored_params entries naming a chunk now name its
     placeholder (the caller's set is updated in place, a non-set copied), so gather_replicated keeps them whole."""
+    _tag_modules_to_save_copies(model)
     slots = {}
     for module in model.modules():
         for name, p in module._parameters.items():
@@ -348,6 +366,10 @@ def begin_shard(model, mesh, config):
     for level in list(model.modules()):
         for handle in level.__dict__.pop(_GUARD, None) or ():
             handle.remove()
+        # PEFT modules_to_save deep-copies a guarded linear, hook included, with no handle on the root.
+        hooks = level.__dict__.get("_forward_pre_hooks") or {}
+        for key in [k for k, fn in hooks.items() if fn is _refuse_unsharded_forward]:
+            del hooks[key]
     pending, swap = {}, {}
     for p, info, where in slots.values():
         meta = nn.Parameter(
