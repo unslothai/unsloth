@@ -107,7 +107,7 @@ def _worker(rank, port, out):
         sharded = sum(type(m.weight).__name__ == "DTensor" for m in fp8)
         losses = _train(model)
         if rank == 0:
-            with open(out, "w") as f:
+            with open(out, "w", encoding = "utf-8") as f:
                 json.dump(
                     dict(converted = len(names), fp8 = len(fp8), sharded = sharded, losses = losses), f
                 )
@@ -115,14 +115,24 @@ def _worker(rank, port, out):
         dist.destroy_process_group()
 
 
+def _reference_worker(rank, out):
+    with open(out, "w", encoding = "utf-8") as f:
+        json.dump(_train(_build()[0]), f)
+
+
 def test_float8_linear_trains_under_native_fsdp2(tmp_path):
     import torch.multiprocessing as mp
     from test_fsdp2_frozen_dtypes_gloo import _free_port
 
-    reference = _train(_build()[0])
+    # The unsharded reference trains in a fresh process too. Computed in the pytest worker it
+    # inherits whatever earlier tests left there, and in the CPU rest shard that moved its step-4
+    # loss to 5.603441 while the sharded ranks (and a clean process) give 5.603824.
+    ref_out = str(tmp_path / "unsharded_fp8.json")
+    mp.spawn(_reference_worker, args = (ref_out,), nprocs = 1, join = True)
+    reference = json.load(open(ref_out, encoding = "utf-8"))
     out = str(tmp_path / "fsdp2_fp8.json")
     mp.spawn(_worker, args = (_free_port(), out), nprocs = 2, join = True)
-    result = json.load(open(out))
+    result = json.load(open(out, encoding = "utf-8"))
     assert result["converted"] == 14
     assert result["fp8"] == 14 and result["sharded"] == 14
     assert result["losses"] == pytest.approx(reference, rel = 1e-5, abs = 1e-6)

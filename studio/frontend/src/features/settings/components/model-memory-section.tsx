@@ -9,7 +9,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useChatRuntimeStore } from "@/features/chat";
+import {
+  resyncInferenceStatusAfterKeptModelsUnload,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useT } from "@/i18n";
@@ -130,10 +133,14 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
         next,
         t("settings.resources.modelMemory.saveError"),
       );
+      const wasKeeping = keepsModelsLoaded(mode);
       setMode(saved);
       useChatRuntimeStore
         .getState()
         .setKeepModelsLoaded(keepsModelsLoaded(saved));
+      if (wasKeeping && !keepsModelsLoaded(saved)) {
+        void resyncInferenceStatusAfterKeptModelsUnload();
+      }
     } catch (saveError) {
       setError(
         saveError instanceof Error

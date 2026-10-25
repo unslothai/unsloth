@@ -94,3 +94,118 @@ def test_wrapper_passes_tuned_backward_options(monkeypatch):
     for key_, val in u._FLEX_TUNED_BWD_KERNEL_OPTIONS.items():
         assert seen[key_] == val
     assert seen["FORCE_USE_FLEX_ATTENTION"] is True
+
+
+def _wrapped_call(monkeypatch, mask, **kwargs):
+    import torch
+
+    seen = {}
+
+    def fake_flex(module, query, key, value, *args, **kw):
+        seen.update(kw.get("kernel_options") or {})
+        return query
+
+    monkeypatch.setattr(u, "_flex_tuned_bwd_device_ok", lambda: True)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
+    wrapped = u._wrap_flex_attention_forward(fake_flex)
+
+    class M(torch.nn.Module):
+        is_causal = True
+
+    q, k, v = (torch.randn(1, 2, 8, 256) for _ in range(3))
+    wrapped(M(), q, k, v, mask, **kwargs)
+    return seen
+
+
+class _Mask:
+    def __init__(self, block_size):
+        self.BLOCK_SIZE = block_size
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [{"bwd_BLOCK_M1": 64}, {"BLOCK_M": 64, "BLOCK_N": 64}, {"num_warps": 8}, {"bwd_num_stages": 2}],
+)
+def test_caller_tiles_are_not_mixed_with_tuned_ones(monkeypatch, requested):
+    # A partial caller set merged with ours could break N1 % M1 == 0 (Inductor rejects it).
+    seen = _wrapped_call(monkeypatch, object(), kernel_options = dict(requested))
+    for key_, val in requested.items():
+        assert seen[key_] == val
+    for key_ in u._FLEX_TUNED_BWD_KERNEL_OPTIONS:
+        if key_ not in requested:
+            assert key_ not in seen
+    assert seen["FORCE_USE_FLEX_ATTENTION"] is True
+
+
+def test_caller_non_tile_options_keep_tuned_backward(monkeypatch):
+    seen = _wrapped_call(monkeypatch, object(), kernel_options = {"PRESCALE_QK": True})
+    assert seen["PRESCALE_QK"] is True
+    for key_, val in u._FLEX_TUNED_BWD_KERNEL_OPTIONS.items():
+        assert seen[key_] == val
+
+
+@pytest.mark.parametrize(
+    "block_size, tuned",
+    [
+        ((128, 128), True),
+        ((64, 128), True),
+        ((32, 32), True),
+        ((16, 16), False),
+        ((128, 16), False),
+    ],
+)
+def test_tuned_backward_only_when_tiles_divide_the_sparse_blocks(monkeypatch, block_size, tuned):
+    # Inductor shrinks its default tiles to fit 16-wide sparse blocks; fixed 32-wide ones cannot.
+    seen = _wrapped_call(monkeypatch, _Mask(block_size))
+    assert all((key_ in seen) == tuned for key_ in u._FLEX_TUNED_BWD_KERNEL_OPTIONS)
+    assert seen["FORCE_USE_FLEX_ATTENTION"] is True
+
+
+@pytest.mark.skipif(
+    not __import__("torch").cuda.is_available()
+    or __import__("torch").version.hip is not None
+    or tuple(int(x) for x in __import__("torch").__version__.split("+")[0].split(".")[:2])
+    < (2, 10),
+    reason = "needs NVIDIA CUDA and torch >= 2.10 (bwd_ kernel_options)",
+)
+@pytest.mark.parametrize("case", ["block16", "caller_m1_64"])
+def test_tuned_backward_compiles_for_small_blocks_and_partial_caller_tiles(monkeypatch, case):
+    # Real Inductor compile of the backward with the options the wrapper emits (tuned path forced).
+    import torch
+    from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+
+    torch._dynamo.reset()
+    flex = torch.compile(flex_attention, fullgraph = True)
+
+    def real_flex(module, query, key, value, mask, **kw):
+        return flex(query, key, value, block_mask = mask, kernel_options = kw.get("kernel_options"))
+
+    monkeypatch.setattr(u, "_flex_tuned_bwd_device_ok", lambda: True)
+    wrapped = u._wrap_flex_attention_forward(real_flex)
+
+    class M(torch.nn.Module):
+        is_causal = True
+
+    S = 128
+    block = 16 if case == "block16" else 128
+    mask = create_block_mask(
+        lambda b, h, q, kv: q >= kv, None, None, S, S, device = "cuda", BLOCK_SIZE = block
+    )
+    q, k, v = (
+        torch.randn(1, 2, S, 256, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+        for _ in range(3)
+    )
+    if case == "block16":
+        # torch 2.10's Inductor cannot compile 16-wide sparse blocks at all (2.14 shrinks its tiles).
+        try:
+            flex(q, k, v, block_mask = mask).float().sum().backward()
+        except Exception as error:
+            pytest.skip(
+                f"this torch cannot compile 16-wide sparse blocks without Unsloth: {type(error).__name__}"
+            )
+        q.grad = k.grad = v.grad = None
+        torch._dynamo.reset()
+    extra = {"kernel_options": {"bwd_BLOCK_M1": 64}} if case == "caller_m1_64" else {}
+    out = wrapped(M(), q, k, v, mask, **extra)
+    out.float().sum().backward()
+    assert q.grad is not None and torch.isfinite(q.grad).all()

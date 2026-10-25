@@ -1823,6 +1823,40 @@ def retired_full_copy_base(repo_id: Optional[str]) -> Optional[str]:
     return base
 
 
+def retired_copy_loads_from_disk(source: Optional[str], *, companion: bool = False) -> bool:
+    """Whether a retired full copy complete on disk (snapshot path, or id with a ``refs/main`` snapshot) loads as itself.
+
+    Its files are the base's own, and the base's mirror may not be cached (offline) or would download again (online).
+    A ``companion`` base serves a single file that supplies the transformer, so that folder needs only its config.
+    PURE: local stat only."""
+    key = (source or "").strip()
+    if not key or retired_full_copy_base(key) is None and not _is_local_path(key):
+        return False
+    try:
+        if _is_local_path(key):
+            root: Optional[Path] = Path(key).expanduser()
+        else:
+            from utils.hf_cache_settings import active_hf_hub_cache
+
+            copy_id = next(c for c in _RETIRED_FULL_COPIES if c == key.lower())
+            # A load by id resolves refs/main (offline too): a commit-pinned snapshot with no main ref is not found.
+            repo = Path(active_hf_hub_cache()) / f"models--{copy_id.replace('/', '--')}"
+            commit = (repo / "refs" / "main").read_text(encoding = "utf-8").strip()
+            root = repo / "snapshots" / commit if commit else None
+        if root is None or not root.is_dir():
+            return False
+        from .diffusion_flux3 import FLUX3_COMPONENT_FOLDERS, FLUX3_INDEX
+
+        return local_pipeline_components_are_complete(
+            root,
+            FLUX3_INDEX,
+            excluded_components = ("transformer",) if companion else (),
+            fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
+        )
+    except (OSError, StopIteration):
+        return False
+
+
 # Repo id (lowercased) -> the commit a load's plan pinned it to, for the duration of that load's assembly. Set only by
 # ``pinned_repo_revision`` around a video load; every hub-id CONFIG read of a base repo (encoder / VAE / transformer
 # configs, model_index, the LTX-2.5 companions) asks ``pinned_revision_kwargs`` so it reads the planned commit. Empty
@@ -2557,7 +2591,11 @@ def _safe_relative_parts(text: str) -> Optional[tuple[str, ...]]:
     return relative.parts
 
 
-def _local_weights_are_complete(component: Path, library_name: str) -> bool:
+def _local_weights_are_complete(
+    component: Path,
+    library_name: str,
+    accept_twin: bool = True,
+) -> bool:
     # The first format with any weights present decides: a leftover .bin index cannot veto safetensors.
     for stems, ext in _LOCAL_PIPELINE_WEIGHT_FORMATS:
         # Transformers never reads diffusion_pytorch_model* (LTX-2's text_encoder ships both shard sets).
@@ -2583,11 +2621,20 @@ def _local_weights_are_complete(component: Path, library_name: str) -> bool:
         sizes = [w.stat().st_size for s in stems if (w := component / f"{s}.{ext}").is_file()]
         if sizes:
             return any(sizes)
-    return False
+    # A lone single-file .fp16 twin: a snapshot an fp16 load staged, read with variant="fp16".
+    return accept_twin and any(
+        _nonempty_file(component / f"{s}.fp16.safetensors")
+        for s in ("diffusion_pytorch_model", "model")
+        if library_name != "transformers" or s != "diffusion_pytorch_model"
+    )
 
 
 def _local_pipeline_component_is_complete(
-    component: Path, library_name: str, class_name: str, config_only_model_components: bool
+    component: Path,
+    library_name: str,
+    class_name: str,
+    config_only_model_components: bool,
+    accept_twin: bool = True,
 ) -> bool:
     if not component.is_dir():
         return False
@@ -2610,7 +2657,8 @@ def _local_pipeline_component_is_complete(
             _nonempty_file(component / a) for a in ("vocab.json", "merges.txt")
         )
     return _json_dict(component / "config.json") is not None and (
-        config_only_model_components or _local_weights_are_complete(component, library_name)
+        config_only_model_components
+        or _local_weights_are_complete(component, library_name, accept_twin)
     )
 
 
@@ -2648,6 +2696,8 @@ def local_pipeline_components_are_complete(
                     library,
                     cls,
                     config_only_model_components or name in excluded_components,
+                    # Fixed-folder assemblers (FLUX.3) open each component without a variant: no twins.
+                    accept_twin = False,
                 )
                 for name, (folder, library, cls) in fixed_component_folders.items()
             )
@@ -2655,6 +2705,7 @@ def local_pipeline_components_are_complete(
             return False
     caller_supplied = _CALLER_SUPPLIED_COMPONENTS.get(class_name, frozenset())
     declared = False
+    twin_only = False
     try:
         for name, spec in payload.items():
             if (
@@ -2697,9 +2748,27 @@ def local_pipeline_components_are_complete(
                 component, spec[0], spec[1], config_only_model_components
             ):
                 return False
+            if not config_only_model_components and _twin_only_component(component):
+                twin_only = True
     except OSError:
         return False
+    if declared and twin_only:
+        # The loader reads .fp16 files pipeline-wide or not at all: a mix of twins and defaults would not open.
+        from .diffusion_fp16_variant import local_fp16_variant
+        return (
+            local_fp16_variant(str(base), load_dtype = None, supplied = tuple(excluded_components))
+            is not None
+        )
     return declared
+
+
+def _twin_only_component(component: Path) -> bool:
+    from .diffusion_fp16_variant import is_default_weight, is_fp16_twin
+    try:
+        names = [entry.name for entry in component.iterdir() if entry.is_file()]
+    except OSError:
+        return False
+    return any(is_fp16_twin(n) for n in names) and not any(is_default_weight(n) for n in names)
 
 
 # Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=0.41.0'`` has

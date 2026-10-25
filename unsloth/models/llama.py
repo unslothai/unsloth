@@ -120,6 +120,7 @@ except ImportError:
     detect_logit_transforms = None
 from ..device_type import (
     xpu_keeps_explicit_bf16,
+    xpu_vllm_refuses_bf16,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -1749,17 +1750,13 @@ def _LlamaModel_fast_forward_inference(
         X = X.to(_get_dtype(dtype_from_config(self.config)))
         bsz, q_len, hd = X.shape
         assert q_len == 1
-        residual = torch.empty(
-            (bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
-        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0")
+        # Not device 0: a cross-device copy per step cannot be graph captured.
+        scratch_device = X.device
+        residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = scratch_device)
+        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = scratch_device)
         XX, XX2 = _XX[0], _XX[1]
-        variance = torch.empty(
-            (bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
-        temp_mlp = torch.empty(
-            (2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
+        variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = scratch_device)
+        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = scratch_device)
         temp_gates = _LazyDeviceScratch(DEVICE_COUNT, temp_mlp[0].to)
         temp_ups = _LazyDeviceScratch(DEVICE_COUNT, temp_mlp[1].to)
 
@@ -2445,6 +2442,9 @@ class _PerDeviceRopeCache:
         self._rope_cache_versions = [None] * DEVICE_COUNT
         # Rows each device can serve without bookkeeping; reset on growth. Read per layer per decode step.
         self._rope_rows_ready = [0] * DEVICE_COUNT
+        # A compiled grad-off build may hold inference tensors (AOTAutograd drops
+        # inference_mode(False)); rebuilt on the next grad-enabled read, off the fast path.
+        self._rope_rebuild_for_grad = [False] * DEVICE_COUNT
         # Never fewer rows than the eager cache started with, so those positions stay valid.
         self._rope_cache_floor = self.current_rope_size
         self._rope_cache_needed = self.current_rope_size
@@ -2459,12 +2459,21 @@ class _PerDeviceRopeCache:
         # saved for backward, so the compiled training block failed and fell back to eager.
         import contextlib
 
-        if not torch.is_inference_mode_enabled():
+        # Dynamo cannot trace is_inference_mode_enabled; _mark_rope_build covers compiled builds.
+        if torch.compiler.is_compiling() or not torch.is_inference_mode_enabled():
             return contextlib.nullcontext()
         stack = contextlib.ExitStack()
         stack.enter_context(torch.inference_mode(False))
         stack.enter_context(torch.no_grad())
         return stack
+
+    def _mark_rope_build(self, device_index):
+        self._rope_rebuild_for_grad[device_index] = (
+            torch.compiler.is_compiling() and not torch.is_grad_enabled()
+        )
+
+    def _needs_grad_rebuild(self, device_index):
+        return self._rope_rebuild_for_grad[device_index] and torch.is_grad_enabled()
 
     def _build_rope_cache(self, device_index):
         # _set_cos_sin_cache records its length as current_rope_size; a lazy build may be shorter.
@@ -2477,12 +2486,14 @@ class _PerDeviceRopeCache:
             )
         self.current_rope_size = current_rope_size
         self._rope_cache_versions[device_index] = self._rope_cache_version
+        self._mark_rope_build(device_index)
 
     def _rope_cache_stale(self, cached, device_index):
         return (
             cached is None
             or cached.shape[0] < self._rope_cache_rows()
             or self._rope_cache_versions[device_index] != self._rope_cache_version
+            or self._needs_grad_rebuild(device_index)
         )
 
     def _ensure_rope_cache(self, device_index):
@@ -2490,7 +2501,11 @@ class _PerDeviceRopeCache:
             device_index = get_current_device()
         if self._rope_cache_stale(self.multi_gpu_cos_cached[device_index], device_index):
             self._build_rope_cache(device_index)
-            self._rope_rows_ready[device_index] = self.multi_gpu_cos_cached[device_index].shape[0]
+            self._rope_rows_ready[device_index] = (
+                0
+                if self._rope_rebuild_for_grad[device_index]
+                else self.multi_gpu_cos_cached[device_index].shape[0]
+            )
         return device_index
 
     def _grow_rope_cache(self, seq_len, dtype):
@@ -2842,6 +2857,8 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self._unsloth_short_sin_cpu = (emb.sin() * self.scaling_factor).to(dtype = dtype)
         # The long cache only exists once something asks for more than original_max_position_embeddings.
         self._init_rope_cache_state(dtype)
+        # Own mark for the short cache: a long rebuild must not clear it.
+        self._short_rope_rebuild_for_grad = [False] * DEVICE_COUNT
 
         self.short_cos_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
@@ -2878,7 +2895,10 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     def _ensure_rope_cache(self, device_index):
         if device_index is None:
             device_index = get_current_device()
-        if self.multi_gpu_short_cos_cached[device_index] is None:
+        short_rebuild_for_grad = (
+            self._short_rope_rebuild_for_grad[device_index] and torch.is_grad_enabled()
+        )
+        if self.multi_gpu_short_cos_cached[device_index] is None or short_rebuild_for_grad:
             device = torch.device(device_index)
             with self._rope_build_mode():
                 self.multi_gpu_short_cos_cached[device_index] = self._unsloth_short_cos_cpu.to(
@@ -2887,6 +2907,9 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
                 self.multi_gpu_short_sin_cached[device_index] = self._unsloth_short_sin_cpu.to(
                     device = device, non_blocking = True
                 )
+            self._short_rope_rebuild_for_grad[device_index] = (
+                torch.compiler.is_compiling() and not torch.is_grad_enabled()
+            )
         if self._rope_cache_version > 0 and self._rope_cache_stale(
             self.multi_gpu_long_cos_cached[device_index], device_index
         ):
@@ -3600,6 +3623,18 @@ class FastLlamaModel:
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
+        if (
+            dtype == torch.bfloat16
+            and DEVICE_TYPE == "xpu"
+            and _vllm_will_load_weights(fast_inference, num_labels)
+            and xpu_vllm_refuses_bf16()
+        ):
+            # No forced-float32 check here: this path never sets UNSLOTH_FORCE_FLOAT32, so the env
+            # var only holds what an earlier FastModel load left behind.
+            logger.warning_once(
+                "Unsloth: vLLM does not accept bfloat16 on this Intel GPU. Will change to float16."
+            )
+            dtype = torch.float16
 
         assert dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32
 
@@ -4110,6 +4145,7 @@ class FastLlamaModel:
                 warn_if_bitsandbytes_quantized_nothing(
                     model, kwargs.get("quantization_config", None), model_name
                 )
+                check_mixed_gpu_placement(model, dtype)
                 # Attach dispatch hooks for bnb multi-device loads. The hooks stand aside only when vLLM
                 # owns the weights, which it never does here: vLLM has no classification head, so this
                 # branch loaded the weights in-process even though the caller asked for fast_inference.
@@ -4196,6 +4232,7 @@ class FastLlamaModel:
                 warn_if_bitsandbytes_quantized_nothing(
                     model, kwargs.get("quantization_config", None), model_name
                 )
+                check_mixed_gpu_placement(model, dtype)
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
                 from unsloth.models._remote_code_buffers import (
                     restore_remote_code_non_persistent_buffers,
