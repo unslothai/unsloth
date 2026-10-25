@@ -152,7 +152,6 @@ def _generic_to_copy_drops_non_blocking(cls: Any) -> bool:
 
 @contextmanager
 def _normal_tensors() -> Iterator[None]:
-    """Tensors made inside are normal ones (no grad), even under a render's ``torch.inference_mode()``."""
     import torch
     with torch.inference_mode(False), torch.no_grad():
         yield
