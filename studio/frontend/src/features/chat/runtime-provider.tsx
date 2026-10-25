@@ -1421,6 +1421,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       metadata: {
         custom: {
           ...(m.metadata?.createdAtEstimated === true ? { createdAtEstimated: true } : {}),
+          ...(m.metadata?.scheduledTask ? { scheduledTask: m.metadata.scheduledTask } : {}),
           ...(typeof m.metadata?.revision === "number" ? { revision: m.metadata.revision } : {}),
         },
       },

@@ -41,6 +41,7 @@ import {
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
+import { ScheduledTaskRunNotifier } from "@/features/scheduled-tasks/run-notifier";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
   SETTINGS_TABS,
@@ -277,6 +278,8 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/chat",
   "/projects",
   "/library",
+  // Tasks only need a chat model, which a chat-only host runs.
+  "/tasks",
   "/hub",
   "/login",
   "/signup",
@@ -824,8 +827,9 @@ function RootLayout() {
           </SidebarInset>
         </SidebarProvider>
       )}
-      {/* This side-effect-only mount stays last so it cannot shift existing React useId paths. */}
+      {/* These side-effect-only mounts stay last so they cannot shift existing React useId paths. */}
       {!isAuthFlowRoute && <HubSourceNoticeMount />}
+      {!isAuthFlowRoute && <ScheduledTaskRunNotifier />}
     </>
   );
 
