@@ -43,7 +43,11 @@ class _SyncStream:
     def __init__(self, items):
         self._items = list(items)
 
-    def read(self, max_bytes, timeout = None):
+    def read(
+        self,
+        max_bytes,
+        timeout = None,
+    ):
         end = time.monotonic() + (timeout if timeout is not None else 10.0)
         while True:
             now = time.monotonic()
@@ -59,7 +63,11 @@ class _AsyncStream:
     def __init__(self, items):
         self._items = list(items)
 
-    async def read(self, max_bytes, timeout = None):
+    async def read(
+        self,
+        max_bytes,
+        timeout = None,
+    ):
         end = time.monotonic() + (timeout if timeout is not None else 10.0)
         while True:
             now = time.monotonic()
@@ -78,9 +86,7 @@ def test_the_sync_reader_stops_at_the_park_cap(monkeypatch):
     client = SimpleNamespace(
         _transport = SimpleNamespace(
             _pool = SimpleNamespace(
-                _connections = [
-                    SimpleNamespace(_connection = SimpleNamespace(_network_stream = stream))
-                ]
+                _connections = [SimpleNamespace(_connection = SimpleNamespace(_network_stream = stream))]
             )
         )
     )
@@ -91,9 +97,9 @@ def test_the_sync_reader_stops_at_the_park_cap(monkeypatch):
         while True:
             stream.read(65536, timeout = _WINDOW)
     waited = time.monotonic() - t0
-    assert waited < _CAP + _WINDOW + 0.25, (
-        f"parked {waited:.2f}s against a {_CAP}s cap: the reader restarted it at its deadline"
-    )
+    assert (
+        waited < _CAP + _WINDOW + 0.25
+    ), f"parked {waited:.2f}s against a {_CAP}s cap: the reader restarted it at its deadline"
 
 
 def test_the_async_reader_stops_at_the_park_cap(monkeypatch):
@@ -113,9 +119,9 @@ def test_the_async_reader_stops_at_the_park_cap(monkeypatch):
         return time.monotonic() - t0
 
     waited = asyncio.run(run())
-    assert waited < _CAP + _WINDOW + 0.25, (
-        f"parked {waited:.2f}s against a {_CAP}s cap: the reader restarted it at its deadline"
-    )
+    assert (
+        waited < _CAP + _WINDOW + 0.25
+    ), f"parked {waited:.2f}s against a {_CAP}s cap: the reader restarted it at its deadline"
 
 
 def test_the_relay_fallback_stops_at_the_park_cap(monkeypatch):
@@ -146,9 +152,9 @@ def test_the_relay_fallback_stops_at_the_park_cap(monkeypatch):
         return time.monotonic() - t0
 
     waited = asyncio.run(run())
-    assert waited < _CAP + _WINDOW + 0.25, (
-        f"parked {waited:.2f}s against a {_CAP}s cap: the relay restarted it at its deadline"
-    )
+    assert (
+        waited < _CAP + _WINDOW + 0.25
+    ), f"parked {waited:.2f}s against a {_CAP}s cap: the relay restarted it at its deadline"
 
 
 def test_the_park_start_is_tracked_per_park():

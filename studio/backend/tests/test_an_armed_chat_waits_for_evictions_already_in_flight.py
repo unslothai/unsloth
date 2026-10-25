@@ -57,9 +57,9 @@ def test_a_later_arrival_waits_on_the_victim_another_plan_chose(busy):
     _fake, controller = busy
     controller.register("C", tokens = 1500, signal = PreemptSignal())
     inference._openai_llama_preemption_plan(controller, gen_id = "C", signal = PreemptSignal())
-    assert controller.participant("C").awaiting_victims == ["A"], (
-        "C goes upstream while A still decodes in 7000 of 8192 cells"
-    )
+    assert controller.participant("C").awaiting_victims == [
+        "A"
+    ], "C goes upstream while A still decodes in 7000 of 8192 cells"
 
 
 def test_the_arm_returns_only_once_that_victim_let_go(busy):

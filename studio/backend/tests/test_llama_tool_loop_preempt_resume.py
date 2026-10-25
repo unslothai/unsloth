@@ -652,10 +652,9 @@ class TestADroppedStructuredCallIsNotReplayed:
         checkpoint = policy.checkpoints[0]
         assert checkpoint.visible_text == "Intro. "
         # At most one token per kept byte, the bound that holds for any tokenizer.
-        assert checkpoint.charged_tokens <= len(
-            checkpoint.visible_text.encode()
+        assert (
+            checkpoint.charged_tokens <= len(checkpoint.visible_text.encode())
         ), f"{checkpoint.charged_tokens} tokens charged as replay for a kept {checkpoint.visible_text!r}"
-
 
     def test_kept_reasoning_denser_than_the_dropped_call_is_charged_in_full(self, monkeypatch):
         """Characters do not prorate tokens: 3000 digits of kept reasoning are 3000 tokens on a
@@ -695,9 +694,9 @@ class TestADroppedStructuredCallIsNotReplayed:
         assert policy.checkpoints, "the attempt never paused"
         checkpoint = policy.checkpoints[0]
         assert checkpoint.reasoning_text == kept
-        assert checkpoint.charged_tokens >= len(kept), (
-            f"{checkpoint.charged_tokens} tokens charged for {len(kept)} digits of replayed reasoning"
-        )
+        assert (
+            checkpoint.charged_tokens >= len(kept)
+        ), f"{checkpoint.charged_tokens} tokens charged for {len(kept)} digits of replayed reasoning"
         assert checkpoint.charged_tokens <= 8005
 
 

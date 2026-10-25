@@ -170,9 +170,7 @@ def test_a_tool_round_whose_victim_never_lets_go_is_refused(armed, monkeypatch):
             payload = None,
             conversation = [],
             rendered_tools = None,
-            observe_tokens = lambda generated: controller.plan_preemptions(
-                needed = 0, exclude = "round"
-            ),
+            observe_tokens = lambda generated: controller.plan_preemptions(needed = 0, exclude = "round"),
         )
     assert controller.participant("chat").state == ParticipantState.PREEMPTING
 
@@ -229,9 +227,13 @@ def test_every_arm_site_answers_a_refusal_as_an_admission_timeout():
                 c, p = call, parents.get(call)
                 ok = False
                 while p is not None and not isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if isinstance(p, ast.Try) and c in p.body and any(
-                        h.type is not None and "LlamaAdmissionTimeout" in _names(h)
-                        for h in p.handlers
+                    if (
+                        isinstance(p, ast.Try)
+                        and c in p.body
+                        and any(
+                            h.type is not None and "LlamaAdmissionTimeout" in _names(h)
+                            for h in p.handlers
+                        )
                     ):
                         ok = True
                         break

@@ -3003,7 +3003,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                         base, slot_id, headers = _llama_slot_headers(llama_backend)
                     ),
                     needed = needed,
-                    recheck = lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend)),
+                    recheck = lambda: fetch_llama_slots(
+                        base, headers = _llama_slot_headers(llama_backend)
+                    ),
                     ambiguous = _maybe_erased,
                 )
                 if _maybe_erased:
@@ -3096,7 +3098,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                         if _maybe_erased:
                             controller.note_cells_possibly_erased(_gguf_slots_seen.get("parked"))
                         if freed:
-                            _llama_preemption_log("reclaimed-idle", freed = freed, gen_id = completion_id)
+                            _llama_preemption_log(
+                                "reclaimed-idle", freed = freed, gen_id = completion_id
+                            )
                             if freed >= _idle_tokens:
                                 controller.note_cells_reclaimed(_gguf_slots_seen.get("parked"))
                             _gguf_slots_seen["at"] = 0.0
@@ -3781,7 +3785,9 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                         _controller = get_preemption_controller(key)
                         after_epoch = _controller.residency_epoch()
                         after = read_slot_occupancy(
-                            lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
+                            lambda: fetch_llama_slots(
+                                base, headers = _llama_slot_headers(llama_backend)
+                            )
                         )
                         if after is not None:
                             _controller.note_resident(
@@ -36733,7 +36739,9 @@ async def produce_openai_chat_completions(
                             _slot_base, headers = _llama_slot_headers(llama_backend)
                         )
                         if any(
-                            isinstance(s, dict) and s.get("id") == _slot_id and s.get("is_processing")
+                            isinstance(s, dict)
+                            and s.get("id") == _slot_id
+                            and s.get("is_processing")
                             for s in _slots_now or ()
                         ):
                             return False
