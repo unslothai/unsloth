@@ -6486,7 +6486,6 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
-        {/* The On Device actions, shown without a hover: the loaded model is the one most often adjusted. */}
         <span className={ROW_ACTIONS_VISIBLE_CLASS}>
           {onConfigure && (
             <ModelLoadSettingsAction
