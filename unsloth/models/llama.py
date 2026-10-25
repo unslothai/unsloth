@@ -1756,17 +1756,15 @@ def _LlamaModel_fast_forward_inference(
         X = X.to(_get_dtype(dtype_from_config(self.config)))
         bsz, q_len, hd = X.shape
         assert q_len == 1
-        residual = torch.empty(
-            (bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
-        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0")
+        # Scratch on the embedding's device (device 0 for a model loaded there, or split from there):
+        # on device 0 a model placed on another GPU copied it across devices every step, which a
+        # CUDA graph capture cannot record.
+        scratch_device = X.device
+        residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = scratch_device)
+        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = scratch_device)
         XX, XX2 = _XX[0], _XX[1]
-        variance = torch.empty(
-            (bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
-        temp_mlp = torch.empty(
-            (2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
+        variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = scratch_device)
+        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = scratch_device)
         temp_gates = _LazyDeviceScratch(DEVICE_COUNT, temp_mlp[0].to)
         temp_ups = _LazyDeviceScratch(DEVICE_COUNT, temp_mlp[1].to)
 
