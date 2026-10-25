@@ -251,7 +251,13 @@ def _drive_load(backend, gguf, **intent_kwargs):
         def kill(self):
             return None
 
+    real_popen = subprocess.Popen
+    server = backend._find_llama_server_binary()
+
+    # Only llama-server: a first torch import inside the load spawns ldconfig probes of its own.
     def _popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != server:
+            return real_popen(cmd, **kwargs)
         launches.append((list(cmd), dict(kwargs.get("env") or {})))
         return _Process()
 
