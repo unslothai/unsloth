@@ -101,6 +101,16 @@ def test_items_already_used_or_held_are_not_asked_for_again():
         _state(allow_item = True),
     )
     assert patch["quest"]["requires_item"] == "lantern"
+    # A fresh item named in `item` (small models skip `new_item_name`) becomes the new item when allowed.
+    patch = validate_director(
+        {"title": "Tea", "giver": "mira", "item": "Teapot"}, _state(allow_item = True)
+    )
+    assert patch["quest"]["requires_item"] == "teapot" and patch["items"][0]["name"] == "Teapot"
+    # A used item named in `item` is never turned into a new one.
+    with pytest.raises(WorldError):
+        validate_director(
+            {"title": "Again", "giver": "mira", "item": "rod"}, _state(allow_item = True)
+        )
 
 
 def test_text_is_bounded():
@@ -116,6 +126,11 @@ def test_text_is_bounded():
     )
     q = patch["quest"]
     assert len(q["title"]) == 120 and len(q["description"]) == 500 and len(q["reward_text"]) == 200
+    long = "The bell rings. " * 50
+    q = validate_director(
+        {"title": "T", "description": long, "giver": "mira", "item": "bell"}, _state()
+    )["quest"]
+    assert q["description"].endswith("rings.") and len(q["description"]) <= 500
 
 
 def test_director_task_returns_a_patch():

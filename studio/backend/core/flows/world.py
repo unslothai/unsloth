@@ -646,7 +646,13 @@ def validate_director(raw: Any, state: dict) -> dict:
         raise WorldError("the director did not return a quest")
 
     def text(key: str, limit: int) -> str:
-        return re.sub(r"\s+", " ", str(raw.get(key) or "")).strip()[:limit]
+        t = re.sub(r"\s+", " ", str(raw.get(key) or "")).strip()
+        if len(t) <= limit:
+            return t
+        # Long text ends at a sentence, not mid-word.
+        cut = t[:limit]
+        end = cut.rfind(". ")
+        return cut[: end + 1] if end > limit // 2 else cut
 
     title = text("title", 120)
     if not title:
@@ -690,10 +696,14 @@ def validate_director(raw: Any, state: dict) -> dict:
         | set(state.get("inventory") or [])
         | set(state.get("picked") or [])
     )
-    need = find(items, text("item", 80))
+    asked = text("item", 80)
+    need = find(items, asked)
     if need in used:
         need = None
-    new_item_name = text("new_item_name", 60)
+    # Small models often name a fresh item in `item` instead of `new_item_name`: an unknown name is the new item.
+    new_item_name = text("new_item_name", 60) or (
+        asked[:60] if asked and find(items, asked) is None else ""
+    )
     if need is None and new_item_name and state.get("allow_item"):
         need = _unique(slug(new_item_name, "item"), taken)
         patch["items"].append(
