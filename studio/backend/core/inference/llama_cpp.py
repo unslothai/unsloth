@@ -45590,6 +45590,7 @@ class LlamaCppBackend:
         continue_final_message: bool = False,
         should_abort = None,
         prefer_native: bool = False,
+        template_options = None,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -45696,6 +45697,10 @@ class LlamaCppBackend:
                         template_body = {"messages": render_messages}
                         if tools:
                             template_body["tools"] = llama_grammar_tools(tools)
+                        # These can affect the prompt rendered for a client-owned tool call.
+                        for key in ("tool_choice", "parallel_tool_calls", "response_format"):
+                            if template_options and key in template_options:
+                                template_body[key] = template_options[key]
                         # Layered over the load-time --chat-template-kwargs: only keys sent here move.
                         if chat_template_kwargs:
                             template_body["chat_template_kwargs"] = chat_template_kwargs
