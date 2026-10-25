@@ -6,7 +6,9 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-const picker = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+const picker = readSrc(
+  "features/model-picker/components/model-selector/pickers.tsx",
+);
 
 test("every quant list and cached GGUF row marks the quant each loaded model runs", () => {
   const expanders = picker.match(/<GgufVariantExpander\b/g)?.length ?? 0;
@@ -15,21 +17,44 @@ test("every quant list and cached GGUF row marks the quant each loaded model run
     picker,
     /loadedQuants\?\.some\(\(q\) => ggufVariantsMatchForPicker\(q, v\.quant\)\) \? \(\s*<span[^>]*>\s*loaded\s*<\/span>/,
   );
-  assert.match(picker, /loadedModels\s*\.filter\(\(m\) => m\.quant && modelIdsMatchForPicker\(m\.id, repoId\)\)/);
+  assert.match(
+    picker,
+    /loadedModels\s*\.filter\(\(m\) => m\.quant && modelIdsMatchForPicker\(m\.id, repoId\)\)/,
+  );
   assert.match(
     picker,
     /if \(activeGgufVariant && modelIdsMatchForPicker\(loadedModelId, repoId\)\) \{\s*quants\.push\(activeGgufVariant\);/,
   );
-  assert.match(picker, /meta="GGUF"\s*quantChip=\{loadedQuants\.map\(ggufQuantChipLabel\)\.join\(", "\) \|\| undefined\}/);
+  assert.match(
+    picker,
+    /meta="GGUF"\s*quantChip=\{loadedQuants\.map\(ggufQuantChipLabel\)\.join\(", "\) \|\| undefined\}/,
+  );
 });
 
 test("a loaded row is selected, picked and ejected by its checkpoint, not its label", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(runtime, /const checkpoint = checkpoints\?\.\[i\] \|\| id;/);
   assert.match(runtime, /statusRes\.serving_checkpoints,\s*\);/);
-  assert.match(runtime, /\.loadedModels\.map\(\(m\) => m\.checkpoint \?\? m\.id\)/);
-  assert.match(picker, /const checkpoint = entry\.checkpoint \?\? entry\.id;\s*const optionKey = makeModelOptionKey\("loaded", checkpoint\);\s*const isSelected = modelIdsMatchForPicker\(value, checkpoint\);/);
-  assert.match(runtime, /const known = new Map\(current\.map\(\(m\) => \[m\.checkpoint \?\? m\.id, m\]\)\);/);
+  assert.match(
+    runtime,
+    /\.loadedModels\.map\(\(m\) => m\.checkpoint \?\? m\.id\)/,
+  );
+  assert.match(
+    picker,
+    /const checkpoint = entry\.checkpoint \?\? entry\.id;\s*const optionKey = makeModelOptionKey\("loaded", checkpoint\);\s*const isSelected = modelIdsMatchForPicker\(value, checkpoint\);/,
+  );
+  assert.match(
+    runtime,
+    /const known = new Map\(current\.map\(\(m\) => \[m\.checkpoint \?\? m\.id, m\]\)\);/,
+  );
   assert.match(picker, /onSelect\(checkpoint, selectMeta\)/);
   assert.match(picker, /onSelect: \(\) => onEject\?\.\(checkpoint\),/);
+});
+
+test("settings opened from a loaded standalone .gguf use the bare path, as other entry points do", () => {
+  assert.match(
+    picker,
+    /const configureMeta: ModelSelectorChangeMeta = isStandaloneGgufPath\(checkpoint\)\s*\?\s*\{ \.\.\.selectMeta, ggufVariant: undefined, isGguf: true \}\s*:\s*selectMeta;/,
+  );
+  assert.match(picker, /onConfigure\(checkpoint, configureMeta\)/);
 });

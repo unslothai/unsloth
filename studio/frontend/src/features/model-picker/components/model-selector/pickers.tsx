@@ -263,6 +263,7 @@ import {
   modelIdsMatchForPicker,
   soleQuantRowState,
 } from "./row-identity";
+import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
 import {
   type FormatTone,
   isFeaturedOnDeviceRepoId,
@@ -6465,6 +6466,11 @@ export function HubModelPicker({
       isDownloaded: true,
       isGguf: Boolean(quant),
     };
+    // As residentModelConfigTarget: a standalone .gguf keys settings by the bare path, its quant is
+    // only a label from the filename.
+    const configureMeta: ModelSelectorChangeMeta = isStandaloneGgufPath(checkpoint)
+      ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
+      : selectMeta;
     return (
       <div
         key={optionKey}
@@ -6490,7 +6496,7 @@ export function HubModelPicker({
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${entry.id}`}
-              onConfigure={() => onConfigure(checkpoint, selectMeta)}
+              onConfigure={() => onConfigure(checkpoint, configureMeta)}
             />
           )}
           <ModelRowMenu
