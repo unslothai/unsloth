@@ -203,6 +203,14 @@
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
     },
     {
+      "file": "studio/backend/core/inference/skills.py",
+      "rule": "unsafe-deserialize",
+      "sink": "yaml.load",
+      "digest": "df424636e7148b98",
+      "count": 2,
+      "reason": "Loader is _FrontmatterLoader, a yaml.SafeLoader subclass that only adds a merge-key pair budget; no Python object construction."
+    },
+    {
       "file": "studio/backend/core/inference/video_wan_fused.py",
       "rule": "dynamic-import",
       "sink": "import_module",

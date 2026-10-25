@@ -250,15 +250,51 @@ def _enabled_sdpa_kernels(kernels: tuple[str, ...]) -> tuple[str, ...]:
 
 
 MPS_PREFILL_ATTENTION_OFF_ENV = "PYTORCH_MPS_DISABLE_PREFILL_ATTENTION"
+MPS_PREFILL_HEAD_DIMS = frozenset((32, 64, 72, 80, 96, 128, 256))
 
 
-def _mps_sdpa_kernels(torch: Any) -> tuple[str, ...]:
-    """MPS ignores ``sdpa_kernel``, so answer from the build: only torch 2.13+ has a fused (prefill) kernel."""
-    if _version_tuple(torch.__version__)[:2] < (2, 13):
-        return (SDPA_MATH,)
+def mps_prefill_supported() -> bool:
+    import torch
     if os.environ.get(MPS_PREFILL_ATTENTION_OFF_ENV, "0") != "0":
-        return (SDPA_MATH,)
-    return (SDPA_FLASH, SDPA_MATH)
+        return False
+    return _version_tuple(torch.__version__)[:2] >= (2, 13)
+
+
+def mps_prefill_attention(
+    query: Any,
+    key: Any,
+    value: Any,
+    attn_mask: Any = None,
+    seq_dim: int = -2,
+) -> bool:
+    """Whether torch runs this SDPA call on the MPS prefill kernel rather than the MPSGraph path that materialises the
+    score matrix. ``seq_dim`` is the query's sequence axis (1 for diffusers' ``[B, S, H, D]``)."""
+    import torch
+
+    if (
+        getattr(getattr(query, "device", None), "type", None) != "mps"
+        or not mps_prefill_supported()
+    ):
+        return False
+    if query.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+        return False
+    # torch converts a bool mask to an additive one in q's dtype; a float mask of another dtype falls back.
+    if attn_mask is not None and attn_mask.dtype not in (torch.bool, query.dtype):
+        return False
+    if torch.is_grad_enabled() and any(t.requires_grad for t in (query, key, value)):
+        return False
+    return (
+        query.shape[seq_dim] > 8
+        and key.shape[seq_dim] > 0
+        and query.shape[-1] == value.shape[-1]
+        and query.shape[-1] in MPS_PREFILL_HEAD_DIMS
+    )
+
+
+def _mps_sdpa_kernels() -> tuple[str, ...]:
+    """MPS ignores ``sdpa_kernel``, so answer from the build: only torch 2.13+ has a fused (prefill) kernel. Shape-blind:
+    callers that know the family's head dims pass them to ``sdpa_math_only``."""
+    return (SDPA_FLASH, SDPA_MATH) if mps_prefill_supported() else (SDPA_MATH,)
 
 
 def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
@@ -275,7 +311,7 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     from core._torchao_stub import _module_is_rocm
 
     if device.split(":")[0] == "mps":
-        return _mps_sdpa_kernels(torch)
+        return _mps_sdpa_kernels()
     if device.split(":")[0] == "cuda" and _module_is_rocm(torch):
         return _probe_rocm_sdpa_kernels(device, dtype)
     # Small enough to be free, but shaped like real attention: the fused kernels reject head_dim they cannot serve, and
@@ -346,19 +382,31 @@ def _sdpa_capability(target: Any) -> tuple[str, ...]:
         return _SDPA_PROBE_CACHE.setdefault(key, available)
 
 
-def sdpa_math_only(target: Any) -> bool:
+def _family_sdpa_kernels(target: Any, head_dims: Any = None) -> tuple[str, ...]:
+    kernels = available_sdpa_kernels(target)
+    if (
+        head_dims
+        and _target_device(target).split(":")[0] == "mps"
+        and not set(head_dims) <= MPS_PREFILL_HEAD_DIMS
+    ):
+        return tuple(k for k in kernels if k not in _SDPA_SUBQUADRATIC)
+    return kernels
+
+
+def sdpa_math_only(target: Any, head_dims: Any = None) -> bool:
     """True only when MATH ran and every sub-quadratic backend refused.
+    ``head_dims`` (the family's; empty = unknown) narrows the shape-blind MPS answer.
 
     A probe that answered nothing at all returns False: silence is not evidence."""
-    available = available_sdpa_kernels(target)
+    available = _family_sdpa_kernels(target, head_dims)
     if not available:
         return False
     return SDPA_MATH in available and not any(k in available for k in _SDPA_SUBQUADRATIC)
 
 
-def sdpa_subquadratic_confirmed(target: Any) -> bool:
+def sdpa_subquadratic_confirmed(target: Any, head_dims: Any = None) -> bool:
     """True only when a sub-quadratic SDPA kernel was seen to run; an unanswered probe is False."""
-    return any(k in _SDPA_SUBQUADRATIC for k in available_sdpa_kernels(target))
+    return any(k in _SDPA_SUBQUADRATIC for k in _family_sdpa_kernels(target, head_dims))
 
 
 SDPA_MATH_ONLY_MESSAGE = (
@@ -370,18 +418,22 @@ SDPA_MATH_ONLY_MESSAGE = (
 )
 
 
-def warn_if_sdpa_math_only(target: Any, logger: Any = None) -> bool:
+def warn_if_sdpa_math_only(
+    target: Any,
+    logger: Any = None,
+    head_dims: Any = None,
+) -> bool:
     """Log the math-only diagnosis at LOAD, not 70 seconds into a doomed generation.
 
     Returns whether the warning fired, so callers can carry it into their resolved controls."""
-    if not sdpa_math_only(target):
+    if not sdpa_math_only(target, head_dims):
         return False
     if logger is not None:
         logger.warning(
             "diffusion.attention.math_only: device=%s dtype=%s kernels=%s -- %s",
             getattr(target, "device", None),
             getattr(target, "dtype", None),
-            ",".join(available_sdpa_kernels(target)) or "none",
+            ",".join(_family_sdpa_kernels(target, head_dims)) or "none",
             SDPA_MATH_ONLY_MESSAGE,
         )
     return True
@@ -458,6 +510,95 @@ def _apply_rocm_guard(available: tuple[str, ...], logger: Any = None) -> tuple[s
             ROCM_FUSED_SDPA_ALLOW_ENV,
         )
     return tuple(disabled)
+
+
+# gfx1151 (Strix Halo): AOTriton's SDPA tuning covers contiguous [B, H, S, D] only, and diffusers' native backend
+# hands SDPA permuted [B, S, H, D] views. Once one head of the strided k/v outgrows L2 the strided call is far slower
+# than copying k/v first (ComfyUI #16726, pytorch/pytorch#190154). Output is bit-identical. 0 disables.
+ROCM_CONTIGUOUS_KV_ENV = "UNSLOTH_DIFFUSION_ROCM_CONTIGUOUS_KV"
+ROCM_CONTIGUOUS_KV_ARCHES = ("gfx1151",)
+ROCM_CONTIGUOUS_KV_ATTR = "_unsloth_rocm_contiguous_kv"
+_ROCM_CONTIGUOUS_KV_L2: dict[int, int] = {}  # device index -> L2 bytes, gfx1151 cards only
+
+
+def _rocm_contiguous_kv_wanted(key: Any, value: Any) -> bool:
+    """True when one head of the strided ``[B, S, H, D]`` k/v exceeds L2."""
+    try:
+        if key.dim() != 4 or value.dim() != 4:
+            return False
+        l2 = _ROCM_CONTIGUOUS_KV_L2.get(key.device.index)
+        if not l2:
+            return False
+        strided = [t for t in (key, value) if not t.permute(0, 2, 1, 3).is_contiguous()]
+        return sum(t.shape[1] * t.shape[3] for t in strided) * key.element_size() > l2
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _heads_major(t: Any) -> Any:
+    """``[B, H, S, D]`` memory so the native backend's permute hands SDPA a dense tensor."""
+    if t.permute(0, 2, 1, 3).is_contiguous():
+        return t
+    return t.permute(0, 2, 1, 3).contiguous().permute(0, 2, 1, 3)
+
+
+def install_rocm_contiguous_kv(target: Any) -> bool:
+    """gfx1151 only: k/v over L2 reach SDPA contiguous (q is not copied). False elsewhere: other GPUs untouched."""
+    if os.environ.get(ROCM_CONTIGUOUS_KV_ENV, "").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    if not _is_cuda_rocm(target) or _rocm_gfx_arch(target) not in ROCM_CONTIGUOUS_KV_ARCHES:
+        return False
+    try:
+        import torch
+        from diffusers.models.attention_dispatch import (
+            AttentionBackendName,
+            _AttentionBackendRegistry,
+        )
+
+        device = torch.device(
+            _indexed_cuda_device(
+                str(
+                    getattr(target, "torch_device", None)
+                    or getattr(target, "device", None)
+                    or "cuda"
+                )
+            )
+        )
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        l2 = int(getattr(torch.cuda.get_device_properties(index), "L2_cache_size", 0) or 0)
+        backends = _AttentionBackendRegistry._backends
+        native_fn = backends[AttentionBackendName.NATIVE]
+    except Exception:  # noqa: BLE001
+        return False
+    if l2 <= 0 or not callable(native_fn):
+        return False
+    _ROCM_CONTIGUOUS_KV_L2[index] = l2
+    if getattr(native_fn, ROCM_CONTIGUOUS_KV_ATTR, False):
+        return True
+
+    def _contiguous_kv(*args: Any, **kwargs: Any) -> Any:
+        args = list(args)
+        key = args[1] if len(args) > 1 else kwargs.get("key")
+        value = args[2] if len(args) > 2 else kwargs.get("value")
+        if kwargs.get("_parallel_config") is None and _rocm_contiguous_kv_wanted(key, value):
+            key, value = _heads_major(key), _heads_major(value)
+            if len(args) > 1:
+                args[1] = key
+            else:
+                kwargs["key"] = key
+            if len(args) > 2:
+                args[2] = value
+            else:
+                kwargs["value"] = value
+        return native_fn(*args, **kwargs)
+
+    setattr(_contiguous_kv, ROCM_CONTIGUOUS_KV_ATTR, True)
+    _contiguous_kv.__wrapped__ = native_fn  # type: ignore[attr-defined]
+    try:
+        backends[AttentionBackendName.NATIVE] = _contiguous_kv
+    except Exception:  # noqa: BLE001
+        return False
+    return True
 
 
 def select_attention_backend(
@@ -761,13 +902,19 @@ def _time_rocm_flash_block(
     for _ in range(1 if long else 2):
         for fn in arms.values():
             block(fn)
-    torch.cuda.synchronize(device)
+    from .diffusion_cuda_graph import synchronize_outside_capture
+
+    synchronize_outside_capture(device)
     for _ in range(3 if long else 5):
         for name, fn in arms.items():
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(device)
             t0 = time.perf_counter()
             block(fn)
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(device)
             times[name].append((time.perf_counter() - t0) * 1000.0)
     med = {name: sorted(v)[len(v) // 2] for name, v in times.items()}
     return {
@@ -1164,13 +1311,17 @@ def _rocm_flash_probe_bytes(
 
 def _rocm_flash_probe_fits(device: str, need: int) -> bool:
     """Room for the probe beside the live forward: device free plus the allocator's cached-but-unused blocks, with
-    25% + 256 MiB to spare. Unknown memory state counts as no room."""
+    25% + 256 MiB to spare, less the user's VRAM Budget reserve (0 at the default). Unknown memory state counts as no
+    room."""
     try:
         import torch
 
-        free, _total = torch.cuda.mem_get_info(device)
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = torch.cuda.mem_get_info(device)
         cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-        return free + max(int(cached), 0) >= need * 1.25 + (256 << 20)
+        reserve = user_budget_reserve_bytes(device, total)
+        return free + max(int(cached), 0) - reserve >= need * 1.25 + (256 << 20)
     except Exception:  # noqa: BLE001
         return False
 
@@ -3346,7 +3497,7 @@ def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
                 return
         except Exception as exc:
             _warn(logger, "bounded Qwen-Image-2.1 math attention", exc)
-    warn_if_sdpa_math_only(target, logger)
+    warn_if_sdpa_math_only(target, logger, _dit_head_dims(pipe))
 
 
 def apply_attention_backend(
@@ -3374,6 +3525,7 @@ def apply_attention_backend(
             guard_rocm_fused_sdpa(target, logger)
         except Exception as exc:
             _warn(logger, "ROCm fused SDPA check", exc)
+        install_rocm_contiguous_kv(target)
     setters = [
         s
         for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))

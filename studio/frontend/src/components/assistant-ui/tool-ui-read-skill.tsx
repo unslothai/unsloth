@@ -77,7 +77,7 @@ const ReadSkillToolUIImpl: ToolCallMessagePartComponent = ({
           </div>
         ) : resultText ? (
           <ScrollPane
-            className="rounded bg-muted/50 p-2"
+            className="rounded-lg bg-muted/50 p-2"
             scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
           >
             {resultText}

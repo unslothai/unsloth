@@ -393,7 +393,9 @@ def qk_rope_device_ok(index: int) -> bool:
                 ulp = (torch.cat((pair, pair), -1) * 2.0**-6).clamp_min(2.0**-14)
                 if bool((diff > ulp).any()) or float((diff > 0).float().mean()) > 5e-3:
                     return False
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return True
     except Exception:  # noqa: BLE001
         return False

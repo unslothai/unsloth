@@ -90,7 +90,7 @@ function ExamplePreviews({ repo }: { repo: string }) {
   return (
     <div className="flex gap-1">
       {urls.map((u) => (
-        <div key={u} className="h-9 w-12 shrink-0 overflow-hidden rounded-[8px] bg-muted">
+        <div key={u} className="h-9 w-12 shrink-0 overflow-hidden rounded-sm bg-muted">
           <img src={u} alt="" loading="lazy" className="size-full object-cover" />
         </div>
       ))}
@@ -156,7 +156,7 @@ export function ExampleDatasetCards({
                 size="sm"
                 variant="outline"
                 // ml-auto keeps it right-aligned even when the previews are missing.
-                className="ml-auto h-7 shrink-0 px-3 text-xs"
+                className="ml-auto shrink-0 text-xs"
                 onClick={() => onImport(ex)}
                 disabled={busyId !== null}
               >

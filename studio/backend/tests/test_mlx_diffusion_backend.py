@@ -1165,7 +1165,7 @@ def test_the_load_route_takes_the_gpu_arbiter_for_mlx_on_a_cpu_torch_host(monkey
     monkeypatch.setattr("routes.inference._selected_gpu_ordinal", _no_ordinal)
     calls = []
     monkeypatch.setattr(
-        arbiter, "acquire_for_request", lambda owner, fn: calls.append("acquire") or fn()
+        arbiter, "acquire_for_request", lambda owner, fn, **_: calls.append("acquire") or fn()
     )
     monkeypatch.setattr(arbiter, "release", lambda owner: calls.append("release"))
     asyncio.run(
@@ -1868,3 +1868,11 @@ def test_release_buffer_cache_never_replaces_the_callers_exception():
         finally:
             mb.release_buffer_cache(mx)
     assert events == ["synchronize", "clear_cache"]
+
+
+def test_the_mlx_base_fetch_keeps_the_fallback_scheduler_config():
+    import fnmatch
+
+    from core.inference.mlx_diffusion_backend import BASE_ALLOW_PATTERNS
+    for name in ("scheduler/scheduler_config.json", "model_index.json"):
+        assert any(fnmatch.fnmatch(name, pattern) for pattern in BASE_ALLOW_PATTERNS), name

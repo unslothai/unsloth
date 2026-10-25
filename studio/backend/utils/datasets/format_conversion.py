@@ -7,7 +7,12 @@ import os
 
 from .cells import cell_text
 from .iterable import is_streaming_dataset
-from .remote_images import fetch_untrusted_image_bytes, is_network_share
+from .remote_images import (
+    fetch_opted_in_image_bytes,
+    fetch_untrusted_image_bytes,
+    is_network_share,
+    private_sources_allowed,
+)
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -28,8 +33,11 @@ def _own_image_path(path, account):
     from utils.account_context import run_as
     from utils.security.dataset_media import require_readable_media
 
-    if isinstance(path, str) and is_network_share(path):
-        raise OSError(f"Refusing an image path on a network share: {path}")
+    if isinstance(path, str) and is_network_share(path) and not private_sources_allowed():
+        raise OSError(
+            f"Refusing an image path on a network share: {path}. "
+            "Set UNSLOTH_ALLOW_PRIVATE_URL_FETCH=1 to load images from shares you trust."
+        )
     run_as(account, require_readable_media, path)
     return path
 
@@ -399,7 +407,9 @@ def _fetch_row_image(url):
     from io import BytesIO
 
     from PIL import Image
-    return Image.open(BytesIO(fetch_untrusted_image_bytes(url))).convert("RGB")
+
+    fetch = fetch_opted_in_image_bytes if private_sources_allowed() else fetch_untrusted_image_bytes
+    return Image.open(BytesIO(fetch(url))).convert("RGB")
 
 
 def convert_to_vlm_format(
@@ -509,6 +519,13 @@ def convert_to_vlm_format(
             logger.info(f"Skipping {total - len(with_image)}/{total} rows without an image")
             dataset = dataset.select(with_image)
             total = len(with_image)
+
+    # A null caption would render as the word "None" in the assistant turn, so leave those rows out like rows without an image.
+    with_text = [i for i, text in enumerate(dataset[text_column]) if text is not None]
+    if len(with_text) < total:
+        logger.info(f"Skipping {total - len(with_text)}/{total} rows without text")
+        dataset = dataset.select(with_text)
+        total = len(with_text)
 
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
