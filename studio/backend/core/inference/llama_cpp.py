@@ -13280,7 +13280,7 @@ class LlamaCppBackend:
                 return f"measured on Linux only (this host is {sys.platform})"
             import torch
 
-            if getattr(torch.version, "hip", None) is not None:
+            if LlamaCppBackend._torch_is_rocm(torch):
                 return "measured on NVIDIA CUDA only (this is a ROCm / HIP build)"
             if not getattr(torch.version, "cuda", None):
                 return "measured on NVIDIA CUDA only (no CUDA torch)"

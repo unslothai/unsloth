@@ -568,7 +568,12 @@ def test_platform_reason_helper(monkeypatch):
     monkeypatch.setattr(_sys, "platform", "linux")
     monkeypatch.setattr(torch.version, "hip", "6.2", raising = False)
     assert "HIP" in LlamaCppBackend._auto_tensor_platform_reason()
+    # AMD SDK wheels leave version.hip unset and only carry "rocm" in __version__.
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.version, "cuda", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+rocm7.0")
+    assert "HIP" in LlamaCppBackend._auto_tensor_platform_reason()
+    monkeypatch.setattr(torch, "__version__", "2.9.0+cu128")
     monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
     assert LlamaCppBackend._auto_tensor_platform_reason() is None
 
