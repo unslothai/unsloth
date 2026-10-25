@@ -150,6 +150,7 @@ _SEARCH_CONNECT_TIMEOUT = 10
 # primp's and httpx's wording for a connect timeout; a read timeout is "operation timed out".
 _DDGS_CONNECT_TIMEOUT_MARKERS = ("connection timed out", "connecttimeout")
 _DDGS_CONNECT_TIMEOUT_LOCK = threading.Lock()
+_DDGS_PENDING = threading.local()
 
 # Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
 # an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
@@ -18241,15 +18242,46 @@ class _PrimpWithConnectTimeout:
             return self._module.Client(*args, **kwargs)
 
 
-def _ddgs_wait_all(
+def _ddgs_wait_recording(
     fs,
     timeout = None,
-    return_when = None,
+    return_when = "ALL_COMPLETED",
 ):
-    # ddgs waits FIRST_EXCEPTION and drops futures still pending after its last batch, so an engine
-    # failing its connect cap discarded a slower engine's answer; its executor joins them anyway.
+    """ddgs's batch ``wait``, unchanged, remembering what was still running after the last batch."""
     import concurrent.futures
-    return concurrent.futures.wait(fs, timeout = timeout)
+
+    done, not_done = concurrent.futures.wait(fs, timeout = timeout, return_when = return_when)
+    _DDGS_PENDING.futures = list(not_done)
+    return done, not_done
+
+
+def _ddgs_text(client, query, max_results, backend) -> list:
+    """``client.text`` plus answers ddgs dropped: its batch wait returns at the first failure and
+    never reads engines still running after the last batch, so an engine failing its connect cap
+    discarded a slower engine's results (#15143). Its executor has joined them by return."""
+    _DDGS_PENDING.futures = []
+    try:
+        results, error = client.text(query, max_results = max_results, backend = backend), None
+    except Exception as exc:  # noqa: BLE001 - re-raised below unless a dropped engine answered
+        results, error = [], exc
+    pending, _DDGS_PENDING.futures = getattr(_DDGS_PENDING, "futures", []), []
+    late = []
+    if len(results) < max_results:
+        for future in pending:
+            if future.done() and not future.cancelled() and future.exception() is None:
+                late.extend(future.result() or [])
+    if late:
+        from ddgs.results import ResultsAggregator
+
+        seen = {r.get("href") for r in results if isinstance(r, dict)}
+        aggregator = ResultsAggregator({"href", "image", "url", "embed_url"})
+        aggregator.extend(late)
+        results = list(results) + [
+            r for r in aggregator.extract_dicts() if r.get("href") not in seen
+        ]
+    if not results and error is not None:
+        raise error
+    return results[:max_results]
 
 
 def _install_ddgs_connect_timeout() -> None:
@@ -18263,7 +18295,7 @@ def _install_ddgs_connect_timeout() -> None:
             if not getattr(http_client.primp, "_unsloth_connect_timeout", False):
                 http_client.primp = _PrimpWithConnectTimeout(http_client.primp)
             if getattr(ddgs_module, "wait", None) is concurrent.futures.wait:
-                ddgs_module.wait = _ddgs_wait_all
+                ddgs_module.wait = _ddgs_wait_recording
             try:
                 from ddgs import http_client2
             except ImportError:
@@ -18635,7 +18667,7 @@ def _web_search(
                         break
                     client = DDGS(timeout = remaining)
                 try:
-                    candidates = client.text(effective_query, max_results = wanted, backend = backend)
+                    candidates = _ddgs_text(client, effective_query, wanted, backend)
                     results = _usable_search_results(candidates, website_policy)
                     rejected_results = rejected_results or bool(candidates and not results)
                 except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure

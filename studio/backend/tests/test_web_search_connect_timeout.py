@@ -131,3 +131,24 @@ def test_an_engine_failing_fast_does_not_drop_a_slower_engines_answer(fresh_inst
     result = tools._web_search("anything", max_results = 1, timeout = 30)
 
     assert "Title: slow answer" in result
+
+
+def test_ddgs_still_moves_on_at_the_first_failure(fresh_install):
+    """The late-answer fix only records what was pending; ddgs keeps refilling a failed slot at once."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ddgs import ddgs as ddgs_module
+
+    tools._install_ddgs_connect_timeout()
+    release = threading.Event()
+
+    def fail():
+        raise RuntimeError("blocked")
+
+    with ThreadPoolExecutor(max_workers = 2) as pool:
+        slow, failed = pool.submit(release.wait, 5), pool.submit(fail)
+        done, not_done = ddgs_module.wait([slow, failed], timeout = 5, return_when = "FIRST_EXCEPTION")
+        release.set()
+
+    assert failed in done and slow in not_done
