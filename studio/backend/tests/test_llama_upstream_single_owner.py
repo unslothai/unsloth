@@ -104,6 +104,7 @@ def llama(monkeypatch):
         return _reply(request)
 
     transport = httpx.MockTransport(handler)
+    state.transport = transport
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
         inf_mod.httpx,
@@ -211,6 +212,16 @@ async def _chat_stream():
         assert lease.released
 
 
+async def _chat_nonstream():
+    return await inf_mod._openai_passthrough_non_streaming_upstream(
+        inf_mod.get_llama_cpp_backend(),
+        ChatCompletionRequest(messages = [ChatMessage(role = "user", content = "hi")]),
+        "org/M-GGUF",
+        request = _Request("/v1/chat/completions"),
+        cancel_event = threading.Event(),
+    )
+
+
 _ROUTES = [
     pytest.param(lambda: _completions(stream = True), "/v1/completions", id = "completions-stream"),
     pytest.param(lambda: _completions(stream = False), "/v1/completions", id = "completions"),
@@ -289,6 +300,102 @@ def test_a_post_on_a_client_the_cancel_closed_reports_the_cancel(monkeypatch):
 
     with pytest.raises(inf_mod._NonStreamingRequestCancelled):
         asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda: _completions(False), id = "completions"),
+        pytest.param(_embeddings, id = "embeddings"),
+        pytest.param(_messages, id = "messages"),
+        pytest.param(_chat_nonstream, id = "chat"),
+    ],
+)
+def test_cancellation_during_watcher_cleanup_closes_client_and_propagates(llama, monkeypatch, call):
+    llama.backend.base_url = _FRESH
+    client = httpx.AsyncClient()
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+    stop_watcher = inf_mod._stop_local_disconnect_cancel_watcher
+    stopping = threading.Event()
+
+    async def blocked_stop(watcher):
+        await stop_watcher(watcher)
+        stopping.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(inf_mod, "_stop_local_disconnect_cancel_watcher", blocked_stop)
+
+    async def run():
+        task = asyncio.create_task(call())
+        try:
+            await _until(stopping.is_set)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert task.cancelled()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions = True)
+        assert client.is_closed
+        assert active_generations.count() == 0
+        assert inf_mod._direct_llama_inflight == 0
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("restart_after", ["embeddings", "first-tokenize"])
+def test_embedding_truncation_keeps_url_and_key_together_after_another_request_respawns(
+    llama, monkeypatch, restart_after
+):
+    backend = llama.backend
+    calls = []
+    embedded = []
+    tokenized = []
+
+    async def handler(request):
+        url, key = str(request.url), request.headers.get("authorization")
+        calls.append((url, key))
+        if url.startswith(_DEAD) and backend.base_url == _FRESH:
+            raise httpx.ConnectError("the old server exited", request = request)
+        if key != backend._auth_headers["Authorization"]:
+            return httpx.Response(401, json = {"error": "invalid API key"})
+        body = json.loads(request.content)
+        if request.url.path == "/tokenize":
+            tokenized.append(body["add_special"])
+            tokens = [11, 12, 13, 14]
+            if body["add_special"]:
+                tokens = [101, *tokens, 102]
+                if restart_after == "first-tokenize":
+                    backend._respawn_if_dead()
+            return httpx.Response(200, json = {"tokens": tokens})
+        embedded.append(body["input"])
+        if isinstance(body["input"], str):
+            if restart_after == "embeddings":
+                backend._respawn_if_dead()
+            return httpx.Response(
+                400,
+                json = {
+                    "error": {
+                        "message": "input (6 tokens) is larger than the max context size (4 tokens). skipping"
+                    }
+                },
+            )
+        return _reply(request)
+
+    monkeypatch.setattr(llama.transport, "handler", handler)
+    request = _Request("/v1/embeddings", {"input": "alpha beta gamma delta", "model": "org/M-GGUF"})
+    response = asyncio.run(inf_mod.openai_embeddings(request, "tester"))
+
+    assert response.status_code == 200
+    assert embedded == ["alpha beta gamma delta", [[101, 11, 12, 102]]]
+    assert tokenized == [True, False]
+    assert backend.respawn_calls == 2  # The other request reloads; this request joins recovery.
+    assert all(
+        key == ("Bearer before-crash" if url.startswith(_DEAD) else "Bearer after-crash")
+        for url, key in calls
+    )
+    assert calls[-1] == (f"{_FRESH}/v1/embeddings", "Bearer after-crash")
+    assert active_generations.count() == 0
 
 
 class _BlockedRespawnBackend(_Backend):

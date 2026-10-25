@@ -6139,7 +6139,8 @@ class _LlamaUpstream:
         if cancel_event is None and request is not None:
             cancel_event = threading.Event()
         self.cancel_event = cancel_event
-        self.url = f"{llama_backend.base_url}{path}"
+        self._base_url = llama_backend.base_url
+        self.url = f"{self._base_url}{path}"
         self.headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
         self.first_token_deadline = None
         self.client = None
@@ -6179,6 +6180,7 @@ class _LlamaUpstream:
         url = recovery.result()
         if url is None:
             return False
+        self._base_url = url.removesuffix(self._path)
         self.url = url
         self.headers = _openai_passthrough_upstream_headers(llama_backend = self._backend)
         return True
@@ -6242,15 +6244,17 @@ class _LlamaUpstream:
     async def __aexit__(self, *_exc_info) -> bool:
         # Re-enterable: a later ``async with`` gets a fresh client but keeps the spent respawn.
         client, watcher, self.client, self._watcher = self.client, self._watcher, None, None
-        if watcher is not None:
-            try:
-                await _stop_local_disconnect_cancel_watcher(watcher)
-            except (asyncio.CancelledError, Exception):
-                pass
         try:
-            await client.aclose()
-        except Exception:
-            pass
+            if watcher is not None:
+                try:
+                    await _stop_local_disconnect_cancel_watcher(watcher)
+                except Exception:
+                    pass
+        finally:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
         return False
 
     async def post(
@@ -6262,7 +6266,7 @@ class _LlamaUpstream:
     ) -> httpx.Response:
         while True:
             _raise_if_nonstreaming_request_cancelled(self.cancel_event)
-            url = self.url if path is None else f"{self._backend.base_url}{path}"
+            url = self.url if path is None else f"{self._base_url}{path}"
             try:
                 resp = await self.client.post(url, json = body, headers = self.headers, timeout = timeout)
             # RuntimeError: a POST sent after the watcher already closed the client.
