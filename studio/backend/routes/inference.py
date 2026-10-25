@@ -16700,7 +16700,10 @@ async def _override_gpu_ids_still_resolve(
             )
 
         device, is_vulkan, resolved = await asyncio.to_thread(_device_and_resolution)
-        if stored_index_kind != ("vulkan" if is_vulkan else "physical"):
+        from utils.hardware.hardware import current_gpu_index_kind
+
+        current_kind = await asyncio.to_thread(current_gpu_index_kind, is_vulkan)
+        if stored_index_kind != current_kind:
             return False
         if device == DeviceType.XPU and not is_vulkan:
             # Rejected outright on XPU.
