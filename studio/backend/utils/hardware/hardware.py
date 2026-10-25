@@ -5131,12 +5131,16 @@ _ROCM_DISCRETE_ONLY_ARCHES = frozenset(
 
 def _rocm_context_free_visible_devices() -> list[Dict[str, Any]]:
     """Linux ROCm per-device VRAM from KFD topology + DRM sysfs, joined by PCI address, with no torch call. Empty under
-    any visibility mask, a KFD reader disagreement or a shared PCI address; non-discrete targets keep their row with
-    used / total None."""
+    any visibility mask, a KFD reader disagreement, a shared PCI address or a KFD address with no amdgpu device (a
+    partitioned card); non-discrete targets keep their row with used / total None."""
     if platform.system() != "Linux" or _rocm_visibility_mask_active():
         return []
     pci_ids = _rocm_kfd_gpu_pci_ids()
     if not pci_ids or len(set(p.lower() for p in pci_ids)) != len(pci_ids):
+        return []
+    # A partitioned card ORs each partition's node id into its KFD location_id (kfd_topology_add_device), so partitions
+    # decode to PCI functions with no amdgpu device of their own while partition 0 matches the whole-board sysfs total.
+    if not {p.lower() for p in pci_ids} <= {c[0].lower() for c in _rocm_linux_amdgpu_cards()}:
         return []
     try:
         from . import amd

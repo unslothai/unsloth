@@ -543,7 +543,11 @@ _ROCM_MASKS = (
 )
 
 
-def _rocm_linux_host(monkeypatch, cards):
+def _rocm_linux_host(
+    monkeypatch,
+    cards,
+    boards = None,
+):
     """``cards`` = [(pci, gfx target, (used_gb, total_gb) or None)] in KFD order; torch and amd-smi are tripwires."""
     from utils.hardware import amd, hardware
 
@@ -558,6 +562,14 @@ def _rocm_linux_host(monkeypatch, cards):
         hardware,
         "_rocm_linux_sysfs_vram_by_pci_gb",
         lambda: {c[0]: c[2] for c in cards if c[2] is not None},
+    )
+    monkeypatch.setattr(
+        hardware,
+        "_rocm_linux_amdgpu_cards",
+        lambda: [
+            (bdf, i, f"/sys/class/drm/card{i}/device")
+            for i, bdf in enumerate(boards or dict.fromkeys(c[0] for c in cards))
+        ],
     )
 
     def _no_torch(*a, **k):
@@ -617,6 +629,21 @@ def test_h3_card_probes_never_report_an_apu_carve_out(monkeypatch):
     )
     assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (None, None)
     assert video_mod._h3_visible_card_count("cuda") == 0
+
+
+def test_h3_card_probes_never_report_a_partition_the_whole_board(monkeypatch):
+    # MI355X in DPX: KFD gives partition 1 the address 03:00.1, which has no amdgpu device, and partition 0 (03:00.0)
+    # would otherwise read the 288 GiB board total.
+    _rocm_linux_host(
+        monkeypatch,
+        [("0000:03:00.0", "gfx950", (8.0, 288.0)), ("0000:03:00.1", "gfx950", None)],
+        boards = ["0000:03:00.0"],
+    )
+    assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (None, None)
+    assert video_mod._h3_visible_card_count("cuda") == 0
+    # The same board unpartitioned (SPX) still reads.
+    _rocm_linux_host(monkeypatch, [("0000:03:00.0", "gfx950", (8.0, 288.0))])
+    assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (280 * GiB, 288 * GiB)
 
 
 def test_h3_card_probes_on_cuda_still_read_nvidia_smi(monkeypatch):
