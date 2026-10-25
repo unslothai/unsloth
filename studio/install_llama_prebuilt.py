@@ -10530,10 +10530,8 @@ print(json.dumps(devices))
 """
 # VK_DRIVER_ID_GOOGLE_SWIFTSHADER, _MESA_LLVMPIPE (software), _MESA_DOZEN (Vulkan over D3D12).
 _VULKAN_SKIPPED_DRIVER_IDS = frozenset({10, 13, 23})
-# VK_DRIVER_ID_QUALCOMM_PROPRIETARY (Snapdragon X on Windows): llama.cpp's Vulkan backend was reported
-# to produce garbage there (ggml-org/llama.cpp#28290, closed stale with no fix) and the fork keeps that
-# bundle opt-in, so the automatic route leaves it to UNSLOTH_LLAMA_CPP_BACKEND=vulkan until a Snapdragon X
-# check passes. Mesa Turnip on the same Adreno hardware is a different driver and is not affected.
+# VK_DRIVER_ID_QUALCOMM_PROPRIETARY (Snapdragon X, Windows): garbage output (ggml-org/llama.cpp#28290), so
+# explicit Vulkan requests only until verified there. Mesa Turnip on Adreno is a different driver.
 _VULKAN_AUTO_OPT_IN_DRIVER_IDS = frozenset({8})
 
 

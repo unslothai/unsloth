@@ -2507,7 +2507,6 @@ def test_vulkan_opt_in_routes_windows_arm64_to_vulkan(monkeypatch, env, flag):
 _ADRENO = (ilp._VulkanGpuName("Qualcomm(R) Adreno(TM) X1-85 GPU", 0x5143, 8),)
 _TURNIP = (ilp._VulkanGpuName("Turnip Adreno (TM) 750", 0x5143, 18),)
 _MALI = (ilp._VulkanGpuName("Mali-G720", 0x13B5, 9),)
-# A Windows arm64 Vulkan GPU on a driver the automatic route takes.
 _ARM64_GPU = (ilp._VulkanGpuName("Arm64 Vulkan GPU", 0x13B5, 9),)
 
 
@@ -2547,7 +2546,7 @@ def test_windows_arm64_adreno_stays_on_cpu_unless_vulkan_is_requested(monkeypatc
     )
     assert routed is host and routed.vulkan_routed is False
     assert (repo, tag, persist) == (FORK, "pin", None)
-    captured = capsys.readouterr()  # log() writes to stdout or stderr depending on _LOG_TO_STDOUT
+    captured = capsys.readouterr()
     assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in captured.out + captured.err
 
 
