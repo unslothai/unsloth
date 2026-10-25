@@ -253,10 +253,10 @@ async def upload_asset(
     sniffed = asset_store.sniff_mime(data) or await asyncio.to_thread(
         asset_store.sniff_text, data, hint
     )
-    if asset_store.kind_of(sniffed or "") not in ("image", "audio", "video", "document"):
+    if asset_store.kind_of(sniffed or "") not in ("image", "audio", "video", "document", "model"):
         raise HTTPException(
             status_code = 415,
-            detail = "Flows take images, audio, video and documents (PDF, DOCX, text)",
+            detail = "Flows take images, audio, video, documents (PDF, DOCX, text) and GLB models",
         )
     try:
         digest, sniffed = await asyncio.to_thread(asset_store.store, data, hint or mime)

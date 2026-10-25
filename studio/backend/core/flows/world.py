@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from core.flows import assets as asset_store
 from core.flows.expr import Prng, seed_from
 from core.flows.schema import WorldSpec
 from core.flows.story import _unique, input_values, most_downstream, node_value, slug
@@ -219,6 +220,9 @@ def normalize_world(
     view = _view3d(raw.get("view3d"))
     if view:
         world["view3d"] = view
+    props = props3d(raw.get("props3d"), width, height)
+    if props:
+        world["props3d"] = props
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
 
 
@@ -248,6 +252,70 @@ def _view3d(raw: Any) -> dict:
     return out
 
 
+PROP_KINDS = ("house", "tree", "lamp", "fence", "well", "crate", "rock", "bench", "stall", "model")
+# Lamps and benches are small enough to walk past; everything else blocks its tile unless the editor says otherwise.
+OPEN_PROPS = ("lamp", "bench")
+MAX_PROPS = 400
+_PROP_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def props3d(raw: Any, width: int, height: int) -> list[dict]:
+    """Clean the 3D editor's props: unknown kinds, duplicate ids and models without a flow asset are dropped,
+    positions are kept on the map and rotation / scale clamped."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for p in raw if isinstance(raw, list) else []:
+        if len(out) >= MAX_PROPS:
+            break
+        if not isinstance(p, dict) or p.get("kind") not in PROP_KINDS:
+            continue
+        pid = p.get("id")
+        if not isinstance(pid, str) or not _PROP_ID.match(pid) or pid in seen:
+            continue
+        x, y = p.get("x"), p.get("y")
+        if not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and v == v for v in (x, y)
+        ):
+            continue
+        prop: dict[str, Any] = {"id": pid, "kind": p["kind"]}
+        if p["kind"] == "model":
+            asset = p.get("asset")
+            if not (
+                isinstance(asset, dict)
+                and isinstance(asset.get("ref"), str)
+                and asset_store.parse_ref(asset["ref"])
+            ):
+                continue
+            prop["asset"] = {
+                "kind": "model",
+                "ref": asset["ref"],
+                "mime": "model/gltf-binary",
+                **({"url": asset["url"]} if isinstance(asset.get("url"), str) else {}),
+            }
+        if isinstance(p.get("name"), str) and p["name"].strip():
+            prop["name"] = p["name"].strip()[:60]
+        prop["x"] = round(max(0.0, min(width - 0.001, float(x))), 3)
+        prop["y"] = round(max(0.0, min(height - 0.001, float(y))), 3)
+        rot = p.get("rot")
+        prop["rot"] = (
+            round(float(rot) % 360, 2)
+            if isinstance(rot, (int, float)) and not isinstance(rot, bool) and abs(rot) < 1e9
+            else 0.0
+        )
+        scale = p.get("scale")
+        prop["scale"] = (
+            round(max(0.2, min(5.0, float(scale))), 3)
+            if isinstance(scale, (int, float)) and not isinstance(scale, bool) and scale == scale
+            else 1.0
+        )
+        prop["solid"] = (
+            p["solid"] if isinstance(p.get("solid"), bool) else p["kind"] not in OPEN_PROPS
+        )
+        seen.add(pid)
+        out.append(prop)
+    return out
+
+
 def apply_play_view(
     world: dict,
     doc: dict,
@@ -274,6 +342,9 @@ def apply_play_view(
         view = _view3d(view)
         if view:
             world["view3d"] = view
+        if isinstance(p.get("props3d"), list):
+            world["props3d"] = props3d(p["props3d"], world["width"], world["height"])
+        world["player_node"] = n["id"]
         break
     return world
 
