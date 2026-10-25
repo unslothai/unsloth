@@ -101,6 +101,14 @@ def system_prompt(task: dict, now_ms: int) -> str:
     )
 
 
+def _loop_cancelled(current: Optional[asyncio.Task], stopping: bool) -> bool:
+    """Whether the scheduler's own task is being cancelled. ``Task.cancelling()`` is 3.11+; before it only stop() does."""
+    if current is None:
+        return False
+    cancelling = getattr(current, "cancelling", None)
+    return bool(cancelling()) if cancelling is not None else stopping
+
+
 def _producer_request(app: Any, run_id: str, cancel_event: threading.Event, tz: str) -> Request:
     from utils.current_date_prompt_settings import CURRENT_DATE_TIMEZONE_HEADER
     from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
@@ -581,8 +589,7 @@ class ScheduledTaskScheduler:
                 "error": failure.message,
             }
         except asyncio.CancelledError:
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
+            if _loop_cancelled(asyncio.current_task(), self._stopping):
                 outcome = {"status": "failed", "error_code": "interrupted"}
                 raise
             # This run's own cancel (the unload gate raises it while waiting): ends the run, not the loop.

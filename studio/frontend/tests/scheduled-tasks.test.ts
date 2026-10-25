@@ -569,6 +569,53 @@ test("an edit answer that predates its run's finish keeps the finished run", asy
   }
 });
 
+test("an edit answered after a refresh that landed meanwhile reads the list again", async () => {
+  const globals = globalThis as Record<string, unknown>;
+  const saved = { window: globals.window, localStorage: globals.localStorage };
+  globals.window = new EventTarget();
+  globals.localStorage = { setItem: () => undefined };
+  try {
+    let answer: (task: unknown) => void = () => undefined;
+    let lists = 0;
+    const completed = { id: "t1", title: "Old", status: "completed", nextRunAt: null, lastRun: null };
+    const store = loadWithStubs<typeof ScheduledTasksStore>(
+      new URL("../src/features/scheduled-tasks/store.ts", import.meta.url),
+      {
+        zustand,
+        "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: "signed-out", getAuthSessionEpoch: () => 1 },
+        "@/features/chat": { notifyChatHistoryUpdated: () => undefined },
+        "./api": {
+          updateScheduledTask: () => new Promise((resolve) => (answer = resolve)),
+          listScheduledTasks: async () => {
+            lists += 1;
+            return { tasks: [{ ...completed, title: lists > 1 ? "Renamed" : "Old" }], now: 0 };
+          },
+        },
+        "./results": {
+          SCHEDULED_TASKS_CHANGED_EVENT: "changed",
+          SCHEDULED_TASKS_WRITTEN_KEY: "written",
+          SCHEDULED_TASK_RUNS_FINISHED_EVENT: "finished",
+        },
+      },
+    );
+    const tasks = store.useScheduledTasksStore;
+    const pending = tasks.getState().update("t1", { title: "Renamed" });
+    // The once task is claimed and completes; a refresh sees it before the rename's answer arrives.
+    await tasks.getState().refresh();
+    answer({ ...completed, title: "Renamed", status: "active", nextRunAt: 5 });
+    await pending;
+    for (let i = 0; i < 5 && lists < 2; i += 1) await Promise.resolve();
+    assert.equal(lists, 2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const [task] = tasks.getState().tasks;
+    assert.equal(task.status, "completed");
+    assert.equal(task.nextRunAt, null);
+  } finally {
+    globals.window = saved.window;
+    globals.localStorage = saved.localStorage;
+  }
+});
+
 test("every unopened result chat stays unread across reloads, and opening one clears only it", () => {
   const globals = globalThis as Record<string, unknown>;
   const saved = { window: globals.window, localStorage: globals.localStorage };

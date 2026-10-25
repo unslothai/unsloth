@@ -1458,6 +1458,15 @@ def test_a_cancellation_raised_for_a_run_ends_the_run_not_the_scheduler(monkeypa
     asyncio.run(scenario())
 
 
+def test_a_run_s_own_cancel_is_told_apart_without_task_cancelling():
+    # Python 3.10 tasks have no cancelling(): only a stopping scheduler cancels its loop there.
+    old_task = SimpleNamespace()
+    assert scheduler_module._loop_cancelled(old_task, stopping = False) is False
+    assert scheduler_module._loop_cancelled(old_task, stopping = True) is True
+    assert scheduler_module._loop_cancelled(SimpleNamespace(cancelling = lambda: 1), False) is True
+    assert scheduler_module._loop_cancelled(None, True) is False
+
+
 def test_the_system_prompt_falls_back_to_utc_for_an_unknown_zone():
     prompt = scheduler_module.system_prompt(
         {"timezone": "Gone/Zone"}, ms("2026-10-14T06:00:00+00:00")

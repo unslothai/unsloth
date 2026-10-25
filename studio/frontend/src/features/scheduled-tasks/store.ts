@@ -47,6 +47,7 @@ interface ScheduledTasksState {
 
 let refreshGeneration = 0;
 let refreshesInFlight = 0;
+let refreshesDone = 0;
 
 type LastRun = ScheduledTask["lastRun"];
 
@@ -69,13 +70,14 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
   /** Applies a write's answer unless the account changed; drops a refresh that started before the write. */
   async function write<T>(request: () => Promise<T>, apply: (result: T) => void): Promise<T> {
     const epoch = getAuthSessionEpoch();
+    const listedBefore = refreshesDone;
     const result = await request();
     if (getAuthSessionEpoch() === epoch) {
-      const dropped = refreshesInFlight > 0;
+      // A refresh dropped now, or one that landed while the write was out, may be newer than its answer.
+      const stale = refreshesInFlight > 0 || refreshesDone !== listedBefore;
       refreshGeneration += 1;
       apply(result);
-      // The dropped refresh may have carried a run finishing meanwhile: ask again, after this write.
-      if (dropped) void get().refresh();
+      if (stale) void get().refresh();
     }
     announceChange();
     return result;
@@ -99,6 +101,7 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
           status: "ready",
           error: null,
         });
+        refreshesDone += 1;
       } catch (error) {
         if (generation !== refreshGeneration) return;
         set({
