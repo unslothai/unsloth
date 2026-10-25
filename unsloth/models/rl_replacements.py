@@ -756,7 +756,59 @@ def cpo_trainer_fused_preference_forward(function_name, function):
     )
 
 
+# TRL >= 1.0 DPOTrainer._compute_loss: the replacement reproduces exactly these metric keys and
+# these logits reads; any other source shape (an older or newer TRL) keeps TRL's own function.
+_DPO_V1_METRIC_KEYS = frozenset(
+    (
+        "aux_loss",
+        "entropy",
+        "num_tokens",
+        "logits/chosen",
+        "logits/rejected",
+        "mean_token_accuracy",
+        "rewards/chosen",
+        "rewards/rejected",
+        "rewards/accuracies",
+        "rewards/margins",
+        "logps/chosen",
+        "logps/rejected",
+    )
+)
+_DPO_V1_SOURCE_MARKERS = (
+    "per_token_logps = selective_log_softmax(shift_logits, shift_labels)",
+    "ref_per_token_logps = selective_log_softmax(ref_shift_logits, shift_labels)",
+    "per_token_entropy = entropy_from_logits(shift_logits.detach())",
+    "predictions = chosen_logits.argmax(dim=-1)",
+)
+
+
+def dpo_trainer_fused_preference_compute_loss(function_name, function):
+    if function_name != "_compute_loss":
+        return function
+    if os.environ.get("UNSLOTH_FUSED_PREFERENCE_LOSS", "0") != "1":
+        return function
+    if "_unsloth_fused_output" in function:
+        return function
+    if not re.search(r"def _compute_loss\(self, model, inputs, return_outputs\)", function):
+        return function
+    if not all(marker in function for marker in _DPO_V1_SOURCE_MARKERS):
+        return function
+    keys = set(re.findall(r'self\._metrics\[mode\]\["([^"]+)"\]', function))
+    if not keys or not keys.issubset(_DPO_V1_METRIC_KEYS):
+        return function
+    return _insert_after_docstring(
+        function,
+        [
+            "from unsloth.models.dpo import unsloth_fused_dpo_compute_loss_v1",
+            "_unsloth_fused_output = unsloth_fused_dpo_compute_loss_v1(self, model, inputs, return_outputs)",
+            "if _unsloth_fused_output is not None:",
+            "    return _unsloth_fused_output",
+        ],
+    )
+
+
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_forward)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_compute_loss)
 RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_fused_preference_forward)
 RL_FUNCTIONS["cpo_trainer"].append(cpo_trainer_fused_preference_forward)
 
