@@ -714,3 +714,24 @@ def test_generated_trl_trainer_init_skips_for_inference_on_a_tp_model():
         )
         exec(tail, {}, {"self": trainer, "model": Model()})
     assert calls == ["Model"], calls
+
+
+def test_trainer_dataloader_workers_are_seeded_by_dp_rank():
+    import functools
+
+    pytest.importorskip("accelerate")
+    from accelerate import Accelerator
+    from transformers.trainer_utils import seed_worker
+
+    tp = _load_tp()
+    tp._install_tp_accelerate_hooks()
+    accelerator = Accelerator(cpu = True)
+    accelerator.__dict__[tp._TP_DATA] = (1, 0)  # dp 1: every tp rank is dp rank 0
+    try:
+        init_fn = functools.partial(seed_worker, num_workers = 2, rank = 3)
+        loader = torch.utils.data.DataLoader(list(range(8)), batch_size = 2, num_workers = 2, worker_init_fn = init_fn)
+        prepared = accelerator.prepare_data_loader(loader)
+    finally:
+        accelerator.__dict__.pop(tp._TP_DATA, None)
+    assert prepared.worker_init_fn.func is seed_worker
+    assert prepared.worker_init_fn.keywords == {"num_workers": 2, "rank": 0}

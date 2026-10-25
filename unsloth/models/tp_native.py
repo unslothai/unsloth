@@ -44,6 +44,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import dataclasses
+import functools
 import inspect
 import re
 import types
@@ -2108,6 +2109,13 @@ def _install_tp_accelerate_hooks():
                 "dispatches iterable datasets over every rank)."
             )
         dp_size, dp_rank = layout
+        # The Trainer seeds workers with partial(seed_worker, rank = process_index): tp peers must draw the
+        # same random transforms / collation, so seed them by dp rank too.
+        init_fn = getattr(data_loader, "worker_init_fn", None)
+        if isinstance(init_fn, functools.partial) and "rank" in (init_fn.keywords or {}):
+            data_loader.worker_init_fn = functools.partial(
+                init_fn.func, *init_fn.args, **{**init_fn.keywords, "rank": dp_rank}
+            )
         cls = type(self)
         # accelerate shards the batches by num_processes / process_index: give it the dp layout, so the tp
         # ranks of a replica read the same batches.
