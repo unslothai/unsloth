@@ -815,13 +815,15 @@ def npc_prompt(
     )
     item_list = ", ".join("{} (id {})".format(i["name"], i["id"]) for i in items.values())
     quest_list = "\n".join(q_lines)
+    # The conversation comes first: what changes between turns (quests, inventory, variables) follows it, so a
+    # picked-up item does not make llama-server process the whole conversation again.
     head = (
+        f"Conversation so far:\n{convo or '(just met)'}\n"
         f"Your quests:\n{quest_list or '- none'}\n"
         f"World items: {item_list or 'none'}\n"
         f"Player ({(world.get('player') or {}).get('name', 'Player')}) carries: {', '.join(inv) or 'nothing'}\n"
         f"Variables: {state.get('vars') or {}}\n"
         + ("You are walking with the player.\n" if state.get("following") else "")
-        + f"Conversation so far:\n{convo or '(just met)'}\n"
     )
     turn = f"Player: {str(state.get('player_message') or '')[:600]}\n{npc['name']}:"
     if memories is None:

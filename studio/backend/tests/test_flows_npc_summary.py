@@ -44,6 +44,19 @@ def test_summary_sits_in_the_stable_prefix():
     assert npc_prompt(_classic_state(), "Stay in character.") == (CLASSIC_SYSTEM, CLASSIC_PROMPT)
 
 
+def test_a_new_item_or_variable_keeps_the_conversation_in_the_cached_prefix():
+    import os
+
+    history = _turns(0, 8)
+    _, before = npc_prompt(_classic_state(history = history), "Stay in character.")
+    _, after = npc_prompt(
+        _classic_state(history = history, inventory = ["rod", "pie"], vars = {"reputation": 5}),
+        "Stay in character.",
+    )
+    shared = os.path.commonprefix([before, after])
+    assert "line 7" in shared and before != after
+
+
 def test_turns_already_summarised_are_not_repeated():
     _, prompt = npc_prompt(
         _classic_state(summary = SUMMARY, history = _turns(0, 14)), "Stay in character."

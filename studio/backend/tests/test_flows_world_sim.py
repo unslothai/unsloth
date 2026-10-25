@@ -32,9 +32,9 @@ CLASSIC_SYSTEM = (
     "agree to head somewhere: Pond (id pond), Mill (id mill). Leave it empty otherwise."
 )
 CLASSIC_PROMPT = (
-    "Your quests:\n- Lost rod (id q): Find my rod Needs item id rod.\nWorld items: Fishing Rod (id rod), Berry Pie "
-    "(id pie)\nPlayer (Pip) carries: Berry Pie (id pie)\nVariables: {'reputation': 2}\nConversation so far:\n"
-    "Player: hello\nOld Tom: Hmph.\nPlayer: Seen my rod?\nOld Tom:"
+    "Conversation so far:\nPlayer: hello\nOld Tom: Hmph.\nYour quests:\n- Lost rod (id q): Find my rod Needs item "
+    "id rod.\nWorld items: Fishing Rod (id rod), Berry Pie (id pie)\nPlayer (Pip) carries: Berry Pie (id pie)\n"
+    "Variables: {'reputation': 2}\nPlayer: Seen my rod?\nOld Tom:"
 )
 
 SIM_RAW = {
