@@ -514,6 +514,43 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     assert "@APPDIR@" not in materialized.read_text(encoding = "utf-8")
 
 
+def test_apprun_turns_the_bundled_atk_bridge_off_by_default(tmp_path):
+    """Jammy's atk-bridge against a newer host registry aborts the web process (#15260)."""
+
+    appdir = _apprun_mount(tmp_path)
+    result = subprocess.run(
+        [appdir / "AppRun"],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(tmp_path / "state")},
+    )
+    printed = result.stdout.splitlines()
+    assert "NO_AT_BRIDGE=1" in printed
+    assert "UNSLOTH_APPIMAGE_NO_AT_BRIDGE=1" in printed
+
+
+def test_apprun_keeps_an_operator_choice_of_atk_bridge(tmp_path):
+    """NO_AT_BRIDGE=0 is how a screen reader user keeps the bridge; any set value stands."""
+
+    appdir = _apprun_mount(tmp_path)
+    for value in ("0", "", "1"):
+        result = subprocess.run(
+            [appdir / "AppRun"],
+            check = True,
+            capture_output = True,
+            text = True,
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "XDG_RUNTIME_DIR": str(tmp_path / "state"),
+                "NO_AT_BRIDGE": value,
+            },
+        )
+        printed = result.stdout.splitlines()
+        assert f"NO_AT_BRIDGE={value}" in printed
+        assert not [line for line in printed if line.startswith("UNSLOTH_APPIMAGE_NO_AT_BRIDGE=")]
+
+
 def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
     """A later launch preserves live-mount policies and removes departed ones."""
 

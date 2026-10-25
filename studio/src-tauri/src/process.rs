@@ -97,12 +97,27 @@ fn appdir_entries_demoted(name: &str) -> Option<std::ffi::OsString> {
     std::env::join_paths(host.into_iter().chain(bundled)).ok()
 }
 
+// Set by the AppRun when it, not the operator, turned the bundled atk-bridge off (#15260).
+#[cfg(target_os = "linux")]
+const APPIMAGE_AT_BRIDGE_MARKER: &str = "UNSLOTH_APPIMAGE_NO_AT_BRIDGE";
+
+// Host programs carry their own AT-SPI stack, so only the AppRun's default is withdrawn;
+// an operator's NO_AT_BRIDGE still reaches them.
+#[cfg(target_os = "linux")]
+fn restore_host_accessibility(cmd: &mut Command) {
+    if std::env::var_os(APPIMAGE_AT_BRIDGE_MARKER).is_some() {
+        cmd.env_remove("NO_AT_BRIDGE");
+    }
+    cmd.env_remove(APPIMAGE_AT_BRIDGE_MARKER);
+}
+
 #[cfg(target_os = "linux")]
 fn scrub_appimage_launcher_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_none() {
         return;
     }
     apply_scrubbed_appimage_library_path(cmd);
+    restore_host_accessibility(cmd);
     if let Some(path) = appdir_entries_demoted("PATH") {
         cmd.env("PATH", path);
     }
@@ -194,6 +209,43 @@ mod appimage_environment_tests {
     fn env_contains_name(env: &str, name: &str) -> bool {
         let prefix = format!("{name}=");
         env.lines().any(|line| line.starts_with(&prefix))
+    }
+
+    #[test]
+    fn host_launcher_child_gets_back_the_atk_bridge_only_the_apprun_turned_off() {
+        let _guard = env_lock();
+        let old = [
+            "APPIMAGE",
+            "APPDIR",
+            "NO_AT_BRIDGE",
+            APPIMAGE_AT_BRIDGE_MARKER,
+        ]
+        .map(|key| (key, std::env::var_os(key)));
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        let launched_env = || {
+            let mut cmd = Command::new("/usr/bin/env");
+            scrub_appimage_launcher_env(&mut cmd);
+            String::from_utf8(cmd.output().expect("run host launcher").stdout).unwrap()
+        };
+
+        std::env::set_var("NO_AT_BRIDGE", "1");
+        std::env::set_var(APPIMAGE_AT_BRIDGE_MARKER, "1");
+        let env = launched_env();
+        assert!(!env_contains_name(&env, "NO_AT_BRIDGE"), "{env}");
+        assert!(!env_contains_name(&env, APPIMAGE_AT_BRIDGE_MARKER), "{env}");
+
+        // The operator's own value, with no marker, is theirs to pass on.
+        std::env::remove_var(APPIMAGE_AT_BRIDGE_MARKER);
+        let env = launched_env();
+        assert!(env.lines().any(|line| line == "NO_AT_BRIDGE=1"), "{env}");
+
+        for (key, value) in old {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 
     #[test]
