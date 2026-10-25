@@ -65,7 +65,6 @@ def _ref(X, dY, m_sizes, E, N, K):
     return out
 
 
-
 class _OverLds:
     """Stands in for the per-expert kernel on a card whose LDS it overflows."""
 
