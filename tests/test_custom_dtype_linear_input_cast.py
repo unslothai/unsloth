@@ -85,8 +85,6 @@ def test_no_hook_when_nothing_moved_off_the_load_dtype():
 
 def test_float8_weight_linears_get_no_hook():
     """FP8Linear-style subclasses keep float8 weights and quantize their own input."""
-    if not hasattr(torch, "float8_e4m3fn"):
-        pytest.skip("torch without float8 dtypes")
 
     class _Fp8Linear(torch.nn.Linear):
         pass
