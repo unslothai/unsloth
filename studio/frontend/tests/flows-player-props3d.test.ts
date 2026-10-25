@@ -134,8 +134,17 @@ test("a solid prop dropped where the player stands never traps them", async () =
   );
   assert.match(
     src,
-    /onProps: \(next\) => setMapProps\(map, next, \[tileOf\(me\)\]\)/,
+    /onProps: \(next\) => setMapProps\(map, next, standTiles\(me\.x, me\.y\)\)/,
   );
+  // Standing at a tile edge, the player also touches the next tile: a prop there must not trap them either.
+  const edge = { x: at.x + 0.99, y: at.y + 0.5 };
+  const next = { x: at.x + 1, y: at.y };
+  E.setMapProps(
+    map,
+    [E.makeProp("well", next, [])],
+    V.standTiles(edge.x, edge.y),
+  );
+  assert.equal(V.canStand(map, edge.x, edge.y), true);
   const player = readFileSync(
     new URL(
       "../src/features/flows/player/world/world-player.tsx",

@@ -39,6 +39,7 @@ import {
   houseCells,
   resolveView3d,
   slide,
+  standTiles,
   waterLevel,
 } from "./world3d";
 
@@ -1130,7 +1131,7 @@ export function createWorld3d(
           groundAt: (x, y) => heightAt(terrain, x, y),
           player: () => ({ x: me.x, y: me.y, yaw: camera.rotation.y }),
           openTile: (x, y) => !SOLID.has(kindAt(map, x, y)),
-          onProps: (next) => setMapProps(map, next, [tileOf(me)]),
+          onProps: (next) => setMapProps(map, next, standTiles(me.x, me.y)),
         });
         const close = ed.close;
         ed.close = () => {
