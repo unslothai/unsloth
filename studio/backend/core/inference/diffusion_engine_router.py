@@ -276,7 +276,6 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     # ggml reads this one itself; anything but a list of ordinals selects nothing or throws. Its
     # ordinals index the raw Vulkan list, so it never vouches for which card a mixed host gets.
     vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
-    # ggml turns commas into spaces and reads whitespace-separated ordinals.
     if vk_mask is not None and not re.fullmatch(r"\s*\d+(?:[\s,]+\d+)*[\s,]*", vk_mask):
         return False
     inventory = _physical_inventory()
@@ -308,16 +307,12 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return False
     rendering = [d for d in gpus if _renders(d)]
     if len(rendering) < len(gpus):
-        # A UHD iGPU beside an AMD card or an Arc: unpinned sd.cpp takes a discrete GPU before an iGPU
-        # (get_default_backend_name), so the card renders. Alone, or under a GGML_VK_VISIBLE_DEVICES list
-        # (whose ordinals may name the iGPU), the iGPU would.
+        # Unpinned sd.cpp takes a discrete GPU before an iGPU (get_default_backend_name); a mask's ordinals may name the iGPU.
         if vk_mask is not None or not rendering:
             return False
         if any(d.get("vendor") != "intel" for d in gpus if not _renders(d)):
             return False
-        # The vendor-level node check above cannot tell an Arc's node from the iGPU's: an Arc whose own node
-        # this process cannot open renders nothing, even beside an AMD card, so it cannot vouch for the Intel
-        # driver either (that driver would enumerate the iGPU alone).
+        # The vendor-level node check cannot tell an Arc's node from the iGPU's: an unopenable Arc vouches for nothing.
         if sys.platform != "win32" and not _reachable_intel_arc_render_node():
             rendering = [d for d in rendering if d.get("vendor") != "intel"]
             if not rendering:

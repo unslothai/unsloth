@@ -288,8 +288,7 @@ _physical_gpu_inventory_refreshing = False
 # One re-detection request per recovery, or a poll every few seconds starves detection.
 _REDETECTION_REQUESTED = False
 _physical_gpu_inventory_cache: Optional[tuple[float, Dict[str, Any]]] = None
-# Bumped when a refresh finds a different device set (an eGPU plugged or pulled, a driver reset), so caches of what the
-# devices said (an sd.cpp --list-devices listing) can tell a stale answer apart without re-probing on every read.
+# Bumped when a refresh finds a different device set, so device-listing caches can tell a stale answer apart.
 _physical_gpu_inventory_generation = 0
 # Same treatment for the torch side: classify_torch_build() calls availability probes that block on a wedged driver, and /api/health and /api/liveness reach it through the verdict.
 _TORCH_BUILD_SNAPSHOT_TTL_SECONDS = 60.0

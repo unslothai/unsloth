@@ -673,11 +673,9 @@ _CUDA_DEVICE_CC_RE = re.compile(
 )
 
 
-# Last --list-devices answer per binary, keyed by (size, mtime_ns), the device-selection env and the hardware inventory
-# generation. The accelerator verdict always probes afresh and refreshes it (a load re-vets the listing on purpose);
-# every other reader reuses it.
+# Last --list-devices answer per binary. The accelerator verdict always re-probes (a load re-vets the listing on purpose).
 _LAST_DEVICE_LISTING: dict = {}
-# What ggml reads to pick or hide devices: a change means a different listing from the same file.
+# What ggml reads to pick or hide devices.
 _DEVICE_LISTING_ENV_VARS: tuple[str, ...] = (
     "GGML_VK_VISIBLE_DEVICES",
     "VK_ICD_FILENAMES",
@@ -712,7 +710,6 @@ def _device_listing_identity(binary: str) -> tuple:
     return (
         _binary_stat_identity(binary),
         tuple(os.environ.get(name) for name in _DEVICE_LISTING_ENV_VARS),
-        # An eGPU unplug or a driver reset changes the listing from the same file under the same env.
         _hardware_inventory_generation(),
     )
 
@@ -721,8 +718,7 @@ def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None
     if not binary:
         return
     if text is None:
-        # Keep the last good listing (an unreadable probe or a timeout is never cached); readers check the identity,
-        # so a changed binary's or environment's listing is never served.
+        # An unreadable probe or a timeout is never cached.
         return
     _LAST_DEVICE_LISTING[binary] = (_device_listing_identity(binary), text)
 
@@ -742,7 +738,6 @@ def sd_cpp_device_listing(binary: str) -> Optional[str]:
     text = _cached_device_listing(binary, require_file = True)
     if text is None:
         text = _sd_cpp_probe_output(binary, "--list-devices")
-        # A path that is not a file has no identity to tell two listings apart: never reused.
         if _binary_stat_identity(binary) is not None:
             _remember_device_listing(binary, text)
     return text
@@ -1546,8 +1541,7 @@ _accelerator_runtime_failures: dict[str, dict] = {}
 
 # AMBIGUOUS failures needed to divert a host (a decisive one is enough alone).
 _AMBIGUOUS_FAILURE_STRIKES = 2
-# Bumped when what counts as a strike narrows. Rule 2 stopped counting Vulkan device-lost errors, so a Vulkan
-# record written before it keeps only its decisive evidence.
+# Rule 2 stopped counting Vulkan device-lost errors: an older Vulkan record keeps only its decisive evidence.
 _FAILURE_RULE = 2
 
 
@@ -1580,8 +1574,7 @@ def _decisive_evidence_only(record: Optional[dict]) -> Optional[dict]:
         "rule": _FAILURE_RULE,
     }
     if record.get("cards"):
-        # Without unscoped proof only the proven cards stay known: a card left in ``cards`` without its own
-        # entry would fall through to the record-wide proof and divert on another card's failure.
+        # A card left in ``cards`` without its own entry would divert on another card's record-wide proof.
         kept["cards"] = [
             c for c in record["cards"] if whole or unscoped["proven"] or c in proven_cards
         ]
@@ -2070,7 +2063,6 @@ def accelerator_runtime_failure_state() -> dict:
                 "fallback": _ACCELERATOR_FALLBACK.get(klass),
                 "strikes": int(record.get("strikes", 0) or 0),
                 "proven": bool(record.get("proven", False)),
-                # The same evidence the runtime decision counts, so status matches behaviour.
                 "diverting": enabled
                 and _record_diverts(_applicable_record(klass, record), fingerprint),
                 "stale": not _fingerprint_still_applies(record.get("fingerprint"), fingerprint),
@@ -2111,8 +2103,7 @@ _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
     "rocm error",
     "rocblas error",
     "memory access fault by gpu node",
-    # Not VK_ERROR_DEVICE_LOST: the spec makes it recoverable by recreating the device (a TDR or a
-    # scheduler timeout), so it says nothing about whether this build runs here.
+    # Not VK_ERROR_DEVICE_LOST: the Vulkan spec makes it recoverable by recreating the device (TDR, scheduler reset).
     "errorinitializationfailed",
     "vk_error_initialization_failed",
 )
@@ -3221,9 +3212,8 @@ class SdCppDiffusionBackend:
         # sd-server started for an in-flight load, before it commits to _state; tracked so an unload can stop it
         # mid-startup.
         self._pending_server: Optional[SdCppServer] = None
-        # The resident server a generation is deliberately stopping to start a replacement (device-loss respawn, CPU
-        # backend restart). status() must not read its exit as an idle crash and clear _state: the handover would then
-        # see an unload and kill the healthy replacement. Only unload() clears _state during that window.
+        # Server a generation is stopping for a replacement: status() must not reap it as an idle crash, or the
+        # handover reads an unload and kills the healthy replacement.
         self._replacing_server: Optional[SdCppServer] = None
         self._gen: Optional[_SdGen] = None
         # Set by _resolve_backend when it had to skip an accelerator install because the managed tree was still in
@@ -5072,8 +5062,7 @@ class SdCppDiffusionBackend:
         # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
         # ends on time.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
-        # One same-build respawn per request. A second lost device in a row (the respawned server lost it too) moves
-        # this load to the CPU backend where the CPU rung applies, else surfaces the error with a hint. Persists nothing.
+        # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
         device_respawned = False
         device_losses = 0
         hires_payload: Optional[dict] = None
@@ -5146,10 +5135,8 @@ class SdCppDiffusionBackend:
                     )
                 except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
-                    # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device leaves
-                    # the server alive on a dead device: start the same build again (a fresh device) and retry once;
-                    # when the respawned server loses it too, this load alone moves to the CPU backend where the CPU
-                    # rung applies. Any other death propagates.
+                    # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
+                    # fresh device: respawn the same build once. Any other death propagates.
                     exc = first_exc
                     while True:
                         moved_to_cpu = False
@@ -5175,8 +5162,7 @@ class SdCppDiffusionBackend:
                         old_server = state.server
                         state = replace(state, server = server)
                         if moved_to_cpu:
-                            # The load now renders on the CPU backend: status() and anything reading the placement
-                            # must say so, with the flags the CPU server actually got (no Vulkan device pin).
+                            # Placement follows the server: the flags the CPU server got, no Vulkan pin.
                             state = replace(
                                 state,
                                 device = "cpu",
@@ -5195,8 +5181,7 @@ class SdCppDiffusionBackend:
                                 )
                             payload["lora"] = list(lora_payload)
                         if hires_plan is not None:
-                            # The replacement server (a CPU-backend restart, a device-loss respawn or the CPU
-                            # fallback after a repeated loss) has its own scratch dir: stage the upscaler there again.
+                            # The replacement has its own scratch dir: stage the upscaler there again.
                             hires_payload = _stage_hires(server)
                             payload["hires"] = dict(hires_payload)
                         try:
