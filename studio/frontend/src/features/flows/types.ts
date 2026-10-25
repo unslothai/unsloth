@@ -460,6 +460,8 @@ export interface WorldSpec {
   style?: string | null;
   entry_points?: Record<string, string>;
   simulation?: WorldSimulation;
+  /** Absent means on. */
+  summarise?: boolean;
   render?: "2d" | "3d";
   view3d?: World3dView;
 }

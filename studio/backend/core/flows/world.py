@@ -43,7 +43,9 @@ TILE_PROMPTS = {
     "tree": "dense tree canopy seen from above",
     "rock": "mossy grey boulders",
 }
+# Keep in sync with MAX_HISTORY in world-state.ts.
 MAX_HISTORY = 24
+SUMMARY_CHARS = 600
 
 
 class WorldError(ValueError):
@@ -438,6 +440,13 @@ NPC_MEMORY_REPLY_SCHEMA = {
 }
 
 
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}},
+    "required": ["summary"],
+}
+
+
 def has_memory(state: dict) -> bool:
     """The world player sends `memory` only for simulated worlds; without it every prompt is the classic one."""
     return isinstance(state.get("memory"), list)
@@ -543,12 +552,55 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
     return out
 
 
+def talk_summary(state: dict) -> tuple[str, int]:
+    s = state.get("summary") if isinstance(state.get("summary"), dict) else {}
+    text = re.sub(r"\s+", " ", str(s.get("text") or "")).strip()[:SUMMARY_CHARS]
+    upto = s.get("upto")
+    return text, upto if isinstance(upto, int) and not isinstance(upto, bool) else -1
+
+
+def compact_prompt(state: dict) -> tuple[str, str]:
+    world, npc = npc_context(state)
+    player = (world.get("player") or {}).get("name", "Player")
+    previous, _ = talk_summary(state)
+    turns = "\n".join(
+        f"{player if t.get('role') == 'player' else npc['name']}: {str(t.get('text') or '')[:400]}"
+        for t in state.get("turns") or []
+        if isinstance(t, dict)
+    )
+    system = (
+        f"You keep the memory of {npc['name']}, a character in the game world \"{world.get('title')}\".\n"
+        f"Persona: {npc.get('persona') or 'a friendly local'}\n"
+        f"Write `summary`: what {npc['name']} remembers of talking with {player}, in first person, under "
+        f"{SUMMARY_CHARS} characters. Keep names, promises, facts {player} shared, items and quests, and how "
+        f"{npc['name']} feels about {player}. Drop small talk. Answer in JSON."
+    )
+    prompt = (
+        f"What you remembered so far: {previous or 'nothing yet'}\n"
+        f"Conversation to fold in:\n{turns or '(nothing)'}\n"
+    )
+    return system, prompt
+
+
+def clean_summary(raw: Any) -> str:
+    text = raw.get("summary") if isinstance(raw, dict) else raw
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not text:
+        raise WorldError("the model did not return a summary")
+    if len(text) > SUMMARY_CHARS:
+        cut = text[:SUMMARY_CHARS]
+        end = cut.rfind(". ")
+        text = cut[: end + 1] if end > SUMMARY_CHARS // 2 else cut
+    return text
+
+
 def npc_prompt(
     state: dict,
     rules: str,
     memories: Optional[list[dict]] = None,
 ) -> tuple[str, str]:
     world, npc = npc_context(state)
+    summary, upto = talk_summary(state)
     items = {i["id"]: i for i in world.get("items") or []}
     inv = [items[i]["name"] + f" (id {i})" for i in state.get("inventory") or [] if i in items]
     quests = [q for q in world.get("quests") or [] if q["giver"] == npc["id"]]
@@ -563,16 +615,25 @@ def npc_prompt(
         f"You are {npc['name']}, a character in the game world \"{world.get('title')}\".\n"
         f"Persona: {npc.get('persona') or 'a friendly local'}\n"
         f"World: {world.get('intro_text') or ''}\n"
-        f"{rules}\n"
+        + (
+            f"Earlier conversations with the player, as you remember them: {summary}\n"
+            if summary
+            else ""
+        )
+        + f"{rules}\n"
         "Reply as JSON. `text` is what you say. Only set `complete_quest` to one of your quest ids when the player has "
         "earned it (they carry the needed item). Use `give_item` only for an item id from the world list that fits the "
         "story; use empty strings when nothing happens."
     )
-    history = (state.get("history") or [])[-MAX_HISTORY:]
+    # Summary lives in the system prompt (changes only on fold) so llama-server reuses the cached prefix.
+    history = [
+        h
+        for h in state.get("history") or []
+        if isinstance(h, dict) and not (isinstance(h.get("seq"), int) and h["seq"] <= upto)
+    ][-MAX_HISTORY:]
     convo = "\n".join(
         f"{'Player' if h.get('role') == 'player' else npc['name']}: {str(h.get('text') or '')[:400]}"
         for h in history
-        if isinstance(h, dict)
     )
     item_list = ", ".join("{} (id {})".format(i["name"], i["id"]) for i in items.values())
     quest_list = "\n".join(q_lines)
@@ -738,6 +799,9 @@ def resolve_world_report(
     world = WorldSpec.model_validate(apply_play_view(world, doc, node_outputs, source)).model_dump(
         exclude_none = True
     )
+    reply = next((n for n in doc.get("nodes") or [] if n["id"] == eps.get("npc_reply")), None)
+    if reply is not None and (reply.get("params") or {}).get("summarise") is False:
+        world["summarise"] = False
     if "npc_reply" not in eps:
         warnings.append("No NPC Reply (live) node: NPCs will only say their greeting")
     sim = world.get("simulation")
