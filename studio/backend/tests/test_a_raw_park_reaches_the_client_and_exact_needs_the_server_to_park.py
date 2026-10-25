@@ -816,7 +816,8 @@ class TestARawRelayWaitsThroughAServerPark:
 
     def test_every_raw_relay_hands_it_over(self):
         source = inspect.getsource(inference)
-        assert source.count("stall_grace = _raw_park_grace(llama_backend),") == 4
+        # Four body readers, and the seven header waits in front of them.
+        assert source.count("stall_grace = _raw_park_grace(llama_backend),") == 11
         assert inference._RAW_PARK_STALL_CAP_S == llama_mod._SERVER_PARK_STALL_CAP_S
 
 
@@ -1058,7 +1059,8 @@ class TestTheParkGraceLivesBelowTheHttpxIterators:
 
     def test_every_raw_relay_reads_through_the_response(self):
         source = inspect.getsource(inference)
-        assert source.count("stall_grace = _raw_park_grace(llama_backend),") == 4
+        # Four body readers, and the seven header waits in front of them.
+        assert source.count("stall_grace = _raw_park_grace(llama_backend),") == 11
         assert (
             source.count("                    response = resp,\n")
             + source.count("                response = resp,\n")

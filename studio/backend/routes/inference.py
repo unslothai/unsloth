@@ -5295,15 +5295,86 @@ async def _wait_preheader_cancel(cancel_event = None, request: Optional[Request]
         await asyncio.sleep(0.05)
 
 
+# The first-token deadline a header wait the park probe excused renews, read by
+# `_aiter_llama_stream_items`: the caller's own deadline went by while the server held the slot.
+_HEADER_PARK_DEADLINE_EXT = "unsloth_header_park_first_token_deadline"
+
+
+async def _send_stream_headers_through_park(
+    client: httpx.AsyncClient,
+    req: httpx.Request,
+    stall_grace: Optional[Callable[[], bool]] = None,
+) -> httpx.Response:
+    """``client.send(req, stream = True)``, waiting out a server park past the read timeout.
+
+    A parking build that predates the stream notices is silent for a park during prompt
+    processing, headers included, and `_install_park_aware_read` only covers the body. At the
+    read timeout the aggregate probe is asked, as for the body; a park buys another window, up
+    to `_RAW_PARK_STALL_CAP_S`. A build that writes the notices sends its headers with the
+    `: preempted` line, and its probe (`_server_park_grace`) answers False, so its header wait
+    still ends at the read timeout. An excused wait renews the first-token deadline from the
+    headers, recorded on the response under `_HEADER_PARK_DEADLINE_EXT`."""
+    timeout_ext = (getattr(req, "extensions", None) or {}).get("timeout")
+    window = timeout_ext.get("read") if isinstance(timeout_ext, dict) else None
+    if stall_grace is None or not isinstance(window, (int, float)):
+        return await client.send(req, stream = True)
+    window = float(window)
+    cap = float(_RAW_PARK_STALL_CAP_S)
+    # httpcore reads this once for the header wait; the loop below is the real bound.
+    timeout_ext["read"] = window + cap + 5.0
+    task = asyncio.ensure_future(client.send(req, stream = True))
+    deadline = time.monotonic() + window
+    crossed_at: Optional[float] = None
+    try:
+        while True:
+            done, _pending = await asyncio.wait(
+                {task}, timeout = max(0.0, deadline - time.monotonic())
+            )
+            if done:
+                response = task.result()
+                if crossed_at is not None:
+                    try:
+                        response.extensions[_HEADER_PARK_DEADLINE_EXT] = min(
+                            start_first_token_wait(window), crossed_at + cap
+                        )
+                    except Exception:
+                        pass
+                return response
+            now = time.monotonic()
+            if crossed_at is None:
+                crossed_at = now
+            grace_left = crossed_at + cap - now
+            if grace_left <= 0 or not await _probe_off_the_loop(stall_grace):
+                raise httpx.ReadTimeout("The model did not produce a first token in time.")
+            logger.info(
+                "llama stream headers silent for %.0fs with a slot parked by the server; waiting",
+                now - crossed_at + window,
+            )
+            deadline = now + min(window, grace_left)
+    finally:
+        # The body's own bound is set by its reader; until then, the caller's window.
+        timeout_ext["read"] = window
+        if not task.done():
+            task.cancel()
+            task.add_done_callback(_discard_task_outcome)
+            try:
+                await asyncio.wait({task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
+            except asyncio.CancelledError:
+                pass
+
+
 async def _send_stream_with_preheader_cancel(
     client: httpx.AsyncClient,
     req: httpx.Request,
     cancel_event = None,
     request: Optional[Request] = None,
     mark_cancel_on_cancel: bool = True,
+    stall_grace: Optional[Callable[[], bool]] = None,
 ) -> Optional[httpx.Response]:
+    """``stall_grace`` (`_raw_park_grace`) lets the header wait outlast a server park, as the
+    body reader does once the headers are in."""
     if cancel_event is None and request is None:
-        return await client.send(req, stream = True)
+        return await _send_stream_headers_through_park(client, req, stall_grace)
     from core.inference.llama_keepwarm import mark_response_failed
 
     def _mark_preheader_cancel() -> None:
@@ -5316,7 +5387,7 @@ async def _send_stream_with_preheader_cancel(
         _mark_preheader_cancel()
         return None
 
-    send_task = asyncio.create_task(client.send(req, stream = True))
+    send_task = asyncio.create_task(_send_stream_headers_through_park(client, req, stall_grace))
     cancel_task = asyncio.create_task(_wait_preheader_cancel(cancel_event, request))
 
     async def _stop_send_task() -> None:
@@ -5520,6 +5591,16 @@ async def _aiter_llama_stream_items(
     """
     if first_token_deadline is None:
         first_token_deadline = start_first_token_wait(_first_token_timeout_s())
+    try:
+        renewed = (getattr(response, "extensions", None) or {}).pop(
+            _HEADER_PARK_DEADLINE_EXT, None
+        )
+    except Exception:
+        renewed = None
+    if isinstance(renewed, (int, float)):
+        # The headers came after a park the probe excused: the deadline set before the send
+        # measured the park, not the prompt.
+        first_token_deadline = max(first_token_deadline, float(renewed))
     last_item_at: Optional[float] = None
     last_prefill_progress: Optional[float] = None
     prefill_buffer = b""
@@ -43231,7 +43312,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 # Same event the relay loop polls, so a forced swap ends the request during prefill
                 # instead of only once headers arrive.
                 resp = await _send_stream_with_preheader_cancel(
-                    client, req, disconnect_event, request = request
+                    client,
+                    req,
+                    disconnect_event,
+                    request = request,
+                    stall_grace = _raw_park_grace(llama_backend),
                 )
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
@@ -46518,7 +46603,11 @@ async def _responses_stream(
                     # Same event the loop below polls: prefill can run for the whole first-token window,
                     # and only the send watcher can end it early.
                     resp = await _send_stream_with_preheader_cancel(
-                        client, req, disconnect_event, request = request
+                        client,
+                        req,
+                        disconnect_event,
+                        request = request,
+                        stall_grace = _raw_park_grace(llama_backend),
                     )
                     if resp is None:
                         api_monitor.finish(monitor_id, "cancelled")
@@ -51904,7 +51993,11 @@ async def _anthropic_passthrough_stream(
                 )
                 first_token_deadline = start_first_token_wait(_first_token_timeout_s())
                 resp = await _send_stream_with_preheader_cancel(
-                    client, req, cancel_event, request = request
+                    client,
+                    req,
+                    cancel_event,
+                    request = request,
+                    stall_grace = _raw_park_grace(llama_backend),
                 )
             except httpx.ConnectError as exc:
                 # Nothing has streamed yet, so a respawned server can be retried once
@@ -51920,7 +52013,11 @@ async def _anthropic_passthrough_stream(
                 )
                 first_token_deadline = start_first_token_wait(_first_token_timeout_s())
                 resp = await _send_stream_with_preheader_cancel(
-                    client, req, cancel_event, request = request
+                    client,
+                    req,
+                    cancel_event,
+                    request = request,
+                    stall_grace = _raw_park_grace(llama_backend),
                 )
             if resp is None:
                 return
@@ -53341,6 +53438,7 @@ async def _openai_passthrough_stream_admitted(
                         req,
                         cancel_event,
                         request = request,
+                        stall_grace = _raw_park_grace(llama_backend),
                         mark_cancel_on_cancel = False,
                     )
                 )
@@ -53727,6 +53825,7 @@ async def _openai_passthrough_stream_admitted(
                                                 ),
                                                 cancel_event,
                                                 request = request,
+                                                stall_grace = _raw_park_grace(llama_backend),
                                                 mark_cancel_on_cancel = False,
                                             )
                                         )
@@ -53777,6 +53876,7 @@ async def _openai_passthrough_stream_admitted(
                                 req,
                                 cancel_event,
                                 request = request,
+                                stall_grace = _raw_park_grace(llama_backend),
                                 mark_cancel_on_cancel = False,
                             )
                         )

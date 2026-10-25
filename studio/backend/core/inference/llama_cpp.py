@@ -2800,6 +2800,8 @@ _SERVER_PARK_COMMENTS = (
     _SERVER_KEEPALIVE_COMMENT,
 )
 _PREEMPT_KEEPALIVE_S = 2.0
+# The first-token deadline a header wait the park probe excused renews, read by `_open_stream`.
+_HEADER_PARK_DEADLINE_EXT = "unsloth_header_park_first_token_deadline"
 
 
 def _post_through_park(
@@ -41910,6 +41912,11 @@ class LlamaCppBackend:
                     raise RuntimeError(
                         f"llama-server returned {response.status_code}: {error_body}"
                     )
+                renewed = (getattr(response, "extensions", None) or {}).get(
+                    _HEADER_PARK_DEADLINE_EXT
+                )
+                if isinstance(renewed, (int, float)):
+                    first_token_deadline = max(first_token_deadline, float(renewed))
                 yield response, first_token_deadline
 
     @staticmethod
@@ -42304,6 +42311,45 @@ class LlamaCppBackend:
             watcher = threading.Thread(target = _cancel_watcher, daemon = True, name = "prefill-cancel")
             watcher.start()
 
+        # A parking build without stream notices is silent for a park during prompt processing,
+        # headers included, and the park-aware read below only covers the body. So the header
+        # wait asks ``stall_grace`` at its deadline too, from a watchdog that shuts the socket
+        # down when nothing is parked. Not on Windows: a Winsock recv before headers cannot be
+        # woken, so that wait keeps its socket bound.
+        header_lock = threading.Lock()
+        header_state: dict = {"in": False, "timed_out": False, "excused_at": None}
+        header_done = threading.Event()
+
+        def _header_park_watchdog(window: float):
+            deadline = time.monotonic() + window
+            while not header_done.wait(max(0.0, deadline - time.monotonic())):
+                now = time.monotonic()
+                if header_state["excused_at"] is None:
+                    header_state["excused_at"] = now
+                grace_left = header_state["excused_at"] + _SERVER_PARK_STALL_CAP_S - now
+                try:
+                    parked = grace_left > 0 and bool(stall_grace())
+                except Exception:
+                    parked = False
+                if parked:
+                    logger.info(
+                        "llama stream headers silent for %.0fs with a slot parked by the "
+                        "server; waiting",
+                        now - header_state["excused_at"] + window,
+                    )
+                    deadline = now + min(window, grace_left)
+                    continue
+                with header_lock:
+                    if header_state["in"]:
+                        return
+                    header_state["timed_out"] = True
+                LlamaCppBackend._shutdown_active_httpx_sockets(client)
+                return
+
+        def _raise_if_header_timed_out(exc = None):
+            if header_state["timed_out"]:
+                raise httpx.ReadTimeout("The model did not produce a first token in time.") from exc
+
         try:
             if first_token_deadline is None:
                 first_token_deadline = start_first_token_wait()
@@ -42311,12 +42357,24 @@ class LlamaCppBackend:
             if sys.platform == "win32":
                 # Stop cannot wake a Winsock recv parked before headers, so that wait keeps the default bound.
                 prefill_read_timeout = min(prefill_read_timeout, _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+            header_read_timeout = socket_timeout(prefill_read_timeout)
+            header_watchdog = None
+            if stall_grace is not None and header_read_timeout is not None and sys.platform != "win32":
+                header_watchdog = threading.Thread(
+                    target = _header_park_watchdog,
+                    args = (header_read_timeout,),
+                    daemon = True,
+                    name = "header-park-wait",
+                )
+                header_read_timeout += _SERVER_PARK_STALL_CAP_S + 5.0
             prefill_timeout = httpx.Timeout(
                 connect = 30,
-                read = socket_timeout(prefill_read_timeout),
+                read = header_read_timeout,
                 write = 10,
                 pool = 10,
             )
+            if header_watchdog is not None:
+                header_watchdog.start()
             with client.stream(
                 "POST",
                 url,
@@ -42324,6 +42382,23 @@ class LlamaCppBackend:
                 timeout = prefill_timeout,
                 headers = headers,
             ) as response:
+                with header_lock:
+                    header_state["in"] = True
+                header_done.set()
+                _raise_if_header_timed_out()
+                excused_at = header_state["excused_at"]
+                if excused_at is not None:
+                    # The deadline the caller set before the send measured the park.
+                    renewed = min(start_first_token_wait(), excused_at + _SERVER_PARK_STALL_CAP_S)
+                    try:
+                        response.extensions[_HEADER_PARK_DEADLINE_EXT] = renewed
+                    except Exception:
+                        pass
+                if header_watchdog is not None:
+                    # The body's bound is set by its reader; until then, the caller's own.
+                    LlamaCppBackend._set_stream_read_timeout(
+                        response, socket_timeout(prefill_read_timeout)
+                    )
                 _response_ref[0] = response
                 # Portable mid-stream cancel: the reader polls cancel itself, so Stop
                 # interrupts a stalled read where the watcher's Windows socket shutdown
@@ -42340,12 +42415,15 @@ class LlamaCppBackend:
                     _raise_interrupt()
                 yield response
                 return
-        except (httpx.RequestError, RuntimeError):
+        except (httpx.RequestError, RuntimeError) as exc:
             # Response was closed by the cancel watcher
             if _interrupt is not None and _interrupt.is_set():
                 _raise_interrupt()
+            # Or by the header watchdog, at a deadline nothing parked excused.
+            _raise_if_header_timed_out(exc)
             raise
         finally:
+            header_done.set()
             _cancel_closed.set()
 
     def _server_socket_is_open(self, timeout_s: float = 0.15) -> bool:
