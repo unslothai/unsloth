@@ -160,6 +160,15 @@ def test_prompt_offers_new_things_only_when_allowed():
     assert "new villager" in system and "new item" in system
 
 
+def test_prompt_lists_only_items_a_new_quest_may_ask_for():
+    _, prompt = director_prompt(_state())
+    assert (
+        "bell: Golden Bell" in prompt and "rod:" not in prompt
+    )  # the rod is what The Lost Rod asks for
+    system, prompt = director_prompt(_state(picked = ["bell"], allow_item = True))
+    assert "bell:" not in prompt and "Every item is already used" in system
+
+
 def test_new_quests_setting_reaches_the_player():
     nodes = [{"id": "w", "type": "world.spec", "params": {"world": RAW}}]
     on = resolve_world({"nodes": [*nodes, {"id": "r", "type": "world.npc_reply", "params": {}}]})

@@ -597,6 +597,15 @@ def clean_summary(raw: Any) -> str:
     return text
 
 
+def _used_items(world: dict, state: dict) -> set:
+    """Items a new quest cannot ask for: already asked for by a quest, carried, or picked up."""
+    return (
+        {q.get("requires_item") for q in world.get("quests") or []}
+        | set(state.get("inventory") or [])
+        | set(state.get("picked") or [])
+    )
+
+
 def director_prompt(state: dict) -> tuple[str, str]:
     """Ask for the next quest of a world in play, built from what is already there."""
     world = state.get("world") if isinstance(state.get("world"), dict) else None
@@ -604,7 +613,11 @@ def director_prompt(state: dict) -> tuple[str, str]:
         raise WorldError("the director needs the world in its state")
     done = set(state.get("completed_quests") or [])
     npcs = "\n".join(f"- {n['id']}: {n['name']}" for n in world.get("npcs") or [])
-    items = "\n".join(f"- {i['id']}: {i['name']}" for i in world.get("items") or [])
+    # Only items a new quest may still ask for, so the model is not tempted by ones already used.
+    used = _used_items(world, state)
+    items = "\n".join(
+        f"- {i['id']}: {i['name']}" for i in world.get("items") or [] if i["id"] not in used
+    )
     regions = "\n".join(f"- {r['id']}: {r['name']}" for r in world.get("regions") or [])
     quests = "\n".join(
         f"- {q['title']} ({'done' if q['id'] in done else 'open'})"
@@ -619,6 +632,9 @@ def director_prompt(state: dict) -> tuple[str, str]:
     if state.get("allow_item"):
         rules.append(
             "Or invent one new item for it (new_item_name, new_item_description) and leave `item` empty."
+            if items
+            else "Every item is already used, so invent one new item for it (new_item_name, "
+            "new_item_description) and leave `item` empty."
         )
     if state.get("allow_npc"):
         rules.append(
@@ -691,11 +707,7 @@ def validate_director(raw: Any, state: dict) -> dict:
         )
     if giver is None:
         raise WorldError("the new quest has no giver in the world")
-    used = (
-        {q.get("requires_item") for q in quests}
-        | set(state.get("inventory") or [])
-        | set(state.get("picked") or [])
-    )
+    used = _used_items(world, state)
     asked = text("item", 80)
     need = find(items, asked)
     if need in used:
