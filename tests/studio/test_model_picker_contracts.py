@@ -1423,10 +1423,22 @@ def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     before = src.split("<Checkbox id={rememberId}", 1)[0]
-    # Footer is the third <div back: the status line sits in the Remember column.
-    footer = before.rsplit("<div", 3)[1]
-    assert "flex-wrap" not in footer, footer[:200]
-    assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]
+    # Opening tags of the divs enclosing Remember, nearest first. The footer column is the one
+    # under the rule. A wrapper just outside it (the picker's sticky pin) may vary by variant, but
+    # only in placement: it must not make the footer wrap either.
+    attr = r"""(?:[^>"'{]|"[^"]*"|'[^']*'|\{(?:[^{}]|\{[^{}]*\})*\})*"""
+    stack = []
+    for match in re.finditer(r"<div\b(" + attr + r")>|</div>", before):
+        if match.group(0) == "</div>":
+            stack.pop()
+        elif not match.group(1).rstrip().endswith("/"):
+            stack.append(match.group(1))
+    tags = stack[::-1]
+    footer = next((i for i, tag in enumerate(tags) if "border-t" in tag), None)
+    assert footer is not None, tags[:4]
+    assert "flex flex-col" in tags[footer] and "variant ===" not in tags[footer], tags[footer]
+    for tag in tags[: footer + 2]:
+        assert "flex-wrap" not in tag, tag
 
 
 def test_save_settings_is_not_rendered_when_it_could_do_nothing():

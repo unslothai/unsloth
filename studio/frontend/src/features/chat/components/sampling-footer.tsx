@@ -17,8 +17,8 @@ import {
   toApiSampling,
 } from "../lib/sampling-memory";
 import type { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import type { InferenceParams } from "../types/runtime";
 import type { InferenceStatusResponse } from "../types/api";
+import type { InferenceParams } from "../types/runtime";
 import type { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 
 // Passed in: importing them here splits shared modules out of the startup bundle.
@@ -84,6 +84,8 @@ export default function SamplingFooter({
   const [saved, setSaved] = useState<SavedSampling | null>(null);
   const [remember, setRemember] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Until the first read lands, an edit or save would be overwritten by its older result.
+  const [loaded, setLoaded] = useState(false);
   const rememberId = useId();
   const statusId = useId();
 
@@ -91,12 +93,18 @@ export default function SamplingFooter({
     const controller = new AbortController();
     setSaved(null);
     setRemember(false);
+    setLoaded(false);
     readSavedSampling(modelId, controller.signal)
       .then((value) => {
         setSaved(value);
         setRemember(value !== null);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setLoaded(true);
+        }
+      });
     return () => controller.abort();
   }, [modelId]);
 
@@ -196,6 +204,7 @@ export default function SamplingFooter({
             id={rememberId}
             aria-describedby={statusId}
             checked={remember}
+            disabled={!loaded}
             onCheckedChange={(checked) => setRemember(checked === true)}
           />
           <label
@@ -220,7 +229,7 @@ export default function SamplingFooter({
             type="button"
             variant={remember ? "dark" : "outline"}
             size="sm"
-            disabled={busy || (remember && unchanged)}
+            disabled={!loaded || busy || (remember && unchanged)}
             onClick={remember ? save : forget}
           >
             {remember ? "Save settings" : "Forget settings"}
