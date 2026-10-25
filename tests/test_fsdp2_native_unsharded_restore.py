@@ -75,7 +75,9 @@ def test_restores_the_exact_setting(sharded):
 def test_int_reshard_after_forward_is_restored(sharded):
     native, model = sharded
     for block in model:
-        block._unsloth_reshard_after_forward = 2  # what shard_model records for FSDP2Config(... = 2)
+        block._unsloth_reshard_after_forward = (
+            2  # what shard_model records for FSDP2Config(... = 2)
+        )
     _generate_like(native, model)
 
 
