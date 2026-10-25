@@ -96,7 +96,6 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   ArrowLeft,
   ArrowRight,
-  RotateCw,
   ShieldCheck,
   XIcon,
 } from "lucide-react";
@@ -1487,7 +1486,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
           }}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <RefreshGlyph strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
       </div>
       <AddressBar
@@ -1602,7 +1601,7 @@ function BrowserFileToolbar({
           onClick={runAgain}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <RefreshGlyph strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
       </div>
       <AddressBar
