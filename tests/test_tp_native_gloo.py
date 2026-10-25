@@ -807,14 +807,15 @@ def _case_trainer(
 
 
 def _case_sharded_lora_init(rank, world, tmp, ckpt):
-    """Weight-dependent LoRA init (PiSSA) on sharded_loading slices is refused before any mutation."""
+    """Weight-dependent LoRA init (PiSSA) on sharded_loading slices is refused before any mutation;
+    orthogonal init only reads the full in / out features and the dtype, so it is allowed like gaussian."""
     from peft import LoraConfig, get_peft_model
     from torch.distributed.device_mesh import init_device_mesh
     from transformers import AutoModelForCausalLM
 
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     out = {}
-    for init in ("pissa", "gaussian"):
+    for init in ("pissa", "gaussian", "orthogonal"):
         model = tpn.load_tensor_parallel(
             ckpt, mesh["tp"], loader = AutoModelForCausalLM.from_pretrained, torch_dtype = torch.float32
         )
@@ -1279,6 +1280,7 @@ def test_sharded_loading_refuses_weight_dependent_lora_init():
         assert "depends on the base weight" in (res["pissa"] or ""), res
         assert not res["pissa_tp"]
         assert res["gaussian"] is None and res["gaussian_tp"], res
+        assert res["orthogonal"] is None and res["orthogonal_tp"], res
 
 
 def test_sharded_loading_refuses_quantized_loads():

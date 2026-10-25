@@ -2313,20 +2313,21 @@ def _preloaded(t):
 
 
 def _refuse_weight_dependent_lora_init(model):
-    """PiSSA / OLoRA / CorDA / EVA / LoftQ build the factors (and residual) from the weight; on a sharded_loading
-    slice that is this rank's slice only, so the factors come out shard-sized and differ per rank."""
+    """PiSSA / OLoRA / CorDA / EVA / LoftQ / MiCA build the factors (and residual) from the weight; on a sharded_loading
+    slice that is this rank's slice only, so the factors come out shard-sized and differ per rank. Orthogonal init
+    reads only the full in / out features and the dtype, so like gaussian it gives full-size factors."""
     configs = {}
     for level in _tp_chain(model):
         configs.update(getattr(level, "peft_config", None) or {})
     bad = {
         name: cfg.init_lora_weights
         for name, cfg in configs.items()
-        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian")
+        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian", "orthogonal")
     }
     if bad:
         raise ValueError(
             f"Unsloth: init_lora_weights {bad} depends on the base weight, which sharded_loading holds only as "
-            "this rank's slice; use init_lora_weights = True / 'gaussian', or load the full model (no "
+            "this rank's slice; use init_lora_weights = True / 'gaussian' / 'orthogonal', or load the full model (no "
             "sharded_loading) before get_peft_model and apply_tensor_parallel."
         )
 
