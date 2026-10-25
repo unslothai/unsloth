@@ -34516,26 +34516,6 @@ class LlamaCppBackend:
                     self._vram_fraction_pending = None
                     raise RuntimeError(detail)
 
-                def _recover_vulkan_stall(stalled_cmd: list[str]) -> bool:
-                    """A probe that could not enumerate plus no loading work replays on CPU (True
-                    once up, False if it could not start); any other stall fails with advice."""
-                    if (
-                        _vulkan_suspect
-                        and getattr(self, "_health_wait_stall_kind", None) == "no_progress"
-                    ):
-                        return _try_auto_vulkan_cpu_fallback(stalled_cmd, None, stalled = True)
-                    _why = (
-                        "startup time limit reached"
-                        if getattr(self, "_health_wait_stall_kind", None) == "ceiling"
-                        else "no loading progress"
-                    )
-                    _raise_terminal_load_failure(
-                        "llama-server did not finish starting on the auto-selected Vulkan "
-                        f"backend ({_why}). If this keeps happening, choose CPU "
-                        "in Settings > GGUF inference engine to run models without the "
-                        "Vulkan driver."
-                    )
-
                 def _vulkan_stall_pending() -> bool:
                     return (
                         getattr(self, "_health_wait_stalled", False)
@@ -34711,6 +34691,26 @@ class LlamaCppBackend:
                         "stalled" if stalled else "crashed",
                     )
                     return True
+
+                def _recover_vulkan_stall(stalled_cmd: list[str]) -> bool:
+                    """A probe that could not enumerate plus no loading work replays on CPU (True
+                    once up, False if it could not start); any other stall fails with advice."""
+                    if (
+                        _vulkan_suspect
+                        and getattr(self, "_health_wait_stall_kind", None) == "no_progress"
+                    ):
+                        return _try_auto_vulkan_cpu_fallback(stalled_cmd, None, stalled = True)
+                    _why = (
+                        "startup time limit reached"
+                        if getattr(self, "_health_wait_stall_kind", None) == "ceiling"
+                        else "no loading progress"
+                    )
+                    _raise_terminal_load_failure(
+                        "llama-server did not finish starting on the auto-selected Vulkan "
+                        f"backend ({_why}). If this keeps happening, choose CPU "
+                        "in Settings > GGUF inference engine to run models without the "
+                        "Vulkan driver."
+                    )
 
                 # Store the resolved on-disk path, not the caller's kwarg: in
                 # HF mode gguf_path is None and ``model_path`` is what
