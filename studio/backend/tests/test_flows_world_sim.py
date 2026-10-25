@@ -27,7 +27,9 @@ CLASSIC_SYSTEM = (
     'You are Old Tom, a character in the game world "Mossy Hollow".\nPersona: grumpy fisher\nWorld: A sleepy village.\n'
     "Stay in character.\nReply as JSON. `text` is what you say. Only set `complete_quest` to one of your quest ids "
     "when the player has earned it (they carry the needed item). Use `give_item` only for an item id from the world "
-    "list that fits the story; use empty strings when nothing happens."
+    "list that fits the story; use empty strings when nothing happens.\nSet `action` to follow_player when you "
+    "agree to come along with the player, stop_following when you part ways, or go_to with a `place` id when you "
+    "agree to head somewhere: Pond (id pond), Mill (id mill). Leave it empty otherwise."
 )
 CLASSIC_PROMPT = (
     "Your quests:\n- Lost rod (id q): Find my rod Needs item id rod.\nWorld items: Fishing Rod (id rod), Berry Pie "

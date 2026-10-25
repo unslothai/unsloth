@@ -436,6 +436,8 @@ export interface WorldSimulation {
   places: WorldPlace[];
   chat_cooldown_min: number;
   calls_per_minute: number;
+  /** On unless false. */
+  needs?: boolean;
 }
 
 export interface WorldSpec {

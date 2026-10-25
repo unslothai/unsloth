@@ -134,6 +134,69 @@ def test_npc_reply_validation_only_allows_known_effects():
         validate_npc_reply({"text": "x"}, _state(npc_id = "ghost"))
 
 
+def test_npc_reply_actions_are_a_fixed_validated_set():
+    s = _state()
+    assert validate_npc_reply({"text": "Lead on!", "action": "follow_player"}, s) == {
+        "text": "Lead on!",
+        "action": "follow_player",
+    }
+    assert (
+        validate_npc_reply({"text": "Bye", "action": "stop_following"}, s)["action"]
+        == "stop_following"
+    )
+    asked = _state(player_message = "Meet me at the pond later?")
+    assert validate_npc_reply(
+        {"text": "See you there", "action": "go_to", "place": "pond"}, asked
+    ) == {
+        "text": "See you there",
+        "action": "go_to",
+        "place": "pond",
+    }
+    assert "action" not in validate_npc_reply(
+        {"text": "Off I go", "action": "go_to", "place": "pond"}, s
+    )
+    for msg, want in (
+        ("Could you follow me? I want to show you something.", "follow_player"),
+        ("Come with me to the pond", "follow_player"),
+        ("Thanks, you can go home now. Stop following me.", "stop_following"),
+    ):
+        out = validate_npc_reply(
+            {"text": "Sure", "action": "go_to", "place": "pond"}, _state(player_message = msg)
+        )
+        assert out.get("action") == want and "place" not in out, msg
+    for bad in (
+        {"action": "burn_down_the_mill"},
+        {"action": "go_to", "place": "the_moon"},
+        {"action": "go_to"},
+        {"action": "Follow_Player"},
+    ):
+        out = validate_npc_reply({"text": "Hm.", **bad}, s)
+        assert out == {"text": "Hm."}, bad
+    system, prompt = npc_prompt(_state(following = True), "")
+    assert "follow_player" in system and "Pond (id pond)" in system
+    assert "You are walking with the player." in prompt
+    assert "walking with" not in npc_prompt(_state(), "")[1]
+
+
+def test_a_villager_who_stays_put_takes_no_movement_action():
+    s = _state(player_message = "Could you follow me?")
+    w = s["world"]
+    s["world"] = {
+        **w,
+        "npcs": [{**n, "wander": False} if n["id"] == "bea" else n for n in w["npcs"]],
+    }
+    assert "action" not in validate_npc_reply({"text": "Sure", "action": "follow_player"}, s)
+    assert "follow_player" not in npc_prompt(s, "")[0]
+
+
+def test_simulation_needs_flag_defaults_on():
+    w = normalize_world({**RAW, "simulation": True}, seed = 1)
+    assert w["simulation"]["needs"] is True
+    w = normalize_world({**RAW, "simulation": {"needs": False}}, seed = 1)
+    assert w["simulation"]["needs"] is False
+    assert "simulation" not in normalize_world(RAW, seed = 1)
+
+
 def test_npc_prompt_mentions_quest_and_inventory():
     system, prompt = npc_prompt(
         _state(inventory = ["rod"], history = [{"role": "player", "text": "yo"}]), "Be brief."

@@ -38,6 +38,7 @@ import {
   isNoChatModelError,
   offlineLine,
 } from "./live-reply";
+import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import { type TileKind, generateMap } from "./procgen";
 import {
@@ -49,6 +50,12 @@ import {
   saveUntilCurrent,
 } from "./props3d";
 import {
+  placeAreas,
+  steerActions,
+  steeredNeeds,
+  villagerStep,
+} from "./world-actions";
+import {
   BackgroundQueue,
   type Note,
   type PlanBlock,
@@ -59,6 +66,7 @@ import {
   emptyMind,
   findEncounter,
   markChat,
+  needsOn,
   placeAt,
   remember,
   simOf,
@@ -276,6 +284,10 @@ export function WorldPlayer({
   );
   useEffect(() => () => queue.clear(), [queue]);
   const busy = useRef(new Set<string>());
+  const steered = useRef(new Set<string>());
+  const withNeeds = useMemo(() => needsOn(spec), [spec]);
+  const offers = useMemo(() => advertisements(sim?.places ?? []), [sim]);
+  const areas = useMemo(() => placeAreas(spec), [spec]);
   const [background, setBackground] = useState<string | null>(null);
 
   const witness = useCallback(
@@ -552,6 +564,13 @@ export function WorldPlayer({
   }, [api, flowId, replyEntry]);
   const talkNpc = talking ? npcById.get(talking) : undefined;
   const turns = talking ? (ws.talks[talking] ?? []) : [];
+  const talkMind = talking ? ws.npc[talking] : undefined;
+  const talkNeeds = talkMind?.needs;
+  const talkDoing = talkMind?.doing
+    ? talkMind.doing.kind === "go_to"
+      ? (talkMind.doing.label ?? "")
+      : `${ACTIONS[talkMind.doing.kind].icon} ${talkMind.doing.kind}`
+    : "";
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
     scroller.current?.scrollTo({
@@ -757,6 +776,11 @@ export function WorldPlayer({
       setWs((st) => ({ ...st, clock: st.clock + sim.minutes_per_second }));
       const day = dayOf(clock);
       const places = new Map(sim.places.map((p) => [p.id, p]));
+      const lives: Record<
+        string,
+        NonNullable<ReturnType<typeof villagerStep>>
+      > = {};
+      const ticked: Record<string, Needs> = {};
       for (const n of spec.npcs) {
         const mind = s.npc[n.id] ?? emptyMind();
         if (planEntry && mind.planDay !== day)
@@ -765,11 +789,43 @@ export function WorldPlayer({
             kind: "plan",
             run: (signal) => planDay(n.id, day, signal),
           });
+        if (steered.current.has(n.id)) {
+          const needs = withNeeds
+            ? steeredNeeds(mind, sim.minutes_per_second)
+            : null;
+          if (needs) ticked[n.id] = needs;
+          continue;
+        }
+        const life = withNeeds
+          ? villagerStep({
+              g,
+              spec,
+              sim,
+              npcId: n.id,
+              mind,
+              clock,
+              offers,
+              areas,
+            })
+          : null;
+        if (life) {
+          lives[n.id] = life;
+          continue;
+        }
         const block =
           mind.planDay === day ? currentBlock(mind.plan, clock) : null;
         g.setNpcPlace(n.id, block ? (places.get(block.place) ?? null) : null);
         g.setNpcStatus(n.id, block ? activityEmoji(block.activity) : "");
       }
+      if (Object.keys(lives).length || Object.keys(ticked).length)
+        setWs((st) => {
+          const npc = { ...st.npc };
+          for (const [id, life] of Object.entries(lives))
+            if (npc[id]) npc[id] = { ...npc[id], ...life };
+          for (const [id, needs] of Object.entries(ticked))
+            if (npc[id]) npc[id] = { ...npc[id], needs };
+          return { ...st, npc };
+        });
       // Only look for a chat when nothing else waits, so an encounter is never stale by the time it runs.
       if (chatEntry && !queue.busy && !queue.pending && queue.allows()) {
         const pair = findEncounter(
@@ -798,13 +854,38 @@ export function WorldPlayer({
     sim,
     ready,
     started,
-    spec.npcs,
+    spec,
     planEntry,
     chatEntry,
     queue,
     planDay,
     chat,
+    withNeeds,
+    offers,
+    areas,
   ]);
+
+  useEffect(() => {
+    if (!ready || !started) return;
+    const timer = window.setInterval(() => {
+      const g = game.current;
+      if (!g) return;
+      const { steered: now, expired } = steerActions(
+        g,
+        areas,
+        wsRef.current,
+        steered.current,
+      );
+      steered.current = now;
+      if (expired.length)
+        setWs((st) => {
+          const errands = { ...(st.errands ?? {}) };
+          for (const id of expired) delete errands[id];
+          return { ...st, errands };
+        });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [ready, started, areas]);
 
   const replyRun = useRef<AbortController | null>(null);
   const send = async () => {
@@ -849,6 +930,7 @@ export function WorldPlayer({
             vars: before.vars,
             inventory: before.inventory,
             completed_quests: before.completedQuests,
+            following: (before.following ?? []).includes(npcId),
             ...(sim
               ? { memory: before.npc[npcId]?.memory ?? [], clock: before.clock }
               : {}),
@@ -1304,6 +1386,43 @@ export function WorldPlayer({
               <div className="text-center font-semibold text-sm">
                 {talkNpc.name}
               </div>
+              {ws.following?.includes(talkNpc.id) ? (
+                <div className="text-[11px] text-emerald-200/80">
+                  Following you
+                </div>
+              ) : null}
+              {talkNeeds ? (
+                <div
+                  className="flex w-full flex-col gap-1"
+                  data-testid="world-npc-needs"
+                >
+                  {NEEDS.map((n) => (
+                    <div
+                      key={n}
+                      className="flex items-center gap-1.5 text-[10px] text-white/55"
+                      title={`${n} ${Math.round(talkNeeds[n])}`}
+                    >
+                      <span className="w-9 capitalize">{n}</span>
+                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
+                        <div
+                          className={cn(
+                            "h-full rounded-full",
+                            talkNeeds[n] < 30
+                              ? "bg-rose-300"
+                              : "bg-emerald-300",
+                          )}
+                          style={{ width: `${Math.round(talkNeeds[n])}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                  {talkDoing ? (
+                    <div className="text-center text-[10px] text-white/45">
+                      {talkDoing}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             <div className="flex min-w-0 flex-1 flex-col gap-3">
               <div
