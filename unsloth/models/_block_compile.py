@@ -661,6 +661,8 @@ def _precheck_band(layer, seq_len, args, kwargs):
 
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
 _IN_BLOCK = [0]
+_PACKED_MODULE = "unsloth.utils.hf_packed_attention"
+_NO_PACKED = [False]
 _OFF, _FULL, _SPLIT = 0, 1, 2
 _DEMOTION = (_FULL, _SPLIT, _OFF)
 _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
@@ -828,6 +830,10 @@ def _wrap(
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
+        # Packed rows run hf_packed_attention's varlen kernel outside the graph (see there).
+        packed = getattr(sys.modules.get(_PACKED_MODULE), "IN_COMPILED_BLOCK", _NO_PACKED)
+        packed_previous = packed[0]
+        packed[0] = True
         try:
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
             with capture_scratch():
@@ -847,6 +853,7 @@ def _wrap(
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
+            packed[0] = packed_previous
 
     def _inline(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
