@@ -763,7 +763,8 @@ _FLEX_TUNED_BWD_MIN_TORCH = "2.10"
 def _flex_tuned_bwd_device_ok():
     """True when every visible CUDA device has a capability the tuned backward was measured on.
 
-    Read once when the flex forward is wrapped (model load), never inside a compiled region.
+    Read once when the flex forward is wrapped, at `import unsloth` (set the env var before it), never
+    inside a compiled region.
     UNSLOTH_FLEX_TUNED_BACKWARD=0 turns it off, =1 forces it on any CUDA device with torch >= 2.10."""
     override = os.environ.get(_FLEX_TUNED_BWD_ENV_VAR, "").strip()
     if override == "0":
@@ -789,6 +790,24 @@ def _flex_tuned_bwd_kernel_options(head_dim, device_ok):
     if not device_ok or not isinstance(head_dim, int) or not (low < head_dim <= high):
         return None
     return dict(_FLEX_TUNED_BWD_KERNEL_OPTIONS)
+
+
+def _flex_tuned_bwd_fits(args, kwargs):
+    """Whether the tuned backward tiles can join this call. Not when the caller set its own tiles
+    (a partial set merged with ours can break bwd_BLOCK_N1 % bwd_BLOCK_M1 == 0), nor when the block
+    mask's sparse blocks are not multiples of our tiles (Inductor's defaults shrink to fit those)."""
+    requested = kwargs.get("kernel_options") or {}
+    if any(k.startswith(("bwd_", "BLOCK_", "num_")) for k in requested):
+        return False
+    mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
+    block_size = getattr(mask, "BLOCK_SIZE", None)
+    if block_size is None:
+        return True
+    try:
+        tiles = [v for k, v in _FLEX_TUNED_BWD_KERNEL_OPTIONS.items() if "_BLOCK_" in k]
+        return all(int(size) % tile == 0 for size in block_size for tile in tiles)
+    except Exception:
+        return False
 
 
 def _flex_call_needs_backward(query, key, value):
@@ -951,6 +970,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and hasattr(query, "dim")
             and query.dim() == 4
             and _flex_call_needs_backward(query, key, value)
+            and _flex_tuned_bwd_fits(args, kwargs)
         ):
             kernel_options = _flex_tuned_bwd_kernel_options(query.shape[-1], tuned_bwd_device_ok)
         # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
@@ -5836,10 +5856,19 @@ def patch_gradient_accumulation_fix(Trainer):
             # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
             _refuse_pipeline_parallel_for_trainer(model)
             tensor_parallel = _tensor_parallel_trainer_pre(model)
-            from ..fsdp2_launch import unsloth_fsdp2_native_requested
+            from .. import fsdp2_launch as _fsdp2_launch
 
             # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
-            native_fsdp2 = unsloth_fsdp2_native_requested()
+            native_fsdp2 = _fsdp2_launch.unsloth_fsdp2_native_requested()
+            if not native_fsdp2 and _fsdp2_launch._NON_CUDA_EXPORT is not None:
+                # UNSLOTH_FSDP2=1 on a non-CUDA install went to accelerate's FSDP2 at import, but a
+                # use_cpu Trainer is MULTI_CPU to accelerate, which drops FSDP: shard natively instead.
+                from .fsdp2_native import native_fsdp2_trainer_init_arguments
+                native_fsdp2 = _fsdp2_launch.reclaim_native_fsdp2_for_cpu_trainer(
+                    native_fsdp2_trainer_init_arguments(_original_trainer_init, args, kwargs)[
+                        "args"
+                    ]
+                )
             if native_fsdp2:
                 from .fsdp2_native import (
                     native_fsdp2_trainer_init_arguments,

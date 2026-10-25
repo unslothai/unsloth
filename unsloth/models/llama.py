@@ -2453,6 +2453,9 @@ class _PerDeviceRopeCache:
         self._rope_cache_versions = [None] * DEVICE_COUNT
         # Rows each device can serve without bookkeeping; reset on growth. Read per layer per decode step.
         self._rope_rows_ready = [0] * DEVICE_COUNT
+        # A compiled grad-off build may hold inference tensors (AOTAutograd drops
+        # inference_mode(False)); rebuilt on the next grad-enabled read, off the fast path.
+        self._rope_rebuild_for_grad = [False] * DEVICE_COUNT
         # Never fewer rows than the eager cache started with, so those positions stay valid.
         self._rope_cache_floor = self.current_rope_size
         self._rope_cache_needed = self.current_rope_size
@@ -2467,12 +2470,21 @@ class _PerDeviceRopeCache:
         # saved for backward, so the compiled training block failed and fell back to eager.
         import contextlib
 
-        if not torch.is_inference_mode_enabled():
+        # Dynamo cannot trace is_inference_mode_enabled; _mark_rope_build covers compiled builds.
+        if torch.compiler.is_compiling() or not torch.is_inference_mode_enabled():
             return contextlib.nullcontext()
         stack = contextlib.ExitStack()
         stack.enter_context(torch.inference_mode(False))
         stack.enter_context(torch.no_grad())
         return stack
+
+    def _mark_rope_build(self, device_index):
+        self._rope_rebuild_for_grad[device_index] = (
+            torch.compiler.is_compiling() and not torch.is_grad_enabled()
+        )
+
+    def _needs_grad_rebuild(self, device_index):
+        return self._rope_rebuild_for_grad[device_index] and torch.is_grad_enabled()
 
     def _build_rope_cache(self, device_index):
         # _set_cos_sin_cache records its length as current_rope_size; a lazy build may be shorter.
@@ -2485,12 +2497,14 @@ class _PerDeviceRopeCache:
             )
         self.current_rope_size = current_rope_size
         self._rope_cache_versions[device_index] = self._rope_cache_version
+        self._mark_rope_build(device_index)
 
     def _rope_cache_stale(self, cached, device_index):
         return (
             cached is None
             or cached.shape[0] < self._rope_cache_rows()
             or self._rope_cache_versions[device_index] != self._rope_cache_version
+            or self._needs_grad_rebuild(device_index)
         )
 
     def _ensure_rope_cache(self, device_index):
@@ -2498,7 +2512,11 @@ class _PerDeviceRopeCache:
             device_index = get_current_device()
         if self._rope_cache_stale(self.multi_gpu_cos_cached[device_index], device_index):
             self._build_rope_cache(device_index)
-            self._rope_rows_ready[device_index] = self.multi_gpu_cos_cached[device_index].shape[0]
+            self._rope_rows_ready[device_index] = (
+                0
+                if self._rope_rebuild_for_grad[device_index]
+                else self.multi_gpu_cos_cached[device_index].shape[0]
+            )
         return device_index
 
     def _grow_rope_cache(self, seq_len, dtype):
@@ -2850,6 +2868,8 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self._unsloth_short_sin_cpu = (emb.sin() * self.scaling_factor).to(dtype = dtype)
         # The long cache only exists once something asks for more than original_max_position_embeddings.
         self._init_rope_cache_state(dtype)
+        # Own mark for the short cache: a long rebuild must not clear it.
+        self._short_rope_rebuild_for_grad = [False] * DEVICE_COUNT
 
         self.short_cos_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
@@ -2886,7 +2906,10 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     def _ensure_rope_cache(self, device_index):
         if device_index is None:
             device_index = get_current_device()
-        if self.multi_gpu_short_cos_cached[device_index] is None:
+        short_rebuild_for_grad = (
+            self._short_rope_rebuild_for_grad[device_index] and torch.is_grad_enabled()
+        )
+        if self.multi_gpu_short_cos_cached[device_index] is None or short_rebuild_for_grad:
             device = torch.device(device_index)
             with self._rope_build_mode():
                 self.multi_gpu_short_cos_cached[device_index] = self._unsloth_short_cos_cpu.to(
@@ -2895,6 +2918,9 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
                 self.multi_gpu_short_sin_cached[device_index] = self._unsloth_short_sin_cpu.to(
                     device = device, non_blocking = True
                 )
+            self._short_rope_rebuild_for_grad[device_index] = (
+                torch.compiler.is_compiling() and not torch.is_grad_enabled()
+            )
         if self._rope_cache_version > 0 and self._rope_cache_stale(
             self.multi_gpu_long_cos_cached[device_index], device_index
         ):

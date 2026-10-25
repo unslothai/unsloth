@@ -3,7 +3,7 @@
 
 import { formatGiB } from "../../../lib/memory/format";
 import type { LoadedPlacement } from "../stores/chat-runtime-store";
-import { CPU_FALLBACK_MESSAGE } from "../utils/mmproj-fallback";
+import { cpuFallbackMessage } from "../utils/mmproj-fallback";
 
 // React-free so node:test can import it; shared by every model load path.
 
@@ -50,7 +50,7 @@ export interface OffloadWarning {
 }
 
 /** Why a loaded model is not fully on the GPU, or `null`. A known cpu_fallback_reason
- * wins over the counts: a recovered Vulkan crash also logs 0/M, and is not a size problem.
+ * wins over the counts: a Vulkan CPU fallback also logs 0/M, and is not a size problem.
  * Manual pins only count with gpuLayers >= 0 (Manual + Auto layers is llama.cpp's fit). */
 export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
   const {
@@ -62,10 +62,11 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
     cpuFallbackReason,
     gpuBackendUnavailable,
   } = counts;
-  if (cpuFallbackReason === "vulkan_startup_crash") {
+  const cpuFallbackDescription = cpuFallbackMessage(cpuFallbackReason);
+  if (cpuFallbackDescription) {
     return {
       titleSuffix: " on CPU",
-      description: CPU_FALLBACK_MESSAGE,
+      description: cpuFallbackDescription,
     };
   }
   // An unrecognised reason is still a reason: say nothing rather than guess at it.
