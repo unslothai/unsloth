@@ -41,10 +41,10 @@ class TestTheFirstMeasurementIsOrdered:
 class TestABatchOfShortPromptsCounts:
     def test_each_string_rounds_up(self):
         assert inference._prompt_kv_tokens(["a", "b", "c"]) == 3
-        assert inference._prompt_kv_tokens("abcd") == 1
-        assert inference._prompt_kv_tokens("abcde") == 2
+        assert inference._prompt_kv_tokens("abcd") == 4
+        assert inference._prompt_kv_tokens("abcde") == 5
         assert inference._prompt_kv_tokens("") == 0
-        assert inference._prompt_kv_tokens([[1, 2, 3], "ab"]) == 4
+        assert inference._prompt_kv_tokens([[1, 2, 3], "ab"]) == 5
 
 
 class TestAGgufSpeechCallIsCounted:

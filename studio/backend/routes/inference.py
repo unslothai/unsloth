@@ -3430,17 +3430,16 @@ async def _openai_llama_let_victims_go(llama_backend, gen_id: Optional[str]) -> 
 
 def _prompt_kv_tokens(prompt) -> int:
     """A conservative KV estimate for a raw prompt, with no tokenizer round trip on the request
-    path. Token arrays count exactly. Text is a quarter token per ASCII character and a whole
-    token per other character: four characters to a token undercounts CJK about fourfold."""
+    path. Token arrays count exactly. Text counts its UTF-8 bytes, which no byte-level or
+    byte-fallback tokenizer exceeds: four characters to a token undercounts CJK about fourfold
+    and digits up to fourfold (#10671), so the plan picked no victim for a cache it overran."""
     if isinstance(prompt, (list, tuple)):
         if prompt and all(isinstance(x, int) for x in prompt):
             return len(prompt)
         return sum(_prompt_kv_tokens(part) for part in prompt)
     if isinstance(prompt, int):
         return 1
-    text = str(prompt or "")
-    ascii_chars = sum(1 for ch in text if ord(ch) < 128)
-    return -(-ascii_chars // 4) + (len(text) - ascii_chars)
+    return len(str(prompt or "").encode("utf-8", "surrogatepass"))
 
 
 def _openai_llama_count_direct_holder(llama_backend, tokens: int, prefix: str) -> Optional[str]:

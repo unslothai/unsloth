@@ -31,7 +31,7 @@ def test_a_chat_beside_a_completion_is_contended_and_the_completion_is_never_cho
     fake, controller = backend
     controller.register("chat", tokens = 4000)
     assert not controller.contended(), "alone, the chat reads nothing"
-    holder = inference._openai_llama_count_completions_holder(fake, "x" * 16000)
+    holder = inference._openai_llama_count_completions_holder(fake, "x" * 4000)
     assert holder is not None
     assert controller.participant(holder).state == ParticipantState.STREAMING_RAW
     assert controller.contended(), "the completion's cells are somebody else's"
@@ -63,7 +63,7 @@ def test_an_unpausable_holder_plans_before_its_request_goes_out(backend, monkeyp
     controller.register("chat", tokens = 4000)
 
     async def route():
-        return inference._openai_llama_count_completions_holder(fake, "x" * 16000)
+        return inference._openai_llama_count_completions_holder(fake, "x" * 4000)
 
     holder = asyncio.run(route())
     assert controller.participant("chat").state == ParticipantState.PREEMPTING
@@ -85,9 +85,9 @@ def test_both_unpausable_registrations_plan():
 def test_the_prompt_estimate_does_not_undercount_cjk_or_token_arrays():
     assert inference._prompt_kv_tokens([101, 102, 103]) == 3
     assert inference._prompt_kv_tokens([[1, 2], [3]]) == 3
-    assert inference._prompt_kv_tokens("你好世界") == 4, "one token a character, not a quarter"
-    assert inference._prompt_kv_tokens("hello world!") == 3
-    assert inference._prompt_kv_tokens(["你好", "abcd"]) == 3
+    assert inference._prompt_kv_tokens("你好世界") == 12, "its UTF-8 bytes, not a quarter token"
+    assert inference._prompt_kv_tokens("hello world!") == 12
+    assert inference._prompt_kv_tokens(["你好", "abcd"]) == 10
 
 
 def test_a_caption_or_ocr_call_is_counted_while_it_runs(backend, monkeypatch):
@@ -119,7 +119,7 @@ def test_an_embedding_beside_a_chat_is_counted_and_the_chat_is_the_victim(backen
 
     async def route():
         # On the loop, as the route runs: planning arms the victims and never blocks.
-        return inference._openai_llama_count_embeddings_holder(fake, ["x" * 8000, "y" * 8000])
+        return inference._openai_llama_count_embeddings_holder(fake, ["x" * 2000, "y" * 2000])
 
     holder = asyncio.run(route())
     assert holder is not None
@@ -154,7 +154,7 @@ def test_a_completion_that_has_produced_is_not_counted_above_the_cells(backend):
     controller.register("chat", tokens = 4000)
 
     async def route():
-        return inference._openai_llama_count_completions_holder(fake, "x" * 16000)
+        return inference._openai_llama_count_completions_holder(fake, "x" * 4000)
 
     holder = asyncio.run(route())
     controller.set_state("chat", ParticipantState.DECODING)
@@ -210,3 +210,31 @@ def test_the_respawn_tells_the_preemptor():
     assert source.index("_preemption.note_backend_reloaded(self)") > source.index(
         "started = bool(self.load_model(intent))"
     )
+
+
+def test_a_numeric_prompt_is_not_undercounted_before_planning(monkeypatch):
+    """A tokenizer that splits digits (Qwen3: one token a digit) prefills one cell a byte of
+    "1234567890" * 2400. A quarter token a character charged 6,000 of its 24,000 cells, so the
+    plan beside a 15,000-cell chat on a 32,768-cell cache picked no victim and the cache overflowed."""
+    digits = "1234567890" * 2400
+    assert inference._prompt_kv_tokens(digits) >= len(digits.encode("utf-8"))
+    for text in ("hello world!", "你好世界", "{\"a\": [1, 2, 3]}", "é\U0001f600"):
+        assert inference._prompt_kv_tokens(text) >= len(text.encode("utf-8")), text
+
+    monkeypatch.setenv(preemption.PREEMPT_ENV, "1")
+    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", _admission_key = "cmpl-numeric-test")
+    controller = get_preemption_controller(inference._preempt_key(fake))
+    controller.configure(budget = 32768, kv_unified = True)
+    controller.register("chat", tokens = 15000, prompt_tokens = 15000)
+    try:
+        controller.set_state("chat", ParticipantState.DECODING)
+        controller.note_measured("chat")
+        controller.note_resident(15000, started_at_seq = controller.residency_epoch())
+        controller.register(
+            "cmpl", tokens = inference._prompt_kv_tokens(digits), state = ParticipantState.STREAMING_RAW
+        )
+        assert controller.snapshot().committed >= 39000
+        assert [v.gen_id for v in controller.plan_preemptions(needed = 0)] == ["chat"]
+    finally:
+        for gen_id in list(controller._participants):
+            controller.unregister(gen_id)
