@@ -19,8 +19,6 @@ const KEY = "unsloth:images:last-model";
 // Retired full copies of the gated FLUX.3 repos. They stay on the Hub for existing links, but Studio's copy of those
 // files lives in the -FP8 repos, so a pick naming one loads the base it copies (as the backend redirects it), and the
 // remembered model matches the status the load reports. The root model.safetensors is that base's bf16 transformer.
-// A copy already downloaded (a snapshot path, with the copy as the display id) loads from disk as before: it was
-// retired for size and holds the base's own files, and the base's mirror may not be cached (or reachable offline).
 const RETIRED_FULL_COPIES: Record<string, string> = {
   "unsloth/flux-3-image-klein": "black-forest-labs/flux-3-image-klein",
   "unsloth/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein-base",
@@ -34,9 +32,7 @@ function retiredSnapshotRepo(path: string): string {
   return match ? `unsloth/${match[1].toLowerCase()}` : "";
 }
 
-/** A downloaded snapshot of a retired copy (its path, with the copy as the display id, or the path alone). It loads
- * from disk only when complete, which only the backend can tell: an incomplete one loads through the base, so it is
- * planned by its path like a Hub pick and whatever that load fetches is staged first, never pulled inline. */
+/** A downloaded retired-copy snapshot: only the backend knows if it is complete, so it is planned like a Hub pick. */
 export function isRetiredCopySnapshot(pick: { repoId: string; displayRepoId?: string }): boolean {
   if (RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()]) return false;
   return Boolean(
@@ -44,9 +40,7 @@ export function isRetiredCopySnapshot(pick: { repoId: string; displayRepoId?: st
   );
 }
 
-/** The pick a retired copy's snapshot load resolved to, once the status names it. An incomplete snapshot loads through
- * the base it copies (the backend redirects it), so the status reports that base: Reapply and the remembered model
- * have to name it too, or the load never matches and the previous model stays remembered. Else the pick as given. */
+/** A retired snapshot that loaded through its base, as that base (else the pick), so Reapply and recall match the status. */
 export function retiredSnapshotAsLoaded<T extends RememberedImageModel & { displayRepoId?: string; baseRepo?: string }>(
   pick: T,
   status: Parameters<typeof matchesRememberedModel>[1],

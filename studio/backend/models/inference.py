@@ -4922,9 +4922,7 @@ class DiffusionLoadRequest(BaseModel):
         # id), loads the base it copies, exactly as the picker's own row does, so the load fetches what the plan prices
         # (hosted encoder, mirror folders) instead of the whole bf16 repo. Its root bf16 ``model.safetensors`` is that
         # base's transformer, so a single-file pick of it is the pipeline load; supplied encoder / VAE files or another
-        # companion base make it a different build, which stays on the copy. A copy already complete on disk is not
-        # redirected: it was retired for size, its files are the base's own, and the base's mirror may not be cached
-        # (offline the redirect cannot load at all; online it downloads the same weights again).
+        # companion base make it a different build, which stays on the copy. A copy complete on disk loads from disk.
         from core.inference.diffusion_families import (
             retired_copy_loads_from_disk,
             retired_full_copy_base,
@@ -4935,8 +4933,7 @@ class DiffusionLoadRequest(BaseModel):
         )
         if base is not None and retired_copy_loads_from_disk(self.model_path, self.gguf_filename):
             base = None
-            # Its root transformer pick takes its companions (encoder, VAE, manifest) from the copy too: with no
-            # base named, the loader would assemble around the family default, the base's -FP8 mirror.
+            # With no base named, the root transformer pick would take companions from the family default (-FP8 mirror).
             if (self.gguf_filename or "").strip().replace(
                 "\\", "/"
             ) == "model.safetensors" and not (self.base_repo or "").strip():

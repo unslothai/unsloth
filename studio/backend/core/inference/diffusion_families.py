@@ -1829,14 +1829,11 @@ def retired_copy_loads_from_disk(
     *,
     companion: bool = False,
 ) -> bool:
-    """Whether a retired full copy that is already on disk loads as itself rather than through its base.
+    """Whether a retired full copy complete on disk (snapshot path, or id with a ``refs/main`` snapshot) loads as itself.
 
-    The copies were retired for size, not for their files: they hold the base's own bf16 weights. So a complete copy
-    (a snapshot path, or the copy's id with its ``refs/main`` snapshot in the live HF cache) still serves the load it
-    always did: offline the base's mirror may not be cached at all, and online switching would pull it again beside
-    the copy. ``filename`` is a single-file pick, which must be there too; it supplies the transformer, so that
-    folder needs only its config, as it does for a ``companion`` base (a single file's encoder / VAE / config). Anything incomplete goes through the base
-    as before. PURE: local stat only."""
+    Its files are the base's own, and the base's mirror may not be cached (offline) or would download again (online).
+    A single file (``filename``) or ``companion`` base supplies the transformer, so that folder needs only its config.
+    PURE: local stat only."""
     key = (source or "").strip()
     if not key or retired_full_copy_base(key) is None and not _is_local_path(key):
         return False
@@ -1861,7 +1858,6 @@ def retired_copy_loads_from_disk(
             return False
         from .diffusion_flux3 import FLUX3_COMPONENT_FOLDERS, FLUX3_INDEX
 
-        # A single file supplies the transformer's weights, so its folder is read for the config only.
         return local_pipeline_components_are_complete(
             root,
             FLUX3_INDEX,

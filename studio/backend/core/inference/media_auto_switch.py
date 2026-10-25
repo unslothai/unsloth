@@ -141,8 +141,8 @@ def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
 def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
     """A downloaded retired FLUX.3 full copy as the load will read it: the pick of the base it copies, which
     ``DiffusionLoadRequest`` redirects it to. So locality is proven for the files that load fetches (the -FP8 mirror's),
-    not the copy's snapshot, and the resident match compares the id the status publishes. A copy complete on disk is
-    left as it is, since the load route keeps it too (``retired_copy_loads_from_disk``)."""
+    not the copy's snapshot, and the resident match compares the id the status publishes. A copy complete on disk stays
+    itself, as the load route keeps it (``retired_copy_loads_from_disk``)."""
     from core.inference.diffusion_families import (
         retired_copy_loads_from_disk,
         retired_full_copy_base,

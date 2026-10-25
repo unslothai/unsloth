@@ -4394,8 +4394,7 @@ export function ImagesPage({
         // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
         source = "hub";
       }
-      // A downloaded snapshot of a retired copy loads from disk only when complete; an incomplete one goes through
-      // the base. Planned by its path, so the plan reaches the same verdict and the base's files are staged.
+      // Only the backend knows if a retired snapshot is complete: plan it by path so an incomplete one stages the base.
       const retiredSnapshot = isRetiredCopySnapshot({ repoId, displayRepoId: opts.displayRepoId });
       if (retiredSnapshot) source = "hub";
       // The retry's override rides the same snapshot, so its plan and its load both carry it.
