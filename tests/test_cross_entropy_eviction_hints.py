@@ -27,6 +27,7 @@ _SIGNATURE = {
     "logits_ptr": "*bf16",
     "loss_ptr": "*fp32",
     "logsumexp_ptr": "*fp32",
+    "logsumexp_others_ptr": "*fp32",
     "labels_ptr": "*i64",
 }
 

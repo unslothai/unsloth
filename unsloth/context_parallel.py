@@ -1035,15 +1035,16 @@ class _GatherSequence(torch.autograd.Function):
             return torch.cat(parts, dim = 1)
         batch, local, rest = x.shape[0], x.shape[1], x.shape[2:]
         # Gather concatenates on dim 0, so sequence goes first; fresh output like torch.cat.
-        out = x.new_empty((batch, size * local, *rest))
         if batch == 1:
+            out = x.new_empty((batch, size * local, *rest))
             _all_gather_into(
                 out.view(size * local, *rest), x.reshape(local, *rest).contiguous(), group = group
             )
             return out
         buffer = x.new_empty((size * local, batch, *rest))
         _all_gather_into(buffer, x.movedim(1, 0).contiguous(), group = group)
-        return out.copy_(buffer.movedim(0, 1))
+        # Out of place: an in-place copy into a returned fresh tensor zeroes compiled grads (torch 2.11).
+        return buffer.movedim(0, 1).contiguous()
 
     @staticmethod
     def backward(ctx, grad):

@@ -34,7 +34,7 @@ stack_mod = routing.stack_mod
 _INSTALL_SH = PACKAGE_ROOT / "install.sh"
 _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 
-_UNCOVERED = ("gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803")
+_UNCOVERED = ("gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803", "gfx90c")
 _POSIX = pytest.mark.skipif(
     os.name == "nt" or shutil.which("bash") is None, reason = "POSIX shell only"
 )
@@ -64,7 +64,7 @@ def test_no_uncovered_arch_has_a_wheel_route():
 def test_the_shell_copies_name_the_same_arches():
     want = "gfx(" + "|".join(sorted(g[3:] for g in _UNCOVERED)) + ")"
     for path in (_INSTALL_SH, _SETUP_SH):
-        found = re.findall(r"\$1 !~ /\^(gfx\([0-9|]+\))\$/", path.read_text(encoding = "utf-8"))
+        found = re.findall(r"\$1 !~ /\^(gfx\([0-9a-f|]+\))\$/", path.read_text(encoding = "utf-8"))
         assert found, f"{path.name}: uncovered-arch filter not found"
         for f in found:
             got = "gfx(" + "|".join(sorted(f[4:-1].split("|"))) + ")"

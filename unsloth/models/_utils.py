@@ -72,6 +72,7 @@ __all__ = [
     "resolve_model_class",
     "resolve_attention_implementation",
     "fall_back_from_flash_attention_on_pre_ampere",
+    "check_mixed_gpu_placement",
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
     "set_task_config_attr",
@@ -167,7 +168,10 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
     apply_gfx101x_triton_workaround,
-    cuda_gate_capabilities,
+    apply_pre_volta_compile_workaround,
+    arch_breaks_compile,
+    cuda_bf16_capability,
+    distributed_launch,
     gfx101x_triton_workaround_applied,
     xpu_supports_native_bf16,
     zoo_shares_xpu_bf16,
@@ -437,6 +441,11 @@ def _unsloth_reset_stray_compile_cache(self):
     model = getattr(self, "model", None)
     if model is None:
         return
+    # The model may have moved (.to(), Trainer placement) since the load-time check.
+    try:
+        check_mixed_gpu_placement(model, live = True)
+    except Exception:
+        pass
     # The detector hook can sit on any wrapper in the chain, and the probe may have run on a different one than self.model, so walk the chain.
     markers = []
     seen = False
@@ -736,6 +745,80 @@ def _flex_kernel_options_for_head_dim(head_dim):
     return dict(_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS)
 
 
+# Inductor's sm8x default flex BACKWARD config at 128 < head_dim <= 256 is (64, 64, 64, 64,
+# 2 stages, 4 warps). On an A100 (sm80) that config runs about 10x slower than a 32 x 32 tile with
+# one stage: Gemma 3 4B shapes (8 query / 4 kv heads, head_dim 256, bf16) fwd+bwd, causal
+# B8 x 1024: 32.4 ms default vs 3.2 ms; sliding 1024 window B2 x 4096: 53.3 vs 4.8 ms; causal
+# B2 x 4096: 115.3 vs 9.5 ms. In Gemma 3 4B LoRA training the flex backward was half of an A100
+# step. B200 (sm100, its own default) is faster on the default, so only the measured capability
+# gets the override. Backward only ("bwd_" keys): the forward template is unchanged, and so is the
+# math (tile sizes only reorder the float32 accumulation).
+_FLEX_TUNED_BWD_HEAD_DIM_RANGE = (128, 256)  # (exclusive low, inclusive high)
+_FLEX_TUNED_BWD_CAPABILITIES = ((8, 0),)
+_FLEX_TUNED_BWD_KERNEL_OPTIONS = {
+    "bwd_BLOCK_M1": 32,
+    "bwd_BLOCK_N1": 32,
+    "bwd_BLOCK_M2": 32,
+    "bwd_BLOCK_N2": 32,
+    "bwd_num_stages": 1,
+    "bwd_num_warps": 4,
+}
+_FLEX_TUNED_BWD_ENV_VAR = "UNSLOTH_FLEX_TUNED_BACKWARD"
+# The flex templates read "bwd_"-prefixed kernel_options from torch 2.10 on; older releases have no
+# per-direction keys, so the override is never passed there.
+_FLEX_TUNED_BWD_MIN_TORCH = "2.10"
+
+
+def _flex_tuned_bwd_device_ok():
+    """True when every visible CUDA device has a capability the tuned backward was measured on.
+
+    Read once when the flex forward is wrapped, at `import unsloth` (set the env var before it), never
+    inside a compiled region.
+    UNSLOTH_FLEX_TUNED_BACKWARD=0 turns it off, =1 forces it on any CUDA device with torch >= 2.10."""
+    override = os.environ.get(_FLEX_TUNED_BWD_ENV_VAR, "").strip()
+    if override == "0":
+        return False
+    try:
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return False
+        if Version(torch.__version__.split("+")[0]) < Version(_FLEX_TUNED_BWD_MIN_TORCH):
+            return False
+        if override == "1":
+            return True
+        return all(
+            tuple(torch.cuda.get_device_capability(index)) in _FLEX_TUNED_BWD_CAPABILITIES
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return False
+
+
+def _flex_tuned_bwd_kernel_options(head_dim, device_ok):
+    """bwd_* kernel_options for this head dim on a measured device, else None."""
+    low, high = _FLEX_TUNED_BWD_HEAD_DIM_RANGE
+    if not device_ok or not isinstance(head_dim, int) or not (low < head_dim <= high):
+        return None
+    return dict(_FLEX_TUNED_BWD_KERNEL_OPTIONS)
+
+
+def _flex_tuned_bwd_fits(args, kwargs):
+    """Whether the tuned backward tiles can join this call. Not when the caller set its own tiles
+    (a partial set merged with ours can break bwd_BLOCK_N1 % bwd_BLOCK_M1 == 0), nor when the block
+    mask's sparse blocks are not multiples of our tiles (Inductor's defaults shrink to fit those)."""
+    requested = kwargs.get("kernel_options") or {}
+    if any(k.startswith(("bwd_", "BLOCK_", "num_")) for k in requested):
+        return False
+    mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
+    block_size = getattr(mask, "BLOCK_SIZE", None)
+    if block_size is None:
+        return True
+    try:
+        tiles = [v for k, v in _FLEX_TUNED_BWD_KERNEL_OPTIONS.items() if "_BLOCK_" in k]
+        return all(int(size) % tile == 0 for size in block_size for tile in tiles)
+    except Exception:
+        return False
+
+
 def _flex_call_needs_backward(query, key, value):
     """True when this flex call is recorded for autograd on an accelerator."""
     try:
@@ -864,6 +947,8 @@ def _wrap_flex_attention_forward(flex_attention_forward):
     if getattr(flex_attention_forward, "_unsloth_flex_kernel_options", False):
         return flex_attention_forward
 
+    tuned_bwd_device_ok = _flex_tuned_bwd_device_ok()
+
     @functools.wraps(flex_attention_forward)
     def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
         if _FLEX_MASKLESS_SDPA_ENABLED and _dropped_causal_mask(module, query, key, args, kwargs):
@@ -888,6 +973,15 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         except Exception:
             kernel_options = None
+        if (
+            kernel_options is None
+            and tuned_bwd_device_ok
+            and hasattr(query, "dim")
+            and query.dim() == 4
+            and _flex_call_needs_backward(query, key, value)
+            and _flex_tuned_bwd_fits(args, kwargs)
+        ):
+            kernel_options = _flex_tuned_bwd_kernel_options(query.shape[-1], tuned_bwd_device_ok)
         # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
         # padded batch stride (comprehensive_padding) that the backward template ignores, so every
         # batch row after the first reads a shifted LSE and the gradients blow up.
@@ -1301,6 +1395,29 @@ def _enable_flex_attention_support(model_class, model_type = ""):
     return True
 
 
+# Inductor's head_dim 256 flex template; with less, Gemma 3's flex backward is wrong (#14439).
+_FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY = 151552
+
+
+def _flex_preferred_fits(config):
+    """False when a visible CUDA card lacks that shared memory; fails open on ROCm / no CUDA."""
+    head_dim = _text_attention_head_dim(config)
+    if head_dim is None or not (
+        _SDPA_FLASH_MAX_HEAD_DIM < head_dim <= _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM
+    ):
+        return True
+    try:
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return True
+        return all(
+            torch.cuda.get_device_properties(index).shared_memory_per_block_optin
+            >= _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return True
+
+
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
@@ -1309,6 +1426,8 @@ def _supports_flex_attention(model_class, config, model_type):
     if _is_flex_excluded(model_type):
         return False
     if not _flex_attention_gpu_is_supported():
+        return False
+    if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -1724,6 +1843,109 @@ def _pre_ampere_cuda_devices(model):
         return []  # same-generation hosts never walk the modules
     attention = _attention_placements(model, device_map)
     return sorted({indices[k] for k in attention if indices.get(k) in pre_ampere})
+
+
+def _placed_gpu_indices(model, live = False):
+    """GPU indices a loaded model's weights sit on: its hf_device_map, else every parameter's device
+    (an extracted text core carries no hf_device_map but may still span cards). live: the map plus
+    the parameters, since a later .to() / Trainer placement moves weights without updating the map."""
+    indices = set()
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, dict):
+        indices = {i for i in (_cuda_index(v) for v in device_map.values()) if i is not None}
+        if not live:
+            return indices
+    try:
+        devices = {p.device for p in model.parameters()}
+    except Exception:
+        return indices
+    current = None
+    for device in devices:
+        if device.type != "cuda":
+            continue
+        if device.index is None:
+            if current is None:
+                current = torch.cuda.current_device()
+            indices.add(current)
+        else:
+            indices.add(device.index)
+    return indices
+
+
+def _bf16_weights_on(model, indices):
+    """torch.bfloat16 when a parameter of that dtype sits on one of these GPU indices, else None. The
+    live check has no load-time dtype, and a Trainer may have placed a bf16 model on an older card."""
+    try:
+        current = None
+        for p in model.parameters():
+            if p.dtype != torch.bfloat16 or p.device.type != "cuda":
+                continue
+            index = p.device.index
+            if index is None:
+                if current is None:
+                    current = torch.cuda.current_device()
+                index = current
+            if index in indices:
+                return torch.bfloat16
+    except Exception:
+        pass
+    return None
+
+
+def check_mixed_gpu_placement(
+    model,
+    dtype = None,
+    live = False,
+):
+    """bf16 and the compile switches answer for the current device; check where the load really
+    put the weights. A card that cannot compile turns Dynamo off before the first forward, and
+    bf16 weights on a card without bf16 get a warning. A sole current-device placement is checked
+    too: the current device may have changed since import. One-GPU hosts never walk anything; the
+    capability reads hit the per-device cache. live: called when training starts, after a later
+    .to() or Trainer placement, so the parameters are read too (see _placed_gpu_indices)."""
+    if DEVICE_TYPE not in ("cuda", "hip") or DEVICE_COUNT <= 1:
+        return
+    indices = sorted(_placed_gpu_indices(model, live = live))
+    if not indices:
+        return
+
+    def _name(i):
+        try:
+            return f"GPU {i} ({torch.cuda.get_device_name(i)})"
+        except Exception:
+            return f"GPU {i}"
+
+    try:
+        if DEVICE_TYPE == "hip":
+            no_compile = [
+                i
+                for i in indices
+                if arch_breaks_compile(
+                    getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")
+                )
+            ]
+            no_bf16 = []
+        else:
+            caps = {i: tuple(torch.cuda.get_device_capability(i)) for i in indices}
+            no_compile = [i for i in indices if caps[i][0] < 7]
+            no_bf16 = [i for i in indices if caps[i][0] < 8]
+    except Exception:
+        return
+    import torch._dynamo as torch_dynamo
+
+    if no_compile and not torch_dynamo.config.disable and apply_pre_volta_compile_workaround(0):
+        print(
+            f"Unsloth: the model has layers on {', '.join(map(_name, no_compile))}, which cannot run "
+            "torch.compile, so training runs without it."
+        )
+    if no_bf16 and dtype is None and live:
+        dtype = _bf16_weights_on(model, set(no_bf16))
+    if no_bf16 and dtype == torch.bfloat16:
+        print(
+            f"Unsloth: the model has bfloat16 layers on {', '.join(map(_name, no_bf16))}, which has "
+            "no native bfloat16, so they run slowly. Load with dtype = torch.float16, or keep the "
+            "model on bfloat16 GPUs with CUDA_VISIBLE_DEVICES."
+        )
 
 
 def fall_back_from_flash_attention_on_pre_ampere(model):
@@ -3114,6 +3336,43 @@ def _st_weighted_subfolder_paths(
         return ()
 
 
+def _root_index_weight_subfolders(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    cache_dir = None,
+):
+    """Subfolders the root safetensors index maps weights into (Cosmos3 keeps every shard under transformer/), else ()."""
+    try:
+        import json as _json
+
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(
+            model_name,
+            "model.safetensors.index.json",
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
+        with open(path, "r", encoding = "utf-8") as f:
+            index = _json.load(f)
+        weight_map = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(weight_map, dict):
+            return ()
+        folders = set()
+        for filename in weight_map.values():
+            if not isinstance(filename, str):
+                continue
+            filename = filename.strip().replace("\\", "/").strip("/")
+            if "/" in filename:
+                folders.add(filename.rsplit("/", 1)[0])
+        return tuple(sorted(folders))
+    except Exception:
+        return ()
+
+
 def _repo_has_weighted_st_subfolders(
     model_name,
     *,
@@ -3300,12 +3559,19 @@ def maybe_prefetch_hf_snapshot(
 
     # A sentence-transformers repo can hold weights at the root AND in declared module subfolders. Probed once and shared, since the subdir prune and the format prune both span "/" and would drop those weights.
     st_module_paths = ()
+    index_subfolders = ()
     if (
         weights_at_root
         and not (tokenizer_only or adapter_only or gguf_file)
         and not (isinstance(subfolder, str) and subfolder.strip("/"))
     ):
         st_module_paths = _st_weighted_subfolder_paths(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
+        index_subfolders = _root_index_weight_subfolders(
             model_name,
             token = token,
             revision = revision,
@@ -3358,8 +3624,8 @@ def maybe_prefetch_hf_snapshot(
         # subfolder=X: the load resolves every weight under X/, so warm that subfolder plus root aux.
         allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
     elif weights_at_root:
-        # A bare load reads only root weights, so drop subdir weights and keep subdir configs. Except a sentence-transformers model with a root weight AND weighted module subfolders, which the ST load also reads.
-        if not st_module_paths:
+        # A bare load reads only root weights, so drop subdir weights, except ST module subfolders and a root index mapping into subfolders: then keep all of them, since Cosmos3's root model_index.json makes unsloth_zoo's download gate require every component (vae/ too).
+        if not st_module_paths and not index_subfolders:
             ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
         if snapshot_download_with_xet_fallback is not None:
@@ -3976,17 +4242,19 @@ def _cache_device_capability(get_device_capability):
     if getattr(get_device_capability, "_unsloth_per_device_cache", False):
         return get_device_capability
 
-    # One visible device: every spelling names it, so the plain C-level cache is exact and fastest.
+    # One device, or several with one capability: every spelling gets the same answer.
     try:
-        single_device = torch.cuda.device_count() <= 1
+        count = torch.cuda.device_count()
+        scanned = {i: get_device_capability(i) for i in range(count)} if count > 1 else {}
+        uniform = count <= 1 or len({tuple(c) for c in scanned.values()}) == 1
     except Exception:
-        single_device = False
-    if single_device:
+        scanned, uniform = {}, False
+    if uniform:
         cached = functools.cache(get_device_capability)
         cached._unsloth_per_device_cache = True
         return cached
 
-    cache = {}
+    cache = dict(scanned)
 
     @functools.wraps(get_device_capability)
     def cached_get_device_capability(device = None):
@@ -4013,6 +4281,8 @@ def _cache_device_capability(get_device_capability):
 
 
 SUPPORTS_BFLOAT16 = False
+# {device index: bf16} on a one-process host whose NVIDIA cards differ, else None (SUPPORTS_BFLOAT16 holds).
+_BF16_BY_DEVICE = None
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
@@ -4024,10 +4294,25 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
 elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     torch.cuda.get_device_capability = _cache_device_capability(torch.cuda.get_device_capability)
-    # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
-    _cuda_caps = cuda_gate_capabilities()
-    SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
-    del _cuda_caps
+    _bf16_cap = cuda_bf16_capability()
+    SUPPORTS_BFLOAT16 = _bf16_cap is not None and _bf16_cap[0] >= 8
+    del _bf16_cap
+    # Cards that differ: is_bfloat16_supported() follows a set_device after import.
+    if not distributed_launch():
+        # Per card, so an unreadable peer drops out instead of discarding the rest.
+        _bf16_caps = {}
+        try:
+            _bf16_count = torch.cuda.device_count()
+        except Exception:
+            _bf16_count = 0
+        for _bf16_i in range(_bf16_count):
+            try:
+                _bf16_caps[_bf16_i] = tuple(torch.cuda.get_device_capability(_bf16_i))
+            except Exception:
+                pass
+        if len(set(_bf16_caps.values())) > 1:
+            _BF16_BY_DEVICE = {i: cap[0] >= 8 for i, cap in _bf16_caps.items()}
+        del _bf16_caps, _bf16_count
 
     if major_version >= 8:
         if _package_available("flash_attn"):
@@ -4957,7 +5242,12 @@ def is_bfloat16_supported():
     # unsloth_zoo probe sees it. Cheap (device properties only).
     if DEVICE_TYPE == "xpu" and zoo_shares_xpu_bf16():
         return xpu_supports_native_bf16()
-    return SUPPORTS_BFLOAT16
+    if _BF16_BY_DEVICE is None:
+        return SUPPORTS_BFLOAT16
+    try:
+        return _BF16_BY_DEVICE.get(torch.cuda.current_device(), SUPPORTS_BFLOAT16)
+    except Exception:
+        return SUPPORTS_BFLOAT16
 
 
 def _requested_float32(dtype):
@@ -5698,11 +5988,23 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
-            _refuse_tensor_parallel_for_trainer(model)
-            from ..fsdp2_launch import unsloth_fsdp2_native_requested
+            # Unsloth tensor parallel model (apply_tensor_parallel): no DDP over the tp ranks, dataloader
+            # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
+            _refuse_pipeline_parallel_for_trainer(model)
+            tensor_parallel = _tensor_parallel_trainer_pre(model)
+            from .. import fsdp2_launch as _fsdp2_launch
 
             # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
-            native_fsdp2 = unsloth_fsdp2_native_requested()
+            native_fsdp2 = _fsdp2_launch.unsloth_fsdp2_native_requested()
+            if not native_fsdp2 and _fsdp2_launch._NON_CUDA_EXPORT is not None:
+                # UNSLOTH_FSDP2=1 on a non-CUDA install went to accelerate's FSDP2 at import, but a
+                # use_cpu Trainer is MULTI_CPU to accelerate, which drops FSDP: shard natively instead.
+                from .fsdp2_native import native_fsdp2_trainer_init_arguments
+                native_fsdp2 = _fsdp2_launch.reclaim_native_fsdp2_for_cpu_trainer(
+                    native_fsdp2_trainer_init_arguments(_original_trainer_init, args, kwargs)[
+                        "args"
+                    ]
+                )
             if native_fsdp2:
                 from .fsdp2_native import (
                     native_fsdp2_trainer_init_arguments,
@@ -5724,6 +6026,9 @@ def patch_gradient_accumulation_fix(Trainer):
             _original_trainer_init(self, *args, **kwargs)
             if native_fsdp2:
                 native_fsdp2_trainer_setup(self, phase = "post")
+            if tensor_parallel:
+                from .tp_native import tp_trainer_setup
+                tp_trainer_setup(phase = "post", trainer = self)
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (
@@ -5784,24 +6089,49 @@ def patch_gradient_accumulation_fix(Trainer):
     _patch_trainer_train_gc_scope(Trainer)
 
 
-def _is_unsloth_tensor_parallel(model):
-    """Walk the wrapper levels for apply_tensor_parallel's marker (dict lookups, no tp_native import)."""
+def _unsloth_model_parallel_marker(model, flag):
+    """Walk the wrapper levels for an apply_*_parallel marker (dict lookups, no tp / pp import)."""
     m, depth = model, 0
     while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
-        if m.__dict__.get("_unsloth_tp"):
+        if m.__dict__.get(flag):
             return True
         modules = m.__dict__.get("_modules") or {}
         m, depth = modules.get("base_model") or modules.get("model"), depth + 1
     return False
 
 
+def _is_unsloth_tensor_parallel(model):
+    return _unsloth_model_parallel_marker(model, "_unsloth_tp")
+
+
+def _is_unsloth_pipeline_parallel(model):
+    return _unsloth_model_parallel_marker(model, "_unsloth_pp")
+
+
 def _refuse_tensor_parallel_for_trainer(model):
+    """Trainer(model_init = ...): the model it returns is built after the Trainer set up its accelerator."""
     if _is_unsloth_tensor_parallel(model):
         raise RuntimeError(
-            "Unsloth: a tensor parallel model (apply_tensor_parallel) cannot be trained by the "
-            "Trainer yet: accelerate would wrap the tensor parallel ranks in DDP. Use a custom "
-            "training loop (unsloth/models/tp_native.py)."
+            "Unsloth: a tensor parallel model (apply_tensor_parallel) returned by model_init cannot be "
+            "trained by the Trainer; build it first and pass Trainer(model = model)."
         )
+    _refuse_pipeline_parallel_for_trainer(model)
+
+
+def _refuse_pipeline_parallel_for_trainer(model):
+    if _is_unsloth_pipeline_parallel(model):
+        raise RuntimeError(
+            "Unsloth: a pipeline parallel model (apply_pipeline_parallel) cannot be trained by the "
+            "Trainer yet: each rank holds one stage, and a stage cannot run a forward alone. Use a custom "
+            "training loop with PipelineParallel.step (unsloth/models/pp_native.py)."
+        )
+
+
+def _tensor_parallel_trainer_pre(model):
+    if not _is_unsloth_tensor_parallel(model):
+        return False
+    from .tp_native import tp_trainer_setup
+    return tp_trainer_setup(model, phase = "pre")
 
 
 def _refuse_tensor_parallel_for_inference(model):
@@ -5810,6 +6140,11 @@ def _refuse_tensor_parallel_for_inference(model):
             "Unsloth: for_inference is not supported on a tensor parallel model in v1 (the fast decode "
             "paths run outside the tensor parallel regions); use model.eval() for forward evaluation, or "
             "save the adapter (save_tp_adapter) and generate on one GPU."
+        )
+    if _is_unsloth_pipeline_parallel(model):
+        raise RuntimeError(
+            "Unsloth: for_inference is not supported on a pipeline parallel model in v1 (each rank holds "
+            "one stage); save the adapter (PipelineParallel.save_adapter) and generate on one GPU."
         )
 
 
@@ -8574,13 +8909,24 @@ def _mx_autocast_forward(self, x):
 
 
 def _nvfp4_any_rank_forward(self, x):
-    # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs; vision layers see rank 4+.
+    # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs (vision layers see rank 4+), and
+    # its quantizer asserts contiguous bfloat16 / float32 activations (nvfp4_quantize).
     from torchao.prototype.qat import NVFP4FakeQuantizedLinear
 
-    if x.dim() == 2:
-        return NVFP4FakeQuantizedLinear.forward(self, x)
-    out = NVFP4FakeQuantizedLinear.forward(self, x.reshape(-1, x.shape[-1]))
-    return out.view(*x.shape[:-1], out.shape[-1])
+    out_dtype = None
+    # float16 autocast hands over float16 activations (an earlier Linear / SDPA); prepare only
+    # admits bfloat16 / float32 weights, so quantize from the weight dtype and return what an
+    # autocast Linear would: the autocast dtype, not the input's.
+    if x.dtype == torch.float16 and torch.is_autocast_enabled(x.device.type):
+        out_dtype = torch.get_autocast_dtype(x.device.type)
+        x = x.to(self.weight.dtype)
+    x2 = x if x.dim() == 2 else x.reshape(-1, x.shape[-1])
+    if not x2.is_contiguous():
+        x2 = x2.contiguous()
+    out = NVFP4FakeQuantizedLinear.forward(self, x2)
+    if x.dim() != 2:
+        out = out.view(*x.shape[:-1], out.shape[-1])
+    return out if out_dtype is None or out.dtype == out_dtype else out.to(out_dtype)
 
 
 def _patch_microscaling_qat_forwards(model) -> None:
@@ -8967,13 +9313,42 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     )
     if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
         return torch.no_grad()
-    # ZeRO-3 keeps small persistent gathered params, so the same poisoning applies.
-    if os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in ("1", "true", "yes", "on"):
-        return torch.no_grad()
-    if isinstance(shared_state, dict) and "DEEPSPEED" in str(
-        shared_state.get("distributed_type", "")
-    ):
-        return torch.no_grad()
+    # ZeRO-3 reuses gathered persistent params (same poisoning); a known stage below 3 does not.
+    deepspeed = os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ) or (
+        isinstance(shared_state, dict)
+        and "DEEPSPEED" in str(shared_state.get("distributed_type", ""))
+    )
+    if deepspeed:
+        # Inline, not a helper: rl_replacements copies only this function into the GRPO trainer.
+        stages = []
+        hf_deepspeed = sys.modules.get("transformers.integrations.deepspeed", None)
+        try:
+            if hf_deepspeed is not None and hf_deepspeed.is_deepspeed_zero3_enabled():
+                stages.append(3)
+        except Exception:
+            pass
+        plugins = shared_state.get("deepspeed_plugins") if isinstance(shared_state, dict) else None
+        if plugins is not None and not isinstance(plugins, dict):
+            plugins = {"default": plugins}
+        for plugin in (plugins or {}).values():
+            if not getattr(plugin, "selected", True):
+                continue
+            # A config file's stage lives in hf_ds_config; zero_stage defaults to 2 regardless.
+            stage = getattr(getattr(plugin, "hf_ds_config", None), "_stage", None)
+            if not isinstance(stage, int) or stage < 0:
+                stage = getattr(plugin, "zero_stage", None)
+            stages.append(stage)
+        env_stage = os.environ.get("ACCELERATE_DEEPSPEED_ZERO_STAGE", "").strip()
+        if env_stage.isdigit():
+            stages.append(int(env_stage))
+        stages = [stage for stage in stages if isinstance(stage, int) and stage >= 0]
+        if not stages or 3 in stages:
+            return torch.no_grad()
     try:
         first = next(iter(model.parameters()), None)
     except Exception:

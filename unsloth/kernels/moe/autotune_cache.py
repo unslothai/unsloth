@@ -42,8 +42,9 @@ def _get_cache_key(
     device_capability: Tuple[int, int],
     seq_len: int = 8192,  # Default sequence length for tuning
     weight_dtype: Optional[torch.dtype] = None,
+    device_model: Optional[Tuple[Any, ...]] = None,
 ) -> str:
-    """Generate a unique cache key based on model configuration."""
+    """Cache key for this MoE shape on this GPU model; ``device_model=None`` gives the pre-model key."""
     key_data = {
         "num_experts": num_experts,
         "hidden_dim": hidden_dim,
@@ -57,6 +58,8 @@ def _get_cache_key(
     }
     if weight_dtype is not None and weight_dtype != dtype:
         key_data["weight_dtype"] = str(weight_dtype)
+    if device_model is not None:
+        key_data["device_model"] = list(device_model)
     key_str = json.dumps(key_data, sort_keys = True)
     return hashlib.md5(key_str.encode()).hexdigest()
 
@@ -172,14 +175,17 @@ def get_or_autotune_moe_kernels(
         seq_len: Sequence length to use for tuning benchmarks
         device: The operands' CUDA device (default: current). On a mixed-GPU host the configs
             must fit the card the kernels launch on, so capability, shared memory, the cache key
-            and tuning all follow it.
+            (which also carries the GPU model) and tuning all follow it. A non-CUDA device keeps
+            the current device.
 
     Returns:
         Tuple of (config_fwd, config_bwd_dx, config_bwd_dw)
     """
+    device = _operand_cuda_device(device)
     device_capability = torch.cuda.get_device_capability(device)
     dev_kw = _device_kwargs(device)
-    cache_key = _get_cache_key(
+    device_model = _device_model(device)
+    key_args = (
         num_experts,
         hidden_dim,
         intermediate_dim,
@@ -189,6 +195,7 @@ def get_or_autotune_moe_kernels(
         seq_len,
         weight_dtype,
     )
+    cache_key = _get_cache_key(*key_args, device_model = device_model)
 
     # Env override to disable autotuning
     if os.environ.get("UNSLOTH_MOE_DISABLE_AUTOTUNE", "0") == "1":
@@ -207,6 +214,7 @@ def get_or_autotune_moe_kernels(
         return _kernel_config_cache[cache_key]
 
     if not force_autotune:
+        # Pre-model-key entries are never read: nothing records which GPU model tuned them.
         cached_data = load_cached_config(cache_key, **dev_kw)
         if cached_data is not None:
             try:
@@ -278,6 +286,40 @@ def get_or_autotune_moe_kernels(
             weight_dtype = weight_dtype,
             **dev_kw,
         )
+
+
+def _operand_cuda_device(device):
+    """``device`` when it names a CUDA card (torch.device, str or int), else None (current device)."""
+    if device is None or isinstance(device, int):
+        return device
+    try:
+        return device if torch.device(device).type == "cuda" else None
+    except (TypeError, RuntimeError):
+        return None
+
+
+_DEVICE_MODELS: Dict[int, Optional[Tuple[Any, ...]]] = {}
+
+
+def _device_model(device = None) -> Optional[Tuple[Any, ...]]:
+    """(name, major, minor, SM count) of the card, as grouped_gemm.interface keys its caches; None if unreadable."""
+    try:
+        index = torch.cuda.current_device() if device is None else _cuda_index(device)
+    except Exception:
+        return None
+    if index not in _DEVICE_MODELS:
+        try:
+            p = torch.cuda.get_device_properties(index)
+            model = (
+                getattr(p, "name", None),
+                getattr(p, "major", None),
+                getattr(p, "minor", None),
+                getattr(p, "multi_processor_count", None),
+            )
+        except Exception:
+            model = None
+        _DEVICE_MODELS[index] = model
+    return _DEVICE_MODELS[index]
 
 
 def _run_moe_autotuning(
@@ -742,6 +784,7 @@ def clear_cache() -> None:
     """Clear all cached kernel configurations."""
     global _kernel_config_cache, _autotune_completed
     _kernel_config_cache.clear()
+    _DEVICE_MODELS.clear()
     _autotune_completed.clear()
     logger.info("Cleared MoE kernel cache")
 

@@ -142,6 +142,38 @@ def calculate_settings(
     return BLOCK_SIZE, num_warps
 
 
+# UNSLOTH_NORM_ARCH_WARPS=0 keeps calculate_settings' warps in the LayerNorm / RMSNorm kernels.
+_NORM_ARCH_WARPS = os.environ.get("UNSLOTH_NORM_ARCH_WARPS", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _cuda_capability(index):
+    return tuple(torch.cuda.get_device_capability(index))
+
+
+def norm_num_warps(table, n_cols, num_warps, device):
+    """num_warps from table[(capability, n_cols)] for CUDA devices, else the default."""
+    if not _NORM_ARCH_WARPS or device is None or device.type != "cuda" or torch.version.hip:
+        return num_warps
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    if torch.compiler.is_compiling():
+        capability = tuple(torch.cuda.get_device_capability(index))
+    else:
+        capability = _cuda_capability(index)
+    if type(n_cols) is not int:
+        # A traced op's fake run passes a symbolic width, which cannot be hashed: match by equality.
+        for (table_capability, width), warps in table.items():
+            if table_capability == capability and width == n_cols:
+                return warps
+        return num_warps
+    return table.get((capability, n_cols), num_warps)
+
+
 HAS_CUDA_STREAM = False
 try:
     import bitsandbytes as bnb

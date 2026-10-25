@@ -1215,7 +1215,31 @@ def test_fnuz_krea2_file_is_not_planned_at_the_stored_size(monkeypatch, tmp_path
             monkeypatch, tmp_path, fam = fam, resident_at = path, fits_mib = 500
         )
         assert backend._fp8_storage_picks[p] is picked, dtype
+        assert backend._fp8_widen_picks[p] is False, dtype
         assert seen[-1] == (1000 if picked else 2000)
+
+
+def test_a_resident_widen_with_host_room_is_recorded_as_the_fp8_rules_choice(monkeypatch, tmp_path):
+    """Fits resident and the host has room: the rule widens, and the load refuses against the rule's reserve; a LoRA
+    at load time drops that choice (it widens because it must)."""
+    from safetensors.torch import save_file
+
+    from core.inference import diffusion as d
+    from core.inference.diffusion_krea2 import KREA2_FAMILY_NAME
+
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    fam = types.SimpleNamespace(name = KREA2_FAMILY_NAME, single_file_is_pipeline = False)
+    path = tmp_path / "krea2_fn.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fn)}, str(path))
+    backend, final, seen, p = _plan_harness(
+        monkeypatch, tmp_path, fam = fam, resident_at = path, fits_mib = 5000
+    )
+    assert backend._fp8_storage_picks[p] is False and final.resident is True
+    assert backend._fp8_widen_picks[p] is True
+    monkeypatch.setattr(d, "comfy_fp8_storage", lambda target, lora = False: not lora)
+    assert backend._fp8_widen_for(p, None, None) is True
+    monkeypatch.setattr(d, "_has_active_lora", lambda loras: True)
+    assert backend._fp8_widen_for(p, None, None) is False
 
 
 def test_a_plan_priced_with_the_offload_only_backend_keeps_it_when_resident(monkeypatch, tmp_path):
