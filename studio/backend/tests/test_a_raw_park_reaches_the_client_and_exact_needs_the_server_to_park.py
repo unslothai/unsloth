@@ -124,9 +124,7 @@ class TestExactNeedsTheServerToPark:
         """One slot never shares the cache, so nothing is ever parked, and llama-server reports
         parking off below two slots: the mode still runs, and a healthy server is kept."""
         assert (
-            self._state(
-                setting = setting, server_parks = False, parking_holds = False, parallel_slots = 1
-            )
+            self._state(setting = setting, server_parks = False, parking_holds = False, parallel_slots = 1)
             == exact.EXACT_STATE_ON
         )
 

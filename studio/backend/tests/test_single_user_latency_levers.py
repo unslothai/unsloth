@@ -104,16 +104,10 @@ def test_count_memo_tells_apart_schemas_in_a_different_key_order(monkeypatch):
     backend._process = SimpleNamespace(pid = 4242)
     msgs = [{"role": "user", "content": "count me"}]
 
-    backend.count_chat_tokens(
-        msgs, tools = _tool({"city": city, "year": year}), prefer_native = True
-    )
-    backend.count_chat_tokens(
-        msgs, tools = _tool({"year": year, "city": city}), prefer_native = True
-    )
+    backend.count_chat_tokens(msgs, tools = _tool({"city": city, "year": year}), prefer_native = True)
+    backend.count_chat_tokens(msgs, tools = _tool({"year": year, "city": city}), prefer_native = True)
     assert len(calls) == 2, "the second schema order was answered from the first one's count"
-    backend.count_chat_tokens(
-        msgs, tools = _tool({"year": year, "city": city}), prefer_native = True
-    )
+    backend.count_chat_tokens(msgs, tools = _tool({"year": year, "city": city}), prefer_native = True)
     assert len(calls) == 2, "the same render in the same order must still be a memo hit"
 
 
