@@ -26,6 +26,7 @@ from unsloth_zoo.hf_utils import add_dtype_kwargs
 from ._utils import (
     _mark_requested_float32,
     _requested_float32,
+    check_mixed_gpu_placement,
     is_bfloat16_supported,
     maybe_prefetch_hf_snapshot,
 )
@@ -432,6 +433,7 @@ class FastDiffusionModel:
         )
 
         model = model_cls.from_pretrained(model_name, config = config, **load_kwargs).eval()
+        check_mixed_gpu_placement(model, dtype)
         model._unsloth_full_finetuning = bool(full_finetuning)
         if trust_remote_code:
             # 4.x remote code builds RoPE inv_freq in __init__; transformers 5 leaves it uninitialised.
