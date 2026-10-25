@@ -335,6 +335,18 @@ def test_a_twins_only_snapshot_is_complete(tmp_path):
     assert not local_pipeline_components_are_complete(snap, "model_index.json")
 
 
+def test_a_mix_of_twins_and_defaults_the_loader_cannot_open_is_incomplete(tmp_path, monkeypatch):
+    # unet only as a twin, every other component only as a default: no pipeline-wide variant reads both.
+    mixed = [t for t in SDXL_TWINS if t.startswith("unet/")]
+    mixed += [d for d in SDXL_DEFAULTS if not d.startswith("unet/")]
+    snap = _snapshot(tmp_path, [*SDXL_CONFIGS, *mixed])
+    assert fv.local_fp16_variant(str(snap), load_dtype = "torch.float16") is None
+    assert not local_pipeline_components_are_complete(snap, "model_index.json")
+    monkeypatch.setenv(fv.FP16_VARIANT_ENV, "0")
+    full = _snapshot(tmp_path / "full", [*SDXL_CONFIGS, *SDXL_TWINS])
+    assert not local_pipeline_components_are_complete(full, "model_index.json")
+
+
 def test_local_pricing_reads_twins_only_where_no_default_sits(tmp_path, monkeypatch):
     import torch
 

@@ -155,7 +155,7 @@ def _snapshot_names(snapshot: str, folders: Iterable[str]) -> list[str]:
     return names
 
 
-def _is_default_weight(basename: str) -> bool:
+def is_default_weight(basename: str) -> bool:
     if _DEFAULT_ANY_RE.match(basename):
         return True
     return (
@@ -171,7 +171,7 @@ def _defaults_present(names: Iterable[str], plan: Mapping[str, str]) -> bool:
     for name in names:
         folder, _, base = str(name).rpartition("/")
         by_folder.setdefault(folder, []).append(base)
-    return all(any(_is_default_weight(b) for b in by_folder.get(folder, ())) for folder in plan)
+    return all(any(is_default_weight(b) for b in by_folder.get(folder, ())) for folder in plan)
 
 
 def local_fp16_variant(
@@ -213,6 +213,7 @@ __all__ = [
     "FP16_VARIANT",
     "FP16_VARIANT_ENV",
     "fp16_variant_enabled",
+    "is_default_weight",
     "is_fp16_dtype",
     "is_fp16_twin",
     "local_fp16_variant",

@@ -2660,6 +2660,7 @@ def local_pipeline_components_are_complete(
             return False
     caller_supplied = _CALLER_SUPPLIED_COMPONENTS.get(class_name, frozenset())
     declared = False
+    twin_only = False
     try:
         for name, spec in payload.items():
             if (
@@ -2702,9 +2703,27 @@ def local_pipeline_components_are_complete(
                 component, spec[0], spec[1], config_only_model_components
             ):
                 return False
+            if not config_only_model_components and _twin_only_component(component):
+                twin_only = True
     except OSError:
         return False
+    if declared and twin_only:
+        # The loader reads .fp16 files pipeline-wide or not at all: a mix of twins and defaults would not open.
+        from .diffusion_fp16_variant import local_fp16_variant
+        return (
+            local_fp16_variant(str(base), load_dtype = None, supplied = tuple(excluded_components))
+            is not None
+        )
     return declared
+
+
+def _twin_only_component(component: Path) -> bool:
+    from .diffusion_fp16_variant import is_default_weight, is_fp16_twin
+    try:
+        names = [entry.name for entry in component.iterdir() if entry.is_file()]
+    except OSError:
+        return False
+    return any(is_fp16_twin(n) for n in names) and not any(is_default_weight(n) for n in names)
 
 
 # Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=0.41.0'`` has
