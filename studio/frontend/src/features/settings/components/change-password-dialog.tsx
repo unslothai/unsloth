@@ -372,7 +372,7 @@ export function ChangePasswordDialog({
             </div>
           </div>
           <DialogFooter className="mt-5">
-            <Button type="submit" disabled={disabled}>
+            <Button variant="dark" type="submit" disabled={disabled}>
               {submitting ? copy.submitting : copy.submit}
             </Button>
           </DialogFooter>

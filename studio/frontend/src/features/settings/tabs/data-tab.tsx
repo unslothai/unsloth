@@ -71,6 +71,7 @@ import { useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   ChevronDownStandardIcon,
+  ChevronLeftStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
@@ -83,11 +84,7 @@ import {
   Image03Icon,
   LibrariesIcon,
   Tick02Icon,
-  Upload01Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -672,7 +669,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             aria-label={t("settings.data.backToData")}
             className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+            <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -745,7 +742,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             aria-label={t("settings.data.backToData")}
             className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+            <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -773,7 +770,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             aria-label={t("settings.data.backToData")}
             className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+            <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -860,7 +857,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 data-settings-label={t(`settings.data.${label}`)}
                 aria-label={t(`settings.data.${label}`)}
                 onClick={() => setSubpage(page)}
-                className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-border/60 px-3 py-2.5 text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="btn-fill flex min-w-0 items-center justify-between gap-2 rounded-full px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <HugeiconsIcon
@@ -908,11 +905,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             // history, and on desktop it retires the running import's handle.
             disabled={importing}
           >
-            {importing ? (
-              <Spinner className="size-3.5 mr-1.5" />
-            ) : (
-              <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
-            )}
+            {importing && <Spinner className="size-3.5 mr-1.5" />}
             {t("settings.chat.importChatsAction")}
           </Button>
           <input
@@ -944,13 +937,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 onClick={() => void handleExternalImport(source)}
                 disabled={externalImporting !== null}
               >
-                {externalImporting === source ? (
+                {externalImporting === source && (
                   <Spinner className="size-3.5 mr-1.5" />
-                ) : (
-                  <HugeiconsIcon
-                    icon={Upload01Icon}
-                    className="size-3.5 mr-1.5"
-                  />
                 )}
                 {externalImporting === source
                   ? t("settings.chat.importingAction")
@@ -969,7 +957,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             onClick={handleExport}
             disabled={exporting || count === 0}
           >
-            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
             {exporting
               ? t("settings.chat.exportingAction")
               : t("settings.chat.exportAction")}
@@ -983,10 +970,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
               <Button variant="outline" size="sm" disabled={count === 0}>
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  className="size-3.5 mr-1.5"
-                />
                 {t("settings.chat.exportConversationsAction")}
               </Button>
             </DropdownMenuTrigger>
@@ -1043,7 +1026,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
               <DropdownMenuTrigger asChild={true}>
                 {/* Fixed width so switching actions never resizes the row. */}
                 <Button
-                  variant="outline"
+                  variant="picker"
                   size="sm"
                   disabled={count === 0}
                   className="w-44 justify-between"
@@ -1150,7 +1133,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
                 <Button
-                  variant="outline"
+                  variant="destructive"
                   size="sm"
                   disabled={count === null || count === 0 || clearing}
                   className="text-destructive hover:text-destructive aria-expanded:text-destructive hover:border-destructive/60"
@@ -1265,9 +1248,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
               {t("common.cancel")}
             </Button>
             <Button
+              variant="destructive"
               onClick={handleClear}
               disabled={clearing}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {clearing
                 ? t("settings.chat.clearingAction")

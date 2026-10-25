@@ -655,8 +655,9 @@ class BlockGraph:
         from .diffusion_cuda_graph import capture_device, note_capture
 
         self._unsloth_capture_device = capture_device()
-        note_capture(self._unsloth_capture_device)
+        # counted live before the generation moves, so a reader seeing an unchanged generation never misses it
         _LIVE_BLOCKS.add(self)
+        note_capture(self._unsloth_capture_device)
         while len(self.cache) > self.max_graphs:
             _drop_entries(self, [self.cache.popitem(last = False)[1]], evicting = True)
             self.stats["evictions"] += 1

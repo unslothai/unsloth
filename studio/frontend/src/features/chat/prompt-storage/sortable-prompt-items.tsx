@@ -81,7 +81,7 @@ export function AutoTextarea({
       placeholder={placeholder}
       rows={minRows}
       className={cn(
-        "w-full resize-none rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed",
+        "w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed",
         className,
       )}
     />
@@ -335,7 +335,7 @@ export function SortablePromptItems({
               else rowRefs.current.delete(uid);
             }}
             className={cn(
-              "flex items-start gap-2 rounded-lg",
+              "flex items-start gap-2 rounded-xl",
               isDragging && "relative z-10 bg-muted/60 ring-1 ring-border",
             )}
           >
@@ -353,7 +353,7 @@ export function SortablePromptItems({
                 }
               }}
               className={cn(
-                "mt-1.5 flex h-7 w-5 shrink-0 touch-none items-center justify-center rounded text-muted-foreground/30 hover:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring outline-none transition-colors",
+                "mt-1.5 flex h-7 w-5 shrink-0 touch-none items-center justify-center rounded-full text-muted-foreground/30 hover:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring outline-none transition-colors",
                 isDragging ? "cursor-grabbing text-muted-foreground" : "cursor-grab",
               )}
             >
@@ -384,7 +384,7 @@ export function SortablePromptItems({
                   setUids((prev) => prev.filter((_, idx) => idx !== i));
                 }}
                 disabled={items.length <= minItems}
-                className="mt-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                className="mt-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Remove"
               >
                 <XIcon className="size-3.5" />

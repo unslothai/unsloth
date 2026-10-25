@@ -37,7 +37,8 @@ def _denoisers(pipe: Any) -> list:
 
 def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool:
     """Whether the denoiser a call onloaded can stay while ``companions`` (the modules that run before it is needed
-    again) are onloaded beside it: free memory plus the allocator's idle cache covers them with a margin."""
+    again) are onloaded beside it: free memory plus the allocator's idle cache (minus CUDA graph pools) covers them
+    with a margin."""
     try:
         import torch
 
@@ -45,12 +46,16 @@ def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool
         param = next(dits[0].parameters()) if dits else None
         if param is None or param.device.type != "cuda":
             return False
-        free, _total = torch.cuda.mem_get_info(param.device)
-        idle = torch.cuda.memory_reserved(param.device) - torch.cuda.memory_allocated(param.device)
+        free, total = torch.cuda.mem_get_info(param.device)
+        from .diffusion_memory import _user_budget_reserve_mib, cuda_reusable_cache_bytes
+
+        idle = cuda_reusable_cache_bytes(param.device)
+
+        reserve = _user_budget_reserve_mib(int(total) >> 20) << 20
     except Exception:  # noqa: BLE001 -- no CUDA / no denoiser: keep the stock offload
         return False
     need = sum(module_bytes(m) for m in companions if m is not None) + HOLD_MARGIN_BYTES
-    return free + max(0, idle) >= need
+    return free + max(0, idle) - reserve >= need
 
 
 @contextlib.contextmanager

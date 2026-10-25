@@ -1337,7 +1337,11 @@ def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None" in src
+    at = src.index("pipe._unsloth_phase_seeds = (")
+    window = " ".join(src[at : at + 300].split())  # the formatter may wrap the expression
+    assert (
+        "_calibrated_activation(fam, target, unpriced_references_ok = True) is not None" in window
+    )
 
 
 def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
@@ -1830,7 +1834,9 @@ def test_cfg_off_keys_are_wired_into_the_load_and_guard():
     src = "".join(src.split())  # whitespace-free: the formatter may wrap these lines
     for needle in (
         'pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))',
-        "cfg = guard_cfg,",
+        # the guard's CFG value reaches the pricer through the split-aware wrapper
+        "guard_cfg, extra_mib = split_aware_request_extra(state.pipe, guard_cfg, workflow, lambda cfg:",
+        "cfg = cfg, unpriced_references = guard_unpriced_refs,",
         'plan.estimates.get("measured_learned_cfg_off", False),',
         "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)",
     ):
@@ -2038,8 +2044,10 @@ def test_attention_scaling_unknown_render_is_not_recorded(store, monkeypatch):
     )
     monkeypatch.setattr(diffusion, "_conditioning_cache_hits", lambda pipe: 0)
     answers = {"math": False, "fused": False}
-    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target: answers["math"])
-    monkeypatch.setattr(diffusion, "sdpa_subquadratic_confirmed", lambda target: answers["fused"])
+    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target, *_: answers["math"])
+    monkeypatch.setattr(
+        diffusion, "sdpa_subquadratic_confirmed", lambda target, *_: answers["fused"]
+    )
     target = types.SimpleNamespace(device = "cuda:0")
     assert not diffusion._attention_scaling_known(target, "native")  # the probe answered nothing
     assert not diffusion._attention_scaling_known(None, None)

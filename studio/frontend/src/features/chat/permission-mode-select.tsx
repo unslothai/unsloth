@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChevronDown, Hand, ShieldCheck } from "lucide-react";
+import { Hand, ShieldCheck } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type { ComponentType } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -435,7 +435,7 @@ export function FullAccessConfirmContent({
           Tools will run without asking and outside the sandbox, including:
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <ul className="flex flex-col rounded-2xl bg-muted/50 px-5 py-1.5">
+      <ul className="flex flex-col rounded-xl bg-muted/50 px-5 py-1.5">
         {FULL_ACCESS_SCOPES.map((scope) => (
           <li key={scope.title} className="flex items-center gap-4 py-3">
             <HugeiconsIcon
@@ -531,7 +531,7 @@ export function PermissionModeDropdown({
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <Button
-            variant="outline"
+            variant="picker"
             size="sm"
             className={cn("gap-1.5", triggerClassName)}
             aria-label="Permission level for tool calls"
@@ -540,7 +540,7 @@ export function PermissionModeDropdown({
             <span className="min-w-0 flex-1 truncate text-left">
               {active.label}
             </span>
-            <ChevronDown className="size-3.5 shrink-0 opacity-60" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 opacity-60" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
