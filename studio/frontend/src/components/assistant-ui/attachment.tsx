@@ -503,7 +503,7 @@ const AttachmentCardRemove: FC = () => {
         variant="ghost"
         size="icon"
         aria-label="Remove file"
-        className="aui-attachment-card-remove absolute top-1.5 right-1.5 size-5 rounded-full bg-foreground p-0 opacity-0 shadow-sm ring-[2.5px] ring-background transition-opacity hover:bg-foreground! focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100 [&_svg]:text-background"
+        className="aui-attachment-card-remove absolute top-1.5 right-1.5 size-5 rounded-full bg-foreground p-0 opacity-0 shadow-sm ring-2 ring-background transition-opacity hover:bg-foreground! focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100 [&_svg]:text-background"
       >
         <XIcon className="aui-attachment-remove-icon size-3 stroke-[2.5px]" />
       </Button>

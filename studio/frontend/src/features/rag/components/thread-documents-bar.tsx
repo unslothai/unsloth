@@ -540,7 +540,7 @@ function DocumentCard({
       onClick={onRemove}
       aria-label={`Remove ${doc.filename}`}
       className={cn(
-        "absolute flex size-5 items-center justify-center rounded-full bg-foreground text-background opacity-0 shadow-sm ring-[2.5px] ring-background transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100",
+        "absolute flex size-5 items-center justify-center rounded-full bg-foreground text-background opacity-0 shadow-sm ring-2 ring-background transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100",
         compact ? "top-1/2 right-1.5 -translate-y-1/2" : "top-1.5 right-1.5",
       )}
     >
