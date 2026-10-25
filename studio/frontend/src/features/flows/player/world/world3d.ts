@@ -264,6 +264,16 @@ export function houseCells(
   return out;
 }
 
+export function standTiles(x: number, y: number, radius = 0.22): Point[] {
+  const out = new Map<string, Point>();
+  for (const dx of [-radius, radius])
+    for (const dy of [-radius, radius]) {
+      const t = { x: Math.floor(x + dx), y: Math.floor(y + dy) };
+      out.set(`${t.x},${t.y}`, t);
+    }
+  return [...out.values()];
+}
+
 /** True when a circle of `radius` tiles at (x, y) overlaps no solid tile: the walk collision test. */
 export function canStand(
   map: WorldMap,

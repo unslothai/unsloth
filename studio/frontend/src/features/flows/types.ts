@@ -470,6 +470,39 @@ export interface WorldSpec {
   autonomy?: WorldAutonomy | null;
   render?: "2d" | "3d";
   view3d?: World3dView;
+  props3d?: WorldProp3d[];
+  player_node?: string;
+}
+
+export type WorldPropKind =
+  | "house"
+  | "tree"
+  | "lamp"
+  | "fence"
+  | "well"
+  | "crate"
+  | "rock"
+  | "bench"
+  | "stall"
+  | "model";
+
+export interface ModelAsset {
+  kind: "model";
+  ref: string;
+  url?: string | null;
+  mime?: string | null;
+}
+
+export interface WorldProp3d {
+  id: string;
+  kind: WorldPropKind;
+  asset?: ModelAsset;
+  name?: string;
+  x: number;
+  y: number;
+  rot?: number;
+  scale?: number;
+  solid?: boolean;
 }
 
 export interface WorldAutonomy {

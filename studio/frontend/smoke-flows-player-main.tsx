@@ -13,7 +13,9 @@ import type { WorldGameHandle } from "@/features/flows/player/world/phaser-game"
 import { generateMap } from "@/features/flows/player/world/procgen";
 import type {
   MediaValue,
+  ModelAsset,
   StoryManifest,
+  WorldProp3d,
   WorldSpec,
 } from "@/features/flows/types";
 /* eslint-enable no-restricted-imports */
@@ -140,6 +142,18 @@ const LIVELY: WorldSpec = {
   ],
 };
 const PLAYED = params.get("autonomy") ? LIVELY : WORLD;
+const PROPS_KEY = "flows-smoke-props3d";
+const MODELS_KEY = "flows-smoke-models";
+const savedProps = (): WorldProp3d[] | null => {
+  const raw = sessionStorage.getItem(PROPS_KEY);
+  return raw ? (JSON.parse(raw) as WorldProp3d[]) : null;
+};
+const models = (): Record<string, string> =>
+  JSON.parse(sessionStorage.getItem(MODELS_KEY) || "{}");
+if (params.get("props") === "reset") {
+  sessionStorage.removeItem(PROPS_KEY);
+  sessionStorage.removeItem(MODELS_KEY);
+}
 
 const sessions = new Map<string, SessionRecord>();
 const calls: { entry: string; inputs: Record<string, unknown> }[] = [];
@@ -174,7 +188,22 @@ const mock: PlayerApi = {
     return picnic;
   },
   async world() {
-    return PLAYED;
+    const props = savedProps();
+    return props ? { ...PLAYED, props3d: props } : PLAYED;
+  },
+  async saveWorldProps(_flowId, props) {
+    sessionStorage.setItem(PROPS_KEY, JSON.stringify(props));
+  },
+  async uploadModel(file, name) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    const ref = `flowasset:${name.replace(/[^a-z0-9]/gi, "")}`;
+    sessionStorage.setItem(
+      MODELS_KEY,
+      JSON.stringify({ ...models(), [ref]: btoa(bin) }),
+    );
+    return { kind: "model", ref, mime: "model/gltf-binary" } as ModelAsset;
   },
   async invoke(_flowId, entry, inputs) {
     calls.push({ entry, inputs });
@@ -228,7 +257,12 @@ const mock: PlayerApi = {
   async reroll() {
     await new Promise((r) => setTimeout(r, 200));
   },
-  async mediaBlob(_m: MediaValue) {
+  async mediaBlob(m: MediaValue) {
+    const glb = models()[m.ref];
+    if (glb)
+      return new Blob([Uint8Array.from(atob(glb), (c) => c.charCodeAt(0))], {
+        type: "model/gltf-binary",
+      });
     return spriteBlob();
   },
 };
