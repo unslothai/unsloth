@@ -72,6 +72,19 @@ def _fast_base_model():
         ):
             node.decorator_list = []
             wanted.insert(0, node)
+    # Follow the lifted code into every other _utils.py helper it names, so a guard either method
+    # gains (for_inference's tensor parallel refusal, #15137) runs here instead of resolving to None.
+    helpers = {n.name: n for n in utils.body if isinstance(n, ast.FunctionDef)}
+    lifted = {n.name for n in wanted}
+    todo = list(wanted)
+    while todo:
+        for ref in ast.walk(todo.pop()):
+            if isinstance(ref, ast.Name) and ref.id in helpers and ref.id not in lifted:
+                node = helpers[ref.id]
+                node.decorator_list = []
+                lifted.add(node.name)
+                wanted.insert(0, node)
+                todo.append(node)
     namespace = _Namespace(os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools)
     module = ast.fix_missing_locations(ast.Module(body = wanted, type_ignores = []))
     exec(compile(module, str(MODELS / "vision.py"), "exec"), namespace)
@@ -133,6 +146,14 @@ def test_flag_set_after_for_inference_is_kept(fbm):
     os.environ[FLAG] = "1"
     fbm.for_training(model)
     assert os.environ[FLAG] == "1"
+
+
+def test_lifted_for_inference_runs_its_real_helpers(fbm):
+    # The lifted for_inference calls the real _utils.py guards, not a None the namespace made up.
+    model = _Model()
+    model._unsloth_tp = True
+    with pytest.raises(RuntimeError, match = "tensor parallel"):
+        fbm.for_inference(model)
 
 
 def _fast_llama_for_training():

@@ -196,7 +196,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
             </span>
             {/* Capped so a huge url cannot push Allow/Deny off screen. */}
             <ScrollPane
-              className="min-w-0 rounded bg-muted/50 px-2 py-1"
+              className="min-w-0 rounded-lg bg-muted/50 px-2 py-1"
               scrollerClassName="max-h-24 overflow-auto whitespace-pre-wrap break-all text-foreground/85"
             >
               <code dir="ltr" className="break-all text-foreground/85">
@@ -266,7 +266,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
                 </div>
                 {resultText && (
                   <ScrollPane
-                    className="rounded bg-muted/50 p-2"
+                    className="rounded-lg bg-muted/50 p-2"
                     scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
                   >
                     {resultText}
@@ -306,7 +306,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               </div>
             ) : resultText ? (
               <ScrollPane
-                className="rounded bg-muted/50 p-2"
+                className="rounded-lg bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {resultText}

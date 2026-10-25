@@ -489,18 +489,72 @@ def test_restart_for_retry_keeps_a_release_that_landed_before_the_stop(monkeypat
     assert slot.end_render() is None and slot.release_pending is None
 
 
-def test_h3_card_probes_read_nothing_on_rocm_without_a_context(monkeypatch):
+_H3_FLAGS = ("--offload-to-cpu", "--diffusion-fa", "--max-vram", "-1", "--stream-layers")
+
+
+def _h3_telemetry(monkeypatch, *, rocm, smi):
+    """48 GiB card with 8 used: amd-smi / nvidia-smi rows when ``smi``, else only torch can read it."""
     from utils.hardware import hardware
 
+    touched = []
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
-    monkeypatch.setattr(hardware, "IS_ROCM", True)
+    monkeypatch.setattr(hardware, "IS_ROCM", rocm)
+    monkeypatch.setattr(
+        hardware, "_get_parent_visible_gpu_spec", lambda: {"raw": "0", "numeric_ids": [0]}
+    )
+    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [0])
+    row = {"index": 0, "visible_ordinal": 0, "vram_total_gb": 48.0, "vram_used_gb": 8.0}
     monkeypatch.setattr(
         hardware,
         "_smi_visible_utilization",
-        lambda spec: pytest.fail("amd-smi rows need a torch context"),
+        lambda spec: {"available": True, "devices": [dict(row)], "index_kind": "physical"}
+        if smi
+        else None,
     )
-    assert video_mod._h3_card_memory_bytes("cuda", 0) == (None, None)
+    monkeypatch.setattr(
+        hardware,
+        "_reconcile_rocm_unified_memory",
+        lambda *_a: touched.append("reconcile"),
+    )
+
+    def per_device(idx):
+        touched.append("torch")
+        return [{"index": 0, "visible_ordinal": 0, "total_gb": 48.0, "used_gb": 8.0}]
+
+    monkeypatch.setattr(hardware, "_torch_get_per_device_info", per_device)
+    monkeypatch.setattr(hardware, "_overlay_system_wide_vram", lambda devices: None)
+    return touched
+
+
+def test_h3_card_probes_read_nothing_on_rocm_without_a_context(monkeypatch):
+    # The pre-spawn budget never creates a context, and ROCm's amd-smi rows need one.
+    touched = _h3_telemetry(monkeypatch, rocm = True, smi = True)
+    assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (None, None)
     assert video_mod._h3_visible_card_count("cuda") == 0
+    assert touched == []
+
+
+def test_h3_residency_reads_fall_back_to_torch_on_rocm(monkeypatch):
+    # The residency and pressure reads may create a context, as they did before the launch budget.
+    _h3_telemetry(monkeypatch, rocm = True, smi = True)
+    assert video_mod._h3_card_memory_bytes("cuda", 0) == (40 * GiB, 48 * GiB)
+
+
+@pytest.mark.parametrize(
+    "rocm, smi", [(True, True), (False, False)], ids = ["rocm_amd_smi", "nvidia_no_smi"]
+)
+def test_h3_auto_runs_resident_when_the_card_fits(monkeypatch, rocm, smi):
+    """48 GiB total, 40 free, 39 needed: Auto drops the streaming flags, as it did before the launch budget."""
+    _h3_telemetry(monkeypatch, rocm = rocm, smi = smi)
+    flags, resident = h3.h3_native_render_flags(
+        _H3_FLAGS,
+        memory_mode = "auto",
+        free_bytes = video_mod._h3_card_free_bytes("cuda", 0),
+        need_bytes = 39 * GiB,
+        env = {},
+    )
+    assert resident is True
+    assert "--offload-to-cpu" not in flags and "--stream-layers" not in flags
 
 
 def test_a_slot_start_records_what_it_attempted_even_when_it_fails(monkeypatch):
@@ -716,7 +770,9 @@ def test_a_stalled_torch_capability_reading_is_bounded(monkeypatch):
 
 def test_an_unpinned_render_on_several_cards_takes_no_scalar_budget(monkeypatch):
     monkeypatch.setattr(
-        video_mod, "_h3_card_memory_bytes", lambda device, ordinal: (int(9 * GiB), int(24 * GiB))
+        video_mod,
+        "_h3_card_memory_bytes",
+        lambda device, ordinal, **_k: (int(9 * GiB), int(24 * GiB)),
     )
     monkeypatch.setattr(video_mod, "_h3_visible_card_count", lambda device: 2)
     assert video_mod._h3_card_free_bytes("cuda", None, single_card_only = True) is None
@@ -748,5 +804,6 @@ def test_h3_card_probes_never_fall_back_to_a_torch_context(monkeypatch):
         hardware, "_torch_get_per_device_info", lambda idx: touched.append(idx) or []
     )
     assert video_mod._h3_visible_card_count("cuda") == 0
-    assert video_mod._h3_card_memory_bytes("cuda", 0) == (None, None)
+    assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (None, None)
+    assert video_mod._h3_card_free_bytes("cuda", 0, allow_context = False) is None
     assert touched == []
