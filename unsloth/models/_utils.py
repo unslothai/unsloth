@@ -1301,6 +1301,29 @@ def _enable_flex_attention_support(model_class, model_type = ""):
     return True
 
 
+# Inductor's head_dim 256 flex template; with less, Gemma 3's flex backward is wrong (#14439).
+_FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY = 151552
+
+
+def _flex_preferred_fits(config):
+    """False when a visible CUDA card lacks that shared memory; fails open on ROCm / no CUDA."""
+    head_dim = _text_attention_head_dim(config)
+    if head_dim is None or not (
+        _SDPA_FLASH_MAX_HEAD_DIM < head_dim <= _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM
+    ):
+        return True
+    try:
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return True
+        return all(
+            torch.cuda.get_device_properties(index).shared_memory_per_block_optin
+            >= _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return True
+
+
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
@@ -1309,6 +1332,8 @@ def _supports_flex_attention(model_class, config, model_type):
     if _is_flex_excluded(model_type):
         return False
     if not _flex_attention_gpu_is_supported():
+        return False
+    if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
