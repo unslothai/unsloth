@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in MLX (mflux) image engine for Apple Silicon (``UNSLOTH_DIFFUSION_MLX=1``) on Studio's GGUF.
+"""MLX (mflux) image engine for Apple Silicon on Studio's GGUF.
 
 Same duck-typed surface as the other image engines; selected only by ``diffusion_engine_router``.
 """
@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -55,6 +56,8 @@ BASE_ALLOW_PATTERNS = (
     "tokenizer/*",
     "vae/*.safetensors",
     "vae/*.json",
+    "scheduler/*.json",
+    "model_index.json",
 )
 _LINKED_SUBDIRS = ("text_encoder", "tokenizer", "vae")
 _TE_GROUP_SIZE = 64
@@ -361,6 +364,19 @@ def vae_tiling_needed(width: int, height: int, free_bytes: Optional[int]) -> boo
     return untiled_decode_bytes(width, height) > free_bytes
 
 
+def release_buffer_cache(mx: Any) -> None:
+    """Synchronize, then clear MLX's buffer cache (clearing with work in flight can free buffers the GPU still writes).
+    Best effort: runs in cleanup paths and must not mask the caller's exception."""
+    try:
+        mx.synchronize()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mlx_diffusion.drain_skipped: %s", exc)
+    try:
+        mx.clear_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mlx_diffusion.clear_cache_skipped: %s", exc)
+
+
 class MfluxRuntime:
     """The only code that imports mlx / mflux. Tests replace it with a fake (``backend.runtime_factory``)."""
 
@@ -433,8 +449,9 @@ class MfluxRuntime:
         callback = _StepCallback()
         model.callbacks.register(callback)
         cancelled = False
+        image = None
         try:
-            result = model.generate_image(
+            image = model.generate_image(
                 seed = int(seed),
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -442,7 +459,7 @@ class MfluxRuntime:
                 width = int(width),
                 height = int(height),
                 guidance = guidance,
-            )
+            ).image
         except StopImageGenerationException as exc:
             # The unwound mflux frames hold the model; uncleared, it survives unload().
             drop_exception_frames(exc)
@@ -456,9 +473,11 @@ class MfluxRuntime:
                 model.callbacks.in_loop.remove(callback)
             except (AttributeError, ValueError):
                 pass
+            # Cached activations are idle system RAM on unified memory; live weights are untouched.
+            release_buffer_cache(mx)
         if cancelled:
             raise MlxCancelled("cancelled")
-        return result.image
+        return image
 
     def free_working_set_bytes(self) -> Optional[int]:
         """Metal's recommended working set minus what MLX holds live now (the resident model), or None."""
@@ -511,9 +530,9 @@ class MfluxRuntime:
         gc.collect()
         try:
             import mlx.core as mx
-            mx.clear_cache()
         except Exception:  # noqa: BLE001
-            pass
+            return
+        release_buffer_cache(mx)
 
     def supports_guidance(self, model: Any) -> bool:
         return bool(getattr(getattr(model, "model_config", None), "supports_guidance", False))
@@ -533,6 +552,7 @@ class _MlxState:
     dense_bits: int
     convert_dir: str
     timings: dict = field(default_factory = dict)
+    gguf_path: Optional[str] = None
 
 
 @dataclass
@@ -864,6 +884,7 @@ class MlxDiffusionBackend:
 
     # ── Load ─────────────────────────────────────────────────────────────────
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -1102,6 +1123,7 @@ class MlxDiffusionBackend:
                 dense_bits = bits,
                 convert_dir = str(out_dir),
                 timings = timings,
+                gguf_path = str(gguf_path),
             )
             with self._lock:
                 if self._load_token != _load_token:
@@ -1219,6 +1241,7 @@ class MlxDiffusionBackend:
 
     # ── Generate ─────────────────────────────────────────────────────────────
 
+    @holds_inference
     def generate(
         self,
         *,
@@ -1259,8 +1282,8 @@ class MlxDiffusionBackend:
             or (upscale is not None and upscale > 1)
         ):
             raise ValueError(
-                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX for "
-                "img2img / inpaint / edit / reference / upscale."
+                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX (or set it to "
+                "auto) for img2img / inpaint / edit / reference / upscale."
             )
         if prompts is not None or seeds is not None:
             raise ValueError(
@@ -1437,8 +1460,16 @@ class MlxDiffusionBackend:
     # ── Unload / status ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("mlx diffusion unload")
-    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict[str, Any]]:
         with self._lock:
+            # Rechecked under the load worker's lock, so a load that ended since costs nothing.
+            if only_if is not None and not only_if():
+                return None
             if expected_account is not None:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control

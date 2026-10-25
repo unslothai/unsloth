@@ -53,7 +53,7 @@ export function DesktopRepairControl(): ReactElement | null {
           variant="outline"
           size="sm"
           onClick={() => setConfirmOpen(true)}
-          className="text-destructive hover:text-destructive hover:border-destructive/60"
+          className="text-destructive hover:text-destructive"
         >
           {t("settings.general.repairInstall.action")}
         </Button>
@@ -84,7 +84,7 @@ export function DesktopRepairControl(): ReactElement | null {
                 setConfirmOpen(false);
                 void repair.repairInstall();
               }}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant="destructive"
             >
               {t("settings.general.repairInstall.confirmAction")}
             </Button>
