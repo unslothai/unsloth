@@ -17,6 +17,7 @@ import threading
 from typing import Any, Optional
 
 from .diffusion_autoopt.patches import source_digest
+from .rocm_bf16 import is_rocm_torch
 
 REAL_ROPE_ENV = "UNSLOTH_DIFFUSION_Q21_REAL_ROPE"
 
@@ -58,7 +59,7 @@ def _addcmul_lowering() -> tuple:
         import torch
         from torch._inductor import lowering
 
-        if getattr(torch.version, "hip", None):
+        if is_rocm_torch(torch):
             return False, False
         src = inspect.getsource(lowering.addcmul)
         return (
