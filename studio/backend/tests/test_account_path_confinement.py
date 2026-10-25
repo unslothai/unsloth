@@ -243,7 +243,6 @@ def test_links_that_do_not_change_where_dotdot_lands_still_pass(tmp_path):
         },
     )
     (real / "sub").mkdir()
-    # A link that stays inside the folder, and the folder itself reached through a link.
     (real / "inner").symlink_to(real / "sub", target_is_directory = True)
     linked = tmp_path / "linked-model"
     linked.symlink_to(real, target_is_directory = True)

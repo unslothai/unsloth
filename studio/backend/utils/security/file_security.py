@@ -76,9 +76,7 @@ def _escapes_folder(name: str) -> bool:
 
 
 def _confinement_roots(folder: Path) -> list:
-    """Real folders a weight name may land in: the model folder, plus for a Hub cache snapshot its
-    ``models--org--repo`` cache folder (as ``_hf_cache_snapshot_ref`` reads the layout), since
-    snapshot files are links into that repo's ``blobs``."""
+    # Plus a Hub snapshot's models--org--repo folder: its files link into that repo's blobs.
     root = os.path.realpath(folder)
     roots = [root]
     ref = _hf_cache_snapshot_ref(root)
@@ -96,13 +94,8 @@ def _within(path: str, root: str) -> bool:
 
 
 def _climbs_through_link(folder: Path, name: str) -> bool:
-    """True when a ``..`` in ``name`` lands outside the model folder on disk. The kernel follows a
-    link first and then applies ``..`` (POSIX), so ``link/../x`` opens ``x`` beside the link's
-    target, not beside the link, and the lexical check above reads the wrong place. Resolves the
-    part up to the last ``..`` and flags it only when that leaves the confinement roots, so a link
-    to a deeper folder of the same model still passes. The rest of the name has no ``..`` and is
-    judged by its text, like any other name. Windows collapses ``..`` before the filesystem sees
-    it, and ``realpath`` does the same there."""
+    # POSIX follows a link before applying "..", so link/../x opens x beside the link's target.
+    # Windows (and ntpath.realpath) collapse ".." first, so both sides agree there.
     parts = name.replace("\\", "/").split("/")
     if ".." not in parts:
         return False
@@ -164,8 +157,8 @@ def escaping_weight_references(folder) -> list:
     """Weight names a local model folder's index files or config.json ``transformers_weights``
     give that point outside the folder: transformers joins each onto the folder as is. Judged by
     the text, so Hub cache snapshots whose files link into the blob store still pass, except that
-    a ``..`` climbing out of a linked directory is judged where the kernel sends it. A Sentence
-    Transformers folder's modules.json module folders are read too, judged against the model folder."""
+    a ``..`` is judged where the kernel sends it. A Sentence Transformers folder's modules.json
+    module folders are read too, judged against the model folder."""
     try:
         folder = Path(str(folder)).expanduser()
         if not folder.is_dir():
