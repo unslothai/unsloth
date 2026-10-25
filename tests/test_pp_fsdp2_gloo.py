@@ -37,6 +37,10 @@ STEPS = 3
 # Step-0 grad norm tolerance vs the one-process reference. Gemma3's own fp32 grad norm sits 1.0e-4 from fp64 on one
 # process (Llama 7.8e-7), so any change of summation order (TP splits, CPU ISA) moves it by that much.
 STEP0_NORM_REL = {"llama": 1e-5, "qwen3": 1e-5, "gemma3": 3e-4}
+# Per-element step-0 grad tolerance, relative to the tensor's largest entry. Gemma3's fp32 reordering
+# noise is about 1e-5 of the tensor (relative L2) on every LoRA weight, up to 2.1e-5 per element, so
+# the llama / qwen3 bound sat on it. The 5e-5 relative L2 bound below still catches systematic errors.
+GRAD_ATOL_REL = {"llama": 2e-5, "qwen3": 2e-5, "gemma3": 1e-4}
 
 
 def _native():
@@ -429,6 +433,7 @@ def _check(
     dims,
     n_mb = 2,
     norm_rel = 1e-5,
+    grad_rel = 2e-5,
 ):
     ref = results[0]["ref"]
     union = set()
@@ -455,8 +460,10 @@ def _check(
         for name, grad in res["grads"].items():
             want = ref["grads"][name]
             # Tensor parallel row-parallel sums reorder fp32 additions: tolerance relative to the tensor's scale.
-            atol = max(1e-6, 2e-5 * float(want.abs().max()))
-            torch.testing.assert_close(grad, want, rtol = 1e-4, atol = atol, msg = name)
+            atol = max(1e-6, grad_rel * float(want.abs().max()))
+            torch.testing.assert_close(
+                grad, want, rtol = 1e-4, atol = atol, msg = lambda m, name = name: f"{name}: {m}"
+            )
             num += float((grad.double() - want.double()).square().sum())
             den += float(want.double().square().sum())
         assert (num / den) ** 0.5 < 5e-5, (rank, (num / den) ** 0.5)
@@ -506,7 +513,12 @@ def _check(
 @pytest.mark.parametrize("arch", sorted(ARCHS))
 def test_pp2_x_fsdp2_dp2_matches_one_process(arch):
     dims = {"pp": 2, "dp": 2}
-    _check(_spawn("compose", arch = arch, dims = dims), dims, norm_rel = STEP0_NORM_REL[arch])
+    _check(
+        _spawn("compose", arch = arch, dims = dims),
+        dims,
+        norm_rel = STEP0_NORM_REL[arch],
+        grad_rel = GRAD_ATOL_REL[arch],
+    )
 
 
 def test_pp2_x_fsdp2_dp2_1f1b_sharded_layout_matches_one_process():
@@ -521,7 +533,12 @@ def test_pp2_x_fsdp2_dp2_1f1b_sharded_layout_matches_one_process():
 @pytest.mark.parametrize("arch", sorted(ARCHS))
 def test_pp2_x_tp2_matches_one_process(arch):
     dims = {"pp": 2, "tp": 2}
-    _check(_spawn("compose", arch = arch, dims = dims), dims, norm_rel = STEP0_NORM_REL[arch])
+    _check(
+        _spawn("compose", arch = arch, dims = dims),
+        dims,
+        norm_rel = STEP0_NORM_REL[arch],
+        grad_rel = GRAD_ATOL_REL[arch],
+    )
 
 
 @pytest.mark.parametrize("other", ["dp", "tp"])
