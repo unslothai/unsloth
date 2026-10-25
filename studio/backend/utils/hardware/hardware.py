@@ -1136,7 +1136,7 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
 
 # install_python_stack._LINUX_UNCOVERED_AMD_GFX: the arches the Linux installers leave on CPU torch.
-_LINUX_UNCOVERED_AMD_GFX = _ROCM_SUPPORTED_GFX_WINDOWS_ONLY | {"gfx803"}
+_LINUX_UNCOVERED_AMD_GFX = _ROCM_SUPPORTED_GFX_WINDOWS_ONLY | {"gfx803", "gfx90c"}
 
 # Krackan Point 2 (gfx1153) names overlap the table's gfx1152 row; the Linux installers read them
 # first and leave CPU torch on purpose (install_python_stack._LINUX_KRACKAN2_NAME_RE).

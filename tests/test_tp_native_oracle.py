@@ -694,7 +694,7 @@ def test_generated_trl_trainer_init_skips_for_inference_on_a_tp_model():
     import re
     import textwrap
 
-    source = open(os.path.join(REPO, "unsloth", "models", "rl.py")).read()
+    source = open(os.path.join(REPO, "unsloth", "models", "rl.py"), encoding = "utf-8").read()
     match = re.search(
         r"super\(\)\.__init__\(\{RLTrainer_call_args\}\{RLTrainer_kwargs\}\)\n(.*?)\n\{RLTrainer_post\}",
         source,
