@@ -212,6 +212,8 @@ class RunState:
     # approved this flow to do; together they gate Python, HTTP, MCP, provider and trigger blocks.
     origin: dict = field(default_factory = dict)
     approvals: dict = field(default_factory = dict)
+    # Monotonic marks of a player call (/invoke): start, GPU wait and hold, first text; read by timing_of().
+    marks: dict[str, float] = field(default_factory = dict)
 
     def node(self, node_id: str) -> NodeState:
         state = self.nodes.get(node_id)
@@ -291,6 +293,7 @@ class RunState:
         self.emit("node.progress", node_id, data)
 
     def text_delta(self, node_id: str, port: str, delta: str) -> None:
+        self.marks.setdefault("first_text", time.monotonic())
         self._pending_text.setdefault((node_id, port), []).append(delta)
 
     def partial(self, node_id: str, data: dict) -> None:
@@ -583,6 +586,25 @@ class NodeContextImpl:
             raise FlowNodeError(f"This run passed the limit of {MAX_GPU_OPS_PER_RUN} GPU steps")
 
 
+def timing_of(marks: dict[str, float]) -> dict:
+    """Milliseconds from the start of a call: waiting for the GPU, first text, the end; after a cancel, how long
+    stopping took (until the GPU lane was free again)."""
+    start = marks.get("start")
+    if start is None:
+        return {}
+    ms = lambda a, b: round((marks[b] - marks[a]) * 1000.0, 1)
+    out: dict = {}
+    if "gpu_wait" in marks and "gpu_held" in marks:
+        out["gpu_wait_ms"] = ms("gpu_wait", "gpu_held")
+    if "first_text" in marks:
+        out["first_text_ms"] = ms("start", "first_text")
+    if "end" in marks:
+        out["total_ms"] = ms("start", "end")
+    if "cancel" in marks and "end" in marks:
+        out["stop_ms"] = ms("cancel", "end")
+    return out
+
+
 class FlowEngine:
     def __init__(self) -> None:
         self.runs: dict[str, RunState] = {}
@@ -687,9 +709,12 @@ class FlowEngine:
         hf_token: Optional[str] = None,
         origin: Optional[str] = "player",
         events: Optional[asyncio.Queue] = None,
+        timing: Optional[dict] = None,
     ) -> dict:
         """Run one entrypoint node (and what it needs, cache first) now and return its outputs.
-        ``events`` receives the run's events as they happen, text deltas included, for a streamed answer."""
+        ``events`` receives the run's events as they happen, text deltas included, for a streamed answer.
+        ``timing`` is filled with where the time went (milliseconds): see timing_of()."""
+        started = time.monotonic()
         plan, spec = self._entry(doc, entry)
         account = current_account()
         rs = RunState(
@@ -705,6 +730,7 @@ class FlowEngine:
             approvals = flows_db.get_capabilities(flow_id),
         )
         rs.hf_token = hf_token
+        rs.marks["start"] = started
         overrides = {
             k: v for k, v in (inputs or {}).items() if any(p["id"] == k for p in spec["inputs"])
         }
@@ -732,6 +758,7 @@ class FlowEngine:
                 await asyncio.wait({scope})
             except asyncio.CancelledError:
                 # The caller left: stop the model call through its hooks while they are registered.
+                rs.marks["cancel"] = time.monotonic()
                 rs.cancel_event.set()
                 await asyncio.shield(self._fire_cancel_hooks(rs))
                 scope.cancel()
@@ -750,6 +777,11 @@ class FlowEngine:
             if flusher is not None:
                 flusher.cancel()
                 rs.subscribers.discard(events)
+            rs.marks["end"] = time.monotonic()
+            found = timing_of(rs.marks)
+            if timing is not None:
+                timing.update(found)
+            logger.info("flows: invoke %s of %s timing %s", entry, flow_id, json.dumps(found))
             await asyncio.to_thread(self.revoke_key, key_id)
 
     def _entry(self, doc: dict, entry: str) -> tuple[Any, dict]:
@@ -1276,7 +1308,9 @@ class FlowEngine:
                 lock = self.gpu_lock()
                 if lock.locked():
                     rs.set_status(nid, "waiting", "Waiting for the GPU")
+                rs.marks.setdefault("gpu_wait", time.monotonic())
                 async with lock:
+                    rs.marks.setdefault("gpu_held", time.monotonic())
                     ctx.check_cancelled()
                     ctx.count_gpu_op()
                     if spec.get("exclusive_gpu"):

@@ -666,6 +666,7 @@ async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
         inputs = body.inputs,
         params = body.params,
         hf_token = _hf_token(request),
+        timing = {},
     )
     if body.stream:
         return _invoke_stream(request, engine, call, body)
@@ -685,7 +686,12 @@ async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
     finally:
         if not task.done():
             task.cancel()
-    return {"outputs": outputs, "session_id": body.session_id, "rev": body.rev}
+    return {
+        "outputs": outputs,
+        "session_id": body.session_id,
+        "rev": body.rev,
+        "timing": call["timing"],
+    }
 
 
 def _invoke_stream(
@@ -751,6 +757,7 @@ def _invoke_stream(
                     "outputs": outputs,
                     "session_id": body.session_id,
                     "rev": body.rev,
+                    "timing": call["timing"],
                 }
             )
         finally:
