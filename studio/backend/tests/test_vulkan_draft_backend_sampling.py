@@ -45,7 +45,6 @@ _DSPARK = [
 ]
 _REAL_POPEN = subprocess.Popen
 
-# MiniCPM-V-4.7's 248094 tokens put logits row 1 at byte 992376, 8 past a 16-byte boundary.
 _MINICPM_V47_VOCAB = 248094
 
 
@@ -114,7 +113,6 @@ def _launch(
     vocab,
     extra_args = None,
 ):
-    """Drive the real load_model as a DSpark load and return the argv it launches."""
     caps = dict(LlamaCppBackend.probe_server_capabilities("/nonexistent/llama-server"))
     caps.update(
         found = True,

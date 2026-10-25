@@ -6636,10 +6636,8 @@ def _extra_args_mtp_draft_path(
 _HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
 _LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
 
-# llama.cpp's Vulkan TOP_K binds its input with no misalignment offset, and backend draft sampling
-# (on by default) feeds it logits row r at r * n_vocab * 4 bytes: unless n_vocab % 64 == 0 that breaks
-# minStorageBufferOffsetAlignment (<= 256) and the server aborts on the first draft with
-# GGML_ASSERT(allow_misalign || misalign_bytes == 0) (#14987, MiniCPM-V-4.7 has 248094 tokens).
+# Vulkan TOP_K cannot bind a misaligned view, and backend draft sampling reads logits row r at
+# r * n_vocab * 4 bytes: n_vocab % 64 != 0 aborts on the first draft (#14987, MiniCPM-V-4.7).
 _VULKAN_ALIGNED_VOCAB_MULTIPLE = 64
 _NO_DRAFT_BACKEND_SAMPLING_FLAG = "--no-spec-draft-backend-sampling"
 
@@ -6647,7 +6645,6 @@ _NO_DRAFT_BACKEND_SAMPLING_FLAG = "--no-spec-draft-backend-sampling"
 def _draft_backend_sampling_off(
     spec_flags: list[str], caps: Mapping[str, object], vocab_size: Optional[int], vulkan: bool
 ) -> list[str]:
-    """``--no-spec-draft-backend-sampling`` for a Vulkan draft whose logits rows are misaligned, else []."""
     if not vulkan or "--spec-type" not in spec_flags:
         return []
     i = spec_flags.index("--spec-type")
