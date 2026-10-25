@@ -4694,8 +4694,7 @@ EOF
             substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
             substep "it afterwards has no effect until you install or update again."
         fi
-        # Forward gfx1153, which a runtime-less probe cannot read: the installer takes a ROCm bundle
-        # that covers it, else the Vulkan one when hipcc cannot build HIP. RDNA 1 / Polaris stay unforwarded.
+        # Forward gfx1153, which a runtime-less probe cannot read. RDNA 1 / Polaris stay unforwarded.
         if [ "$_setup_unsup_gfx" = gfx1153 ] && [ -z "$_setup_gfx" ]; then
             _setup_gfx=gfx1153
         fi

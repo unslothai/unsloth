@@ -5078,9 +5078,7 @@ class TestForkOnlyPrebuilts:
 
 
 class TestLinuxUncoveredRocmGpuTakesVulkan:
-    """Lone Krackan Point 2 (gfx1153) on Linux: setup forwards --rocm-gfx gfx1153, no fork Linux ROCm
-    bundle maps it, and without hipcc the HIP source build ends CPU-only. The Vulkan bundle runs this
-    GPU, so it is installed instead. With hipcc the source build stays (it builds HIP for gfx1153)."""
+    """Linux gfx1153 (no ROCm bundle): Vulkan without hipcc, the HIP source build with it."""
 
     TAG = "b11798-mix-f8a7950"
     ROCM = f"app-{TAG}-linux-x64-rocm-gfx110X.tar.gz"

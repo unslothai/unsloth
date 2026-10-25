@@ -7415,9 +7415,7 @@ def _hipcc_available() -> bool:
 
 
 def _uncovered_rocm_gpu_takes_vulkan(host: HostInfo) -> bool:
-    """A Linux x86_64 ROCm host whose GPU no ROCm bundle covers takes the Vulkan bundle when the
-    HIP source build would end CPU-only (no hipcc). Not under a HIP mask (Vulkan ignores it) or
-    beside an NVIDIA card (Vulkan would reach it too)."""
+    """No hipcc means a CPU-only source build; Vulkan ignores HIP masks and would reach an NVIDIA card."""
     return (
         host.is_linux
         and host.is_x86_64
@@ -7457,8 +7455,6 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         if published_rocm is not None:
             attempts.append(published_rocm)
         elif _uncovered_rocm_gpu_takes_vulkan(host):
-            # No bundle covers this gfx (gfx1153, gfx1152, ...) and no hipcc can build one: the
-            # source build would end CPU-only, while the Vulkan bundle runs this GPU.
             vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
             if vulkan_choice is not None:
                 log(

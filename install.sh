@@ -4806,8 +4806,7 @@ _amd_prefer_discrete_gfx() {
     case "${3:-}:$_apdg_sel" in
         torch:gfx1150|torch:gfx1151|torch:gfx1152) _apdg_strix=1 ;;
     esac
-    # Strix defers only when the picked generic index already ships AMD's Strix fixes (rocm7.13+,
-    # whose wheels also carry its kernels); below that, or on another index, it keeps its own wheels.
+    # Strix defers only to a generic rocm7.13+ index (AMD's Strix fixes); otherwise it keeps its wheels.
     if [ -n "$_apdg_strix" ]; then
         case "${_torch_index_leaf:-}" in
             rocm[0-9]*.[0-9]*) _rocm_leaf_below "$_torch_index_leaf" 7 13 && _apdg_strix="" ;;

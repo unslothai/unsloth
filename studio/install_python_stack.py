@@ -3643,11 +3643,8 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
-    # Strix defers only where the generic wheel installed instead keeps the APU working: a tag at
-    # or above the per-arch floor (7.13), which ships AMD's Strix fixes, and no HSA override (which
-    # spoofs every agent, the dGPU included). Below it the generic wheel lacks those fixes (and on
-    # ROCm 6.x the gfx1151 kernels), and a dGPU family index lacks the APU entirely: the Strix
-    # keeps its own per-arch index, as before.
+    # Strix defers only to a generic tag at the per-arch floor (7.13, AMD's Strix fixes) with no HSA
+    # override (it spoofs every agent); below it the generic wheel would leave the APU broken.
     _strix_rocm = _detect_rocm_version() if runtime_gfx in _STRIX_APU_GFX else None
     _strix_tag = _automatic_generic_pytorch_rocm_tag(_strix_rocm) if _strix_rocm else None
     _strix_first = (

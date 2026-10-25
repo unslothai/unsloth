@@ -92,8 +92,7 @@ def _sh_routing_leaf(
 
 @pytest.fixture
 def _generic_tag_with_strix_fixes(monkeypatch):
-    """A generic pytorch.org tag at the per-arch floor (none is published yet): the only case a
-    leading Strix defers, since only such a wheel keeps AMD's Strix fixes and its kernels."""
+    """A generic rocm7.13 tag (none is published yet), the only one a leading Strix defers to."""
     monkeypatch.setitem(stack_mod._ROCM_TORCH_INDEX, (7, 13), "rocm7.13")
 
 
@@ -102,8 +101,7 @@ def _generic_tag_with_strix_fixes(monkeypatch):
 )
 @pytest.mark.parametrize("rocm_version", [(6, 4), (7, 1), (7, 2)])
 def test_python_a_leading_strix_keeps_its_index_below_the_fix_floor(devices, rocm_version):
-    # Every generic tag below rocm7.13 lacks AMD's Strix fixes (6.x also its kernels), and the
-    # dGPU family indexes lack the APU: deferring traded a working APU for the dGPU (#13931).
+    # Below rocm7.13 deferring traded a working APU for the dGPU (#13931).
     calls = routing._run_install(gfx_devices = devices, rocm_version = rocm_version)
     assert f"repo.amd.com/rocm/whl/{devices[0]}" in calls, calls
     assert "installing for" not in routing._run_install.printed
@@ -628,8 +626,6 @@ def test_install_sh_lspci_gfx1153_is_only_the_fallback(tmp_path, lines, expected
     ],
 )
 def test_setup_sh_forwards_an_inferred_gfx1153_to_llama_cpp(unsup, setup_gfx, expected):
-    # The forwarding below the summary passes _setup_gfx as --rocm-gfx; the installer picks a
-    # covering ROCm bundle, else Vulkan when hipcc cannot build HIP.
     source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     start = source.index("        # Forward gfx1153, which a runtime-less probe cannot read")
     end = source.index("        fi\n", start) + len("        fi\n")
