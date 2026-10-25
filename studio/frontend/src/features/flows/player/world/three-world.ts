@@ -658,6 +658,8 @@ export function createWorld3d(
     const at = map.items[it.id];
     if (at && !picked.includes(it.id)) spawnItem(it, at);
   }
+  // Signs nothing walks into or picks up (a home a villager built).
+  const markers = new Map<string, three.Sprite>();
   const prompt = tagSprite("E", 0.14);
   prompt.visible = false;
   scene.add(prompt);
@@ -1111,6 +1113,17 @@ export function createWorld3d(
     },
     addItem(item: WorldItem, at: Point) {
       if (!items.has(item.id)) spawnItem(item, at);
+    },
+    addMarker(id: string, at: Point, icon: string, label: string) {
+      if (markers.has(id)) return;
+      const sign = tagSprite(`${icon} ${label}`, 0.22);
+      sign.position.set(
+        at.x + 0.5,
+        heightAt(terrain, at.x + 0.5, at.y + 0.5) + 0.2,
+        at.y + 0.5,
+      );
+      scene.add(sign);
+      markers.set(id, sign);
     },
     openEditor() {
       if (editor) return Promise.resolve(editor);

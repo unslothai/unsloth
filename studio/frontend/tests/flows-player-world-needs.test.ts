@@ -294,7 +294,7 @@ test("needs keep dropping while a villager follows or runs an errand", async () 
     new URL("../src/features/flows/player/world/world-player.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(src, /if \(steered\.current\.has\(n\.id\)\) \{[\s\S]{0,200}steeredNeeds\(mind, sim\.minutes_per_second\)/);
+  assert.match(src, /if \(steered\.current\.has\(n\.id\)[^{]*\) \{[\s\S]{0,200}steeredNeeds\(mind, sim\.minutes_per_second\)/);
 });
 
 test("errands end with the game clock in simulated worlds", () => {

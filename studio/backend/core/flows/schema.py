@@ -309,7 +309,8 @@ class WorldNpc(_Strict):
     wander: bool = True
     routine: Optional[str] = None
     relationships: Optional[dict[str, str]] = None
-    seed_memories: Optional[list[dict[str, Any]]] = None
+    seed_memories: Optional[list[dict[str, Any]]] = None  # [{text, importance}]
+    role: Optional[Literal["rival", "hostile"]] = None
 
 
 class WorldItem(_Strict):
@@ -363,6 +364,14 @@ class WorldSimulation(_Strict):
     needs: bool = True  # Sims-style needs pick what villagers do between plan blocks
 
 
+class WorldAutonomy(_Strict):
+    trade: bool = False  # make, buy and sell goods
+    homes: bool = False  # claim a free house or build one
+    quests: bool = False  # a rival races the player for quest items
+    rivals: bool = False  # the quest director may add rivals
+    enemies: bool = False  # hostile villagers chase and rob (non-lethal)
+
+
 class World3dView(_Strict):
     time_of_day: Optional[Literal["dawn", "day", "dusk", "night"]] = None
     sky: Optional[str] = None  # "#rrggbb"; the time of day picks one when unset
@@ -407,6 +416,7 @@ class WorldSpec(_Strict):
     style: Optional[str] = None
     entry_points: dict[str, str] = Field(default_factory = dict)
     simulation: Optional[WorldSimulation] = None
+    autonomy: Optional[WorldAutonomy] = None
     render: Optional[Literal["2d", "3d"]] = None
     view3d: Optional[World3dView] = None
     props3d: Optional[list[WorldProp3d]] = None

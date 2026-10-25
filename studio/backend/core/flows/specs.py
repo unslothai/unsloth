@@ -1976,6 +1976,13 @@ NODE_SPECS: list[dict] = [
             P("rules", "textarea", "Stay in character. Keep replies under 60 words.", "Rules"),
             P("summarise", "bool", True, "Summarise long conversations"),
             P("new_quests", "bool", True, "Keep generating quests"),
+            P(
+                "autonomy",
+                "select",
+                "off",
+                "Villagers act on their own",
+                options = ["off", "village", "rivals", "full"],
+            ),
         ],
         lane = "gpu",
         model_kind = "chat",
