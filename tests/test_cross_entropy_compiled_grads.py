@@ -8,7 +8,10 @@ import pytest
 import torch
 
 if not torch.cuda.is_available() or torch.version.hip is not None:
-    pytest.skip("needs an NVIDIA CUDA device", allow_module_level = True)
+    pytest.skip(
+        "Triton cross entropy kernels under torch.compile need an NVIDIA CUDA device",
+        allow_module_level = True,
+    )
 
 from unsloth.kernels import cross_entropy_loss as ce_mod
 
