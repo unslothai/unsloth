@@ -11,7 +11,6 @@ import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 
-/** Segment fills; dark mode takes lighter, softer tones of the same hues. */
 export const STORAGE_COLORS = {
   yellow: "bg-amber-400 dark:bg-[#f7d35f]",
   purple: "bg-violet-500 dark:bg-[#a971f2]",
@@ -31,7 +30,6 @@ export interface StorageSegment {
   color: string;
 }
 
-/** Usage headline, one stacked bar, a legend of sizes and a footnote. */
 export function StorageOverview({
   label,
   heading,
@@ -40,7 +38,6 @@ export function StorageOverview({
   totalBytes,
   footer,
 }: {
-  /** Settings search target for this block. */
   label?: string;
   heading: ReactNode;
   action?: ReactNode;
@@ -60,7 +57,7 @@ export function StorageOverview({
         <p className="text-sm font-semibold text-foreground">{heading}</p>
         {action}
       </div>
-      {/* A rounded rectangle, not a pill: the design asks for square-ish ends on the usage bar. */}
+      {/* A rounded rectangle, not a pill, by design. */}
       <div className="flex h-6 overflow-hidden rounded-sm bg-muted">
         {scale > 0
           ? segments.map((segment) =>
@@ -96,7 +93,6 @@ export function StorageOverview({
   );
 }
 
-/** Bordered group of action rows, divided like a list. */
 export function SettingsCard({
   children,
   className,
@@ -121,7 +117,6 @@ export function SettingsCardRow({
 }: {
   label: string;
   description?: ReactNode;
-  /** Long-form explanation behind an info icon, as in SettingsRow. */
   hint?: string;
   children?: ReactNode;
 }) {
