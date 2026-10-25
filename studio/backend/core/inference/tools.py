@@ -144,10 +144,8 @@ _DDGS_RESET_MARKERS = (
     "forcibly closed",  # Windows WSAECONNRESET (10054)
 )
 _DDGS_HTTP1_RETRY_LOCK = threading.Lock()
-# Seconds an engine gets to accept the connection. One blocked on the network never does, and under
-# the whole-request timeout alone a blocked tier 1 spent the tool budget (300s, more as ddgs waits
-# once per batch of engines), so tier 2 and the Wikipedia fallback never ran (#15143). An engine
-# that connects keeps the whole budget to answer.
+# Connect cap per engine: a blocked tier 1 otherwise spent the whole tool budget, so tier 2 and the
+# Wikipedia fallback never ran (#15143). A connected engine keeps the full budget to answer.
 _SEARCH_CONNECT_TIMEOUT = 10
 # primp's and httpx's wording for a connect timeout; a read timeout is "operation timed out".
 _DDGS_CONNECT_TIMEOUT_MARKERS = ("connection timed out", "connecttimeout")
