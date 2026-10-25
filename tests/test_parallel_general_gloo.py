@@ -342,7 +342,123 @@ def _pp_parity(mesh, arch):
     }
 
 
-CASES = {"tp": _case_tp, "pp": _case_pp}
+def _import_checkout_unsloth():
+    """`import unsloth` from this checkout (conftest's device spoof first); None, or why it failed."""
+    for name in [n for n in sys.modules if n == "unsloth" or n.startswith("unsloth.")]:
+        del sys.modules[name]
+    sys.path.insert(0, REPO)
+    try:
+        spec = importlib.util.spec_from_file_location("_pg_conftest", os.path.join(REPO, "tests", "conftest.py"))
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+        import unsloth  # noqa: F401
+    except Exception as e:  # a CPU host that refuses `import unsloth`
+        return repr(e)
+    return None
+
+
+def _no_host_sync():
+    """Patches making any device -> host read of a tensor (float(), .item(), bool()) raise."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def guard():
+        saved = {k: getattr(torch.Tensor, k) for k in ("__float__", "item", "__bool__")}
+
+        def refuse(self, *args, **kwargs):
+            raise AssertionError("host sync")
+
+        try:
+            for k in saved:
+                setattr(torch.Tensor, k, refuse)
+            yield
+        finally:
+            for k, v in saved.items():
+                setattr(torch.Tensor, k, v)
+
+    return guard()
+
+
+def _case_clip(rank, world, tmp):
+    """tp_clip_grad_norm_ / _clip_over_world: no host sync, a tensor norm, grads clipped to max_norm."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))["tp"]
+    model = build("llama")
+    tpn.apply_tensor_parallel(model, mesh)
+    ids, labels = batch(model, bsz = 2)
+    params = [p for p in model.parameters() if p.requires_grad]
+    out = {}
+    for name, clip in (
+        ("tp_clip_grad_norm_", lambda: tpn.tp_clip_grad_norm_(params, 1e-3)),
+        ("_clip_over_world", lambda: tpn._clip_over_world([p for p in params if p.grad is not None], 1e-3, 1e-6)),
+        ("no_clip", lambda: tpn.tp_clip_grad_norm_(params, 1e9)),
+    ):
+        model.zero_grad(set_to_none = True)
+        model(input_ids = ids, labels = labels, use_cache = False).loss.backward()
+        before = {n: tpn._full(p.grad, p).clone() for n, p in model.named_parameters() if p.grad is not None}
+        try:
+            with _no_host_sync():
+                norm = clip()
+            error = None
+        except AssertionError as e:
+            norm, error = None, str(e)
+        after = {n: tpn._full(p.grad, p).clone() for n, p in model.named_parameters() if p.grad is not None}
+        total = float(torch.stack([g.double().square().sum() for g in after.values()]).sum().sqrt())
+        out[name] = {
+            "error": error,
+            "is_tensor": isinstance(norm, torch.Tensor),
+            "norm": None if norm is None else float(norm),
+            "before": float(torch.stack([g.double().square().sum() for g in before.values()]).sum().sqrt()),
+            "after": total,
+            "unchanged": all(torch.equal(before[k], after[k]) for k in before),
+        }
+    return out
+
+
+EXPORTS = ("unsloth_save_model", "unsloth_save_model:lora", "unsloth_generic_save_pretrained_merged",
+           "unsloth_save_pretrained_merged")
+
+
+def _case_export(rank, world, tmp):
+    """Merged / LoRA exports refuse a TP or PP model on every rank before writing anything."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth import save
+    from unsloth.models import _utils, pp_native, tp_native
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))["tp"]
+    guard = getattr(_utils, "_refuse_model_parallel_export", None)
+    if guard is not None:
+        guard(build("llama"), "save_pretrained_merged")  # not parallel: passes through
+    tp_model = build("llama")
+    tp_native.apply_tensor_parallel(tp_model, mesh)
+    pp_model = build("llama")
+    pp_native.apply_pipeline_parallel(pp_model, mesh, n_microbatches = 2)
+    calls = {
+        "unsloth_save_model": lambda m, d: save.unsloth_save_model(m, None, d, save_method = "merged_16bit"),
+        "unsloth_save_model:lora": lambda m, d: save.unsloth_save_model(m, None, d, save_method = "lora"),
+        "unsloth_generic_save_pretrained_merged": lambda m, d: save.unsloth_generic_save_pretrained_merged(
+            m, d, tokenizer = None, save_method = "merged_16bit"
+        ),
+        "unsloth_save_pretrained_merged": lambda m, d: save.unsloth_save_pretrained_merged(m, d, tokenizer = None),
+    }
+    out = {}
+    for kind, model in (("tp", tp_model), ("pp", pp_model)):
+        for name in EXPORTS:
+            directory = os.path.join(tmp, f"{kind}_{name.replace(':', '_')}_{rank}")
+            try:
+                calls[name](model, directory)
+                error = None
+            except Exception as e:
+                error = f"{type(e).__name__}: {e}"
+            wrote = os.path.exists(directory) and bool(os.listdir(directory))
+            out[f"{kind}:{name}"] = {"error": error, "wrote": wrote}
+    return out
+
+
+CASES = {"tp": _case_tp, "pp": _case_pp, "clip": _case_clip, "export": _case_export}
 
 
 def _worker(rank, world, port, case, tmp):
@@ -384,6 +500,15 @@ def _spawn(case, world = 2):
         codes = [p.exitcode for p in procs]
         assert codes == [0] * world, f"rank exit codes {codes}"
         return [torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)]
+
+
+_SPAWNED = {}
+
+
+def _spawn_cached(case):
+    if case not in _SPAWNED:
+        _SPAWNED[case] = _spawn(case)
+    return _SPAWNED[case]
 
 
 def _close(a, b, rtol):
@@ -456,3 +581,62 @@ def test_tp_head_norm_names_need_one_head():
     attn.query_layernorm = type(attn.query_layernorm)(64)
     with pytest.raises(ValueError, match = "normalizes 64 features, not one head"):
         tpn.derive_tp_plan(model, 2)
+
+
+@pytest.mark.parametrize("name", ["tp_clip_grad_norm_", "_clip_over_world", "no_clip"])
+def test_tp_clip_has_no_host_sync(name):
+    for res in _spawn_cached("clip"):
+        r = res[name]
+        assert r["error"] is None and r["is_tensor"], r
+        assert r["norm"] == pytest.approx(r["before"], rel = 1e-5), r
+        if name == "no_clip":
+            assert r["unchanged"], r  # a coefficient clamped at 1 leaves the grads bitwise unchanged
+        else:
+            assert r["after"] == pytest.approx(1e-3, rel = 1e-4), r
+
+
+@pytest.mark.parametrize("kind", ["tp", "pp"])
+@pytest.mark.parametrize("name", EXPORTS)
+def test_exports_refuse_model_parallel_before_writing(kind, name):
+    results = _spawn_cached("export")
+    if "skip" in results[0]:
+        pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
+    want = "tensor parallel model" if kind == "tp" else "pipeline parallel model"
+    for res in results:
+        r = res[f"{kind}:{name}"]
+        assert r["error"] and "RuntimeError" in r["error"] and want in r["error"], r
+        assert not r["wrote"], r
+
+
+def test_every_whole_model_export_is_guarded():
+    """Static: every export patch_saving_functions binds, and every writer behind them, refuses TP / PP first."""
+    import ast
+
+    tree = ast.parse(open(os.path.join(REPO, "unsloth", "save.py")).read())
+    functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    bound = set()
+    for node in ast.walk(functions["patch_saving_functions"]):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_bind_saving_method":
+            bound.add(node.args[0].id)
+    adapter_or_tokenizer = {"unsloth_model_save_pretrained", "unsloth_push_to_hub", "unsloth_tokenizer_save_pretrained"}
+    writers = {
+        "unsloth_save_model",
+        "unsloth_generic_save",
+        "unsloth_save_pretrained_merged",
+        "unsloth_push_to_hub_merged",
+        "save_to_gguf_generic",
+        "_unsloth_save_lora_gguf",
+        "save_lora_to_custom_dir",
+        "_unsloth_save_compressed_tensors",
+        "_unsloth_save_torchao",
+        "_unsloth_save_openvino",
+    }
+    targets = (bound - adapter_or_tokenizer) | writers
+    assert len(targets) >= 18, sorted(targets)
+    unguarded = []
+    for name in sorted(targets):
+        decorators = functions[name].decorator_list  # bound inside patch_saving_functions: defined at module level
+        first = decorators[0] if decorators else None
+        if not (isinstance(first, ast.Call) and getattr(first.func, "id", None) == "_model_parallel_refuses_save"):
+            unguarded.append(name)
+    assert not unguarded, unguarded
