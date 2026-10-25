@@ -5700,6 +5700,7 @@ def patch_gradient_accumulation_fix(Trainer):
                 pass
             # Unsloth tensor parallel model (apply_tensor_parallel): no DDP over the tp ranks, dataloader
             # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
+            _refuse_pipeline_parallel_for_trainer(model)
             tensor_parallel = _tensor_parallel_trainer_pre(model)
             from ..fsdp2_launch import unsloth_fsdp2_native_requested
 
@@ -5815,6 +5816,10 @@ def _refuse_tensor_parallel_for_trainer(model):
             "Unsloth: a tensor parallel model (apply_tensor_parallel) returned by model_init cannot be "
             "trained by the Trainer; build it first and pass Trainer(model = model)."
         )
+    _refuse_pipeline_parallel_for_trainer(model)
+
+
+def _refuse_pipeline_parallel_for_trainer(model):
     if _is_unsloth_pipeline_parallel(model):
         raise RuntimeError(
             "Unsloth: a pipeline parallel model (apply_pipeline_parallel) cannot be trained by the "
