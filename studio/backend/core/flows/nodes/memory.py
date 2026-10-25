@@ -64,7 +64,6 @@ def _now(ctx: NodeContext) -> float:
     value = ctx.inputs.get("now")
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
-    # No clock wired: wall-clock hours, so the 0.995-per-hour decay means real hours.
     return time.time() / 3600.0
 
 
@@ -88,7 +87,6 @@ def _set_vectors(records: list[dict], vectors: Optional[list], model: Optional[s
 
 
 async def _embed(ctx: NodeContext, texts: list[str]) -> Optional[tuple[list, Optional[str]]]:
-    """Vectors plus the name of the model that made them, so a stream can tell when the model changed."""
     if not texts:
         return [], None
     try:
@@ -162,7 +160,6 @@ async def _rate_batch(ctx: NodeContext, texts: list[str]) -> list[int]:
 
 
 def _items(value: Any) -> list[dict]:
-    """Texts to add: one text, a list of texts, or records {text, importance?, kind?}."""
     if value is None:
         return []
     values = value if isinstance(value, list) else [value]
@@ -305,7 +302,6 @@ async def reflect(ctx: NodeContext) -> dict:
         seed = ctx.seed,
     )
     asked = raw.get("questions") if isinstance(raw, dict) else None
-    # Without structured output a local model may answer one question as a bare string.
     asked = [asked] if isinstance(asked, str) else asked if isinstance(asked, list) else []
     questions = [str(q).strip() for q in asked if str(q).strip()][:3]
     if not questions:
@@ -424,7 +420,6 @@ def clean_plan(raw: Any, places: list[str], chunks: int) -> list[dict]:
     """Keep well-formed entries in time order; a place outside the known list is dropped, not guessed."""
     plan = []
     entries = raw.get("plan") if isinstance(raw, dict) else None
-    # Without structured output a local model may return one entry as a bare object.
     entries = (
         [entries] if isinstance(entries, dict) else entries if isinstance(entries, list) else []
     )

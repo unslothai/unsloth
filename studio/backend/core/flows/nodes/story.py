@@ -123,7 +123,6 @@ def _expression_names(value: Any) -> list[str]:
     return out[:8]
 
 
-# Face cues that make an expression read at sprite size.
 _EXPRESSION_CUES = {
     "happy": "a wide open-mouthed smile, raised cheeks, eyes crinkled with joy",
     "sad": "drooping brows, a downturned mouth, glossy eyes looking down",
@@ -149,7 +148,6 @@ async def _expression_portraits(
     cut_out: bool,
     progress: Any = None,
 ) -> dict[str, dict]:
-    """One portrait per expression from the uncut base portrait: reference workflow, same seed, so the face holds."""
     out: dict[str, dict] = {}
     for i, expr in enumerate(expressions):
         ctx.check_cancelled()
@@ -231,7 +229,6 @@ async def story_illustrate(ctx: NodeContext) -> dict:
     }
     total = max(1, len(todo_bg) + len(todo_pt) + sum(len(v) for v in todo_ex.values()))
     done = 0
-    # Scenes that share a prompt share one painting.
     painted: dict[str, dict] = {}
     for s in todo_bg:
         ctx.check_cancelled()

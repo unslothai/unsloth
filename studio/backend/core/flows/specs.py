@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-# Param kinds the generic inspector renders:
-# text, textarea, number, int, bool, select, model, seed, json, color, string_list, expr, asset, story, world, schema
 CATEGORIES = [
     {"id": "input", "title": "Inputs", "color": "#64748b"},
     {"id": "text", "title": "Text & LLM", "color": "#8b5cf6"},
@@ -41,7 +39,6 @@ PORT_COLORS = {
     "json": "#94a3b8",
     "list": "#e2e8f0",
     "image": "#f472b6",
-    # A grayscale image where white marks the area to repaint; interchangeable with image ports.
     "mask": "#fb7185",
     "audio": "#34d399",
     "video": "#f87171",
@@ -111,7 +108,6 @@ def P(
     return d
 
 
-# The input type a bindable param of each kind takes.
 BIND_TYPES = {
     "number": "number",
     "int": "number",
@@ -120,7 +116,6 @@ BIND_TYPES = {
     "text": "text",
     "textarea": "text",
     "select": "text",
-    # Expressions are JSON trees ({op, args}), like the field's JSON editor.
     "expr": "json",
     "color": "text",
     "json": "json",
@@ -177,14 +172,13 @@ def spec(
         "inputs": inputs,
         "outputs": list(outputs),
         "params": list(params),
-        "lane": lane,  # cpu | gpu | player
+        "lane": lane,
         "model_kind": model_kind,
         "cacheable": cacheable and not side_effect,
         "side_effect": side_effect,
         "icon": icon,
         # player: authored for a player (story/world); the engine compiles it, never runs it as a step.
         "player": player,
-        # entrypoint: can be invoked by name from a player (`/invoke`).
         "entrypoint": entrypoint,
         # flow_in/flow_out: story control handles (edges of kind "flow"). flow_out names the outgoing handles.
         "flow_in": flow_in,
@@ -192,16 +186,13 @@ def spec(
     }
     # Only when set, so the published catalog of existing nodes stays the same.
     if requires:
-        # requires: the model backend the node needs ("transformers" or "gguf"), checked after the load.
         found["requires"] = list(requires)
     if exclusive_gpu:
-        # exclusive_gpu: hold the Studio-wide GPU lease while the node runs (measurements). The engine takes
-        # the lease on the GPU lane, so an exclusive node always runs there.
+        # exclusive_gpu: hold the Studio-wide GPU lease while the node runs; such a node always runs on the GPU lane.
         found["exclusive_gpu"] = True
         found["lane"] = "gpu"
     if requires_approval:
-        # requires_approval: python | http | mcp | provider | trigger; owner-started runs only, once the owner
-        # approved it for the flow (core/flows/capabilities.py).
+        # requires_approval: python | http | mcp | provider | trigger, owner-approved per flow (core/flows/capabilities.py).
         found["requires_approval"] = list(requires_approval)
     return found
 
@@ -217,7 +208,6 @@ _IMAGE_SIZE = [
     "1536x640",
 ]
 
-# Studio's image route fields, passed through only when set (models/inference.py DiffusionGenerateRequest).
 _IMAGE_ADVANCED = [
     P(
         "loras",

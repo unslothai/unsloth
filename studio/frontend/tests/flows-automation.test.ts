@@ -59,7 +59,6 @@ test("the webhook URL uses the backend origin and never shows the last block's s
     new URL("../src/features/flows/editor/trigger-panel.tsx", import.meta.url),
     "utf8",
   );
-  // Desktop serves the page from the webview, not the HTTP server the hook lives on.
   assert.match(source, /webhookUrl\(getApiBase\(\) \|\| window\.location\.origin/);
   assert.match(source, /setTrigger\(null\);\s*\}, \[flowId, nodeId\]\)/);
 });
@@ -72,6 +71,5 @@ test("the approval banner never shows or approves another flow's report", async 
   );
   assert.match(source, /current\.current === flowId && setReport\(found\)/);
   assert.match(source, /setReport\(null\);\s*\}, \[flowId\]\)/);
-  // An approval that returns after the user opened another flow must not land on that flow's banner.
   assert.match(source, /if \(current\.current === flowId\) setReport\(approved\)/);
 });

@@ -19,7 +19,6 @@ def canonical(value: Any) -> str:
 
 
 def _value_identity(value: Any) -> Any:
-    """Media and assets are identified by their ref, not by URLs that may change."""
     if isinstance(value, dict):
         if value.get("kind") in ("image", "audio", "video") and isinstance(value.get("ref"), str):
             return {"kind": value["kind"], "ref": value["ref"]}
