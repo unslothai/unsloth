@@ -86,4 +86,6 @@ def test_every_round_launch_hands_the_driver_the_cancel():
 
     source = inspect.getsource(llama_mod.LlamaCppBackend.generate_chat_completion_with_tools)
     launch = source.index("_pending_calls[_entry_index] = _start_tool_call(")
-    assert "cancel_event = cancel_event" in source[launch : launch + 600]
+    # The round's own abort rides with the request cancel, so a failed settlement stops it too.
+    assert "_tool_cancel = _interrupt_event(cancel_event, _round_abort)" in source
+    assert "cancel_event = _tool_cancel" in source[launch : launch + 600]

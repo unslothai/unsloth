@@ -137,3 +137,58 @@ def test_an_ordinary_error_in_the_drain_is_still_reported(monkeypatch):
             )
         )
     assert not cancel.is_set()
+
+
+def test_a_settlement_error_stops_the_running_sibling_without_stopping_the_request(
+    monkeypatch,
+):
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    outcome: dict = {}
+    finished = threading.Event()
+
+    def _execute(
+        name,
+        arguments,
+        *,
+        cancel_event = None,
+        **_kwargs,
+    ):
+        if (arguments or {}).get("query") == "alpha":
+            return "alpha-done"
+        stopped = cancel_event is not None and cancel_event.wait(3.0)
+        outcome["beta"] = "stopped" if stopped else "side effect after the round failed"
+        finished.set()
+        return "beta"
+
+    def _broken(self, *args, **kwargs):
+        raise RuntimeError("ledger broke")
+
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _gguf_sse(
+                    {"tool_calls": [_call(0, "call_a", "alpha"), _call(1, "call_b", "beta")]}
+                ),
+                _gguf_done(),
+            ],
+            [_gguf_sse({"content": "Final answer."}), _gguf_done()],
+        ],
+        [],
+    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
+    monkeypatch.setattr(ToolLoopController, "record_result", _broken)
+    cancel = threading.Event()
+    with pytest.raises(RuntimeError, match = "ledger broke"):
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "go"}],
+                tools = [WEB],
+                max_tool_iterations = 2,
+                cancel_event = cancel,
+            )
+        )
+    assert finished.wait(5.0), "the sibling never returned"
+    assert outcome["beta"] == "stopped", outcome["beta"]
+    assert not cancel.is_set()

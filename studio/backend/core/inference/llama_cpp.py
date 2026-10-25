@@ -45523,6 +45523,9 @@ class LlamaCppBackend:
                     and not _round_needs_order(tool_calls)
                 )
                 _pending_calls: list = []
+                # Ends the round's overlapped calls when it fails, without marking the request stopped.
+                _round_abort = threading.Event() if _parallel_round else None
+                _tool_cancel = _interrupt_event(cancel_event, _round_abort)
                 _round_launched = [0]
                 _round_budget_cell: list = [None, None]
 
@@ -46027,6 +46030,7 @@ class LlamaCppBackend:
                         def _invoke_tool(
                             _output_callback,
                             _decision = decision,
+                            _call_cancel = _tool_cancel,
                             _branch = _call_branch,
                             _approved = _host_access_approved,
                             _strict = strict_isolation,
@@ -46043,7 +46047,7 @@ class LlamaCppBackend:
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
-                                cancel_event = cancel_event,
+                                cancel_event = _call_cancel,
                                 timeout = _effective_timeout,
                                 session_id = session_id,
                                 thread_id = thread_id,
@@ -46404,7 +46408,7 @@ class LlamaCppBackend:
                             _invoke_tool,
                             tool_name = decision.tool_name,
                             tool_call_id = decision.tool_call_id,
-                            cancel_event = cancel_event,
+                            cancel_event = _tool_cancel,
                             started_events = _started_events,
                         )
                         if _parallel_round:
@@ -46590,7 +46594,7 @@ class LlamaCppBackend:
                                 _entry[3],
                                 _entry[4],
                                 _entry[5],
-                                cancel_event = cancel_event,
+                                cancel_event = _tool_cancel,
                             )
 
                 # Empty unless `_parallel_round`, so the sequential path never reaches here.
@@ -46653,6 +46657,8 @@ class LlamaCppBackend:
                             _p_decision, result, _p_budget, _p_starved, _p_compact
                         )
                 except BaseException as _round_exit:
+                    if _round_abort is not None and _pending_calls:
+                        _round_abort.set()
                     if (
                         not isinstance(_round_exit, Exception)
                         and _pending_calls
