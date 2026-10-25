@@ -68,7 +68,9 @@ def _native(rank, world, layout):
         mesh = None
         share = TOKENS // world
         tokens = x[rank * share : (rank + 1) * share]
-        num_items = (TOKENS * world) // world  # HF sums the count over the world, CP divides it by cp
+        num_items = (
+            TOKENS * world
+        ) // world  # HF sums the count over the world, CP divides it by cp
     else:
         # Two disjoint 2-rank meshes [0, 1] and [2, 3]; every rank reads its own quarter of the batch.
         mesh = DeviceMesh("cpu", [[0, 1], [2, 3]], mesh_dim_names = ("pair", "shard"))["shard"]
@@ -93,11 +95,18 @@ def _native(rank, world, layout):
     scaler.scale((out.float() * coef).sum() / num_items * world).backward()
     scaler.unscale_(opt)
     found_inf = float(
-        sum(v.item() for v in scaler._per_optimizer_states[id(opt)]["found_inf_per_device"].values())
+        sum(
+            v.item() for v in scaler._per_optimizer_states[id(opt)]["found_inf_per_device"].values()
+        )
     )
     scaler.step(opt)
     scaler.update()
-    return found_inf, float(scaler._init_scale), float(scaler.get_scale()), model.weight.full_tensor().detach().clone()
+    return (
+        found_inf,
+        float(scaler._init_scale),
+        float(scaler.get_scale()),
+        model.weight.full_tensor().detach().clone(),
+    )
 
 
 def _worker(rank, world, port, out, layout):
@@ -115,7 +124,6 @@ def _worker(rank, world, port, out, layout):
             res["native"] = _native(rank, world, layout)
         except Exception as e:  # noqa: BLE001
             import traceback
-
             res["native"] = repr(e) + traceback.format_exc()
         torch.save(res, os.path.join(out, f"rank{rank}.pt"))
     finally:
@@ -124,7 +132,9 @@ def _worker(rank, world, port, out, layout):
 
 def _run(tmp_path_factory, layout, world):
     out = str(tmp_path_factory.mktemp(f"fp16_{layout}"))
-    torch.multiprocessing.spawn(_worker, args = (world, _free_port(), out, layout), nprocs = world, join = True)
+    torch.multiprocessing.spawn(
+        _worker, args = (world, _free_port(), out, layout), nprocs = world, join = True
+    )
     return [torch.load(os.path.join(out, f"rank{r}.pt"), weights_only = False) for r in range(world)]
 
 

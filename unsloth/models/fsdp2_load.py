@@ -71,7 +71,11 @@ def _output_head_weight(model):
     return weight if isinstance(weight, torch.Tensor) else None
 
 
-def _refuse_unsharded_forward(module, args, kwargs = None):
+def _refuse_unsharded_forward(
+    module,
+    args,
+    kwargs = None,
+):
     raise RuntimeError(
         "Unsloth: this model was loaded with native FSDP2 sharded loading (each rank holds only its shard "
         "of the linear weights); shard it first (unsloth.models.fsdp2_native.shard_model(model), or let the "
@@ -194,7 +198,6 @@ def load_fsdp2_sharded(
     16-bit). Raises if no model went through the sharded path."""
     if loader is None:
         from unsloth import FastLanguageModel
-
         loader = FastLanguageModel.from_pretrained
         kwargs.setdefault("load_in_4bit", False)
     with fsdp2_sharded_loading(mesh) as state:
@@ -209,11 +212,15 @@ def load_fsdp2_sharded(
 
 def fsdp2_sharded_load_requested():
     """UNSLOTH_FSDP2_SHARDED_LOAD=1 with native FSDP2 requested (UNSLOTH_FSDP2=1 under WORLD_SIZE > 1)."""
-    if os.environ.get("UNSLOTH_FSDP2_SHARDED_LOAD", "0").strip().lower() not in ("1", "true", "yes", "on"):
+    if os.environ.get("UNSLOTH_FSDP2_SHARDED_LOAD", "0").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
         return False
     try:
         from .fsdp2_native import native_fsdp2_requested
-
         return bool(native_fsdp2_requested())
     except Exception:
         return False
@@ -334,7 +341,13 @@ def _full_from_chunks(local, info, mesh, dtype):
     return torch.cat(pieces, 0)[:rows].to(dtype).contiguous()
 
 
-def gather_replicated(model, pending, replicated, mesh, also = ()):
+def gather_replicated(
+    model,
+    pending,
+    replicated,
+    mesh,
+    also = (),
+):
     """Chunks whose parameter stays replicated (outside FSDP2) are gathered whole, and swapped in
     `replicated` and the sets in `also`. Collective over `mesh`; every rank reaches it with the same set
     (the layout and dtype decisions are agreed)."""
@@ -396,7 +409,9 @@ def finish_shard(model, pending):
                 )
             with torch.no_grad():
                 local = local.to(dtype = old.dtype)
-            new = nn.Parameter(fsdp_param.to_sharded_dtensor(local), requires_grad = old.requires_grad)
+            new = nn.Parameter(
+                fsdp_param.to_sharded_dtensor(local), requires_grad = old.requires_grad
+            )
             for attr, value in old.__dict__.items():
                 if attr != "_unsloth_fsdp2_pending":
                     new.__dict__[attr] = value
