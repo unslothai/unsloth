@@ -4159,7 +4159,13 @@ export function ModelConfigPage({
       >
       {/* pt-3.25: Remember's cap top 18px under the rule, as under the buttons. */}
       <div className="flex flex-col gap-3.5 border-t border-border pt-3.25">
-        <div className="flex min-w-0 items-center gap-2">
+        {/* The sidebar is too narrow for both on one row: the status takes a line of its own. */}
+        <div
+          className={cn(
+            "flex min-w-0 items-center gap-x-2",
+            variant === "sidebar" && "flex-wrap",
+          )}
+        >
           <Checkbox
             id={rememberId}
             aria-describedby={saveStatusId}
@@ -4182,7 +4188,13 @@ export function ModelConfigPage({
             id={saveStatusId}
             aria-live="polite"
             data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
-            className="ml-auto min-w-0 truncate text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+            className={cn(
+              "min-w-0 truncate text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400",
+              // min-h: the line keeps its height while empty, so a status appearing never moves the buttons.
+              variant === "sidebar"
+                ? "min-h-[calc(1.375em+0.25rem)] basis-full pt-1 pl-6"
+                : "ml-auto",
+            )}
           >
             {saveStatus}
           </p>
