@@ -3,7 +3,7 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Delete02Icon, ImageAdd02Icon, ImageCropIcon } from "@hugeicons/core-free-icons";
+import { Delete02Icon, ImageCropIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { Button } from "@/components/ui/button";
@@ -179,7 +179,7 @@ export function ImageDropzone({
     return (
       <div
         data-reload-snapshot-sensitive
-        className={cn("relative overflow-hidden rounded-[10px] border border-border", className)}
+        className={cn("relative overflow-hidden rounded-lg border border-border", className)}
       >
         {/* Checkerboard behind the preview, so a transparent upload shows its alpha. */}
         <img
@@ -257,12 +257,12 @@ export function ImageDropzone({
       className={cn(
         "flex h-28 w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed text-xs transition-colors",
         dragging
-          ? "border-primary/60 bg-primary/5 text-foreground"
+          ? "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5 text-foreground"
           : "border-border text-muted-foreground hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
         className,
       )}
     >
-      <HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />
+      <HugeiconsIcon icon={PlusSignIcon} className="size-5" />
       <span>{label}</span>
       <input
         ref={inputRef}

@@ -10178,11 +10178,46 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
 _with_session_packages = os_sandbox.with_session_packages
 
 
+def _script_top_level_imports(script: str) -> "list[str]":
+    """Top-level module names an approved script imports by absolute name; none if it does not parse."""
+    try:
+        tree = ast.parse(script)
+    except (SyntaxError, ValueError):
+        return []
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return sorted(names)
+
+
+def _requested_chat_clis(scripts: str, text: str, dest: str) -> "str | None":
+    """Copy the chat-installed CLIs whose names appear as words in *text* into *dest*; *dest* if any."""
+    try:
+        entries = os.listdir(scripts)
+    except OSError:
+        return None
+    # Windows resolves commands case-insensitively.
+    fold = str.lower if os.name == "nt" else str
+    words = {fold(word) for word in re.findall(r"[\w.+-]+", text)}
+    copied = False
+    for entry in entries:
+        stem = os.path.splitext(entry)[0] if os.name == "nt" else entry
+        source = os.path.join(scripts, entry)
+        if (fold(entry) in words or fold(stem) in words) and os.path.isfile(source):
+            os.makedirs(dest, exist_ok = True)
+            shutil.copy2(source, os.path.join(dest, entry))
+            copied = True
+    return dest if copied else None
+
+
 def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]":
     """argv and env for an approved host-access launch: nothing it loads comes from the sandbox-writable workdir.
 
     HOME and (for the python tool) the script move to a private per-call directory outside every workdir, and the
-    session packages stay off PYTHONPATH/PATH; earlier sandboxed calls can write all of those in the workdir. The
+    session packages and the helpers the script imports only ever go last on sys.path/PATH; earlier sandboxed calls can write all of those in the workdir. The
     cwd stays the workdir, so relative paths in the approved code resolve as before.
     """
     private = tempfile.mkdtemp(prefix = "unsloth-host-call-")
@@ -10192,25 +10227,34 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
         if sys.platform == "win32":
             env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(private)
         argv = tuple(plan.argv)
+        packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+        if os.path.isdir(packages):
+            # The trusted sitecustomize appends these after installed packages for Python and Terminal alike.
+            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
+            env["PYTHONNOUSERSITE"] = "1"
+            # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
+            # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
+            requested = _requested_chat_clis(
+                os.path.join(packages, "Scripts" if os.name == "nt" else "bin"),
+                script if script is not None else " ".join(map(str, argv)),
+                os.path.join(private, ".unsloth-chat-bin"),
+            )
+            if requested:
+                env["PATH"] = os.pathsep.join(
+                    part for part in (env.get("PATH", ""), requested) if part
+                )
         if script is not None and argv:
+            # Helper modules the approved script itself imports stay importable from the chat folder, after
+            # everything else. Only those names: a library probing an optional import never reaches the folder.
+            helpers = _script_top_level_imports(script)
+            if helpers:
+                env["_UNSLOTH_HOST_WORKDIR"] = plan.workdir
+                env["_UNSLOTH_HOST_WORKDIR_MODULES"] = ",".join(helpers)
             # Written here, not read back from the workdir copy: a sandboxed call could have replaced that file.
             path = os.path.join(private, os.path.basename(argv[-1]))
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding = "utf-8") as f:
                 f.write(script)
-            packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
-            if os.path.isdir(packages):
-                # Chat-installed packages go last on sys.path, so the sandbox-writable folder cannot shadow anything.
-                launcher = os.path.join(private, "unsloth_host_launch.py")
-                fd = os.open(launcher, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w", encoding = "utf-8") as f:
-                    f.write(
-                        "import runpy, sys\n"
-                        f"sys.path.append({packages!r})\n"
-                        f"sys.argv[0] = {path!r}\n"
-                        f"runpy.run_path({path!r}, run_name = '__main__')\n"
-                    )
-                path = launcher
             argv = (*argv[:-1], path)
             # The script's own folder stays off sys.path too (CPython >= 3.11).
             env["PYTHONSAFEPATH"] = "1"
