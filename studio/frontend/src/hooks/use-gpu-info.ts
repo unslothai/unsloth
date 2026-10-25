@@ -269,7 +269,9 @@ function toGpuDevices(
     .map((d) => ({
       index: d.index as number,
       indexKind:
-        d.index_kind === "physical" || d.index_kind === "vulkan"
+        d.index_kind === "physical" ||
+        d.index_kind === "vulkan" ||
+        d.index_kind === "cuda_device"
           ? d.index_kind
           : null,
       name: d.name ?? `GPU ${d.index}`,
@@ -284,8 +286,11 @@ function toGpuDevices(
       pinnable:
         pinnableBackend &&
         (d.index_kind === "vulkan" ||
-          (data?.device_backend !== "xpu" && d.index_kind === "physical")),
-      diffusionPinnable: diffusionBackend && d.index_kind === "physical",
+          (data?.device_backend !== "xpu" &&
+            (d.index_kind === "physical" || d.index_kind === "cuda_device"))),
+      diffusionPinnable:
+        diffusionBackend &&
+        (d.index_kind === "physical" || d.index_kind === "cuda_device"),
     }));
 }
 

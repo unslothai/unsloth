@@ -540,6 +540,7 @@ function normalizeGpuFields(partial: RawConfig): {
   if (
     partial.selectedGpuIndexKind === "physical" ||
     partial.selectedGpuIndexKind === "vulkan" ||
+    partial.selectedGpuIndexKind === "cuda_device" ||
     partial.selectedGpuIndexKind === null
   ) {
     out.selectedGpuIndexKind = partial.selectedGpuIndexKind;

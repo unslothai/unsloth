@@ -2181,7 +2181,11 @@ export function loadedGpuMemoryFields(resp: {
     const gpuIds = managed
       ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])
       : null;
-    const indexKind = managed ? ("physical" as const) : null;
+    const indexKind = managed
+      ? cachedPinnableGpuIndexKind() === "cuda_device"
+        ? ("cuda_device" as const)
+        : ("physical" as const)
+      : null;
     return {
       selectedGpuIds: gpuIds,
       selectedGpuIndexKind: indexKind,
