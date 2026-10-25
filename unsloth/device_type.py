@@ -436,10 +436,9 @@ def apply_pre_volta_compile_workaround(
     return True
 
 
-# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
-# (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
-# Current device (every visible card when distributed); placements on another gfx906 are checked after loading.
-# Same switch as pre-Volta, so regions compiled while unsloth_zoo imported are turned off too.
+# gfx906 (MI50 / Radeon VII, dropped after ROCm 6.3): compiled graphs crash or miscompile, eager
+# trains. Current device (every card when distributed); loads recheck placement. Same switch as
+# pre-Volta, so regions compiled while unsloth_zoo imported are turned off too.
 def arch_breaks_compile(arch):
     return str(arch or "").split(":")[0].strip().lower() == "gfx906"
 
