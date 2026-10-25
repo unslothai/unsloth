@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
+import { readGenerationProgress } from "../lib/generation-progress";
 import { externalModelLabel } from "../lib/external-model-label";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { minPSamplingPayload } from "../lib/min-p-policy";
@@ -2792,6 +2793,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "speculativeType",
   "loadedSpeculativeType",
   "specFallbackReason",
+  "loadedPlacement",
   "specDraftNMax",
   "loadedSpecDraftNMax",
   "specDraftModel",
@@ -5884,6 +5886,7 @@ export function createOpenAIStreamAdapter(
       let responseModelId = externalSelection?.modelId ?? params.checkpoint;
       let firstTokenTime: number | undefined;
       let totalChunks = 0;
+      let lastFinishReason: string | null = null;
       let resolveFirstToken: (() => void) | null = null;
       let rejectFirstToken: ((err: unknown) => void) | null = null;
       const firstTokenPromise = new Promise<void>((resolve, reject) => {
@@ -7502,6 +7505,20 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
+              // Transient like the diffusion canvas: never transcript text, never a first token.
+              const generationProgress = (
+                chunk as unknown as { _generationProgress?: unknown }
+              )._generationProgress;
+              if (generationProgress !== undefined) {
+                const update = readGenerationProgress(generationProgress);
+                if (update?.phase === "prefill") {
+                  runtime.setLivePrefill(liveThreadKey(serverCancel), update.prefill);
+                } else if (update?.phase === "decode") {
+                  runtime.setLiveDecode(liveThreadKey(serverCancel), update.decode);
+                }
+                continue;
+              }
+
               // Diffusion frame: a transient canvas snapshot routed to the transient store and skipped; it
               // has no assistant text, so it never enters the transcript.
               const diffusionFrame = (
@@ -8091,6 +8108,10 @@ export function createOpenAIStreamAdapter(
                 incompleteReason = "length";
               } else if (chunk.choices?.[0]?.finish_reason) {
                 incompleteReason = null;
+              }
+              const chunkFinishReason = chunk.choices?.[0]?.finish_reason;
+              if (typeof chunkFinishReason === "string" && chunkFinishReason) {
+                lastFinishReason = chunkFinishReason;
               }
               // Latch the chunk's `model` field so the openrouter/free chip shows the underlying model.
               if (
@@ -9029,7 +9050,8 @@ export function createOpenAIStreamAdapter(
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
-          serverPromptEvalTime ?? firstTokenTime,
+          // What the user waited, as a resumed run records it. Server prompt eval has its own row.
+          firstTokenTime ?? serverPromptEvalTime,
           finishedAt - streamStartTime,
           finalTokenCount,
           toolCallParts.length,
@@ -9078,6 +9100,7 @@ export function createOpenAIStreamAdapter(
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
+              stopReason: lastFinishReason ?? undefined,
               contextUsage: meta?.usage
                 ? {
                     promptTokens: meta.usage.prompt_tokens,
@@ -9326,6 +9349,7 @@ export function createOpenAIStreamAdapter(
         // Drop the transient denoising canvas so the finished bubble shows only the committed answer;
         // scoped, since a global clear wiped another chat's frame.
         runtime.clearActiveDiffusionCanvasForThread(cleanupKey);
+        runtime.clearLiveGenerationForThread(cleanupKey);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {

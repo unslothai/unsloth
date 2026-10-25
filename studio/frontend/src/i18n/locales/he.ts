@@ -73,7 +73,7 @@ export const he = {
       cursorDescription: "מציג סמן במקום שבו מודלים לוחצים, מקלידים וגוררים בדף",
       askEveryTime: "לשאול בכל פעם",
       permissionsTitle: "הרשאות הסוכן",
-      permissionsDescription: "בחירת ברירות מחדל והוספת חריגים לאתרים מסוימים. שדות סיסמה ותשלום לעולם אינם ממולאים, לא משנה מה מוגדר כאן.",
+      permissionsDescription: "הגדרת ברירות מחדל וחריגים לפי אתר. שדות סיסמה ותשלום לעולם אינם ממולאים.",
       site: "אתר או תבנית",
       sitePlaceholder: "example.com או *.example.com",
       default: "ברירת מחדל",
@@ -1128,6 +1128,9 @@ export const he = {
       storageDisk: "{free} פנויים מתוך {total} בדיסק זה",
       storageEmpty: "עדיין לא מאוחסן דבר בספרייה.",
       storageHidden: "{size} מוסתרים בהגדרות התוכן",
+      storageHiddenLabel: "מוסתר",
+      storageRefresh: "רענון",
+      storageOpen: "פתיחה",
       storageError: "לא ניתן לקרוא את אחסון הספרייה.",
       locationsSection: "קבצים בדיסק",
       locationsDescription:
@@ -2402,7 +2405,7 @@ export const he = {
       },
     },
     resources: {
-      title: "מערכת",
+      title: "מערכת ומנוע",
       description: "עקוב אחר החומרה והאחסון של שרת Unsloth זה.",
       liveUpdates: "עדכונים בזמן אמת",
       floatingWindow: "חלון צף",
@@ -2571,6 +2574,13 @@ export const he = {
       storage: {
         title: "אחסון",
         systemDisk: "דיסק מערכת",
+        systemUsed: "{used} בשימוש מתוך {total} בדיסק המערכת",
+        modelsDiskSummary: "כונן תיקיית המודלים: {used} בשימוש מתוך {total}, {free} פנויים",
+        segmentModels: "מודלים",
+        segmentCaches: "מטמונים",
+        segmentOther: "אחר",
+        segmentFree: "פנוי",
+        refreshAction: "רענון",
         modelsDisk: "דיסק המודלים",
         diskUsage: "{used} בשימוש / {total}",
         diskFree: "{free} פנוי",
@@ -2871,6 +2881,11 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
+      showGenerationDetails: "פרטי יצירה",
+      showGenerationDetailsDescription:
+        "הצגת מהירות ומספר אסימונים בזמן אמת בזמן שתשובה נוצרת, והיכן הוצבו השכבות של מודל מקומי.",
+      showGenerationDetailsKeywords:
+        "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
@@ -3096,6 +3111,9 @@ export const he = {
         searchAudio: "חיפוש קטעי אודיו בארכיון",
         unarchive: "הוצא מהארכיון",
         unarchiveAll: "הוצא הכול מהארכיון",
+        unarchiveAllInProject: "הוצא הכול מהארכיון בפרויקט",
+        deleteAllInProject: "מחק הכול בפרויקט",
+        groupActions: "פעולות עבור {group}",
         unarchiveResults: "הוצא את התוצאות מהארכיון",
         deleteResults: "מחק את התוצאות",
         noChats: "אין צ'אטים התואמים לחיפוש.",
@@ -4309,6 +4327,7 @@ export const he = {
     disable: "השבת את {name}",
     updateError: "עדכון המיומנות נכשל",
     newSkill: "מיומנות חדשה",
+    import: "ייבוא",
     delete: "מחק את {name}",
     createDescription:
       "נשמרת כ-SKILL.md בתיקייה חדשה תחת ~/.agents/skills, ומופעלת מיד עם יצירתה.",
@@ -4331,9 +4350,14 @@ export const he = {
     created: "{name} נוצרה",
     saved: "{name} נשמרה",
     deleted: "{name} נמחקה",
+    importedOne: "נוספה {count} מיומנות",
+    importedMany: "נוספו {count} מיומנויות",
+    importPartial: "נוספו {added} מתוך {total} מיומנויות",
     saveError: "שמירת המיומנות נכשלה",
     openError: "פתיחת המיומנות נכשלה",
     deleteError: "מחיקת המיומנות נכשלה",
+    importError: "ייבוא המיומנות נכשל",
+    exportError: "ייצוא המיומנות נכשל",
     deleteTitle: "מחיקת מיומנות",
     deleteDescription:
       'למחוק את "{name}" ואת כל מה שבתיקייה שלה תחת ~/.agents/skills? פעולה זו אינה ניתנת לביטול.',

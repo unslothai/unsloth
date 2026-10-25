@@ -407,6 +407,29 @@ def _unsloth_dataset_column_names(dataset):
     return list(row.keys()) if hasattr(row, "keys") else []
 
 
+def _unsloth_non_blocking_batches(self):
+    """Copy pinned batches with non_blocking=True; accelerate's blocking .to() syncs once per batch
+    tensor. Stream-ordered, so numerics are unchanged. UNSLOTH_NON_BLOCKING_BATCHES=0 opts out."""
+    import os
+
+    if os.environ.get("UNSLOTH_NON_BLOCKING_BATCHES", "1") == "0":
+        return False
+    args = getattr(self, "args", None)
+    accelerator = getattr(self, "accelerator", None)
+    config = getattr(accelerator, "dataloader_config", None)
+    if args is None or config is None or not hasattr(config, "non_blocking"):
+        return False
+    if not getattr(args, "dataloader_pin_memory", False) or config.non_blocking:
+        return False
+    try:
+        if accelerator.device.type != "cuda":
+            return False
+    except Exception:
+        return False
+    config.non_blocking = True
+    return True
+
+
 def _unsloth_reset_stray_compile_cache(self):
     # A manual forward/backward under torch.compile BEFORE trainer.train() caches a forward plus AOTAutograd backward graph in a one-off context, and reusing it poisons training with NaN/zero gradients, so drop the cache. Module-level, so the SFT auto-packing wrapper and the plain-Trainer loop can run it too.
     import os
@@ -1169,6 +1192,15 @@ def _declares_no_sdpa(model_class):
         if "_supports_sdpa" in vars(klass):
             return vars(klass)["_supports_sdpa"] is False
     return False
+
+
+def _native_class_refuses_sdpa(model_class):
+    # A transformers-shipped class whose _supports_sdpa resolves False (Mamba, FalconMamba inherit PreTrainedModel's
+    # default): transformers raises on sdpa for it, so the zoo's registry-based "sdpa" guess must not win. Remote code keeps the guess.
+    module = getattr(model_class, "__module__", None) or ""
+    if not (module == "transformers" or module.startswith("transformers.")):
+        return False
+    return getattr(model_class, "_supports_sdpa", None) is False
 
 
 def _model_class_supports_flash_attention(model_class):
@@ -2649,7 +2681,11 @@ def resolve_attention_implementation(
     model_type = model_type_name.lower()
     if supports_sdpa is None:
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
-    if _is_sdpa_excluded(model_type) or _declares_no_sdpa(model_class):
+    if (
+        _is_sdpa_excluded(model_type)
+        or _declares_no_sdpa(model_class)
+        or _native_class_refuses_sdpa(model_class)
+    ):
         supports_sdpa = False
     if not supports_sdpa:
         _remember_no_sdpa_config(config)
@@ -5662,6 +5698,7 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
+            _refuse_tensor_parallel_for_trainer(model)
             from ..fsdp2_launch import unsloth_fsdp2_native_requested
 
             # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
@@ -5713,6 +5750,7 @@ def patch_gradient_accumulation_fix(Trainer):
             _replan_auto_offload_safely(self)
             _size_auto_checkpoint_skip_for_trainer(self)
             _block_swap_for_trainer_backend(self)
+            _tensor_subclass_weights_for_ddp(self)
             _enable_ddp_batched_grad_copy(self)
             from ._ddp_defaults import install_unsloth_ddp_comm_defaults
 
@@ -5725,8 +5763,73 @@ def patch_gradient_accumulation_fix(Trainer):
         Trainer.__init__ = _unsloth_trainer_init
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
 
+    _original_call_model_init = getattr(Trainer, "call_model_init", None)
+    if _original_call_model_init is not None and not getattr(
+        _original_call_model_init, "_unsloth_marks_ddp_ignores", False
+    ):
+
+        @functools.wraps(_original_call_model_init)
+        def _unsloth_call_model_init(self, *args, **kwargs):
+            # model_init rebuilds the model when training starts: the new instance needs the same
+            # DDP exclusions as the one __init__ marked.
+            model = _original_call_model_init(self, *args, **kwargs)
+            _refuse_tensor_parallel_for_trainer(model)
+            _tensor_subclass_weights_for_ddp(self, model)
+            return model
+
+        _unsloth_call_model_init._unsloth_marks_ddp_ignores = True
+        Trainer.call_model_init = _unsloth_call_model_init
+
     # Idempotent: already installed at import unless Trainer was reloaded since.
     _patch_trainer_train_gc_scope(Trainer)
+
+
+def _unsloth_model_parallel_marker(model, flag):
+    """Walk the wrapper levels for an apply_*_parallel marker (dict lookups, no tp / pp import)."""
+    m, depth = model, 0
+    while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
+        if m.__dict__.get(flag):
+            return True
+        modules = m.__dict__.get("_modules") or {}
+        m, depth = modules.get("base_model") or modules.get("model"), depth + 1
+    return False
+
+
+def _is_unsloth_tensor_parallel(model):
+    return _unsloth_model_parallel_marker(model, "_unsloth_tp")
+
+
+def _is_unsloth_pipeline_parallel(model):
+    return _unsloth_model_parallel_marker(model, "_unsloth_pp")
+
+
+def _refuse_tensor_parallel_for_trainer(model):
+    if _is_unsloth_tensor_parallel(model):
+        raise RuntimeError(
+            "Unsloth: a tensor parallel model (apply_tensor_parallel) cannot be trained by the "
+            "Trainer yet: accelerate would wrap the tensor parallel ranks in DDP. Use a custom "
+            "training loop (unsloth/models/tp_native.py)."
+        )
+    if _is_unsloth_pipeline_parallel(model):
+        raise RuntimeError(
+            "Unsloth: a pipeline parallel model (apply_pipeline_parallel) cannot be trained by the "
+            "Trainer yet: each rank holds one stage, and a stage cannot run a forward alone. Use a custom "
+            "training loop with PipelineParallel.step (unsloth/models/pp_native.py)."
+        )
+
+
+def _refuse_tensor_parallel_for_inference(model):
+    if _is_unsloth_tensor_parallel(model):
+        raise RuntimeError(
+            "Unsloth: for_inference is not supported on a tensor parallel model in v1 (the fast decode "
+            "paths run outside the tensor parallel regions); use model.eval() for forward evaluation, or "
+            "save the adapter (save_tp_adapter) and generate on one GPU."
+        )
+    if _is_unsloth_pipeline_parallel(model):
+        raise RuntimeError(
+            "Unsloth: for_inference is not supported on a pipeline parallel model in v1 (each rank holds "
+            "one stage); save the adapter (PipelineParallel.save_adapter) and generate on one GPU."
+        )
 
 
 # Real children only: PEFT's LoraModel forwards `base_model` to the backbone, skipping the loss head.
@@ -10001,6 +10104,43 @@ def _block_swap_for_trainer_backend(trainer):
             f"or launch without {backend}."
         )
     return []
+
+
+def _tensor_subclass_weights_for_ddp(trainer, model = None):
+    """DDP (torchrun without FSDP / DeepSpeed): keep frozen tensor subclass weights (load_in_fp8's torchao
+    Float8Tensor) out of DDP's start-up broadcast, which flattens each parameter and fails on them; every
+    rank loads them identically. Trainable ones are refused on every rank alike. Returns the names added."""
+    from .loader_utils import is_distributed, _frozen_tensor_subclass_names_for_ddp
+
+    if model is None:
+        model = getattr(trainer, "model", None)
+    if model is None or not is_distributed():
+        return []
+    if (
+        any(
+            getattr(m, "_unsloth_fsdp2_native", False) is True
+            for m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None))
+            if m is not None
+        )
+        or getattr(trainer, "is_fsdp_enabled", False)
+        or getattr(trainer, "is_deepspeed_enabled", False)
+    ):
+        return []
+    names = _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = True)
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    seen = set(ignored)
+    added = [name for name in names if name not in seen]
+    if not added:
+        return []
+    from torch.nn.parallel import DistributedDataParallel
+
+    DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored + added)
+    if int(os.environ.get("RANK", "0") or 0) == 0:
+        print(
+            f"Unsloth: DDP leaves {len(added)} frozen {type(model.get_parameter(added[0])).__name__} weights "
+            "out of its start-up broadcast (every rank loads them identically)."
+        )
+    return added
 
 
 def _trainer_offload_replan_skip(trainer):

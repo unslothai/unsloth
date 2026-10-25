@@ -70,7 +70,7 @@ export const sv = {
       cursorDescription: "Visar en pekare där modeller klickar, skriver och drar på sidan",
       askEveryTime: "Fråga varje gång",
       permissionsTitle: "Agentbehörigheter",
-      permissionsDescription: "Välj standardvärden och lägg till undantag för vissa webbplatser. Lösenords- och betalningsfält fylls aldrig i, oavsett inställningarna här.",
+      permissionsDescription: "Ange standardvärden och undantag per webbplats. Lösenords- och betalningsfält fylls aldrig i.",
       site: "Webbplats eller mönster",
       sitePlaceholder: "example.com eller *.example.com",
       default: "Standard",
@@ -1154,6 +1154,9 @@ export const sv = {
       storageDisk: "{free} ledigt av {total} på den här disken",
       storageEmpty: "Inget lagras i biblioteket ännu.",
       storageHidden: "{size} dolt i innehållsinställningarna",
+      storageHiddenLabel: "Dolt",
+      storageRefresh: "Uppdatera",
+      storageOpen: "Öppna",
       storageError: "Det gick inte att läsa bibliotekets lagring.",
       locationsSection: "Filer på disk",
       locationsDescription:
@@ -2474,7 +2477,7 @@ export const sv = {
       },
     },
     resources: {
-      title: "System",
+      title: "System och motor",
       description: "Övervaka maskinvara och lagring på denna Unsloth-server.",
       liveUpdates: "Direktuppdateringar",
       floatingWindow: "Flytande fönster",
@@ -2648,6 +2651,13 @@ export const sv = {
       storage: {
         title: "Lagring",
         systemDisk: "Systemdisk",
+        systemUsed: "{used} av {total} används på systemdisken",
+        modelsDiskSummary: "Enheten för modellmappen: {used} av {total} används, {free} ledigt",
+        segmentModels: "Modeller",
+        segmentCaches: "Cacheminnen",
+        segmentOther: "Övrigt",
+        segmentFree: "Ledigt",
+        refreshAction: "Uppdatera",
         modelsDisk: "Modelldisk",
         diskUsage: "{used} används / {total}",
         diskFree: "{free} ledigt",
@@ -2954,6 +2964,11 @@ export const sv = {
       showReplyTimesDescription: "Visa under varje svar när det blev klart.",
       showReplyTimesKeywords:
         "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
+      showGenerationDetails: "Genereringsdetaljer",
+      showGenerationDetailsDescription:
+        "Visa hastighet och antal token live medan ett svar strömmas, och var en lokal modells lager placerades.",
+      showGenerationDetailsKeywords:
+        "detaljer hastighet token statistik lager avlastning verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
@@ -3186,6 +3201,9 @@ export const sv = {
         searchAudio: "Sök arkiverat ljud",
         unarchive: "Avarkivera",
         unarchiveAll: "Avarkivera alla",
+        unarchiveAllInProject: "Avarkivera alla i projektet",
+        deleteAllInProject: "Ta bort alla i projektet",
+        groupActions: "Åtgärder för {group}",
         unarchiveResults: "Avarkivera resultat",
         deleteResults: "Ta bort resultat",
         noChats: "Inga chattar matchar din sökning.",
@@ -4440,6 +4458,7 @@ export const sv = {
     disable: "Inaktivera {name}",
     updateError: "Det gick inte att uppdatera färdigheten",
     newSkill: "Ny färdighet",
+    import: "Importera",
     delete: "Ta bort {name}",
     createDescription:
       "Sparas som SKILL.md i en ny mapp under ~/.agents/skills och aktiveras så snart den finns.",
@@ -4464,9 +4483,14 @@ export const sv = {
     created: "{name} skapades",
     saved: "{name} sparades",
     deleted: "{name} togs bort",
+    importedOne: "{count} färdighet lades till",
+    importedMany: "{count} färdigheter lades till",
+    importPartial: "{added} av {total} färdigheter lades till",
     saveError: "Det gick inte att spara färdigheten",
     openError: "Det gick inte att öppna färdigheten",
     deleteError: "Det gick inte att ta bort färdigheten",
+    importError: "Det gick inte att importera färdigheten",
+    exportError: "Det gick inte att exportera färdigheten",
     deleteTitle: "Ta bort färdighet",
     deleteDescription:
       'Ta bort "{name}" och allt i dess mapp under ~/.agents/skills? Detta kan inte ångras.',

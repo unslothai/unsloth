@@ -111,7 +111,7 @@ function UseModelScopeButton() {
             .catch(() => setFailed(true))
             .finally(() => setSwitching(false));
         }}
-        className="h-8 rounded-full"
+        className="rounded-full"
       >
         {t("picker.useModelScope")}
       </Button>
@@ -131,7 +131,7 @@ function UpdateTokenButton() {
     <Button
       size="sm"
       onClick={() => openSettings("general")}
-      className="h-8 rounded-full"
+      className="rounded-full"
     >
       {t("picker.updateToken")}
     </Button>
@@ -189,7 +189,7 @@ export function NetworkErrorState({
           <button
             type="button"
             onClick={onSwitchDevice}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+            className="inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 py-2 text-ui-12 [&_svg]:-my-2 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
           >
             On Device
           </button>
@@ -294,7 +294,7 @@ export function DiscoverFetchMoreState({
           <button
             type="button"
             onClick={onClearFilters}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+            className="inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 py-2 text-ui-12 [&_svg]:-my-2 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
           >
             Clear filters
           </button>
@@ -356,7 +356,7 @@ export function DiscoverFetchMoreFooter({
         type="button"
         onClick={failed && onRetry ? onRetry : onFetchMore}
         disabled={isLoadingMore}
-        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+        className="inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 py-2 text-ui-12 [&_svg]:-my-2 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
       >
         <HugeiconsIcon
           icon={Refresh01Icon}

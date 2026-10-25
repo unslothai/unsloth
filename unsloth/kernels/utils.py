@@ -445,7 +445,11 @@ def _is_packed_state(quant_state):
 def get_lora_parameters(proj):
     """Return (weight, weight quant_state, lora A, lora B, lora scale).
     With QAT enabled, also fake-quantizes the base layer and lora weights.
+    Tensor parallel projections (models/tp_native.py) return local shards of their DTensors.
     """
+    localize = proj.__dict__.get("_unsloth_tp_local")
+    if localize is not None:
+        return localize(proj)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)
@@ -513,6 +517,9 @@ def get_lora_parameters(proj):
 
 
 def get_lora_parameters_bias(proj):
+    localize = proj.__dict__.get("_unsloth_tp_local")
+    if localize is not None:
+        return localize(proj, bias = True)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)
@@ -667,6 +674,24 @@ class _NF4Plan(list):
     # so copies and pickles of the model drop it and rebuild on first use.
     def __reduce__(self):
         return (_no_plan, ())
+
+
+# Set by unsloth.models.fsdp2_qlora on an FSDP2 all-gathered 4-bit weight.
+_FSDP2_GATHERED = "_unsloth_fsdp2_gathered"
+
+
+def _gathered_plan_hit(plan, W):
+    """FSDP2 frees an all-gathered weight's storage after use and re-allocates it for the next
+    all-gather: the same tensor at a new address, so a plan keyed on the address it was built at
+    never hits again. The planned launch reads the address of the tensor it was built with at
+    launch time, so it still applies while that tensor and W (the weight, or a view of it such as
+    the backward's `W.t()`) are at the same address with the 16 byte alignment it was specialized
+    on. A tensor given a new storage object instead of a resized one has another address: rebuilt."""
+    address = W.data_ptr()
+    if plan[6].data_ptr() != address or (address & 15) != (plan[0] & 15):
+        return False
+    gathered = W if W._base is None else W._base
+    return getattr(gathered, _FSDP2_GATHERED, False)
 
 
 def _nf4_kernels_failed(error):
@@ -903,7 +928,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             plan = getattr(quant_state, "_unsloth_nf4_plan", None)
             if (
                 plan is not None
-                and plan[0] == W.data_ptr()
+                and (plan[0] == W.data_ptr() or _gathered_plan_hit(plan, W))
                 and plan[1] is quant_state.absmax
                 and plan[2] is quant_state.dtype
             ):
@@ -949,6 +974,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                             rerun,
                             _SCRATCH.get(("weight", device.index)),
                             out,
+                            W,
                         ]
                     )
             else:
@@ -1657,6 +1683,23 @@ def _rows_plans(quant_state):
     return plans
 
 
+_OPTIMIZER_STEPS = 0
+
+
+def _count_optimizer_step(optimizer, args, kwargs):
+    global _OPTIMIZER_STEPS
+    _OPTIMIZER_STEPS += 1
+
+
+try:
+    # Fused optimizers (AdamW(fused = True), the transformers default on torch >= 2.8) update
+    # parameters without bumping _version, so the LoRA cast cache also keys on optimizer steps.
+    from torch.optim.optimizer import register_optimizer_step_post_hook
+    register_optimizer_step_post_hook(_count_optimizer_step)
+except Exception:
+    pass
+
+
 def _fast_lora_weights(lora_A, lora_B, dtype):
     if lora_A.dtype == dtype and lora_B.dtype == dtype:
         return lora_A, lora_B
@@ -1665,7 +1708,14 @@ def _fast_lora_weights(lora_A, lora_B, dtype):
     if lora_A.is_inference() or lora_B.is_inference():
         key = (None, None, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
     else:
-        key = (lora_A._version, lora_B._version, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
+        key = (
+            _OPTIMIZER_STEPS,
+            lora_A._version,
+            lora_B._version,
+            lora_A.data_ptr(),
+            lora_B.data_ptr(),
+            dtype,
+        )
     cache = getattr(lora_A, "_fast_lora", None)
     if cache is None or cache[0] != key:
         cache = (key, lora_A.to(dtype), lora_B.to(dtype))

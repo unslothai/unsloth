@@ -52,6 +52,7 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
     | {
         _reasoningDurationMs?: unknown;
         _contextUsage?: unknown;
+        _generationProgress?: unknown;
         context_truncated?: unknown;
         quote_cut?: unknown;
         usage?: unknown;
@@ -63,6 +64,7 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   if (
     "_reasoningDurationMs" in chunk ||
     "_contextUsage" in chunk ||
+    "_generationProgress" in chunk ||
     chunk.context_truncated ||
     chunk.quote_cut
   ) {
@@ -181,6 +183,8 @@ type RecoveryTimings = {
   [key: string]: unknown;
 };
 
+const RECOVERED_STOP_REASONS = new Set(["stop", "length", "tool_calls", "content_filter"]);
+
 export function recoveredGenerationFinalMetadata(options: {
   current: Record<string, unknown>;
   run: {
@@ -189,6 +193,7 @@ export function recoveredGenerationFinalMetadata(options: {
     createdAt: number;
     startedAt: number | null;
     completedAt: number | null;
+    finishReason?: string | null;
   };
   usage?: RecoveryUsage;
   timings?: RecoveryTimings;
@@ -218,6 +223,10 @@ export function recoveredGenerationFinalMetadata(options: {
 
   if (next.serverTimings === undefined && timings !== undefined) {
     next.serverTimings = timings;
+  }
+  // Only the stream's own vocabulary: "cancelled" / "interrupted" are run states the reply already shows.
+  if (next.stopReason === undefined && RECOVERED_STOP_REASONS.has(run.finishReason ?? "")) {
+    next.stopReason = run.finishReason;
   }
   if (
     next.contextUsage === undefined &&

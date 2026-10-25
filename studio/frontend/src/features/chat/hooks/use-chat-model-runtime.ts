@@ -3707,7 +3707,8 @@ export function useChatModelRuntime() {
             const totalGb = prog.bytes_total / 1e9;
             const pct = Math.min(99, Math.round(prog.fraction * 100));
             const est = estimate(mmapSamples, prog.bytes_loaded, prog.bytes_total);
-            const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB in memory`;
+            // Bytes the server has read or paged in, not bytes resident in RAM: weights headed for VRAM pass through.
+            const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB loaded`;
             const label = est.stable
               ? `${base} • ${formatRate(est.rate)}${
                   formatEta(est.eta) !== "--" ? ` • ${formatEta(est.eta)} left` : ""
@@ -3728,7 +3729,7 @@ export function useChatModelRuntime() {
               ...modelLoadToastOptions(
                 renderLoadDescription(
                   "Starting model…",
-                  "Paging weights into memory.",
+                  "Loading model weights.",
                   pct,
                   label,
                 ),

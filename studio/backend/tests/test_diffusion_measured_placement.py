@@ -170,14 +170,16 @@ def test_whole_transformer_tier_kill_switch(q21_pipe, monkeypatch):
     assert new.resident_transformer_mib == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
 
 
-def test_whole_transformer_tier_needs_streamed_encoders(q21_pipe, monkeypatch):
-    """A group plan whose encoders stay resident cannot trade them for the DiT: the tier leaves it alone."""
+def test_whole_transformer_tier_streams_resident_encoders(q21_pipe, monkeypatch):
+    """Resident encoders stream when that keeps more of the DiT resident (it runs every step, they once per prompt)."""
     monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
     plan = dm.replace(
         _flat_plan(9550, 12288), offload_policy = dm.OFFLOAD_GROUP, stream_text_encoders = False
     )
     new = _refine(q21_pipe, plan)
-    assert int(new.resident_transformer_mib or 0) < 6922
+    assert new.resident_transformer_mib == 6922
+    assert new.stream_text_encoders
+    assert new.estimates["denoiser_first_resident_te_dit_mib"] < 6922
 
 
 def test_no_room_keeps_flat_plan(q21_pipe):
