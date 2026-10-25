@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A Train-tab run on a model whose architecture no installed transformers ships was
-// accepted, spawned, and killed minutes later at model load:
-//   "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit is not supported yet in transformers==5.3.0"
-// Unsloth already had the consent dialog that provisions .venv_t5_latest, but it was
-// wired only into chat. These pin the gate: the start path consults the check, pauses
-// on the dialog, and abandons the start when declined.
+// The Train start path must consult the transformers-upgrade check, pause on the consent
+// dialog, and abandon the start when declined.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -77,7 +73,6 @@ test("declining the install abandons the start instead of spawning a doomed run"
 
   assert.equal(outcome.proceed, false);
   assert.equal(outcome.forces16Bit, false);
-  // The worker's own wording, so the message names the real cause.
   assert.match(String(outcome.error), /is not supported yet/);
   assert.ok(String(outcome.error).includes(MODEL));
 });
@@ -98,8 +93,7 @@ test("a model shipping its own code keeps the custom-code way out", async () => 
     true,
     "the dialog must offer the trust_remote_code fallback, like chat does",
   );
-  // Training raises no "stop N chats" prompt, so it carries no answer to one: the
-  // install must never cancel someone else's stream on this tab's behalf.
+  // Training raises no "stop N chats" prompt, so it must never cancel another tab's stream.
   assert.equal(stub.calls[1]?.args[0].forceCancelActive, undefined);
 });
 
@@ -154,10 +148,8 @@ test("an already-routed model reports 16-bit without a dialog", async () => {
 });
 
 test("an exact 4-bit resume is never offered an install that strands it", async () => {
-  // The sidecar is a persistent overlay and this checkpoint is attested against a 4-bit
-  // load it permanently refuses (effective_training_load_in_4bit raises
-  // ExactResumeResourcesUnavailable). The model ships its own code, so the resume works
-  // today: consenting would trade it for an upgrade it does not need, with no way back.
+  // The sidecar is persistent and refuses this checkpoint's attested 4-bit load, while the
+  // model's own code resumes today, so consenting would strand it.
   stub.resetStub();
   stub.state.checkResult = {
     upgrade: UPGRADE,
@@ -187,11 +179,8 @@ test("an exact 4-bit resume is never offered an install that strands it", async 
 });
 
 test("a resume with no custom-code way out is not offered a doomed install", async () => {
-  // No fallback, so the install looks like the only way in, but it is not one:
-  // installing activates the latest tier, and effective_training_load_in_4bit then
-  // raises for the very config the backend answered installBreaksExactResume with. The
-  // resume fails either way, and consent buys only a persistent overlay that retires
-  // 4-bit for every later run, so the start is refused with a reason instead.
+  // Installing would make effective_training_load_in_4bit raise for this config, so the start is
+  // refused with a reason instead of offering the install.
   stub.resetStub();
   stub.state.checkResult = {
     upgrade: UPGRADE,
@@ -220,12 +209,8 @@ test("a resume with no custom-code way out is not offered a doomed install", asy
 });
 
 test("a resume with nothing to install is told the truth about why", async () => {
-  // installBreaksExactResume answers "would the install strand this checkpoint", and the
-  // backend answers it from the run's own provenance, without regard to whether a
-  // release exists to install. For a dev-only architecture there is none, so "installing
-  // would strand it, start a new run instead" is wrong twice over: nothing can be
-  // installed, and a new run on the same architecture cannot load either. The dev-only
-  // explanation is the accurate one.
+  // installBreaksExactResume ignores whether a release exists; for a dev-only architecture the
+  // dev-only explanation is the accurate one.
   stub.resetStub();
   stub.state.checkResult = {
     upgrade: { ...UPGRADE, supported_in_pypi: false },
@@ -248,9 +233,7 @@ test("a resume with nothing to install is told the truth about why", async () =>
 });
 
 test("declining a dev-only upgrade is not told to start again and install it", async () => {
-  // Nothing to install: the architecture is only on transformers main, so the dialog
-  // shows no Install action at all. Reusing the installable wording would send the user
-  // round a loop that can never end.
+  // Dev-only architecture: no Install action, so the installable wording would loop forever.
   stub.resetStub();
   stub.state.checkResult = {
     upgrade: { ...UPGRADE, supported_in_pypi: false },
@@ -288,8 +271,7 @@ test("declining an installable upgrade is still told how to get it", async () =>
 });
 
 test("the check is asked about the copy the run will load", async () => {
-  // A cached model loads from its pinned snapshot; the repo's current config.json can
-  // name a different architecture, and gating on that one gates on the wrong model.
+  // A cached model loads from its pinned snapshot, whose architecture can differ from the repo's.
   stub.resetStub();
 
   await confirmTrainingTransformersUpgrade({
@@ -329,11 +311,8 @@ test("a backend without the check leaves the start exactly as it was", async () 
 });
 
 test("the custom-code verdict travels to the next gate", async () => {
-  // The gate has just read this model's config, so it knows the model ships its own
-  // modeling code. confirmRemoteCodeIfNeeded falls back to the caller's flag when the
-  // scan request itself fails, and the training callers' stored flag is false on a fresh
-  // run: without carrying this out, that fallback skips consent and starts a worker with
-  // trust_remote_code off, for a model that cannot load without it.
+  // confirmRemoteCodeIfNeeded falls back to the caller's flag (false on a fresh run) when the
+  // scan fails, so the gate's knowledge of custom code must be carried out.
   stub.resetStub();
   stub.state.checkResult = {
     upgrade: { ...UPGRADE, supported_in_pypi: false },
@@ -368,9 +347,7 @@ test("a model without custom code reports no verdict to carry", async () => {
   assert.equal(outcome.requiresTrustRemoteCode, false);
 });
 
-// Everything that worked before this gate has to keep working. The realistic mismatch
-// is a bundle newer than the backend serving it, which is every in-place upgrade between
-// the assets swapping and the server restarting: the route 404s and the check throws.
+// A bundle newer than its backend (mid-upgrade) gets a 404 here; the start must still work.
 for (const [label, failure] of [
   ["a 404 from a backend without the route", new Error("404: API endpoint not found")],
   ["a 405 from a backend without the route", new Error("405: Method Not Allowed")],
@@ -384,8 +361,7 @@ for (const [label, failure] of [
     assert.equal(outcome.proceed, true);
     assert.equal(outcome.error, null);
     assert.equal(outcome.forces16Bit, false);
-    // false is what the next gate would have used anyway, and the start path ORs it
-    // with the stored flag, so a failed check can never REMOVE a custom-code consent.
+    // The start path ORs this with the stored flag, so a failed check never removes consent.
     assert.equal(outcome.requiresTrustRemoteCode, false);
     assert.equal(
       stub.calls.filter((c) => c.name === "confirmTransformersUpgradeIfNeeded").length,
@@ -396,7 +372,6 @@ for (const [label, failure] of [
 }
 
 test("an upgrade with no version is never offered as an install", async () => {
-  // A partially populated payload must not produce "Install transformers undefined".
   stub.resetStub();
   stub.state.checkResult = {
     upgrade: {
@@ -425,9 +400,7 @@ test("a field from a newer backend is ignored rather than fatal", async () => {
     latestTierActive: false,
     forces16Bit: false,
   };
-  // Added through Object.assign because the stub's types are deliberately exact: a key
-  // this build has never heard of is a compile error there, which is the whole point of
-  // typing it that way, and is also exactly what a newer backend would send.
+  // Object.assign because the stub's types are deliberately exact, and a newer backend sends unknown keys.
   Object.assign(stub.state.checkResult, {
     someVerdictThisBuildHasNeverHeardOf: { nested: true },
   });

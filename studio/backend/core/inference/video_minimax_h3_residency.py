@@ -463,6 +463,71 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
     return True
 
 
+H3_BLOCK_PIN_ENV = "UNSLOTH_H3_STREAM_BLOCK_PIN"
+
+
+def pin_streamed_block_groups(transformer: Any, logger: Any = None) -> tuple[int, int]:
+    """Pin a lazily streamed denoiser's block groups in place, group by group, while the pin budget holds.
+
+    The up-front plan prices a pin as extra host RAM, so 12 / 16 GB hosts stream H3 lazily: every onload re-pins
+    behind a host sync and the stream prefetch stays off. The arena re-points each weight at its slab, freeing the
+    pageable copy; the budget is re-read per group, so a surviving pageable copy stops the pin.
+    Returns (groups pinned, block groups). ``UNSLOTH_H3_STREAM_BLOCK_PIN=0`` off."""
+    if str(os.environ.get(H3_BLOCK_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        return 0, 0
+    _top, blocks = h3_offload_groups(transformer)
+    lazy = [
+        g
+        for g in blocks
+        if getattr(g, "low_cpu_mem_usage", False)
+        and getattr(g, "stream", None) is not None
+        and not getattr(g, "offload_to_disk_path", None)
+        and callable(getattr(g, "_init_cpu_param_dict", None))
+        and not is_resident(g)
+    ]
+    if not lazy:
+        return 0, len(blocks)
+    from .diffusion_memory import _pinned_memory_capped
+    from .diffusion_pinned_arena import pin_arena_enabled, pinned_arena_for_group_offload
+    from .video_minimax_h3_te import h3_te_pin_allowed
+
+    # Per-tensor pin_memory() keeps the pageable copy until the first offload; capped hosts pin each onload anyway.
+    if not pin_arena_enabled() or _pinned_memory_capped():
+        return 0, len(blocks)
+    pinned = 0
+    with pinned_arena_for_group_offload() as arena:
+        if arena is None:
+            return 0, len(blocks)
+        for group in lazy:
+            tensors = _group_tensors(group)
+            if any(getattr(t, "device", None) is None or t.device.type != "cpu" for t in tensors):
+                break
+            if not h3_te_pin_allowed(group_payload_bytes(group)):
+                break
+            saved = (group.low_cpu_mem_usage, group.cpu_param_dict)
+            try:
+                group.low_cpu_mem_usage = False
+                group.cpu_param_dict = group._init_cpu_param_dict()
+            except Exception as exc:  # noqa: BLE001 -- this group and the rest stay lazily pinned
+                group.low_cpu_mem_usage, group.cpu_param_dict = saved
+                if logger is not None:
+                    logger.warning("video.h3_block_pin: stopped at a group: %s", exc)
+                break
+            pinned += 1
+        payload, reserved = arena.payload_bytes, arena.reserved_bytes
+    if pinned == len(blocks) and len(lazy) == len(blocks):
+        transformer._unsloth_pin_arena_bytes = (payload, reserved)
+    if logger is not None:
+        logger.info(
+            "video.h3_block_pin: %d of %d streamed block groups pinned in place (%.2f GB in %.2f GB of slabs)",
+            pinned,
+            len(blocks),
+            payload / 1e9,
+            reserved / 1e9,
+        )
+    return pinned, len(blocks)
+
+
 H3_STREAM_PREFETCH_ENV = "UNSLOTH_H3_STREAM_PREFETCH"
 
 

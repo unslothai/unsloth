@@ -29,9 +29,12 @@ import {
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
 import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
-import { NOTIFICATION_PREF_KEYS } from "@/hooks/use-notification-frequency";
+import {
+  NOTIFICATION_PREF_KEYS,
+  type NotificationChannel,
+} from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
-import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
+import { LOCALE_STORAGE_KEY, type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   SPELLCHECK_STORAGE_KEY,
@@ -68,9 +71,9 @@ import {
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
 } from "@/features/library";
+import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
-import { DeveloperModeSection } from "../components/developer-mode-section";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
@@ -92,6 +95,25 @@ import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-sto
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
+
+// whisper.cpp rides along with llama.cpp's card, so it has no line of its own.
+const UPDATE_REMINDER_CHANNELS: {
+  channel: NotificationChannel;
+  name: string;
+  hintKey?: TranslationKey;
+}[] = [
+  { channel: "unsloth", name: "Unsloth" },
+  {
+    channel: "llama",
+    name: "llama.cpp",
+    hintKey: "settings.general.notifications.llamaHint",
+  },
+  {
+    channel: "audio",
+    name: "audio.cpp",
+    hintKey: "settings.general.notifications.audioHint",
+  },
+];
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
 // would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
@@ -500,7 +522,7 @@ export function GeneralTab() {
         </p>
       </header>
 
-      {/* Desktop-only, and self-gating: outside the desktop app both render
+      {/* Desktop-only, and self-gating: outside the desktop app these render
           nothing and the section keeps just the version rows. */}
       <StudioVersionSection>
         {isTauri ? (
@@ -509,6 +531,7 @@ export function GeneralTab() {
             <DesktopUpdateNote />
           </div>
         ) : null}
+        <DesktopInstallTypeControl />
       </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>
@@ -567,7 +590,7 @@ export function GeneralTab() {
               <button
                 type="button"
                 onClick={() => setShowToken((s) => !s)}
-                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
                 aria-label={
                   showToken
                     ? t("settings.general.hideToken")
@@ -586,7 +609,6 @@ export function GeneralTab() {
               type="button"
               variant="outline"
               size="sm"
-              className="h-8"
               disabled={!draftToken && !hfToken}
               onClick={clearHfToken}
             >
@@ -622,73 +644,8 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      {isTauri ? (
-        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
-          <SettingsRow
-            label={t("settings.general.startup.launchAtLogin")}
-            description={t("settings.general.startup.launchAtLoginDescription")}
-            below={
-              launchAtLoginSetting.error ? (
-                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                  {launchAtLoginSetting.error}
-                </span>
-              ) : null
-            }
-          >
-            <Switch
-              checked={launchAtLoginSetting.value ?? false}
-              disabled={
-                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
-              }
-              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
-            />
-          </SettingsRow>
-
-          {closeToTraySetting.supported ? (
-            <SettingsRow
-              label={t("settings.general.startup.closeToTray")}
-              description={t("settings.general.startup.closeToTrayDescription")}
-              below={
-                closeToTraySetting.error ? (
-                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                    {closeToTraySetting.error}
-                  </span>
-                ) : null
-              }
-            >
-              <Switch
-                checked={closeToTraySetting.value ?? false}
-                disabled={
-                  closeToTraySetting.value === null || closeToTraySetting.saving
-                }
-                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
-              />
-            </SettingsRow>
-          ) : null}
-
-          {trayIconSetting.supported ? (
-            <SettingsRow
-              label={t("settings.general.startup.menuBarIcon")}
-              description={t("settings.general.startup.menuBarIconDescription")}
-            >
-              <div className="flex flex-col items-end gap-1">
-                <Switch
-                  checked={trayIconSetting.value ?? false}
-                  disabled={
-                    trayIconSetting.value === null || trayIconSetting.saving
-                  }
-                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
-                />
-                {trayIconSetting.error ? (
-                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                    {trayIconSetting.error}
-                  </span>
-                ) : null}
-              </div>
-            </SettingsRow>
-          ) : null}
-        </SettingsSection>
-      ) : null}
+      {/* Owner-only like the installation-wide block below: its routes are. */}
+      {isOwner ? <DocumentsRagSection /> : null}
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
         <SettingsRow
@@ -703,49 +660,34 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.general.notifications.showUnslothUpdates")}
+          label={t("settings.general.notifications.updateReminders")}
           description={t(
-            "settings.general.notifications.showUnslothUpdatesDescription",
+            "settings.general.notifications.updateRemindersDescription",
           )}
-        >
-          <NotificationFrequencySelect
-            channel="unsloth"
-            label={t("settings.general.notifications.showUnslothUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showLlamaUpdates")}
-          description={t(
-            "settings.general.notifications.showLlamaUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="llama"
-            label={t("settings.general.notifications.showLlamaUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showWhisperUpdates")}
-          description={t(
-            "settings.general.notifications.showWhisperUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="whisper"
-            label={t("settings.general.notifications.showWhisperUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showAudioCppUpdates")}
-          description={t(
-            "settings.general.notifications.showAudioCppUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="audio"
-            label={t("settings.general.notifications.showAudioCppUpdates")}
-          />
-        </SettingsRow>
+          className="pb-1"
+        />
+        <div className="flex flex-col pb-3">
+          {UPDATE_REMINDER_CHANNELS.map(({ channel, name, hintKey }) => (
+            <div
+              key={channel}
+              data-settings-label={name}
+              className="flex items-center justify-between gap-4 py-1.5"
+            >
+              <div className="flex min-w-0 items-baseline gap-2">
+                <span className="text-sm text-foreground">{name}</span>
+                {hintKey ? (
+                  <span className="truncate text-xs text-muted-foreground">
+                    {t(hintKey)}
+                  </span>
+                ) : null}
+              </div>
+              <NotificationFrequencySelect
+                channel={channel}
+                label={`${t("settings.general.notifications.updateReminders")}: ${name}`}
+              />
+            </div>
+          ))}
+        </div>
       </SettingsSection>
 
       {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
@@ -777,17 +719,15 @@ export function GeneralTab() {
           description={t("settings.general.previewSharing.revokeDescription")}
         >
           <Button
-            variant="outline"
+            variant="destructive"
             size="sm"
             onClick={() => setRevokePreviewOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+            className="text-destructive hover:text-destructive"
           >
             {t("settings.general.previewSharing.revokeAction")}
           </Button>
         </SettingsRow>
       </SettingsSection>
-
-      <DocumentsRagSection />
 
       <HubSettingsSection />
 
@@ -870,8 +810,75 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <DeveloperModeSection />
         </>
+      ) : null}
+
+      {isTauri ? (
+        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.startup.launchAtLogin")}
+            description={t("settings.general.startup.launchAtLoginDescription")}
+            below={
+              launchAtLoginSetting.error ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                  {launchAtLoginSetting.error}
+                </span>
+              ) : null
+            }
+          >
+            <Switch
+              checked={launchAtLoginSetting.value ?? false}
+              disabled={
+                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+              }
+              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
+            />
+          </SettingsRow>
+
+          {closeToTraySetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.closeToTray")}
+              description={t("settings.general.startup.closeToTrayDescription")}
+              below={
+                closeToTraySetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {closeToTraySetting.error}
+                  </span>
+                ) : null
+              }
+            >
+              <Switch
+                checked={closeToTraySetting.value ?? false}
+                disabled={
+                  closeToTraySetting.value === null || closeToTraySetting.saving
+                }
+                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+              />
+            </SettingsRow>
+          ) : null}
+
+          {trayIconSetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.menuBarIcon")}
+              description={t("settings.general.startup.menuBarIconDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={trayIconSetting.value ?? false}
+                  disabled={
+                    trayIconSetting.value === null || trayIconSetting.saving
+                  }
+                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
+                />
+                {trayIconSetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {trayIconSetting.error}
+                  </span>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : null}
+        </SettingsSection>
       ) : null}
 
       <SettingsSection
@@ -886,7 +893,7 @@ export function GeneralTab() {
             variant="outline"
             size="sm"
             onClick={() => setConfirmOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+            className="text-destructive hover:text-destructive"
           >
             {t("settings.general.resetPreferences.action")}
           </Button>
@@ -913,7 +920,7 @@ export function GeneralTab() {
             </Button>
             <Button
               onClick={resetAllPrefs}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant="destructive"
             >
               {t("settings.general.resetPreferences.confirmAction")}
             </Button>
@@ -939,9 +946,9 @@ export function GeneralTab() {
               {t("common.cancel")}
             </Button>
             <Button
+              variant="destructive"
               onClick={() => void revokePreviewLinks()}
               disabled={isRevokingPreview}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {isRevokingPreview
                 ? t("settings.general.previewSharing.revoking")

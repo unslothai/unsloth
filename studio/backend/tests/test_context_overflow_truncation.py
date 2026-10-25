@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the opt-in ``context_overflow="truncate_middle"`` passthrough policy.
-
-On ``exceed_context_size_error`` the passthrough drops middle turn-groups and
-retries inside the real window instead of surfacing a fatal 400. Truncation
-keeps the system prompt, the first turn, and recent turns, and never orphans
-a tool result from its tool_calls turn. Also covers ``/v1/models`` exposing
-the real post-readback context window.
-"""
+"""truncate_middle drops middle turn-groups on overflow and never orphans a tool result."""
 
 from __future__ import annotations
 
@@ -51,7 +44,6 @@ from models.inference import ChatCompletion
 import routes.inference as routes_mod
 
 
-# Nick's actual error body from the Discord report logs.
 _NICK_ERROR = (
     '{"detail":"llama-server error: {\\"error\\":{\\"code\\":400,'
     '\\"message\\":\\"request (70494 tokens) exceeds the available context size '
@@ -90,11 +82,6 @@ def _conversation(n_tool_turns: int = 12) -> list[dict]:
     return msgs
 
 
-# ---------------------------------------------------------------------------
-# _parse_overflow_counts
-# ---------------------------------------------------------------------------
-
-
 def test_parse_overflow_counts_nick_error():
     assert _parse_overflow_counts(_NICK_ERROR) == (70494, 67584)
 
@@ -103,20 +90,13 @@ def test_parse_overflow_counts_missing_fields():
     assert _parse_overflow_counts('{"error":"something else"}') is None
 
 
-# ---------------------------------------------------------------------------
-# _truncate_middle_messages
-# ---------------------------------------------------------------------------
-
-
 def test_truncation_drops_middle_keeps_anchors():
     msgs = _conversation()
     new, dropped = _truncate_middle_messages(msgs, keep_ratio = 0.5)
     assert dropped > 0
     assert len(new) == len(msgs) - dropped
-    # System prompt and task anchor survive.
     assert new[0]["role"] == "system"
     assert new[1] == msgs[1]
-    # The most recent turns survive verbatim.
     assert new[-1] == msgs[-1]
     assert new[-2] == msgs[-2]
 
@@ -140,7 +120,6 @@ def test_truncation_reduces_estimated_size_toward_target():
     new_total = sum(_estimate_message_tokens(m) for m in new)
     assert dropped > 0
     assert new_total < total
-    # Should land at or below the requested share, modulo one whole group.
     biggest_group = max(
         _estimate_message_tokens(a) + _estimate_message_tokens(b)
         for a, b in zip(msgs[2:-2:2], msgs[3:-2:2])
@@ -184,7 +163,6 @@ def test_rolling_truncation_drops_complete_oldest_turns():
     assert new[0] == messages[0]
     assert new[-1] == messages[-1]
     assert "old question" not in {message.get("content") for message in new}
-    # The tool exchange is either retained as a whole or removed as a whole.
     surviving_call_ids = {
         call["id"] for message in new for call in (message.get("tool_calls") or [])
     }
@@ -357,12 +335,7 @@ def test_rolling_truncation_can_drop_assistant_after_instruction(instruction_rol
 
 @pytest.fixture
 def no_compaction_headroom(monkeypatch):
-    """Pin the compaction headroom to zero.
-
-    For tests about the MINIMUM eviction needed to fit, the headroom is noise: it drops
-    more than necessary, so an exact count would assert the headroom's value rather than
-    the fit's behaviour. Tests about the headroom set it explicitly.
-    """
+    """Sets compaction headroom to zero, so minimum-eviction tests assert the fit, not the headroom."""
     monkeypatch.setattr(context_window, "_COMPACTION_HEADROOM_RATIO", 0.0)
 
 
@@ -410,8 +383,6 @@ def test_rolling_fit_never_clips_an_irreducible_latest_turn():
 
     assert fitted is messages
     assert fitted == messages
-    # Unchanged messages, but not a silent None: the fit says WHY it gave up, so the
-    # user hears the single message is the problem rather than the history.
     assert info is not None and info["fits"] is False
     assert info["dropped_messages"] == 0
     assert info["latest_turn_tokens"] > info["context_length"]
@@ -445,11 +416,7 @@ def test_evicted_messages_returns_dropped_turns_in_original_order(no_compaction_
 
 
 def test_evicted_messages_uses_identity_not_equality():
-    """Two byte-identical turns must not collapse into one.
-
-    An equality diff reports BOTH copies as evicted when only the older one was, so
-    downstream acts on a turn the model can still see.
-    """
+    """Evicted detection compares identity, not equality, so identical turns do not collapse."""
     first = {"role": "user", "content": "same question"}
     second = {"role": "user", "content": "same question"}
     before = [first, {"role": "assistant", "content": "reply"}, second]
@@ -483,11 +450,7 @@ def test_group_turns_matches_the_unit_truncation_drops():
 
 
 def test_reserve_tokens_does_not_trim_a_prompt_that_already_fits():
-    """The reserve must never be what causes eviction.
-
-    A conversation inside the window comes back untouched even when the reserve would
-    not fit alongside it, or recall would start evicting chats nowhere near the limit.
-    """
+    """A prompt inside the window is untouched, so the reply reserve must never trigger eviction."""
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "short"},
@@ -555,15 +518,13 @@ def test_rolling_fit_keeps_original_when_protected_messages_still_do_not_fit():
     assert fitted is messages
     assert fitted == messages
     assert info is not None and info["fits"] is False
-    # The partial eviction is deliberately NOT applied: the request fails either way,
-    # and dropping turns off a doomed request loses them for nothing.
+    # Partial eviction is not applied: the request fails anyway and the turns would be lost.
     assert info["dropped_messages"] == 0
     assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
 
 
 def test_an_irreducible_fit_serves_the_eviction_when_the_original_is_past_the_window():
     """Use an eviction that fits the window when the original does not."""
-    # 450 chars: past the 400-token target, inside the 500-token window.
     latest = {"role": "user", "content": "latest" * 75}
     messages = [
         {"role": "user", "content": "old" * 100},
@@ -583,7 +544,6 @@ def test_an_irreducible_fit_serves_the_eviction_when_the_original_is_past_the_wi
 
     assert counter(messages) > 500 >= counter(fitted)
     assert fitted == [latest]
-    # Still a refusal: the diagnosis is what the client explains the short reply with.
     assert info is not None and info["fits"] is False
     assert info["dropped_messages"] == 2
     assert info["prompt_tokens_after"] == counter(fitted) < info["prompt_tokens_before"]
@@ -595,7 +555,6 @@ def test_an_irreducible_fit_keeps_the_original_while_it_still_fits_the_window():
     messages = [
         {"role": "user", "content": "old" * 10},
         {"role": "assistant", "content": "answer" * 5},
-        # 480 chars on its own, so evicting the pair still misses the 450-token target.
         {"role": "user", "content": "latest" * 80},
     ]
     counter = lambda candidate: sum(  # noqa: E731
@@ -618,7 +577,6 @@ def test_an_irreducible_fit_keeps_the_original_while_it_still_fits_the_window():
 
 def test_an_irreducible_fit_refuses_an_eviction_that_fills_the_window():
     """An eviction landing on `n_ctx` exactly is refused, so it is not a rescue."""
-    # 500 chars in a 500-token window: serving this would drop turns and still fail.
     messages = [
         {"role": "user", "content": "o" * 300},
         {"role": "assistant", "content": "a" * 600},
@@ -669,13 +627,7 @@ def test_an_irreducible_fit_serves_the_eviction_when_the_original_fills_the_wind
 
 
 def test_an_irreducible_fit_refuses_a_rescue_that_leaves_no_room_to_answer():
-    """A rescue has to buy an ANSWER, not just an accepted request.
-
-    Serving a prompt one token under the window evicts the history and comes back with a
-    one-token reply stopped on `length`: the turns are gone and the user has nothing. The
-    refusal it replaces at least kept them and named the turn that was too big, so below a
-    floor of reply room the old behaviour wins.
-    """
+    """An irreducible fit refuses a rescue that leaves no reply room, rather than evicting for one token."""
     latest = {"role": "user", "content": "x" * 495}
     messages = [
         {"role": "user", "content": "o" * 300},
@@ -693,17 +645,13 @@ def test_an_irreducible_fit_refuses_a_rescue_that_leaves_no_room_to_answer():
         count_tokens = counter,
     )
 
-    # The eviction it reached is under the window, so the old gate would have served it
-    # with five tokens to answer in. `irreducible_tokens` is that floor.
     assert counter(messages) > 500
     assert info is not None and info["irreducible_tokens"] == 495
-    # Refused instead, with the history intact.
     assert fitted is messages
     assert info is not None and info["fits"] is False
     assert info["dropped_messages"] == 0
     assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
 
-    # And one that DOES leave room is still rescued: the floor is 500 // 16 = 31.
     roomy = [
         {"role": "user", "content": "o" * 300},
         {"role": "assistant", "content": "a" * 300},
@@ -721,11 +669,7 @@ def test_an_irreducible_fit_refuses_a_rescue_that_leaves_no_room_to_answer():
 
 
 def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
-    """A tool loop refits with the tool result appended.
-
-    The turn that will not fit is then output the user never wrote and cannot edit, so
-    "shorten this message" has no remedy. The role is what tells the two apart.
-    """
+    """The diagnosis names whose turn does not fit, since tool output the user cannot edit has no remedy."""
     user_turn = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "what does this file contain"},
@@ -741,7 +685,6 @@ def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
     assert info["fits"] is False
     assert info["latest_turn_role"] == "tool"
 
-    # And an ordinary overflowing user message still says so.
     _, info = fit_rolling_context(
         [
             {"role": "system", "content": "system"},
@@ -755,12 +698,7 @@ def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
 
 
 def test_an_irreducible_fit_survives_a_template_that_refuses_a_lone_tool_result():
-    """The diagnosis is produced exactly where a tool loop is most likely to be.
-
-    Strict templates refuse to render a tool result on its own, so counting that slice
-    threw out of the fit and the caller fell back to the untrimmed request, telling the
-    client nothing on the one path this diagnosis exists for.
-    """
+    """The diagnosis must survive templates that refuse a lone tool result, not fall back untrimmed."""
 
     def strict_counter(messages):
         if len(messages) == 1 and messages[0].get("role") == "tool":
@@ -785,16 +723,11 @@ def test_an_irreducible_fit_survives_a_template_that_refuses_a_lone_tool_result(
 
     assert info is not None and info["fits"] is False
     assert info["latest_turn_role"] == "tool"
-    # Estimated rather than counted: an approximation beats no diagnosis at all.
     assert info["latest_turn_tokens"] > 0
 
 
 def test_an_irreducible_fit_says_whether_the_message_or_the_history_is_at_fault():
-    """The two numbers that make the error actionable.
-
-    llama-server's error reports the WHOLE conversation's size and advises shortening
-    it, which cannot work when the latest turn alone is over the window.
-    """
+    """The error must say whether the latest message or the history is too big; the advice differs."""
     huge_message = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "latest" * 200},
@@ -808,8 +741,6 @@ def test_an_irreducible_fit_says_whether_the_message_or_the_history_is_at_fault(
     assert info["fits"] is False
     assert info["latest_turn_tokens"] > info["context_length"]
 
-    # A conversation that fits reports nothing, not a fits:False dict a caller could
-    # mistake for a failure.
     small = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
@@ -823,16 +754,10 @@ def test_an_irreducible_fit_says_whether_the_message_or_the_history_is_at_fault(
     assert none_info is None
 
 
-# ---------------------------------------------------------------------------
-# _apply_overflow_truncation
-# ---------------------------------------------------------------------------
-
-
 def test_apply_overflow_truncation_mutates_body_and_clamps_max_tokens():
     body = {"messages": _conversation(), "max_tokens": 32000}
     assert _apply_overflow_truncation(body, _NICK_ERROR) is True
     assert len(body["messages"]) < len(_conversation())
-    # Generation headroom: max_tokens clamped to the non-prompt share of n_ctx.
     assert body["max_tokens"] <= max(1024, int(67584 * 0.25))
 
 
@@ -861,7 +786,6 @@ def test_rolling_overflow_never_clips_the_latest_request():
 
     assert _apply_overflow_truncation(body, _NICK_ERROR, "truncate_oldest") is True
     assert body["messages"][-1]["content"] == latest
-    # A second recovery has no old turn left to drop and must fail cleanly.
     assert _apply_overflow_truncation(body, _NICK_ERROR, "truncate_oldest") is False
 
 
@@ -937,7 +861,6 @@ def test_apply_overflow_truncation_clips_giant_protected_tool_results():
     body = {"messages": msgs, "max_tokens": 32000}
     n_before = len(msgs)
     assert _apply_overflow_truncation(body, _NICK_ERROR) is True
-    # No message disappeared (pairing intact), but contents were clipped.
     assert len(body["messages"]) == n_before
     clipped = [m for m in body["messages"] if _CLIP_MARKER in str(m.get("content"))]
     assert clipped, "expected at least one clipped tool result"
@@ -976,7 +899,6 @@ def test_clip_long_contents_reaches_target_and_keeps_structure():
     clipped = _clip_long_contents(msgs, target_est = total // 4)
     assert clipped >= 1
     assert sum(_estimate_message_tokens(m) for m in msgs) <= total // 4
-    # Roles and count unchanged; the short final user message untouched.
     assert [m["role"] for m in msgs] == ["system", "user", "assistant", "tool", "user"]
     assert msgs[-1]["content"] == "latest question"
 
@@ -1023,11 +945,6 @@ def test_overflow_truncation_server_default_env(monkeypatch):
     assert _rolling_context_policy(_Unset()) == "truncate_oldest"
 
 
-# ---------------------------------------------------------------------------
-# /v1/models context metadata
-# ---------------------------------------------------------------------------
-
-
 class _FakeLlamaBackend:
     is_loaded = True
     model_identifier = "unsloth/Qwen3.6-27B-GGUF"
@@ -1046,7 +963,6 @@ def test_v1_models_exposes_real_context_window(monkeypatch):
     assert len(models) == 1
     entry = models[0]
     assert entry["id"] == "unsloth/Qwen3.6-27B-GGUF"
-    # The REAL (post /props readback) window, not the requested one.
     assert entry["context_length"] == 67584
     assert entry["max_context_length"] == 262144
 
@@ -1117,11 +1033,7 @@ def test_reasoning_clip_alone_prevents_middle_eviction():
 
 
 def test_compaction_headroom_does_not_trim_a_prompt_that_already_fits():
-    """Same rule as the reserve: headroom must never be what causes eviction.
-
-    The headroom makes a compaction take a chunk out in one go; charging it up front
-    would evict from chats that comfortably fit today.
-    """
+    """Compaction headroom must never trigger eviction on a prompt that already fits."""
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "short"},
@@ -1141,11 +1053,7 @@ def test_compaction_headroom_does_not_trim_a_prompt_that_already_fits():
 
 
 def test_compaction_leaves_headroom_below_the_budget():
-    """A compaction lands clear of the budget, not flush against it.
-
-    Trimming to the brim makes the boundary creep every turn: the client re-sends the
-    whole transcript, so an exactly fitted prompt is over again on the next turn.
-    """
+    """A compaction must land below the budget, or the next turn's re-sent transcript overflows again."""
     messages = [{"role": "system", "content": "system"}]
     for index in range(12):
         messages.append({"role": "user", "content": f"question {index} " * 20})
@@ -1162,7 +1070,6 @@ def test_compaction_leaves_headroom_below_the_budget():
     assert info is not None
     prompt_target = 800 - min(100, 800 // 4)
     assert info["prompt_tokens_after"] <= prompt_target
-    # The point of the change: comfortably under, not just under.
     assert info["prompt_tokens_after"] < prompt_target * 0.9
 
 
@@ -1196,20 +1103,12 @@ def _fit_with_appended(
 
 
 def test_sticky_boundary_holds_still_while_short_turns_are_appended():
-    """After a compaction, ordinary turns do not push the boundary again.
-
-    The notice depends on this, and it is why the boundary is read back rather than
-    recomputed: the client re-sends the whole transcript, so a recomputed "keep the
-    newest N tokens" slides forward and every reply reports a fresh compaction.
-    """
+    """The sticky boundary is read back, not recomputed, so short appended turns do not slide it forward."""
     base = _long_thread()
     first = _fit_with_appended(base, 0)
     assert first is not None and first["dropped_messages"] > 0
 
     boundary = first["dropped_messages"]
-    # Not "forever": the appended turns consume the headroom and the next test pins
-    # down that it eventually moves. A handful of turns, against a baseline that moved
-    # on nearly every one.
     for appended in range(1, 6):
         info = _fit_with_appended(base, appended, sticky = boundary)
         assert info is not None
@@ -1235,11 +1134,7 @@ def test_sticky_boundary_moves_again_once_the_headroom_is_used_up():
 
 
 def test_sticky_boundary_never_causes_eviction_on_a_thread_that_fits():
-    """A stale boundary from a longer branch must not evict a conversation that fits.
-
-    After a rollback the saved boundary describes a branch that no longer exists. The
-    fit may reapply it, but never report a compaction on a prompt that already fits.
-    """
+    """A stale boundary from a rolled-back branch must never report a compaction on a prompt that fits."""
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "short"},
@@ -1260,13 +1155,7 @@ def test_sticky_boundary_never_causes_eviction_on_a_thread_that_fits():
 
 
 def test_the_compaction_headroom_needs_a_boundary_to_be_worth_it():
-    """Cutting deeper than needed buys quiet turns only if the cut is remembered.
-
-    An incognito chat, an API request with no persisted thread, or a request whose turns
-    are not saved gets neither the boundary back nor a recall of what went, so there the
-    headroom is simply less history than plain eviction would have kept, on every
-    overflow, and turning the archive off did not restore the old behaviour.
-    """
+    """Extra headroom only helps where the cut is remembered; threadless requests get no boundary."""
     messages = []
     for index in range(20):
         messages.append({"role": "user", "content": f"q{index} " + "u" * 80})
@@ -1286,7 +1175,6 @@ def test_the_compaction_headroom_needs_a_boundary_to_be_worth_it():
     sticky, sticky_info = _fit(True)
 
     assert plain_info["fits"] and sticky_info["fits"]
-    # The one that can restore its boundary is the one that pays for headroom.
     assert sticky_info["dropped_messages"] > plain_info["dropped_messages"]
     assert len(plain) > len(sticky)
 
@@ -1336,14 +1224,7 @@ def test_zero_headroom_drops_only_the_oldest_turn_needed_to_fit():
 
 
 def test_a_request_that_chose_nothing_keeps_the_eviction_size_it_always_had():
-    """`keeps_boundary = False` is not a request for no extra trim.
-
-    Threadless API requests and incognito chats zero the headroom because there is no
-    boundary to remember a deeper cut with, not because anyone picked the "no extra trim"
-    option. Keying the 5% floor on `headroom` instead of the requested ratio handed them
-    the new setting anyway: measured on the messages below, eviction went from 12 messages
-    to 2 for a caller that sent no new field at all.
-    """
+    """keeps_boundary=False does not mean no extra trim; the 5% floor keys on the requested ratio."""
     messages = []
     for _ in range(100):
         messages.append({"role": "user", "content": "u" * 5})
@@ -1372,13 +1253,6 @@ def test_clamp_compaction_headroom_ratio_rejects_junk():
     assert clamp_compaction_headroom_ratio(-1) == 0.0
     assert clamp_compaction_headroom_ratio(2) == 0.9
     assert clamp_compaction_headroom_ratio(0.05) == 0.05
-
-
-# --- Keeping the user's standing instruction when everything else is evicted ---
-#
-# `truncate_oldest_messages` protects the newest USER group, so an instruction is safe only
-# while it IS that group: one "continue" later it is the first thing evicted. These cover
-# the pin that holds it and the bounds that stop the pin becoming the problem.
 
 
 def _instruction(text = None):
@@ -1424,7 +1298,6 @@ def test_a_governing_instruction_survives_filler_turns():
 
     assert any(message is instruction for message in kept)
     assert dropped >= 2
-    # And with the knob at its shipped default the behaviour is exactly today's.
     kept_today, _ = truncate_oldest_messages(
         messages,
         0.3,
@@ -1438,7 +1311,6 @@ def test_a_pinned_instruction_cannot_starve_the_window():
     is the thing the ceiling excludes -- not partially, at all."""
     from core.inference import instruction_pin
 
-    # ~890 tokens each, so any one of them fits under the 1024 ceiling and no two do.
     big = [_instruction("Please " + "consider this requirement carefully. " * 95) for _ in range(3)]
     messages = []
     for instruction in big:
@@ -1451,11 +1323,7 @@ def test_a_pinned_instruction_cannot_starve_the_window():
 
 
 def test_later_long_user_turns_crowd_out_an_older_instruction():
-    """The bound is newest-first over a fixed number of groups, so a standing instruction
-    with enough long user turns after it is NOT pinned. This is the same hole Zed's 80 KB
-    newest-first replay has, and it is recorded here rather than left to be discovered:
-    the pin protects an instruction against FILLER, not against a long conversation.
-    """
+    """The instruction pin is bounded, so enough later long turns still crowd out an older instruction."""
     from core.inference import instruction_pin
 
     instruction = _instruction()
@@ -1474,7 +1342,6 @@ def test_later_long_user_turns_crowd_out_an_older_instruction():
     pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 4096)
 
     assert id(instruction) not in pinned
-    # It is reachable, though, once the budget covers the turns in between.
     wide = instruction_pin.pinned_instruction_ids(messages, groups = 4, max_tokens = 4096)
     assert id(instruction) in wide
 
@@ -1518,40 +1385,27 @@ def test_a_thin_query_is_recognised_but_a_short_real_question_is_not():
     assert instruction_pin.is_thin_query("continue")
     assert instruction_pin.is_thin_query("yes")
     assert instruction_pin.is_thin_query("ok!")
-    # Keyboards autocorrect "..." to one ellipsis character, which used to survive the
-    # punctuation strip, so `continue…` was called substantive.
+    # Keyboards autocorrect '...' to a single ellipsis character.
     assert instruction_pin.is_thin_query("continue…")
     assert instruction_pin.is_thin_query("and then…")
     assert instruction_pin.is_thin_query("continue...")
-    # Short, but it names what it wants, so an older instruction must not replace it.
     assert not instruction_pin.is_thin_query("what is ZQXVARA123 now?")
     assert not instruction_pin.is_thin_query("what is ZQXVARA123 now…")
 
 
 def test_a_self_contained_two_word_request_is_not_thin():
-    """Thin has to mean "names nothing", not "is short".
-
-    A word count swept in every self-contained short request, and a thin query earns an
-    anchor that `conversation_archive.recall` spends AHEAD of the user's own words. At
-    top_k=1 -- which the over-budget backoff (4 -> 2 -> 1) and a small window both reach,
-    since `_recall_top_k` is `budget // CHUNK_TOKENS` -- the anchor takes the only slot
-    and the turn answering what was actually asked is never retrieved.
-    """
+    """A self-contained short request is not thin: a thin-query anchor would take the only top_k=1 slot."""
     from core.inference import instruction_pin
 
     for request in ("review billing", "restart nginx", "fix authentication", "ZQXVARA123?"):
         assert not instruction_pin.is_thin_query(request), request
 
-    # Still thin: every word is a function word or a nudge, so there is nothing to search.
     for nudge in ("what about it", "and then?", "do it", "yes please", "why?", "???"):
         assert instruction_pin.is_thin_query(nudge), nudge
 
 
 def test_a_pin_is_charged_for_everything_it_holds():
-    """`truncate_oldest_messages` protects by GROUP, so the reply rides along with the
-    instruction. Charging only the instruction let a 28-token pin hold 20037 tokens, past
-    both the ceiling and the prompt-fraction cap, and `_fit_with_instruction_pins` then
-    dropped every pin on the retry -- losing the instruction the pin exists to keep."""
+    """Charge the pin for its whole group, or it overshoots the ceiling and is dropped on retry."""
     from core.inference import instruction_pin
 
     instruction = _instruction()
@@ -1564,7 +1418,6 @@ def test_a_pin_is_charged_for_everything_it_holds():
 
     assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024) == set()
 
-    # And the same instruction with a reply the budget can afford is still pinned.
     modest = list(messages)
     modest[2] = {"role": "assistant", "content": "Understood."}
     assert instruction_pin.pinned_instruction_ids(modest, groups = 2, max_tokens = 1024) == {
@@ -1573,20 +1426,13 @@ def test_a_pin_is_charged_for_everything_it_holds():
 
 
 def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
-    """The pinless retry fires on a REFUSAL, not on a prompt that was merely reduced.
-
-    `_fit_with_instruction_pins` drops the pins and refits when the pinned attempt does
-    not fit, since pinning turning a servable request into a refusal is worse than losing
-    the instruction. A rescued fit reports `fits` false too, but it is servable and is
-    what gets sent, so retrying there loses the instruction for nothing.
-    """
+    """The pinless retry fires only on a refusal; a rescued fit is servable, so it keeps its pins."""
     from core.inference import instruction_pin, llama_cpp
 
     instruction = _instruction("A" * 300)
     messages = [
         {"role": "system", "content": "S" * 40},
         instruction,
-        # Rides along with the pin: the evictor protects by GROUP.
         {"role": "assistant", "content": "B" * 160},
         {"role": "user", "content": "C" * 280},
         {"role": "assistant", "content": "D" * 280},
@@ -1595,10 +1441,7 @@ def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
     counter = lambda candidate: sum(  # noqa: E731
         len(str(message.get("content", ""))) for message in candidate
     )
-    # ctx 1000 -> prompt_target 872, reply floor 62. Pinned floor is 40+300+160+420 =
-    # 920: past the target, and 920+62 is inside the window, so a rescue. Pinless floor
-    # is 40+420 = 460, which fits outright -- which is exactly why the retry is tempting
-    # and exactly why it must not fire.
+    # ctx 1000: pinned floor 920 is a rescue; the pinless floor 460 fits but must not be retried.
     assert counter(messages) == 1480
 
     calls = []
@@ -1611,8 +1454,7 @@ def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
 
     original_pins = instruction_pin.pinned_instruction_ids
     llama_cpp._fit_context = _spy
-    # Stubbed: which turns get pinned is the pin heuristic's own business and has its own
-    # tests. What is under test here is what the fitter does once something IS pinned.
+    # Stubbed: pin selection has its own tests; this covers the fitter once something is pinned.
     instruction_pin.pinned_instruction_ids = lambda *_a, **_k: {id(instruction)}
     try:
         fitted, info = llama_cpp._fit_with_instruction_pins(
@@ -1626,23 +1468,15 @@ def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
         llama_cpp._fit_context = original
         instruction_pin.pinned_instruction_ids = original_pins
 
-    # A rescue, not a refusal: shorter than the original and inside the window.
     assert info is not None and info["fits"] is False
     assert info["dropped_messages"] > 0
     assert counter(fitted) < 1000 <= counter(messages)
-    # Fitted once. No pinless retry, so the standing instruction survived.
     assert len(calls) == 1
     assert any(message is instruction for message in fitted)
 
 
 def test_a_pin_charges_token_dense_text_at_its_real_rate():
-    """The ceiling is only a ceiling if the turn is charged what it really costs.
-
-    Four characters per token undercharges CJK and emoji by roughly 2x or more, so a turn
-    that really costs 1056 tokens was charged 276 and cleared a 1024 ceiling it was nowhere
-    near. The pin then held far more than the budget allows and the fitter evicted recent
-    turns to pay for it, which is the failure the budget exists to prevent.
-    """
+    """Four characters per token undercharges CJK and emoji by 2x or more, so pins need the real rate."""
     from core.inference import instruction_pin
 
     dense_instruction = {
@@ -1656,21 +1490,14 @@ def test_a_pin_charges_token_dense_text_at_its_real_rate():
         {"role": "user", "content": "continue"},
     ]
 
-    # Its real cost is over the ceiling, so it is not pinned at all rather than partially.
     assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024) == set()
-    # A ceiling that can afford it still pins it, so this is a charge and not a refusal.
     assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 4096) == {
         id(dense_instruction)
     }
 
 
 def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
-    """A trailing tool exchange is its own group, and `truncate_oldest_messages` skips a
-    protected group BEFORE the `starts_user_turn` expansion, so that group stays an
-    independent eviction unit and goes while the pinned instruction stays. Charging it to
-    the pin would let one ordinary file read cost a one-line instruction its pin over
-    tokens the pin never keeps -- and an agent run is exactly where the filler follow-up
-    the pin exists for appears."""
+    """A trailing tool exchange is its own eviction unit, so the pin must not be charged for it."""
     from core.inference import instruction_pin
     from core.inference.context_window import truncate_oldest_messages
 
@@ -1692,14 +1519,12 @@ def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
     pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024)
     assert pinned == {id(instruction)}
 
-    # And the 20k tokens it was being charged for are evicted anyway, with the pin on.
     kept, dropped = truncate_oldest_messages(messages, 0.01, protected_message_ids = pinned)
     assert any(message is instruction for message in kept)
     assert not any(message is tool_call for message in kept)
     assert not any(message is tool_result for message in kept)
     assert dropped == 2
 
-    # The reply sharing the instruction's group is still charged, so the ceiling holds.
     with_reply = [
         {"role": "system", "content": "you are helpful"},
         instruction,
@@ -1720,7 +1545,6 @@ def test_a_date_note_that_would_overflow_the_fit_is_not_moved():
         {"role": "assistant", "content": "D" * 100},
         {"role": "user", "content": "what is the date?"},
     ]
-    # the note is priced far above its length, so moving it would leave the fit over target.
     counter = lambda candidate: sum(  # noqa: E731
         len(str(message.get("content", "")))
         + 400 * str(message.get("content", "")).count("[Current date:")
