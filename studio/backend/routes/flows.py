@@ -531,13 +531,44 @@ async def plan_flow(request: Request, flow_id: str, body: PlanBody) -> dict:
     except CompileError as exc:
         return {"models": [], "gpu_ops": 0, "cached_nodes": 0, "errors": exc.issues, "warnings": []}
     baked = set((doc.get("baked") or {}).keys())
+    models = await _model_report(request, plan)
     return {
-        "models": await _model_report(request, plan),
+        "models": models,
         "gpu_ops": len(plan.gpu_nodes()),
         "cached_nodes": len([n for n in plan.order if n in baked]),
         "errors": [],
         "warnings": plan.warnings,
+        "hints": await asyncio.to_thread(_residency_hints, models),
     }
+
+
+# Model kinds that take turns on the GPU: with Keep multiple models loaded off, each switch is a full reload.
+SWAPPING_KINDS = ("chat", "vision", "tts", "audio", "image", "video")
+
+
+def _residency_hints(models: list[dict]) -> list[dict]:
+    """A flow that alternates between models while Studio evicts on every load: say how to stop the reloads."""
+    repos = {
+        m["repo"].lower()
+        for m in models
+        if m.get("kind") in SWAPPING_KINDS and not m.get("optional")
+    }
+    if len(repos) < 2:
+        return []
+    try:
+        from utils.multi_model_settings import get_multi_model_mode
+        mode = get_multi_model_mode()
+    except Exception:
+        return []
+    if mode != "off":
+        return []
+    return [
+        {
+            "id": "multi_model",
+            "message": f"This flow switches between {len(repos)} models. With Keep multiple models loaded set to "
+            "When they fit, models that fit stay loaded instead of reloading at every switch.",
+        }
+    ]
 
 
 def _hf_token(request: Request) -> Optional[str]:
