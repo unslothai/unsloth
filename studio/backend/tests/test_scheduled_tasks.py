@@ -1420,6 +1420,8 @@ def test_a_scheduled_run_while_away_switches_back_to_the_earlier_model(monkeypat
 
 
 def test_switching_back_unloads_only_a_task_model_loaded_beside_the_primary(monkeypatch):
+    from core.inference.orchestrator import routed_slot
+
     world = SwapWorld(monkeypatch)
     kept = []
     monkeypatch.setattr(
@@ -1436,11 +1438,28 @@ def test_switching_back_unloads_only_a_task_model_loaded_beside_the_primary(monk
             )
 
     async def unload(request, subject):
+        # The real unload routes to the kept slot by setting this context variable.
+        routed_slot.set(object())
         world.unloaded.append(request.model_path)
         kept.remove(request.model_path)
 
     monkeypatch.setattr(inference_routes, "_unload_model_impl", unload)
-    world.run(monkeypatch, {"id": "run-1", "source": "schedule"}, LoadsBeside(completion("Ok.")))
+    holder = scheduler_module.SwapHolder()
+    task = make_task(model = SwapWorld.TASK_MODEL, allowModelLoad = True)
+    monkeypatch.setattr(
+        inference_routes, "produce_openai_chat_completions", LoadsBeside(completion("Ok."))
+    )
+
+    async def run_then_restore():
+        app = SimpleNamespace(state = SimpleNamespace())
+        await generate_answer(
+            app, task, {"id": "run-1", "source": "schedule"}, threading.Event(), holder
+        )
+        await scheduler_module._restore_after_swap(holder.pending, app)
+        # Later runs in the scheduler's task must see the primary, not the dropped slot.
+        return routed_slot.get()
+
+    assert asyncio.run(run_then_restore()) is None
     assert world.unloaded == [SwapWorld.TASK_MODEL] and kept == []
     assert world.loaded == SwapWorld.EARLIER and world.reloads == []
 

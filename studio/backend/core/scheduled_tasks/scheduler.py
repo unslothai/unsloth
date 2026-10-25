@@ -397,7 +397,10 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
             if not _primary_serves(swap.model) and _model_is_loaded(swap.model):
                 # Loaded beside the primary (Keep multiple models loaded with a speech model in it): the primary
                 # was never replaced, so only the task model goes.
-                await _unload_model_impl(UnloadRequest(model_path = swap.model), swap.subject)
+                # Its own task: unloading routes to the slot through a context variable, which must not stick to the loop.
+                await asyncio.ensure_future(
+                    _unload_model_impl(UnloadRequest(model_path = swap.model), swap.subject)
+                )
                 return
             if _model_is_loaded(swap.model):
                 # A Transformers or MLX task model has no GGUF identity; it holds the primary all the same.
