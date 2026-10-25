@@ -193,6 +193,223 @@ def ppo_trainer_free_rollout_logits(function_name, function):
 RL_FUNCTIONS["ppo_trainer"].append(ppo_trainer_free_rollout_logits)
 
 
+def _unsloth_replace_block(function, old_lines, new_lines):
+    """Replace the one run of consecutive lines whose stripped text is ``old_lines`` with ``new_lines`` (written
+    relative to the first old line's indent). None unless the run occurs exactly once."""
+    lines = function.split("\n")
+    stripped = [line.strip() for line in lines]
+    n = len(old_lines)
+    hits = [i for i in range(len(lines) - n + 1) if stripped[i : i + n] == list(old_lines)]
+    if len(hits) != 1:
+        return None
+    i = hits[0]
+    indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
+    return "\n".join(
+        lines[:i] + [indent + line if line else line for line in new_lines] + lines[i + n :]
+    )
+
+
+_PPO_FUSED_IMPORT = (
+    "from unsloth.models._fused_rl_logprobs import (",
+    "    ppo_route as _unsloth_ppo_route_of,",
+    "    ppo_batch_generation as _unsloth_ppo_batch_generation,",
+    "    ppo_forward as _unsloth_ppo_forward,",
+    "    ppo_score as _unsloth_ppo_score,",
+    "    ppo_policy_logprobs as _unsloth_ppo_policy_logprobs,",
+    ")",
+    "_unsloth_ppo_route = _unsloth_ppo_route_of(self)",
+)
+_PPO_FUSED_BLOCKS = (
+    # The route is decided once per train() before the first rollout.
+    (
+        ("for update in range(1, args.num_total_batches + 1):",),
+        _PPO_FUSED_IMPORT + ("for update in range(1, args.num_total_batches + 1):",),
+    ),
+    # Rollouts without the stacked float32 generation scores.
+    (
+        ("query_responses, logitss = batch_generation(",),
+        (
+            "query_responses, logitss = (",
+            "    batch_generation if _unsloth_ppo_route is None else _unsloth_ppo_batch_generation",
+            ")(",
+        ),
+    ),
+    # Rollout (old) log-probs: the policy forward + fused scorer the training pass uses.
+    (
+        (
+            "logits = logitss[i : i + args.local_rollout_forward_batch_size]",
+            "logprob = selective_log_softmax(logits, response)",
+            "del logits",
+        ),
+        (
+            "if _unsloth_ppo_route is not None:",
+            "    logprob = _unsloth_ppo_policy_logprobs(",
+            "        _unsloth_ppo_route, forward, selective_log_softmax, model, query_response, response,",
+            "        context_length, processing_class.pad_token_id, args.temperature + 1e-7,",
+            "    )",
+            "else:",
+            "    logits = logitss[i : i + args.local_rollout_forward_batch_size]",
+            "    logprob = selective_log_softmax(logits, response)",
+            "    del logits",
+        ),
+    ),
+    (
+        ("ref_output = forward(model.policy, query_response, processing_class.pad_token_id)",),
+        (
+            "ref_output = _unsloth_ppo_forward(",
+            "    _unsloth_ppo_route, forward, model.policy, query_response, processing_class.pad_token_id",
+            ")",
+        ),
+    ),
+    (
+        ("ref_output = forward(ref_policy, query_response, processing_class.pad_token_id)",),
+        (
+            "ref_output = _unsloth_ppo_forward(",
+            "    _unsloth_ppo_route, forward, ref_policy, query_response, processing_class.pad_token_id",
+            ")",
+        ),
+    ),
+    (
+        (
+            "ref_logits = ref_output.logits[:, context_length - 1 : -1]",
+            "ref_logits /= args.temperature + 1e-7",
+            "ref_logprob = selective_log_softmax(ref_logits, response)",
+            "del ref_output, ref_logits",
+        ),
+        (
+            "_unsloth_scored = _unsloth_ppo_score(",
+            "    _unsloth_ppo_route, model if ref_policy is None else ref_policy,",
+            "    ref_output.logits[:, context_length - 1 : -1], response, args.temperature + 1e-7,",
+            ")",
+            "if _unsloth_scored is None:",
+            "    ref_logits = ref_output.logits[:, context_length - 1 : -1]",
+            "    ref_logits /= args.temperature + 1e-7",
+            "    ref_logprob = selective_log_softmax(ref_logits, response)",
+            "    del ref_output, ref_logits",
+            "else:",
+            "    ref_logprob = _unsloth_scored[0]",
+            "    del ref_output, _unsloth_scored",
+        ),
+    ),
+    # Training pass: the value head still reads the critic backbone; only the policy head is fused.
+    (
+        ("output, vpred_temp = forward(model, mb_query_responses, processing_class.pad_token_id)",),
+        (
+            "output, vpred_temp = _unsloth_ppo_forward(",
+            "    _unsloth_ppo_route, forward, model, mb_query_responses, processing_class.pad_token_id",
+            ")",
+        ),
+    ),
+    (
+        (
+            "logits = output.logits[:, context_length - 1 : -1]",
+            "logits /= args.temperature + 1e-7",
+            "new_logprobs = selective_log_softmax(logits, mb_responses)",
+        ),
+        (
+            "_unsloth_scored = _unsloth_ppo_score(",
+            "    _unsloth_ppo_route, model, output.logits[:, context_length - 1 : -1], mb_responses,",
+            "    args.temperature + 1e-7, entropy = True,",
+            ")",
+            "if _unsloth_scored is None:",
+            "    logits = output.logits[:, context_length - 1 : -1]",
+            "    logits /= args.temperature + 1e-7",
+            "    new_logprobs = selective_log_softmax(logits, mb_responses)",
+            "else:",
+            "    logits = None",
+            "    new_logprobs, _unsloth_entropy = _unsloth_scored",
+            "    del _unsloth_scored",
+        ),
+    ),
+    # The entropy metric comes out of the same kernel pass (detached, temperature-scaled like TRL's).
+    (
+        (
+            "prob_dist = torch.nn.functional.softmax(logits, dim=-1)",
+            "entropy = torch.logsumexp(logits, dim=-1) - torch.sum(prob_dist * logits, dim=-1)",
+        ),
+        (
+            "if logits is None:",
+            "    prob_dist = None",
+            "    entropy = _unsloth_entropy",
+            "else:",
+            "    prob_dist = torch.nn.functional.softmax(logits, dim=-1)",
+            "    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(prob_dist * logits, dim=-1)",
+        ),
+    ),
+)
+
+
+def ppo_trainer_fused_logprobs(function_name, function):
+    """Score PPO's rollout, reference and training log-probs (and the entropy metric) from hidden states with the
+    fused linear kernel. Every anchor must match exactly once, else TRL's source is returned untouched; at run time
+    ``ppo_route`` / ``ppo_score`` keep TRL's lines for any head or forward the kernel cannot serve."""
+    if function_name != "train" or "_unsloth_ppo_route" in function:
+        return function
+    new = function
+    for old_lines, new_lines in _PPO_FUSED_BLOCKS:
+        new = _unsloth_replace_block(new, old_lines, new_lines)
+        if new is None:
+            return function
+    return new
+
+
+RL_FUNCTIONS["ppo_trainer"].append(ppo_trainer_fused_logprobs)
+
+
+_RLOO_LOGPS_DEF = re.compile(
+    r"^(?P<indent>[ \t]*)def _get_per_token_logps_and_entropies\(", re.MULTILINE
+)
+
+
+def rloo_trainer_fused_logprobs(function_name, function):
+    """RLOOTrainer (TRL < 1.15) reads ``model(**inputs).logits``: keep its body as
+    ``_unsloth_stock_get_per_token_logps_and_entropies`` and put a dispatcher in front that scores text-only batches
+    from hidden states. TRL >= 1.15 calls its own fused lm_head, already served by the zoo kernel."""
+    if function_name != "_get_per_token_logps_and_entropies":
+        return function
+    if "fused_lm_head=True" in function or "_unsloth_rloo" in function:
+        return function
+    match = list(_RLOO_LOGPS_DEF.finditer(function))
+    if len(match) != 1 or ".logits" not in function or "self.temperature" not in function:
+        return function
+    indent = match[0].group("indent")
+    try:
+        from unsloth.models._fused_rl_logprobs import rloo_stock_traits
+    except Exception:
+        return function
+    traits = rloo_stock_traits(function)
+    stock = _RLOO_LOGPS_DEF.sub(
+        lambda m: m.group("indent") + "def _unsloth_stock_get_per_token_logps_and_entropies(",
+        function,
+        count = 1,
+    )
+    body = [
+        "def _get_per_token_logps_and_entropies(",
+        "    self, model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False,",
+        "    *args, **kwargs,",
+        "):",
+        "    try:",
+        "        from unsloth.models._fused_rl_logprobs import rloo_fused_logps as _unsloth_rloo_fused_logps",
+        "    except Exception:",
+        "        _unsloth_rloo_fused_logps = None",
+        "    if _unsloth_rloo_fused_logps is not None:",
+        "        _out = _unsloth_rloo_fused_logps(",
+        f"            self, {traits!r}, model, input_ids, attention_mask, logits_to_keep, batch_size,",
+        "            compute_entropy, args, kwargs,",
+        "        )",
+        "        if _out is not None:",
+        "            return _out",
+        "    return self._unsloth_stock_get_per_token_logps_and_entropies(",
+        "        model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, *args, **kwargs",
+        "    )",
+    ]
+    dispatcher = "\n".join(indent + line for line in body) + "\n\n"
+    return dispatcher + stock
+
+
+RL_FUNCTIONS["rloo_trainer"].append(rloo_trainer_fused_logprobs)
+
+
 def dpo_trainer_fix_columns(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_dpo = (
