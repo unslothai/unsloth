@@ -130,6 +130,26 @@ def test_an_unreadable_image_or_unknown_projector_is_charged_the_ceiling():
     )
 
 
+def test_a_gemma3_image_is_priced_at_its_fixed_cost_whatever_its_size():
+    # llama-server charged 258 for every size on Gemma 3 4B; the 4224 ceiling would be 16x that.
+    backend = _backend(projector = "gemma3")
+
+    for size in ((1920, 1080), (64, 64)):
+        price = llama_cpp._image_token_price(backend, _image(_png(*size)))
+        assert price == 256 + llama_cpp._IMAGE_WRAPPER_TOKENS
+    assert llama_cpp._image_token_price(backend, _image("https://x/y.png")) == (
+        256 + llama_cpp._IMAGE_WRAPPER_TOKENS
+    )
+
+
+def test_the_dimension_cache_does_not_keep_the_image_payload_alive():
+    url = _png(32, 16)
+
+    assert cw.image_dimensions(_image(url)) == (32, 16)
+    assert all(not isinstance(key, str) for key in cw._DATA_URL_DIMENSIONS)
+    assert url not in cw._DATA_URL_DIMENSIONS
+
+
 def test_a_text_only_model_is_charged_nothing():
     assert llama_cpp._image_token_price(_backend(vision = False), _image(_png(64, 64))) == 0
 

@@ -67,7 +67,6 @@ from core.inference.context_window import (
     compact_executed_call_arguments,
     compact_refused_tool_arguments,
     estimate_message_tokens_with_priced_images,
-    estimate_message_tokens_without_unpriced_media,
     estimate_messages_tokens_without_unpriced_media,
     _reply_floor,
     estimate_messages_tokens_conservative,
@@ -2550,18 +2549,25 @@ _IMAGE_WRAPPER_TOKENS = 128
 # Qwen-VL projectors fold one (patch * 2)-pixel square into each embedding: 14 px patches on
 # Qwen2/2.5-VL, 16 on Qwen3-VL, so an image costs about (w / s) * (h / s) up to the cap.
 _MERGED_PATCH_PX = {"qwen2vl_merger": 28, "qwen2.5vl_merger": 28, "qwen3vl_merger": 32}
+# Fixed-resolution projectors cost the same for every image: Gemma 3 resizes to 896 px and pools
+# to 16 x 16 (258 KV positions measured on Gemma 3 4B against a 4224-token ceiling).
+_FIXED_IMAGE_TOKENS = {"gemma3": 256}
 
 
 def _image_token_price(backend, part: dict) -> int:
     """What one image adds to the prompt, for the fit and the tool-result sizing (#14968).
 
-    The admission ceiling, except on a Qwen-VL projector where the image's own size gives a
-    close count: charging every screenshot the 4096-token ceiling would evict history that
-    fits. Never above the ceiling, and the ceiling whenever the size cannot be read."""
+    The admission ceiling, except on a fixed-resolution projector, whose cost is known, and on a
+    Qwen-VL projector, where the image's own size gives a close count: charging every screenshot
+    the 4096-token ceiling would evict history that fits. Never above the ceiling, and the
+    ceiling whenever the size cannot be read."""
     ceiling = _mcp_image_tokens(backend)
     if ceiling <= 0:
         return 0
     projector = str(getattr(backend, "_mmproj_projector_type", None) or "").strip().lower()
+    fixed = _FIXED_IMAGE_TOKENS.get(projector)
+    if fixed:
+        return min(ceiling, fixed + _IMAGE_WRAPPER_TOKENS)
     merged = _MERGED_PATCH_PX.get(projector)
     dims = image_dimensions(part) if merged else None
     if dims is None:

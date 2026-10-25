@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import re
@@ -111,9 +110,26 @@ def image_dimensions(part: dict) -> Optional[tuple[int, int]]:
     return _data_url_dimensions(url)
 
 
-@functools.lru_cache(maxsize = 256)
+_DATA_URL_DIMENSIONS: dict[tuple[int, int], Optional[tuple[int, int]]] = {}
+_DATA_URL_DIMENSIONS_MAX = 256
+
+
 def _data_url_dimensions(url: str) -> Optional[tuple[int, int]]:
-    """Cached on the URL: the same image is priced on every count of a tool loop."""
+    """Cached because the same image is priced on every count of a tool loop. Keyed on the URL's
+    hash, not the URL: an lru_cache would keep up to 256 multi-MB base64 payloads alive."""
+    key = (hash(url), len(url))
+    try:
+        return _DATA_URL_DIMENSIONS[key]
+    except KeyError:
+        pass
+    dims = _read_data_url_dimensions(url)
+    if len(_DATA_URL_DIMENSIONS) >= _DATA_URL_DIMENSIONS_MAX:
+        _DATA_URL_DIMENSIONS.clear()
+    _DATA_URL_DIMENSIONS[key] = dims
+    return dims
+
+
+def _read_data_url_dimensions(url: str) -> Optional[tuple[int, int]]:
     try:
         import base64
         import io
