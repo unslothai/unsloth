@@ -27,6 +27,8 @@ interface VoiceTypingSettings {
   mode: VoiceTypingMode;
   /** Show the floating recording indicator on screen. */
   hudEnabled: boolean;
+  /** Show the words as they are recognised inside the indicator. */
+  hudShowTranscript: boolean;
   /** Short tones when recording starts and stops. */
   soundEnabled: boolean;
   /** Append a space so consecutive dictations do not run together. */
@@ -37,6 +39,16 @@ interface VoiceTypingSettings {
   preloadModel: boolean;
   /** End a dictation by itself when the speaker pauses for long enough. */
   autoStopSilence: boolean;
+  /** Silence before the automatic stop, in milliseconds. */
+  autoStopDelayMs: number;
+  /** How long the microphone stays open after a dictation for an instant restart. */
+  micWarmSeconds: number;
+  /** Drop "um", "uh" and similar sounds from each segment. */
+  removeFillerWords: boolean;
+  /** Turn spoken punctuation ("comma", "new line") into marks. */
+  spokenPunctuation: boolean;
+  /** Press Enter after inserting, for chat boxes that send on Enter. */
+  submitAfterInsert: boolean;
   /** Off: the transcript waits on the clipboard for a manual paste. */
   pasteAutomatically: boolean;
   /** Runtime view of the dictation model, not a preference. */
@@ -45,11 +57,17 @@ interface VoiceTypingSettings {
   setShortcut: (shortcut: string) => void;
   setMode: (mode: VoiceTypingMode) => void;
   setHudEnabled: (enabled: boolean) => void;
+  setHudShowTranscript: (enabled: boolean) => void;
   setSoundEnabled: (enabled: boolean) => void;
   setAppendTrailingSpace: (enabled: boolean) => void;
   setKeepOnClipboard: (enabled: boolean) => void;
   setPreloadModel: (enabled: boolean) => void;
   setAutoStopSilence: (enabled: boolean) => void;
+  setAutoStopDelayMs: (delayMs: number) => void;
+  setMicWarmSeconds: (seconds: number) => void;
+  setRemoveFillerWords: (enabled: boolean) => void;
+  setSpokenPunctuation: (enabled: boolean) => void;
+  setSubmitAfterInsert: (enabled: boolean) => void;
   setPasteAutomatically: (enabled: boolean) => void;
   setReadiness: (readiness: VoiceTypingReadiness) => void;
 }
@@ -63,23 +81,35 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       shortcut: DEFAULT_VOICE_TYPING_SHORTCUT,
       mode: "hybrid",
       hudEnabled: true,
+      hudShowTranscript: true,
       soundEnabled: true,
       appendTrailingSpace: true,
       keepOnClipboard: false,
       preloadModel: true,
       autoStopSilence: true,
+      autoStopDelayMs: 2500,
+      micWarmSeconds: 15,
+      removeFillerWords: true,
+      spokenPunctuation: false,
+      submitAfterInsert: false,
       pasteAutomatically: true,
       readiness: "unknown",
       setEnabled: (enabled) => set({ enabled }),
       setShortcut: (shortcut) => set({ shortcut }),
       setMode: (mode) => set({ mode }),
       setHudEnabled: (hudEnabled) => set({ hudEnabled }),
+      setHudShowTranscript: (hudShowTranscript) => set({ hudShowTranscript }),
       setSoundEnabled: (soundEnabled) => set({ soundEnabled }),
       setAppendTrailingSpace: (appendTrailingSpace) =>
         set({ appendTrailingSpace }),
       setKeepOnClipboard: (keepOnClipboard) => set({ keepOnClipboard }),
       setPreloadModel: (preloadModel) => set({ preloadModel }),
       setAutoStopSilence: (autoStopSilence) => set({ autoStopSilence }),
+      setAutoStopDelayMs: (autoStopDelayMs) => set({ autoStopDelayMs }),
+      setMicWarmSeconds: (micWarmSeconds) => set({ micWarmSeconds }),
+      setRemoveFillerWords: (removeFillerWords) => set({ removeFillerWords }),
+      setSpokenPunctuation: (spokenPunctuation) => set({ spokenPunctuation }),
+      setSubmitAfterInsert: (submitAfterInsert) => set({ submitAfterInsert }),
       setPasteAutomatically: (pasteAutomatically) =>
         set({ pasteAutomatically }),
       setReadiness: (readiness) => set({ readiness }),
@@ -94,11 +124,17 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
         shortcut: state.shortcut,
         mode: state.mode,
         hudEnabled: state.hudEnabled,
+        hudShowTranscript: state.hudShowTranscript,
         soundEnabled: state.soundEnabled,
         appendTrailingSpace: state.appendTrailingSpace,
         keepOnClipboard: state.keepOnClipboard,
         preloadModel: state.preloadModel,
         autoStopSilence: state.autoStopSilence,
+        autoStopDelayMs: state.autoStopDelayMs,
+        micWarmSeconds: state.micWarmSeconds,
+        removeFillerWords: state.removeFillerWords,
+        spokenPunctuation: state.spokenPunctuation,
+        submitAfterInsert: state.submitAfterInsert,
         pasteAutomatically: state.pasteAutomatically,
       }),
       // Version 2 turns the shortcut on for stores written before the feature made

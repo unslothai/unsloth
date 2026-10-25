@@ -49,6 +49,12 @@ export function VoiceTypingSettingsSection() {
   const setMode = useVoiceTypingStore((state) => state.setMode);
   const hudEnabled = useVoiceTypingStore((state) => state.hudEnabled);
   const setHudEnabled = useVoiceTypingStore((state) => state.setHudEnabled);
+  const hudShowTranscript = useVoiceTypingStore(
+    (state) => state.hudShowTranscript,
+  );
+  const setHudShowTranscript = useVoiceTypingStore(
+    (state) => state.setHudShowTranscript,
+  );
   const soundEnabled = useVoiceTypingStore((state) => state.soundEnabled);
   const setSoundEnabled = useVoiceTypingStore((state) => state.setSoundEnabled);
   const appendTrailingSpace = useVoiceTypingStore(
@@ -67,6 +73,36 @@ export function VoiceTypingSettingsSection() {
   const autoStopSilence = useVoiceTypingStore((state) => state.autoStopSilence);
   const setAutoStopSilence = useVoiceTypingStore(
     (state) => state.setAutoStopSilence,
+  );
+  const autoStopDelayMs = useVoiceTypingStore(
+    (state) => state.autoStopDelayMs,
+  );
+  const setAutoStopDelayMs = useVoiceTypingStore(
+    (state) => state.setAutoStopDelayMs,
+  );
+  const micWarmSeconds = useVoiceTypingStore(
+    (state) => state.micWarmSeconds,
+  );
+  const setMicWarmSeconds = useVoiceTypingStore(
+    (state) => state.setMicWarmSeconds,
+  );
+  const removeFillerWords = useVoiceTypingStore(
+    (state) => state.removeFillerWords,
+  );
+  const setRemoveFillerWords = useVoiceTypingStore(
+    (state) => state.setRemoveFillerWords,
+  );
+  const spokenPunctuation = useVoiceTypingStore(
+    (state) => state.spokenPunctuation,
+  );
+  const setSpokenPunctuation = useVoiceTypingStore(
+    (state) => state.setSpokenPunctuation,
+  );
+  const submitAfterInsert = useVoiceTypingStore(
+    (state) => state.submitAfterInsert,
+  );
+  const setSubmitAfterInsert = useVoiceTypingStore(
+    (state) => state.setSubmitAfterInsert,
   );
   const pasteAutomatically = useVoiceTypingStore(
     (state) => state.pasteAutomatically,
@@ -322,6 +358,22 @@ export function VoiceTypingSettingsSection() {
         />
       </SettingsRow>
 
+      {hudEnabled ? (
+        <SettingsRow
+          label={t("settings.voice.voiceTyping.hudTranscriptLabel")}
+          description={t(
+            "settings.voice.voiceTyping.hudTranscriptDescription",
+          )}
+        >
+          <Switch
+            checked={hudShowTranscript}
+            onCheckedChange={setHudShowTranscript}
+            data-testid="voice-typing-hud-transcript"
+            aria-label={t("settings.voice.voiceTyping.hudTranscriptLabel")}
+          />
+        </SettingsRow>
+      ) : null}
+
       <SettingsRow
         label={t("settings.voice.voiceTyping.soundsLabel")}
         description={t("settings.voice.voiceTyping.soundsDescription")}
@@ -332,6 +384,71 @@ export function VoiceTypingSettingsSection() {
           data-testid="voice-typing-sounds"
           aria-label={t("settings.voice.voiceTyping.soundsLabel")}
         />
+      </SettingsRow>
+
+      <SettingsRow
+        label={t("settings.voice.voiceTyping.fillerWordsLabel")}
+        description={t("settings.voice.voiceTyping.fillerWordsDescription")}
+      >
+        <Switch
+          checked={removeFillerWords}
+          onCheckedChange={setRemoveFillerWords}
+          data-testid="voice-typing-filler-words"
+          aria-label={t("settings.voice.voiceTyping.fillerWordsLabel")}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        label={t("settings.voice.voiceTyping.spokenPunctuationLabel")}
+        description={t(
+          "settings.voice.voiceTyping.spokenPunctuationDescription",
+        )}
+      >
+        <Switch
+          checked={spokenPunctuation}
+          onCheckedChange={setSpokenPunctuation}
+          data-testid="voice-typing-spoken-punctuation"
+          aria-label={t("settings.voice.voiceTyping.spokenPunctuationLabel")}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        label={t("settings.voice.voiceTyping.micWarmLabel")}
+        description={t("settings.voice.voiceTyping.micWarmDescription")}
+      >
+        <Select
+          value={String(micWarmSeconds)}
+          onValueChange={(value) => setMicWarmSeconds(Number(value))}
+        >
+          <SelectTrigger
+            size="sm"
+            className="w-44"
+            data-testid="voice-typing-mic-warm"
+            aria-label={t("settings.voice.voiceTyping.micWarmLabel")}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="0">
+              {t("settings.voice.voiceTyping.micWarmOff")}
+            </SelectItem>
+            <SelectItem value="15">
+              {t("settings.voice.voiceTyping.micWarmSeconds", {
+                seconds: 15,
+              })}
+            </SelectItem>
+            <SelectItem value="30">
+              {t("settings.voice.voiceTyping.micWarmSeconds", {
+                seconds: 30,
+              })}
+            </SelectItem>
+            <SelectItem value="60">
+              {t("settings.voice.voiceTyping.micWarmSeconds", {
+                seconds: 60,
+              })}
+            </SelectItem>
+          </SelectContent>
+        </Select>
       </SettingsRow>
 
       <SettingsRow
@@ -370,6 +487,20 @@ export function VoiceTypingSettingsSection() {
         />
       </SettingsRow>
 
+      {pasteAutomatically ? (
+        <SettingsRow
+          label={t("settings.voice.voiceTyping.submitLabel")}
+          description={t("settings.voice.voiceTyping.submitDescription")}
+        >
+          <Switch
+            checked={submitAfterInsert}
+            onCheckedChange={setSubmitAfterInsert}
+            data-testid="voice-typing-submit"
+            aria-label={t("settings.voice.voiceTyping.submitLabel")}
+          />
+        </SettingsRow>
+      ) : null}
+
       <SettingsRow
         label={t("settings.voice.voiceTyping.preloadLabel")}
         description={t("settings.voice.voiceTyping.preloadDescription")}
@@ -393,6 +524,43 @@ export function VoiceTypingSettingsSection() {
           aria-label={t("settings.voice.voiceTyping.autoStopLabel")}
         />
       </SettingsRow>
+
+      {autoStopSilence ? (
+        <SettingsRow
+          label={t("settings.voice.voiceTyping.autoStopDelayLabel")}
+          description={t(
+            "settings.voice.voiceTyping.autoStopDelayDescription",
+          )}
+        >
+          <Select
+            value={String(autoStopDelayMs)}
+            onValueChange={(value) => setAutoStopDelayMs(Number(value))}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-44"
+              data-testid="voice-typing-auto-stop-delay"
+              aria-label={t("settings.voice.voiceTyping.autoStopDelayLabel")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1500">
+                {t("settings.voice.voiceTyping.seconds", { seconds: "1.5" })}
+              </SelectItem>
+              <SelectItem value="2500">
+                {t("settings.voice.voiceTyping.seconds", { seconds: "2.5" })}
+              </SelectItem>
+              <SelectItem value="4000">
+                {t("settings.voice.voiceTyping.seconds", { seconds: 4 })}
+              </SelectItem>
+              <SelectItem value="6000">
+                {t("settings.voice.voiceTyping.seconds", { seconds: 6 })}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+      ) : null}
 
       <p className="pt-1 text-xs text-muted-foreground">
         {t("settings.voice.voiceTyping.engineNote")}

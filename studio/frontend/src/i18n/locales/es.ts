@@ -1680,6 +1680,27 @@ export const es = {
         hudListening: "Listening",
         hudTranscribing: "Transcribing",
         hudInserted: "Inserted",
+        hudTranscriptLabel: "Live text",
+        hudTranscriptDescription:
+          "Show the words as they are recognised inside the indicator",
+        fillerWordsLabel: "Remove filler words",
+        fillerWordsDescription:
+          "Drop \u201cum\u201d, \u201cuh\u201d and similar sounds from the transcript",
+        spokenPunctuationLabel: "Spoken punctuation",
+        spokenPunctuationDescription:
+          "Say \u201ccomma\u201d, \u201cperiod\u201d or \u201cnew line\u201d to insert punctuation",
+        micWarmLabel: "Keep the microphone ready",
+        micWarmDescription:
+          "Keep it open briefly after a dictation so the next one starts instantly",
+        micWarmOff: "Off",
+        micWarmSeconds: "{seconds} seconds",
+        autoStopDelayLabel: "Pause before stopping",
+        autoStopDelayDescription:
+          "How long a silence ends the dictation when the automatic stop is on",
+        submitLabel: "Press Enter after inserting",
+        submitDescription:
+          "For chat boxes that send the message when you press Enter",
+        seconds: "{seconds} s",
       },
       readAloud: {
         sectionTitle: "Lectura en voz alta",

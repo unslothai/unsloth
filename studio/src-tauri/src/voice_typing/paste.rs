@@ -13,6 +13,9 @@ use arboard::{Clipboard, ImageData};
 /// The paste target needs a moment to consume the clipboard before it is safe to
 /// put the previous contents back.
 const RESTORE_DELAY: Duration = Duration::from_millis(350);
+/// Enter must land after the target has inserted the paste, not while it is
+/// still handling Ctrl+V.
+const SUBMIT_DELAY: Duration = Duration::from_millis(120);
 
 enum SavedClipboard {
     Text(String),
@@ -26,12 +29,14 @@ enum SavedClipboard {
 /// Types `text` into the focused window and returns `"pasted"`, or `"copied"` when
 /// the platform has no way to synthesize a paste: the transcript then waits on the
 /// clipboard for a manual paste. With `paste` off the transcript is only copied,
-/// which is the way out of apps that refuse synthesized keystrokes.
+/// which is the way out of apps that refuse synthesized keystrokes. `submit` sends
+/// Enter after a successful paste, for chat boxes that send on Enter.
 #[tauri::command]
 pub async fn voice_typing_insert(
     text: String,
     keep_on_clipboard: bool,
     paste: bool,
+    submit: bool,
 ) -> Result<String, String> {
     let mut clipboard =
         Clipboard::new().map_err(|error| format!("Clipboard unavailable: {error}"))?;
@@ -49,6 +54,20 @@ pub async fn voice_typing_insert(
     if !paste_chord() {
         log::warn!("Voice typing insert: paste key could not be sent; transcript left on the clipboard");
         return Ok("copied".to_string());
+    }
+
+    // The clipboard handle is not held across the submit delay; on some
+    // platforms it is not `Send`, and the restore opens its own handle anyway.
+    drop(clipboard);
+
+    if submit {
+        // Async command on a worker thread: sleeping here delays nothing else.
+        tokio::time::sleep(SUBMIT_DELAY).await;
+        if enter_key() {
+            log::info!("Voice typing insert: submitted with Enter");
+        } else {
+            log::warn!("Voice typing insert: Enter could not be sent");
+        }
     }
 
     if !keep_on_clipboard {
@@ -112,14 +131,15 @@ fn restore(clipboard: &mut Clipboard, saved: SavedClipboard) {
 }
 
 #[cfg(target_os = "windows")]
-fn paste_chord() -> bool {
+fn send_virtual_keys(keys: &[(u16, bool)]) -> bool {
     use std::mem::size_of;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
     };
 
-    fn key(vk: u16, up: bool) -> INPUT {
-        INPUT {
+    let inputs: Vec<INPUT> = keys
+        .iter()
+        .map(|&(vk, up)| INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
@@ -130,17 +150,35 @@ fn paste_chord() -> bool {
                     dwExtraInfo: 0,
                 },
             },
-        }
-    }
-
-    let inputs = [
-        key(VK_CONTROL, false),
-        key(VK_V, false),
-        key(VK_V, true),
-        key(VK_CONTROL, true),
-    ];
-    let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) };
+        })
+        .collect();
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            size_of::<INPUT>() as i32,
+        )
+    };
     sent == inputs.len() as u32
+}
+
+#[cfg(target_os = "windows")]
+fn paste_chord() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_V};
+
+    send_virtual_keys(&[
+        (VK_CONTROL, false),
+        (VK_V, false),
+        (VK_V, true),
+        (VK_CONTROL, true),
+    ])
+}
+
+#[cfg(target_os = "windows")]
+fn enter_key() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+
+    send_virtual_keys(&[(VK_RETURN, false), (VK_RETURN, true)])
 }
 
 #[cfg(target_os = "macos")]
@@ -152,6 +190,15 @@ fn paste_chord() -> bool {
             "-e",
             "tell application \"System Events\" to keystroke \"v\" using command down",
         ])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn enter_key() -> bool {
+    std::process::Command::new("osascript")
+        .args(["-e", "tell application \"System Events\" to key code 36"])
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
@@ -179,7 +226,32 @@ fn paste_chord() -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
+fn enter_key() -> bool {
+    let attempts: [(&str, &[&str]); 3] = [
+        ("wtype", &["Return"]),
+        ("xdotool", &["key", "--clearmodifiers", "Return"]),
+        ("ydotool", &["key", "28:1", "28:0"]),
+    ];
+    for (program, args) in attempts {
+        if std::process::Command::new(program)
+            .args(args)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 fn paste_chord() -> bool {
+    false
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn enter_key() -> bool {
     false
 }

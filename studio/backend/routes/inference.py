@@ -26341,6 +26341,7 @@ async def transcribe_audio_raw(
     device: Optional[Literal["auto", "cpu", "gpu"]] = None,
     current_subject: str = Depends(get_current_subject),
     stream: bool = False,
+    save: bool = True,
     title: str = Query("Recording", max_length = 255),
 ):
     """Transcribe a raw audio body without base64 or JSON conversion overhead."""
@@ -26360,6 +26361,7 @@ async def transcribe_audio_raw(
                     raw, model, language, fast, engine, None, device, on_progress
                 ),
                 title,
+                save = save,
             ),
             media_type = "application/x-ndjson",
             headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},

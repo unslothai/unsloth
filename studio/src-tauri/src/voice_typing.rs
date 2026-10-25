@@ -229,6 +229,12 @@ pub async fn voice_typing_hud_level(app: AppHandle, level: f32) {
     hud::emit_level(&app, level.clamp(0.0, 1.0));
 }
 
+/// Live transcript for the overlay. Never logged: the words are the user's.
+#[tauri::command]
+pub async fn voice_typing_hud_text(app: AppHandle, text: String) {
+    hud::emit_text(&app, &text);
+}
+
 // ---------------------------------------------------------------------------
 // Shortcut chords
 // ---------------------------------------------------------------------------

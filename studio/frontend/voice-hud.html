@@ -8,7 +8,9 @@
     <title>Unsloth voice typing</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- The overlay window is transparent and has no theme; this entry deliberately
-         skips the main shell's boot scripts and stylesheet. -->
+         skips the main shell's theme and reload scripts. The crypto polyfill is
+         still needed by the shared modules the overlay imports. -->
+    <script src="/crypto-boot.js"></script>
     <style>
       :root {
         color-scheme: dark;

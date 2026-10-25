@@ -17,7 +17,13 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-async def stream_transcript(transcribe, title: str):
+async def stream_transcript(transcribe, title: str, save: bool = True):
+    """Stream progress and the result as NDJSON.
+
+    ``save`` keeps a completed transcript in the Audio gallery. Dictation turns it
+    off: its short segments would otherwise bury the recordings the user chose to
+    transcribe on the Audio page.
+    """
     loop = asyncio.get_running_loop()
     # Text progress is latest-wins: a newer update replaces an unread text one. A phase change is
     # never replaced, so a model that loads within one tick cannot swallow "loading" before the
@@ -54,7 +60,7 @@ async def stream_transcript(transcribe, title: str):
     async def run():
         result = await transcribe(on_progress)
         record = None
-        if result.get("text", "").strip():
+        if save and result.get("text", "").strip():
             try:
                 record = await asyncio.to_thread(transcript_gallery.save, result, title)
             except Exception as exc:

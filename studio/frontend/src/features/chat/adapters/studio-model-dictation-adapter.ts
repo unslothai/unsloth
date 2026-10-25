@@ -31,8 +31,18 @@ import { withAbort } from "../../hub/lib/abort-signals";
 import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
-import { startDictationLevelMeter } from "./dictation-level";
-import { type SegmentRecorder, createAudioRecorder } from "./pcm-recorder";
+import {
+  cleanDictationText,
+  joinTranscriptParts,
+} from "./dictation-text";
+import type { SpeechSegment } from "./dictation-segmenter";
+import {
+  microphoneErrorMessage,
+  openMicrophone,
+  stopMediaStream,
+} from "./microphone";
+import { PcmCapture } from "./pcm-capture";
+import { encodeWav } from "./pcm-recorder";
 import { SttModelNotDownloadedError, sttRequestError } from "./stt-errors";
 // re-export preserves the public dictation entry point
 export { SttModelNotDownloadedError } from "./stt-errors";
@@ -43,42 +53,17 @@ import {
 } from "./dictation-outcome";
 import {
   type StudioDictationSession,
-  isMissingDeviceError,
   resolveDictationChatId,
 } from "./studio-web-speech-dictation-adapter";
 
-// Fine timeslice so the buffer is ready the moment a segment is cut or stopped.
-const SEGMENT_TIMESLICE_MS = 250;
-// Whisper pads input to 30s. Short dictation stays one clip; long dictation cuts at the first
-// pause after 20s or before the 30s boundary.
-const MIN_SEGMENT_MS = 20_000;
-const MAX_SEGMENT_MS = 28_000;
-const SILENCE_CUT_MS = 280;
-// Raw RMS (0..1) above which a frame counts as speech (well above the room floor after noise suppression).
-const VOICE_RMS = 0.015;
-
-// Prefer Opus (small, widely supported); fall back to whatever the browser records. The
-// backend decodes any of these with PyAV.
-const PREFERRED_MIME_TYPES = [
-  "audio/webm;codecs=opus",
-  "audio/webm",
-  "audio/ogg;codecs=opus",
-  "audio/mp4",
-];
-
-function pickMimeType(): string | undefined {
-  if (typeof MediaRecorder === "undefined") return undefined;
-  for (const type of PREFERRED_MIME_TYPES) {
-    if (MediaRecorder.isTypeSupported(type)) return type;
-  }
-  return undefined;
-}
-
-const stopStream = (stream: MediaStream | null) => {
-  for (const track of stream?.getTracks() ?? []) {
-    track.stop();
-  }
-};
+// A sentence is cut at the first pause after five seconds, so its transcription
+// starts while the next sentence is still being spoken. Fourteen seconds keeps
+// the final clip well inside Whisper's 30-second window even when the speaker
+// never pauses.
+const DEFAULT_MIN_SEGMENT_MS = 5_000;
+const DEFAULT_MAX_SEGMENT_MS = 14_000;
+const DEFAULT_SILENCE_CUT_MS = 360;
+const DEFAULT_PRE_ROLL_MS = 450;
 
 /** Backend STT engine, decided by the model: Whisper ids run GGML through whisper.cpp, mtmd
  *  ids run through llama.cpp, the GGUF audio runtime's ids (saved keys, package folders and
@@ -127,6 +112,80 @@ async function sttErrorDetail(response: Response): Promise<string> {
   return body?.detail ?? body?.error?.message ?? `HTTP ${response.status}`;
 }
 
+/** One NDJSON line from the transcription stream. */
+interface TranscriptStreamEvent {
+  type?: string;
+  text?: string;
+  message?: string;
+}
+
+/** Read the backend's NDJSON transcript stream: progress lines carry the text so
+ *  far, the last line carries the result, and an error line replaces the result.
+ *  A response that is not NDJSON (an older server) is parsed as JSON instead. */
+async function readTranscriptStream(
+  response: Response,
+  onPartial?: (text: string) => void,
+): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const data = (await response.json()) as { text?: string };
+    return (data.text ?? "").trim();
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let text = "";
+  let failure: string | null = null;
+  let completed = false;
+  const handle = (line: string) => {
+    if (!line.trim()) return;
+    let event: TranscriptStreamEvent;
+    try {
+      event = JSON.parse(line) as TranscriptStreamEvent;
+    } catch {
+      // A truncated line is not worth failing a transcription over.
+      return;
+    }
+    if (event.type === "complete") {
+      completed = true;
+      if (typeof event.text === "string") text = event.text;
+      return;
+    }
+    if (event.type === "error") {
+      failure = event.message?.trim() || "Transcription failed. Try again.";
+      return;
+    }
+    if (
+      event.type === "progress" &&
+      typeof event.text === "string" &&
+      event.text.trim()
+    ) {
+      onPartial?.(event.text.trim());
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      handle(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+      newline = buffer.indexOf("\n");
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) handle(buffer);
+  if (failure) {
+    // The stream reports a detail where a JSON error would carry a status; a
+    // missing model must still open the download prompt.
+    throw sttRequestError(/not downloaded/i.test(failure) ? 409 : 500, failure);
+  }
+  if (!completed) {
+    throw new Error("The transcription stream ended before a result.");
+  }
+  return text.trim();
+}
+
 export async function transcribeAudioBlob(
   blob: Blob,
   options: {
@@ -138,6 +197,12 @@ export async function transcribeAudioBlob(
     ggufVariant?: string | null;
     providerId?: string;
     signal?: AbortSignal;
+    /** Ask the local backend for NDJSON progress and live text. */
+    stream?: boolean;
+    /** Called with a segment's text so far; local engines only. */
+    onPartial?: (text: string) => void;
+    /** Keep the clip in the transcript gallery; dictation turns this off. */
+    save?: boolean;
   } = {},
 ): Promise<string> {
   const settings = useVoiceSettingsStore.getState();
@@ -214,6 +279,9 @@ export async function transcribeAudioBlob(
   });
   if (language) params.set("language", language);
   params.set("device", options.device ?? settings.sttDevice);
+  const streaming = options.stream === true;
+  if (streaming) params.set("stream", "true");
+  if (options.save === false) params.set("save", "false");
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
     {
@@ -231,6 +299,12 @@ export async function transcribeAudioBlob(
       );
     }
     throw sttRequestError(response.status, detail);
+  }
+  if (
+    streaming &&
+    response.headers.get("content-type")?.includes("application/x-ndjson")
+  ) {
+    return readTranscriptStream(response, options.onPartial);
   }
   const data = (await response.json()) as { text?: string };
   return (data.text ?? "").trim();
@@ -504,20 +578,33 @@ export function unloadSttModel(
 
 /** Recorded-audio dictation. Short recordings use one pass; long ones split near whisper's 30s
  *  window. Confirm keeps text, discard removes it, and either releases the microphone. */
-export class StudioModelDictationAdapter implements DictationAdapter {
-  private readonly chatId: string | null | undefined;
+export interface StudioModelDictationOptions {
+  chatId?: string | null;
+  /** A microphone the caller keeps open between sessions. The adapter records from
+   *  it but never stops its tracks; a session without one opens and releases its
+   *  own. */
+  microphone?: MediaStream | null;
+  /** Remove filler words from every finished segment. */
+  removeFillerWords?: boolean;
+  /** Turn spoken punctuation into marks. */
+  spokenPunctuation?: boolean;
+}
 
-  constructor(options: { chatId?: string | null } = {}) {
-    this.chatId = options.chatId;
+export class StudioModelDictationAdapter implements DictationAdapter {
+  private readonly options: StudioModelDictationOptions;
+
+  constructor(options: StudioModelDictationOptions = {}) {
+    this.options = options;
   }
 
   static isSupported(): boolean {
-    return (
-      typeof window !== "undefined" &&
-      window.isSecureContext &&
-      typeof MediaRecorder !== "undefined" &&
-      navigator.mediaDevices?.getUserMedia !== undefined
-    );
+    if (typeof window === "undefined" || !window.isSecureContext) return false;
+    if (navigator.mediaDevices?.getUserMedia === undefined) return false;
+    const audioContext =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    return typeof audioContext === "function";
   }
 
   listen(): DictationAdapter.Session {
@@ -550,7 +637,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const sessionVariant = usesExternalEndpoint
       ? null
       : sttModelVariant(sessionModel, settings.sttGgufVariant);
-    const sessionChatId = resolveDictationChatId(this.chatId);
+    const sessionChatId = resolveDictationChatId(this.options.chatId);
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -562,40 +649,25 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const endCallbacks = new Set<() => void>();
 
     let stream: MediaStream | null = null;
+    let ownsStream = false;
+    let capture: PcmCapture | null = null;
     let ended = false;
     let cancelled = false;
     let finalizing = false;
     const abortController = new AbortController();
-    const mimeType = pickMimeType();
-    // Shared waveform meter also feeds this adapter's pause detector.
-    let stopLevelMeter = () => {
-      // Replaced after microphone access succeeds.
-    };
-    let onAudioFrame: (rawRms: number, now: number) => void = () => {};
 
     let resolveEnded: (() => void) | null = null;
     const endedPromise = new Promise<void>((resolve) => {
       resolveEnded = resolve;
     });
 
-    // Background transcription pipeline. Each segment is a self-contained clip transcribed on its
-    // own; results are stored by index so the final text keeps its order.
-    type Segment = {
-      index: number;
-      chunks: Blob[];
-      startedAt: number;
-      voiced: boolean;
-      recorder: SegmentRecorder;
-    };
+    // Background transcription pipeline. Each cut segment is a self-contained WAV
+    // transcribed on its own; results are stored by index so the final text keeps
+    // its order, while each finished segment is published at once.
     const results: string[] = [];
-    const queue: { index: number; blob: Blob }[] = [];
+    const queue: { index: number; segment: SpeechSegment }[] = [];
     let worker = false;
-    let currentSeg: Segment | null = null;
     let segCounter = 0;
-    let pendingRecorders = 0;
-    let silenceMs = 0;
-    let lastFrameAt = 0;
-    let cutting = false;
     let finalCutDone = false;
     let reportedTranscriptionError = false;
 
@@ -629,35 +701,36 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       if (stage === "preload") finishSession("cancelled");
     };
 
-    const buildTranscript = () =>
-      results
-        .filter((part) => part?.trim())
-        .join(" ")
-        .trim();
+    const buildTranscript = () => joinTranscriptParts(results.filter(Boolean));
+
+    const stopCapture = () => {
+      const active = capture;
+      capture = null;
+      active?.stop();
+    };
+
+    const releaseOwnedStream = () => {
+      if (ownsStream) {
+        stopMediaStream(stream);
+        ownsStream = false;
+      }
+      stream = null;
+    };
 
     const finishSession = (
       reason: "stopped" | "cancelled" | "error",
       transcript?: string,
     ) => {
       if (ended) return;
+      // Set first: stopping the capture flushes one last segment, which must not
+      // be queued into a session that is already over.
       ended = true;
-      stopLevelMeter();
-      if (currentSeg && currentSeg.recorder.state !== "inactive") {
-        try {
-          currentSeg.recorder.stop();
-        } catch {
-          // ignore
-        }
-      }
+      stopCapture();
+      releaseOwnedStream();
       session.status = { type: "ended", reason };
-      stopStream(stream);
-      stream = null;
-      const corrected = transcript ? applyDictationDictionary(transcript) : "";
-      if (reason !== "cancelled" && corrected) {
-        markDictationTranscript();
-        for (const callback of speechCallbacks) {
-          callback({ transcript: corrected, isFinal: true });
-        }
+      const corrected =
+        reason === "cancelled" ? "" : (transcript ?? buildTranscript());
+      if (corrected) {
         recordRecentDictation(corrected, sessionChatId);
       }
       for (const callback of speechEndCallbacks) {
@@ -670,9 +743,37 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     // Finish once the final segment has been cut and the queue has drained.
     const maybeComplete = () => {
       if (ended || cancelled || !finalizing || !finalCutDone) return;
-      if (pendingRecorders === 0 && queue.length === 0 && !worker) {
+      if (queue.length === 0 && !worker) {
         finishSession("stopped", buildTranscript());
       }
+    };
+
+    /** Publish one finished segment: cleaned, dictionary-corrected, in order. */
+    const publishFinal = (index: number, text: string) => {
+      results[index] = text;
+      if (!text) return;
+      markDictationTranscript();
+      for (const callback of speechCallbacks) {
+        callback({ transcript: text, isFinal: true });
+      }
+    };
+
+    const cleanSegment = (text: string): string => {
+      const trimmed = text.trim();
+      if (!trimmed) return "";
+      // Not trimmed: a segment can be a spoken "new paragraph", which is
+      // whitespace and must survive to the join.
+      return cleanDictationText(applyDictationDictionary(trimmed), {
+        language: sessionLanguage,
+        removeFillers: this.options.removeFillerWords,
+        spokenPunctuation: this.options.spokenPunctuation,
+      });
+    };
+
+    const enqueueSegment = (index: number, segment: SpeechSegment) => {
+      if (cancelled || ended) return;
+      queue.push({ index, segment });
+      processQueue();
     };
 
     // serialize segment transcription to avoid flooding the backend
@@ -684,17 +785,29 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         return;
       }
       worker = true;
+      const wav = encodeWav(item.segment.samples, item.segment.sampleRate);
+      const blob = new Blob([wav], { type: "audio/wav" });
       void (async () => {
         try {
-          const text = await transcribeAudioBlob(item.blob, {
+          const text = await transcribeAudioBlob(blob, {
             model: sessionModel,
             language: sessionLanguage,
             engine: sessionEngine,
             ggufVariant: sessionVariant,
             providerId: sessionProviderId,
             signal: abortController.signal,
+            // The local backend can stream partial text while it decodes; an
+            // external endpoint answers with one JSON body.
+            stream: !usesExternalEndpoint,
+            save: false,
+            onPartial: (partial) => {
+              if (cancelled || ended) return;
+              for (const callback of speechCallbacks) {
+                callback({ transcript: partial, isFinal: false });
+              }
+            },
           });
-          if (!cancelled) results[item.index] = text;
+          if (!cancelled && !ended) publishFinal(item.index, cleanSegment(text));
         } catch (error) {
           if (!cancelled && !abortController.signal.aborted) {
             // only a lost segment is partial; preload failures cost no recorded audio
@@ -708,135 +821,17 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       })();
     };
 
-    // Every non-empty recording is transcribed. The RMS meter only shapes segment boundaries; a
-    // quiet microphone or suspended AudioContext can keep it below VOICE_RMS for real speech,
-    // so it must never discard audio. Whisper returns an empty transcript for genuine silence.
-    const enqueueSegment = (index: number, blob: Blob) => {
-      if (blob.size > 0) {
-        queue.push({ index, blob });
-        processQueue();
-      } else {
-        results[index] = "";
-        maybeComplete();
-      }
-    };
-
-    // Start recording a fresh segment on the shared mic stream.
-    const startSegment = () => {
-      if (ended || cancelled || !stream) return;
-      const seg: Segment = {
-        index: segCounter++,
-        chunks: [],
-        startedAt: performance.now(),
-        voiced: false,
-        recorder: createAudioRecorder(stream, mimeType),
-      };
-      currentSeg = seg;
-      silenceMs = 0;
-      seg.recorder.addEventListener("dataavailable", (event) => {
-        if (event.data.size > 0) seg.chunks.push(event.data);
-      });
-      seg.recorder.addEventListener("stop", () => {
-        pendingRecorders = Math.max(0, pendingRecorders - 1);
-        if (cancelled || ended) {
-          maybeComplete();
-          return;
-        }
-        const blob = new Blob(seg.chunks, {
-          type: seg.recorder.mimeType || "audio/webm",
-        });
-        enqueueSegment(seg.index, blob);
-      });
-      pendingRecorders += 1;
-      try {
-        seg.recorder.start(SEGMENT_TIMESLICE_MS);
-      } catch (error) {
-        pendingRecorders = Math.max(0, pendingRecorders - 1);
-        if (currentSeg === seg) currentSeg = null;
-        throw error;
-      }
-    };
-
-    // Close the current segment at a pause and open the next, so recording stays continuous while
-    // each clip is independently decodable.
-    const cutSegment = () => {
-      const seg = currentSeg;
-      if (cutting || !seg || finalizing) return;
-      cutting = true;
-      const rec = seg.recorder;
-      if (rec.state !== "inactive") {
-        rec.addEventListener(
-          "stop",
-          () => {
-            cutting = false;
-          },
-          { once: true },
-        );
-        try {
-          rec.stop();
-        } catch {
-          cutting = false;
-        }
-      } else {
-        cutting = false;
-      }
-      startSegment();
-    };
-
-    // Pause detector: mark voiced frames. Short dictations stay one segment; long ones cut at a
-    // pause after the target duration, or at the hard limit.
-    onAudioFrame = (rawRms, now) => {
-      const seg = currentSeg;
-      if (!seg || finalizing) {
-        lastFrameAt = now;
-        return;
-      }
-      if (rawRms > VOICE_RMS) {
-        seg.voiced = true;
-        silenceMs = 0;
-      } else if (lastFrameAt) {
-        silenceMs += now - lastFrameAt;
-      }
-      lastFrameAt = now;
-      const duration = now - seg.startedAt;
-      const pauseBreak =
-        seg.voiced && duration > MIN_SEGMENT_MS && silenceMs > SILENCE_CUT_MS;
-      if (!cutting && (pauseBreak || duration > MAX_SEGMENT_MS)) {
-        cutSegment();
-      }
-    };
-
     const session: StudioDictationSession = {
       status: { type: "starting" },
       stop: async () => {
         if (!ended && !finalizing) {
           finalizing = true;
-          // Stop publishing zero-valued frames at once so the UI can switch to its transcription shimmer.
-          stopLevelMeter();
-          const seg = currentSeg;
-          // Cut the final segment (its buffer survives) so only the short tail is left to transcribe,
-          // then release the mic immediately.
-          if (seg && seg.recorder.state !== "inactive") {
-            seg.recorder.addEventListener(
-              "stop",
-              () => {
-                finalCutDone = true;
-                maybeComplete();
-              },
-              { once: true },
-            );
-            try {
-              seg.recorder.stop();
-            } catch {
-              finalCutDone = true;
-              maybeComplete();
-            }
-          } else {
-            finalCutDone = true;
-            maybeComplete();
-          }
-          stopStream(stream);
-          stream = null;
+          // Cut the final segment (its buffer survives) and release the
+          // microphone at once; only transcription is left.
+          stopCapture();
+          releaseOwnedStream();
+          finalCutDone = true;
+          maybeComplete();
         }
         await endedPromise;
       },
@@ -875,31 +870,18 @@ export class StudioModelDictationAdapter implements DictationAdapter {
 
     void (async () => {
       try {
-        const { micDeviceId } = useVoiceSettingsStore.getState();
-        const baseAudio: MediaTrackConstraints = {
-          echoCancellation: true,
-          noiseSuppression: true,
-        };
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio:
-              micDeviceId && micDeviceId !== "default"
-                ? { ...baseAudio, deviceId: { exact: micDeviceId } }
-                : baseAudio,
-          });
-        } catch (error) {
-          // Saved mic may be unplugged; fall back to the default.
-          if (micDeviceId !== "default" && isMissingDeviceError(error)) {
-            stream = await navigator.mediaDevices.getUserMedia({
-              audio: baseAudio,
-            });
-          } else {
-            throw error;
-          }
+        const borrowed = this.options.microphone;
+        const borrowedLive = borrowed?.getAudioTracks().some(
+          (track) => track.readyState === "live",
+        );
+        if (borrowed && borrowedLive) {
+          stream = borrowed;
+        } else {
+          stream = await openMicrophone(settings.micDeviceId);
+          ownsStream = true;
         }
         if (ended || cancelled) {
-          stopStream(stream);
-          stream = null;
+          releaseOwnedStream();
           return;
         }
         if (!usesExternalEndpoint && sessionEngine) {
@@ -914,18 +896,19 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             reportTranscriptionError(error, "preload"),
           );
         }
-        stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
-          onAudioFrame(rawRms, now);
+        capture = new PcmCapture(stream, {
+          preRollMs: DEFAULT_PRE_ROLL_MS,
+          minSegmentMs: DEFAULT_MIN_SEGMENT_MS,
+          maxSegmentMs: DEFAULT_MAX_SEGMENT_MS,
+          silenceCutMs: DEFAULT_SILENCE_CUT_MS,
+          onSegment: (segment) => enqueueSegment(segCounter++, segment),
         });
-        startSegment();
+        capture.start();
         session.status = { type: "running" };
         for (const callback of speechStartCallbacks) callback();
       } catch (error) {
-        const message = isMissingDeviceError(error)
-          ? "No microphone was found for dictation."
-          : "Dictation could not access the microphone.";
         console.error("STT microphone error:", error);
-        toast.error(message);
+        toast.error(microphoneErrorMessage(error));
         finishSession("error");
       }
     })();

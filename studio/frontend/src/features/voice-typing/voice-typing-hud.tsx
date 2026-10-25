@@ -14,6 +14,7 @@ const BAR_COUNT = 9;
 interface HudPayload {
   state?: string;
   level?: number;
+  text?: string;
 }
 
 const DOT_COLORS: Record<string, string> = {
@@ -44,6 +45,7 @@ export function VoiceTypingHud() {
   const t = useT();
   const [state, setState] = useState("");
   const [level, setLevel] = useState(0);
+  const [text, setText] = useState("");
 
   useEffect(() => {
     const subscribing = listen<HudPayload>("voice-typing:hud", (event) => {
@@ -51,8 +53,12 @@ export function VoiceTypingHud() {
       if (payload.state) {
         setState(payload.state);
         if (payload.state !== "recording") setLevel(0);
+        if (payload.state === "preparing" || payload.state === "idle") {
+          setText("");
+        }
       }
       if (typeof payload.level === "number") setLevel(payload.level);
+      if (typeof payload.text === "string") setText(payload.text);
     });
     return () => {
       void subscribing.then((unlisten) => unlisten());
@@ -94,10 +100,10 @@ export function VoiceTypingHud() {
       <div
         style={{
           display: "flex",
-          alignItems: "center",
-          gap: 10,
+          flexDirection: "column",
+          gap: text ? 6 : 0,
           padding: "10px 16px",
-          borderRadius: 999,
+          borderRadius: text ? 18 : 999,
           background: "rgba(15, 17, 21, 0.88)",
           boxShadow:
             "0 10px 30px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08)",
@@ -105,36 +111,59 @@ export function VoiceTypingHud() {
           fontSize: 12.5,
           fontWeight: 500,
           letterSpacing: 0.1,
+          maxWidth: 348,
         }}
       >
-        <span
-          className={state === "recording" ? "vt-pulse" : undefined}
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: 999,
-            background: DOT_COLORS[state] ?? "#8b93a1",
-            flexShrink: 0,
-          }}
-        />
-        <span>{label}</span>
-        <span
-          style={{
-            display: "flex",
-            alignItems: "flex-end",
-            gap: 3,
-            height: 24,
-            color: barColor,
-          }}
-        >
-          {heights.map((height, index) => (
-            <span
-              key={index}
-              className="vt-bar"
-              style={{ width: 3, height: `${height}px` }}
-            />
-          ))}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span
+            className={state === "recording" ? "vt-pulse" : undefined}
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 999,
+              background: DOT_COLORS[state] ?? "#8b93a1",
+              flexShrink: 0,
+            }}
+          />
+          <span>{label}</span>
+          <span
+            style={{
+              display: "flex",
+              alignItems: "flex-end",
+              gap: 3,
+              height: 24,
+              color: barColor,
+              marginLeft: "auto",
+            }}
+          >
+            {heights.map((height, index) => (
+              <span
+                key={index}
+                className="vt-bar"
+                style={{ width: 3, height: `${height}px` }}
+              />
+            ))}
+          </span>
+        </div>
+        {text ? (
+          <div
+            dir="auto"
+            style={{
+              maxWidth: 316,
+              fontSize: 11.5,
+              lineHeight: "15px",
+              fontWeight: 400,
+              color: "#c7ccd4",
+              overflow: "hidden",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              wordBreak: "break-word",
+            }}
+          >
+            {text}
+          </div>
+        ) : null}
       </div>
     </div>
   );

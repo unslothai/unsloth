@@ -575,6 +575,15 @@ export {
 } from "./hooks/use-chat-projects";
 export { subscribeDictationLevel } from "./adapters/dictation-level";
 export {
+  appendTranscriptText,
+  joinTranscriptParts,
+} from "./adapters/dictation-text";
+export {
+  microphoneErrorMessage,
+  openMicrophone,
+  stopMediaStream,
+} from "./adapters/microphone";
+export {
   dictationFailed,
   dictationProducedTranscript,
 } from "./adapters/dictation-outcome";

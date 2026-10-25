@@ -59,6 +59,7 @@ import {
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
 } from "@/features/chat/adapters/studio-dictation-adapter";
+import { appendTranscriptText } from "@/features/chat/adapters/dictation-text";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -369,9 +370,10 @@ function useDictation(
     // Append final transcripts; the adapter has already applied the dictionary and recorded the session.
     session.onSpeech((result) => {
       if (!result.isFinal) return;
-      const transcript = result.transcript?.trim() ?? "";
+      // Not trimmed: a spoken "new paragraph" can be the whole segment.
+      const transcript = result.transcript ?? "";
       if (transcript) {
-        setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
+        setText((prev) => appendTranscriptText(prev, transcript));
       }
     });
     session.onEnd?.(() => {

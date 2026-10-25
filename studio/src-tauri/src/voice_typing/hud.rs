@@ -15,10 +15,14 @@ use tauri::{
 };
 
 const HUD_LABEL: &str = "voice-hud";
-const HUD_WIDTH: f64 = 224.0;
-const HUD_HEIGHT: f64 = 56.0;
+const HUD_WIDTH: f64 = 380.0;
+const HUD_HEIGHT: f64 = 92.0;
 /// Distance from the bottom of the monitor to the overlay's bottom edge.
 const BOTTOM_MARGIN: f64 = 88.0;
+/// A live transcript longer than this is cut before it crosses IPC; the overlay
+/// only has room for a line or two, and the newest words are the ones worth
+/// showing.
+const MAX_TEXT_CHARS: usize = 400;
 
 #[derive(Clone, Serialize)]
 struct HudEvent {
@@ -26,10 +30,14 @@ struct HudEvent {
     state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     level: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
 }
 
 /// Last announced phase and mic level, replayed when the overlay page loads late.
 static SNAPSHOT: Mutex<(String, f32)> = Mutex::new((String::new(), 0.0));
+/// Live transcript shown under the phase label; never logged.
+static HUD_TEXT: Mutex<String> = Mutex::new(String::new());
 
 fn existing(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(window) = app.get_webview_window(HUD_LABEL) {
@@ -96,6 +104,18 @@ pub fn emit_state(app: &AppHandle, state: &str) {
     {
         let mut snapshot = SNAPSHOT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         snapshot.0 = state.to_string();
+        // A late-loading overlay replays the level too; a stale level from the
+        // previous session would show full bars before the first frame arrives.
+        if state == "preparing" || state == "idle" {
+            snapshot.1 = 0.0;
+        }
+    }
+    // A new session or a closed overlay must never show the previous transcript.
+    if state == "preparing" || state == "idle" {
+        HUD_TEXT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
     if let Some(window) = app.get_webview_window(HUD_LABEL) {
         let _ = window.emit(
@@ -103,6 +123,7 @@ pub fn emit_state(app: &AppHandle, state: &str) {
             HudEvent {
                 state: Some(state.to_string()),
                 level: None,
+                text: None,
             },
         );
     }
@@ -119,6 +140,45 @@ pub fn emit_level(app: &AppHandle, level: f32) {
             HudEvent {
                 state: None,
                 level: Some(level),
+                text: None,
+            },
+        );
+    }
+}
+
+/// Show the words recognised so far under the phase label.
+pub fn emit_text(app: &AppHandle, text: &str) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut begin = chars.len().saturating_sub(MAX_TEXT_CHARS);
+    if begin > 0 {
+        // Do not open the overlay in the middle of a word: skip the fragment
+        // left by the cut. Text with no whitespace at all stays clipped.
+        if !chars[begin].is_whitespace() && !chars[begin - 1].is_whitespace() {
+            if let Some(offset) = chars[begin..].iter().position(|c| c.is_whitespace()) {
+                begin += offset;
+            }
+        }
+        while begin < chars.len() && chars[begin].is_whitespace() {
+            begin += 1;
+        }
+    }
+    let mut clipped: String = chars[begin..].iter().collect();
+    if clipped.trim().is_empty() {
+        clipped.clear();
+    }
+    {
+        let mut snapshot = HUD_TEXT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *snapshot = clipped.clone();
+    }
+    if let Some(window) = app.get_webview_window(HUD_LABEL) {
+        let _ = window.emit(
+            "voice-typing:hud",
+            HudEvent {
+                state: None,
+                level: None,
+                text: Some(clipped),
             },
         );
     }
@@ -135,11 +195,16 @@ fn emit_snapshot(app: &AppHandle) {
     if state.is_empty() {
         return;
     }
+    let text = HUD_TEXT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     let _ = window.emit(
         "voice-typing:hud",
         HudEvent {
             state: Some(state),
             level: Some(level),
+            text: Some(text),
         },
     );
 }
