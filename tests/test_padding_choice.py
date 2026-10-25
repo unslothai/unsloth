@@ -129,7 +129,10 @@ def test_default_max_length_does_not_clip_long_rows():
     _, padded, pairs = pc.estimate_microbatch_tokens([2000, 4000] * 50, 2, cap)
     assert pc.choose_padding(*Q06, padded, pairs, PEAK["A100"], 10**9)[0] is True
     _, padded, pairs = pc.estimate_microbatch_tokens([2000, 4000] * 50, 2, 1024)
-    assert pc.choose_padding(*Q06, padded, pairs, PEAK["A100"], 10**9)[0] is False  # the old clipped estimate
+    assert (
+        pc.choose_padding(*Q06, padded, pairs, PEAK["A100"], 10**9)[0] is False
+    )  # the old clipped estimate
+
 
 def test_estimate_microbatch_tokens():
     real, padded, pairs = pc.estimate_microbatch_tokens([100] * 50, 4)

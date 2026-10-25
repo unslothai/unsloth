@@ -246,7 +246,6 @@ def _effective_max_length(model, config):
     default = None
     try:
         import dataclasses
-
         for field in dataclasses.fields(type(config)):
             if field.name == "max_length":
                 default = field.default
