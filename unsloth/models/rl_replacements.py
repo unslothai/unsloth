@@ -7578,7 +7578,11 @@ def _kto_ref_else(function, m):
     return _fused_pass_else(m)
 
 
-def kto_trainer_ref_log_probs_chunked(function_name, function):
+def kto_trainer_ref_log_probs_chunked(
+    function_name,
+    function,
+    keys = ("KL", "completion"),
+):
     """Rewrite TRL 0.22 - 1.14's KTO reference log-prob precompute (``compute_reference_log_probs`` < 1.6,
     ``compute_ref_log_probs`` 1.6 - 1.13, ``_compute_ref_log_probs`` 1.14) to score the completion and KL batches
     from hidden states with the fused linear op instead of ``[B, S, V]`` logits. Every log-prob statement must match
@@ -7626,7 +7630,8 @@ def kto_trainer_ref_log_probs_chunked(function_name, function):
             if ("KL_" in _fused_pass_mask(m)) != (key == "KL"):
                 return function
             logps.setdefault(key, []).append(m)
-    if sorted(logps) != ["KL", "completion"] or any(len(v) != 1 for v in logps.values()):
+    # KTO scores a completion and a KL batch; BCO only the completions.
+    if sorted(logps) != sorted(keys) or any(len(v) != 1 for v in logps.values()):
         return function
     # Forwards: every assignment of the logits is a decoder-only forward we rewrite or an encoder-decoder one
     # (refused at run time, so its flag stays False).
@@ -7638,9 +7643,9 @@ def kto_trainer_ref_log_probs_chunked(function_name, function):
         call = function[m.end() : function.find(".logits", m.end())]
         if "decoder_input_ids" not in call:
             return function
-    for lhs in ("completion_logits", "KL_logits"):
-        if not any(f.group("lhs") == lhs for f in forwards):
-            return function
+    wanted = {"completion_logits"} | ({"KL_logits"} if "KL" in keys else set())
+    if {f.group("lhs") for f in forwards} != wanted:
+        return function
     for f in forwards:
         args = f.group("args")
         if f"{batch_var}[" not in args or "**" in args:
@@ -7735,3 +7740,288 @@ RL_PRE_ITEMS["kto_trainer"].append(
     "except Exception:\n"
     "    _unsloth_fused_linear_logprobs = None\n"
 )
+
+
+# BCO (TRL 0.22 - 1.10): the policy / reference ``forward`` and the precompute pass are KTO's (TRL < 1.6) layout.
+def _unsloth_preference_chunked_off():
+    return os.environ.get("UNSLOTH_PREFERENCE_CHUNKED", "1").lower() in ("0", "false", "no", "off")
+
+
+def _unsloth_bco_chunked_head(self, model, batch, method):
+    """``_unsloth_dpo_chunked_head`` that also honours ``UNSLOTH_PREFERENCE_CHUNKED=0``."""
+    if _unsloth_preference_chunked_off():
+        return None
+    return _unsloth_dpo_chunked_head(self, model, batch, method)
+
+
+def _unsloth_bco_fused_pass_head(self, model, batch, return_outputs, method):
+    if _unsloth_preference_chunked_off():
+        return None
+    return _unsloth_fused_pass_head(self, model, batch, return_outputs, method)
+
+
+def bco_trainer_chunked_logprobs(function_name, function):
+    """BCO's ``forward`` is KTO's TRL < 1.6 ``forward`` (``completion_logits`` is read only by row selection for the
+    ``logits/*_sum`` metrics, which the vocab-sum stand-in keeps exact); its ``compute_reference_log_probs`` is KTO's
+    precompute without the KL batch. The UDM classifier reads prompt embeddings, never the logits."""
+    if function_name == "forward":
+        new = kto_trainer_chunked_logprobs(function_name, function)
+        old = '_unsloth_dpo_chunked_head(self, model, batch, "forward")'
+        if new == function or new.count(old) != 1:
+            return function
+        return new.replace(old, '_unsloth_bco_chunked_head(self, model, batch, "forward")')
+    if function_name == "compute_reference_log_probs":
+        new = kto_trainer_ref_log_probs_chunked(function_name, function, keys = ("completion",))
+        if new == function:
+            return function
+        return new.replace(
+            "= _unsloth_fused_pass_head(self, ", "= _unsloth_bco_fused_pass_head(self, "
+        )
+    return function
+
+
+RL_FUNCTIONS["bco_trainer"].append(bco_trainer_chunked_logprobs)
+
+
+# Online DPO (TRL 0.22 - 1.x ``_forward``), XPO / Nash-MD (TRL 0.22 - 1.10 ``_compute_logprobs``): score the
+# completions from hidden states instead of [B, C, V] logits.
+def _unsloth_odpo_chunked_head(self, model, batch, method):
+    """``(unwrapped, head, transforms)`` when this pass can score from hidden states, else ``None``."""
+    reason = None
+    if _unsloth_fused_linear_logprobs is None:
+        reason = "unsloth_zoo has no fused_linear_logprobs"
+    elif os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        reason = "UNSLOTH_FUSED_LINEAR=0"
+    elif _unsloth_preference_chunked_off():
+        reason = "UNSLOTH_PREFERENCE_CHUNKED=0"
+    elif any(k != "attention_mask" and k != "input_ids" for k in batch):
+        # Vision rows (pixel_values, image_grid_thw, ...) keep TRL's layout.
+        reason = "extra model inputs"
+    if reason is not None:
+        try:
+            fallbacks = self.__dict__.setdefault("_unsloth_dpo_chunked_fallbacks", {})
+            fallbacks[reason] = fallbacks.get(reason, 0) + 1
+        except Exception:
+            pass
+        return None
+    return _unsloth_dpo_chunked_head(self, model, batch, method)
+
+
+def _unsloth_odpo_hidden_logps(
+    self,
+    chunked,
+    hidden_states,
+    completion_ids,
+    mask = None,
+):
+    """TRL's ``log_softmax(head(hidden_states))[completion_ids]`` per position (float32). Rows outside ``mask`` are 0
+    (the caller zeroes them anyway). A shape TRL would reject or broadcast gets real logits and TRL's own math."""
+    _, head, (multiply, divide, softcap) = chunked
+    if hidden_states.dim() != 3 or hidden_states.shape[:2] != completion_ids.shape:
+        logits = torch.nn.functional.linear(
+            hidden_states.to(device = head.weight.device, dtype = head.weight.dtype),
+            head.weight,
+            head.bias,
+        )
+        if multiply:
+            logits = logits * multiply
+        if divide:
+            logits = logits / divide
+        if softcap:
+            logits = softcap * torch.tanh(logits / softcap)
+        return torch.take_along_dim(
+            logits.log_softmax(dim = -1), completion_ids.unsqueeze(-1), dim = 2
+        ).squeeze(-1)
+    logps = _unsloth_fused_linear_logprobs(
+        hidden_states,
+        head.weight,
+        completion_ids,
+        bias = head.bias,
+        mask = None if mask is None else mask.bool(),
+        logit_scale_multiply = multiply,
+        logit_scale_divide = divide,
+        logit_softcapping = softcap,
+    )
+    try:
+        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+    except Exception:
+        pass
+    return logps.to(completion_ids.device)
+
+
+_ODPO_CALL = re.compile(
+    r"^(?P<i>[ \t]*)output = model\(prompt_completion_ids, "
+    r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*\n",
+    re.MULTILINE,
+)
+_ODPO_LOGPS = re.compile(
+    r"^(?P<i>[ \t]*)logprobs = torch\.take_along_dim\(logits\.log_softmax\(dim=-1\), "
+    r"completion_ids\.unsqueeze\(-1\), dim=2\)\.squeeze\(-1\)[ \t]*\n",
+    re.MULTILINE,
+)
+# Between the forward and the log-probs, ``output.logits`` / ``logits`` may only be sliced or row-gathered (the same
+# code then slices hidden states): TRL's slice, and online_dpo_trainer__forward's right-align gather.
+_ODPO_READS = (
+    r"logits = output\.logits\[:, (?:start_idx|prompt_ids\.size\(1\) - 1) ?: ?(?:end_idx|-1)\]",
+    r"_unsloth_index = _unsloth_index\.clamp\(0, output\.logits\.size\(1\) - 1\)",
+    r"_unsloth_rows, _unsloth_len = output\.logits\.shape\[:2\]",
+    r"logits = output\.logits\.reshape\(_unsloth_rows \* _unsloth_len, -1\)\.index_select\(",
+    r"\).view\(_unsloth_rows, -1, output\.logits\.size\(-1\)\)",
+)
+
+
+def online_dpo_trainer_chunked_logprobs(function_name, function):
+    """Rewrite Online DPO's ``_forward``: the forward returns hidden states, TRL's slice (or Unsloth's right-align
+    gather) picks the completion positions, and the fused op scores every one of them (``objective/kl`` and
+    ``objective/entropy`` read the padding positions too). No temperature: TRL scores raw logits. Untouched unless
+    both anchors match once and nothing else reads the logits."""
+    if function_name != "_forward" or _unsloth_fused_linear_logprobs is None:
+        return function
+    if "_unsloth_odpo" in function:
+        return function
+    calls = list(_ODPO_CALL.finditer(function))
+    logps = list(_ODPO_LOGPS.finditer(function))
+    if len(calls) != 1 or len(logps) != 1 or calls[0].end() > logps[0].start():
+        return function
+    between = function[calls[0].end() : logps[0].start()]
+    code = "\n".join(line for line in between.splitlines() if not line.lstrip().startswith("#"))
+    if not _fused_pass_reads_ok(code, r"\blogits\b", _ODPO_READS):
+        return function
+    if (
+        re.search(r"\blogits\b", function[logps[0].end() :])
+        or "output.logits" in function[: calls[0].start()]
+    ):
+        return function
+    c, m = calls[0], logps[0]
+    i = c.group("i")
+    kwargs = (
+        "model_kwargs"
+        if c.group("kwargs") == "**model_kwargs"
+        else "dict(attention_mask=prompt_completion_mask)"
+    )
+    forward = (
+        f"{i}_unsloth_odpo_kwargs = {kwargs}\n"
+        f'{i}_unsloth_odpo = _unsloth_odpo_chunked_head(self, model, _unsloth_odpo_kwargs, "_forward")\n'
+        f"{i}output = _unsloth_dpo_model_forward(\n"
+        f"{i}    model, prompt_completion_ids, _unsloth_odpo_kwargs, _unsloth_odpo is not None\n"
+        f"{i})\n"
+        f"{i}_unsloth_odpo_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_odpo, output.logits)\n"
+    )
+    j = m.group("i")
+    score = (
+        f"{j}if _unsloth_odpo_hidden:\n"
+        f"{j}    logprobs = _unsloth_odpo_hidden_logps(self, _unsloth_odpo, logits, completion_ids)\n"
+        f"{j}else:\n" + textwrap.indent(textwrap.dedent(m.group(0)), j + "    ")
+    )
+    return function[: c.start()] + forward + between + score + function[m.end() :]
+
+
+_XPO_LOGPS = re.compile(
+    r"^(?P<i>[ \t]*)output = m\(data\[\"input_ids\"\], attention_mask=data\[\"attention_mask\"\]\)\n"
+    r"(?P=i)logits = output\.logits\[:, context_length - 1 : -1\]\n"
+    r"(?P=i)token_logprobs = selective_log_softmax\(logits, data\[\"input_ids\"\]\[:, context_length:\]\)\n"
+    r"(?P=i)return token_logprobs\n",
+    re.MULTILINE,
+)
+
+
+def xpo_trainer_chunked_logprobs(function_name, function):
+    """XPO / Nash-MD ``_compute_logprobs``: each ``compute_logprobs_for_data`` pass scores the completion tokens from
+    hidden states. Padding rows come back 0, which is what TRL's ``masked_fill(padding_mask, 0.0)`` makes them."""
+    if function_name != "_compute_logprobs" or _unsloth_fused_linear_logprobs is None:
+        return function
+    if "_unsloth_odpo" in function:
+        return function
+    found = list(_XPO_LOGPS.finditer(function))
+    if len(found) != 1 or len(re.findall(r"\blogits\b", function)) != 3:
+        return function
+    if (
+        len(
+            re.findall(
+                r"model_padding_mask = model_data\[\"attention_mask\"\]\[:, context_length:\] == 0",
+                function,
+            )
+        )
+        != 1
+    ):
+        return function
+    i = found[0].group("i")
+    new = (
+        f'{i}_unsloth_odpo_kwargs = dict(attention_mask=data["attention_mask"])\n'
+        f'{i}_unsloth_odpo = _unsloth_odpo_chunked_head(self, m, _unsloth_odpo_kwargs, "_compute_logprobs")\n'
+        f"{i}output = _unsloth_dpo_model_forward(\n"
+        f'{i}    m, data["input_ids"], _unsloth_odpo_kwargs, _unsloth_odpo is not None\n'
+        f"{i})\n"
+        f"{i}logits = output.logits[:, context_length - 1 : -1]\n"
+        f"{i}if _unsloth_dpo_returns_hidden_states(self, _unsloth_odpo, output.logits):\n"
+        f"{i}    return _unsloth_odpo_hidden_logps(\n"
+        f'{i}        self, _unsloth_odpo, logits, data["input_ids"][:, context_length:],\n'
+        f'{i}        data["attention_mask"][:, context_length:] != 0,\n'
+        f"{i}    )\n"
+        f'{i}token_logprobs = selective_log_softmax(logits, data["input_ids"][:, context_length:])\n'
+        f"{i}return token_logprobs\n"
+    )
+    return function[: found[0].start()] + new + function[found[0].end() :]
+
+
+# After online_dpo_trainer__forward, whose right-align gather the rewrite reuses on hidden states.
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer_chunked_logprobs)
+RL_FUNCTIONS["xpo_trainer"].append(xpo_trainer_chunked_logprobs)
+RL_FUNCTIONS["nash_md_trainer"].append(xpo_trainer_chunked_logprobs)
+for _odpo_trainer in ("bco_trainer", "online_dpo_trainer", "xpo_trainer", "nash_md_trainer"):
+    for _odpo_item in (
+        _unsloth_get_model_config,
+        _unsloth_text_configs,
+        _unsloth_get_final_logit_softcapping,
+        _unsloth_resolve_logit_scales,
+        _unsloth_grpo_returns_hidden_states,
+        _unsloth_grpo_hidden_states_signal,
+        _unsloth_pref_returns_hidden_states,
+        _unsloth_gkd_dense_head,
+        _unsloth_gkd_logit_transforms,
+        _unsloth_pref_logit_transforms,
+        _unsloth_stock_logps_hook,
+        _unsloth_dpo_chunked_head,
+        _unsloth_dpo_model_forward,
+        _unsloth_dpo_returns_hidden_states,
+        _unsloth_preference_chunked_off,
+    ):
+        RL_PRE_ITEMS[_odpo_trainer].append(inspect.getsource(_odpo_item))
+    if _odpo_trainer == "bco_trainer":
+        for _odpo_item in (
+            _unsloth_kto_hidden_logps,
+            _unsloth_bco_chunked_head,
+            _unsloth_kto_ref_chunked_forward,
+            _unsloth_kto_ref_batch_logps,
+            _unsloth_fused_pass_head,
+            _unsloth_bco_fused_pass_head,
+            _unsloth_fused_pass_logps,
+        ):
+            RL_PRE_ITEMS[_odpo_trainer].append(inspect.getsource(_odpo_item))
+    else:
+        for _odpo_item in (_unsloth_odpo_chunked_head, _unsloth_odpo_hidden_logps):
+            RL_PRE_ITEMS[_odpo_trainer].append(inspect.getsource(_odpo_item))
+    RL_PRE_ITEMS[_odpo_trainer].append(
+        "try:\n"
+        "    from unsloth_zoo.device_map_planner import detect_logit_transforms\n"
+        "except Exception:\n"
+        "    detect_logit_transforms = None\n"
+        "try:\n"
+        "    from unsloth_zoo.fused_losses.chunked_logprob import (\n"
+        "        unsloth_chunked_logprobs as _unsloth_chunked_logprobs,\n"
+        "        unsloth_masked_logprobs as _unsloth_masked_logprobs,\n"
+        "    )\n"
+        "except Exception:\n"
+        "    _unsloth_chunked_logprobs = _unsloth_masked_logprobs = None\n"
+        "try:\n"
+        "    from unsloth_zoo.fused_losses.preference_loss import linear_mean_logits as _unsloth_linear_mean_logits\n"
+        "except Exception:\n"
+        "    _unsloth_linear_mean_logits = None\n"
+        "try:\n"
+        "    from unsloth_zoo.fused_losses.fused_linear import (\n"
+        "        fused_linear_logprobs as _unsloth_fused_linear_logprobs,\n"
+        "    )\n"
+        "except Exception:\n"
+        "    _unsloth_fused_linear_logprobs = None\n"
+        f"_DPO_VISION_KEYS = {tuple(_DPO_VISION_KEYS)!r}\n"
+    )
