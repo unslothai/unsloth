@@ -6,169 +6,230 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group";
+import { Input } from "@/components/ui/input";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+import {
+  Delete02Icon,
+  Edit03Icon,
+  Tick02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
-import type { PerModelConfig } from "../model-config/per-model-config";
+import type { MouseEvent, PointerEvent } from "react";
 import {
   SAVED_RUN_SETTINGS_NAME_MAX,
-  SAVED_RUN_SETTINGS_PER_MODEL_MAX,
-  deleteSavedRunSettings,
-  findSavedRunSettings,
+  type SavedRunSettings,
   normalizeSavedRunSettingsName,
-  saveRunSettings,
-  useSavedRunSettings,
 } from "../model-config/saved-run-settings";
 
-interface SavedRunSettingsRowProps {
-  modelId: string;
+/** ``target`` is the set being renamed. */
+export type RunSettingsNaming =
+  | { mode: "new"; name: string }
+  | { mode: "rename"; name: string; target: string };
+
+interface RunSettingsPickerProps {
+  modelName: string;
+  sets: readonly SavedRunSettings[];
+  /** The set the model loads with, or null for the default (recommended) settings. */
+  selected: string | null;
+  /** Default with edits: the name they will be saved under. */
+  customName: string | null;
+  /** Null on Default settings, which cannot be renamed. */
+  onEditName: (() => void) | null;
+  naming: RunSettingsNaming | null;
   disabled?: boolean;
-  currentConfig: () => PerModelConfig;
-  onApply: (config: PerModelConfig) => void;
+  onPick: (name: string | null) => void;
+  onNamingChange: (naming: RunSettingsNaming | null) => void;
+  onNamingSubmit: () => void;
+  onDelete: (name: string) => void;
 }
 
-export function SavedRunSettingsRow({
-  modelId,
-  disabled = false,
-  currentConfig,
-  onApply,
-}: SavedRunSettingsRowProps) {
-  const saved = useSavedRunSettings(modelId);
-  const [name, setName] = useState("");
-  const match = findSavedRunSettings(saved, name);
-  const cleanName = normalizeSavedRunSettingsName(name);
-  const full = !match && saved.length >= SAVED_RUN_SETTINGS_PER_MODEL_MAX;
+const ITEM = "flex min-h-9 items-center gap-2 px-3 py-0 text-ui-13 font-medium";
+// The default bg-border/50 vanishes on the dark menu surface.
+const SEPARATOR =
+  "bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.16*var(--contrast-wash-gain,1)))]";
+const ROW_ICON =
+  "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
-  const save = () => {
-    if (!cleanName || disabled) {
-      return;
-    }
-    if (full) {
-      toast.error(
-        `Up to ${SAVED_RUN_SETTINGS_PER_MODEL_MAX} saved settings per model. Delete one first.`,
-      );
-      return;
-    }
-    if (!saveRunSettings(modelId, cleanName, currentConfig())) {
-      toast.error("Couldn't save these settings.");
-      return;
-    }
-    setName(cleanName);
-    toast.success(match ? `Updated "${cleanName}".` : `Saved "${cleanName}".`);
-  };
-
-  const remove = () => {
-    if (!match || disabled) {
-      return;
-    }
-    if (!deleteSavedRunSettings(modelId, match.name)) {
-      toast.error("Couldn't delete these settings.");
-      return;
-    }
-    setName("");
-    toast.success(`Deleted "${match.name}".`);
-  };
-
+function Check({ on }: { on: boolean }) {
   return (
-    <div className="flex flex-col gap-2">
-      <span className="text-ui-13 text-foreground">Saved settings</span>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild={true} disabled={saved.length === 0}>
-          <div
-            className="w-full min-w-0 outline-none focus-visible:outline-none"
-            aria-label="Open saved settings"
-          >
-            <InputGroup className="panel-input-group">
-              <InputGroupInput
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    save();
-                  }
-                  event.stopPropagation();
-                }}
-                placeholder={
-                  saved.length ? "Pick or name settings" : "Name these settings"
-                }
-                maxLength={SAVED_RUN_SETTINGS_NAME_MAX}
-                autoComplete="off"
-                disabled={disabled}
-                className="!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-ui-13 font-medium leading-9 md:text-ui-13"
-                aria-label="Saved settings name"
-              />
-              {saved.length > 0 && (
-                <InputGroupAddon
-                  align="inline-end"
-                  className="min-h-0 shrink-0 cursor-pointer gap-0 self-stretch border-0 py-0 pl-0 !pr-1"
-                >
-                  <span
-                    className="pointer-events-none inline-flex !h-7 !w-7 shrink-0 items-center justify-center self-center rounded-full text-muted-foreground"
-                    aria-hidden="true"
-                  >
-                    <HugeiconsIcon
-                      icon={ChevronDownStandardIcon}
-                      className="size-3.5"
-                      strokeWidth={2}
-                    />
-                  </span>
-                </InputGroupAddon>
-              )}
-            </InputGroup>
-          </div>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="start"
-          sideOffset={4}
-          className="menu-soft-surface max-h-[min(18rem,var(--radix-dropdown-menu-content-available-height))] rounded-lg border-0 p-1 ring-0"
-        >
-          {saved.map((entry) => (
-            <DropdownMenuItem
-              key={entry.name}
-              disabled={disabled}
-              onSelect={() => {
-                setName(entry.name);
-                onApply(entry.config);
-              }}
-              className="flex min-h-9 items-center px-3 py-0 text-ui-13 font-medium"
-            >
-              {entry.name}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <div className="flex flex-wrap items-center gap-2">
+    <HugeiconsIcon
+      icon={Tick02Icon}
+      strokeWidth={2}
+      className={cn("size-3.5 shrink-0", !on && "invisible")}
+    />
+  );
+}
+
+// Clicking an icon must not also pick its row: Radix selects on pointerup when it missed the pointerdown.
+const keepRow = (event: MouseEvent | PointerEvent) => {
+  event.preventDefault();
+  event.stopPropagation();
+};
+
+export function RunSettingsPicker({
+  modelName,
+  sets,
+  selected,
+  customName,
+  onEditName,
+  naming,
+  disabled = false,
+  onPick,
+  onNamingChange,
+  onNamingSubmit,
+  onDelete,
+}: RunSettingsPickerProps) {
+  if (naming) {
+    return (
+      <div className="flex min-w-0 items-center gap-2">
+        <Input
+          autoFocus={true}
+          value={naming.name}
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) =>
+            onNamingChange({ ...naming, name: event.target.value })
+          }
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onNamingSubmit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              onNamingChange(null);
+            }
+          }}
+          maxLength={SAVED_RUN_SETTINGS_NAME_MAX}
+          autoComplete="off"
+          aria-label={
+            naming.mode === "new"
+              ? "Name for the new settings"
+              : `New name for ${naming.target}`
+          }
+          className="h-9 min-w-0 flex-1 rounded-full text-ui-13"
+        />
         <Button
           type="button"
           variant="outline"
           size="sm"
-          disabled={disabled || !cleanName}
-          onClick={save}
+          disabled={normalizeSavedRunSettingsName(naming.name) === ""}
+          onClick={onNamingSubmit}
         >
-          {match ? "Update" : "Save"}
+          Save
         </Button>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="text-muted-foreground hover:text-destructive"
-          disabled={disabled || !match}
-          onClick={remove}
+          className="text-muted-foreground"
+          onClick={() => onNamingChange(null)}
         >
-          Delete
+          Cancel
         </Button>
       </div>
+    );
+  }
+  return (
+    <div className="flex min-w-0 items-center gap-1.5">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild={true} disabled={disabled}>
+          <button
+            type="button"
+            aria-label="Run settings for this model"
+            className="flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-full border border-border bg-transparent pr-2.5 pl-3.5 text-left text-ui-13 font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          >
+            <span className="min-w-0 truncate">
+              {selected ?? customName ?? "Default settings"}
+            </span>
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={2}
+              className="size-3.5 shrink-0 text-muted-foreground"
+            />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="start"
+          sideOffset={4}
+          className="menu-soft-surface max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] w-max min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[min(36rem,calc(100vw-2rem))] rounded-lg border-0 p-1 ring-0"
+        >
+          <DropdownMenuItem className={ITEM} onSelect={() => onPick(null)}>
+            <Check on={selected === null && customName === null} />
+            <span className="min-w-0 truncate">
+              Default settings for {modelName}
+            </span>
+          </DropdownMenuItem>
+          {sets.length > 0 && <DropdownMenuSeparator className={SEPARATOR} />}
+          {sets.map((entry) => (
+            <DropdownMenuItem
+              key={entry.name}
+              className={cn(ITEM, "pr-1.5")}
+              onSelect={() => onPick(entry.name)}
+            >
+              <Check on={entry.name === selected} />
+              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+              <button
+                type="button"
+                aria-label={`Rename ${entry.name}`}
+                className={ROW_ICON}
+                onPointerDown={keepRow}
+                onPointerUp={keepRow}
+                onClick={(event) => {
+                  keepRow(event);
+                  onNamingChange({
+                    mode: "rename",
+                    name: entry.name,
+                    target: entry.name,
+                  });
+                }}
+              >
+                <HugeiconsIcon
+                  icon={Edit03Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
+              <button
+                type="button"
+                aria-label={`Delete ${entry.name}`}
+                className={cn(ROW_ICON, "hover:text-destructive")}
+                onPointerDown={keepRow}
+                onPointerUp={keepRow}
+                onClick={(event) => {
+                  keepRow(event);
+                  onDelete(entry.name);
+                }}
+              >
+                <HugeiconsIcon
+                  icon={Delete02Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {onEditName && (
+        <button
+          type="button"
+          aria-label="Rename this setting"
+          title="Rename"
+          disabled={disabled}
+          onClick={onEditName}
+          className={cn(ROW_ICON, "size-9 rounded-full disabled:opacity-50")}
+        >
+          <HugeiconsIcon
+            icon={Edit03Icon}
+            strokeWidth={1.75}
+            className="size-4"
+          />
+        </button>
+      )}
     </div>
   );
 }
