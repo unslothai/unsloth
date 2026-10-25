@@ -241,7 +241,9 @@ def test_a_stall_after_a_listed_device_fails_without_a_cpu_replay(monkeypatch, t
     no CPU replay, no relaunch into the same hang, and the error points at Settings."""
     _route_env(monkeypatch, outcome)
     sink = {}
-    with pytest.raises(RuntimeError, match = r"Settings > GGUF inference engine"):
+    with pytest.raises(
+        RuntimeError, match = r"no loading progress\)\. .*Settings > GGUF inference engine"
+    ):
         _run_cpu_fallback_load(
             monkeypatch,
             tmp_path,
@@ -259,7 +261,9 @@ def test_a_suspect_launch_cut_off_by_the_ceiling_fails_without_a_cpu_replay(monk
     """Still loading when the ceiling hit: that is progress, not a dead driver."""
     _route_env(monkeypatch, "timeout")
     sink = {}
-    with pytest.raises(RuntimeError, match = r"Settings > GGUF inference engine"):
+    with pytest.raises(
+        RuntimeError, match = r"startup time limit reached\)\. .*Settings > GGUF inference engine"
+    ):
         _run_cpu_fallback_load(
             monkeypatch,
             tmp_path,

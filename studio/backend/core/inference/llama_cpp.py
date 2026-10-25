@@ -34214,9 +34214,14 @@ class LlamaCppBackend:
                         and getattr(self, "_health_wait_stall_kind", None) == "no_progress"
                     ):
                         return _try_auto_vulkan_cpu_fallback(stalled_cmd, None, stalled = True)
+                    _why = (
+                        "startup time limit reached"
+                        if getattr(self, "_health_wait_stall_kind", None) == "ceiling"
+                        else "no loading progress"
+                    )
                     _raise_terminal_load_failure(
                         "llama-server did not finish starting on the auto-selected Vulkan "
-                        "backend (no loading progress). If this keeps happening, choose CPU "
+                        f"backend ({_why}). If this keeps happening, choose CPU "
                         "in Settings > GGUF inference engine to run models without the "
                         "Vulkan driver."
                     )
