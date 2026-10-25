@@ -113,7 +113,11 @@ def _decode_buffers(model):
     return sum("paged_attention" in m.__dict__ for m in model.modules())
 
 
-def _gen(model, tok, new = 24):
+def _gen(
+    model,
+    tok,
+    new = 24,
+):
     enc = tok(PROMPTS, return_tensors = "pt", padding = True).to("cuda")
     out = model.generate(
         **enc, max_new_tokens = new, min_new_tokens = new, do_sample = False,
