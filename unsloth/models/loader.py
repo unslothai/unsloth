@@ -35,6 +35,7 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
+from .float8_training import convert_model_to_float8_training, resolve_float8_training
 from .mistral_format import (
     MistralFormatRedirect,
     is_mistral_format_view,
@@ -189,6 +190,7 @@ from ._utils import (
     _apply_text_only_key_mapping,
     _get_remote_composite_text_only,
     _merge_key_mapping,
+    _convert_qwen3_asr_package_config,
     _rebase_user_quantization_config,
     _drop_text_only_key_mapping,
     _adapter_fits_text_model,
@@ -773,6 +775,83 @@ def _resolve_speech_seq2seq_auto_model(
     return None
 
 
+def _resolve_audio_lm_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """The causal or seq2seq LM auto class that builds this audio config's full model
+    (AudioFlamingo3 registers only as a seq2seq LM on transformers 5.17), else None."""
+    import transformers
+
+    for name in ("AutoModelForCausalLM", "AutoModelForSeq2SeqLM"):
+        auto_class = getattr(transformers, name, None)
+        try:
+            if _audio_lm_class(
+                auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+            ):
+                return auto_class
+        except Exception:
+            continue
+    return None
+
+
+_AUDIO_HEAD_AUTO_CLASS_NAMES = (
+    "AutoModelForCTC",
+    "AutoModelForTDT",
+    "AutoModelForAudioClassification",
+    "AutoModelForAudioFrameClassification",
+    "AutoModelForAudioXVector",
+    "AutoModel",
+)
+
+
+def _resolve_audio_auto_model(
+    model_config,
+    include_bare = True,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """The auto class whose mapped class is the checkpoint's own architecture (Wav2Vec2ForCTC,
+    ASTForAudioClassification, a bare WavLMModel), else None."""
+    import transformers
+
+    architectures = getattr(model_config, "architectures", None) or ()
+    if not architectures:
+        return None
+    for name in _AUDIO_HEAD_AUTO_CLASS_NAMES:
+        if name == "AutoModel" and not include_bare:
+            continue
+        auto_class = getattr(transformers, name, None)
+        try:
+            model_class = auto_class and resolve_model_class(
+                auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+            )
+        except Exception:
+            model_class = None
+        if model_class is not None and getattr(model_class, "__name__", None) == architectures[0]:
+            return auto_class
+    return None
+
+
+def _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs):
+    """CTC / audio classification / bare audio encoders load their own head. A causal-LM mapping
+    (WhisperConfig -> WhisperForCausalLM) yields only to an audio head the checkpoint names."""
+    causal_maps = (
+        resolve_model_class(AutoModelForCausalLM, model_config, **_probe_hub_kwargs) is not None
+    )
+    return (
+        _resolve_audio_auto_model(model_config, include_bare = not causal_maps, **_probe_hub_kwargs)
+        # moonshine-streaming's repo config names no architectures; only its speech seq2seq class builds it.
+        or (
+            None
+            if causal_maps
+            else _resolve_speech_seq2seq_auto_model(model_config, **_probe_hub_kwargs)
+        )
+        or AutoModelForCausalLM
+    )
+
+
 def _get_user_task_config_attrs(user_config):
     if user_config is None:
         return {}
@@ -1219,6 +1298,18 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = distributed_device_map
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
+        if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
+            raise ValueError(
+                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
+                "their base weights frozen, so there is no fp8 training step to take."
+            )
+        if kwargs.get("float8_training", None) not in (None, False) and qat_scheme is not None:
+            raise ValueError(
+                "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
+                "layers for fake-quantized ones first, so float8 training would convert nothing. Pick one."
+            )
+        if not full_finetuning:
+            kwargs.pop("float8_training", None)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             delegated, tokenizer = FastModel.from_pretrained(
                 on_model_resolved = on_model_resolved,
@@ -2025,7 +2116,7 @@ from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
-from .vision import FastBaseModel, _is_text_seq2seq_config
+from .vision import FastBaseModel, _is_text_seq2seq_config, _audio_lm_class
 from .diffusion import FastDiffusionModel, is_diffusion_model_type
 from .diffusion_profiles import resolve_diffusion_profile
 from transformers import (
@@ -2126,6 +2217,17 @@ class FastModel(FastBaseModel):
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
+        float8_training = resolve_float8_training(kwargs.pop("float8_training", None))
+        if float8_training is not None and not full_finetuning:
+            raise ValueError(
+                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
+                "their base weights frozen, so there is no fp8 training step to take."
+            )
+        if float8_training is not None and qat_scheme is not None:
+            raise ValueError(
+                "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
+                "layers for fake-quantized ones first, so float8 training would convert nothing. Pick one."
+            )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -2403,6 +2505,9 @@ class FastModel(FastBaseModel):
                 **({"config": user_config} if user_config is not None else {}),
                 **kwargs,
             )
+            if float8_training is not None:
+                converted = convert_model_to_float8_training(model, float8_training)
+                print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
@@ -2934,6 +3039,16 @@ class FastModel(FastBaseModel):
             old_model_name, kwargs, require_processor = _ckpt_is_vlm
         )
 
+        _qwen3_asr_key_mapping = None
+        # vLLM reads the package layout (thinker_config) itself, so fast_inference keeps the repo config.
+        if user_config is None and not fast_inference:
+            model_config, _qwen3_asr_key_mapping = _convert_qwen3_asr_package_config(model_config)
+            if _qwen3_asr_key_mapping:
+                _merge_key_mapping(kwargs, _qwen3_asr_key_mapping)
+                print(
+                    f"Unsloth: {old_model_name} uses the qwen-asr package layout; "
+                    "converting it to transformers' Qwen3-ASR format while loading."
+                )
         # Capture task intent before text_only can replace a parent VLM config with its nested text config.
         task_config_attrs = _get_user_task_config_attrs(user_config)
         for _cfg_key in ("num_labels", "id2label", "label2id", "problem_type"):
@@ -3080,6 +3195,14 @@ class FastModel(FastBaseModel):
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
+                # Audio classifiers (AST, wav2vec2) map only under the audio classification auto class.
+                if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
+                    import transformers as _transformers
+                    _audio_cls = getattr(_transformers, "AutoModelForAudioClassification", None)
+                    if _audio_cls is not None and resolve_model_class(
+                        _audio_cls, model_config, **_probe_hub_kwargs
+                    ):
+                        auto_model = _audio_cls
             elif _is_text_seq2seq_config(model_config) or (
                 # SeamlessM4T: Seq2SeqLM-mapped (text-to-text) beside its speech classes, no causal-LM class.
                 not is_vlm
@@ -3138,10 +3261,12 @@ class FastModel(FastBaseModel):
                         auto_model = (
                             _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
                             or _resolve_speech_seq2seq_auto_model(model_config, **_probe_hub_kwargs)
+                            or _resolve_audio_lm_auto_model(model_config, **_probe_hub_kwargs)
+                            or _resolve_audio_auto_model(model_config, **_probe_hub_kwargs)
                             or auto_model
                         )
             else:
-                auto_model = AutoModelForCausalLM
+                auto_model = _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs)
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit
@@ -3228,6 +3353,8 @@ class FastModel(FastBaseModel):
             **kwargs,
         )
         _drop_text_only_key_mapping(model, _text_key_mapping)
+        # Saves write the native layout, matching the converted config.
+        _drop_text_only_key_mapping(model, _qwen3_asr_key_mapping)
         _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
 
         if resize_model_vocab is not None:
@@ -3436,6 +3563,9 @@ class FastModel(FastBaseModel):
         model = _drop_float16_overflowing_attention_dropout(model, dtype)
         # Loaded adapters skip get_peft_model.
         _ignore_block_swap_params_for_ddp(model)
+        if float8_training is not None:
+            converted = convert_model_to_float8_training(model, float8_training)
+            print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
         return _mark_requested_float32(model, user_float32), tokenizer

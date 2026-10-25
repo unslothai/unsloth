@@ -1,0 +1,626 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Runs scheduled tasks while Studio is up: one loop, one run at a time, each saved as a chat."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import threading
+import uuid
+import weakref
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from starlette.requests import Request
+
+from core.scheduled_tasks.schedule import next_run_after, parse_schedule, resolve_timezone
+from core.training.account_jobs import job_accounts
+from loggers import get_logger
+from storage import scheduled_tasks_db as db
+from utils.account_context import AccountContext, arun_as, current_account_id, run_as
+
+logger = get_logger(__name__)
+
+# Longest sleep: asyncio's clock stops while a computer sleeps, so a run due meanwhile starts at most this late.
+_POLL_SECONDS = 60.0
+# Floor after a pass that claimed nothing, so an unclaimable due task cannot spin the loop.
+_MIN_SLEEP_SECONDS = 1.0
+_HEARTBEAT_SECONDS = 30.0
+_STALE_RUN_MS = 2 * 60 * 1000
+_RUN_TIMEOUT_SECONDS = 20 * 60
+_CANCEL_GRACE_SECONDS = 10.0
+_STOP_GRACE_SECONDS = 5.0
+_SETTLE_ATTEMPTS = 3
+_SETTLE_RETRY_SECONDS = 1.0
+_ERROR_TEXT_LIMIT = 500
+_YIELD_SECONDS = 5 * 60
+_YIELD_POLL_SECONDS = 2.0
+
+_schedulers: "weakref.WeakSet[ScheduledTaskScheduler]" = weakref.WeakSet()
+
+
+class RunFailed(Exception):
+    """A run that ends without a chat. ``code`` is a reason the UI words itself."""
+
+    def __init__(
+        self,
+        code: Optional[str] = None,
+        message: Optional[str] = None,
+    ):
+        super().__init__(message or code or "failed")
+        self.code = code
+        self.message = message
+
+
+@dataclass
+class Answer:
+    content: str
+    reasoning: str
+    model: Optional[str]
+    # What Chat selects to continue the conversation; `model` is the reply's display name.
+    checkpoint: Optional[str] = None
+    gguf_variant: Optional[str] = None
+
+
+@dataclass
+class _ActiveRun:
+    account_id: str
+    task_id: str
+    run_id: str
+    cancel_event: threading.Event
+
+
+def cancel_account_runs(account_id: str) -> None:
+    for scheduler in list(_schedulers):
+        scheduler.cancel_account(account_id)
+
+
+def retire_account_scheduled_tasks(account: AccountContext) -> None:
+    cancel_account_runs(account.account_id)
+
+
+def next_run_for(task: dict, after_ms: int) -> Optional[int]:
+    return next_run_after(parse_schedule(task["schedule"]), task["timezone"], after_ms)
+
+
+def system_prompt(task: dict, now_ms: int) -> str:
+    try:
+        zone = resolve_timezone(task["timezone"])
+    except ValueError:
+        zone = timezone.utc
+    local = datetime.fromtimestamp(now_ms / 1000, tz = zone)
+    when = f"{local:%A}, {local:%B} {local.day}, {local.year} at {local:%H:%M}"
+    return (
+        f"This is a scheduled task the user set up in Unsloth Studio, running on {when} "
+        f"({task['timezone']}). The user is not watching this chat and will read your reply "
+        "later, so complete the task directly and do not ask follow-up questions."
+    )
+
+
+def _loop_cancelled(current: Optional[asyncio.Task], stopping: bool) -> bool:
+    """Whether the scheduler's own task is being cancelled. ``Task.cancelling()`` is 3.11+; before it only stop() does."""
+    if current is None:
+        return False
+    cancelling = getattr(current, "cancelling", None)
+    return bool(cancelling()) if cancelling is not None else stopping
+
+
+def _producer_request(app: Any, run_id: str, cancel_event: threading.Event, tz: str) -> Request:
+    from utils.current_date_prompt_settings import CURRENT_DATE_TIMEZONE_HEADER
+    from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
+    from routes.inference import LOADED_MODELS_ONLY_SCOPE_KEY, REQUIRE_TEXT_HEADER
+
+    path = f"/api/scheduled-tasks/runs/{run_id}"
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii", "ignore"),
+        "query_string": b"",
+        "headers": [
+            (CURRENT_DATE_TIMEZONE_HEADER.encode("latin-1"), tz.encode("latin-1", "ignore")),
+            (REQUIRE_TEXT_HEADER.lower().encode("latin-1"), b"1"),
+        ],
+        "client": ("127.0.0.1", 0),
+        "server": ("127.0.0.1", 0),
+        "app": app,
+        # The kept model it names may be unloaded before routing: never load it back.
+        LOADED_MODELS_ONLY_SCOPE_KEY: True,
+        "state": {
+            "generation_cancel_event": cancel_event,
+            "api_monitor_via_api_key": False,
+            # Created by a signed-in user, so never classified as keyless loopback traffic.
+            KEYLESS_ADMISSION_STATE_KEY: False,
+        },
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return Request(scope, receive)
+
+
+def _error_text(detail: Any) -> str:
+    if isinstance(detail, dict):
+        nested = detail.get("error")
+        if isinstance(nested, dict):
+            detail = nested
+        detail = detail.get("message") or detail.get("detail") or detail.get("error") or detail
+    text = detail if isinstance(detail, str) else json.dumps(detail, default = str)
+    return text.strip()[:_ERROR_TEXT_LIMIT] or "The model could not answer."
+
+
+def _chat_model_loaded() -> bool:
+    from routes.inference import _loaded_slot_ident
+    return _loaded_slot_ident() is not None
+
+
+def _speech_only(llama: Any, orchestrator: Any) -> bool:
+    """A loaded audio model a text-only run cannot use: TTS answers with speech, Whisper refuses a request without audio."""
+    if getattr(llama, "is_loaded", False):
+        return bool(getattr(llama, "_is_audio", False))
+    active = getattr(orchestrator, "active_model_name", None)
+    info = (getattr(orchestrator, "models", None) or {}).get(active) or {}
+    return bool(info.get("is_audio"))
+
+
+def _slot_model(slot: Any) -> Optional[str]:
+    if _speech_only(slot.llama, slot.orchestrator):
+        return None
+    if getattr(slot.llama, "is_loaded", False) and getattr(slot.llama, "model_identifier", None):
+        return str(slot.llama.model_identifier)
+    name = getattr(slot.orchestrator, "active_model_name", None)
+    return str(name) if name else None
+
+
+def _sole_kept_model() -> Optional[str]:
+    """With no primary this account may use for text, its one model kept alongside: named, a run routes to it without a load."""
+    from core.inference import model_slots
+    from hub.services.models import account_access
+    from routes.inference import _loaded_slot_ident, _peek_inference_backend, get_llama_cpp_backend
+
+    primary = _loaded_slot_ident()
+    if (
+        primary is not None
+        and not (
+            account_access.managed_account() and account_access.resident_hidden("chat", primary)
+        )
+        and not _speech_only(get_llama_cpp_backend(), _peek_inference_backend())
+    ):
+        return None
+    names = [name for name in map(_slot_model, model_slots.visible()) if name]
+    return names[0] if len(names) == 1 else None
+
+
+async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threading.Event) -> Answer:
+    """Ask the loaded chat model to do the task. Text only: tools never run unattended."""
+    from fastapi import HTTPException
+
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+    from core.inference.llama_keepwarm import InferenceActivityReservation, end_in_process_request
+    from models.inference import ChatCompletionRequest
+    from routes.inference import produce_openai_chat_completions
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _RUN_TIMEOUT_SECONDS
+    request = _producer_request(app, run["id"], cancel_event, task["timezone"])
+    activity = InferenceActivityReservation()
+    activity.reserve()
+    producer: Optional[asyncio.Future] = None
+    response = None
+    try:
+        # The deadline covers the wait for a model load or unload to let go too: one that never
+        # does must not keep the scheduler from every other task.
+        try:
+            await asyncio.wait_for(activity.start(cancel_event), timeout = _RUN_TIMEOUT_SECONDS)
+        except TimeoutError:
+            raise RunFailed("timeout") from None
+        if cancel_event.is_set():
+            raise RunFailed("cancelled")
+        # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
+        payload = ChatCompletionRequest.model_validate(
+            {
+                # No model: the loaded one answers, and an idle-unloaded one is brought back. Naming
+                # one could switch models under the user.
+                "messages": [
+                    {"role": "system", "content": system_prompt(task, db.now_ms())},
+                    {"role": "user", "content": task["prompt"]},
+                ],
+                "stream": False,
+                "cancel_id": run["id"],
+                # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
+                # means every built-in, python and terminal included.
+                "tool_choice": "none",
+                "enabled_tools": [],
+                **({"model": kept} if (kept := _sole_kept_model()) else {}),
+            }
+        )
+
+        serving: dict = {}
+
+        async def produce() -> Any:
+            # Settled in this task: slot routing lives in its context, which the caller never sees.
+            reply = None
+            try:
+                reply = await produce_openai_chat_completions(
+                    payload,
+                    request,
+                    task["ownerSubject"],
+                    cancel_on_disconnect = False,
+                )
+                serving.update(_serving_checkpoint())
+                return reply
+            finally:
+                end_in_process_request(
+                    request.scope,
+                    answered = reply is not None and int(getattr(reply, "status_code", 200)) < 400,
+                )
+
+        producer = asyncio.ensure_future(produce())
+        done, _ = await asyncio.wait({producer}, timeout = max(0.0, deadline - loop.time()))
+        if not done:
+            raise RunFailed("timeout")
+        try:
+            response = producer.result()
+        except HTTPException as exc:
+            # A named kept model answered for itself, so its refusal is not "nothing loaded",
+            # unless it was unloaded before the request reached it.
+            named = "model" in payload.model_fields_set
+            if (not named and not _chat_model_loaded()) or (named and _sole_kept_model() is None):
+                raise RunFailed("no_model") from None
+            raise RunFailed(None, _error_text(exc.detail)) from None
+        except GpuBusyForAnotherAccountError as exc:
+            raise RunFailed(None, _error_text(exc.as_http_exception().detail)) from None
+    finally:
+        if producer is not None and not producer.done():
+            # A timeout or shutdown: stop the generation itself, not just this wait.
+            cancel_event.set()
+            producer.cancel()
+            await asyncio.wait({producer}, timeout = _CANCEL_GRACE_SECONDS)
+
+        def release(*_: Any) -> None:
+            activity.finish()
+            if producer is None:
+                end_in_process_request(request.scope, answered = False)
+
+        if producer is not None and not producer.done():
+            # Its worker has not unwound yet: the model stays busy until it does.
+            producer.add_done_callback(release)
+        else:
+            release()
+    if cancel_event.is_set():
+        raise RunFailed("cancelled")
+    body = getattr(response, "body", None)
+    if body is None:
+        raise RunFailed(None, "The model did not return a reply.")
+    data = json.loads(bytes(body))
+    if int(getattr(response, "status_code", 200)) >= 400:
+        raise RunFailed(None, _error_text(data))
+    choices = data.get("choices") or [{}]
+    message = choices[0].get("message") or {}
+    content = message.get("content") or ""
+    if not content.strip():
+        raise RunFailed("empty")
+    return Answer(
+        content = content,
+        reasoning = message.get("reasoning_content") or "",
+        model = data.get("model") or None,
+        checkpoint = serving.get("checkpoint"),
+        gguf_variant = serving.get("gguf_variant"),
+    )
+
+
+def _serving_checkpoint() -> dict:
+    """The model that answered, as Chat names it: read in the producer's task, where its slot was routed."""
+    from routes.inference import _loaded_slot_ident, get_llama_cpp_backend
+
+    llama = get_llama_cpp_backend()
+    variant = getattr(llama, "hf_variant", None) if getattr(llama, "is_loaded", False) else None
+    return {"checkpoint": _loaded_slot_ident(), "gguf_variant": variant or None}
+
+
+def _project_or_none(project_id: Optional[str]) -> Optional[str]:
+    from storage import studio_db
+    return project_id if project_id and studio_db.get_chat_project(project_id) else None
+
+
+def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_at: int) -> str:
+    from storage import studio_db
+
+    thread_id = db.chat_id_for_run(run["id"])
+    user_message_id = str(uuid.uuid4())
+    # After the prompt even within one millisecond, which the message order relies on.
+    answered_at = max(finished_at, started_at + 1)
+    model = answer.model or ""
+    checkpoint = answer.checkpoint or model
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": task["title"],
+            "modelType": "base",
+            "modelId": checkpoint,
+            "modelGgufVariant": answer.gguf_variant,
+            "createdAt": started_at,
+            "updatedAt": answered_at,
+            "scheduledTaskId": task["id"],
+            "projectId": _project_or_none(task.get("projectId")),
+            "archived": bool(task.get("archiveSuccessful")),
+        }
+    )
+    parts: list[dict] = []
+    source = {"taskId": task["id"], "runId": run["id"]}
+    metadata: dict = {
+        "scheduledTask": source,
+        "responseDetails": {
+            "modelId": checkpoint,
+            "modelLabel": model,
+            "responseModelId": model,
+            "providerName": "Local model",
+            "providerType": "local",
+            "startedAt": started_at,
+            "finishedAt": answered_at,
+            "durationMs": answered_at - started_at,
+            "toolCalls": [],
+        },
+    }
+    if answer.reasoning.strip():
+        parts.append({"type": "reasoning", "text": answer.reasoning})
+        seconds = max(0, round((answered_at - started_at) / 1000))
+        metadata.update(reasoningDuration = seconds, reasoningDurations = [seconds])
+    parts.append({"type": "text", "text": answer.content})
+    try:
+        studio_db.sync_chat_messages(
+            thread_id,
+            [
+                {
+                    "id": user_message_id,
+                    "threadId": thread_id,
+                    "parentId": None,
+                    "role": "user",
+                    "content": [{"type": "text", "text": task["prompt"]}],
+                    "metadata": {"scheduledTask": source},
+                    "createdAt": started_at,
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "threadId": thread_id,
+                    "parentId": user_message_id,
+                    "role": "assistant",
+                    "content": parts,
+                    "metadata": metadata,
+                    "createdAt": answered_at,
+                },
+            ],
+        )
+    except Exception:
+        # Never leave an empty chat behind.
+        _discard_chat(thread_id)
+        raise
+    return thread_id
+
+
+def _discard_chat(thread_id: str) -> None:
+    from storage import studio_db
+    try:
+        studio_db.delete_chat_threads([thread_id])
+    except Exception:
+        logger.exception("scheduled_tasks.discard_chat_failed")
+
+
+class ScheduledTaskScheduler:
+    def __init__(self, app: Any) -> None:
+        _schedulers.add(self)
+        self.app = app
+        self.worker_id = uuid.uuid4().hex
+        self._task: Optional[asyncio.Task] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # Made in start(): an asyncio.Event is bound to its loop, and a second lifespan may run on another.
+        self._wake: Optional[asyncio.Event] = None
+        self._stopping = False
+        self._active: Optional[_ActiveRun] = None
+        self._last_account: Optional[str] = None
+        self._due: Optional[int] = None
+
+    def start(self) -> None:
+        if self._task is not None:
+            return
+        self._stopping = False
+        self._loop = asyncio.get_running_loop()
+        self._wake = asyncio.Event()
+        self._task = asyncio.create_task(self._run_loop(), name = "scheduled-task-scheduler")
+
+    async def stop(self) -> None:
+        self._stopping = True
+        self.wake()
+        active = self._active
+        if active is not None:
+            active.cancel_event.set()
+        task, self._task = self._task, None
+        if task is None:
+            return
+        done, _ = await asyncio.wait({task}, timeout = _STOP_GRACE_SECONDS)
+        if not done:
+            task.cancel()
+            await asyncio.wait({task}, timeout = _STOP_GRACE_SECONDS)
+
+    def wake(self) -> None:
+        """Re-check what is due now. Safe from any thread: sync routes run in a pool."""
+        loop, event = self._loop, self._wake
+        if loop is None or event is None or loop.is_closed():
+            return
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(event.set)
+
+    def cancel_task_run(
+        self,
+        task_id: str,
+        account_id: Optional[str] = None,
+    ) -> None:
+        active = self._active
+        account_id = current_account_id() if account_id is None else account_id
+        if active is not None and active.task_id == task_id and active.account_id == account_id:
+            active.cancel_event.set()
+
+    def cancel_account(self, account_id: str) -> None:
+        active = self._active
+        if active is not None and active.account_id == account_id:
+            active.cancel_event.set()
+
+    async def _run_loop(self) -> None:
+        while not self._stopping:
+            # Cleared before looking, so a wake that lands while this pass runs is not lost.
+            self._wake.clear()
+            try:
+                claimed = await asyncio.to_thread(self._claim)
+                if claimed is not None:
+                    account, task, run = claimed
+                    # Shutdown began after the claim: give it back. Past here nothing awaits before the run is active.
+                    if self._stopping:
+                        await asyncio.to_thread(self._release, account, task, run)
+                        return
+                    await arun_as(account, self._execute(account, task, run))
+                    continue
+                # Sleep until the next run is due (APScheduler, Celery beat); wake() cuts it short on any change.
+                delay = _POLL_SECONDS
+                if self._due is not None:
+                    delay = min(delay, max(_MIN_SLEEP_SECONDS, (self._due - db.now_ms()) / 1000))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Never escape the loop: that would stop every schedule for the life of the process.
+                logger.exception("scheduled_tasks.loop_iteration_failed")
+                delay = 5.0
+            if self._stopping:
+                return
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._wake.wait(), timeout = delay)
+
+    async def _yield_to_inference(self, cancel_event: threading.Event) -> None:
+        from core.inference.llama_keepwarm import inference_in_flight
+        deadline = asyncio.get_running_loop().time() + _YIELD_SECONDS
+        while (
+            inference_in_flight()
+            and not cancel_event.is_set()
+            and not self._stopping
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(_YIELD_POLL_SECONDS)
+
+    def _accounts(self) -> list[AccountContext]:
+        accounts = job_accounts()
+        for index, account in enumerate(accounts):
+            if account.account_id == self._last_account:
+                return accounts[index + 1 :] + accounts[: index + 1]
+        return accounts
+
+    def _claim(self) -> Optional[tuple[AccountContext, dict, dict]]:
+        """One pass, one read per account: claim the next due run, else note in ``_due`` when one is."""
+        now = db.now_ms()
+        self._due = None
+        for account in self._accounts():
+            if self._stopping:
+                return None
+            try:
+                claimed, due = run_as(
+                    account, db.poll, now, now - _STALE_RUN_MS, self.worker_id, next_run_for
+                )
+            except Exception:
+                logger.exception("scheduled_tasks.claim_failed_for_account")
+                continue
+            if claimed is not None:
+                # stop() cannot cancel this thread, so give the claim back here; its occurrence runs at next start.
+                if self._stopping:
+                    self._release(account, *claimed)
+                    return None
+                self._last_account = account.account_id
+                return (account, *claimed)
+            if due is not None and (self._due is None or due < self._due):
+                self._due = due
+        return None
+
+    def _release(self, account: AccountContext, task: dict, run: dict) -> None:
+        try:
+            run_as(account, db.release_claim, run["id"], self.worker_id, task["nextRunAt"])
+        except Exception:
+            logger.exception("scheduled_tasks.release_failed")
+
+    async def _heartbeat(self, run_id: str) -> None:
+        while True:
+            await asyncio.sleep(_HEARTBEAT_SECONDS)
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(db.heartbeat, run_id, self.worker_id)
+
+    async def _execute(self, account: AccountContext, task: dict, run: dict) -> None:
+        cancel_event = threading.Event()
+        self._active = _ActiveRun(account.account_id, task["id"], run["id"], cancel_event)
+        heartbeat = asyncio.create_task(self._heartbeat(run["id"]))
+        started_at = run["startedAt"] or db.now_ms()
+        outcome: dict[str, Any] = {"status": "failed"}
+        saving = False
+        try:
+            if not await asyncio.to_thread(self._still_wanted, account, task["id"]):
+                outcome = {"status": "failed", "error_code": "cancelled"}
+                return
+            if run.get("source") == "schedule":
+                await self._yield_to_inference(cancel_event)
+                if cancel_event.is_set():
+                    raise RunFailed("cancelled")
+            answer = await generate_answer(self.app, task, run, cancel_event)
+            if not await asyncio.to_thread(db.task_exists, task["id"]):
+                return
+            saving = True
+            thread_id = await asyncio.to_thread(
+                save_chat, task, run, answer, started_at, db.now_ms()
+            )
+            outcome = {"status": "succeeded", "thread_id": thread_id, "model": answer.model}
+        except RunFailed as failure:
+            if self._stopping and failure.code == "cancelled":
+                failure = RunFailed("interrupted")
+            outcome = {
+                "status": "failed",
+                "error_code": failure.code,
+                "error": failure.message,
+            }
+        except asyncio.CancelledError:
+            if _loop_cancelled(asyncio.current_task(), self._stopping):
+                outcome = {"status": "failed", "error_code": "interrupted"}
+                raise
+            # This run's own cancel (the unload gate raises it while waiting): ends the run, not the loop.
+            outcome = {
+                "status": "failed",
+                "error_code": "interrupted" if self._stopping else "cancelled",
+            }
+        except Exception as exc:
+            logger.exception("scheduled_tasks.run_failed")
+            outcome = {"status": "failed", "error": _error_text(str(exc))}
+        finally:
+            heartbeat.cancel()
+            self._active = None
+            # A chat stands only for a succeeded run; a failure removes it in the same transaction.
+            discard = saving and outcome["status"] != "succeeded"
+            settled = await self._settle(run["id"], {**outcome, "discard_chat": discard})
+            if saving and settled is not True:
+                await asyncio.to_thread(_discard_chat, db.chat_id_for_run(run["id"]))
+
+    @staticmethod
+    def _still_wanted(account: AccountContext, task_id: str) -> bool:
+        return db.task_exists(task_id) and any(
+            entry.account_id == account.account_id for entry in job_accounts()
+        )
+
+    async def _settle(self, run_id: str, outcome: dict[str, Any]) -> Optional[bool]:
+        for attempt in range(_SETTLE_ATTEMPTS):
+            try:
+                return await asyncio.to_thread(db.finish_run, run_id, self.worker_id, **outcome)
+            except Exception:
+                logger.exception("scheduled_tasks.finish_failed")
+            if attempt + 1 < _SETTLE_ATTEMPTS:
+                await asyncio.sleep(_SETTLE_RETRY_SECONDS)
+        return None

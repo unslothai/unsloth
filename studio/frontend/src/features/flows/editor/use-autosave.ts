@@ -95,9 +95,10 @@ async function performSave(force = false): Promise<boolean> {
   useUiStore.getState().setSaveState("saving");
   try {
     const record = await saveFlow(current.flowId, doc, current.baseUpdatedAt);
-    if (session !== current) return true;
+    // Recorded even after the editor moved on: the closing save queued behind this one builds on it.
     current.baseUpdatedAt = record.updatedAt;
     current.savedSignature = signature;
+    if (session !== current) return true;
     current.failedSignature = null;
     const latest = documentSignature(documentFromState(useDocStore.getState()));
     useUiStore

@@ -7,7 +7,6 @@ import { useCatalogStore } from "./catalog-store";
 
 let loading: Promise<NodeCatalog> | null = null;
 
-/** The backend's catalog, once per session. */
 export function ensureCatalog(): Promise<NodeCatalog> {
   const existing = useCatalogStore.getState().catalog;
   if (existing) return Promise.resolve(existing);

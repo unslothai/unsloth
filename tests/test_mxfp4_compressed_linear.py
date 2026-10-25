@@ -80,6 +80,13 @@ needs_zoo_packed_save = pytest.mark.skipif(
 )
 
 DEVICES = ["cpu"] + (["cuda"] if has_real_cuda() else [])
+
+
+def _cuda_amp_dtype():
+    # CUDA autocast refuses bf16 below sm_80 (T4), where Unsloth trains in fp16.
+    return torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
+
+
 _E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
 
 
@@ -155,6 +162,20 @@ def test_dequant_matches_compressed_tensors_decompress(device):
         assert torch.equal(got.view(torch.int16), want.view(torch.int16)), (o, i)
 
 
+@pytest.mark.parametrize("device", DEVICES)
+def test_torch_fp16_decode_rounds_once_for_every_finite_scale(device):
+    # E8M0 1..254 (0xFF is NaN): past fp16's range a value is inf, a zero nibble stays +-0, small ones go subnormal.
+    # torch < 2.12's ldexp built 2^e in fp16, so 0 * 2^16 was NaN, 2^-10 * 2^20 inf and 6 * 2^-25 zero.
+    packed, scale = _random_packed(8, 64, low = 1, high = 255)
+    packed[0, :16] = torch.arange(0, 256, 16, dtype = torch.uint8)
+    packed[1, :16] = torch.arange(0, 16, dtype = torch.uint8)
+    scale[0, 0], scale[0, 1], scale[1, 0], scale[1, 1] = 143, 147, 102, 254
+    want = _reference_decode(packed, scale).to(torch.float16)
+    got = _dequantize_torch(packed.to(device).view(8, 2, 16), scale.to(device), torch.float16).cpu()
+    assert got.dtype == torch.float16 and got.shape == (8, 64)
+    assert torch.equal(got.view(torch.int16), want.view(torch.int16))
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_zoo_kernel_and_torch_path_agree():
     packed, scale = _random_packed(256, 512, low = 1, high = 254)
@@ -204,17 +225,20 @@ def test_forward_and_input_gradient_are_exact_and_save_only_packed_bytes(device,
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_autocast_runs_the_matmul_in_the_autocast_dtype():
+    amp = _cuda_amp_dtype()
     packed, scale = _random_packed(64, 64)
     module = make_mxfp4_packed_linear(64, 64, device = "cuda")
     module.weight_packed.data.copy_(packed)
     module.weight_scale.data.copy_(scale)
+    if amp == torch.float16:
+        module.weight_scale.data.clamp_(118, 126)  # fp16's range: the decode stays finite and exact
     ref = nn.Linear(64, 64, bias = False, device = "cuda", dtype = torch.float32)
     ref.weight.data.copy_(module.dequantize_weight(torch.float32))
     x = torch.randn(4, 64, device = "cuda", requires_grad = True)
     x2 = x.detach().clone().requires_grad_()
-    with torch.autocast("cuda", dtype = torch.bfloat16):
+    with torch.autocast("cuda", dtype = amp):
         ya, yb = module(x), ref(x2)
-    assert ya.dtype == yb.dtype == torch.bfloat16
+    assert ya.dtype == yb.dtype == amp
     assert torch.equal(ya, yb)
     ya.float().sum().backward()
     yb.float().sum().backward()
@@ -481,7 +505,11 @@ def test_fast_lora_paths_get_the_packed_bytes_and_a_decoder_not_a_16bit_weight()
     assert not has_mxfp4_base(proj) and not has_mxfp4_base(model.base_model.model.dense)
 
 
-def _mlp_lora_pair(hidden, inter):
+def _mlp_lora_pair(
+    hidden,
+    inter,
+    dtype = torch.bfloat16,
+):
     peft = pytest.importorskip("peft")
 
     class MLP(nn.Module):
@@ -490,17 +518,15 @@ def _mlp_lora_pair(hidden, inter):
             self.gate_proj, self.up_proj, self.down_proj = gate, up, down
 
     packed = [
-        _filled(inter, hidden, seed = 1),
-        _filled(inter, hidden, seed = 2),
-        _filled(hidden, inter, seed = 3),
+        _filled(inter, hidden, seed = 1, dtype = dtype),
+        _filled(inter, hidden, seed = 2, dtype = dtype),
+        _filled(hidden, inter, seed = 3, dtype = dtype),
     ]
     for module in packed:
         module.weight_scale.data.clamp_(118, 126)
     dense = []
     for module in packed:
-        linear = nn.Linear(
-            module.in_features, module.out_features, bias = False, dtype = torch.bfloat16
-        )
+        linear = nn.Linear(module.in_features, module.out_features, bias = False, dtype = dtype)
         linear.weight.data.copy_(module.dequantize_weight())
         dense.append(linear)
     models = []
@@ -526,23 +552,26 @@ def test_fused_lora_mlp_on_a_packed_base_matches_the_dense_base(rows):
     """8 rows run the fused MXFP4 GEMM (bf16-rounding-level), 256 decode for cuBLAS (bit-exact)."""
     from unsloth.kernels.fast_lora import apply_lora_mlp_swiglu, apply_lora_o
 
-    packed, dense = _mlp_lora_pair(64, 128)
+    amp = _cuda_amp_dtype()
+    packed, dense = _mlp_lora_pair(64, 128, amp)
     x = torch.randn(
         1, rows, 64, device = "cuda", generator = torch.Generator("cuda").manual_seed(0)
-    ).to(torch.bfloat16)
+    ).to(amp)
     results = []
     for mlp in (packed, dense):
         xa = x.clone().requires_grad_()
-        with torch.autocast("cuda", dtype = torch.bfloat16):
+        with torch.autocast("cuda", dtype = amp):
             y = apply_lora_mlp_swiglu(mlp, xa, inplace = False)
             y = y + apply_lora_o(
                 type("O", (), {"o_proj": mlp.down_proj})(), y.new_ones(1, rows, 128) * 0.01
             )
-        y.float().square().sum().backward()
+        # fp16 grads of this loss pass 65504; a power-of-two seed scale is exact and keeps them finite.
+        (y.float().square().sum() * (2.0**-14 if amp == torch.float16 else 1.0)).backward()
         lora_grads = [p.grad.float() for n, p in sorted(mlp.named_parameters()) if "lora_" in n]
         results.append((y.float(), xa.grad.float(), lora_grads))
     (ya, ga, la), (yb, gb, lb) = results
     assert len(la) == len(lb) == 6
+    assert all(torch.isfinite(g).all() and g.abs().max() > 0 for g in (ga, *la))
     if rows > 64:
         assert torch.equal(ya, yb) and torch.equal(ga, gb)
         assert all(torch.equal(a, b) for a, b in zip(la, lb))
@@ -1125,7 +1154,8 @@ def test_a_partly_merged_bitsandbytes_route_model_saves_and_reloads(tmp_path):
         want = unloaded(input_ids = ids).logits
     out = str(tmp_path / "unloaded")
     unloaded.save_pretrained(out)
-    reloaded = AutoModelForCausalLM.from_pretrained(out, dtype = torch.bfloat16, device_map = {"": 0})
+    # want.dtype: Unsloth loads fp16 where bf16 is unsupported (T4) even when asked for bf16
+    reloaded = AutoModelForCausalLM.from_pretrained(out, dtype = want.dtype, device_map = {"": 0})
     attn = reloaded.model.layers[0].self_attn
     assert type(attn.q_proj) is nn.Linear and type(attn.k_proj) is nn.Linear
     with torch.no_grad():

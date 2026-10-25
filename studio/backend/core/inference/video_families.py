@@ -864,6 +864,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832)),
         bf16_components_gb = (2.8, 11.4, 0.5),
         vae_force_fp32 = True,
+        # Finite in float16 like TI2V-5B (ComfyUI WAN21_T2V runs fp16): T4 keeps the DiT fp16, not the fp32 promotion.
+        fp16_guard = "native",
         # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
         # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
         # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,

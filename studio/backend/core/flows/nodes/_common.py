@@ -121,7 +121,9 @@ def first_json(text: str) -> Any:
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if fence:
         text = fence.group(1)
-    for opener, closer in (("{", "}"), ("[", "]")):
+    # Whichever comes first: a list of objects is the list, not its first object.
+    pairs = sorted((("{", "}"), ("[", "]")), key = lambda p: (text.find(p[0]) < 0, text.find(p[0])))
+    for opener, closer in pairs:
         start = text.find(opener)
         while start != -1:
             depth, in_str, esc = 0, False, False
@@ -874,7 +876,7 @@ async def generate_image(
             "guidance_start": float(control.get("guidance_start", 0.0)),
             "guidance_end": float(control.get("guidance_end", 1.0)),
         }
-    # Only what was set is sent, so a node without these settings posts the same body as before.
+    # Only set fields are sent, so a node without these settings posts the default body.
     body.update(route_options(options))
 
     async def cancel() -> None:

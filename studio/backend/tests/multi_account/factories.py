@@ -176,6 +176,7 @@ CORE_FACTORIES = {
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
     ),
     "routes.skills:GET:/{name}": Factory("skill", fragment = SENTINEL, absent = SENTINEL),
+    "routes.skills:GET:/{name}/export": Factory("skill", fragment = SKILL_NAME),
     "routes.skills:PUT:/{name}": Factory(
         "skill",
         {"description": EDITED, "instructions": "Instructions"},
@@ -193,6 +194,7 @@ from . import (  # noqa: E402  domain tables import Factory and register their s
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 
@@ -203,6 +205,7 @@ DOMAINS = (
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 

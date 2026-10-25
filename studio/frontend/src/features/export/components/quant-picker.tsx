@@ -85,7 +85,7 @@ export function QuantPicker({
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition-colors",
                 active
-                  ? "ring-ring-strong bg-primary/10 text-foreground"
+                  ? "ring-ring-strong bg-wash-10 text-foreground"
                   : "ring-border text-muted-foreground hover:text-foreground hover:ring-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]",
               )}
             >

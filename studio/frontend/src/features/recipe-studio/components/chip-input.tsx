@@ -89,12 +89,12 @@ export function ChipInput({
   return (
     <div
       ref={containerRef}
-      className={`bg-input/30 border-input dark:border-transparent focus-within:border-ring dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255_/_calc(0.09*var(--contrast-wash-gain,1)))] flex min-h-9 flex-wrap items-center gap-1.5 border bg-clip-padding px-1.5 py-1.5 text-sm transition-colors ${isWrapped ? "corner-squircle rounded-xl" : "rounded-4xl"}`}
+      className={`bg-input/30 border-input dark:border-transparent focus-within:border-ring dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255_/_calc(0.09*var(--contrast-wash-gain,1)))] flex min-h-9 flex-wrap items-center gap-1.5 border bg-clip-padding px-1.5 py-1.5 text-sm transition-colors ${isWrapped ? "corner-squircle rounded-xl" : "rounded-full"}`}
     >
       {values.map((value, index) => (
         <span
           key={`${value}-${index}`}
-          className="bg-muted-foreground/10 text-foreground flex h-[calc(--spacing(5.5))] w-fit items-center justify-center gap-1 rounded-4xl pr-0 pl-2 text-xs font-medium whitespace-nowrap"
+          className="bg-muted-foreground/10 text-foreground flex h-[calc(--spacing(5.5))] w-fit items-center justify-center gap-1 rounded-full pr-0 pl-2 text-xs font-medium whitespace-nowrap"
         >
           {value}
           <Button
