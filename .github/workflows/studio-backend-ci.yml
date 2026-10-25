@@ -467,6 +467,8 @@ jobs:
               --ignore=tests/vllm_compat
               --ignore=tests/version_compat
               --ignore-glob=tests/test_fsdp2*.py
+              --ignore-glob=tests/test_tp_*.py
+              --ignore-glob=tests/test_pp_*.py
               --deselect tests/test_model_registry.py::test_model_registration
               --deselect tests/test_model_registry.py::test_all_model_registration
           # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
@@ -475,6 +477,14 @@ jobs:
           - shard: fsdp2
             selection: >-
               tests/test_fsdp2*.py
+          # Tensor and pipeline parallel gloo tests spawn 2 to 4 ranks each, like fsdp2's.
+          # Back in the catch-all they pushed it to the 2100 s step cap again (killed at
+          # 2092 s with 0 failures on three PRs, Oct 25); measured locally they are 260 s
+          # of the 315 s that the catch-all's remaining spawn-based files take.
+          - shard: parallel
+            selection: >-
+              tests/test_tp_*.py
+              tests/test_pp_*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
