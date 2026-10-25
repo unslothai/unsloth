@@ -1155,6 +1155,9 @@ export const sv = {
       storageDisk: "{free} ledigt av {total} på den här disken",
       storageEmpty: "Inget lagras i biblioteket ännu.",
       storageHidden: "{size} dolt i innehållsinställningarna",
+      storageHiddenLabel: "Dolt",
+      storageRefresh: "Uppdatera",
+      storageOpen: "Öppna",
       storageError: "Det gick inte att läsa bibliotekets lagring.",
       locationsSection: "Filer på disk",
       locationsDescription:
@@ -2475,7 +2478,7 @@ export const sv = {
       },
     },
     resources: {
-      title: "System",
+      title: "System och motor",
       description: "Övervaka maskinvara och lagring på denna Unsloth-server.",
       liveUpdates: "Direktuppdateringar",
       floatingWindow: "Flytande fönster",
@@ -2649,6 +2652,13 @@ export const sv = {
       storage: {
         title: "Lagring",
         systemDisk: "Systemdisk",
+        systemUsed: "{used} av {total} används på systemdisken",
+        modelsDiskSummary: "Enheten för modellmappen: {used} av {total} används, {free} ledigt",
+        segmentModels: "Modeller",
+        segmentCaches: "Cacheminnen",
+        segmentOther: "Övrigt",
+        segmentFree: "Ledigt",
+        refreshAction: "Uppdatera",
         modelsDisk: "Modelldisk",
         diskUsage: "{used} används / {total}",
         diskFree: "{free} ledigt",

@@ -1094,6 +1094,11 @@ def apply_tensor_parallel(
             "Unsloth: this model is already distributed (DTensor parameters or a transformers tp_plan); "
             "load it without tp_plan before apply_tensor_parallel."
         )
+    if any(level.__dict__.get("_unsloth_pp") is not None for level in _tp_chain(model)):
+        raise ValueError(
+            "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism "
+            "(apply_pipeline_parallel) in v1."
+        )
     tp_plan = derive_tp_plan(model, tp, plan)
     for region in tp_plan.regions:
         for proj in region.projs:

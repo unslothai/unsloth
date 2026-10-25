@@ -950,6 +950,9 @@ export const it = {
       storageDisk: "{free} liberi su {total} in questo disco",
       storageEmpty: "Nella Libreria non c'è ancora nulla.",
       storageHidden: "{size} nascosti nelle impostazioni Contenuti",
+      storageHiddenLabel: "Nascosti",
+      storageRefresh: "Aggiorna",
+      storageOpen: "Apri",
       storageError: "Impossibile leggere lo spazio della Libreria.",
       locationsSection: "File sul disco",
       locationsDescription: "Dove Unsloth conserva ogni tipo di file. Le cartelle della libreria sono etichette dentro Unsloth, non cartelle sul disco. I fine-tuning e le esportazioni restano dove sono, perché addestramento e chat li trovano tramite il percorso.",
@@ -2242,7 +2245,7 @@ export const it = {
       },
     },
     resources: {
-      title: "Sistema",
+      title: "Sistema e motore",
       description:
         "Monitora hardware e archiviazione di questo server Unsloth.",
       liveUpdates: "Aggiornamenti in tempo reale",
@@ -2399,6 +2402,13 @@ export const it = {
       storage: {
         title: "Archiviazione",
         systemDisk: "Disco di sistema",
+        systemUsed: "{used} usati su {total} sul disco di sistema",
+        modelsDiskSummary: "Unità della cartella modelli: {used} usati su {total}, {free} liberi",
+        segmentModels: "Modelli",
+        segmentCaches: "Cache",
+        segmentOther: "Altro",
+        segmentFree: "Libero",
+        refreshAction: "Aggiorna",
         modelsDisk: "Disco dei modelli",
         diskUsage: "In uso: {used} / Totale: {total}",
         diskFree: "Disponibili: {free}",

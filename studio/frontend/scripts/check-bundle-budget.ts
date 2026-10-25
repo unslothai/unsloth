@@ -422,11 +422,16 @@ export const BUDGET = {
   // 2,090,854 B transfer against 1492952a09, Node 22, 99 chunks). Raised by that on top of #15084 and #15025.
   // The pinned Run settings footer adds 25 B raw / 49 B transfer to the eager model picker (6,932,829 -> 6,932,854 B
   // raw, 2,088,616 -> 2,088,665 B transfer against 2c2e04474b, Node 26, unchanged at 99 chunks). Raised by that.
-  // Scheduled tasks (#13871): the results poll, unseen dots and strings (page and dialog lazy) measure 6,789.7 KB
-  // raw / 2,046.0 KB transfer merged with main b143b37d5 (Node 24, 99 chunks). Set to that plus about 300 B raw /
+  // Storage overview in Library and System settings (#15083) adds 360 B raw / 56 B transfer, its strings in the
+  // eager en locale plus 46 B in the settings chunk; the overview itself is a lazy chunk (6,932,829 -> 6,933,189 B
+  // raw, 2,088,616 -> 2,088,672 B transfer against cfc593f0bd, Node 26, unchanged at 99 chunks). Raised by that.
+  // Its "System and Engine" page title adds 11 B raw / 34 B transfer to the eager en locale (6,933,189 -> 6,933,200 B
+  // raw, 2,088,699 -> 2,088,733 B transfer merged with f49cbdf535, Node 26, 99 chunks). Raised by that.
+  // Scheduled tasks (#13871): the results poll, unseen dots and strings (page and dialog lazy) measure 6,781.9 KB
+  // raw / 2,046.3 KB transfer merged with main bf9eaf39a (Node 24, 105 chunks). Set to that plus about 300 B raw /
   // 150 B transfer.
-  transferBytes: 2_095_250,
-  rawBytes: 6_952_950,
+  transferBytes: 2_095_550,
+  rawBytes: 6_944_950,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

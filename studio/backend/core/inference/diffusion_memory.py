@@ -4061,7 +4061,8 @@ def _offload_cost_measurements() -> Optional[tuple[float, float]]:
     try:
         import torch
 
-        if not torch.cuda.is_available() or is_rocm_torch(torch):
+        # integrated GPU: the probe's pinned buffer only takes RAM from the card; unpriced keeps the whole-module plan
+        if not torch.cuda.is_available() or is_rocm_torch(torch) or not host_pinning_allowed():
             return None
         key = torch.cuda.current_device()
         if key in _OFFLOAD_COST_PROBES:
