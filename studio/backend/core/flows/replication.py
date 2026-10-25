@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What an exported flow was made with, so another Studio can reproduce it: the Studio version and, per model, the
-Hub revision and GGUF file in the local cache. Stored in `meta.replication` (free metadata, so older Studios read
-the file unchanged); compared on import into readable notices. Reads the cache from disk only, never the network."""
+"""Export stamp in `meta.replication` (older Studios ignore it): Studio version and per-model Hub revision and
+GGUF file, read from the local cache only, never the network."""
 
 from __future__ import annotations
 

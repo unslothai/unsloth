@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Exports record what made them (Studio version, model revisions and GGUF files from the local cache), and an
-import says where this Studio differs. A fake Hugging Face cache stands in for the real one."""
+"""Export replication stamps and import notices, against a fake Hugging Face cache."""
 
 import json
 
