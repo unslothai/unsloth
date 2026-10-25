@@ -12907,13 +12907,23 @@ def _media_on_target_gpus(placement) -> bool:
     return bool(held) and (not gpus or bool(set(held) & set(gpus)))
 
 
+def _idle_kept_chat_on_target_gpus(placement) -> bool:
+    """Whether an idle chat model kept alongside holds VRAM on the GPUs this load targets."""
+    gpus = None if placement.gpu_ids_are_vulkan_ordinals else _placement_gpu_ids(placement)
+    return bool(model_slots.eviction_victims(None, 0, set(gpus) if gpus else None, discrete = True))
+
+
 def _primary_refuses_partial_fit(serving: bool, policy: str, placement) -> bool:
-    """Whether a primary GGUF load refuses a partial GPU fit beside an image or video model, to retry once room is
-    made. Not under Always while a primary serves: the refusal lands after its teardown, leaving nothing loaded."""
+    """Whether a primary GGUF load refuses a partial GPU fit beside an image or video model, or under When they fit
+    beside an idle kept chat model, to retry once room is made. Not under Always while a primary serves: the refusal
+    lands after its teardown, leaving nothing loaded."""
     return (
         _primary_can_retry_fit.get()
         and not (serving and policy == "always")
-        and _media_on_target_gpus(placement)
+        and (
+            _media_on_target_gpus(placement)
+            or (policy == "fit" and _idle_kept_chat_on_target_gpus(placement))
+        )
     )
 
 
@@ -12999,16 +13009,18 @@ def _outgoing_chat_credit_gb(
 
 
 async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> LoadRequest:
-    """A primary chat load refused a partial GPU fit beside an image or video model: return the request to retry.
+    """A primary chat load refused a partial GPU fit beside other models: return the request to retry.
 
-    When they fit frees the image or video model (cheapest first), else lets llama-server fit what it can. Always
-    only accepts a smaller context; otherwise it refuses, since nothing may be unloaded.
+    When they fit frees the cheapest residents (image or video first, then idle kept chat models), else lets
+    llama-server fit what it can. Always only accepts a smaller context or a host RAM spill; otherwise it refuses,
+    since nothing may be unloaded.
     """
     from core.inference import gpu_arbiter, gpu_residency
 
-    if exc.capped:
+    policy = await asyncio.to_thread(gpu_residency.current_policy)
+    if exc.capped or (policy == "always" and getattr(exc, "host", False)):
         return request.model_copy(update = {"force_alongside": True})
-    if await asyncio.to_thread(gpu_residency.current_policy) == "always":
+    if policy == "always":
         rows = (await asyncio.to_thread(gpu_residency._free_mib_by_gpu))[0] or {}
         gpus = [g for g in exc.gpu_indices or () if "free_mib" in rows.get(g, {})]
         free = sum(rows[g]["free_mib"] for g in gpus)
@@ -19344,8 +19356,11 @@ async def load_model_gated(
                         from utils.multi_model_settings import get_multi_model_mode
 
                         if await asyncio.to_thread(get_multi_model_mode) == "always":
-                            # Always unloads nothing: try once more beside the others, else refuse.
-                            if exc.capped and not request.force_alongside:
+                            # Always unloads nothing: try once more beside the others (a host RAM spill loads
+                            # with its warning, as alone), else refuse.
+                            if (
+                                exc.capped or getattr(exc, "host", False)
+                            ) and not request.force_alongside:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
                             if measured and not account_access.managed_account():
@@ -19415,6 +19430,20 @@ async def load_model_gated(
                                         force = request.force_cancel_active,
                                         action = "Loading a model",
                                     )
+                                # Idle kept models that make room together with the active one go too.
+                                victims = await asyncio.to_thread(
+                                    model_slots.in_slot,
+                                    None,
+                                    lambda: _kept_victims_beside_primary(exc),
+                                )
+                                reports = await asyncio.to_thread(
+                                    lambda: {slot: _kept_slot_reports(slot) for slot in victims}
+                                )
+                                dropped = await asyncio.to_thread(model_slots.evict_these, victims)
+                                note_keyed([r for slot in dropped for r in reports.get(slot, ())])
+                                evicted += [
+                                    _model_key(s.request) for s in dropped if s.request is not None
+                                ]
                                 # As a pick does before a switch: the active model goes first, so
                                 # the new one is placed on a GPU it no longer shares.
                                 await asyncio.to_thread(_unload_primary)
@@ -19565,6 +19594,22 @@ def _active_model_holds_none_of(exc) -> bool:
     return bool(getattr(llama, "_requested_gpu_ids", None) and pin) and not set(pin) & set(
         exc.gpu_indices
     )
+
+
+def _kept_victims_beside_primary(exc) -> list:
+    """Idle kept slots that, unloaded with the active llama-server, cover ``exc``'s shortfall; call via
+    ``in_slot(None, ...)``. [] when the active model alone covers it or nothing priced does."""
+    if getattr(exc, "host", False) or not exc.short_mib:
+        return []
+    gpus = exc.gpu_indices or None
+    held = sum(
+        mib
+        for idx, mib in (getattr(get_llama_cpp_backend(), "_planned_vram_mib", None) or {}).items()
+        if not gpus or idx in gpus
+    )
+    if not held or held >= exc.short_mib:
+        return []
+    return model_slots.eviction_victims(None, exc.short_mib - held, gpus, exc.discrete)
 
 
 def _primary_model_label() -> Optional[str]:

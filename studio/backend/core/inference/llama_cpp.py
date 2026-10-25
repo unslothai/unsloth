@@ -637,9 +637,10 @@ def _gpu_short_message(
 class GpuMemoryShortError(RuntimeError):
     """A load that must fit next to the loaded models does not. ``capped``: it would, at a
     smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on.
-    ``discrete``: none of them shares host RAM, so a server off them or on the CPU frees nothing there."""
+    ``discrete``: none of them shares host RAM, so a server off them or on the CPU frees nothing there.
+    ``host``: short on free VRAM plus system RAM together, so any other model's memory counts."""
 
-    __slots__ = ("capped", "short_mib", "gpu_indices", "discrete")
+    __slots__ = ("capped", "short_mib", "gpu_indices", "discrete", "host")
 
     def __init__(
         self,
@@ -648,12 +649,14 @@ class GpuMemoryShortError(RuntimeError):
         short_mib: int = 0,
         gpu_indices = None,
         discrete: bool = False,
+        host: bool = False,
     ):
         super().__init__(message)
         self.capped = capped
         self.short_mib = short_mib
         self.gpu_indices = gpu_indices
         self.discrete = discrete
+        self.host = host
 
 
 def _apple_wired_headroom_bytes() -> Optional[int]:
@@ -33776,6 +33779,14 @@ class LlamaCppBackend:
                     avail_mib = _preflight_avail_mib,
                     shared_gpu_ids = _shared_gpu_ids,
                 )
+                # Beside other models the spill pages against their memory: the route frees one and retries.
+                if (
+                    _offload_msg
+                    and intent.refuse_partial_gpu_fit
+                    and gpu_memory_mode != "manual"
+                    and self._other_servers_running()
+                ):
+                    raise GpuMemoryShortError(_offload_msg, host = True)
                 # Snapshotted BEFORE the override note is appended below, so a re-price
                 # that promotes this notice appends that note once rather than twice.
                 _host_ram_msg = _offload_msg
@@ -37653,6 +37664,10 @@ class LlamaCppBackend:
         for backend in serving:
             if backend is self or not getattr(backend, "is_active", False):
                 continue
+            # A server that died keeps _process until a respawn or kill, but its VRAM is already back.
+            poll = getattr(getattr(backend, "_process", None), "poll", None)
+            if callable(poll) and poll() is not None:
+                continue
             for idx, mib in getattr(backend, "_planned_vram_mib", {}).items():
                 held[idx] = held.get(idx, 0) + mib
         # Weights plus generation headroom, the full figure _net_of_held_vram needs (empty under Off).
@@ -37661,6 +37676,19 @@ class LlamaCppBackend:
         for idx, mib in media_held_mib().items():
             held[idx] = held.get(idx, 0) + mib
         return held
+
+    def _other_servers_running(self) -> bool:
+        """Another serving backend's llama-server is up, or an image/video model is kept beside this one."""
+        serving = _serving_backends_snapshot()
+        if self not in serving:
+            return False
+        for backend in serving:
+            process = getattr(backend, "_process", None) if backend is not self else None
+            if process is not None and (not hasattr(process, "poll") or process.poll() is None):
+                return True
+        from core.inference.gpu_residency import media_held_mib
+
+        return bool(media_held_mib())
 
     def _media_unallocated_vram_mib(self) -> dict[int, int]:
         """MiB per GPU of the resident image/video models' price not yet allocated (empty under Off)."""
