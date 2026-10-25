@@ -304,8 +304,7 @@ def offload_all_but_4bit_merge_operands(model):
     """`offload_to_cpu` for a merged 4-bit save: PEFT merges a LoRA layer where its packed 4-bit base
     weight stays (its GPU), so only the adapter weights of those layers stay there too. Everything
     else (embeddings, unquantized towers, LoRA on unquantized layers with their base) goes to the CPU.
-    With `lora_bias = True` the merge also adds lora_B's bias into the base layer's bias, so that bias
-    stays with them (a CPU base bias plus a GPU lora_B bias raises a device mismatch).
+    With `lora_bias = True` the merge adds lora_B's bias into the base bias, so that bias stays too.
     Selected by parameter name, not identity: `fsdp2_gathered` reshards first, and a parameter an eval
     forward left unsharded is a different object from the DTensor the gather then sees."""
     prefixes = []

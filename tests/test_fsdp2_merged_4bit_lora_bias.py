@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""FSDP2 merged_4bit save with PEFT `lora_bias = True` on a biased 4-bit layer (Qwen2 q/k/v).
-
-PEFT's bitsandbytes merge adds lora_B's bias into the base layer's bias, so the merged_4bit offload
-filter (`offload_all_but_4bit_merge_operands`) must keep that base bias on the GPU with the adapters.
-Before, it went to the CPU and `merge_and_unload` raised "Expected all tensors to be on the same device".
-
-- the filter decision, on CPU (modules loaded from their files: importing unsloth needs a GPU);
-- the real path on one GPU: bitsandbytes Linear4bit(bias=True) + PEFT lora_bias, FSDP2 fully_shard on a
-  one-rank NCCL mesh, `fsdp2_gathered` with `merged_save_gather_options`, `merge_4bit_lora_layer_by_layer`,
-  then `merge_and_unload` (what save_pretrained_merged runs for merged_4bit).
-"""
+"""FSDP2 merged_4bit with PEFT `lora_bias = True` on a biased 4-bit layer: PEFT's bnb merge adds
+lora_B's bias into the base bias, so the offload filter must keep that base bias on the GPU too."""
 
 import importlib.util
 import json
@@ -56,12 +47,9 @@ def test_merged_4bit_filter_keeps_the_base_bias_a_lora_bias_merges_into():
     params = dict(model.named_parameters())
     offload = m.offload_all_but_4bit_merge_operands(model)
     decide = lambda name: offload(name, params[name])
-    # The merge operands of a 4-bit layer stay put, including the base bias lora_B's bias joins.
     assert not decide("q4_lora_bias.base_layer.bias")
     assert not decide("q4_lora_bias.lora_B.default.bias")
     assert not decide("q4_lora_bias.lora_A.default.weight")
-    # Unchanged: without lora_bias the base bias is not a merge operand, and unquantized layers merge
-    # on the CPU with everything else.
     assert decide("q4.base_layer.bias")
     assert decide("plain_lora_bias.base_layer.bias")
     assert decide("plain_lora_bias.lora_B.default.bias")
