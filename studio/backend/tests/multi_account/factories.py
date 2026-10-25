@@ -194,6 +194,7 @@ from . import (  # noqa: E402  domain tables import Factory and register their s
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 
@@ -204,6 +205,7 @@ DOMAINS = (
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 
