@@ -67,7 +67,6 @@ from core.inference.context_window import (
     compact_executed_call_arguments,
     compact_refused_tool_arguments,
     estimate_message_tokens_with_priced_images,
-    estimate_messages_tokens_without_unpriced_media,
     _reply_floor,
     estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
@@ -114,6 +113,7 @@ from core.inference.llama_server_args import (
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
     extra_args_image_max_tokens,
+    extra_args_image_min_tokens,
     extra_args_mmproj_auto,
     extra_args_select_load_mode,
     fit_is_enabled_in,
@@ -2570,8 +2570,11 @@ def _image_token_price(backend, part: dict) -> int:
         return ceiling
     width, height = dims
     tokens = max(1, round(width / merged)) * max(1, round(height / merged))
+    extra_args = getattr(backend, "_extra_args", None)
     try:
-        cap = extra_args_image_max_tokens(getattr(backend, "_extra_args", None)) or 0
+        cap = extra_args_image_max_tokens(extra_args) or 0
+        # mtmd upscales a small image to at least --image-min-tokens.
+        tokens = max(tokens, extra_args_image_min_tokens(extra_args) or 0)
     except Exception:  # noqa: BLE001 -- pricing must never break a count
         cap = 0
     cap = cap or ceiling - _IMAGE_WRAPPER_TOKENS
@@ -9034,6 +9037,13 @@ class LlamaCppBackend:
 
     def _countable_messages(self, messages: list[dict]) -> list[dict]:
         """The counting copy every fit and size probe uses: images charged, audio and video dropped."""
+        from core.inference.mcp_images import prepare_image_turn_boundaries
+
+        # Before pricing: a stand-in hides an image turn from Ministral's alternation fix-up.
+        messages = prepare_image_turn_boundaries(
+            messages,
+            getattr(self, "_chat_template_override", None) or getattr(self, "_chat_template", None),
+        )
         return messages_with_priced_images(messages, self._price_image)
 
     def _estimate_countable_message(self, message: dict) -> int:
@@ -41164,7 +41174,7 @@ class LlamaCppBackend:
                         # messages, priced by the fit with the catalogue and template.
                         _prompt_token_offset = int(
                             truncation.get("prompt_tokens_after") or 0
-                        ) - estimate_messages_tokens_without_unpriced_media(conversation)
+                        ) - sum(self._estimate_countable_message(m) for m in conversation)
                     if truncation:
                         _recalled = _archive_and_recall(
                             conversation,

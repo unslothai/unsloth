@@ -239,3 +239,61 @@ def test_the_backend_counts_images_through_its_own_helpers(monkeypatch):
 
     assert priced["content"][0]["text"] == " the" * (60 * 34 + llama_cpp._IMAGE_WRAPPER_TOKENS)
     assert backend._estimate_countable_message(message) >= 60 * 34
+
+
+def test_image_min_tokens_floors_the_price_of_a_small_image():
+    # mtmd upscales a 256 px image to 1024 embeddings under --image-min-tokens 1024.
+    backend = _backend(extra_args = ["--image-min-tokens", "1024"])
+
+    price = llama_cpp._image_token_price(backend, _image(_png(256, 256)))
+
+    assert price == 1024 + llama_cpp._IMAGE_WRAPPER_TOKENS
+
+
+def test_a_ministral_image_turn_is_still_balanced_in_the_counting_copy(monkeypatch):
+    from core.inference import mcp_images
+
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "is_vision", property(lambda self: True))
+    backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
+    backend._mmproj_projector_type = "pixtral"
+    backend._extra_args = []
+    backend._chat_template = (
+        "{{ raise_exception('After the optional system message, conversation roles must "
+        "alternate user and assistant roles except for tool calls and results.') }}"
+    )
+    turn = mcp_images.placeholder_turn(1)
+    turn["content"] = [
+        part if part.get("type") == "text" else _image(_png(64, 64)) for part in turn["content"]
+    ]
+    assert mcp_images.is_synthetic_image_turn(turn)
+    conversation = [
+        {"role": "user", "content": "Take a screenshot."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c0", "type": "function", "function": {"name": "shot", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c0", "content": "done"},
+        turn,
+    ]
+
+    countable = backend._countable_messages(conversation)
+
+    assert [m["role"] for m in countable] == ["user", "assistant", "tool", "assistant", "user"]
+    # count_chat_tokens repeats the fix-up; it must find nothing left to insert.
+    template = backend._chat_template
+    assert mcp_images.prepare_image_turn_boundaries(countable, template) is countable
+
+
+def test_the_prompt_offset_prices_images_like_the_fit_it_is_taken_from():
+    import inspect
+
+    src = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion_with_tools)
+    offset = src.split("_prompt_token_offset = int(", 1)[1].split("if truncation:", 1)[0]
+
+    # The fit's count charges images, so the estimate subtracted from it must too, or the
+    # fallback that adds the offset back charges every retained image twice.
+    assert "_estimate_countable_message" in offset
+    assert "without_unpriced_media" not in offset
