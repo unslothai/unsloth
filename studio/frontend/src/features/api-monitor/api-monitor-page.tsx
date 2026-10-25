@@ -947,6 +947,7 @@ export function ApiMonitorPage(): ReactElement {
   );
   const reload = useApiModelReload({
     selectModel: runtime.selectModel,
+    loadNpuModel: runtime.loadNpuModel,
     onSettled: refresh,
     residencyKey,
   });

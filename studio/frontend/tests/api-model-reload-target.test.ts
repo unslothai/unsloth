@@ -27,3 +27,8 @@ test("an MLX precision folder reloads as a model with its folder, not as a GGUF 
   assert.match(page, /const loadedIsMlx = useChatRuntimeStore\(\(s\) => s\.loadedIsMlx\);/);
   assert.match(page, /isMlx: index === activeIndex && loadedIsMlx === true,/);
 });
+
+test("a served NPU model reloads through the NPU loader, as the picker routes it", () => {
+  assert.match(hook, /if \(isNpuModelId\(target\.id\)\) \{\s*await loadNpuModel\(target\.id, \{\s*forceReload: true,/);
+  assert.match(page, /loadNpuModel: runtime\.loadNpuModel,/);
+});

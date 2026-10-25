@@ -7,6 +7,7 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import { isNpuModelId } from "@/features/npu";
 import {
   currentRuntimePerModelConfig,
   resolveResidentInitialConfig,
@@ -19,7 +20,7 @@ import {
 } from "./reload-last-model";
 import { monitorSelection } from "./use-resident-run-target";
 
-type SelectModel = ReturnType<typeof useChatModelRuntime>["selectModel"];
+type Runtime = ReturnType<typeof useChatModelRuntime>;
 
 export type ReloadableModel = {
   name: string;
@@ -57,10 +58,12 @@ function servedTarget(model: ReloadableModel): LastLoadRecord {
 /** Reload for the API page: one served model, every served model, or (none served) the last local load. */
 export function useApiModelReload({
   selectModel,
+  loadNpuModel,
   onSettled,
   residencyKey,
 }: {
-  selectModel: SelectModel;
+  selectModel: Runtime["selectModel"];
+  loadNpuModel: Runtime["loadNpuModel"];
   onSettled: () => void;
   residencyKey: string;
 }) {
@@ -97,6 +100,14 @@ export function useApiModelReload({
         target.ggufVariant,
       );
       const config = resolved.remembered ? resolved.config : null;
+      // As the picker does: /validate cannot resolve an NPU id, so these skip selectModel.
+      if (isNpuModelId(target.id)) {
+        await loadNpuModel(target.id, {
+          forceReload: true,
+          config: config ?? undefined,
+        });
+        return;
+      }
       await selectModel({
         id: target.id,
         isGguf: target.kind === "gguf",
@@ -111,7 +122,7 @@ export function useApiModelReload({
         throwOnError: true,
       });
     },
-    [selectModel],
+    [selectModel, loadNpuModel],
   );
 
   const run = useCallback(
