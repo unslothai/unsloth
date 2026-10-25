@@ -433,6 +433,23 @@ def _grade_the_boundary_block(
     return [u for u in taken if u is not boundary] + kept, running
 
 
+def _spills_every_block(layout: ModelLayout, units: Sequence[SpillUnit]) -> bool:
+    """Whether ``units`` takes every block's FFN and, for a shared/dense FFN or attention rung it
+    touches, that rung off every block holding it: the only spill whose per-device share does not
+    depend on where llama.cpp cuts the layer ranges."""
+    moved = _moved_by_index(units)
+    if not all(moved.get(b.index, 0) >= b.spillable_bytes for b in layout.blocks):
+        return False
+    touched: dict[SpillClass, set[int]] = {}
+    for unit in units:
+        if unit.cls in (SpillClass.DENSE_FFN, SpillClass.ATTENTION):
+            touched.setdefault(unit.cls, set()).add(unit.index)
+    return all(
+        indices >= {u.index for u in _units_of(layout.blocks, cls)}
+        for cls, indices in touched.items()
+    )
+
+
 def _moved_by_index(units: Sequence[SpillUnit]) -> dict[int, int]:
     """Bytes this spill takes off each block."""
     moved: dict[int, int] = {}
@@ -453,7 +470,7 @@ _RUNG_NAMES: dict[Optional[SpillClass], str] = {
 
 def _rung_description(units: Sequence[SpillUnit], layout: ModelLayout) -> str:
     """ "the ffn_down of every block plus the ffn_up/gate_up of 5 of 40 blocks"."""
-    total = len([b for b in layout.blocks if b.spillable_bytes > 0]) or len(layout.blocks)
+    default_total = len([b for b in layout.blocks if b.spillable_bytes > 0]) or len(layout.blocks)
     seen: list[Optional[SpillClass]] = []
     counts: dict[Optional[SpillClass], set[int]] = {}
     for unit in units:
@@ -463,6 +480,8 @@ def _rung_description(units: Sequence[SpillUnit], layout: ModelLayout) -> str:
         counts[unit.cls].add(unit.index)
     parts = []
     for cls in seen:
+        # Per class: a MoE's leading dense blocks carry shared/dense FFN but no experts.
+        total = (len(_units_of(layout.blocks, cls)) if cls is not None else 0) or default_total
         n = len(counts[cls])
         where = "every block" if n >= total else f"{n} of {total} blocks"
         parts.append(f"{_RUNG_NAMES[cls]} of {where}")
@@ -1867,7 +1886,7 @@ def _plan_at(
     ) -> Plan:
         """Check ``units`` device by device, then either finish or say why not."""
         moved = _moved_by_index(units)
-        full = all(moved.get(b.index, 0) >= b.spillable_bytes for b in spillable)
+        full = _spills_every_block(layout, units)
         if (
             n_devices > 1
             and not full
@@ -1943,10 +1962,14 @@ def _plan_at(
         freed += got
 
     if freed >= deficit:
-        moved = _moved_by_index(taken)
-        full = all(moved.get(b.index, 0) >= b.spillable_bytes for b in spillable)
+        # Graded first: trimming the boundary block can turn an every-block spill partial.
+        graded, graded_freed = _grade_the_boundary_block(layout, opts, taken, freed, deficit)
         per_device_selected = False
-        if n_devices > 1 and not full and not opts.trust_device_row_model:
+        if (
+            n_devices > 1
+            and not _spills_every_block(layout, graded)
+            and not opts.trust_device_row_model
+        ):
             per_device = _select_units_per_device(
                 layout, opts, n_ctx, vram_bytes_per_device, **per_device_kw
             )
@@ -1959,7 +1982,7 @@ def _plan_at(
                 if rescued is not None:
                     return rescued
         else:
-            taken, freed = _grade_the_boundary_block(layout, opts, taken, freed, deficit)
+            taken, freed = graded, graded_freed
         described = _rung_description(taken, layout)
         return attempt(
             taken,
