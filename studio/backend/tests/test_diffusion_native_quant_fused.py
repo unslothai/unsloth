@@ -56,6 +56,12 @@ def test_no_inductor_runtime_or_rocm_keeps_eager(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
     assert nq._fused_w8a8() is None
     assert nq.fused_w8a8_state()["failed"] == "ROCm"
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and tag __version__ instead.
+    monkeypatch.setattr(nq, "_FUSED_STATE", {"fn": None, "failed": None})
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+rocm7.0")
+    assert nq._fused_w8a8() is None
+    assert nq.fused_w8a8_state()["failed"] == "ROCm"
 
 
 def test_cpu_input_never_takes_the_compiled_linear(monkeypatch):

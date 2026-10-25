@@ -305,12 +305,14 @@ def _fused_w8a8() -> Optional[Callable[..., Any]]:
         return fn
     import torch
 
+    from .rocm_bf16 import is_rocm_torch
+
     try:
         from .diffusion_speed import torch_compile_runtime_available
         runtime = torch_compile_runtime_available()
     except Exception:  # noqa: BLE001 - unknown runtime: stay eager
         runtime = False
-    if not runtime or getattr(torch.version, "hip", None):
+    if not runtime or is_rocm_torch(torch):
         _FUSED_STATE["failed"] = "no inductor runtime" if not runtime else "ROCm"
         return None
     # Registered in eager, before any trace reads the handle.
