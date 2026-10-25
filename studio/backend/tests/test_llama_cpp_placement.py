@@ -223,7 +223,7 @@ def test_stopping_a_stand_in_server_signals_nothing(tmp_path, monkeypatch):
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
     sent = []
     monkeypatch.setattr(lifetime, "terminate_pid", lambda pid, **_k: sent.append(("pid", pid)))
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append(("pg", pgid)))
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append(("pg", pgid)), raising = False)
     _launch(backend, gguf)
     backend.unload_model()
     assert sent == []

@@ -1111,7 +1111,7 @@ def test_wired_unload_of_a_fake_server_signals_nothing(tmp_path, monkeypatch):
     )
     sent = []
     monkeypatch.setattr(lifetime, "terminate_pid", lambda pid, **_k: sent.append(("pid", pid)))
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append(("pg", pgid)))
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append(("pg", pgid)), raising = False)
     _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
     assert backend._process.pid == _FAKE_SERVER_PID
     backend.unload_model()
