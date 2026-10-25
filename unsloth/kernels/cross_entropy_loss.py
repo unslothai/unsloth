@@ -41,7 +41,6 @@ def _log1p(x):
 
 @triton.jit
 def _softplus(x):
-    # log(1 + exp(x))
     return tl.maximum(x, 0.0) + _log1p(tl.exp(-tl.abs(x)))
 
 
@@ -119,9 +118,7 @@ def _cross_entropy_forward(
         # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
         if DO_SOFTCAPPING:
             x = SOFTCAP * triton_tanh(x / SOFTCAP)
-        # logsumexp - x rounds to 0 once the label's exp(0) = 1 swamps the other terms
-        # (~16.6 nats in fp32), while the other classes keep their gradients. Sum the other
-        # terms alone: loss = softplus(logsumexp(others) - x), accurate down to exp underflow.
+        # lse - x rounds to 0 past a ~16.6 nat margin in fp32 (softmax collapse, arXiv 2610.31642).
         sum_others = tl.sum(tl.where(col_offsets == label_idx, 0.0, exp_logits), 0)
         loss = _softplus(c + tl.log(sum_others) - x)
     else:
