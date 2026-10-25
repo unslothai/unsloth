@@ -30,7 +30,8 @@ FAMILIES = {
     "ltx-2": "Lightricks/LTX-2",
 }
 
-_BF, _AO, _W8 = "bf16", "ao", "w8"
+# _HN: the hosted int8 pair read as torchao-free W8A8 layers under offload (video_hosted_int8_native).
+_BF, _AO, _W8, _HN = "bf16", "ao", "w8", "hosted-w8"
 EXPECTED = {
     "wan2.2-ti2v-5b": {
         8: ("model", _W8),
@@ -42,11 +43,11 @@ EXPECTED = {
         80: ("none", _BF),
     },
     "wan2.2-t2v-a14b": {
-        8: ("model", _W8),
-        12: ("both", _W8),
-        16: ("both", _W8),
-        24: ("model", _W8),
-        32: ("model", _W8),
+        8: ("model", _HN),
+        12: ("both", _HN),
+        16: ("both", _HN),
+        24: ("model", _HN),
+        32: ("model", _HN),
         48: ("dit", _AO),
         80: ("dit", _BF),
     },
@@ -122,12 +123,13 @@ def _spoof(
     monkeypatch.setattr(tq, "native_quant_host", lambda t: False)
     monkeypatch.setattr(tq, "native_offload_host", lambda t: True)
     monkeypatch.setattr(V, "stored_denoiser_precision", lambda *a, **k: None)
-    spy = types.SimpleNamespace(plans = [], quant = [], speed = [], seeded = [])
+    spy = types.SimpleNamespace(plans = [], quant = [], speed = [], seeded = [], seeded_native = [])
 
     import core.inference.video_denoiser_prequant as vdp
 
     def _seed(fam, base, *, scheme, **kw):
         spy.seeded.append(scheme)
+        spy.seeded_native.append(bool(kw.get("native_offload")))
         return {"transformer": object()}
 
     monkeypatch.setattr(vdp, "denoiser_prequant_pipe_kwargs", _seed)
@@ -178,6 +180,8 @@ def _precision_code(spy, status) -> str:
     if not engaged or engaged == "off":
         return _BF
     assert engaged == "int8", engaged
+    if spy.seeded and all(spy.seeded_native):
+        return _HN
     return _W8 if spy.quant and spy.quant[0].get("offload") else _AO
 
 
@@ -195,6 +199,8 @@ def test_auto_planner_table(fake_runtime, monkeypatch, family, tier_gib, cap_nam
     assert status["loaded"] is True
     if precision == _W8:
         assert spy.quant[0]["mode"] == "int8"
+    if precision == _HN:
+        assert spy.seeded == ["int8"] and spy.seeded_native == [True] and not spy.quant
 
 
 @pytest.mark.parametrize("family", ["wan2.2-t2v-a14b", "ltx-2"])
@@ -979,3 +985,14 @@ def test_a_cancel_during_the_background_pin_wait_ends_the_render_promptly(
         )
     assert time.perf_counter() - began < 10
     assert not rendered
+
+
+@pytest.mark.parametrize("tier_gib", [12, 16, 24])
+def test_a14b_kill_switch_restores_the_runtime_offload_build(fake_runtime, monkeypatch, tier_gib):
+    """``UNSLOTH_VIDEO_HOSTED_INT8_OFFLOAD=0``: the offloaded A14B declines the hosted pair and quantises at runtime."""
+    monkeypatch.setenv("UNSLOTH_VIDEO_HOSTED_INT8_OFFLOAD", "0")
+    spy = _spoof(monkeypatch, tier_gib = tier_gib)
+    status = VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"])
+    assert _tier_code(spy.plans[-1]) == EXPECTED["wan2.2-t2v-a14b"][tier_gib][0]
+    assert _precision_code(spy, status) == _W8
+    assert not spy.seeded and spy.quant[0]["offload"] is True
