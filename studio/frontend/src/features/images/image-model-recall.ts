@@ -421,9 +421,11 @@ export function finishedLoadTarget<T extends ImageModelKey & { fieldFiles?: Imag
   current: T | null,
   status: Parameters<typeof matchesRememberedModel>[1] & Parameters<typeof forgetStaleImageComponents>[1],
 ): T | PendingImageLoad | null {
-  const pending = readPendingImageLoad();
+  const stored = readPendingImageLoad();
   clearPendingImageLoad();
   if (current?.fieldFiles) return current;
+  // A retired snapshot is published as what it loaded as (its base, or its own pipeline for a root pick).
+  const pending = stored ? retiredSnapshotAsLoaded(stored, status) : stored;
   if (
     pending &&
     matchesRememberedModel(pending, status) &&

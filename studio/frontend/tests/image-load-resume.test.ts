@@ -149,3 +149,16 @@ test("a pending load whose files the resident build does not use keeps the saved
   rememberPendingImageLoad({ ...zImage, fieldFiles: other });
   assert.deepEqual(finishedLoadTarget(null, native)?.fieldFiles, other);
 });
+
+test("a retired snapshot's load resumed after a page reload is recovered as what it loaded as", () => {
+  store.clear();
+  const snapshot = "/hf/hub/models--unsloth--flux-3-image-klein/snapshots/abc";
+  const asPipeline = { loaded: true, repo_id: snapshot, model_kind: "pipeline" };
+  rememberPendingImageLoad({ repoId: snapshot, kind: "single_file", filename: "model.safetensors", baseRepo: snapshot });
+  const root = finishedLoadTarget(null, asPipeline);
+  assert.deepEqual([root?.repoId, root?.kind, root?.filename], [snapshot, "pipeline", undefined]);
+  const asBase = { loaded: true, repo_id: "black-forest-labs/flux-3-image-klein", model_kind: "pipeline" };
+  rememberPendingImageLoad({ repoId: snapshot, kind: "pipeline", displayRepoId: "unsloth/flux-3-image-klein" });
+  const redirected = finishedLoadTarget(null, asBase);
+  assert.deepEqual([redirected?.repoId, redirected?.kind], ["black-forest-labs/flux-3-image-klein", "pipeline"]);
+});
