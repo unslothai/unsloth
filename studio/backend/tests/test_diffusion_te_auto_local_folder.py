@@ -48,7 +48,10 @@ def test_unset_request_on_local_folder_takes_no_hosted_encoder(family, tmp_path)
     hub = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16)
     assert component in hub
     # The local folder of the same name does not.
-    assert tpq.te_prequant_sources_for_base(fam, str(local), te_quant_mode = mode, target = CUDA_BF16) == {}
+    assert (
+        tpq.te_prequant_sources_for_base(fam, str(local), te_quant_mode = mode, target = CUDA_BF16)
+        == {}
+    )
     # Neither does a request made inside a load whose raw request was unset (plain string mode).
     with tpq.auto_te_request(True):
         assert (
@@ -66,8 +69,12 @@ def test_explicit_request_on_local_folder_is_unchanged(family, tmp_path):
     local = tmp_path / folder
     local.mkdir()
     explicit = str(_auto_mode(fam))
-    hub = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = explicit, target = CUDA_BF16)
-    got = tpq.te_prequant_sources_for_base(fam, str(local), te_quant_mode = explicit, target = CUDA_BF16)
+    hub = tpq.te_prequant_sources_for_base(
+        fam, fam.base_repo, te_quant_mode = explicit, target = CUDA_BF16
+    )
+    got = tpq.te_prequant_sources_for_base(
+        fam, str(local), te_quant_mode = explicit, target = CUDA_BF16
+    )
     assert got == hub and component in got
 
 
