@@ -3168,6 +3168,17 @@ html[data-chat-font] .aui-root {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
+	/* Settings only: every option picker (selects and picker-variant menus) one height, a filled
+	   Button's like h-control, and one padding, shape and type, whatever size or text class each site
+	   set. Menus that are actions (Export, Delete all) are not picker-variant and keep their own. */
+	[data-settings-dialog] :is([data-slot="select-trigger"], [data-variant="picker"]) {
+		height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px) !important;
+		padding-inline: calc(14px * var(--ui-space-scale, 1)) !important;
+		border-radius: 9999px !important;
+		font-size: var(--text-sm) !important;
+		font-weight: 400 !important;
+	}
+
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
 	   none in dark. !important so it also overrides the bespoke menu shadows. */
 	[data-slot="dropdown-menu-content"],
