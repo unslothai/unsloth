@@ -650,7 +650,14 @@ def _trainer_args(tmp, bs, **overrides):
     return transformers.TrainingArguments(**kwargs)
 
 
-def _case_trainer(rank, world, tmp, dp, tp, lora_kwargs = None):
+def _case_trainer(
+    rank,
+    world,
+    tmp,
+    dp,
+    tp,
+    lora_kwargs = None,
+):
     """The HF Trainer on a tp (dp = 1) or dp x tp (shard_model over mesh['dp']) model; tp = 1: the 1-process
     reference with a dp times larger batch. Sequential batches, so both read the same rows per step."""
     import torch.distributed as dist
@@ -1117,7 +1124,11 @@ def test_trainer_splits_mixed_optimizer_groups_for_tp_only():
         pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
     for rank, res in enumerate(_spawn("trainer", 2, dp = 1, tp = 2, lora_kwargs = kw)):
         assert res["mixed_groups"] == 0, rank
-        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (rank, res["losses"], ref["losses"])
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (
+            rank,
+            res["losses"],
+            ref["losses"],
+        )
 
 
 @pytest.mark.parametrize("dp,tp", [(1, 2), (2, 2)])
