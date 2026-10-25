@@ -101,13 +101,11 @@ def test_compile_authored_graph():
     StoryManifest.model_validate(m)
     assert m["start"] == "s1" and m["title"] == "Moon" and m["vars"] == {"courage": 0}
     scenes = {s["id"]: s for s in m["scenes"]}
-    # The scene flowing into the Choice node carries the menu itself.
     s1 = scenes["s1"]
     assert [c["text"] for c in s1["choices"]] == ["Forest", "Lake"]
     assert s1["choices"][0]["set"]["courage"]["op"] == "+"
     assert s1["choices"][1]["if"]["op"] == ">"
     assert s1["lines"][-1]["text"] == "Where to?"
-    # Pip was not a Character node: auto-created; Mo's expression parsed.
     chars = {c["name"]: c for c in m["characters"]}
     assert set(chars) == {"Mo", "Pip"}
     assert s1["lines"][1] == {"speaker": "mo", "text": "The moon is gone!", "expression": "sad"}
@@ -121,9 +119,7 @@ def test_compile_authored_graph():
     assert scenes["set"]["on_enter"] == {"courage": 3}
     assert scenes["good"]["ending"]["kind"] == "good"
     assert any("Nowhere" in w for w in warnings)
-    assert (
-        walk_check(m) == [] and "c1" not in scenes
-    )  # the merged Choice node leaves no stray scene
+    assert walk_check(m) == [] and "c1" not in scenes
 
 
 def test_baked_generated_story_wins_and_entry_points():
@@ -140,7 +136,6 @@ def test_baked_generated_story_wins_and_entry_points():
     assert m["title"] == "Illustrated"
     assert m["entry_points"] == {"next_scene": "next"}
     doc["baked"] = {"gen": {"story": {**gen, "title": "Baked gen"}}}
-    # Baked values come first, but the most downstream node still wins.
     assert compile_story(doc, {"ill": {"story": gen_ill}})["title"] == "Illustrated"
     assert compile_story(doc, {})["title"] == "Baked gen"
 
@@ -209,15 +204,14 @@ def test_repair_generated_guarantees_endings():
     StoryManifest.model_validate(m)
     scenes = {s["id"]: s for s in m["scenes"]}
     assert m["start"] == "porch"
-    # "nowhere" is dropped; porch/tree/loop is a closed loop, so it gets a way out to the ending.
     assert [c["text"] for c in scenes["porch"]["choices"]] == ["Ask Owl", "Find another way"]
     assert scenes["porch"]["choices"][1]["goto"] == "sky"
     assert scenes["porch"]["choices"][0]["set"] == {
         "courage": {"op": "+", "args": [{"var": "courage"}, 1]}
     }
     assert m["vars"] == {"courage": 0}
-    assert scenes["sky"]["ending"]  # no ending written: the last scene ends it
-    assert scenes["sky"]["lines"][0].get("speaker") is None  # unknown speaker -> narrator
+    assert scenes["sky"]["ending"]
+    assert scenes["sky"]["lines"][0].get("speaker") is None
     assert walk_check(m) == []
 
 
@@ -259,7 +253,6 @@ def test_illustrate_paints_each_scene_and_cuts_portraits():
     assert len(ctx.cutouts) == len(out["characters"])
     seeds = [i["seed"] for i in ctx.images]
     assert len(set(seeds)) == len(seeds)
-    # Deterministic: the same seed paints with the same per-scene seeds.
     ctx2 = FakeCtx("story.illustrate", inputs = {"story": story})
     run(story_nodes.story_illustrate(ctx2))
     assert [i["seed"] for i in ctx2.images] == seeds
@@ -300,7 +293,6 @@ def test_next_scene_live():
     assert scene["id"].startswith("gen_") and scene["generate_background"] is True
     assert scene["choices"][0]["goto"].startswith("gen_") and scene["choices"][1]["goto"] == "porch"
     assert scene["lines"][0]["speaker"] == "mo"
-    # Same state -> same ids (players can cache and dedupe).
     assert repair_live_scene(raw, state)["id"] == scene["id"]
     end = repair_live_scene(
         {"title": "Fin", "lines": [], "is_ending": True, "ending_kind": "good"}, state
@@ -334,9 +326,7 @@ def test_infinite_mode_keeps_open_exits():
         "gen_c_1",
         "gen_c_2",
     ]
-    doc[
-        "nodes"
-    ].pop()  # without a Next Scene node the open exits cannot be written: fall back to live
+    doc["nodes"].pop()
     m2, warnings = compile_story_report(doc)
     assert m2["mode"] == "live" and m2["scenes"][0]["choices"] == [] and warnings
 

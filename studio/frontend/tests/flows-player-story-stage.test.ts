@@ -112,7 +112,6 @@ test("hide takes a character off with its exit, and sounds cue once at the next 
     [["lu", "slideright"]],
   );
   assert.deepEqual(view.sounds, ["door"]);
-  // Expression from `show` persists; the next stop has no news.
   const later = step(s, 2);
   assert.deepEqual(R.stageAt(staged, later).sounds, []);
   assert.deepEqual(R.stageAt(staged, later).leaving, []);

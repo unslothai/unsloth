@@ -91,7 +91,6 @@ function insideRect(
   );
 }
 
-/** Which group each moved node now sits in (by its header centre); the smallest enclosing frame wins. */
 function groupMembership(
   positions: Record<string, [number, number]>,
   sizes: Map<string, Size>,
@@ -385,7 +384,6 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     event.dataTransfer.dropEffect = "move";
   }, []);
 
-  // Files from the desktop become input blocks where they land (the view's centre for a Desktop drop).
   const dropPoint = useRef<{ x: number; y: number } | null>(null);
   const wrapper = useRef<HTMLDivElement | null>(null);
   const fileDrop = useNativeFileDrop({

@@ -67,7 +67,6 @@ function base(kind: FlowKind, name: string, description: string): FlowDocument {
   };
 }
 
-/** Starting points for New. Node params left out fall back to the catalog defaults on the backend. */
 export function templateDocument(kind: FlowKind): FlowDocument {
   if (kind === "story") {
     const doc = base(

@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""list_flows, run_flow, get_job(kind="flow") and cancel(kind="flow") over a fake Studio."""
-
 from .mcp_harness import bodies, run_tool
 
 

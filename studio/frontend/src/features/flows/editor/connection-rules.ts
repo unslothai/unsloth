@@ -61,7 +61,6 @@ export function edgeHandles(edge: FlowEdge): {
   };
 }
 
-/** JSON ports take any of these, as in the compiler's `JSON_LIKE`. */
 const JSON_LIKE: ReadonlySet<PortType> = new Set<PortType>([
   "text",
   "number",
@@ -93,10 +92,8 @@ export function typesCompatible(source: PortSpec, target: PortSpec): boolean {
     return true;
   }
   if (t === "json" && JSON_LIKE.has(s)) return true;
-  // A mask is a grayscale image, so the two connect either way.
   if ((s === "image" && t === "mask") || (s === "mask" && t === "image"))
     return true;
-  // One value into a list port arrives as a one-item list.
   return (
     t === "list" && (!target.item || target.item === "any" || target.item === s)
   );
@@ -150,10 +147,8 @@ export function checkConnection(
   return { ok: true, kind: "data", sourcePort: out.id, targetPort: inp.id };
 }
 
-/** For Each `collect` edges come back from the loop body; the compiler does not count them as dependencies. */
 const COLLECT_PORT = "collect";
 
-/** Whether adding source->target data edge would close a cycle (data edges must stay acyclic). */
 export function wouldCreateCycle(
   edges: Iterable<FlowEdge>,
   sourceId: string,
@@ -181,7 +176,6 @@ export function wouldCreateCycle(
   return false;
 }
 
-/** Specs that could accept (or provide) a value of `port` type: used by drag-to-empty quick add. */
 export function compatibleSpecs(
   specs: NodeSpec[],
   from: { side: "in" | "out"; kind: EdgeKind; port: PortSpec | null },

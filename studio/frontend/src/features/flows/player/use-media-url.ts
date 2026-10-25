@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 import type { MediaValue } from "../types";
 import { type PlayerApi, mediaObjectUrl } from "./player-api";
 
-/** An object URL for `media` (fetched with auth, cached), or null while loading / on failure. */
 export function useMediaUrl(
   api: PlayerApi,
   media: MediaValue | null | undefined,
