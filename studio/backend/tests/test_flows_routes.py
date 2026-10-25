@@ -6,8 +6,10 @@ assets and examples, and account isolation."""
 
 import asyncio
 import hashlib
+import io
 import json
 import time
+import zipfile
 
 import pytest
 from fastapi import FastAPI, Request
@@ -259,7 +261,7 @@ def test_examples_list_and_copy(client, monkeypatch):
 
 def test_bundled_examples_are_listed_and_copy(client):
     listed = client.get("/api/flows/examples").json()["examples"]
-    assert len(listed) == 53 and "lantern-picnic" in {e["id"] for e in listed}
+    assert len(listed) == 54 and "lantern-picnic" in {e["id"] for e in listed}
     copied = client.post("/api/flows/examples/lantern-picnic/copy").json()
     assert copied["doc"]["kind"] == "story"
 
@@ -449,3 +451,29 @@ def test_an_audio_only_webm_recording_is_audio(client):
         client.post("/api/flows/assets?name=c.webm", content = clip).json()["media"]["kind"]
         == "video"
     )
+
+
+def test_glb_models_upload_and_travel_in_packages(client, monkeypatch):
+    from .test_flows_glb import TRI, make_glb
+
+    async def no_resident(request):
+        return {}
+
+    monkeypatch.setattr(flows_routes, "_resident", no_resident)
+    model = make_glb(TRI)
+    up = client.post("/api/flows/assets?name=boat.glb&mime=model/gltf-binary", content = model)
+    assert up.status_code == 200
+    media = up.json()["media"]
+    assert media["kind"] == "model" and media["mime"] == "model/gltf-binary"
+    assert client.get(f"/api/flows/assets/{media['ref']}").content == model
+    refused = client.post(
+        "/api/flows/assets", content = make_glb({**TRI, "buffers": [{"uri": "https://x.test/b"}]})
+    )
+    assert refused.status_code == 415 and "outside files" in refused.json()["detail"]
+    prop = {"id": "m-1", "kind": "model", "x": 1.5, "y": 1.5, "asset": media}
+    d = doc([node("play", "world.play", props3d = [prop])], id = "scenery")
+    client.post("/api/flows", json = {"doc": d})
+    exported = client.get("/api/flows/scenery/export", params = {"mode": "package"})
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as zf:
+        assert f"assets/{media['ref'].split(':')[1]}.glb" in zf.namelist()

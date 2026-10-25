@@ -37,13 +37,14 @@ MIME_EXT = {
     "text/plain": "txt",
     "text/markdown": "md",
     "text/html": "html",
+    "model/gltf-binary": "glb",
 }
 EXT_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "gif": "image/gif",
             "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg", "flac": "audio/flac",
             "m4a": "audio/mp4", "weba": "audio/webm", "mp4": "video/mp4", "webm": "video/webm", "json": "application/json",
             "pdf": "application/pdf",
             "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "txt": "text/plain", "md": "text/markdown", "html": "text/html"}  # fmt: skip
+            "txt": "text/plain", "md": "text/markdown", "html": "text/html", "glb": "model/gltf-binary"}  # fmt: skip
 # Documents a Load Document block reads. Text types are only taken when the uploader says so (they have no magic
 # bytes), and are always served back as plain text so an HTML file never renders on Studio's origin.
 DOCUMENT_MIMES = frozenset(
@@ -99,6 +100,9 @@ def sniff_mime(data: bytes) -> Optional[str]:
         tracks = data[: cluster if cluster > 0 else 65536]
         audio_only = (b"A_OPUS" in tracks or b"A_VORBIS" in tracks) and b"V_" not in tracks
         return "audio/webm" if audio_only else "video/webm"
+    if head[:4] == b"glTF":
+        # A 3D model a world places as a prop; core.flows.glb checks it before it is stored.
+        return "model/gltf-binary"
     if head.startswith(b"%PDF-"):
         return "application/pdf"
     if head[:4] == b"PK\x03\x04" and b"word/document.xml" in data:
@@ -140,6 +144,8 @@ def text_hint(mime: Optional[str], name: Optional[str]) -> Optional[str]:
 def kind_of(mime: str) -> str:
     if mime in DOCUMENT_MIMES:
         return "document"
+    if mime == "model/gltf-binary":
+        return "model"
     return mime.split("/", 1)[0] if mime.split("/", 1)[0] in ("image", "audio", "video") else "file"
 
 
@@ -171,9 +177,12 @@ def store(data: bytes, mime: Optional[str] = None) -> tuple[str, str]:
             sniffed = mime
         else:
             raise ValueError(
-                "Unsupported asset type: only PNG, JPEG, WebP, GIF, WAV, MP3, OGG, FLAC, MP4, WebM, PDF, DOCX "
-                "and text"
+                "Unsupported asset type: only PNG, JPEG, WebP, GIF, WAV, MP3, OGG, FLAC, MP4, WebM, PDF, DOCX, "
+                "text and GLB models"
             )
+    if sniffed == "model/gltf-binary":
+        from core.flows.glb import inspect_glb
+        inspect_glb(data)  # GlbError (a ValueError) names what is wrong with the model
     digest = hashlib.sha256(data).hexdigest()
     target = assets_dir() / f"{digest}.{MIME_EXT[sniffed]}"
     if not target.exists():

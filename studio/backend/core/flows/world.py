@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from core.flows import assets as asset_store
 from core.flows.expr import Prng, seed_from
 from core.flows.schema import WorldSpec
 from core.flows.story import _unique, input_values, most_downstream, node_value, slug
@@ -230,7 +231,142 @@ def normalize_world(
     auto = raw.get("autonomy")
     if isinstance(auto, dict) and any(auto.get(k) is True for k in AUTONOMY_FLAGS):
         world["autonomy"] = {k: auto.get(k) is True for k in AUTONOMY_FLAGS}
+    if raw.get("render") in ("2d", "3d"):
+        world["render"] = raw["render"]
+    view = _view3d(raw.get("view3d"))
+    if view:
+        world["view3d"] = view
+    props = props3d(raw.get("props3d"), width, height)
+    if props:
+        world["props3d"] = props
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
+
+
+TIMES_OF_DAY = ("dawn", "day", "dusk", "night")
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _view3d(raw: Any) -> dict:
+    """Clean the optional 3D view settings: out of range numbers are clamped, unknown values dropped."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    if raw.get("time_of_day") in TIMES_OF_DAY:
+        out["time_of_day"] = raw["time_of_day"]
+    if isinstance(raw.get("sky"), str) and _HEX.match(raw["sky"].strip()):
+        out["sky"] = raw["sky"].strip().lower()
+    for key, lo, hi in (
+        ("fog", 0.0, 1.0),
+        ("camera_height", 0.3, 4.0),
+        ("walk_speed", 0.5, 20.0),
+        ("terrain", 0.0, 3.0),
+    ):
+        v = raw.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+            out[key] = round(max(lo, min(hi, float(v))), 3)
+    if isinstance(raw.get("ambient"), dict):
+        out["ambient"] = raw["ambient"]
+    return out
+
+
+PROP_KINDS = ("house", "tree", "lamp", "fence", "well", "crate", "rock", "bench", "stall", "model")
+# Lamps and benches are small enough to walk past; everything else blocks its tile unless the editor says otherwise.
+OPEN_PROPS = ("lamp", "bench")
+MAX_PROPS = 400
+_PROP_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def props3d(raw: Any, width: int, height: int) -> list[dict]:
+    """Clean the 3D editor's props: unknown kinds, duplicate ids and models without a flow asset are dropped,
+    positions are kept on the map and rotation / scale clamped."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for p in raw if isinstance(raw, list) else []:
+        if len(out) >= MAX_PROPS:
+            break
+        if not isinstance(p, dict) or p.get("kind") not in PROP_KINDS:
+            continue
+        pid = p.get("id")
+        if not isinstance(pid, str) or not _PROP_ID.match(pid) or pid in seen:
+            continue
+        x, y = p.get("x"), p.get("y")
+        if not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and v == v for v in (x, y)
+        ):
+            continue
+        prop: dict[str, Any] = {"id": pid, "kind": p["kind"]}
+        if p["kind"] == "model":
+            asset = p.get("asset")
+            if not (
+                isinstance(asset, dict)
+                and isinstance(asset.get("ref"), str)
+                and asset_store.parse_ref(asset["ref"])
+            ):
+                continue
+            prop["asset"] = {
+                "kind": "model",
+                "ref": asset["ref"],
+                "mime": "model/gltf-binary",
+                **({"url": asset["url"]} if isinstance(asset.get("url"), str) else {}),
+            }
+        if isinstance(p.get("name"), str) and p["name"].strip():
+            prop["name"] = p["name"].strip()[:60]
+        prop["x"] = round(max(0.0, min(width - 0.001, float(x))), 3)
+        prop["y"] = round(max(0.0, min(height - 0.001, float(y))), 3)
+        rot = p.get("rot")
+        prop["rot"] = (
+            round(float(rot) % 360, 2)
+            if isinstance(rot, (int, float)) and not isinstance(rot, bool) and abs(rot) < 1e9
+            else 0.0
+        )
+        scale = p.get("scale")
+        prop["scale"] = (
+            round(max(0.2, min(5.0, float(scale))), 3)
+            if isinstance(scale, (int, float)) and not isinstance(scale, bool) and scale == scale
+            else 1.0
+        )
+        prop["solid"] = (
+            p["solid"] if isinstance(p.get("solid"), bool) else p["kind"] not in OPEN_PROPS
+        )
+        seen.add(pid)
+        out.append(prop)
+    return out
+
+
+def apply_play_view(
+    world: dict,
+    doc: dict,
+    node_outputs: Optional[dict] = None,
+    source: Optional[str] = None,
+) -> dict:
+    """The World Player node's view settings win over the world's own: they are read from the saved flow, so
+    switching to 3D or changing the time of day needs no rerun. With several players, the one fed by ``source``
+    (the node the world came from) wins."""
+    players = [
+        n for n in doc.get("nodes") or [] if n["type"] == "world.play" and not n.get("disabled")
+    ]
+    fed = {e["target"] for e in doc.get("edges") or [] if source and e.get("source") == source}
+    players.sort(key = lambda n: n["id"] not in fed)
+    for n in players:
+        p = n.get("params") or {}
+        if p.get("view") in ("2d", "3d"):
+            world["render"] = p["view"]
+        view = dict(world.get("view3d") or {})
+        if p.get("time_of_day") in TIMES_OF_DAY:
+            view["time_of_day"] = p["time_of_day"]
+        for a in input_values(doc, node_outputs or {}, n["id"], "ambient"):
+            if isinstance(a, dict):
+                view["ambient"] = a
+        view = _view3d(view)
+        if view:
+            world["view3d"] = view
+        # Scenery placed in the 3D editor is saved on the World Player, so it needs no rerun either.
+        if isinstance(p.get("props3d"), list):
+            world["props3d"] = props3d(p["props3d"], world["width"], world["height"])
+        # The editor saves scenery back onto this player only, so other players keep their own.
+        world["player_node"] = n["id"]
+        break
+    return world
 
 
 def _memory_items(raw: Any) -> list[dict]:
@@ -1006,8 +1142,9 @@ def resolve_world_report(
     warnings: list[str] = []
     picked = most_downstream(doc, node_outputs, WORLD_SOURCE_TYPES, "world")
     raw: Optional[dict] = None
+    source: Optional[str] = None
     if picked is not None and isinstance(picked[1], dict):
-        raw = picked[1]
+        raw, source = picked[1], picked[0]["id"]
     else:
         for n in doc.get("nodes") or []:
             if n["type"] != "world.spec" or n.get("disabled"):
@@ -1017,7 +1154,7 @@ def resolve_world_report(
                 ins[0] if ins and isinstance(ins[0], dict) else (n.get("params") or {}).get("world")
             )
             if isinstance(base, dict):
-                raw = dict(base)
+                raw, source = dict(base), n["id"]
                 for ts in input_values(doc, node_outputs, n["id"], "tileset"):
                     if isinstance(ts, dict):
                         raw["tileset"] = {**(raw.get("tileset") or {}), **ts}
@@ -1053,6 +1190,9 @@ def resolve_world_report(
         if name and name not in eps and not n.get("disabled"):
             eps[name] = n["id"]
     world["entry_points"] = eps
+    world = WorldSpec.model_validate(apply_play_view(world, doc, node_outputs, source)).model_dump(
+        exclude_none = True
+    )
     reply = next((n for n in doc.get("nodes") or [] if n["id"] == eps.get("npc_reply")), None)
     if reply is not None and (reply.get("params") or {}).get("summarise") is False:
         world["summarise"] = False

@@ -481,6 +481,63 @@ export interface WorldSpec {
   new_quests?: boolean;
   /** What villagers may do on their own; absent (every flag off) keeps the world as it was. */
   autonomy?: WorldAutonomy | null;
+  /** Which player draws the world; the top-down map when unset. */
+  render?: "2d" | "3d";
+  view3d?: World3dView;
+  /** Scenery placed with the 3D editor; saved on the World Player block. */
+  props3d?: WorldProp3d[];
+  /** The World Player block whose settings this world was played with; scenery is saved back onto it. */
+  player_node?: string;
+}
+
+export type WorldPropKind =
+  | "house"
+  | "tree"
+  | "lamp"
+  | "fence"
+  | "well"
+  | "crate"
+  | "rock"
+  | "bench"
+  | "stall"
+  | "model";
+
+export interface ModelAsset {
+  kind: "model";
+  ref: string;
+  url?: string | null;
+  mime?: string | null;
+}
+
+export interface WorldProp3d {
+  id: string;
+  kind: WorldPropKind;
+  asset?: ModelAsset;
+  name?: string;
+  /** Tile units; a prop on a tile stands at its centre (x + 0.5). */
+  x: number;
+  y: number;
+  /** Degrees about the vertical axis. */
+  rot?: number;
+  scale?: number;
+  /** Blocks walking on its tile (2D and 3D). */
+  solid?: boolean;
+}
+
+/** How the first-person 3D player draws a world. Every field is optional; the player fills in defaults. */
+export interface World3dView {
+  time_of_day?: "dawn" | "day" | "dusk" | "night";
+  /** "#rrggbb"; the time of day picks one when unset. */
+  sky?: string;
+  /** 0 = clear, 1 = thick. */
+  fog?: number;
+  /** Eye height in tiles. */
+  camera_height?: number;
+  /** Tiles per second. */
+  walk_speed?: number;
+  /** Hill height scale. */
+  terrain?: number;
+  ambient?: MediaValue;
 }
 
 export interface WorldAutonomy {
