@@ -68,6 +68,8 @@ export interface WorldState {
   additions?: WorldAdditions;
   auto?: AutoState;
   npcAt?: Record<string, Point>;
+  /** Health, ammo, pickups taken, knockouts and the player's height; only in worlds with action play on. */
+  action?: { combat?: unknown; pose?: { z: number } };
 }
 
 export interface Errand {
@@ -416,6 +418,10 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
     additions,
     ...(autonomyOn(played)
       ? { auto: autoOf(r.auto, played), npcAt: npcAtOf(r.npcAt, npcIds) }
+      : {}),
+    // Checked again (combatOf) by the 3D view that reads it; anything else is left out.
+    ...(played.action?.movement && r.action && typeof r.action === "object"
+      ? { action: r.action }
       : {}),
   };
 }

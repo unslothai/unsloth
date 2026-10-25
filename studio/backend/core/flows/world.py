@@ -54,6 +54,23 @@ AUTONOMY_LEVELS = {
     "full": AUTONOMY_FLAGS,
 }
 NPC_ROLES = ("rival", "hostile")
+ACTION_FLAGS = ("movement", "shooter")
+GAMEPLAY_LEVELS = {
+    "explore": {},
+    "action": {"movement": True},
+    "shooter": {"movement": True, "shooter": True},
+}
+
+
+def action_of(raw: Any) -> Optional[dict]:
+    """The world's action flags, or None when none is on (a shooter always moves with physics)."""
+    if not isinstance(raw, dict):
+        return None
+    flags = {k: raw.get(k) is True for k in ACTION_FLAGS}
+    flags["movement"] = flags["movement"] or flags["shooter"]
+    return flags if any(flags.values()) else None
+
+
 MAX_ADDED_ROLE = 2
 SUMMARY_CHARS = 600
 
@@ -228,6 +245,9 @@ def normalize_world(
     auto = raw.get("autonomy")
     if isinstance(auto, dict) and any(auto.get(k) is True for k in AUTONOMY_FLAGS):
         world["autonomy"] = {k: auto.get(k) is True for k in AUTONOMY_FLAGS}
+    act = action_of(raw.get("action"))
+    if act:
+        world["action"] = act
     if raw.get("render") in ("2d", "3d"):
         world["render"] = raw["render"]
     view = _view3d(raw.get("view3d"))
@@ -355,6 +375,12 @@ def apply_play_view(
         view = _view3d(view)
         if view:
             world["view3d"] = view
+        if p.get("gameplay") in GAMEPLAY_LEVELS:
+            act = action_of(GAMEPLAY_LEVELS[p["gameplay"]])
+            if act:
+                world["action"] = act
+            else:
+                world.pop("action", None)
         if isinstance(p.get("props3d"), list):
             world["props3d"] = props3d(p["props3d"], world["width"], world["height"])
         world["player_node"] = n["id"]

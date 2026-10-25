@@ -2114,6 +2114,13 @@ NODE_SPECS: list[dict] = [
                 "Time of day (3D)",
                 options = ["auto", "dawn", "day", "dusk", "night"],
             ),
+            P(
+                "gameplay",
+                "select",
+                "explore",
+                "Gameplay (3D)",
+                options = ["explore", "action", "shooter"],
+            ),
         ],
         icon = "gamepad",
     ),

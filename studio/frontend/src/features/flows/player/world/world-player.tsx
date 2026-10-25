@@ -47,6 +47,7 @@ import {
   playerSell,
   priceOf,
   resolveEncounter,
+  safeAt,
 } from "./autonomy";
 import {
   type LiveReply,
@@ -57,16 +58,13 @@ import {
 } from "./live-reply";
 import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
-import { type TileKind, generateMap } from "./procgen";
-import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
-  type EditorState,
-  GlbError,
-  SaveQueue,
-  type WorldEditor,
-  inspectGlb,
-  saveUntilCurrent,
-} from "./props3d";
+  type Point,
+  type TileKind,
+  type WorldMap,
+  generateMap,
+} from "./procgen";
+import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
   placeAreas,
   steerActions,
@@ -81,6 +79,14 @@ import {
   noAdditions,
   withAdditions,
 } from "./world-director";
+import {
+  type EditorState,
+  GlbError,
+  SaveQueue,
+  type WorldEditor,
+  inspectGlb,
+  saveUntilCurrent,
+} from "./props3d";
 import {
   BackgroundQueue,
   type Note,
@@ -291,6 +297,13 @@ export function WorldPlayer({
     spec.render === "3d" && webglAvailable() ? "3d" : "2d",
   );
   const lastTile = useRef<{ x: number; y: number } | null>(null);
+  // Scenery edits and villager positions outlive a view switch; the renderer only holds a copy of the map.
+  const carried = useRef<{
+    map: WorldMap;
+    props: WorldMap["props"];
+    blocked: WorldMap["blocked"];
+    npcs?: Record<string, Point>;
+  } | null>(null);
   const bootedView = useRef<"2d" | "3d" | null>(null);
   const ambientUrl = useMediaUrl(
     api,
@@ -398,11 +411,14 @@ export function WorldPlayer({
 
   useEffect(() => {
     let live = true;
+    const bootedFor = loads.current;
     let handle: WorldGameHandle | null = null;
+    let world: WorldMap | null = null;
     const switched = bootedView.current !== null && bootedView.current !== view;
     bootedView.current = view;
     const startAt = switched ? lastTile.current : wsRef.current.player;
     setReady(false);
+    const kept = carried.current?.map === map ? carried.current : null;
     (async () => {
       try {
         const [art, create] = await Promise.all([
@@ -413,7 +429,7 @@ export function WorldPlayer({
             view === "3d"
               ? [
                   ...new Set(
-                    (map.props ?? [])
+                    ((kept ? kept.props : map.props) ?? [])
                       .map((p) => p.asset?.ref)
                       .filter((r): r is string => Boolean(r)),
                   ),
@@ -426,22 +442,24 @@ export function WorldPlayer({
         ]);
         if (!live || !host.current) return;
         const added = wsRef.current.additions ?? noAdditions();
-        const saved = wsRef.current.npcAt ?? {};
+        const saved = (switched && kept?.npcs) || wsRef.current.npcAt || {};
+        world = {
+          ...map,
+          ...(kept ? { props: kept.props, blocked: kept.blocked } : {}),
+          npcs: {
+            ...map.npcs,
+            ...Object.fromEntries(added.npcs.map((n) => [n.id, n])),
+            ...saved,
+          },
+          items: {
+            ...map.items,
+            ...Object.fromEntries(added.items.map((i) => [i.id, i])),
+          },
+        };
         handle = create(
           host.current,
           specRef.current,
-          {
-            ...map,
-            npcs: {
-              ...map.npcs,
-              ...Object.fromEntries(added.npcs.map((n) => [n.id, n])),
-              ...saved,
-            },
-            items: {
-              ...map.items,
-              ...Object.fromEntries(added.items.map((i) => [i.id, i])),
-            },
-          },
+          world,
           art,
           wsRef.current.picked,
           startAt,
@@ -457,6 +475,9 @@ export function WorldPlayer({
                 );
             },
             locked: () => lockedRef.current,
+            action: wsRef.current.action,
+            onEvent: (text) => toast(text),
+            safeAt: (p) => safeRef.current(p),
           },
         );
         game.current = handle;
@@ -477,7 +498,23 @@ export function WorldPlayer({
     })();
     return () => {
       live = false;
-      if (handle) lastTile.current = handle.playerTile();
+      if (handle) {
+        lastTile.current = handle.playerTile();
+        if (world)
+          carried.current = {
+            map,
+            props: world.props,
+            blocked: world.blocked,
+            // A loaded save brings its own villager positions.
+            npcs: loads.current === bootedFor ? handle.npcTiles() : undefined,
+          };
+        // A view switch keeps the fight going; a loaded save brings its own.
+        const action = handle.actionState?.() as WorldState["action"];
+        if (action && loads.current === bootedFor) {
+          wsRef.current = { ...wsRef.current, action };
+          setWs((st) => ({ ...st, action }));
+        }
+      }
       handle?.destroy();
       game.current = null;
       setEditor(null);
@@ -1022,6 +1059,10 @@ export function WorldPlayer({
 
   const flags = useMemo(() => autonomyOf(baseSpec), [baseSpec]);
   const autoOn = useMemo(() => autonomyOn(baseSpec), [baseSpec]);
+  // Combat runs only in the 3D view; the map view keeps the usual hostile encounters.
+  const shooterOn = baseSpec.action?.shooter === true && view === "3d";
+  // Safe places for the 3D shooter: refreshed by each village beat (none without autonomy).
+  const safeRef = useRef<(p: Point) => boolean>(() => false);
   const autoSteered = useRef(new Set<string>());
   useEffect(() => {
     if (!autoOn || !ready || !started) return;
@@ -1052,6 +1093,15 @@ export function WorldPlayer({
         player: g.playerTile(),
         npcs: g.npcTiles(),
       });
+      safeRef.current = (p) => safeAt(ground, out.state.auto ?? base.auto!, p);
+      // In a shooter the hostiles fight instead of stopping the player for an encounter.
+      if (shooterOn && out.state.auto?.encounter && !base.auto?.encounter) {
+        out.state = {
+          ...out.state,
+          auto: { ...out.state.auto, encounter: null },
+        };
+        out.notes = out.notes.filter((n) => !n.endsWith("blocks your way!"));
+      }
       run(g, out.cmds);
       const now = new Set(out.steered);
       for (const id of autoSteered.current)
@@ -1077,7 +1127,7 @@ export function WorldPlayer({
       events.current = [...events.current, ...out.notes].slice(-6);
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [autoOn, ready, started, map, areas, toast]);
+  }, [autoOn, ready, started, map, areas, toast, shooterOn]);
 
   const deal = (
     fn: (st: WorldState) => { state: WorldState; note: string } | null,
@@ -1264,8 +1314,10 @@ export function WorldPlayer({
   };
 
   const save = async (slot: string) => {
+    const action = game.current?.actionState?.() as WorldState["action"];
     const state = serialize({
       ...wsRef.current,
+      ...(action ? { action } : {}),
       player: game.current?.playerTile() ?? null,
       ...(autoOn && game.current ? { npcAt: game.current.npcTiles() } : {}),
     });

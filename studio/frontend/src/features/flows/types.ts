@@ -468,6 +468,9 @@ export interface WorldSpec {
   /** False when the NPC Reply node's "Keep generating quests" is off; absent means on. */
   new_quests?: boolean;
   autonomy?: WorldAutonomy | null;
+  /** Action play in the 3D view (World Player "Gameplay"); absent keeps walking as it was. */
+  action?: WorldAction | null;
+  /** Which player draws the world; the top-down map when unset. */
   render?: "2d" | "3d";
   view3d?: World3dView;
   props3d?: WorldProp3d[];
@@ -505,14 +508,6 @@ export interface WorldProp3d {
   solid?: boolean;
 }
 
-export interface WorldAutonomy {
-  trade?: boolean;
-  homes?: boolean;
-  quests?: boolean;
-  rivals?: boolean;
-  enemies?: boolean;
-}
-
 export interface World3dView {
   time_of_day?: "dawn" | "day" | "dusk" | "night";
   sky?: string;
@@ -524,6 +519,21 @@ export interface World3dView {
   walk_speed?: number;
   terrain?: number;
   ambient?: MediaValue;
+}
+
+export interface WorldAction {
+  /** Gravity, jumping, sprint, crouch and collisions with scenery. */
+  movement?: boolean;
+  /** A hitscan weapon, health and ammo; hostile villagers fight back. */
+  shooter?: boolean;
+}
+
+export interface WorldAutonomy {
+  trade?: boolean;
+  homes?: boolean;
+  quests?: boolean;
+  rivals?: boolean;
+  enemies?: boolean;
 }
 
 export type RunStatus =

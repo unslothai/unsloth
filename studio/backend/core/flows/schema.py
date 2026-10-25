@@ -372,6 +372,13 @@ class WorldAutonomy(_Strict):
     enemies: bool = False  # hostile villagers chase and rob (non-lethal)
 
 
+class WorldAction(_Strict):
+    """Action play in the 3D view; every flag off keeps walking as it was."""
+
+    movement: bool = False  # gravity, jumping, sprint, crouch and collisions with scenery
+    shooter: bool = False  # a hitscan weapon, health and ammo; hostile villagers fight back
+
+
 class World3dView(_Strict):
     time_of_day: Optional[Literal["dawn", "day", "dusk", "night"]] = None
     sky: Optional[str] = None  # "#rrggbb"; the time of day picks one when unset
@@ -417,6 +424,7 @@ class WorldSpec(_Strict):
     entry_points: dict[str, str] = Field(default_factory = dict)
     simulation: Optional[WorldSimulation] = None
     autonomy: Optional[WorldAutonomy] = None
+    action: Optional[WorldAction] = None
     render: Optional[Literal["2d", "3d"]] = None
     view3d: Optional[World3dView] = None
     props3d: Optional[list[WorldProp3d]] = None
