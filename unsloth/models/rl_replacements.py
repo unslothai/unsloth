@@ -756,10 +756,8 @@ def cpo_trainer_fused_preference_forward(function_name, function):
     )
 
 
-# TRL >= 0.29 DPOTrainer._compute_loss: the replacement reproduces exactly these metric keys and
-# these logits reads; any other source shape keeps TRL's own function. Measured on every release
-# 0.29.0 .. 1.16.0: 0.29.x truncates inside the function (declined), 1.0 .. 1.13 and 1.14 match
-# (two spellings of the same reads), 1.15+ already scores through TRL's own fused lm head.
+# The replacement reproduces exactly these metric keys and logits reads; any other source keeps TRL's
+# function (0.29.x truncates inside it, 1.15+ already uses TRL's fused lm head).
 _DPO_V1_METRIC_KEYS = frozenset(
     (
         "aux_loss",

@@ -515,10 +515,8 @@ def unsloth_fused_orpo_concatenated_forward(
     return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, nll_loss)
 
 
-# TRL >= 1.0 DPOTrainer: no concatenated_forward; `_compute_loss` concatenates [chosen; rejected]
-# rows itself and scores them, plus its entropy / logit / token-accuracy metrics, from full
-# batch x seq_len x vocab policy and reference logits. Under UNSLOTH_FUSED_PREFERENCE_LOSS=1
-# the replacement below reproduces that function from hidden states instead.
+# TRL >= 1.0 DPOTrainer._compute_loss scores [chosen; rejected] from full batch x seq x vocab logits;
+# under UNSLOTH_FUSED_PREFERENCE_LOSS=1 the replacement below reproduces it from hidden states.
 _DPO_V1_INPUT_KEYS = frozenset(
     (
         "input_ids",
