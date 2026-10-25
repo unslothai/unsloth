@@ -395,6 +395,7 @@ export function WorldPlayer({
 
   useEffect(() => {
     let live = true;
+    const bootedFor = loads.current;
     let handle: WorldGameHandle | null = null;
     const switched = bootedView.current !== null && bootedView.current !== view;
     bootedView.current = view;
@@ -477,7 +478,15 @@ export function WorldPlayer({
     })();
     return () => {
       live = false;
-      if (handle) lastTile.current = handle.playerTile();
+      if (handle) {
+        lastTile.current = handle.playerTile();
+        // A view switch keeps the fight going; a loaded save brings its own.
+        const action = handle.actionState?.() as WorldState["action"];
+        if (action && loads.current === bootedFor) {
+          wsRef.current = { ...wsRef.current, action };
+          setWs((st) => ({ ...st, action }));
+        }
+      }
       handle?.destroy();
       game.current = null;
       setEditor(null);

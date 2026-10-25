@@ -304,3 +304,13 @@ test("a save keeps action state only for a world with action play on; old saves 
   delete old.action;
   assert.equal(W.deserialize(armed, old)?.action, undefined);
 });
+
+test("switching views keeps the fight, while a loaded save brings its own", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL("../src/features/flows/player/world/world-player.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /const bootedFor = loads\.current;/);
+  assert.match(src, /const action = handle\.actionState\?\.\(\)[^;]*;\s*if \(action && loads\.current === bootedFor\)/);
+});
