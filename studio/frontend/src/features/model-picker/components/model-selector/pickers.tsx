@@ -7079,21 +7079,27 @@ export function HubModelPicker({
               />
             </span>
           ) : (
-            // No chevron until the probe rules out a sole quant, which renders its own row.
-            <span
-              aria-hidden="true"
-              className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6")}
-            >
+            // No chevron until the probe rules out a sole quant, which renders its own row. The whole
+            // gutter toggles, for the mouse (the row button has the keyboard); pr-2.5 puts the glyph in
+            // the heading chevron's column.
+            <span className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6")}>
               {soleQuants.pending.has(c.repo_id) ? null : (
-                <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/70">
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
+                  className="flex h-full w-full cursor-pointer items-center justify-end pr-2.5 text-muted-foreground/80 hover:text-foreground"
+                >
                   <HugeiconsIcon
-                    icon={ChevronDownStandardIcon}
-                    className={cn(
-                      "size-3.5 transition-transform",
-                      expanderOpen && "rotate-180",
-                    )}
+                    icon={
+                      expanderOpen
+                        ? ChevronDownStandardIcon
+                        : ChevronRightStandardIcon
+                    }
+                    className="size-3"
                   />
-                </span>
+                </button>
               )}
             </span>
           )}

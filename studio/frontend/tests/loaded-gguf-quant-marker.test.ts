@@ -34,15 +34,16 @@ test("a loaded row is selected, picked and ejected by its checkpoint, not its la
   assert.match(picker, /onEject\?\.\(checkpoint\);/);
 });
 
-test("an On Device GGUF row with several quants shows a chevron that turns when open", () => {
+test("an On Device GGUF row with several quants shows a right/down chevron its gutter toggles", () => {
   const start = picker.indexOf("const renderDownloadedGgufRow = (");
   const row = picker.slice(start, picker.indexOf("<GgufVariantExpander", start));
   assert.match(row, /if \(soleQuant\) return renderSoleQuantGgufRow\(c, soleQuant\);/);
   assert.match(
     row,
-    /\{soleQuants\.pending\.has\(c\.repo_id\) \? null : \([\s\S]*?icon=\{ChevronDownStandardIcon\}[\s\S]*?expanderOpen && "rotate-180"/,
+    /\{soleQuants\.pending\.has\(c\.repo_id\) \? null : \(\s*<button[\s\S]*?onClick=\{\(\) => toggleGgufExpanded\(c\.repo_id, expanderOpen\)\}/,
   );
-  assert.match(row, /className=\{cn\(ROW_ACTIONS_PINNED_CLASS, "h-6"\)\}/);
+  assert.match(row, /expanderOpen\s*\?\s*ChevronDownStandardIcon\s*:\s*ChevronRightStandardIcon/);
+  assert.match(row, /<span className=\{cn\(ROW_ACTIONS_PINNED_CLASS, "h-6"\)\}>/);
 });
 
 test("a loaded hub GGUF row opens its quant list, so quants downloaded after the load stay reachable", () => {

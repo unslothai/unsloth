@@ -378,7 +378,7 @@ test("a partial GGUF repo carries its own menu, not an empty gutter", () => {
   );
   assert.match(
     row,
-    /\) : \([\s\S]*?<span\s+aria-hidden="true"\s+className=\{cn\(ROW_ACTIONS_PINNED_CLASS, "h-6"\)\}\s*>\s*\{soleQuants\.pending\.has\(c\.repo_id\) \? null : \(/,
+    /\) : \([\s\S]*?<span className=\{cn\(ROW_ACTIONS_PINNED_CLASS, "h-6"\)\}>\s*\{soleQuants\.pending\.has\(c\.repo_id\) \? null : \(/,
     "and a complete repo's gutter holds only the expand chevron",
   );
   assert.ok(row.includes("cachePath={{ repoId: c.repo_id }}"), "reveal");
