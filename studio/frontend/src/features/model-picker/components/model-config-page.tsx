@@ -3699,6 +3699,11 @@ export function ModelConfigPage({
     (!perModelConfigsEqual(forSetStore(runtimeConfig), forSetStore(selectedEntry.config)) ||
       (persistedSet ?? null) !== selectedSet ||
       (!matchesStored && !atDefault));
+  // Arguments a load would refuse, or not read yet: saving them would store what cannot load.
+  const extraArgsBlocked =
+    (!extraArgsLoadable && !sharedExtraArgsCleared) ||
+    sharedExtraArgsRefused ||
+    extraArgsHydrating;
   // Editing Default turns it into a new set, saved under this name on Save or Load.
   const customName =
     selectedSet === null && !atDefault ? newRunSettingsName(savedSets, modelName) : null;
@@ -3891,6 +3896,10 @@ export function ModelConfigPage({
       return false;
     }
     const keep = into !== null;
+    if (keep && extraArgsBlocked) {
+      toast.error("Fix the extra arguments before saving.");
+      return false;
+    }
     const { effectiveRuntimeConfig } = commitDraft();
     if (keep && !saveRunSettings(configId, into, forSetStore(effectiveRuntimeConfig))) {
       toast.error("Couldn't save these settings.");
@@ -4024,13 +4033,17 @@ export function ModelConfigPage({
       rememberChanged;
     // Load saves into the selected set too (an edited Default becomes one), so the set and what
     // loads never drift apart.
-    const loadSet =
+    let loadSet =
       selectedSet ??
       (customName !== null && !isDefaultConfig(forSetStore(effectiveRuntimeConfig))
         ? customName
         : null);
-    if (loadSet !== null) {
-      saveRunSettings(configId, loadSet, forSetStore(effectiveRuntimeConfig));
+    if (loadSet !== null && !saveRunSettings(configId, loadSet, forSetStore(effectiveRuntimeConfig))) {
+      toast.error("Couldn't save these settings, loading with them anyway.");
+      // Never select a set that was not created.
+      if (loadSet !== selectedSet) {
+        loadSet = null;
+      }
     }
     const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig, loadSet !== null);
     if (saved) {
@@ -4389,10 +4402,7 @@ export function ModelConfigPage({
                 !canSave ||
                 stagedMetadataPending ||
                 budgetSettling ||
-                (selectedSet !== null &&
-                  ((!extraArgsLoadable && !sharedExtraArgsCleared) ||
-                    sharedExtraArgsRefused ||
-                    extraArgsHydrating))
+                ((selectedSet !== null || customName !== null) && extraArgsBlocked)
               }
               onClick={onSaveClick}
             >

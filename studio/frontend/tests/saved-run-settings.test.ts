@@ -158,6 +158,26 @@ test("new settings are named after the model and numbered past taken names", () 
   );
 });
 
+test("a model name at the length limit still gets a unique numbered name", () => {
+  const longName = "x".repeat(90);
+  const first = saved.newRunSettingsName([], longName);
+  assert.equal(first.length, saved.SAVED_RUN_SETTINGS_NAME_MAX);
+  const other = "unsloth/Long-GGUF";
+  saved.saveRunSettings(other, first, config(2048));
+  const second = saved.newRunSettingsName(
+    saved.listSavedRunSettings(other),
+    longName,
+  );
+  assert.ok(second.endsWith(" 2"));
+  assert.ok(second.length <= saved.SAVED_RUN_SETTINGS_NAME_MAX);
+  assert.ok(saved.saveRunSettings(other, second, config(4096)));
+  assert.ok(
+    saved
+      .newRunSettingsName(saved.listSavedRunSettings(other), longName)
+      .endsWith(" 3"),
+  );
+});
+
 test("settings remembered before named sets show up as one, and are not duplicated", () => {
   assert.equal(
     saved.adoptRememberedRunSettings(MODEL, "Q4_K_M", config(16384), "SmolLM"),
@@ -235,8 +255,14 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
   // never drift apart.
   assert.match(
     page,
-    /const loadSet =\s*selectedSet \?\?[\s\S]*?saveRunSettings\(configId, loadSet, forSetStore\(effectiveRuntimeConfig\)\);[\s\S]*?persistConfig\(effectiveRuntimeConfig, loadSet !== null\)/,
+    /let loadSet =\s*selectedSet \?\?[\s\S]*?!saveRunSettings\(configId, loadSet, forSetStore\(effectiveRuntimeConfig\)\)[\s\S]*?if \(loadSet !== selectedSet\) \{\s*loadSet = null;[\s\S]*?persistConfig\(effectiveRuntimeConfig, loadSet !== null\)/,
   );
+  // Saving an edited Default creates a set, so it takes the same extra-argument gate as a set.
+  assert.match(
+    page,
+    /\(\(selectedSet !== null \|\| customName !== null\) && extraArgsBlocked\)/,
+  );
+  assert.match(page, /if \(keep && extraArgsBlocked\) \{/);
   // Editing Default shows the name it will be saved under; Save uses it without asking.
   assert.match(
     page,

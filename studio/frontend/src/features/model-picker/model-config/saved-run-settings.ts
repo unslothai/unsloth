@@ -285,12 +285,19 @@ export function newRunSettingsName(
   list: readonly SavedRunSettings[],
   modelName: string,
 ): string {
-  const base = normalizeSavedRunSettingsName(`${modelName} custom settings`);
-  let name = base;
+  const base = `${modelName} custom settings`;
+  let name = withSuffix(base, "");
   for (let n = 2; findSavedRunSettings(list, name); n++) {
-    name = `${base} ${n}`;
+    name = withSuffix(base, ` ${n}`);
   }
   return name;
+}
+
+// Trims the base, not the suffix: a cut suffix would name the same set forever.
+function withSuffix(base: string, suffix: string): string {
+  return normalizeSavedRunSettingsName(
+    `${normalizeSavedRunSettingsName(base).slice(0, SAVED_RUN_SETTINGS_NAME_MAX - suffix.length)}${suffix}`,
+  );
 }
 
 // Names earlier builds gave sets: an adopted record, then "Custom setting for <model>[ N]".
@@ -309,7 +316,7 @@ function legacyRename(
   if (!sameName(name.slice(0, old.length), old) || !/^( \d+)?$/.test(suffix)) {
     return null;
   }
-  return `${normalizeSavedRunSettingsName(`${modelName} custom settings`)}${suffix}`;
+  return withSuffix(`${modelName} custom settings`, suffix);
 }
 
 export function hasLegacyRunSettings(
