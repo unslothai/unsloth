@@ -663,20 +663,10 @@ def test_a_first_launch_that_turns_unpinned_logs_its_own_stage(
     ], lines
 
 
-def _vision_spill_launch(tmp_path, monkeypatch, *, outcome, **load_kw):
-    """A multimodal deep spill the cache serves. ``outcome(cmd)`` gives each spawn's
-    (exit code or None for healthy, output lines)."""
-    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+def _scripted_launch(tmp_path, monkeypatch, *, outcome, **load_kw):
+    """A spilled MoE with a drafter whose spawns ``outcome(cmd)`` scripts as (exit code,
+    or None for healthy, output lines)."""
     spawned = []
-    make = placement._moe_backend
-
-    def with_projector(*args, **kwargs):
-        backend, gguf = make(*args, **kwargs)
-        mmproj = _write_gguf(tmp_path / "mmproj.gguf", architecture = "clip")
-        backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
-        return backend, gguf
-
-    monkeypatch.setattr(placement, "_moe_backend", with_projector)
 
     def launch(
         backend,
@@ -712,17 +702,36 @@ def _vision_spill_launch(tmp_path, monkeypatch, *, outcome, **load_kw):
         with placement.patch.object(placement.subprocess, "Popen", side_effect = fake_popen):
             assert backend.load_model(
                 placement.GgufLoadIntent(
-                    gguf_path = str(gguf),
-                    model_identifier = model_identifier,
-                    is_vision = True,
-                    **load_kwargs,
+                    gguf_path = str(gguf), model_identifier = model_identifier, **load_kwargs
                 )
             )
         return {"cmd": spawned[-1]}
 
     monkeypatch.setattr(placement, "_launch", launch)
-    backend, cmd = _load(tmp_path, memory = _DEEP_SPILL_CARD, **load_kw)
+    backend, _cmd = _load(tmp_path, **load_kw)
     return backend, spawned
+
+
+def _vision_spill_launch(tmp_path, monkeypatch, *, outcome, **load_kw):
+    """A multimodal deep spill the cache serves, spawns scripted as in _scripted_launch."""
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    make = placement._moe_backend
+
+    def with_projector(*args, **kwargs):
+        backend, gguf = make(*args, **kwargs)
+        mmproj = _write_gguf(tmp_path / "mmproj.gguf", architecture = "clip")
+        backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+        return backend, gguf
+
+    monkeypatch.setattr(placement, "_moe_backend", with_projector)
+    return _scripted_launch(
+        tmp_path,
+        monkeypatch,
+        outcome = outcome,
+        memory = _DEEP_SPILL_CARD,
+        is_vision = True,
+        **load_kw,
+    )
 
 
 def test_the_text_only_retry_after_a_failed_cpu_projector_runs_the_restored_slots(
@@ -755,3 +764,106 @@ def test_the_text_only_retry_after_a_failed_cpu_projector_runs_the_restored_slot
     assert "--mmproj" not in text_only, text_only
     assert _flag(text_only, "--parallel") == str(backend.effective_parallel_slots), text_only
     assert backend.effective_parallel_slots == 4
+
+
+def test_auto_standing_a_hybrid_head_down_keeps_the_slots_beside_a_bare_draft_model(
+    tmp_path, _moe_cache_host, _hybrid_head
+):
+    """A bare -md in the extras does not stop Auto emitting --spec-type none, under
+    which the draft model never drafts."""
+    draft = _write_gguf(tmp_path / "user-draft.gguf")
+    _backend, cmd = _load(
+        tmp_path,
+        drafter = False,
+        speculative_type = "auto",
+        extra_args = ["-md", str(draft)],
+    )
+
+    assert _flag(cmd, "--spec-type") == "none", cmd
+    assert _flag(cmd, "--parallel") == "4", cmd
+
+
+@pytest.mark.parametrize("ngram_mod", [True, False])
+def test_a_bare_draft_model_beside_a_stood_down_mla_head(
+    tmp_path, _moe_cache_host, _mla_head, monkeypatch, ngram_mod
+):
+    """Auto's ngram-mod replaces the bare -md; with no ngram-mod nothing is emitted and
+    the -md runs as the drafter, so that one is still cut."""
+    monkeypatch.delenv("UNSLOTH_MLA_MTP_ENABLED", raising = False)
+    draft = _write_gguf(tmp_path / "user-draft.gguf")
+    _backend, cmd = _cache_launch(
+        tmp_path,
+        caps = dict(_CAPS, supports_ngram_mod = ngram_mod),
+        n_parallel = 4,
+        n_parallel_from_default = True,
+        speculative_type = "auto",
+        extra_args = ["-md", str(draft)],
+    )
+
+    if ngram_mod:
+        assert _flag(cmd, "--spec-type") == "ngram-mod", cmd
+        assert _flag(cmd, "--parallel") == "4", cmd
+    else:
+        assert "--spec-type" not in cmd, cmd
+        assert _flag(cmd, "--parallel") == "2", cmd
+
+
+def test_a_vulkan_crash_replayed_on_cpu_runs_at_the_asked_count(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """The CPU replay streams no experts (the cut skips a CPU fallback), so it gets the
+    slots back with the spill micro-batch and the cache it already drops."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_vulkan_prebuilt_was_auto_selected", staticmethod(lambda _binary: True)
+    )
+    make = placement._moe_backend
+
+    def staged_cpu_runtime(*args, **kwargs):
+        backend, gguf = make(*args, **kwargs)
+        backend._cpu_isolated_binary = lambda _binary: "/fake/llama-server"
+        backend._llama_server_env_for_binary = lambda _binary: {placement._loader_path_var(): ""}
+        # The fixture answers "not Vulkan" on the instance.
+        backend._is_vulkan_backend = lambda _binary = None: True
+        return backend, gguf
+
+    monkeypatch.setattr(placement, "_moe_backend", staged_cpu_runtime)
+
+    def on_cpu(cmd):
+        return "--device" in cmd and cmd[cmd.index("--device") + 1] == "none"
+
+    backend, spawned = _scripted_launch(
+        tmp_path,
+        monkeypatch,
+        outcome = lambda cmd: (None, []) if on_cpu(cmd) else (-11, ["ggml_vulkan: crash"]),
+    )
+
+    first, replay = spawned[0], spawned[-1]
+    assert _flag(first, "--parallel") == "2", first
+    assert on_cpu(replay), replay
+    assert _flag(replay, "--parallel") == "4", replay
+    assert backend.effective_parallel_slots == 4
+    assert not backend._slots_cut_for_drafter
+
+
+def test_a_single_sequence_recovery_is_not_recorded_as_the_spill_cut(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """One slot is the build's limit there: a chosen four would relaunch the same
+    one-slot server, so it must dedupe."""
+
+    def outcome(cmd):
+        if _flag(cmd, "--parallel") == "1":
+            return None, []
+        return 1, ["a unified KV cache is only supported with a single sequence"]
+
+    backend, spawned = _scripted_launch(tmp_path, monkeypatch, outcome = outcome)
+
+    assert _flag(spawned[0], "--parallel") == "2", spawned[0]
+    assert _flag(spawned[-1], "--parallel") == "1", spawned[-1]
+    assert backend.effective_parallel_slots == 1
+    assert not backend._slots_cut_for_drafter

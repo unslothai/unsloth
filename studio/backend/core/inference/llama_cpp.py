@@ -29703,21 +29703,29 @@ class LlamaCppBackend:
                     # 94). Unpriceable keeps the ask.
                     # Auto also drops an embedded MLA head (_auto_mla_embedded_mtp in
                     # _build_speculative_flags) for ngram-mod or no speculation.
+                    # Only Studio's own drafter keeps the head up there. A bare -md (extras
+                    # or env) stays beside the emitted --spec-type none / ngram-mod, under
+                    # which it never drafts; it runs only where neither is emitted.
                     _drafter_stands_down = bool(
                         _spec_canon == "auto"
                         and self._nextn_predict_layers
-                        and not _separate_draft_launches
+                        and not mtp_draft_path
                         and not _extra_args_set_spec_type(extra_args)
                         and (
                             (
                                 self._ssm_inner_size is not None
                                 and self._full_attention_interval is not None
+                                and (not _separate_draft_launches or server_caps.get("mtp_token"))
                             )
                             or (
                                 getattr(self, "_kv_lora_rank", None) is not None
                                 and not _mla_mtp_auto_enabled()
                                 and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
                                 and not _trained_drafter_sidecar(model_path)[1]
+                                and (
+                                    not _separate_draft_launches
+                                    or server_caps.get("supports_ngram_mod")
+                                )
                             )
                         )
                     )
@@ -32200,6 +32208,40 @@ class LlamaCppBackend:
                         )
                     return run_cmd
 
+                def _cpu_replay_at_asked_slots(argv: list[str]) -> list[str]:
+                    """``argv`` back at the asked slots for a --device none replay. A CPU
+                    fallback streams no experts, so the spilled-MoE cut never applies to
+                    one (intent.cpu_fallback at _moe_experts_on_host), as the micro-batch
+                    raise and the cache _prepare_cpu_fallback_launch strips do not."""
+                    nonlocal n_parallel, _spill_cut_needs_cache
+                    nonlocal _auto_ctx_checkpoints, _auto_ckpt_emitted
+                    if (
+                        _spill_slots_asked is None
+                        or _extra_args_n_parallel(argv, env = {}) != _MOE_SPILL_DEFAULT_SLOTS
+                    ):
+                        return argv
+                    logger.info(
+                        "CPU fallback: no experts to stream, so the serving slots go back "
+                        "%d -> %d.",
+                        _MOE_SPILL_DEFAULT_SLOTS,
+                        _spill_slots_asked,
+                    )
+                    # _spill_slots_asked stays: the slot-cut marker then reads no cut, and
+                    # a second replay (the drafterless argv) is rewritten the same way.
+                    n_parallel = _spill_slots_asked
+                    _spill_cut_needs_cache = False
+                    argv = _with_parallel_slots(
+                        argv,
+                        n_parallel,
+                        n_batch = n_batch,
+                        supports_kv_unified = bool(server_caps.get("supports_kv_unified")),
+                    )
+                    if _auto_ckpt_emitted:
+                        argv = self._without_flag_pairs(argv, _auto_ckpt_emitted)
+                    _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                    _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(argv)
+                    return argv
+
                 # Pinned loads only: under mmap the cache measured slower than none.
                 self._moe_cache_flags = []
                 if (
@@ -33665,6 +33707,7 @@ class LlamaCppBackend:
                     if not _crashed or not _cpu_fallback_eligible or _load_cancelled():
                         return False
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
+                    failed_cmd = _cpu_replay_at_asked_slots(failed_cmd)
                     prepared = self._prepare_cpu_fallback_launch(
                         binary,
                         failed_cmd,
@@ -33912,6 +33955,7 @@ class LlamaCppBackend:
                     if self._auto_vulkan_cpu_fallback_eligible(
                         binary, intent, extra_args, env, allow_manual_cpu = True
                     ):
+                        cmd = _cpu_replay_at_asked_slots(cmd)
                         prepared = self._prepare_cpu_fallback_launch(
                             binary,
                             cmd,
@@ -34513,6 +34557,10 @@ class LlamaCppBackend:
                         cmd = _kvu_cmd
                         # Read by admission control; left as-is Studio over-admits.
                         n_parallel = 1  # allow-slot-clamp: llama-server refused more
+                        # The build's limit, not the spill cut: a chosen count relaunches
+                        # to this same one slot, so nothing may read the cut as standing.
+                        _spill_slots_asked = None
+                        _spill_cut_needs_cache = False
                         kv_cache_unified = False
                         # The cap in argv was sized for slots this retry no longer runs;
                         # same re-decide as the arch-crash respawn.
