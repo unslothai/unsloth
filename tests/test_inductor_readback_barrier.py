@@ -274,9 +274,9 @@ def test_a_user_custom_graph_pass_keys_the_cache_on_the_barrier_too(monkeypatch)
 
 
 def test_an_inference_aware_user_pass_still_gets_is_inference(monkeypatch):
+    user = _user_pass_class("CustomInferenceAwareGraphPass")()  # skips on torch without it
     from torch._inductor.custom_graph_pass import CustomInferenceAwareGraphPass
 
-    user = _user_pass_class("CustomInferenceAwareGraphPass")()
     _, inductor_config = _install_with(monkeypatch, user)
     keyed = inductor_config.post_grad_custom_post_pass
     # post_grad.py passes is_inference only to CustomInferenceAwareGraphPass instances.
