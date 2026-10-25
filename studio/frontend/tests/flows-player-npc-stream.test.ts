@@ -61,6 +61,16 @@ test("a streamed answer that fails or stops early is an error", async () => {
   );
 });
 
+test("loading a save stops the reply still being written", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL("../src/features/flows/player/world/world-player.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /signal: run\.signal,\s*onDelta:/);
+  assert.match(src, /loads\.current \+= 1;\s*replyRun\.current\?\.abort\(\);/);
+});
+
 test("with no chat model a villager answers offline in their own words", () => {
   for (const msg of [
     "No chat model is loaded. Pick a model on this node, or load one first.",
