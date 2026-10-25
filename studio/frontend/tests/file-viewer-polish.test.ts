@@ -14,12 +14,19 @@ const { audioWorkflowTab } = await import("../src/features/audio/workflows.ts");
 
 const read = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
 
-test("audio reads as ai-speech everywhere and Text to Speech as text-to-speech", () => {
+test("audio reads as the bars-only icon everywhere and Text to Speech as ai-speech with its sparkle", () => {
   assert.equal(ATTACHMENT_KIND_ICONS.audio, AiSpeechIcon);
   assert.equal(audioWorkflowTab("speak").icon, TextToSpeechIcon);
-  assert.notEqual(AiSpeechIcon, TextToSpeechIcon);
+  const paths = (icon: unknown) => (icon as [string, { d: string }][]).map(([, attrs]) => attrs.d);
+  const sparkle = (d: string) => d.startsWith("M18.5 3.9375");
+  assert.ok(!paths(AiSpeechIcon).some(sparkle), "audio carries no sparkle");
+  assert.ok(paths(TextToSpeechIcon).some(sparkle), "Text to Speech keeps ai-speech's sparkle");
   for (const file of ["components/app-sidebar.tsx", "components/command-palette.tsx", "features/library/file-kind.ts"]) {
     assert.doesNotMatch(read(file), /AudioWave01Icon/, file);
+  }
+  // Chat's audio chips and Upload audio used lucide's headphones.
+  for (const file of ["features/chat/shared-composer.tsx", "components/assistant-ui/thread.tsx"]) {
+    assert.doesNotMatch(read(file), /HeadphonesIcon/, file);
   }
 });
 

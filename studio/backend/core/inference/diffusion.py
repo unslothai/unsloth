@@ -124,9 +124,11 @@ from .diffusion_zimage_cfg_split import (
     zimage_cfg_split_status,
 )
 from .diffusion_zimage_cfg_split import render as zimage_cfg_split_render
+from .diffusion_prefix_kv import release_prefix_kv, track_prefix_kv
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
+    release_cfg_prefix_kv,
     drop_displaced_cfg_router,
     install_cfg_parallel,
     multigpu_mode,
@@ -186,6 +188,7 @@ from .diffusion_memory import (
     ACTIVATION_TILE,
     DeviceMemory,
     ImageActivationShortfallError,
+    OFFLOAD_GROUP,
     OFFLOAD_MODEL,
     OFFLOAD_NONE,
     OFFLOAD_STREAMING,
@@ -218,6 +221,11 @@ from .diffusion_memory import (
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
+    prefer_whole_module_offload,
+    whole_tier_request_costs,
+    pin_denoiser_for_call,
+    measured_image_runtime_mib,
+    WHOLE_TIER_ATTR,
     learned_peak_label,
     CFG_OFF_PART,
     cfg_off_peaks_enabled,
@@ -279,6 +287,7 @@ from .diffusion_speed import (
     settle_compile_fallback,
     snapshot_backend_flags,
 )
+from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_vae_upcast import pipeline_upcasts_keep_storage
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
@@ -422,6 +431,8 @@ from .diffusion_comfy_quant import (
 )
 from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
 from .diffusion_prequant import (
+    PrequantIntoError,
+    PrequantSource,
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
     local_prequant_path_ready,
@@ -1069,6 +1080,17 @@ def _is_source_sized(workflow: str, family: Any = None) -> bool:
     if workflow == "edit":
         return family is None or bool(getattr(family, "edit", False))
     return workflow in ("img2img", "inpaint", "upscale")
+
+
+def _release_prefix_kv(pipe: Any) -> None:
+    """Drop the denoiser's prefix KV caches (and a CFG-parallel replica's copies) before VAE decode."""
+    try:
+        released = release_prefix_kv(getattr(pipe, "transformer", None))
+        if released:
+            release_cfg_prefix_kv(pipe)
+            logger.debug("diffusion.prefix_kv: %d MiB released before decode", released >> 20)
+    except Exception as exc:  # noqa: BLE001 - a memory saving only
+        logger.debug("diffusion.prefix_kv: release failed: %s", exc)
 
 
 def _compile_shape_dims(
@@ -2841,6 +2863,121 @@ def _start_peak_probe(state: Any) -> Any:
         return probe
     except Exception:  # noqa: BLE001 - measurement only
         return None
+
+
+def _graphs_settled_eager(state: Any) -> bool:
+    """No CUDA graph can still record over the denoiser placement (graphs key on weight addresses)."""
+    pipe = getattr(state, "pipe", None)
+    handles = tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()) or tuple(
+        getattr(state, "cuda_graphs", ()) or ()
+    )
+    try:
+        if cuda_graph.live_graph_count(_peak_device_index(state)):
+            return False
+    except Exception:  # noqa: BLE001 - unreadable: something may be recorded
+        return False
+    for handle in handles:
+        if getattr(handle, "poisoned", False):
+            continue
+        declined = getattr(handle, "_placement_declined", None)
+        if (
+            callable(declined)
+            and declined()
+            and getattr(handle, "fallback_handle", None) is None
+            and getattr(handle, "fallback", None) is None
+        ):
+            continue
+        return False
+    return True
+
+
+def _whole_tier_for_request(
+    state: Any,
+    *,
+    steps: int,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int,
+    cfg: Optional[bool],
+    condition_pixels: int,
+    workflow: Optional[str] = None,
+    logger: Any = None,
+) -> Optional[tuple[float, float, int]]:
+    """``(whole s, streamed s, activation MiB)`` if this request should run the denoiser whole, else None.
+    Blocks compile below their offload hooks, so compiled code never sees the pin; a pending background compile or a
+    CUDA graph that could still record keeps the streamed plan. Without a learned pre-decode peak the call streams."""
+    pipe = getattr(state, "pipe", None)
+    if getattr(state, "offload_policy", None) != OFFLOAD_GROUP or getattr(
+        state, "transformer_cache", None
+    ):
+        return None
+    if int(condition_pixels or 0) > 0:
+        # no learned peak covers condition images
+        return None
+    try:
+        family, label, speed = _live_peak_identity(state)
+    except Exception:  # noqa: BLE001
+        return None
+    tier_info = getattr(pipe, WHOLE_TIER_ATTR, None)
+    if isinstance(tier_info, dict) and speed == SPEED_OFF:
+        # remembered: a deferred profile later rewrites the load's key, and post-capture renders record under none
+        tier_info.setdefault("eager_peak_label", without_cfg_off(str(label)))
+    costs = whole_tier_request_costs(
+        pipe,
+        steps = steps,
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        cfg = cfg,
+        condition_pixels = condition_pixels,
+    )
+    if costs is None or costs[0] >= costs[1]:
+        return None
+    bg = getattr(state, "bg_compile", None)
+    if bg is not None and bg.pending():
+        return None
+    if not _graphs_settled_eager(state):
+        return None
+    if speed is None:
+        return None
+    # a deferred compile tier records nothing: its eager peak (not exceeded when compiled) stands in
+    keys = [(label, speed), (label, SPEED_OFF)]
+    loaded = getattr(pipe, "_unsloth_peak_identity", None)
+    if isinstance(loaded, tuple) and len(loaded) == 3:
+        loaded_label = str(loaded[1])
+        if CFG_OFF_PART in str(label).split("|"):
+            loaded_label = f"{without_cfg_off(loaded_label)}|{CFG_OFF_PART}"
+        keys += [(loaded_label, tier) for tier in (loaded[2], SPEED_OFF) if tier is not None]
+    eager_label = tier_info.get("eager_peak_label") if isinstance(tier_info, dict) else None
+    if eager_label:
+        if CFG_OFF_PART in str(label).split("|"):
+            eager_label = f"{eager_label}|{CFG_OFF_PART}"
+        keys.append((eager_label, SPEED_OFF))
+    activation = None
+    for key_label, tier in dict.fromkeys(keys):
+        activation = measured_image_runtime_mib(
+            family,
+            tier,
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            quant = with_workflow(key_label, workflow),
+            static_seed = False,
+            phase = "pre_decode",
+        )
+        if activation is not None:
+            break
+    if activation is None:
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: a %d-step render prices the denoiser whole (%.2f s vs %.2f s streamed), but no "
+                "pre-decode peak is learned for its size yet: it streams",
+                int(steps),
+                costs[0],
+                costs[1],
+            )
+        return None
+    return costs[0], costs[1], int(activation)
 
 
 def _peak_device_index(state: Any) -> Optional[int]:
@@ -9115,7 +9252,26 @@ class DiffusionBackend:
                                     else {}
                                 )
                                 engaged: list[str] = []
-                                for attr, _module in denoisers:
+                                cached_scheme = (
+                                    self._pipeline_quant_from_cache(
+                                        pipe,
+                                        fam,
+                                        denoisers,
+                                        target = target,
+                                        transformer_quant = transformer_quant,
+                                        fast_accum = transformer_quant_fast_accum,
+                                        loras = loras,
+                                        base = base,
+                                        fetch_base = fetch_base,
+                                        source_base = _base_local_dir or fetch_base,
+                                        hf_token = hf_token,
+                                    )
+                                    if native_scheme is None
+                                    else None
+                                )
+                                if cached_scheme is not None:
+                                    engaged.append(cached_scheme)
+                                for attr, _module in denoisers if cached_scheme is None else ():
                                     scheme = quantize_transformer(
                                         pipe
                                         if attr == "transformer"
@@ -9131,7 +9287,13 @@ class DiffusionBackend:
                                     if scheme is None:
                                         break
                                     engaged.append(scheme)
-                                if engaged and len(engaged) == len(denoisers):
+                                if (
+                                    engaged
+                                    and len(engaged) == len(denoisers)
+                                    and cached_scheme is not None
+                                ):
+                                    transformer_quant_engaged = cached_scheme
+                                elif engaged and len(engaged) == len(denoisers):
                                     transformer_quant_engaged = engaged[0]
                                     self._save_pipeline_quant_to_cache(
                                         pipe,
@@ -9667,6 +9829,20 @@ class DiffusionBackend:
                             cache = peak_cache,
                             graphs = peak_graphs,
                         )
+                        try:
+                            plan_steps, _ = default_generation_params(
+                                *((fam.name,) if is_flux3_family(fam) else ()),
+                                gguf_filename,
+                                content_variant_hint(repo_id, gguf_filename),
+                                repo_id,
+                                base,
+                                fam.name,
+                            )
+                        except Exception:  # noqa: BLE001 - unpriced: the unconditional switch
+                            plan_steps = None
+                        plan = prefer_whole_module_offload(
+                            pipe, plan, logger = logger, steps = plan_steps
+                        )
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
                             plan.resident_transformer_mib or plan.resident_text_encoder_mib
@@ -9682,6 +9858,7 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_learned_peak_quadratic"),
                                 plan.estimates.get("measured_static_seed", True),
                                 plan.estimates.get("measured_learned_cfg_off", False),
+                                plan.estimates.get("measured_dense_bf16", False),
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
@@ -10426,6 +10603,85 @@ class DiffusionBackend:
             )
             check_cancelled()
         return pipe, scheme
+
+    @staticmethod
+    def _pipeline_quant_from_cache(
+        pipe: Any,
+        fam: Any,
+        denoisers: Any,
+        *,
+        target: Any,
+        transformer_quant: Optional[str],
+        fast_accum: Optional[bool],
+        loras: Any,
+        base: Optional[str],
+        fetch_base: Optional[str],
+        source_base: Optional[str],
+        hf_token: Optional[str],
+    ) -> Optional[str]:
+        """Hosted checkpoints are not read: the published FLUX.2-klein-4B INT8 renders different pixels."""
+        try:
+            names = [attr for attr, _module in (denoisers or ())]
+            transformer = getattr(pipe, "transformer", None)
+            if (
+                fam is None
+                or transformer is None
+                or names != ["transformer"]
+                or _has_active_lora(loras)
+            ):
+                return None
+            family = getattr(fam, "name", None)
+            if native_quant_scheme(target, transformer_quant, family = family) is not None:
+                return None
+            scheme = select_transformer_quant_scheme(
+                target, transformer_quant, family = family, base_repo = base
+            )
+            from .diffusion_prequant_cache import CACHEABLE_SCHEMES, lookup, note_hit
+
+            if scheme not in CACHEABLE_SCHEMES or transformer_is_quantised(transformer):
+                return None
+            cached = lookup(fam, scheme, base_repo = base, source_base = source_base, logger = logger)
+            if not cached:
+                return None
+            first = next(iter(transformer.parameters()), None)
+            here = str(first.device) if first is not None else "cpu"
+            t0 = time.perf_counter()
+            loaded = load_prequantized_transformer(
+                type(transformer),
+                fetch_base or base,
+                PrequantSource(kind = "path", location = cached, filename = None),
+                device = str(getattr(target, "device", None) or here),
+                dtype = getattr(first, "dtype", None),
+                hf_token = hf_token,
+                scheme = scheme,
+                min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                fast_accum = fast_accum,
+                cache_dir = hub_cache_dir(),
+                local_files_only = True,
+                logger = logger,
+                placement_device = here,
+                family = family,
+                into = transformer,
+            )
+            if loaded is None:
+                if transformer_is_quantised(transformer):
+                    raise PrequantIntoError("the cached build was partly applied and then failed")
+                return None
+            note_hit(cached, logger)
+            logger.info(
+                "diffusion.transformer_quant: %s read from the local prequant cache in %.1f s (no re-quantize)",
+                scheme,
+                time.perf_counter() - t0,
+            )
+            return scheme
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, PrequantIntoError):
+                raise RuntimeError(
+                    f"transformer_quant='{transformer_quant}' could not finish loading its cached build ({exc}); "
+                    "reload to quantize it fresh"
+                ) from exc
+            logger.warning("diffusion.prequant_cache: read skipped (%s)", exc)
+            return None
 
     @staticmethod
     def _save_pipeline_quant_to_cache(
@@ -12195,6 +12451,8 @@ class DiffusionBackend:
             restore_vae: Optional[Callable[[], None]] = None
             restore_resident: Optional[Callable[[], None]] = None
             bg = None
+            # Kicked from the finally below: an offloaded denoiser's placement (restore_resident) must be back first.
+            kick_bg = False
             bg_eager = False
             bg_token = None
             # A Detailer crop inpaint (diffusion_bg_compile.auxiliary_pass): eager, uncounted, nothing recorded.
@@ -12686,6 +12944,7 @@ class DiffusionBackend:
                         )
                 guard_width = guard_height = guard_target = None
                 guard_batch = 1
+                guard_condition_pixels = 0
 
                 try:
                     # Forward dims, not sliders: conditioned workflows size from the input image; same derivation as the compile-cache registration below.
@@ -12911,10 +13170,16 @@ class DiffusionBackend:
                             _report(chunk_ticker[0].completed())
                     if cancel.is_set():
                         pipe._interrupt = True
+                    cross_forward_step(pipe, step_index)
+                    # Last denoise step issued: the prefix KV cache (Qwen-Image-2.1) is dead weight through decode.
+                    num_steps = getattr(pipe, "_num_timesteps", None)
+                    if isinstance(num_steps, int) and step_index + 1 >= num_steps:
+                        _release_prefix_kv(pipe)
                     return callback_kwargs
 
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+                    track_prefix_kv(getattr(pipe, "transformer", None))
                 # Hires fix latent upscaler (ComfyUI LatentUpscale): the base pass hands the refine pass its latents,
                 # so it skips the VAE decode and the image post-processing that only the discarded pixels needed.
                 latent_output = bool(
@@ -12943,6 +13208,8 @@ class DiffusionBackend:
                             sd_controls.variation_strength if sd_controls is not None else None,
                         ),
                         pipeline_upcasts_keep_storage(pipe),
+                        # Only with the step callback: it stops the carry before the last step's decode.
+                        cross_forward_render(pipe, enabled = "callback_on_step_end" in chunk_kwargs),
                     ):
                         return pipe(**chunk_kwargs).images
 
@@ -12981,7 +13248,40 @@ class DiffusionBackend:
                     state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)
                 except Exception:  # noqa: BLE001 - an unknown guidance mode records nothing
                     state.pipe._unsloth_peak_cfg = None
-                peak_probe = _start_peak_probe(state)
+                whole_tier = None
+                if _hires_pass is None and not aux_pass and not bg_eager:
+                    try:
+                        whole_tier = _whole_tier_for_request(
+                            state,
+                            steps = denoise_steps,
+                            width = guard_width,
+                            height = guard_height,
+                            # the largest forward this request runs, not the activation guard's singleton floor
+                            batch_size = max((len(chunk) for chunk in chunks), default = 1),
+                            cfg = getattr(state.pipe, "_unsloth_peak_cfg", None),
+                            condition_pixels = guard_condition_pixels,
+                            workflow = workflow,
+                            logger = logger,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - the load's streamed plan
+                        logger.debug(
+                            "diffusion.memory: per-request whole denoiser skipped (%s)", exc
+                        )
+                        whole_tier = None
+                whole_release: list = []
+
+                def _release_whole_denoiser() -> None:
+                    while whole_release:
+                        try:
+                            whole_release.pop()()
+                        except Exception as release_exc:  # noqa: BLE001 - the groups keep their state
+                            logger.warning(
+                                "diffusion.memory: streaming the denoiser again failed (%s)",
+                                release_exc,
+                            )
+
+                # a whole-denoiser call's peak is not the streamed placement's
+                peak_probe = None if whole_tier is not None else _start_peak_probe(state)
                 decode_restores: list = []
                 try:
                     previewer = _start_previewer()
@@ -13051,6 +13351,23 @@ class DiffusionBackend:
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
                             if state.te_releaser is not None:
                                 state.te_releaser.release()
+                            if whole_tier is not None and not whole_release:
+                                # pinned after the encode, released before the decode
+                                release = pin_denoiser_for_call(
+                                    state.pipe,
+                                    getattr(guard_target, "torch_device", None) or state.device,
+                                    activation_mib = whole_tier[2],
+                                    logger = logger,
+                                )
+                                if release is not None:
+                                    whole_release.append(release)
+                                    logger.info(
+                                        "diffusion.memory: this %d-step render runs the denoiser whole (priced "
+                                        "%.2f s vs %.2f s streamed)",
+                                        int(denoise_steps),
+                                        whole_tier[0],
+                                        whole_tier[1],
+                                    )
 
                         chunk_ticker[0] = _CompletedStepTicker(progress_steps)
 
@@ -13060,6 +13377,7 @@ class DiffusionBackend:
                             to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
                             if peak_probe is not None:
                                 peak_probe.mark_decode()
+                            _release_whole_denoiser()
                             # encoder residency lent to the decode streams again only if free memory is short now
                             restore = release_for_decode(
                                 state.pipe,
@@ -13135,6 +13453,7 @@ class DiffusionBackend:
                             )
                             continue
                         finally:
+                            _release_whole_denoiser()
                             while decode_restores:
                                 try:
                                     decode_restores.pop()()
@@ -13205,7 +13524,7 @@ class DiffusionBackend:
                     # Nothing compiled ran, so nothing to register or save yet.
                     bg.note_eager_generation()
                     if _hires_pass is None or not _hires_pass.defer_bg_kick:
-                        bg.kick()
+                        kick_bg = True
                 else:
                     try:
                         # Register the dims the forward ACTUALLY compiled with, and each distinct chunk size: a static compile makes one artifact per batch size.
@@ -13335,6 +13654,11 @@ class DiffusionBackend:
                         restore_resident()
                     except Exception as exc:  # noqa: BLE001 - the groups keep streaming
                         logger.warning("diffusion.memory: re-residency failed: %s", exc)
+                if kick_bg and bg is not None:
+                    try:
+                        bg.kick()
+                    except Exception as exc:  # noqa: BLE001 - the next render compiles inline
+                        logger.warning("diffusion.bg_compile: kick failed: %s", exc)
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
@@ -13858,22 +14182,52 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
 
 
 def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
-    """Group-offloads the ControlNet when the base is offloaded (resident .to(device) can OOM); returns True on success, else caller falls back to resident."""
+    """Stream a ControlNet module through ``device`` via diffusers group offloading. Used when the
+    base model was loaded with an offload policy: forcing the ControlNet fully resident with
+    ``.to(device)`` would defeat that low-VRAM placement and can OOM. Group offloading is applied
+    to this single module, so it is isolated and reversible. Returns True on success; on any
+    failure the caller falls back to a resident placement (a calibrated tier refuses instead).
+
+    On CUDA: ``record_stream`` (without it diffusers synchronizes the compute stream on every group offload),
+    and the event-fenced ``GroupPrefetcher`` replaces diffusers' host-synced prefetch chain."""
     try:
+        import inspect
+
         import torch
         from diffusers.hooks import apply_group_offloading
 
+        from .diffusion_memory import _apply_group_offloading_packed
         from .host_pinning import host_pinning_allowed
 
         onload = torch.device(device)
-        apply_group_offloading(
-            cn_model,
-            onload_device = onload,
-            offload_device = torch.device("cpu"),
-            offload_type = "block_level",
-            num_blocks_per_group = 1,
-            use_stream = onload.type == "cuda" and host_pinning_allowed(onload),
-        )
+        use_stream = onload.type == "cuda" and host_pinning_allowed(onload)
+        kwargs: dict[str, Any] = {
+            "onload_device": onload,
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": 1,
+            "use_stream": use_stream,
+        }
+        params = inspect.signature(apply_group_offloading).parameters
+        prefetch = use_stream and "record_stream" in params and "non_blocking" in params
+        if prefetch:
+            from .diffusion_memory import (
+                _pin_top_level_group,
+                _skip_top_level_copy_back,
+                install_group_offload_buffer_restore,
+                install_group_offload_hooks_eager,
+                install_group_prefetch,
+            )
+
+            install_group_offload_buffer_restore()
+            install_group_offload_hooks_eager()
+            kwargs["non_blocking"] = True
+            kwargs["record_stream"] = True
+        _apply_group_offloading_packed(apply_group_offloading, cn_model, kwargs, logger)
+        if prefetch:
+            if not _pin_top_level_group(cn_model, logger):
+                _skip_top_level_copy_back(cn_model, logger)
+            install_group_prefetch(cn_model, onload, logger)
         return True
     except Exception as exc:  # noqa: BLE001 - offload is best-effort; resident is the fallback
         if logger is not None:

@@ -745,6 +745,53 @@ def _ensure_process_group(
     return dist
 
 
+_NCCL2_WARNED = False
+# GPUs at or below this size are where nccl2's extra per-rank memory is worth a warning.
+_NCCL2_WARN_MAX_BYTES = 24 * 2**30
+
+
+def _uses_nccl2(dist, device):
+    """torch 2.14's nccl2 backend; TORCH_DIST_USE_NCCL2=1 still reports "nccl", so check the object."""
+    try:
+        group = dist.distributed_c10d._get_default_group()
+        impl = type(group._get_backend(device)).__name__
+        return impl == "ProcessGroupNCCL2"
+    except Exception:
+        pass
+    try:
+        name = str(dist.get_backend()).lower()
+    except Exception:
+        return False
+    return name == "nccl2" or (
+        name == "nccl" and os.environ.get("TORCH_DIST_USE_NCCL2", "").strip() == "1"
+    )
+
+
+def _warn_nccl2_memory(dist, device):
+    """Under nccl2 every rank seeing GPU 0 makes a CUDA context there (torch 2.14.1, 2 x T4: 102 MiB
+    per rank, plain nccl none), so small GPU 0 runs out first."""
+    global _NCCL2_WARNED
+    if _NCCL2_WARNED or device.type != "cuda":
+        return
+    try:
+        if dist.get_world_size() < 2 or torch.cuda.device_count() < 2:
+            return
+        if torch.cuda.get_device_properties(device).total_memory > _NCCL2_WARN_MAX_BYTES:
+            return
+    except Exception:
+        return
+    if not _uses_nccl2(dist, device):
+        return
+    _NCCL2_WARNED = True
+    _print_rank0(
+        "Unsloth: the process group uses the nccl2 backend (backend = 'nccl2' or "
+        "TORCH_DIST_USE_NCCL2=1). Under nccl2 every other rank also builds a CUDA context on GPU 0 "
+        "(about 0.1 GiB each on 2 x T4, more on larger GPUs and grows with the number of ranks), so "
+        "GPU 0 has less memory than the others. On GPUs of 24 GB or less prefer the default 'nccl' "
+        "backend (unset TORCH_DIST_USE_NCCL2), or launch each rank with only its own GPU visible."
+    )
+
+
 def _default_mesh(device, dist):
     from torch.distributed.device_mesh import init_device_mesh
     return init_device_mesh(device.type, (dist.get_world_size(),))
@@ -1382,6 +1429,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
         torch.cuda.set_device(device)
+    _warn_nccl2_memory(dist, device)
     mesh = config.mesh if config.mesh is not None else _default_mesh(device, dist)
     _sync_trainable_from_first_rank(model, dist, device, config.mesh)
     param_dtype = _resolve_param_dtype(model, config)
@@ -1645,11 +1693,12 @@ def native_clip_grad_norm_(
             else:
                 # complex grads give real norms; every rank must gather the same dtype.
                 norm_dtype = dtype.to_real() if dtype.is_complex else dtype
-                values = torch.full(
-                    (len(idx),), math.inf if p < 0 else 0.0, device = device, dtype = norm_dtype
-                )
-                if live:
-                    values[torch.tensor(live, device = device)] = torch.stack(norms).to(device)
+                # Host-side interleave: torch.tensor(live, device = cuda) was a blocking H2D copy per step.
+                fill = torch.full((), math.inf if p < 0 else 0.0, device = device, dtype = norm_dtype)
+                slots = [fill] * len(idx)
+                for k, n in zip(live, norms):
+                    slots[k] = n.to(device = device, dtype = norm_dtype)
+                values = torch.stack(slots)
             chunks.append(values)
         return chunks
 
@@ -2134,13 +2183,62 @@ def native_load_optimizer(model, optimizer, path_or_state):
 
     # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
     rename_optimizer_state_for(_inner_optimizer(optimizer), state)
-    set_optimizer_state_dict(
-        _native_root(model),
-        _inner_optimizer(optimizer),
-        state,
-        options = StateDictOptions(full_state_dict = True),
-    )
+    root = _native_root(model)
+    inner = _inner_optimizer(optimizer)
+    unstepped = _unstepped_optimizer_params(root, inner, state)
+    # torch refuses a trainable parameter without saved state, and strict = False would keep the
+    # fresh init state for it. Hiding these (requires_grad off) leaves them stateless, as saved.
+    try:
+        for param in unstepped:
+            param.requires_grad_(False)
+        set_optimizer_state_dict(
+            root,
+            inner,
+            state,
+            options = StateDictOptions(full_state_dict = True),
+        )
+    finally:
+        for param in unstepped:
+            param.requires_grad_(True)
+    for param in unstepped:
+        inner.state.pop(param, None)
     return state
+
+
+def _unstepped_optimizer_params(root, optimizer, state):
+    """Trainable parameters listed in the saved param groups but with no saved state (never got a
+    gradient). Raises for one not listed at all: another model's optimizer."""
+    saved_state = state.get("state") or {}
+    if not isinstance(saved_state, dict) or all(isinstance(k, int) for k in saved_state):
+        return []  # not keyed by FQN: torch loads it as given
+    try:
+        from torch.distributed.checkpoint.state_dict import _get_fqns
+    except ImportError:
+        _get_fqns = None
+    fqns = {}
+    for name, param in root.named_parameters(remove_duplicate = False):
+        names = _get_fqns(root, name) if _get_fqns is not None else {name}
+        fqns.setdefault(param, set()).update(names)
+    listed = {f for g in state.get("param_groups") or [] for f in (g.get("params") or [])}
+    saved = set(saved_state)
+    unstepped, seen, unknown = [], set(), []
+    for group in optimizer.param_groups:
+        for param in group["params"]:
+            names = fqns.get(param)
+            if not param.requires_grad or not names or names & saved:
+                continue
+            if names & listed:
+                if id(param) not in seen:
+                    seen.add(id(param))
+                    unstepped.append(param)
+            else:
+                unknown.append(sorted(names)[0])
+    if unknown:
+        raise RuntimeError(
+            f"Unsloth: the optimizer checkpoint has no entry for {unknown[0]} ({len(unknown)} "
+            "parameters), so it was not saved from this model's optimizer."
+        )
+    return unstepped
 
 
 # Sharded (torch.distributed.checkpoint) resume. The optimizer directory is opt-in
@@ -2244,7 +2342,12 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     # The target layout: this rank's shards (empty optimizer state is initialised first).
     state = get_optimizer_state_dict(root, optimizer, options = options)
     unstepped = _match_saved_optimizer_keys(state, directory, root)
+    # Hyperparameter keys the checkpoint lacks (another optimizer class, or an older torch) keep this
+    # optimizer's values; dcp.load would refuse them as missing.
+    unsaved = _drop_unsaved_group_keys(state, directory)
     dcp.load(state, checkpoint_id = os.fspath(directory), process_group = group)
+    for index, key, value in unsaved:
+        state["param_groups"][index].setdefault(key, value)
     if unstepped:
         # Parameters the saved optimizer held but never stepped: listed in its (now loaded) param
         # groups, without state. Anything else without state is not this optimizer's checkpoint.
@@ -2263,6 +2366,23 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     rename_optimizer_state_for(optimizer, state)
     set_optimizer_state_dict(root, optimizer, state, options = options)
     return state
+
+
+def _drop_unsaved_group_keys(state, directory):
+    """Removes (and returns as (group index, key, value)) the param group entries of the dcp.load
+    target that the checkpoint does not hold."""
+    from torch.distributed.checkpoint import FileSystemReader
+
+    metadata = FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
+    dropped = []
+    for index, group in enumerate(state.get("param_groups") or []):
+        prefix = f"param_groups.{index}."
+        if not isinstance(group, dict) or not any(k.startswith(prefix) for k in metadata):
+            continue  # not flattened per key: leave it to dcp.load
+        for key in [k for k in group if k != "params"]:
+            if prefix + key not in metadata:
+                dropped.append((index, key, group.pop(key)))
+    return dropped
 
 
 def _match_saved_optimizer_keys(
@@ -2290,6 +2410,14 @@ def _match_saved_optimizer_keys(
         entry = per_param[fqn]
         for name in [n for n in entry if f"state.{fqn}.{n}" not in metadata]:
             del entry[name]
+        for name, value in list(entry.items()):
+            # Saved as a tensor where this optimizer keeps a plain value (torch AdamW's tensor step
+            # resumed into bitsandbytes' int step): read the tensor, the rename converts it.
+            md = metadata[f"state.{fqn}.{name}"]
+            size = getattr(md, "size", None)
+            dtype = getattr(getattr(md, "properties", None), "dtype", None)
+            if not isinstance(value, torch.Tensor) and size is not None and dtype is not None:
+                entry[name] = torch.empty(tuple(size), dtype = dtype)
         if not entry:
             del per_param[fqn]
             unstepped.append(fqn)
@@ -3364,10 +3492,26 @@ def _refuse_parallelism_config(training_args):
         )
 
 
+def _expert_parallel_requested(model):
+    """from_pretrained(distributed_config = DistributedConfig(enable_expert_parallel = True))."""
+    for m in (model, getattr(model, "get_base_model", lambda: None)()):
+        dc = getattr(getattr(m, "config", None), "distributed_config", None)
+        if dc is None:
+            continue
+        ep = (
+            dc.get("enable_expert_parallel")
+            if isinstance(dc, dict)
+            else getattr(dc, "enable_expert_parallel", False)
+        )
+        if ep is True:
+            return True
+    return False
+
+
 def _refuse_tensor_parallel_model(model):
-    """A model loaded with a tensor-parallel plan (from_pretrained(tp_plan = ...)) already holds
-    DTensor parameters on its own mesh; the Trainer would also build a ParallelismConfig from its
-    tp_size. Native FSDP2 cannot shard it again."""
+    """A model loaded with tp_plan or expert parallelism already holds DTensor / per-rank expert
+    parameters on its own mesh, and the Trainer would build a ParallelismConfig from its tp_size.
+    Native FSDP2 cannot shard it again."""
     if not isinstance(model, nn.Module) or getattr(model, _NATIVE_FLAG, False):
         return
     tp_size = getattr(model, "tp_size", None)
@@ -3375,12 +3519,36 @@ def _refuse_tensor_parallel_model(model):
         tp_size = int(tp_size) if tp_size is not None else None
     except (TypeError, ValueError):
         tp_size = None
+    # tp_size > 1 too: a stale distributed_config on a model loaded without one is not expert parallel.
+    if (tp_size or 1) > 1 and _expert_parallel_requested(model):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 got a model loaded with transformers expert parallelism "
+            f"(DistributedConfig(enable_expert_parallel = True), tp_size = {tp_size}): its experts are "
+            "already split over the ranks, and FSDP2 would shard them again. Load it without "
+            "distributed_config for native FSDP2, which shards every expert over all ranks itself."
+        )
     DTensor = None
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
         pass
     dtensor = DTensor is not None and any(isinstance(p, DTensor) for p in model.parameters())
+    # Any level or module (the marker sits on every wrapper level apply_tensor_parallel was given or below).
+    if any(
+        m.__dict__.get("_unsloth_tp") or m.__dict__.get("_unsloth_tp_style")
+        for m in model.modules()
+    ):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 does not compose with Unsloth tensor parallelism "
+            "(apply_tensor_parallel) yet; train a tensor parallel model with a custom loop over the tp "
+            "ranks only (data parallel size 1)."
+        )
+    if any(m.__dict__.get("_unsloth_pp") for m in model.modules()):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 does not compose with Unsloth pipeline parallelism "
+            "(apply_pipeline_parallel) yet; train a pipeline parallel model with PipelineParallel.step "
+            "over the pp ranks only (data parallel size 1)."
+        )
     if (tp_size or 1) > 1 or dtensor:
         raise RuntimeError(
             "Unsloth: native FSDP2 got a model that is already distributed (tensor-parallel tp_plan, "

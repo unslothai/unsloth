@@ -477,7 +477,11 @@ from utils.first_token_timeout import (
     start_first_token_wait,
 )
 
-# Leaf module, not utils.models: its __init__ pulls in PyYAML, and this chat backend must not make the models package a hard dependency.
+# The leaf module, not utils.models: importing anything from that package runs its __init__,
+# which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
+# Unsloth's Python is, so it must not make the whole models package a hard import dependency.
+from utils import gguf_archs as _gguf_archs
+from utils import gguf_names as _gguf_names
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
@@ -922,6 +926,165 @@ _GPU_DEVICE_PREFIXES = (
     "musa",
     "cann",
 )
+
+
+# Any backend's "model buffer size" line (CUDA0, CPU_Mapped, RPC0[host:port], ...).
+_MODEL_BUFFER_RE = re.compile(
+    r"\b([A-Za-z][^\s=]*)\s+model buffer size\s*=\s*([0-9]+(?:\.[0-9]+)?)\s+MiB\b"
+)
+# --fit's verdict per device, e.g. "- CUDA0 (NVIDIA GeForce RTX 3090): 31 layers ( 8 overflowing), 22815 MiB used".
+# An overflowing layer keeps its MoE experts (or part of a layer) out of that device's memory.
+_FIT_DEVICE_RE = re.compile(
+    r"common_params_fit_impl:\s+-\s+(?P<device>[A-Za-z]+\d+)\s+\(.*?\):\s+(?P<layers>\d+)\s+layers?"
+    r"\s*(?:\(\s*(?P<overflow>\d+)\s+overflowing\s*\))?\s*,\s*\d+\s+MiB used"
+)
+# The MoE-only fill: printed for a model with experts, whose GPU layers then hold only their dense weights.
+_FIT_DENSE_ONLY_MARK = "filling dense-only layers back-to-front"
+# From here the per-device lines carry an explicit "(N overflowing)" count.
+_FIT_FULL_LAYERS_MARK = "converting dense-only layers to full layers"
+# One extra partial layer squeezed onto device i; on any device but the last it overflows to the NEXT GPU, not RAM.
+_FIT_EXTRA_LAYER_RE = re.compile(
+    r"set ngl_per_device\[(?P<index>\d+)\]\.\(n_layer, n_part, overflow_type\)=\(\d+, \d+, (?:UP|GATE|ATTN)\)"
+)
+# --moe-cache-mib auto: every routed expert stays in host RAM and a cache of the busiest ones goes on the GPU. --fit
+# returns before any per-device line on this path.
+_FIT_MOE_CACHE_RE = re.compile(
+    r"moe cache auto: all routed experts in host RAM, cache (?P<mib>\d+) MiB"
+)
+
+
+def _host_buffer(name: str) -> bool:
+    """CPU* buffers, AMX and a GPU backend's pinned host buffer (CUDA_Host) live in system memory."""
+    upper = name.upper()
+    return "CPU" in upper or upper.endswith("_HOST") or upper == "AMX"
+
+
+def parse_weight_placement(
+    lines: "list[str]", model_bytes: Optional[int] = None
+) -> "Optional[dict]":
+    """Where llama.cpp put the main model's weights, from its startup log.
+
+    ``gpu_mib`` / ``host_mib`` sum the main model's buffer block, the first allocated one (dry runs log 0.00 MiB).
+    "offloaded 31/31" hides an expert spill, so ``overflow_layers`` comes from --fit's final per-device
+    lines; the last device's count includes the output layer, which spills nothing (a 3090 gemma-4-26B
+    load printing "8 overflowing" holds exactly seven layers' worth in CUDA_Host). None without --fit.
+    A ``*_Mapped`` buffer logs its mmap span, first to last host tensor, which covers GPU tensors in
+    between when experts spill; ``model_bytes`` (the main GGUF set) caps host at the file minus the GPU side."""
+    blocks: list[list] = []
+    current: Optional[list] = None
+    # A build without GPU offload logs no "offloaded N/M layers" line, only the buffers: each run of them is a block.
+    unmarked = False
+    moe = False
+    full_phase = False
+    # device -> (layers, overflow or None for a dense-only line), in the order of the final verdict
+    verdict: dict[str, tuple[int, Optional[int]]] = {}
+    dense_only_order: list[str] = []
+    extra_layer_on: set[int] = set()
+    expert_cache_mib: Optional[float] = None
+    for line in lines:
+        if _FIT_DENSE_ONLY_MARK in line:
+            moe = True
+            continue
+        if _FIT_FULL_LAYERS_MARK in line:
+            full_phase = True
+            verdict = {}
+            continue
+        cache = _FIT_MOE_CACHE_RE.search(line)
+        if cache is not None:
+            expert_cache_mib = float(cache.group("mib"))
+            continue
+        extra = _FIT_EXTRA_LAYER_RE.search(line)
+        if extra is not None and full_phase:
+            extra_layer_on.add(int(extra.group("index")))
+            continue
+        fit = _FIT_DEVICE_RE.search(line)
+        if fit is not None:
+            device = fit.group("device")
+            overflow = fit.group("overflow")
+            verdict[device] = (
+                int(fit.group("layers")),
+                int(overflow) if overflow is not None else None,
+            )
+            if not full_phase and device not in dense_only_order:
+                dense_only_order.append(device)
+            continue
+        counts = _OFFLOADED_LAYERS_RE.search(line)
+        if counts is not None:
+            current, unmarked = [int(counts.group(2)), 0.0, 0.0, False], False
+            blocks.append(current)
+            continue
+        buffer = _MODEL_BUFFER_RE.search(line)
+        if buffer is None:
+            if unmarked:
+                current, unmarked = None, False
+            continue
+        if current is None:
+            current, unmarked = [0, 0.0, 0.0, False], True
+            blocks.append(current)
+        mib = float(buffer.group(2))
+        if _host_buffer(buffer.group(1)):
+            current[2] += mib
+            current[3] = current[3] or (mib > 0 and buffer.group(1).upper().endswith("_MAPPED"))
+        else:
+            current[1] += mib
+    # A no-alloc dry run logs the same block with every buffer at 0.00 MiB.
+    loaded = [block for block in blocks if block[1] + block[2] > 0]
+    if not loaded:
+        return None
+    # llama-server loads the main model before any drafter, which can have MORE layers (Gemma 4 E2B: 35 vs 26B A4B: 30).
+    main = loaded[0]
+    host_mib = main[2]
+    if main[3] and main[1] > 0 and model_bytes:
+        host_mib = min(host_mib, max(0.0, model_bytes / (1024 * 1024) - main[1]))
+
+    overflow: Optional[int] = None
+    if verdict:
+        devices = list(verdict)
+        overflow = 0
+        for index, device in enumerate(devices):
+            layers, counted = verdict[device]
+            if counted is None:
+                # Dense-only fill (filled back to front, so the first device it printed is the last one). A dense
+                # model's layers are full. The last device keeps one layer full and its output slot spills nothing.
+                if not moe:
+                    continue
+                last = bool(dense_only_order) and device == dense_only_order[0]
+                counted = max(0, layers - 2) if last else layers
+            elif index < len(devices) - 1:
+                if index in extra_layer_on and counted > 0:
+                    counted -= 1
+            elif counted > 0:
+                counted -= 1
+            overflow += counted
+    return {
+        "gpu_mib": round(main[1], 1),
+        "host_mib": round(host_mib, 1),
+        "overflow_layers": overflow,
+        "all_experts_in_ram": expert_cache_mib is not None,
+        "expert_cache_mib": expert_cache_mib,
+    }
+
+
+def _extra_weight_file_bytes(argv, env: Optional[Mapping[str, str]] = None) -> int:
+    """GGUF sets of the projector, local drafter and adapters a llama-server launch loads. arg.cpp reads
+    the ``LLAMA_ARG_*`` env first and lets argv override it, so ``env`` is the one the child got."""
+    tokens = [str(token) for token in argv] if isinstance(argv, (list, tuple)) else []
+    env_map = env or {}
+    projector: Optional[str] = None
+    for index, token in enumerate(tokens):
+        if _flag_name(token) not in ("--mmproj", "-mm"):
+            continue
+        _, eq, value = token.partition("=")
+        if eq:
+            projector = value
+        elif index + 1 < len(tokens):
+            projector = tokens[index + 1]
+    if projector is None:
+        projector = (env_map.get("LLAMA_ARG_MMPROJ") or "").strip() or None
+    drafter, remote = _extra_args_mtp_draft_source(tokens, env_map)
+    paths = [path for path in (projector, None if remote else drafter) if path]
+    paths += _sidecar_adapter_paths(tokens)
+    return sum(_gguf_set_bytes(Path(path)) for path in dict.fromkeys(paths))
 
 
 def parse_gpu_offload_counts(lines: "list[str]") -> "Optional[tuple[int, int]]":
@@ -2317,6 +2480,39 @@ _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
 
 
+def _gguf_set_bytes(path: Path) -> int:
+    """Size of a GGUF plus, when it is a split one, its sibling shards: llama-server opens the whole set."""
+    total = 0
+    try:
+        if path.is_file():
+            total += path.stat().st_size
+        m = _SHARD_FULL_RE.match(path.name)
+        if m is None or not path.parent.is_dir():
+            return total
+        # llama.cpp names a shard "<prefix>-<i>-of-<count>.gguf" from the first one's, so both must match: a
+        # drafter split as "<main prefix>-MTP-..." or a stale set with another count is not this set.
+        prefix, count = m.group(1).lower(), int(m.group(3))
+        for sibling in path.parent.iterdir():
+            if sibling.name == path.name:
+                continue
+            sibling_match = _SHARD_FULL_RE.match(sibling.name)
+            if (
+                sibling_match is None
+                or sibling_match.group(1).lower() != prefix
+                or int(sibling_match.group(3)) != count
+                or not 1 <= int(sibling_match.group(2)) <= count
+            ):
+                continue
+            try:
+                if sibling.is_file():
+                    total += sibling.stat().st_size
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return total
+
+
 # ── Sliding-window-pattern resolver ───────────────────────────
 # Period N: layer i is SWA iff (i+1) % N != 0. Absent: phi3 (no key/val length), qwen2 (converter strips the window), mistral v0.1/v0.2 (all-SWA is no period).
 _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
@@ -2886,61 +3082,30 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     return False
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
-_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+_DRAFTER_KINDS = _gguf_names.DRAFTER_KINDS
+_DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
 _DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash", "eagle3": "EAGLE-3"}
 
 
 def _drafter_path_kind(path: str) -> Optional[str]:
-    """Matches basename prefix or exact parent dir, never a substring: kind names are also family names."""
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return None
-    parts = [segment for segment in p.split("/") if segment]
-    name, parents = parts[-1], parts[:-1]
-    for kind in _DRAFTER_KINDS:
-        if name.startswith(f"{kind}-"):
-            return kind
-    for kind in _DRAFTER_DIR_KINDS:
-        if kind in parents:
-            return kind
-    return None
+    return _gguf_names.drafter_path_kind(path)
 
 
-_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
-# Mirrors hub.utils.gguf._IMATRIX_WEIGHTED_RE.
-_IMATRIX_WEIGHTED_RE = re.compile(
-    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
-)
+_IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
 
 
 def _is_companion_gguf_path(path: str) -> bool:
-    """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
-    drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
-    drafters for DeepSeek V4 Flash, the ``<model>-dspark-<quant>.gguf`` drafters for
-    prism-ml Bonsai, the ``eagle3-*.gguf`` draft heads). Mirrors
-    hub.utils.gguf so variant resolution never picks a companion as the main model --
-    a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
-    ahead of the real weight.
-
-    EXCLUSION ONLY. Use ``_is_mtp_only_drafter_path`` to pick a drafter to launch.
-    """
+    """Exclude companions from main-model selection; use _is_mtp_only_drafter_path for launch."""
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
     if "mmproj" in p:
         return True
-    # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
-    # holding calibration statistics, so only the name rules it out.
-    stem = Path(p).stem
-    if _IMATRIX_TOKEN_RE.search(stem) and not _IMATRIX_WEIGHTED_RE.search(stem):
+    if _gguf_names.is_imatrix_filename(p):
         return True
-    if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
-        return True
-    return _drafter_path_kind(path) is not None
+    return _gguf_names.is_mtp_drafter_path(path)
 
 
 def _is_mtp_only_drafter_path(path: str) -> bool:
@@ -2967,22 +3132,8 @@ def _is_root_dflash_drafter_path(path: str) -> bool:
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
-_GGUF_KNOWN_QUANT_RE = re.compile(
-    r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
-    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|P?TQ[0-9]+_[0-9]+"
-    r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
-    r"|Q[0-9]+_K"
-    r"|BF16|F16|F32)",
-    re.IGNORECASE,
-)
-# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_companion_gguf_path.
-_DSPARK_BEFORE_QUANT_RE = re.compile(
-    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
-    re.IGNORECASE,
-)
+_GGUF_KNOWN_QUANT_RE = _gguf_names.GGUF_QUANT_RE
+_DSPARK_BEFORE_QUANT_RE = _gguf_names.DSPARK_BEFORE_QUANT_RE
 
 
 def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
@@ -7118,6 +7269,8 @@ class LlamaCppBackend:
         self._gpu_offload_active: Optional[bool] = None
         # (offloaded, total) layers llama.cpp reported for this load, when it said.
         self._gpu_offload_layers: Optional[tuple[int, int]] = None
+        # parse_weight_placement's result for this load.
+        self._weight_placement: Optional[dict] = None
         # Whether the user's own extras pinned the layer split for this load.
         self._offload_overridden: bool = False
         # Studio saw a GPU for this load but llama.cpp's device table did not.
@@ -7573,6 +7726,29 @@ class LlamaCppBackend:
     def offload_total_layers(self) -> Optional[int]:
         return self._gpu_offload_layers[1] if self._gpu_offload_layers else None
 
+    def _placement_value(self, key: str):
+        placement = getattr(self, "_weight_placement", None)
+        return placement.get(key) if placement else None
+
+    @property
+    def gpu_weights_mib(self) -> Optional[float]:
+        return self._placement_value("gpu_mib")
+
+    @property
+    def host_weights_mib(self) -> Optional[float]:
+        return self._placement_value("host_mib")
+
+    @property
+    def overflow_layers(self) -> Optional[int]:
+        """Under --moe-cache-mib auto every routed expert is in RAM, so this is every MoE layer."""
+        if self._placement_value("all_experts_in_ram"):
+            return self.n_moe_layers or None
+        return self._placement_value("overflow_layers")
+
+    @property
+    def expert_cache_mib(self) -> Optional[float]:
+        return self._placement_value("expert_cache_mib")
+
     @property
     def gpu_backend_unavailable(self) -> bool:
         """Studio found a GPU for this load but llama.cpp reported none."""
@@ -7675,22 +7851,105 @@ class LlamaCppBackend:
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
-        """Resident set size of ``pid`` in bytes, from /proc/<pid>/status (Linux).
-        0 when the status has no VmRSS line (zombie / kernel thread); None where
-        /proc is unavailable (macOS/Windows) or the value is unreadable."""
+        """``RssFile`` of ``pid`` (Linux), ``VmRSS`` before kernel 4.5; 0 when neither, None without /proc.
+        Not ``RssAnon``: CUDA pins the host weight buffer (``CUDA_Host``) before a byte of it is read."""
+        vm_rss = None
         try:
             with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
                 for line in f:
-                    if line.startswith("VmRSS:"):
-                        # IndexError guards a "VmRSS:" line with no value column.
+                    # IndexError guards a line with no value column.
+                    if line.startswith("RssFile:"):
                         return int(line.split()[1]) * 1024  # kB -> bytes
+                    if line.startswith("VmRSS:"):
+                        vm_rss = int(line.split()[1]) * 1024
         except (FileNotFoundError, PermissionError, ValueError, IndexError, OSError):
             return None
-        return 0  # readable but no VmRSS line
+        return 0 if vm_rss is None else vm_rss
+
+    @staticmethod
+    def _read_load_bytes(pid: int) -> Optional[int]:
+        """Bytes ``pid`` has taken in, for a load that streams weights to VRAM and keeps little RSS.
+
+        Linux: ``rchar`` (page cache hits included). Windows: psutil read_bytes. macOS: the larger of
+        disk bytes read (a cold mmap Metal load) and physical footprint (a copy into Metal or CPU
+        buffers)."""
+        if os.path.isdir("/proc"):
+            try:
+                with open(f"/proc/{pid}/io", "r", encoding = "utf-8") as f:
+                    for line in f:
+                        if line.startswith("rchar:"):
+                            return int(line.split()[1])
+            except (FileNotFoundError, PermissionError, ValueError, IndexError, OSError):
+                return None
+            return None
+        if sys.platform == "darwin":
+            usage = LlamaCppBackend._darwin_rusage(pid)
+            return max(usage) if usage else None
+        if sys.platform != "win32":
+            return None
+        try:
+            import psutil
+            return int(psutil.Process(pid).io_counters().read_bytes)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _darwin_rusage(pid: int) -> Optional[tuple]:
+        """``(ri_diskio_bytesread, ri_phys_footprint)`` of ``pid`` from proc_pid_rusage, or None."""
+        import ctypes
+
+        class _RusageInfoV2(ctypes.Structure):
+            _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [
+                (name, ctypes.c_uint64)
+                for name in (
+                    "ri_user_time",
+                    "ri_system_time",
+                    "ri_pkg_idle_wkups",
+                    "ri_interrupt_wkups",
+                    "ri_pageins",
+                    "ri_wired_size",
+                    "ri_resident_size",
+                    "ri_phys_footprint",
+                    "ri_proc_start_abstime",
+                    "ri_proc_exit_abstime",
+                    "ri_child_user_time",
+                    "ri_child_system_time",
+                    "ri_child_pkg_idle_wkups",
+                    "ri_child_interrupt_wkups",
+                    "ri_child_pageins",
+                    "ri_child_elapsed_abstime",
+                    "ri_diskio_bytesread",
+                    "ri_diskio_byteswritten",
+                )
+            ]
+
+        try:
+            info = _RusageInfoV2()
+            # RUSAGE_INFO_V2 = 2
+            if (
+                ctypes.CDLL("/usr/lib/libproc.dylib").proc_pid_rusage(pid, 2, ctypes.byref(info))
+                != 0
+            ):
+                return None
+            return int(info.ri_diskio_bytesread), int(info.ri_phys_footprint)
+        except (OSError, AttributeError, ValueError):
+            return None
 
     def load_progress(self) -> Optional[dict]:
-        """VmRSS of llama-server over GGUF shard sizes, sampled during warm-up; None when idle or
-        off Linux."""
+        """Return live model-load progress, or None if not loading.
+
+        ``bytes_loaded`` is the larger of the bytes read and Linux file-backed RSS; never a working set,
+        which counts buffers allocated before any read. The total includes projector, drafter and adapters.
+
+        Shape::
+
+            {
+                "phase": "mmap" | "ready",
+                "bytes_loaded": int,   # as above, never decreasing
+                "bytes_total":  int,   # weight files the server loads
+                "fraction": float,     # bytes_loaded / bytes_total, 0..1
+            }
+        """
         proc = self._process
         if proc is None:
             return None
@@ -7698,42 +7957,19 @@ class LlamaCppBackend:
         if pid is None:
             return None
 
-        # Sum shard sizes (primary + any extras alongside).
-        bytes_total = 0
         gguf_path = self._gguf_path
-        if gguf_path:
-            primary = Path(gguf_path)
-            try:
-                if primary.is_file():
-                    bytes_total += primary.stat().st_size
-            except OSError:
-                pass
-            # Extra shards share the primary's prefix before the shard index.
-            try:
-                parent = primary.parent
-                stem = primary.name
-                m = _SHARD_RE.match(stem)
-                prefix = m.group(1) if m else None
-                if prefix and parent.is_dir():
-                    prefix_lower = prefix.lower()
-                    for sibling in parent.iterdir():
-                        if (
-                            sibling.is_file()
-                            and sibling.name.lower().startswith(prefix_lower)
-                            and sibling.name != stem
-                            and sibling.suffix.lower() == ".gguf"
-                        ):
-                            try:
-                                bytes_total += sibling.stat().st_size
-                            except OSError:
-                                pass
-            except OSError:
-                pass
+        bytes_total = _gguf_set_bytes(Path(gguf_path)) if gguf_path else 0
+        launched = getattr(self, "_process_env", None)
+        bytes_total += _extra_weight_file_bytes(
+            getattr(proc, "args", None),
+            launched[1] if launched is not None and launched[0] is proc else None,
+        )
 
-        # VmRSS of the llama-server; None where /proc is unavailable.
-        bytes_loaded = LlamaCppBackend._read_rss_bytes(pid)
-        if bytes_loaded is None:
+        rss = LlamaCppBackend._read_rss_bytes(pid)
+        read = LlamaCppBackend._read_load_bytes(pid)
+        if rss is None and read is None:
             return None
+        bytes_loaded = max(rss or 0, read or 0)
 
         # RSS drops once -ngl offloads to VRAM; keep a high-water mark so progress never regresses.
         hwm_pid, hwm = getattr(self, "_load_rss_hwm", (None, 0))
@@ -7744,6 +7980,8 @@ class LlamaCppBackend:
         phase = "ready" if self._healthy else "mmap"
         fraction = 0.0
         if bytes_total > 0:
+            # Reads past the weights (headers, a second pass) must not push the figure past the total.
+            bytes_loaded = min(bytes_loaded, bytes_total)
             fraction = min(1.0, bytes_loaded / bytes_total)
         # Healthy means loaded: offloaded mmap pages leave RSS far below the shard total.
         if self._healthy:
@@ -18373,47 +18611,16 @@ class LlamaCppBackend:
             return None
         return str(mtp_draft_path)
 
-    # ── Lifecycle ─────────────────────────────────────────────────
-    # GGUF general.architecture values for diffusion / image models, which llama.cpp cannot load.
-    # Matched exactly so a chat arch like 'taiwan' is not misrouted.
-    _IMAGE_ARCHES = frozenset(
-        (
-            "qwen_image",
-            "qwen_image21",
-            "flux",
-            # Krea 2 GGUFs from some converters (molbal/krea2-gguf), #14474.
-            "krea2",
-        )
-    )
-    # Shared archs (Z-Image declares lumina2): header alone does not say Images can run it; refusal must resolve as routes.models._arch_to_task does.
-    _AMBIGUOUS_IMAGE_ARCHES = frozenset(("lumina2",))
-    # Text-to-video archs; split from images so the refusal names the Video page.
-    _VIDEO_ARCHES = frozenset(
-        (
-            "ltxv",
-            "wan",
-        )
-    )
-    # Media archs no page can run: the refusal names no destination; keep in _DIFFUSION_ARCHES so the pre-launch refusal still fires.
-    _UNRUNNABLE_MEDIA_ARCHES = frozenset(
-        (
-            "cosmos",
-            "hyvid",
-            "sd1",
-            "sd3",
-            "sdxl",
-            "aura",
-            "hidream",
-        )
-    )
+    _IMAGE_ARCHES = _gguf_archs.DIFFUSION_IMAGE_GGUF_ARCHS
+    _AMBIGUOUS_IMAGE_ARCHES = _gguf_archs.AMBIGUOUS_DIFFUSION_GGUF_ARCHS
+    _VIDEO_ARCHES = _gguf_archs.VIDEO_GGUF_ARCHS
+    _UNRUNNABLE_MEDIA_ARCHES = _gguf_archs.UNSUPPORTED_DIFFUSION_GGUF_ARCHS
     _DIFFUSION_ARCHES = (
         _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
     )
-    # TTS archs llama.cpp cannot load; shared with the listing classifier.
     _SPEECH_ARCHES = _SPEECH_GGUF_ARCHS
 
-    # Placeholders gguf-connector writes into general.architecture; llama.cpp knows neither, so unlisted they die opaquely in llama-server.
-    _PLACEHOLDER_ARCHES = frozenset(("pig", "cow"))
+    _PLACEHOLDER_ARCHES = _gguf_archs.PLACEHOLDER_DIFFUSION_GGUF_ARCHS
 
     @staticmethod
     def _video_arch_is_pickable(
@@ -20986,6 +21193,8 @@ class LlamaCppBackend:
                 )
             )
             self._process = _spawned
+            # The env picks companions too (LLAMA_ARG_MMPROJ, ...): load_progress sizes them from it.
+            self._process_env = (_spawned, env)
             _invalidate_gpu_memory("llama-server spawned")
             # Serialise loads so two llama-servers never coexist; /unload is not blocked; lifecycle read first.
             self._note_server_pid(_spawned.pid)
@@ -27205,6 +27414,7 @@ class LlamaCppBackend:
                                 )
                             )
                             self._process = _spawned
+                            self._process_env = (_spawned, env)
                             _invalidate_gpu_memory("llama-server spawned")
                             # Inside the lock: written after a sweep reaped the child,
                             # _pid_start_identity yields no start time, and the bare pid
@@ -28988,6 +29198,10 @@ class LlamaCppBackend:
                 ):
                     _offload_counts = None
                 self._gpu_offload_layers = _offload_counts
+                self._weight_placement = parse_weight_placement(
+                    self._stdout_lines,
+                    _gguf_set_bytes(Path(self._gguf_path)) if self._gguf_path else None,
+                )
                 self._gpu_backend_unavailable = bool(_detected_gpus or _metal_capable_host()) and (
                     llama_saw_gpu_device(self._stdout_lines) is False
                 )
@@ -30291,6 +30505,7 @@ class LlamaCppBackend:
             # Unknown, so the training guard treats the loading server as VRAM-resident.
             self._gpu_offload_active = None
             self._gpu_offload_layers = None
+            self._weight_placement = None
             self._offload_overridden = False
             self._gpu_backend_unavailable = False
             # Candidates are (pid, resolved binary, kill callable); shared handling below keeps paths agreeing.
