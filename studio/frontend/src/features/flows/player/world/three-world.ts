@@ -16,13 +16,17 @@ import type {
 } from "./phaser-game";
 import {
   type Point,
+  SOLID,
   type TileKind,
   type WorldMap,
   findPath,
   isSolid,
   kindAt,
 } from "./procgen";
+import { createPropLayer } from "./props-scene3d";
+import { type WorldEditor, setMapProps } from "./props3d";
 import { canvas, fitImage, paintItem } from "./sprites";
+import type { WorldEditorRuntime } from "./world-editor3d";
 import {
   TILE_COLORS,
   TIMES,
@@ -34,6 +38,7 @@ import {
   houseCells,
   resolveView3d,
   slide,
+  standTiles,
   waterLevel,
 } from "./world3d";
 
@@ -238,6 +243,10 @@ export function createWorld3d(
     scene.add(skyDome);
   }
 
+  const world = new three.Group();
+  world.name = "world";
+  scene.add(world);
+
   const camera = new three.PerspectiveCamera(72, 1, 0.05, 400);
   camera.rotation.order = "YXZ";
 
@@ -298,7 +307,7 @@ export function createWorld3d(
   groundGeo.setAttribute("color", new three.BufferAttribute(col, 3));
   groundGeo.computeVertexNormals();
   const groundMat = keep(new three.MeshLambertMaterial({ vertexColors: true }));
-  scene.add(new three.Mesh(groundGeo, groundMat));
+  world.add(new three.Mesh(groundGeo, groundMat));
 
   if (waterTiles.length) {
     const wpos = new Float32Array(waterTiles.length * 18);
@@ -330,7 +339,7 @@ export function createWorld3d(
         opacity: 0.85,
       }),
     );
-    scene.add(new three.Mesh(wg, wm));
+    world.add(new three.Mesh(wg, wm));
   }
 
   const decor = decorCells(map);
@@ -361,7 +370,7 @@ export function createWorld3d(
       mesh.setMatrixAt(i, m4);
     });
     mesh.instanceMatrix.needsUpdate = true;
-    scene.add(mesh);
+    world.add(mesh);
     return mesh;
   };
   const trees = decor.tree.filter((p) => !houseAt.has(`${p.x},${p.y}`));
@@ -461,7 +470,7 @@ export function createWorld3d(
       roof.rotation.y = Math.PI / 4;
       roof.scale.set(bw + 0.4, 1.3, bd + 0.4);
       roof.position.set(cx, heightAt(terrain, cx, cz) + wallH + 0.65, cz);
-      scene.add(roof);
+      world.add(roof);
     }
   }
   if (houses.length) {
@@ -485,7 +494,7 @@ export function createWorld3d(
         p.y + 0.5,
       );
       g.rotation.y = Math.floor(hash2(p.x, p.y, spec.seed) * 4) * (Math.PI / 2);
-      scene.add(g);
+      world.add(g);
     }
   }
   if (decor.flowers.length) {
@@ -506,6 +515,16 @@ export function createWorld3d(
         ),
       );
   }
+
+  const props = createPropLayer(
+    (x, y) => heightAt(terrain, x, y),
+    art.models ?? {},
+  );
+  world.add(props.root);
+  props.sync(map.props ?? []);
+  let editor: WorldEditorRuntime | null = null;
+  let opening: Promise<WorldEditor> | null = null;
+  let destroyed = false;
 
   const texOf = (c: HTMLCanvasElement) => {
     const t = keep(new three.CanvasTexture(c));
@@ -921,11 +940,13 @@ export function createWorld3d(
     }
     walkPhase += moving ? dt * 9 : 0;
     const ground = heightAt(terrain, me.x, me.y);
-    camera.position.set(
-      me.x,
-      ground + view.camera_height + (moving ? Math.sin(walkPhase) * 0.03 : 0),
-      me.y,
-    );
+    if (editor) editor.frame();
+    else
+      camera.position.set(
+        me.x,
+        ground + view.camera_height + (moving ? Math.sin(walkPhase) * 0.03 : 0),
+        me.y,
+      );
     skyDome?.position.copy(camera.position);
 
     for (const n of npcs) {
@@ -1062,6 +1083,10 @@ export function createWorld3d(
   const npcById = (id: string) => npcs.find((n) => n.id === id);
   return {
     destroy() {
+      destroyed = true;
+      editor?.close();
+      editor = null;
+      props.dispose();
       cancelAnimationFrame(raf);
       ro.disconnect();
       window.removeEventListener("keydown", onKeyDown);
@@ -1086,6 +1111,34 @@ export function createWorld3d(
     },
     addItem(item: WorldItem, at: Point) {
       if (!items.has(item.id)) spawnItem(item, at);
+    },
+    openEditor() {
+      if (editor) return Promise.resolve(editor);
+      opening ??= import("./world-editor3d").then(({ createWorldEditor }) => {
+        opening = null;
+        if (destroyed) throw new Error("The 3D view was closed");
+        if (controls.isLocked) controls.unlock();
+        const ed = createWorldEditor({
+          scene,
+          camera,
+          dom: renderer.domElement,
+          layer: props,
+          exportRoot: world,
+          map,
+          groundAt: (x, y) => heightAt(terrain, x, y),
+          player: () => ({ x: me.x, y: me.y, yaw: camera.rotation.y }),
+          openTile: (x, y) => !SOLID.has(kindAt(map, x, y)),
+          onProps: (next) => setMapProps(map, next, standTiles(me.x, me.y)),
+        });
+        const close = ed.close;
+        ed.close = () => {
+          close();
+          if (editor === ed) editor = null;
+        };
+        editor = ed;
+        return ed;
+      });
+      return opening;
     },
     removeItem(id: string) {
       const it = items.get(id);
