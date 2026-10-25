@@ -107,7 +107,6 @@ def test_npc_reply_validation_only_allows_known_effects():
         "take_item": "rod",
         "set": {"reputation": 2},
     }
-    # Quest needs the item; another NPC cannot complete it; done quests stay done.
     assert "complete_quest" not in validate_npc_reply(
         {"text": "x", "complete_quest": "q"}, _state()
     )

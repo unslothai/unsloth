@@ -13,7 +13,6 @@ import {
 } from "./canvas-rules";
 import { createNode } from "./node-factory";
 
-/** Turn files into input blocks at `at` (flow coordinates), stacked downwards. Returns the new node ids. */
 export async function addFileNodes(
   files: File[],
   at: { x: number; y: number },
@@ -37,7 +36,6 @@ export async function addFileNodes(
     try {
       if (target.via === "asset") {
         const asset = await uploadAsset(file);
-        // The server reads the bytes: an audio-only WebM or MP4 the browser called video gets the block it fits.
         const fits = inputForAssetKind(asset.kind);
         if (fits && fits !== target.type) node = createNode(fits, position);
         if (!node) continue;

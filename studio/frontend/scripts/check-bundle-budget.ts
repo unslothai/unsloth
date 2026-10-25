@@ -430,10 +430,7 @@ export const BUDGET = {
   // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
   // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
   // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
-  // Flows: +12,232 B raw / +6,300 B transfer over main (6,945,181 -> 6,957,413 B raw, 2,095,657 -> 2,101,957 B
-  // transfer against 1610b38cc4, Node 24, 105 -> 120 chunks). Its sidebar row and routes, plus eager modules the
-  // bundler splits into shared startup chunks; Flows stays lazy (local Hugeicons copies avoid +26 KB raw).
-  // Raised by that.
+  // Flows: +12,232 B raw / +6,300 B transfer over 1610b38cc4 (shared startup chunks); Flows itself stays lazy.
   transferBytes: 2_102_627,
   rawBytes: 6_970_945,
 };

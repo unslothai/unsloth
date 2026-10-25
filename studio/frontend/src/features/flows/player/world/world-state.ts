@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The world's game state outside the renderer: inventory, quests, variables, conversations and save data.
-// Phaser owns positions frame to frame; this owns everything a save slot or an NPC needs to know.
 
 import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
@@ -144,7 +142,6 @@ export function pickUp(s: WorldState, itemId: string): WorldState {
   };
 }
 
-/** Talking to a quest giver starts their open quests. */
 export function startQuestsOf(
   spec: WorldSpec,
   s: WorldState,
@@ -285,7 +282,6 @@ export function applyReply(
     try {
       vars = applySets(quest.set, st.vars);
     } catch {
-      // A quest effect that does not evaluate leaves the variables as they were.
     }
     st = {
       ...st,

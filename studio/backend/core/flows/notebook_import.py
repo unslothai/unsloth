@@ -33,7 +33,6 @@ _CONFIGS = {
     "UnslothTrainingArguments",
     "SentenceTransformerTrainingArguments",
 }
-# Trainers Studio has no equivalent for: the notebook stays a Colab notebook.
 _UNSUPPORTED = {
     "GRPOTrainer": "GRPO reinforcement learning",
     "GRPOConfig": "GRPO reinforcement learning",
@@ -44,8 +43,7 @@ _UNSUPPORTED = {
     "KTOTrainer": "KTO preference training",
     "PPOTrainer": "PPO reinforcement learning",
 }
-# Trainers whose objective is the Fine-tune block's supervised loss. Any other *Trainer (CPO, GKD, RLOO,
-# reward modelling, ...) is a different experiment, so the notebook is reported instead of imported as SFT.
+# Trainers with the Fine-tune block's supervised loss; any other *Trainer is reported, not imported as SFT.
 _SFT_TRAINERS = {
     "SFTTrainer",
     "Trainer",
@@ -147,7 +145,6 @@ class _Reader(ast.NodeVisitor):
     def visit_If(self, node: ast.If) -> None:
         # `if False: model.save_pretrained_gguf(...)` is the notebooks' way of switching a step off.
         if isinstance(node.test, ast.Constant):
-            # `if True:` runs only its body, `if False:` only its else.
             for child in node.body if node.test.value else node.orelse:
                 self.visit(child)
             return
@@ -201,7 +198,6 @@ class _Reader(ast.NodeVisitor):
             if isinstance(alpha, int) and not isinstance(alpha, bool):
                 self.tune["lora_alpha"] = alpha
         elif fn == "load_dataset" and "dataset" not in self.found and _local_files(self, node):
-            # load_dataset("json", data_files = ...) reads the notebook's own files, which a flow cannot reach.
             self.unsupported.add("a dataset loaded from local files (data_files)")
         elif fn == "load_dataset" and "dataset" in self.found:
             repo = self.kw(node, "path", 0)
@@ -216,7 +212,6 @@ class _Reader(ast.NodeVisitor):
                 self.unsupported.add("training on more than one dataset")
         elif fn == "load_dataset" and "dataset" not in self.found:
             repo = self.kw(node, "path", 0)
-            # Same rule as the Hub dataset block: `imdb` and `owner/name` are both valid ids.
             if isinstance(repo, str) and _REPO.match(repo):
                 self.found["dataset"] = repo
                 subset = self.kw(node, "name", 1)
@@ -332,13 +327,10 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
     elif isinstance(epochs, float):
         tune["num_epochs"] = int(epochs)
     if not found.get("peft"):
-        # No get_peft_model call: the notebook trains every weight, so the flow does too.
         tune["training_type"] = "full"
-    # TTS and Gemma-style vision notebooks load through FastLanguageModel / FastModel; the name says which they are.
     if found["task"] == "text" and _category(name) in ("audio", "vision"):
         found["task"] = _category(name)
     if found["task"] != "text" and tune.pop("dataset_streaming", None):
-        # Studio's embedding, vision and audio trainers load the whole dataset; they refuse streaming.
         report["approximated"].append(
             f"Streaming: Studio's {found['task']} training loads the whole dataset instead"
         )

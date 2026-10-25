@@ -41,16 +41,13 @@ logger = logging.getLogger(__name__)
 
 CPU_CONCURRENCY = 4
 PROGRESS_MIN_INTERVAL_S = 0.2
-# A streamed player answer is flushed this often, so its text reads as typed.
 INVOKE_FLUSH_S = 0.05
 CANCEL_GRACE_S = 10.0
 LEASE_RETRY_S = 2.0
-# Run Flow nests at most this many flows below the one the user started.
 MAX_CALL_DEPTH = 3
 MEMORY_EVENTS = 4000
 FINISHED_RUNS_KEPT = 64
 
-# The slot each model kind loads into; models sharing a slot evict each other.
 MODEL_SLOT = {
     "chat": "llm",
     "vision": "llm",
@@ -71,7 +68,6 @@ class _Skip:
 
 
 SKIPPED = _Skip()
-# Blocks a schedule or webhook fires; in a run one of them started, the others do not run.
 TRIGGER_TYPES = ("trigger.schedule", "trigger.webhook")
 
 
@@ -136,7 +132,6 @@ class NodeState:
     error: Optional[str] = None
     progress: Optional[dict] = None
     message: Optional[str] = None
-    # The last value a long node published per port before it finished; never fed to other nodes.
     partial: Optional[dict] = None
 
     def snapshot(self) -> dict:
@@ -195,9 +190,7 @@ class RunState:
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
     gpu_ops: int = 0
-    # A Run Flow child counts its GPU steps against the run that called it.
     gpu_parent: Optional["RunState"] = field(default = None, repr = False)
-    # Keyed by (node id, For Each iteration): parallel iterations of one node each keep their own hooks.
     cancel_hooks: dict[tuple, list[Callable[[], Awaitable[None]]]] = field(default_factory = dict)
     node_tasks: dict[str, asyncio.Task] = field(default_factory = dict)
     _last_progress: dict[str, float] = field(default_factory = dict)
@@ -210,8 +203,6 @@ class RunState:
     input_overrides: dict[str, dict] = field(default_factory = dict)
     finished_at: Optional[float] = None
     hf_token: Optional[str] = field(default = None, repr = False)
-    # Who started the run ({"kind": "ui" | "api_key" | "trigger" | "player", "owner": bool}) and what the owner
-    # approved this flow to do; together they gate Python, HTTP, MCP, provider and trigger blocks.
     origin: dict = field(default_factory = dict)
     approvals: dict = field(default_factory = dict)
     marks: dict[str, float] = field(default_factory = dict)
@@ -254,8 +245,7 @@ class RunState:
                     "data": {k: v for k, v in event["data"].items() if k != "preview"},
                 }
             elif type_ == "node.partial":
-                # A partial often repeats everything so far (rows collected), so storing each copy grows the table
-                # quadratically. Store the position only; live clients and the run snapshot carry the value.
+                # Partials often repeat everything so far: store the position only, or the table grows quadratically.
                 stored = {**event, "data": {k: v for k, v in event["data"].items() if k != "value"}}
             try:
                 flows_db.append_event(self.id, self.seq, stored)
@@ -556,7 +546,6 @@ class NodeContextImpl:
 
         holder = gpu_arbiter._lease_holder.get()
         if holder is not None:
-            # Stop runs from the cancel request's task; its cleanup (a restore load) still acts as the lease holder.
             inner = fn
 
             async def fn() -> None:
@@ -567,7 +556,6 @@ class NodeContextImpl:
                     gpu_arbiter._lease_holder.reset(token)
 
         if self._rs.cancelled:
-            # Cancelled while the job was starting.
             task = asyncio.get_running_loop().create_task(_run_cancel_hook(fn))
             _LATE_HOOKS.add(task)
             task.add_done_callback(_LATE_HOOKS.discard)
@@ -756,7 +744,6 @@ class FlowEngine:
         self._warming: dict[tuple, asyncio.Task] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.handlers: Optional[dict] = None
-        # Tests swap these in.
         self.mint_key: Callable[[AccountContext], tuple[str, Optional[int]]] = (
             flow_caller.mint_run_key
         )
@@ -886,7 +873,6 @@ class FlowEngine:
             or spec["type"] in BACKGROUND_NODES
             or (isinstance(state, dict) and state.get("task") in BACKGROUND_TASKS)
         )
-        # Ports supplied by the player do not need their upstream nodes.
         need = {entry}
         for port, sources in plan.inputs.get(entry, {}).items():
             if port not in overrides:
@@ -971,7 +957,6 @@ class FlowEngine:
             )
             self._warming[key] = task
             task.add_done_callback(lambda t, k = key: self._warming.pop(k, None))
-        # A player leaving mid-load does not abort it: the next conversation still wants the model.
         return await asyncio.shield(task)
 
     async def _warm(
@@ -1002,7 +987,6 @@ class FlowEngine:
         rs.key_id = key_id
         ctx = NodeContextImpl(self, rs, entry, spec, params, {}, 0)
         try:
-            # Same lane as the entry point itself, so a warm-up never loads under another GPU step.
             async with self.gpu_lock():
                 await ctx.ensure_model(spec["model_kind"], params.get("model"))
             return True
@@ -1033,7 +1017,6 @@ class FlowEngine:
         from core.flows.nodes.inputs import apply_input_values
 
         doc, params = apply_input_values(record["doc"], values)
-        # A declared param the caller leaves out keeps its default, as in the Run dialog.
         for declared in doc.get("params") or []:
             if (
                 isinstance(declared, dict)
@@ -1058,12 +1041,10 @@ class FlowEngine:
             gpu_parent = parent,
         )
         if ctx.node_id in set(parent.options.get("force_nodes") or []):
-            # Re-roll on the Run Flow block re-runs the called flow too, cache and baked outputs included.
             child.options["force_nodes"] = list(plan.order)
         child.hf_token = parent.hf_token
         child.caller = parent.caller
         child.key_id = parent.key_id
-        # The called flow runs for whoever started the parent, but only with what its owner approved for that flow.
         child.origin = parent.origin
         child.approvals = await asyncio.to_thread(flows_db.get_capabilities, flow_id)
         ctx.on_cancel(lambda: self._fire_cancel_hooks(child))
@@ -1103,7 +1084,6 @@ class FlowEngine:
             flows_db.update_run(rs.id, status = "running", started_at = flows_db.now_ms())
             rs.emit("run.started", data = {"order": rs.plan.order})
             targets = rs.options.get("target_nodes") or []
-            # Re-rolling a For Each re-rolls what it runs: its body, nested loops included.
             forced = set(rs.options.get("force_nodes") or [])
             stack = [n for n in forced if n in rs.plan.bodies]
             while stack:
@@ -1112,7 +1092,6 @@ class FlowEngine:
                         forced.add(member)
                         stack.append(member)
             rs.options["force_nodes"] = sorted(forced)
-            # Entrypoints (Next Scene, Scene Art, NPC Reply) answer the player through /invoke, not a full run.
             need = (
                 rs.plan.ancestors(targets)
                 if targets
@@ -1128,7 +1107,6 @@ class FlowEngine:
             try:
                 done, _ = await asyncio.wait({scope}, timeout = MAX_RUN_SECONDS)
                 if not done:
-                    # Stop external jobs while their hooks are registered, then the node tasks themselves.
                     rs.cancel_event.set()
                     await self._fire_cancel_hooks(rs)
                     raise asyncio.TimeoutError
@@ -1204,8 +1182,6 @@ class FlowEngine:
         try:
             await self._scope_loop(rs, pending, running, env, iteration)
         except asyncio.CancelledError:
-            # A player leaving an /invoke cancels this task directly: stop the external jobs while their hooks are
-            # still registered, as Stop and the time limit do.
             if not rs.cancel_event.is_set():
                 rs.cancel_event.set()
                 await self._fire_cancel_hooks(rs)
@@ -1251,7 +1227,6 @@ class FlowEngine:
                     cpu_running += 1
             if not running:
                 if pending:
-                    # Nothing can start: the remaining nodes wait on nodes outside this scope that never ran.
                     for nid in pending:
                         env.values[nid] = SKIPPED
                         rs.set_status(nid, "skipped", "Its inputs never arrived")
@@ -1294,7 +1269,6 @@ class FlowEngine:
         return True
 
     def _pick_gpu(self, rs: RunState, ready: list[str]) -> str:
-        """The ready GPU node that keeps the resident model; else the model most ready nodes share; else data order."""
         plan = rs.plan
 
         def model_of(nid: str) -> tuple[str, str]:
@@ -1314,7 +1288,6 @@ class FlowEngine:
         return next(n for n in ready if counts[model_of(n)] == best)
 
     def _gather_inputs(self, rs: RunState, nid: str, env: Env) -> tuple[dict, Optional[str]]:
-        """(inputs, why it must be skipped or None)."""
         plan = rs.plan
         spec = plan.specs[nid]
         overrides = rs.input_overrides.get(nid, {})
@@ -1341,8 +1314,6 @@ class FlowEngine:
                     values = [v if isinstance(v, list) else [v] for v in values]
                 inputs[pid] = values if port.get("multi") else values[0]
             elif spec["type"] not in JOIN_TYPES:
-                # A connected input that got nothing (a branch not taken, a failed step) skips the node; only joins
-                # treat it as absent.
                 return (
                     inputs,
                     "An upstream step failed" if upstream_failed else "Its input was skipped",
@@ -1368,7 +1339,6 @@ class FlowEngine:
             and spec["type"] in TRIGGER_TYPES
             and nid not in fired
         ):
-            # Another trigger started this run: this one's branch stays still.
             env.values[nid] = SKIPPED
             rs.set_status(nid, "skipped", "Another trigger started this run")
             self._record(rs, nid, "skipped", None, None, iteration)
@@ -1380,9 +1350,6 @@ class FlowEngine:
         pinned = (rs.options.get("pinned") or {}).get(nid)
         if isinstance(pinned, dict) and iteration is None and not forced:
             from core.flows.nodes._common import gallery_media_present
-
-            # The editor pinned an earlier output of this node: downstream gets it as if it were cached. One holding
-            # media the user has since deleted runs the node again instead, as a stale cache hit does.
             try:
                 present = await asyncio.to_thread(gallery_media_present, pinned)
             except Exception:
@@ -1426,7 +1393,6 @@ class FlowEngine:
                     flow_params = ctx.flow_params,
                 )
                 hit = flows_db.cache_get(key)
-                # A cached image, clip or video the user has since deleted is regenerated, not served as a 404.
                 if hit is not None:
                     from core.flows.nodes._common import gallery_media_present
                     if not await asyncio.to_thread(gallery_media_present, hit):
@@ -1531,7 +1497,6 @@ class FlowEngine:
         self._finish(rs, nid, env, outputs, "done", iteration)
 
     async def _exclusive(self, rs: RunState, nid: str, spec: dict, handler: Any, ctx: Any) -> dict:
-        """Run under the Studio-wide GPU lease, so chat, training and other runs cannot swap the model meanwhile."""
         from core.inference import gpu_arbiter
         while True:
             lease = gpu_arbiter.operation_lease(
@@ -1562,7 +1527,6 @@ class FlowEngine:
     ) -> None:
         spec = rs.plan.specs[nid]
         declared = {p["id"] for p in spec["outputs"]}
-        # If/Switch leave out the branches they do not take; consumers of those see them skipped.
         env.values[nid] = {k: v for k, v in outputs.items() if k in declared}
         state = rs.node(nid)
         state.outputs = outputs
@@ -1615,7 +1579,6 @@ class FlowEngine:
         key = {"repo": choice.get("repo"), "variant": choice.get("variant")}
         repo = choice.get("repo")
         if isinstance(repo, str) and os.path.isabs(repo):
-            # A local export can be rewritten in place: its files name the weights, not the path.
             key["files"] = await asyncio.to_thread(_local_fingerprint, repo)
         return key
 
@@ -1664,7 +1627,6 @@ class FlowEngine:
             return SKIPPED
 
         if parallel:
-            # Each iteration has its own scope, so the CPU limit is applied across iterations here.
             gate = asyncio.Semaphore(CPU_CONCURRENCY)
 
             async def bounded(index: int, item: Any) -> Any:
@@ -1699,10 +1661,8 @@ class FlowEngine:
             iteration,
             message = f"{len(failed_body)} step(s) failed" if failed_body else None,
         )
-        # Body nodes keep their own status; the run reports their failures.
 
     async def _bake(self, rs: RunState) -> None:
-        """Copy every finished output into the flow as embedded values, media included, so it plays with no models."""
         baked: dict[str, dict] = {}
         refs: dict[str, dict] = {}
         for nid in rs.plan.order:
@@ -1779,7 +1739,6 @@ class FlowEngine:
         if value.get("kind") in ("table", "heatmap", "tensor") and isinstance(
             value.get("ref"), str
         ):
-            # A large structured value's full data is a JSON flow asset: the baked package carries it too.
             digest = asset_store.parse_ref(value["ref"])
             got = asset_store.read(digest) if digest else None
             if got is not None:
@@ -1804,7 +1763,6 @@ class FlowEngine:
 
 
 def _bind_params(spec: dict, params: dict, inputs: dict) -> None:
-    """A value connected to a bindable param's input replaces the field, clamped like a typed one."""
     by_id = {p["id"]: p for p in spec["params"]}
     for port in spec["inputs"]:
         pid = port.get("param")
@@ -1821,7 +1779,6 @@ def _origin(account: AccountContext, kind: Optional[str]) -> dict:
 
 
 def _local_fingerprint(path: str) -> Optional[list]:
-    """(name, size, mtime) of a local model file; a folder folds every file directly in it into one digest."""
     try:
         if os.path.isdir(path):
             entries = sorted(os.scandir(path), key = lambda e: e.name)

@@ -999,7 +999,6 @@ async def unload_video_model(
 
     from core.inference import gpu_arbiter
 
-    # An operation holding the GPU lease keeps its model; the holder's own unloads pass.
     leased = gpu_arbiter.lease_refusal()
     if leased is not None:
         raise leased.as_http_exception()

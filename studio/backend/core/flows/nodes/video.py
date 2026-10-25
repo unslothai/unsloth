@@ -33,7 +33,6 @@ async def generate(ctx: NodeContext) -> dict:
     if ctx.params.get("size"):
         body["size"] = str(ctx.params["size"])
     if ctx.params.get("num_frames"):
-        # The route takes seconds or a frame count, never both.
         body["num_frames"] = int(ctx.params["num_frames"])
     elif ctx.params.get("seconds"):
         body["seconds"] = str(ctx.params["seconds"])
@@ -57,7 +56,6 @@ async def generate(ctx: NodeContext) -> dict:
             job = await ctx.call("POST", "/v1/videos", json = body)
             break
         except FlowNodeError as exc:
-            # One video renders at a time: wait for the other one rather than failing.
             if exc.status != 409 or time.monotonic() - started > BUSY_WAIT_S:
                 raise
             ctx.set_status("waiting", "Another video is rendering")
@@ -100,7 +98,6 @@ async def frame(ctx: NodeContext) -> dict:
     kind, _, video_id = ref.partition(":")
     which = str(ctx.params.get("frame") or "last")
     if kind != "video" or not video_id:
-        # An uploaded or edited clip is a flow asset, not a gallery video: decode it here.
         from core.flows.nodes.media_utils import video_frame
 
         data, _ = await ctx.media_bytes(video)
@@ -154,7 +151,6 @@ def concat_clips(clips: list[bytes]) -> bytes:
                 ratio = rate / Fraction(source.average_rate or rate)
                 emitted = 0
                 for index, frame in enumerate(src.decode(source)):
-                    # Output frames this clip should have reached by the end of this source frame.
                     due = round((index + 1) * ratio)
                     if due <= emitted:
                         continue

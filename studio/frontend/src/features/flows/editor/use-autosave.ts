@@ -41,7 +41,6 @@ export function beginSaveSession(
   useUiStore.getState().setSaveState("saved");
 }
 
-/** Leave the editor: a pending edit is still saved, then the session closes. */
 export function endSaveSession(): void {
   const current = session;
   if (!current) return;
@@ -49,8 +48,7 @@ export function endSaveSession(): void {
     clearTimeout(current.timer);
     current.timer = null;
   }
-  // Snapshot now, even with no timer: a save queued behind an in-flight one is skipped once the next flow loads,
-  // and by the time it would run the store may hold that flow. saveClosing skips an unchanged document.
+  // Snapshot now: a save queued behind an in-flight one is skipped once the next flow loads into the store.
   const state = useDocStore.getState();
   const doc = state.flowId === current.flowId ? documentFromState(state) : null;
   if (doc) {
@@ -78,7 +76,6 @@ async function saveClosing(
   }
 }
 
-/** True once the server holds the document on screen. */
 async function performSave(force = false): Promise<boolean> {
   const current = session;
   if (!current) return true;
@@ -90,7 +87,6 @@ async function performSave(force = false): Promise<boolean> {
     useUiStore.getState().setSaveState("saved");
     return true;
   }
-  // A signature that just failed is not retried until it changes or the user saves explicitly.
   if (!force && signature === current.failedSignature) return false;
   useUiStore.getState().setSaveState("saving");
   try {
@@ -161,7 +157,6 @@ function scheduleSave(): void {
   }, SAVE_DEBOUNCE_MS);
 }
 
-/** Save now (Ctrl+S, before playing); resolves to false when the save failed or conflicted. */
 export async function flushSave(): Promise<boolean> {
   const current = session;
   if (!current) return true;

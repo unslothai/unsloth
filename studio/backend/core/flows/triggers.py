@@ -31,8 +31,6 @@ def new_token() -> str:
     return secrets.token_urlsafe(24)
 
 
-# Cron (minute hour day-of-month month day-of-week; *, lists, ranges, steps)
-
 _CRON_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 
 
@@ -72,7 +70,7 @@ def parse_cron(expr: str) -> list[set[int]]:
 
 
 def cron_matches(sets: list[set[int]], when: datetime) -> bool:
-    weekday = (when.weekday() + 1) % 7  # Monday=1 ... Sunday=0
+    weekday = (when.weekday() + 1) % 7
     day_ok, weekday_ok = when.day in sets[2], weekday in sets[4]
     # As in cron: with both day fields restricted, either one matching is enough.
     if len(sets[2]) < 31 and len(sets[4]) < 7:
@@ -80,9 +78,6 @@ def cron_matches(sets: list[set[int]], when: datetime) -> bool:
     else:
         days = day_ok and weekday_ok
     return when.minute in sets[0] and when.hour in sets[1] and when.month in sets[3] and days
-
-
-# Index of a flow's triggers, kept in step with the saved document
 
 
 def wanted(doc: dict) -> list[dict]:
@@ -131,12 +126,8 @@ def due(row: dict, now: datetime, since_ms: int) -> bool:
     if config.get("cron"):
         if not cron_matches(parse_cron(config["cron"]), now):
             return False
-        # Once per matching minute.
         return now_ms // 60000 > since_ms // 60000
     return now_ms - since_ms >= int(config.get("every_minutes") or 60) * 60000
-
-
-# Firing
 
 
 def _busy(flow_id: str) -> bool:
@@ -267,7 +258,6 @@ class Scheduler:
 SCHEDULER = Scheduler()
 
 
-# Webhook rate limit: per token, in memory.
 _HITS: dict[str, list[float]] = {}
 WEBHOOK_PER_MINUTE = 30
 
@@ -281,7 +271,6 @@ def rate_limited(token: str) -> bool:
     hits.append(now)
     _HITS[token] = hits
     if len(_HITS) > 10000:
-        # Only buckets with no call in the last minute go.
         for key in [k for k, v in _HITS.items() if not v or now - v[-1] >= 60]:
             del _HITS[key]
     return False
