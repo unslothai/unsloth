@@ -65,7 +65,6 @@ LOAD_KIND = {"chat": "llm", "vision": "llm", "tts": "tts", "audio": "audio"}
 PREFETCH_KINDS = ("chat", "vision", "tts", "audio", "image", "video")
 # Blocks whose untaken branch skips what follows: a step behind one may never run, so nothing loads for it early.
 BRANCH_TYPES = ("logic.if", "logic.switch")
-# Asking Studio what is loaded must never hold up a run start.
 RESIDENT_PROBE_S = 5.0
 
 
@@ -1281,7 +1280,6 @@ class FlowEngine:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # The step loads its model itself when it starts; a failed early load only costs that wait.
             rs.prefetch_load = None
             logger.debug("flows: loading ahead for %s failed", nid, exc_info = True)
 

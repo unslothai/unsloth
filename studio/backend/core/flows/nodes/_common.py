@@ -408,7 +408,6 @@ async def _ensure_model(
 
 
 def note_loaded(ctx: Any, slot: str, repo: str) -> None:
-    """Record a load this step made, for the flow's "Unload models when the run ends"."""
     note = getattr(ctx, "note_loaded", None)
     if callable(note):
         note(slot, repo)

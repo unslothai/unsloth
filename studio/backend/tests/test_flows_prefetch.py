@@ -19,7 +19,6 @@ from ._flows_helpers import doc, edge, node, run_async
 
 @pytest.fixture
 def studio(monkeypatch):
-    """Fake Studio residency: what each slot holds, every load the run makes, and every unload."""
     state = {"slots": {}, "loads": [], "unloads": []}
 
     async def resident_slots(caller):
@@ -123,7 +122,6 @@ async def test_the_next_model_loads_while_cpu_steps_run(studio):
     assert [repo for repo, _ in studio["loads"]] == ["m1", "m2"]
     (start, end) = spans[0]
     m2_loaded = dict(studio["loads"])["m2"]
-    # m2 was ready before the template that feeds it finished, so the second LLM step did not wait for a load.
     assert start < m2_loaded < end
     assert rs.prefetched == 1
     logs = [
@@ -155,7 +153,6 @@ async def test_a_rerun_served_from_the_cache_loads_nothing_ahead(studio):
     studio["slots"]["llm"] = ["something-else"]
     rs = await _run(eng, _chain("rerun"))
     assert rs.nodes["g2"].status == "cached"
-    # Nothing upstream computed fresh output, so every step was a cache hit: no early load may even start.
     ahead = [
         e for e in rs.events if e["type"] == "node.log" and "ahead while" in e["data"]["message"]
     ]
@@ -204,7 +201,6 @@ async def test_the_first_gpu_step_keeps_what_studio_already_has_loaded(studio):
     )
     rs = await _run(eng, d)
     assert rs.status == "completed"
-    # m2 was already resident, so it runs first and m1 loads once, instead of m2 being evicted and reloaded.
     assert order == ["m2", "m1"]
     assert [repo for repo, _ in studio["loads"]] == ["m1"]
 
@@ -249,7 +245,6 @@ def test_the_plan_suggests_keeping_models_loaded_only_when_it_helps(monkeypatch)
     monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "off")
     hints = flows_routes._residency_hints(two)
     assert [h["id"] for h in hints] == ["multi_model"] and "2 models" in hints[0]["message"]
-    # One model (an embedder does not take turns), an optional second, or a setting that already keeps them: no hint.
     assert flows_routes._residency_hints(two[:1] + two[2:]) == []
     assert flows_routes._residency_hints([two[0], {**two[1], "optional": True}]) == []
     monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
@@ -291,7 +286,6 @@ async def test_no_early_load_swaps_the_model_a_use_loaded_model_step_runs_on(stu
     )
     rs = await _run(eng, d)
     assert rs.status == "completed"
-    # The step on "use the loaded model" still ran on m1, the model the run had loaded when its input arrived.
     assert seen["loaded"] == ["m1"]
 
 
@@ -324,7 +318,6 @@ async def test_stopping_a_run_mid_early_load_stops_that_load(studio, monkeypatch
     await eng.cancel(rs.id)
     await asyncio.wait_for(rs.task, timeout = 30)
     assert rs.status == "cancelled"
-    # Cancelling the wait alone leaves Studio's load job running; the unload is what stops it.
     assert studio["unloads"] == ["m2"]
 
 
@@ -352,7 +345,6 @@ async def test_unload_after_the_run_waits_for_the_gpu(studio, monkeypatch):
     studio["slots"]["llm"] = []
     eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
     d = _chain("unload-waits", unload_after_run = True)
-    # A CPU tail after the last GPU step, while which another flow takes the GPU.
     d["nodes"].append(node("tail", "text.template", template = "{}"))
     d["edges"].append(edge("g2", "text", "tail", "values"))
     parsed, errors = parse_document(d)
@@ -366,7 +358,6 @@ async def test_unload_after_the_run_waits_for_the_gpu(studio, monkeypatch):
     # Another flow's GPU step holds the GPU: unloading now could cancel its generation.
     await lock.acquire()
     try:
-        # Past the 0.6 s tail: the run has ended its steps and is waiting to unload.
         await asyncio.sleep(1.5)
         assert studio["unloads"] == []
     finally:
@@ -497,7 +488,6 @@ async def test_a_failed_early_load_leaves_the_steps_own_load_in_place(studio, mo
     rs.caller = rs.caller or object()
     await asyncio.wait_for(rs.task, timeout = 30)
     assert rs.status == "completed" and calls.count("m2") == 2
-    # The step's own load of m2 succeeded: nothing unloads it.
     assert studio["unloads"] == [] and studio["slots"]["llm"] == ["m2"]
 
 
@@ -653,7 +643,6 @@ async def test_no_early_load_while_a_for_each_body_runs_on_the_loaded_model(stud
     )
     rs = await _run(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
-    # Every iteration ran on m1: nothing loaded m2 while the loop was still running.
     assert seen == [["m1"]] * 3
 
 
