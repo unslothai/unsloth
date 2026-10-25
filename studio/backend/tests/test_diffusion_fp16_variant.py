@@ -364,3 +364,23 @@ def test_local_pricing_reads_twins_only_where_no_default_sits(tmp_path, monkeypa
         snap_both, exclude_transformer = False, load_dtype = torch.float16
     )
     assert set(priced) == set(SDXL_DEFAULTS)
+
+
+def test_a_supplied_component_unblocks_the_twins_its_cached_default_blocked(tmp_path):
+    # vae cached only as its default file, every other component staged as a twin: the vae is supplied.
+    files = [*SDXL_CONFIGS, "vae/diffusion_pytorch_model.safetensors"]
+    files += [t for t in SDXL_TWINS if not t.startswith("vae/")]
+    snap = _snapshot(tmp_path, files)
+    assert fv.local_fp16_variant(str(snap), load_dtype = "torch.float16") is None
+    assert fv.local_fp16_variant(str(snap), load_dtype = "torch.float16", supplied = ("vae",)) == "fp16"
+
+
+def test_the_load_recomputes_the_variant_with_the_final_kwargs_even_after_a_first_none():
+    import inspect
+
+    source = inspect.getsource(diffusion_mod)
+    assert "if _fp16_variant_eligible:" in source
+    assert (
+        "if _fp16_variant is not None:\n                                        # Final kwargs"
+        not in source
+    )

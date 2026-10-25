@@ -9325,17 +9325,20 @@ class DiffusionBackend:
                                 _variant_snapshot = _load_snapshot_dir(
                                     fetch_base, _base_local_dir, hub_cache_dir()
                                 )
-                                _fp16_variant = (
-                                    None
-                                    if pipeline_seed_scheme is not None
+                                _fp16_variant_eligible = not (
+                                    pipeline_seed_scheme is not None
                                     or _pipeline_prequant_skipped
                                     or is_flux3_family(fam)
                                     or fam.name in (MOSS_IMAGE_FAMILY_NAME, KREA2_FAMILY_NAME)
-                                    else local_fp16_variant(
+                                )
+                                _fp16_variant = (
+                                    local_fp16_variant(
                                         _variant_snapshot,
                                         load_dtype = dtype,
                                         supplied = _te_replaced,
                                     )
+                                    if _fp16_variant_eligible
+                                    else None
                                 )
                                 # Stopped once the pipeline is built.
                                 self._stop_load_prefetch()
@@ -9556,8 +9559,9 @@ class DiffusionBackend:
                                         pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
                                             small_host, dtype
                                         )
-                                    if _fp16_variant is not None:
-                                        # Re-check: a dtype map or supplied component changes what twins must cover.
+                                    if _fp16_variant_eligible:
+                                        # Final kwargs: a dtype map or a supplied component (a default-only cached
+                                        # file it replaces blocked the first check) changes what twins must cover.
                                         _fp16_variant = local_fp16_variant(
                                             _variant_snapshot,
                                             load_dtype = dtype,
