@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Linux gfx90c (Renoir / Cezanne / Lucienne / Barcelo iGPU) alone, with a readable arch.
-
-rocminfo reported gfx90c, which was in no uncovered list, so get_torch_index_url took the
-generic pytorch.org ROCm tag: a multi-GB torch with no gfx90c kernels. Beside a discrete card
-(#7776) the discrete card still gets ROCm torch.
-"""
+"""A lone Linux gfx90c (Renoir-Barcelo iGPU) gets CPU torch; beside a dGPU (#7776) it keeps ROCm."""
 
 from __future__ import annotations
 
@@ -117,7 +112,6 @@ def test_install_sh_gfx90c_beside_a_dgpu_keeps_the_generic_tag(monkeypatch, tmp_
 
 @_POSIX
 def test_install_sh_gfx90c_under_a_gfx900_spoof_keeps_rocm(monkeypatch, tmp_path):
-    """HSA_OVERRIDE_GFX_VERSION=9.0.0 is the usual Renoir workaround; the generic wheel has gfx900."""
     _rocminfo_harness(monkeypatch, tmp_path, _ROCMINFO_GFX90C)
     monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "9.0.0")
     url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
