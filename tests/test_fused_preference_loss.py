@@ -731,9 +731,13 @@ def test_rl_replacement_injects_dispatch_only_when_enabled(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("kind", ["forward_hook", "pre_hook", "hf_hook", "subclass"])
-def test_hooked_or_custom_head_falls_back(dpo_module, monkeypatch, kind):
-    """The kernel reads the head's weight directly, so a head whose forward does more is left to TRL."""
+@pytest.mark.parametrize(
+    "kind",
+    ["forward_hook", "pre_hook", "global_forward_hook", "global_pre_hook", "hf_hook", "subclass"],
+)
+def test_hooked_or_custom_head_falls_back(dpo_module, monkeypatch, request, kind):
+    """The kernel reads the head's weight directly, so a head whose forward does more is left to TRL.
+    Global forward hooks fire on the head too, and the kernel never calls it."""
     monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
     batch = _orpo_batch(seed = 4)
     model = _model(0)
@@ -742,6 +746,14 @@ def test_hooked_or_custom_head_falls_back(dpo_module, monkeypatch, kind):
         head.register_forward_hook(lambda m, i, o: o * 2)
     elif kind == "pre_hook":
         head.register_forward_pre_hook(lambda m, i: (i[0] * 2,))
+    elif kind == "global_forward_hook":
+        from torch.nn.modules.module import register_module_forward_hook
+        handle = register_module_forward_hook(lambda m, i, o: o * 2 if m is head else None)
+        request.addfinalizer(handle.remove)
+    elif kind == "global_pre_hook":
+        from torch.nn.modules.module import register_module_forward_pre_hook
+        handle = register_module_forward_pre_hook(lambda m, i: (i[0] * 2,) if m is head else None)
+        request.addfinalizer(handle.remove)
     elif kind == "hf_hook":
         head._hf_hook = object()
     else:
