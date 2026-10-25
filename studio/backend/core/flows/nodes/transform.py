@@ -97,7 +97,6 @@ async def filter_list(ctx: NodeContext) -> dict:
 
 
 def _sort_key(value: Any) -> tuple:
-    # Numbers, then text, then anything else by its JSON; empty values always sort last.
     if value is None:
         return (3, 0)
     if isinstance(value, bool):
@@ -117,7 +116,6 @@ async def sort_list(ctx: NodeContext) -> dict:
     descending = bool(ctx.params.get("descending"))
     present = [k for k in keyed if k[0][0] != 3]
     empty = [k for k in keyed if k[0][0] == 3]
-    # Python's sort stays stable with reverse, so equal keys keep their order either way.
     present.sort(key = lambda k: k[0], reverse = descending)
     out = [k[2] for k in present + empty]
     limit = ctx.params.get("limit")
@@ -164,7 +162,6 @@ async def merge_data(ctx: NodeContext) -> dict:
         if isinstance(a, list) and isinstance(b, list):
             if max(len(a), len(b)) > MAX_ITEMS:
                 raise FlowNodeError(f"Each side takes at most {MAX_ITEMS} items")
-            # Item by item, like n8n's "combine by position"; the longer list keeps its extra items.
             pairs = []
             for i in range(max(len(a), len(b))):
                 left = a[i] if i < len(a) else None

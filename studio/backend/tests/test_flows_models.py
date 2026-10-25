@@ -46,7 +46,6 @@ def test_a_loaded_repo_is_reused_even_when_the_node_names_a_variant(monkeypatch)
     async def run():
         await _common.ensure_model(ctx, "chat", choice)
         await _common.ensure_model(ctx, "chat", choice)
-        # Another run or page swaps the chat model: the next step must load ours again.
         resident["llm"] = ["someone/else-GGUF"]
         await _common.ensure_model(ctx, "chat", choice)
 
@@ -110,7 +109,6 @@ def test_a_variant_loaded_outside_flows_is_seen(monkeypatch):
     ctx = _Ctx()
 
     async def run():
-        # The Chat page loaded Q8 after Flows loaded Q4: a Q4 node must load Q4 again.
         await _common.ensure_model(ctx, "chat", {"repo": repo, "variant": "Q4_K_M"})
         await _common.ensure_model(ctx, "chat", {"repo": repo, "variant": "Q4_K_M"})
 

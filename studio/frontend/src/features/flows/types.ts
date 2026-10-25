@@ -149,12 +149,9 @@ export interface ParamSpec {
   step?: number;
   model_kind?: string;
   accept?: "image" | "audio" | "video" | "document";
-  /** A Studio GET route that lists the choices, and the dotted path to them (`tasks[].id`). */
   options_from?: string;
   options_path?: string;
-  /** The param also takes a connection (its `param:<id>` input). */
   bindable?: boolean;
-  /** Shown under a collapsed "Advanced" heading in the inspector. */
   advanced?: boolean;
 }
 
@@ -165,7 +162,6 @@ export interface PortSpec {
   optional?: boolean;
   multi?: boolean;
   item?: PortType;
-  /** Set on the input a bindable param adds (`param:<id>`): a connected value replaces that field. */
   param?: string;
 }
 
@@ -187,11 +183,8 @@ export interface NodeSpec {
   entrypoint: boolean;
   flow_in: boolean;
   flow_out: string[];
-  /** The model backend the node needs ("transformers" or "gguf"). */
   requires?: string[];
-  /** Holds the Studio-wide GPU lease while it runs (measurements). */
   exclusive_gpu?: boolean;
-  /** Runs only for the owner, once approved: python | http | mcp | provider | trigger. */
   requires_approval?: string[];
 }
 
@@ -313,7 +306,6 @@ export type StoryPosition =
   | "twoleft"
   | "tworight";
 
-/** Ren'Py-style stage directions; a line with empty text carries only these. */
 export interface StoryStage {
   show?: string | null;
   hide?: string | null;
@@ -438,10 +430,8 @@ export interface WorldPlace {
   h: number;
 }
 
-/** Generative Agents style village life (Park et al. 2023); absent on classic worlds. */
 export interface WorldSimulation {
   enabled: boolean;
-  /** Game minutes per real second. */
   minutes_per_second: number;
   start_minute: number;
   places: WorldPlace[];

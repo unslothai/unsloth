@@ -32,7 +32,6 @@ const SPRITE: Record<StoryTransition, [string, number]> = {
   none: ["", 0],
 };
 
-/** CSS animation for a sprite coming on (or going off, played in reverse and held). */
 export function spriteAnimation(
   t: StoryTransition,
   out: boolean,
@@ -53,7 +52,6 @@ const BG_MS: Record<StoryTransition, number> = {
   none: 0,
 };
 
-/** A soft painted-looking gradient with drifting light blobs, seeded by the scene, for scenes without art. */
 export const ProceduralBackdrop = memo(function ProceduralBackdrop({
   seedKey,
 }: { seedKey: string }) {
@@ -108,7 +106,6 @@ function layerStyle(l: Layer): React.CSSProperties {
     };
   }
   if (l.t === "fade" || l.t === "flash") {
-    // Swap under the overlay at its peak.
     return {
       opacity: l.shown ? 1 : 0,
       transition: `opacity 1ms linear ${Math.round(ms * 0.45)}ms`,
@@ -120,7 +117,6 @@ function layerStyle(l: Layer): React.CSSProperties {
   };
 }
 
-/** Changes scene backgrounds with a transition (default crossfade); `url` null shows the procedural backdrop. */
 export function BackgroundStage({
   seedKey,
   url,
@@ -217,7 +213,6 @@ export function BackgroundStage({
   );
 }
 
-/** Keyframes the players use, injected once (the feature is lazy, so no global CSS edit is needed). */
 export function PlayerKeyframes() {
   return (
     <style>{`

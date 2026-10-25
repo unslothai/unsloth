@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Data and retrieval blocks: expression transforms, chunked splitting, documents and knowledge bases."""
-
 import httpx
 import pytest
 
@@ -39,7 +37,6 @@ def test_edit_fields_on_an_object_and_on_a_list():
         inputs = {"value": ROWS[1]},
     )
     assert run(transform.edit_fields(ctx))["value"] == {"n": 2}
-    # The input object is copied, never edited in place.
     assert "label" not in ROWS[0]
 
 
@@ -71,7 +68,6 @@ def test_map_filter_sort_dedupe():
             )
         )
     )
-    # Empty keys go last in either direction.
     assert [r["score"] for r in by_score["items"]] == [9, 7, 3, None]
     by_name = run(
         transform.sort_list(
@@ -121,13 +117,11 @@ def test_merge_modes():
     assert merge(left, right, mode = "by_key", key = "id", keep_unmatched = False) == [
         {"id": 2, "x": "b", "y": "B"}
     ]
-    # One order, two line items: both lines survive the join.
     lines = [{"id": 2, "sku": "x"}, {"id": 2, "sku": "y"}]
     assert merge([{"id": 2, "who": "A"}], lines, mode = "by_key", key = "id") == [
         {"id": 2, "who": "A", "sku": "x"},
         {"id": 2, "who": "A", "sku": "y"},
     ]
-    # A right-hand row without the key is unmatched, so it is kept like any other unmatched row.
     assert merge(left, [{"y": "N"}], mode = "by_key", key = "id") == [*left, {"y": "N"}]
     assert merge(left, [{"y": "N"}], mode = "by_key", key = "id", keep_unmatched = False) == []
     with pytest.raises(FlowNodeError, match = "at most"):
@@ -169,7 +163,6 @@ def test_split_default_is_unchanged_and_chunks_overlap():
         "One. Two!",
         "Three? Four.",
     ]
-    # An overlap as large as the chunk still moves forward.
     assert text.chunk_text("a b c", 2, 5, "words") == ["a b", "b c"]
 
 
@@ -188,8 +181,6 @@ def test_documents_are_sniffed_and_text_needs_a_named_type():
 
 
 class _Rag(FakeCtx):
-    """A Studio stand-in for the RAG routes the knowledge blocks call."""
-
     def __init__(
         self,
         node_type,
@@ -279,7 +270,6 @@ def test_knowledge_examples_name_only_studios_local_models():
     ask = next(d for d in build() if d["id"] == "ask-documents")
     needs = {m["kind"]: m for m in ask["requirements"]["models"]}
     assert needs["embedding"]["repo"] == config.DEFAULT_EMBEDDING_MODEL
-    # No provider, endpoint or model field: the blocks only call Studio's own RAG routes (checked in _Rag.call).
     from core.flows.specs import SPECS_BY_TYPE
 
     for spec_type in ("doc.load", "kb.add", "kb.search"):

@@ -652,9 +652,7 @@ class GpuLeaseHeldError(GpuBusyForAnotherAccountError):
         )
 
 
-# One operation at a time may hold the GPU against residency changes. The holder is a server-side
-# context value set by the code that took the lease (a Flows run sets it around its own node), so
-# requests that node makes in-process pass, and no client can claim it.
+# One operation at a time may hold the GPU lease; the holder is a context value set server-side, so no client can claim it.
 _lease_lock = threading.Lock()
 _lease: Optional[dict] = None
 _lease_holder: ContextVar[Optional[str]] = ContextVar("gpu_lease_holder", default = None)
@@ -703,8 +701,7 @@ def operation_lease(
     global _lease
     import time
 
-    # Install under _lock too, so a residency change already past its lease check finishes first. Never block on it:
-    # callers run on the event loop, and a busy arbiter reads as "try again shortly".
+    # Install under _lock without blocking: callers run on the event loop, and a busy arbiter reads as "try again".
     if not _lock.acquire(blocking = False):
         raise GpuLeaseHeldError("A model change", 2.0)
     try:
