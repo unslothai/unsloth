@@ -349,7 +349,8 @@ def _is_block_list(container, no_split):
     """A ModuleList whose children are all blocks (modules with submodules and parameters). Classes may mix
     (Jamba, Zamba / Zamba2, OlmoHybrid, Mllama text); lists of bare Linear / norm modules (Gemma3n altup
     projections, also after PEFT wraps them) are not blocks."""
-    children = list(container.children())
+    # Pipeline parallel pass-throughs (layers another stage owns, no parameters) are not blocks.
+    children = [c for c in container.children() if "_pp_index" not in c.__dict__]
     if not children:
         return False
     for child in children:
@@ -379,7 +380,7 @@ def find_shard_units(model, ignored_params = ()) -> list:
             continue
         if isinstance(module, nn.ModuleList) and _is_block_list(module, no_split):
             for child in module.children():
-                if id(child) not in inside:
+                if id(child) not in inside and "_pp_index" not in child.__dict__:
                     _take(child)
     if no_split and not units:
         # Fallback only when no block list exists: the existing `_no_split_modules` classes (transformers 5.x
@@ -1439,6 +1440,17 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if config.units is not None:
         # Sharing is checked once the replicated set is known (ignored and, if replicated, frozen params).
         check_shard_units(model, list(config.units), ignored_params = None)
+    pp_stage = None
+    if any(m.__dict__.get("_unsloth_pp") for m in model.modules()):
+        # Unsloth pipeline parallel x FSDP2 data parallel (torchtitan order: split, then shard each stage over
+        # the dp dimension of the same mesh). Checked before any change.
+        from .pp_native import check_pp_dp_composition
+
+        pp_stage = check_pp_dp_composition(model, config.mesh)
+        if config.reshard_after_forward is None:
+            # torchtitan's PP default (distributed/fsdp.py get_fsdp_reshard_after_forward_policy): keep units
+            # gathered after forward, else every micro-batch all-gathers them again.
+            config = dataclasses.replace(config, reshard_after_forward = False)
     if _refuse_tensor_parallel_model(model, config.mesh, compose = True):
         # Unsloth tensor parallel x FSDP2 data parallel: the frozen weights are this rank's tp slices,
         # replicated over the data parallel mesh; FSDP2 shards only the trainable (LoRA) DTensors over it.
@@ -1606,7 +1618,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     model._unsloth_fsdp2_units = wrapped
     model._unsloth_fsdp2_extra_units = [u for u in extra_units if isinstance(u, FSDPModule)]
     model._unsloth_fsdp2_root_only = layout.root_only
-    if config.wrap_generate:
+    if config.wrap_generate and pp_stage is None:  # a pipeline stage refuses generate itself
         _wrap_generate(model)
     model._unsloth_fsdp2_mp_policy = mp_policy
     model._unsloth_fsdp2_replicated = sum(1 for p in model.parameters() if p in replicated)
@@ -1622,6 +1634,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         from .fsdp2_save import install_dcp_bnb_state_dict
         install_dcp_bnb_state_dict()
     install_native_fsdp2_hooks()
+    if pp_stage is not None:
+        # The pipeline stage module becomes the outer FSDP2 root: one gradient reduce-scatter per step.
+        pp_stage._attach_data_parallel(mesh, mp_policy)
     global _SHARDED_ANY
     _SHARDED_ANY = True  # fsdp2_launch then leaves a custom loop's Accelerator alone
     classes = sorted({type(u).__name__.removeprefix("FSDP") for u in wrapped})
@@ -3587,10 +3602,12 @@ def _refuse_tensor_parallel_model(
             "apply_tensor_parallel(model, mesh['tp']) over the same 2-D (dp, tp) mesh."
         )
     if any(m.__dict__.get("_unsloth_pp") for m in model.modules()):
+        if compose and mesh is not None:
+            return False  # shard_model checked the pp x dp composition (pp_native.check_pp_dp_composition)
         raise RuntimeError(
-            "Unsloth: native FSDP2 does not compose with Unsloth pipeline parallelism "
-            "(apply_pipeline_parallel) yet; train a pipeline parallel model with PipelineParallel.step "
-            "over the pp ranks only (data parallel size 1)."
+            "Unsloth: native FSDP2 does not compose with Unsloth pipeline parallelism (apply_pipeline_parallel) "
+            "here; for pipeline x data parallel call shard_model(model, FSDP2Config(mesh = mesh['dp'])) on the "
+            "split model and train it with PipelineParallel.step (not the Trainer)."
         )
     if (tp_size or 1) > 1 or dtensor:
         raise RuntimeError(
