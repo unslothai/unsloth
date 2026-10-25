@@ -75,7 +75,6 @@ def test_new_npc_and_item_get_fresh_ids():
 def test_dangling_references_are_rejected():
     with pytest.raises(WorldError):
         validate_director({"title": "X", "giver": "Nobody", "item": "bell"}, _state())
-    # A new villager is only made when allowed.
     with pytest.raises(WorldError):
         validate_director(
             {"title": "X", "giver": "Ann", "item": "bell", "new_npc_name": "Ann"}, _state()

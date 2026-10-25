@@ -666,7 +666,6 @@ def validate_director(raw: Any, state: dict) -> dict:
         t = re.sub(r"\s+", " ", str(raw.get(key) or "")).strip()
         if len(t) <= limit:
             return t
-        # Long text ends at a sentence, not mid-word.
         cut = t[:limit]
         end = cut.rfind(". ")
         return cut[: end + 1] if end > limit // 2 else cut

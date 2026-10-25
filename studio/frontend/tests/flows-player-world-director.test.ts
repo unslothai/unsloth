@@ -80,7 +80,6 @@ test("director runs when no quest is left, or right after one is finished", () =
   assert.equal(D.directorDue(SPEC, s, false), false);
   assert.equal(D.directorDue(SPEC, s, true), true);
   assert.equal(D.directorDue(SPEC, finished(), false), true);
-  // Three open quests is enough.
   const busy = {
     ...SPEC,
     quests: [0, 1, 2].map((i) => ({ ...SPEC.quests[0], id: `q${i}` })),
@@ -189,7 +188,6 @@ test("additions survive save and load, and keep their quests and items", () => {
   assert.deepEqual(back.additions, out.state.additions);
   assert.deepEqual(back.activeQuests, ["ring_bell"]);
   assert.deepEqual(back.inventory, ["bell"]);
-  // A save from before additions loads with none.
   const old = W.deserialize(SPEC, {
     ...W.serialize(W.initialWorldState(SPEC)),
     additions: undefined,
