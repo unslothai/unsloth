@@ -32,6 +32,7 @@ import {
   type PromptUpsamplerStatus,
   upsamplerDownloadBytes,
   upsamplerNeedsDownload,
+  upsamplerServesEarlierQuant,
   clearPreviewDigests,
   previewSignature,
   upsamplerDownloadFraction,
@@ -152,7 +153,9 @@ function UpsamplerDownloadNotice({
       ) : (
         <>
           <span className="text-muted-foreground">
-            {status.downloaded
+            {upsamplerServesEarlierQuant(status)
+              ? `Prompts are enhanced with an earlier upsampler quant (${status.filename})${status.mmproj_downloaded ? "" : ", edits from the text alone"}. Download the current one${size ? ` (${size})` : ""} for better captions.`
+              : status.downloaded
               ? `The prompt upsampler's vision projector${size ? ` (${size})` : ""} is not downloaded. Until it is, edits are enhanced from the text alone.`
               : `The prompt upsampler${size ? ` (${size})` : ""} is not downloaded. Until it is, prompts run as typed.`}
           </span>
@@ -164,7 +167,7 @@ function UpsamplerDownloadNotice({
               type="button"
               size="sm"
               variant="secondary"
-              className="h-7 gap-1.5 self-start text-xs"
+              className="gap-1.5 self-start text-xs"
               disabled={busy}
               onClick={() => void start()}
             >
@@ -335,7 +338,7 @@ export function EnhancePromptControls({
                   type="button"
                   size="sm"
                   variant="secondary"
-                  className="h-7 px-2 text-xs"
+                  className="text-xs"
                   onClick={() => {
                     onUseCaption(preview.caption);
                     setPreview(null);

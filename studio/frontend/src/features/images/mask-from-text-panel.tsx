@@ -168,7 +168,7 @@ function SegmenterDownloadNotice({
               type="button"
               size="sm"
               variant="secondary"
-              className="h-7 gap-1.5 self-start text-xs"
+              className="gap-1.5 self-start text-xs"
               disabled={busy}
               onClick={() => void start()}
             >
@@ -292,7 +292,7 @@ export function MaskFromTextPanel({
           type="button"
           size="sm"
           variant="secondary"
-          className="h-8 gap-1.5 text-xs"
+          className="gap-1.5 text-xs"
           disabled={!canRun}
           onClick={() => void run()}
         >

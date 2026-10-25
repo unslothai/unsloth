@@ -515,7 +515,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                   type="button"
                   variant="dark"
                   size="sm"
-                  className="pointer-events-auto h-8 rounded-full bg-black/70 text-white hover:bg-black/85"
+                  className="pointer-events-auto rounded-full bg-black/70 text-white hover:bg-black/85"
                   onClick={handleEditClick}
                 >
                   <PencilIcon className="size-3.5" />

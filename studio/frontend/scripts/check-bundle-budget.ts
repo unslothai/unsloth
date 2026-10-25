@@ -427,8 +427,11 @@ export const BUDGET = {
   // raw, 2,088,616 -> 2,088,672 B transfer against cfc593f0bd, Node 26, unchanged at 99 chunks). Raised by that.
   // Its "System and Engine" page title adds 11 B raw / 34 B transfer to the eager en locale (6,933,189 -> 6,933,200 B
   // raw, 2,088,699 -> 2,088,733 B transfer merged with f49cbdf535, Node 26, 99 chunks). Raised by that.
-  transferBytes: 2_091_207,
-  rawBytes: 6_942_431,
+  // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
+  // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
+  // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
+  transferBytes: 2_096_327,
+  rawBytes: 6_958_713,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
