@@ -151,7 +151,8 @@ test("a hungry villager goes to eat, a rested fed one follows the day plan, and 
   assert.equal(content.until, 600);
   // The same seed always draws the same action; across seeds the top choices vary.
   const mid = { energy: 60, hunger: 45, social: 40, fun: 45 };
-  assert.deepEqual(pick(mid, 3), pick(mid, 3));
+  const draws = () => Array.from({ length: 30 }, (_, i) => pick(mid, i));
+  assert.deepEqual(draws(), draws());
   const kinds = new Set(
     Array.from(
       { length: 40 },
@@ -267,7 +268,9 @@ test("follow me: a reply makes the NPC walk to the player through the handle, st
   const same = W.applyReply(s, ws, "tom", {
     text: "x",
     action: "dance" as never,
+    place: "pond",
   }).state;
+  assert.deepEqual(same.errands, ws.errands);
   assert.deepEqual(same.following, ws.following);
   const nowhere = W.applyReply(s, ws, "tom", {
     text: "x",
