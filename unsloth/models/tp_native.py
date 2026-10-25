@@ -1504,7 +1504,12 @@ def _scale_grads_(params, total, max_norm, eps):
         for p in params:
             g = p.grad
             local = g.to_local() if _is_dtensor(g) else g
-            local.mul_(coef.to(device = local.device, dtype = local.dtype))
+            c = coef.to(device = local.device, dtype = torch.float32)
+            if local.dtype in (torch.float16, torch.bfloat16):
+                # A small coefficient rounds to 0 in fp16 (a device tensor is cast to the grad dtype).
+                local.copy_(local.float().mul_(c))
+            else:
+                local.mul_(c.to(local.dtype))
 
 
 def _clip_over_world(params, max_norm, eps):

@@ -595,6 +595,15 @@ def test_tp_clip_has_no_host_sync(name):
             assert r["after"] == pytest.approx(1e-3, rel = 1e-4), r
 
 
+def test_tp_clip_coefficient_is_not_narrowed_to_fp16():
+    # A coefficient of ~1.7e-8 rounds to 0 in fp16; the clipped grads (~1e-3) are representable.
+    p = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+    p.grad = torch.full((4,), 60000.0, dtype = torch.float16)
+    tpn._scale_grads_([p], torch.tensor(6e7), 1.0, 1e-6)
+    assert torch.all(p.grad > 0), p.grad
+    assert p.grad.float() == pytest.approx(torch.full((4,), 1e-3), rel = 1e-2), p.grad
+
+
 @pytest.mark.parametrize("kind", ["tp", "pp"])
 @pytest.mark.parametrize("name", EXPORTS)
 def test_exports_refuse_model_parallel_before_writing(kind, name):
