@@ -990,19 +990,24 @@ async def list_fine_tuning_jobs(
         pending = []
     after_run = await _resolve(after) if after else None
     runs = await asyncio.to_thread(_runs_after, after_run, limit + 1)
-    if after_run and not runs:
-        # The live job has no history row yet and is listed first, so the history follows it.
-        status = await _current_status(current_subject, via_api_key)
-        if status is not None and _status_field(status, "job_id") == after_run:
-            runs = await asyncio.to_thread(_runs_after, None, limit + 1)
+    status = await _current_status(current_subject, via_api_key)
+    live_id = _status_field(status, "job_id") if status is not None else None
+    # Live jobs without a history row yet (a batch's members while it sets up) are listed first.
+    live = []
+    if live_id and _status_field(status, "phase") != "idle":
+        live = [
+            r
+            for r in reversed(_BATCHES.get(live_id, [live_id]))
+            if await asyncio.to_thread(get_run, r) is None
+        ]
+    if after_run in live:
+        # The history follows the live jobs, so a cursor on one continues with the rest of them.
+        live = live[live.index(after_run) + 1 :]
+        runs = await asyncio.to_thread(_runs_after, None, limit + 1)
+    elif after_run:
+        live = []
     jobs = [_for_caller(await asyncio.to_thread(_job_from_run, run), via_api_key) for run in runs]
-    if after is None:
-        status = await _current_status(current_subject, via_api_key)
-        live_id = _status_field(status, "job_id") if status is not None else None
-        live_phase = _status_field(status, "phase") if status is not None else None
-        for live_run in _BATCHES.get(live_id, [live_id]) if live_id else []:
-            if live_phase != "idle" and all(run["id"] != live_run for run in runs):
-                jobs.insert(0, await _job(live_run, current_subject, via_api_key))
+    jobs = [await _job(r, current_subject, via_api_key) for r in live] + jobs
     # A job that ended before it started sorts by its creation; once a newer job ran, it is only retrievable.
     newest = max((job["created_at"] for job in jobs), default = 0)
     jobs = [

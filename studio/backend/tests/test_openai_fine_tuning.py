@@ -1083,6 +1083,29 @@ def test_compatible_queued_jobs_start_as_one_batch(batch_queue):
     assert live["status"].job_id not in {openai_fine_tuning._run_id(i) for i in listed_ids}
 
 
+def test_listing_pages_through_a_batch_that_is_still_loading(batch_queue):
+    client, _calls, _live, gpu, _backend = batch_queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = [await _create(client, uploaded.id, suffix = s) for s in "abc"]
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        seen, after = [], None
+        for _ in range(5):
+            page = await client.fine_tuning.jobs.list(
+                limit = 1, **({"after": after} if after else {})
+            )
+            seen += [j.id for j in page.data]
+            if not page.has_more:
+                break
+            after = page.data[-1].id
+        return jobs, seen
+
+    jobs, seen = _run(flow())
+    assert sorted(seen) == sorted(j.id for j in jobs) and len(seen) == 3
+
+
 def test_mlx_jobs_never_batch(batch_queue, monkeypatch):
     client, calls, _live, gpu, _backend = batch_queue
     monkeypatch.setattr(_training_core, "should_use_mlx_training_backend", lambda: True)
