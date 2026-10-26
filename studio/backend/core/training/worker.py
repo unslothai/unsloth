@@ -3493,14 +3493,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         raise ValueError("No dataset specified")
 
-    _emit_resource_provenance(
+    if not _emit_resource_provenance(
         event_queue,
         config,
         loaded_model_for_provenance,
         model_load_target = model_load_name,
         model_load_in_4bit = bool(config.get("load_in_4bit")),
         dataset_loaded_from_exact_snapshot = bool(config.get("_dataset_loaded_from_exact_snapshot")),
-    )
+    ):
+        return
 
     from core.training.eval_dataset import evaluation_enabled
 
@@ -5324,7 +5325,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
             return
 
-        _emit_resource_provenance(
+        if not _emit_resource_provenance(
             event_queue,
             config,
             trainer.model,
@@ -5333,7 +5334,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             dataset_loaded_from_exact_snapshot = bool(
                 getattr(trainer, "dataset_loaded_from_exact_snapshot", False)
             ),
-        )
+        ):
+            return
 
         if eval_dataset is not None:
             event_queue.put(
@@ -5622,10 +5624,12 @@ def _emit_resource_provenance(
     model_load_target: str,
     model_load_in_4bit: bool,
     dataset_loaded_from_exact_snapshot: bool,
-) -> None:
+) -> bool:
+    """False, after reporting why, when a resumed run loaded a different base than it trained on."""
     from core.training.provenance import (
         build_worker_provenance_event,
         incomplete_worker_provenance_event,
+        resumed_model_mismatch,
     )
 
     try:
@@ -5640,7 +5644,16 @@ def _emit_resource_provenance(
         logger.warning("Could not attest training resource provenance", exc_info = True)
         event = incomplete_worker_provenance_event("provenance_attestation_failed")
     event["ts"] = time.time()
+    expected = config.get("resume_expected_model")
+    mismatch = resumed_model_mismatch(expected, event) if expected else None
+    if mismatch:
+        # Only the dataset is recorded, so the next resume keeps this run's expectation, not the
+        # base it loaded by mistake.
+        event_queue.put({**event, "model": incomplete_worker_provenance_event()["model"]})
+        event_queue.put({"type": "error", "error": mismatch, "stack": "", "ts": time.time()})
+        return False
     event_queue.put(event)
+    return True
 
 
 def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
@@ -6185,14 +6198,15 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
         return
 
-    _emit_resource_provenance(
+    if not _emit_resource_provenance(
         event_queue,
         config,
         loaded_model_for_provenance,
         model_load_target = model_load_name,
         model_load_in_4bit = False,
         dataset_loaded_from_exact_snapshot = bool(config.get("_dataset_loaded_from_exact_snapshot")),
-    )
+    ):
+        return
 
     loss = MultipleNegativesRankingLoss(model)
 

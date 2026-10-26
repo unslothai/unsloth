@@ -271,6 +271,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "model_revision": values.get("model_revision"),
         "actual_model_repo_id": values.get("actual_model_repo_id"),
         "resume_model_load_mode": values.get("resume_model_load_mode"),
+        "resume_expected_model": values.get("resume_expected_model"),
         "dataset_known_cached": values.get("dataset_known_cached", False),
         "dataset_local_path": values.get("dataset_local_path"),
         "dataset_snapshot_path": values.get("dataset_snapshot_path"),
@@ -1847,10 +1848,9 @@ class TrainingBackend:
                     "retry when it completes."
                 )
 
-            if (
-                config.get("require_exact_resume_resources")
-                or config.get("require_exact_model_resource")
-            ) and config.get("load_in_4bit"):
+            from .provenance import resume_requires_original_load_mode
+
+            if resume_requires_original_load_mode(config) and config.get("load_in_4bit"):
                 from .provenance import effective_training_load_in_4bit
                 effective_training_load_in_4bit(
                     config,

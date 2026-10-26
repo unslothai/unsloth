@@ -2450,7 +2450,7 @@ def test_pending_hub_model_resume_before_attestation_is_allowed():
         },
     }
 
-    actual_repo_id, requires_exact_model, requires_exact_dataset, _, _ = (
+    actual_repo_id, requires_exact_model, requires_exact_dataset, _, _, _ = (
         route._prepare_resume_resource_provenance(request, resume_run)
     )
 

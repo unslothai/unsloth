@@ -1544,12 +1544,13 @@ def _normalized_optional_string(value: Any) -> Optional[str]:
 
 def _prepare_resume_resource_provenance(
     request: TrainingStartRequest, resume_run: dict
-) -> tuple[Optional[str], bool, bool, bool, Optional[str]]:
+) -> tuple[Optional[str], bool, bool, bool, Optional[str], dict[str, Any]]:
     stored = training_run_config(resume_run)
     from core.training.provenance import (
         ExactResumeResourcesUnavailable,
         RESOURCE_PROVENANCE_KEY,
         exact_resume_resource_requirements,
+        local_model_resume_expectation,
         resource_provenance_is_complete,
     )
 
@@ -1623,6 +1624,17 @@ def _prepare_resume_resource_provenance(
         ) from error
     for field in TrainingStartRequest.model_fields:
         setattr(request, field, getattr(validated_request, field))
+    expected_model = local_model_resume_expectation(stored)
+    if expected_model is not None:
+        # The worker checks the base it loads against this; the dataset pin still applies.
+        return (
+            None,
+            False,
+            requires_exact_dataset,
+            False,
+            None,
+            {"resume_expected_model": expected_model},
+        )
     marker = stored.get(RESOURCE_PROVENANCE_KEY)
     model_load_mode = (
         _normalized_optional_string(marker.get("model_load_mode"))
@@ -1635,6 +1647,7 @@ def _prepare_resume_resource_provenance(
         requires_exact_dataset,
         resource_provenance_is_complete(stored),
         model_load_mode,
+        {},
     )
 
 
@@ -1956,6 +1969,7 @@ async def _admit_training_request(
     resume_requires_exact_resources = False
     resume_requires_exact_model = False
     resume_requires_exact_dataset = False
+    resume_overrides: dict[str, Any] = {}
     if request.resume_from_checkpoint:
         try:
             resume_output_dir = await asyncio.to_thread(
@@ -2005,6 +2019,7 @@ async def _admit_training_request(
             resume_requires_exact_dataset,
             resume_requires_exact_resources,
             resume_model_load_mode,
+            resume_overrides,
         ) = await asyncio.to_thread(
             _prepare_resume_resource_provenance,
             request,
@@ -2235,6 +2250,7 @@ async def _admit_training_request(
         "gpu_ids": request.gpu_ids,
         "s3_config": request.s3_config.model_dump() if request.s3_config else None,
     }
+    training_kwargs.update(resume_overrides)
 
     # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled for brand-new
     # architectures, so VRAM checks must not underestimate a load the worker refuses.

@@ -93,6 +93,14 @@ class ExactResumeResourcesUnavailable(ValueError):
     pass
 
 
+def resume_requires_original_load_mode(config: dict[str, Any]) -> bool:
+    return bool(
+        config.get("require_exact_resume_resources")
+        or config.get("require_exact_model_resource")
+        or config.get("resume_expected_model")
+    )
+
+
 def effective_training_load_in_4bit(
     config: dict[str, Any], model_load_target: str, hf_token: Optional[str]
 ) -> bool:
@@ -101,9 +109,7 @@ def effective_training_load_in_4bit(
     from utils.transformers_version import latest_tier_active_for
 
     latest_tier_active = latest_tier_active_for(model_load_target, hf_token)
-    if latest_tier_active and (
-        config.get("require_exact_resume_resources") or config.get("require_exact_model_resource")
-    ):
+    if latest_tier_active and resume_requires_original_load_mode(config):
         raise ExactResumeResourcesUnavailable(
             "This checkpoint requires its original 4-bit model load mode, "
             "which is unavailable with the active Transformers runtime."
@@ -121,8 +127,12 @@ def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
         return False
     except Exception:
         return False
-    # Same disjunction effective_training_load_in_4bit tests.
-    return bool(requires_exact_model or resource_provenance_is_complete(config))
+    # The stored-run form of resume_requires_original_load_mode.
+    return bool(
+        requires_exact_model
+        or resource_provenance_is_complete(config)
+        or local_model_resume_expectation(config) is not None
+    )
 
 
 def _normalized_repo_id(value: Any) -> Optional[str]:
@@ -922,6 +932,52 @@ def exact_resume_resource_requirements(config: dict[str, Any]) -> tuple[bool, bo
             )
         validate_exact_dataset_pin(config)
     return require_model, require_dataset
+
+
+def local_model_resume_expectation(config: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """The attested base of a stored run whose model is a local folder (a continued adapter).
+    Resume loads that folder as the run did, so its base is checked once loaded instead of
+    pinned as the load target, which would load the bare base."""
+    from utils.paths import is_local_path
+
+    if not is_local_path(str(config.get("model_name") or "")):
+        return None
+    repo_id = _normalized_repo_id(config.get("actual_model_repo_id"))
+    snapshot = config.get("model_snapshot_path")
+    if repo_id is None or not isinstance(snapshot, str) or not snapshot:
+        # A resume that stopped before attesting hands on the expectation it was checked against.
+        carried = config.get("resume_expected_model")
+        if isinstance(carried, dict) and carried.get("repo_id") and carried.get("snapshot_path"):
+            return carried
+        return None
+    marker = config.get(RESOURCE_PROVENANCE_KEY)
+    return {
+        "repo_id": repo_id,
+        "snapshot_path": snapshot,
+        "load_mode": marker.get("model_load_mode") if isinstance(marker, dict) else None,
+    }
+
+
+def resumed_model_mismatch(expected: dict[str, Any], event: dict[str, Any]) -> Optional[str]:
+    """Why the model a resumed run loaded is not the one its checkpoint was trained on, or None."""
+    model = event.get("model") if isinstance(event.get("model"), dict) else {}
+    loaded = model.get("snapshot_path")
+    if (
+        model.get("status") != _ATTESTED
+        or _normalized_repo_id(model.get("repo_id")) != expected.get("repo_id")
+        or not isinstance(loaded, str)
+        or os.path.realpath(loaded) != os.path.realpath(expected.get("snapshot_path") or "")
+    ):
+        return (
+            f"The base model {expected.get('repo_id')} no longer resolves to the revision this "
+            "checkpoint was trained on, so it cannot be resumed exactly."
+        )
+    if expected.get("load_mode") and model.get("load_mode") != expected["load_mode"]:
+        return (
+            f"The base model loaded as {model.get('load_mode')!r}, but this checkpoint was "
+            f"trained on a {expected['load_mode']!r} load, so it cannot be resumed exactly."
+        )
+    return None
 
 
 def resource_provenance_allows_resume(config: dict[str, Any]) -> bool:
