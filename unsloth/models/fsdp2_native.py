@@ -3384,7 +3384,13 @@ def _scaler_for_native(trainer):
             self._one_flag(optimizer)
             return state["found_inf_per_device"]
 
-        def _unscale_grads_(self, optimizer, inv_scale, found_inf, allow_fp16 = True):
+        def _unscale_grads_(
+            self,
+            optimizer,
+            inv_scale,
+            found_inf,
+            allow_fp16 = True,
+        ):
             # The replicator hands CPU grads (cpu_offload shards) copies of a CUDA inv_scale / found_inf
             # made with non_blocking=True: the CPU kernel can read the pinned buffer before the copy
             # lands, unscaling by garbage and losing the overflow flag. Start from host copies.

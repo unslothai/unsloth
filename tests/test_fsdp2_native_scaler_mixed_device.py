@@ -100,7 +100,9 @@ def test_late_device_to_host_copies_keep_the_step_right(world_of_one, explicit_u
     if overflow in ("cuda", "both"):
         on_cuda.grad[0, 0] = float("inf")
     torch.cuda.synchronize()
-    torch.cuda._sleep(200_000_000)  # keep the stream busy: any non_blocking copy to the host lands late
+    torch.cuda._sleep(
+        200_000_000
+    )  # keep the stream busy: any non_blocking copy to the host lands late
     if explicit_unscale:
         scaler.unscale_(opt)
     scaler.step(opt)
@@ -113,6 +115,9 @@ def test_late_device_to_host_copies_keep_the_step_right(world_of_one, explicit_u
         assert scaler.get_scale() == 2.0**8
     else:
         for p, b in zip((on_cpu, on_cuda), before):
-            assert torch.equal(p.detach().cpu(), b.cpu()), (overflow, "the overflow step changed weights")
+            assert torch.equal(p.detach().cpu(), b.cpu()), (
+                overflow,
+                "the overflow step changed weights",
+            )
             assert float(opt.state[p]["step"]) == 0.0, (overflow, float(opt.state[p]["step"]))
         assert scaler.get_scale() == 2.0**7
