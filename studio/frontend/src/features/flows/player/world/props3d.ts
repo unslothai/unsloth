@@ -413,7 +413,7 @@ export interface WorldEditor {
   add(kind: Exclude<WorldPropKind, "model">): void;
   addModel(asset: ModelAsset, data: ArrayBuffer, name?: string): Promise<void>;
   placeRequest(text: string): PlaceRequest;
-  /** Props added, or -1 when the scene changed since `placeRequest`. */
+  /** Props added, or -1 when the scene changed or the editor closed since `placeRequest`. */
   addPlaced(placed: unknown): number;
   select(id: string | null): void;
   setMode(mode: GizmoMode): void;

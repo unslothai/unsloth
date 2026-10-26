@@ -305,6 +305,7 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
       orbit.update();
     },
     close() {
+      placeBasis = null;
       window.removeEventListener("keydown", onKey, true);
       dom.removeEventListener("pointerdown", onDown);
       dom.removeEventListener("pointerup", onUp);
