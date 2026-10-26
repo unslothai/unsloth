@@ -4487,47 +4487,51 @@ export function ModelConfigPage({
           onNamingSubmit={submitNaming}
           onDelete={setPendingDelete}
         />
-        <p
-          id={saveStatusId}
-          aria-live="polite"
-          data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
-          // min-h keeps the empty line's height, so the buttons never move. Not while naming in the
-          // sidebar: the name box's own button row already moved them, and the blank line only adds a gap.
+        {/* One row under the dropdown, always rendered so picking Default or a status change never moves the
+            buttons. Kept but invisible while naming; in the sidebar the name box's own buttons already moved
+            them, so it goes. Default itself is never pinned. */}
+        <div
           className={cn(
-            "-mt-2 -mb-1.5 min-h-[calc(1.375em+0.25rem)] min-w-0 truncate pl-3.5 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400",
-            naming && variant === "sidebar" && "hidden",
+            "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2 pl-3.5",
+            naming && (variant === "sidebar" ? "hidden" : "invisible"),
           )}
-          title={saveStatus || undefined}
         >
-          {saveStatus}
-        </p>
-        {!naming && (
-          // Always rendered, so picking Default never moves the buttons; Default itself is never pinned.
-          <div className="-mt-1.5 flex min-w-0 items-center gap-2 pl-3.5">
-            <Checkbox
-              id={alwaysLoadId}
-              checked={selectedSet !== null && selectedSet === pinnedSet}
-              disabled={
-                selectedSet === null ||
-                sharedVariantUnresolved ||
-                extraArgsHydrating ||
-                budgetSettling
-              }
-              onCheckedChange={(checked) => setAlwaysLoad(checked === true)}
-            />
-            <label
-              htmlFor={alwaysLoadId}
-              title={
-                selectedSet === null
-                  ? "Pick or save a setting to always load it"
-                  : "Every load of this model uses these settings, even after you load it once with others"
-              }
-              className="min-w-0 cursor-pointer select-none truncate text-ui-12 text-muted-foreground peer-disabled:cursor-default peer-disabled:opacity-60"
-            >
-              Always load with these settings
-            </label>
-          </div>
-        )}
+          <Checkbox
+            id={alwaysLoadId}
+            aria-label="Always load with these settings"
+            aria-describedby={saveStatusId}
+            checked={selectedSet !== null && selectedSet === pinnedSet}
+            disabled={
+              naming !== null ||
+              selectedSet === null ||
+              sharedVariantUnresolved ||
+              extraArgsHydrating ||
+              budgetSettling
+            }
+            onCheckedChange={(checked) => setAlwaysLoad(checked === true)}
+          />
+          <label
+            htmlFor={alwaysLoadId}
+            title={
+              selectedSet === null
+                ? "Pick or save a setting to always load it"
+                : "Every load of this model uses these settings, even after you load it once with others"
+            }
+            className="shrink-0 cursor-pointer select-none text-ui-12 text-muted-foreground peer-disabled:cursor-default peer-disabled:opacity-60"
+          >
+            {/* The sidebar is too narrow for the full label beside the status; the box's name stays full. */}
+            {variant === "sidebar" ? "Always load" : "Always load with these settings"}
+          </label>
+          <p
+            id={saveStatusId}
+            aria-live="polite"
+            data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
+            className="ml-auto min-w-0 truncate text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+            title={saveStatus || undefined}
+          >
+            {saveStatus}
+          </p>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button

@@ -474,6 +474,11 @@ test("while a set is pinned, picking or loading another uses it once", () => {
     /const setAlwaysLoad = [\s\S]*?setPinnedRunSettings\(configId, target\.ggufVariant, selectedSet\)[\s\S]*?if \(setUnsaved\) \{\s*if \(!handleSave\(selectedSet, message, selectedSet\)\)[\s\S]*?pickSet\(selectedSet, selectedSet\);/,
   );
   assert.match(page, /Always load with these settings/);
+  // The box and the status share the one row under the dropdown.
+  assert.match(
+    page,
+    /<Checkbox\s+id=\{alwaysLoadId\}[\s\S]{0,1600}<\/label>\s*<p\s+id=\{saveStatusId\}[\s\S]{0,500}\{saveStatus\}\s*<\/p>\s*<\/div>/,
+  );
   // The server row is the pinned set, so it must not replace what a resident model loaded once.
   assert.match(
     page,
