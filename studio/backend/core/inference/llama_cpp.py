@@ -38725,11 +38725,7 @@ class LlamaCppBackend:
         finally:
             self._kill_process_group(_pgid)
             _surviving_descendants = self._terminate_descendants(_descendants)
-            # getattr: teardown must tolerate a partially-built backend (failed
-            # __init__ or a __new__-built instance), as with _llama_log_fh below.
-            if getattr(self, "_stats_logger", None) is not None:
-                self._stats_logger.stop()
-                self._stats_logger = None
+            self._stop_stats_logger()
             # Drop it from the lifetime record only once it is confirmed gone.
             # A server that survived a failed kill has to stay recorded, or the
             # next startup sweep cannot reap it. The record stores a start-time
@@ -41436,6 +41432,13 @@ class LlamaCppBackend:
                     return False
                 return started
 
+    def _stop_stats_logger(self) -> None:
+        """Stop the engine-stats poller of the child going away. getattr: teardown must
+        tolerate a partially-built backend (failed __init__ or a __new__-built instance)."""
+        if getattr(self, "_stats_logger", None) is not None:
+            self._stats_logger.stop()
+            self._stats_logger = None
+
     def _retire_device_lost_server(
         self,
         served_by,
@@ -41477,6 +41480,10 @@ class LlamaCppBackend:
                 served_by.wait(timeout = 10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+            # Else it polls the dead child's port, which another server may reuse, until the
+            # next load; a terminal Metal retirement has no next load. The replacement's
+            # load starts its own.
+            self._stop_stats_logger()
             if metal_poison is not None:
                 # Decided under _respawn_lock, or a request could respawn the dead child
                 # with the speculative config the drafter-free reload avoids.
