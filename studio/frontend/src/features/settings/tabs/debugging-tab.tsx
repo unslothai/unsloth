@@ -31,7 +31,6 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  Copy01Icon,
   Download01Icon,
   FolderOpenIcon,
   InformationCircleIcon,
@@ -40,6 +39,7 @@ import {
   Shield01Icon,
   TextWrapIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownIcon } from "lucide-react";
 import {

@@ -133,7 +133,6 @@ import {
   Add01Icon,
   ArrowUpDownIcon,
   Cancel01Icon,
-  Copy01Icon,
   DashboardCircleIcon,
   Flag01Icon,
   FlimSlateIcon,
@@ -147,6 +146,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -203,6 +203,7 @@ import { localGgufKindFor } from "./local-gguf-policy";
 import {
   type ModelCapabilities,
   detectCapabilities,
+  isDiffusionTask,
 } from "./model-capabilities";
 import {
   AUDIO_CATALOG,
@@ -2619,9 +2620,6 @@ export const AUDIO_GEN_TASKS = [
   "audio-to-audio",
 ] as const;
 
-// Diffusion GGUF archs the Images backend cannot assemble yet; they would 400 on load.
-const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
-
 const MEDIA_PAGE_TASKS: readonly string[] = [
   ...IMAGE_GEN_TASKS,
   ...VIDEO_GEN_TASKS,
@@ -2697,8 +2695,8 @@ function passesTaskGate(
       !(!taskFilterHasAudio(filter) && isImageEditModel(repoId))
     ) || localModel?.opaque === true;
   }
-  // Unfiltered (chat): diffusion models stay listed and route to their page.
-  return repoTask !== UNSUPPORTED_DIFFUSION_TASK;
+  // Chat hides diffusion models; Images/Video own them.
+  return !isDiffusionTask(repoTask);
 }
 
 let _cachedGgufCache: CachedGgufRepo[] = [];
@@ -4289,7 +4287,7 @@ export function HubModelPicker({
     catalogSeedRows,
   ]);
 
-  // Supported diffusion GGUFs stay listed so a pick routes to Images or Video.
+  // Ordered by the On Device dropdown (Recent / Size / Name / Downloaded).
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(

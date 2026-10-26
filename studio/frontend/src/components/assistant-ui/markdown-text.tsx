@@ -48,7 +48,8 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import {

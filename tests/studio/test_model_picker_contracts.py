@@ -1105,13 +1105,12 @@ def test_same_click_commit_covers_all_numeric_inputs():
     )
 
 
-def test_context_commit_rechecks_persistence_only_shortcut():
-    """Committed context changes must bypass persistence-only saves."""
+def test_load_always_runs_the_committed_config():
+    """Load has no save-only shortcut left: Save is its own button, so a committed edit always loads."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const effectiveConfig =" in src
-    assert "perModelConfigsEqual(effectiveConfig, baseline, {" in src
-    assert "const effectivePersistenceOnly =" in src
-    assert "if (effectivePersistenceOnly)" in src
+    assert "const { effectiveRuntimeConfig, effectiveMaxSeqLengthValue } = commitDraft();" in src
+    assert "effectivePersistenceOnly" not in src
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():
@@ -1453,7 +1452,7 @@ def test_save_settings_is_not_rendered_when_it_could_do_nothing():
     gate = " ".join(_save_button_gate().split())
     assert "!canSave" in gate, gate
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "? !atDefault || savedRemember" in page
+    assert "? !atDefault || (savedRemember && !loadsOnce)" in page
 
 
 def test_save_settings_reflects_the_context_it_pinned():
@@ -1964,12 +1963,16 @@ def test_local_model_sections_respect_the_task_filter():
 
 
 def test_chat_picker_routes_diffusion_picks_to_their_page():
-    """Chat cannot load a diffusion or audio model. Rather than hiding an on-device one or
-    letting it 400, the unfiltered picker routes the pick to the page that loads it."""
+    """Chat cannot load a diffusion or audio model. The unfiltered picker hides on-device diffusion
+    rows (Images / Video list them; #15336), and a pick that still reaches it routes to its page."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     gate = re.search(r"function passesTaskGate\(.*?\n\}", src, re.S)
     assert gate, "passesTaskGate not found"
-    assert "UNSUPPORTED_DIFFUSION_TASK" in gate.group(0)
+    assert "!isDiffusionTask(repoTask)" in gate.group(0)
+    caps = _read("features/model-picker/components/model-selector/model-capabilities.ts")
+    assert (
+        'task === "image-diffusion-unsupported"' in caps
+    ), "the never-loadable tag must stay hidden"
     wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
     assert wrapper, "the routing wrapper around onSelect is missing"
     body = wrapper.group(0)
@@ -3198,20 +3201,21 @@ def test_run_settings_page_keeps_its_identifying_controls():
     assert 'aria-label="Back to model list"' in page
     assert 'ariaLabel="Context Length"' in page
     assert 'aria-label="Context Length"' in page
-    # The button element, not the word: "Reset" also appears in comments. Reset picks Default
-    # settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
+    # The button element, not the word: "Reset" also appears in comments. Reset picks the pinned set,
+    # else Default settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
     reset = any(
-        "onClick={() => pickSet(null)}" in el.group(0) and re.search(r">\s*Reset\s*<", el.group(0))
+        "onClick={() => pickSet(pinnedSet)}" in el.group(0)
+        and re.search(r">\s*Reset\s*<", el.group(0))
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )
     assert reset, "the Reset button's JSX is gone or no longer named Reset"
     assert "const next = entry?.config ?? DEFAULT_PER_MODEL_CONFIG;" in page
 
 
-def test_the_primary_action_keeps_its_four_labels():
+def test_the_primary_action_keeps_its_labels():
     """The driver sweeps these names to find the one button the panel shows."""
     page = _read("features/model-picker/components/model-config-page.tsx")
-    for label in ('"Save settings"', '"Forget settings"', '"Reload model"', '"Load model"'):
+    for label in ('"Reload model"', '"Load model"'):
         assert label in page, label
     # The labels live in a calculation, so require a button that renders them. Other props
     # contain braces, so match whole elements first.

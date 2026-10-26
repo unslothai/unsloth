@@ -17,12 +17,12 @@ export interface StagedPlanProgress extends PickToastProgress {
 }
 
 export interface PickToastOptions {
-  describe: (phase: PickToastPhase, progress: PickToastProgress | null) => unknown;
+  describe: (phase: PickToastPhase, progress: PickToastProgress | null, modelName?: string) => unknown;
   classNames?: Record<string, string>;
 }
 
 export interface PickToast {
-  show: () => string;
+  show: (modelName?: string) => string;
   dismiss: (id: string | undefined) => void;
   dismissAll: () => void;
   setPhase: (id: string | undefined, phase: PickToastPhase, plan?: number) => void;
@@ -40,6 +40,7 @@ export function createPickToast({ describe, classNames }: PickToastOptions): Pic
     phase: PickToastPhase;
     plan?: number;
     progress: PickToastProgress | null;
+    modelName?: string;
   } | null = null;
 
   const render = () => {
@@ -47,7 +48,7 @@ export function createPickToast({ describe, classNames }: PickToastOptions): Pic
     const id = live.id;
     toast(null, {
       id,
-      description: describe(live.phase, live.progress) as never,
+      description: describe(live.phase, live.progress, live.modelName) as never,
       duration: Infinity,
       closeButton: true,
       ...(classNames ? { classNames } : {}),
@@ -59,10 +60,10 @@ export function createPickToast({ describe, classNames }: PickToastOptions): Pic
   };
 
   return {
-    show: () => {
+    show: (modelName) => {
       if (live) toast.dismiss(live.id);
       seq += 1;
-      live = { id: `diffusion-pick:${seq}`, phase: "preparing", progress: null };
+      live = { id: `diffusion-pick:${seq}`, phase: "preparing", progress: null, modelName };
       render();
       return live.id;
     },
@@ -79,7 +80,7 @@ export function createPickToast({ describe, classNames }: PickToastOptions): Pic
     },
     setPhase: (id, phase, plan) => {
       if (id === undefined || live?.id !== id) return;
-      live = { id, phase, plan: phase === "downloading" ? plan : undefined, progress: null };
+      live = { ...live, phase, plan: phase === "downloading" ? plan : undefined, progress: null };
       render();
     },
     progress: (progress) => {

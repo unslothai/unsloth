@@ -28,17 +28,21 @@ import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
   BotIcon,
-  Copy01Icon,
+  Image01Icon,
   InformationCircleIcon,
-  SourceCodeIcon,
+  McpServerIcon,
+  TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -52,6 +56,7 @@ import type {
 } from "../api/keyless-api-access";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
+import { scrollIntoPane } from "../lib/scroll-into-pane";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
@@ -516,8 +521,12 @@ export function UsageExamples({
   keylessScope = "off",
   keylessTools = false,
   keylessExposure = null,
+  agentsExtra = null,
+  agentsOnly = false,
 }: {
   apiKey?: string | null;
+  agentsOnly?: boolean;
+  agentsExtra?: ReactNode;
   useTunnel: boolean;
   onUseTunnelChange: (next: boolean) => void;
   /** which routes keyless api access serves, so a placeholder is only used where it works */
@@ -528,6 +537,34 @@ export function UsageExamples({
 }) {
   const t = useT();
   const isOwner = useIsAccountOwner();
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  // Refs, not ids: the API page can mount a second copy, and an id lookup found that one.
+  const agentsRef = useRef<HTMLDivElement | null>(null);
+  const mcpRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (agentsOnly) return;
+    if (scrollTarget !== "api-keys-agents" && scrollTarget !== "api-keys-mcp") return;
+    const target = scrollTarget;
+    const section = (target === "api-keys-agents" ? agentsRef : mcpRef).current;
+    if (!section) return;
+    const pin = () => scrollIntoPane(section);
+    const observer = new ResizeObserver(pin);
+    observer.observe(section.parentElement ?? section);
+    const release = () => {
+      observer.disconnect();
+      useSettingsDialogStore.getState().consumeScrollTarget(target);
+    };
+    const timer = window.setTimeout(release, 1500);
+    const events = ["wheel", "touchmove", "keydown"] as const;
+    for (const name of events) {
+      window.addEventListener(name, release, { passive: true });
+    }
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(timer);
+      for (const name of events) window.removeEventListener(name, release);
+    };
+  }, [scrollTarget, agentsOnly]);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const secure = usePlatformStore((s) => s.secure);
@@ -799,106 +836,114 @@ export function UsageExamples({
 
   return (
     <section className="flex min-w-0 max-w-full flex-col gap-4">
-      <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-        <HugeiconsIcon icon={SourceCodeIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-        {t("settings.apiKeys.usageExamples")}
-      </h2>
-      {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
-      {cloudflareUrl ? (
-        <div className="flex min-w-0 items-center justify-between gap-2 rounded-full border border-border px-4 py-2">
-          <div className="flex shrink-0 items-center gap-1.5">
-            <Switch
-              size="sm"
-              checked={useTunnel}
-              onCheckedChange={onUseTunnelChange}
-              aria-label={t("settings.apiKeys.secureHttps")}
-            />
-            <span className="text-ui-11 font-medium text-foreground">
-              {t("settings.apiKeys.secureHttps")}
-              {/* Only for a network bind not launched with --secure: its raw port stays
-                  reachable. A loopback bind (the default, and Desktop) exposes nothing. */}
-              {secure || loopbackBind ? null : (
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    {/* Inline on the baseline, like a glyph after the label. */}
-                    <button
-                      type="button"
-                      className="ml-1.5 inline-flex align-baseline rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      aria-label={t("settings.apiKeys.secureHttpsHint")}
-                    >
-                      {/* Follows the UI font size, like the SettingsRow hint
-                          this matches. */}
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-[var(--ui-icon-size-hint)]"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
-                    {t("settings.apiKeys.secureHttpsHint")}
-                  </TooltipContent>
-                </Tooltip>
-              )}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={handleCopyUrl}
-            className={cn(
-              "flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              !useTunnel && "opacity-50",
-            )}
-            title={cloudflareUrl}
-            aria-label={t("settings.apiKeys.copyTunnelUrl")}
-          >
-            <span className="truncate font-mono">{cloudflareUrl}</span>
-            <HugeiconsIcon
-              icon={copiedUrl ? Tick02Icon : Copy01Icon}
-              className={cn(
-                "size-3.5 shrink-0",
-                copiedUrl && "text-emerald-600",
-              )}
-            />
-          </button>
-        </div>
-      ) : null}
-      <ExampleToggle
-        label={t("settings.apiKeys.exampleRequest")}
-        variant="toggle"
-        value={variant}
-        options={VARIANTS.map((option) => ({
-          id: option.id,
-          label: t(option.labelKey),
-        }))}
-        onChange={(next) => pickExample(exampleType(language, next))}
-      />
-      {model ? null : (
-        <p className="text-ui-11 leading-relaxed text-muted-foreground">
-          {t("settings.apiKeys.usageNoModel")}
-        </p>
-      )}
-      <ExampleCodeBox
-        code={snippets[lang]}
-        language={shikiLang}
-        label={t("settings.apiKeys.usageExamples")}
-        redactFromReload={Boolean(apiKey)}
-        pills={
-          <ExampleToggle
-            label={t("settings.apiKeys.exampleLanguage")}
-            value={language}
-            options={LANGUAGES}
-            onChange={(next) => pickExample(exampleType(next, variant))}
-          />
-        }
-        os={os}
-        onOsChange={setOs}
-      />
-      <div className="flex min-w-0 flex-col gap-2.5 pt-2">
-        <div className="flex items-center justify-between gap-3">
+      {agentsOnly ? null : (
+        <>
           <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-            <HugeiconsIcon icon={BotIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-            {t("settings.apiKeys.codingAgents")}
+            <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+            {t("settings.apiKeys.usageExamples")}
           </h2>
+          {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
+          {cloudflareUrl ? (
+            <div className="flex min-w-0 items-center justify-between gap-2 rounded-full border border-border px-4 py-2">
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Switch
+                  size="sm"
+                  checked={useTunnel}
+                  onCheckedChange={onUseTunnelChange}
+                  aria-label={t("settings.apiKeys.secureHttps")}
+                />
+                <span className="text-ui-11 font-medium text-foreground">
+                  {t("settings.apiKeys.secureHttps")}
+                  {/* Only for a network bind not launched with --secure: its raw port stays
+                      reachable. A loopback bind (the default, and Desktop) exposes nothing. */}
+                  {secure || loopbackBind ? null : (
+                    <Tooltip>
+                      <TooltipTrigger asChild={true}>
+                        {/* Inline on the baseline, like a glyph after the label. */}
+                        <button
+                          type="button"
+                          className="ml-1.5 inline-flex align-baseline rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          aria-label={t("settings.apiKeys.secureHttpsHint")}
+                        >
+                          {/* Follows the UI font size, like the SettingsRow hint
+                              this matches. */}
+                          <HugeiconsIcon
+                            icon={InformationCircleIcon}
+                            className="size-[var(--ui-icon-size-hint)]"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+                        {t("settings.apiKeys.secureHttpsHint")}
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopyUrl}
+                className={cn(
+                  "flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  !useTunnel && "opacity-50",
+                )}
+                title={cloudflareUrl}
+                aria-label={t("settings.apiKeys.copyTunnelUrl")}
+              >
+                <span className="truncate font-mono">{cloudflareUrl}</span>
+                <HugeiconsIcon
+                  icon={copiedUrl ? Tick02Icon : Copy01Icon}
+                  className={cn(
+                    "size-3.5 shrink-0",
+                    copiedUrl && "text-emerald-600",
+                  )}
+                />
+              </button>
+            </div>
+          ) : null}
+          <ExampleToggle
+            label={t("settings.apiKeys.exampleRequest")}
+            variant="toggle"
+            value={variant}
+            options={VARIANTS.map((option) => ({
+              id: option.id,
+              label: t(option.labelKey),
+            }))}
+            onChange={(next) => pickExample(exampleType(language, next))}
+          />
+          {model ? null : (
+            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+              {t("settings.apiKeys.usageNoModel")}
+            </p>
+          )}
+          <ExampleCodeBox
+            code={snippets[lang]}
+            language={shikiLang}
+            label={t("settings.apiKeys.usageExamples")}
+            redactFromReload={Boolean(apiKey)}
+            pills={
+              <ExampleToggle
+                label={t("settings.apiKeys.exampleLanguage")}
+                value={language}
+                options={LANGUAGES}
+                onChange={(next) => pickExample(exampleType(next, variant))}
+              />
+            }
+            os={os}
+            onOsChange={setOs}
+          />
+        </>
+      )}
+      <div ref={agentsRef} className="flex min-w-0 scroll-mt-6 flex-col gap-2.5 pt-2">
+        <div className="flex items-center justify-between gap-3">
+          {agentsOnly ? (
+            <span />
+          ) : (
+            <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+              <HugeiconsIcon icon={BotIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+              {t("settings.tabs.agents")}
+            </h2>
+          )}
           {/* Agents is owner-only (settings-tab-visibility.ts): other accounts would land
               on General, so they get the agent's docs instead. The tab restores its agent
               from this pref when it mounts. */}
@@ -907,7 +952,9 @@ export function UsageExamples({
               type="button"
               onClick={() => {
                 setAgentsTabAgent(agent);
-                useSettingsDialogStore.getState().setActiveTab("agents");
+                // Off the API page there is no dialog to switch tabs in.
+                if (agentsOnly) useSettingsDialogStore.getState().openDialog("agents");
+                else useSettingsDialogStore.getState().setActiveTab("agents");
               }}
               className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
@@ -1005,6 +1052,7 @@ export function UsageExamples({
             {t("settings.agents.vscodeNote")}
           </p>
         )}
+        {agentsExtra ? <div ref={mcpRef}>{agentsExtra}</div> : null}
       </div>
     </section>
   );
