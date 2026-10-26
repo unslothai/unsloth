@@ -242,6 +242,18 @@ def _run_cases(rank, world_size, base, out):
             fsdp2_save._host_available_bytes = real
         result["ram_wrote"] = os.path.isdir(mine("gguf_ram"))
 
+    def estimate():
+        # An eval forward leaves the root unit gathered; the RAM and placement estimates must
+        # still count those weights, as the gather (which reshards first) will move them.
+        model, tokenizer = load()
+        full = fsdp2_save._gathered_host_bytes(model, offload_to_cpu = True, offload_4bit = True)
+        model.eval()
+        with torch.no_grad():
+            model(input_ids = torch.arange(16).reshape(2, 8))
+        result["estimate_gathered_after_eval"] = not _all_dtensor(model)
+        after = fsdp2_save._gathered_host_bytes(model, offload_to_cpu = True, offload_4bit = True)
+        result["estimate_bytes"] = (full, after)
+
     def ptq():
         # A LoRA model, quantized after a 16-bit merge.
         from torchao.quantization import Int8WeightOnlyConfig
@@ -265,7 +277,7 @@ def _run_cases(rank, world_size, base, out):
 
     cases = [merged, gguf, push_gguf]
     if sharded:
-        cases += [fail, ram]
+        cases += [fail, ram, estimate]
     if HAS_TORCHAO:
         cases += [ptq, qat]
     for case in cases:
@@ -441,6 +453,15 @@ def test_too_big_for_host_ram_is_refused_on_every_rank(runs):
         error = runs["ranks"][rank]["ram_error"]
         assert error and "host RAM" in error and "0.5 GiB is available" in error, error
         assert not runs["ranks"][rank]["ram_wrote"]
+
+
+def test_export_estimate_counts_units_an_eval_forward_left_gathered(runs):
+    _no_raise(runs, "estimate")
+    for rank in (0, 1):
+        res = runs["ranks"][rank]
+        assert res["estimate_gathered_after_eval"], "the eval forward must leave a unit gathered"
+        full, after = res["estimate_bytes"]
+        assert full > 0 and after == full, res["estimate_bytes"]
 
 
 @pytest.mark.skipif(not HAS_TORCHAO, reason = "torchao not installed")

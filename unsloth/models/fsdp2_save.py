@@ -282,11 +282,9 @@ def fsdp2_gathered(
     if not units or DTensor is None:
         yield None
         return
-    for unit in units:
-        # An eval forward leaves the last block and the lm_head unit gathered; make every
-        # parameter a DTensor again so all ranks gather the same list.
-        if hasattr(unit, "reshard"):
-            unit.reshard()
+    # An eval forward leaves the last block and the lm_head unit gathered; make every
+    # parameter a DTensor again so all ranks gather the same list.
+    _reshard_units(units)
     dist = _dist()
     rank = dist.get_rank() if dist is not None else 0
     writer_rank = mesh_writer_rank(model)
@@ -489,6 +487,12 @@ _EXPORT_COUNTER = {}
 _GIB = 1024**3
 
 
+def _reshard_units(units):
+    for unit in units:
+        if hasattr(unit, "reshard"):
+            unit.reshard()
+
+
 def _gathered_host_bytes(
     model,
     trainable_only = False,
@@ -501,6 +505,9 @@ def _gathered_host_bytes(
     DTensor = _dtensor_class()
     if DTensor is None:
         return 0
+    # Counted as the gather will find them: it reshards first, so an eval forward's still
+    # gathered units are DTensors again by then.
+    _reshard_units(fsdp2_units(model))
     total = 0
     seen = set()
     for name, param in model.named_parameters():
@@ -544,6 +551,7 @@ def gather_on_accelerator_if_it_fits(model):
     if not isinstance(model, torch.nn.Module):
         return on_cpu
     DTensor = _dtensor_class()
+    _reshard_units(fsdp2_units(model))
     device = next(
         (
             p.to_local().device
