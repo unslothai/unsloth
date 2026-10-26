@@ -492,6 +492,10 @@ def hub_range_fetcher(
         with _ranged_stream(get_session(), url, headers) as resp:
             if resp.status_code != 206:
                 raise ValueError(f"range request answered {resp.status_code}")
+            headers = getattr(resp, "headers", None) or {}
+            total = str(headers.get("Content-Range") or "").rpartition("/")[2]
+            if total.isdigit():
+                fetch.file_size = int(total)
             return b"".join(_iter_body(resp, 1 << 20))
 
     return fetch
