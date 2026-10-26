@@ -276,6 +276,23 @@ def _end_probe_group(proc: subprocess.Popen) -> None:
             pipe.close()
 
 
+def _run_grouped(argv, **popen_kwargs) -> subprocess.CompletedProcess:
+    """subprocess.run, but in its own session with the probe's limits, and the whole group ends with it."""
+    proc = subprocess.Popen(
+        argv,
+        stdin = subprocess.DEVNULL,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        start_new_session = True,
+        **popen_kwargs,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout = PROBE_TIMEOUT_SECONDS)
+    finally:
+        _end_probe_group(proc)
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
 def _abstract_control() -> "tuple[bytes | None, Any]":
     """Nothing without a scope to test, or when the host cannot reach its own socket."""
     if sys.platform != "linux":
@@ -355,14 +372,11 @@ def _host_positive_controls(workdir: str, sentinel: str, outside: str, env: dict
             f"the host itself could not write outside the probe workdir ({exc})", exc
         )
     try:
-        completed = subprocess.run(
+        completed = _run_grouped(
             (sys.executable, "-I", "-S", "-c", _host_payload(workdir)),
             cwd = workdir,
             env = env,
-            stdin = subprocess.DEVNULL,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            timeout = PROBE_TIMEOUT_SECONDS,
+            preexec_fn = _probe_preexec,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return _classified(
@@ -453,23 +467,13 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             execution_kind = "python",
         )
         prepared = backend.prepare(plan)
-        proc = subprocess.Popen(
+        completed = _run_grouped(
             prepared.argv,
             cwd = prepared.workdir,
             env = prepared.env,
-            stdin = subprocess.DEVNULL,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
             preexec_fn = prepared.preexec_fn,
             pass_fds = tuple(prepared.pass_fds),
-            # Its own group, so the teardown reaches whatever the payload spawned.
-            start_new_session = True,
         )
-        try:
-            stdout, stderr = proc.communicate(timeout = PROBE_TIMEOUT_SECONDS)
-        finally:
-            _end_probe_group(proc)
-        completed = subprocess.CompletedProcess(prepared.argv, proc.returncode, stdout, stderr)
         if completed.returncode != 0 or completed.stdout.strip() != PROBE_TOKEN.encode():
             detail = (completed.stderr or b"").decode("utf-8", "replace").strip()[-300:]
             if not detail:

@@ -296,6 +296,25 @@ def test_a_timed_out_probe_also_ends_what_the_payload_spawned(monkeypatch, tmp_p
     assert _gone(grandchild), f"the payload's child {grandchild} outlived the probe"
 
 
+def test_a_timed_out_host_control_also_ends_what_it_spawned(monkeypatch, tmp_path):
+    monkeypatch.setattr(sandbox_probe, "PROBE_TIMEOUT_SECONDS", 1.0)
+    pid_file = tmp_path / "grandchild.pid"
+    monkeypatch.setattr(
+        sandbox_probe,
+        "_host_payload",
+        lambda workdir: (
+            "import subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(120)'])\n"
+            f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+            "time.sleep(120)\n"
+        ),
+    )
+    available, reason = sandbox_probe.probe(_Backend("confining", _confining))
+    assert available is False and "positive controls" in reason
+    grandchild = int(pid_file.read_text())
+    assert _gone(grandchild), f"the host control's child {grandchild} outlived the probe"
+
+
 def test_the_payload_runs_under_the_tool_launch_fd_and_cpu_caps(tmp_path):
     limits_file = tmp_path / "limits.txt"
     payload = (
