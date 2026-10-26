@@ -253,6 +253,8 @@ type ActiveModelLoadRun = {
 
 /** The selection the user last asked for, so an await can tell it was superseded. */
 let modelSelectionIntentEpoch = 0;
+/** Bumped whenever a load run is aborted, Stop and replacement alike: selectModel resolves quietly then. */
+let modelLoadCancelEpoch = 0;
 let pendingExternalReplacement:
   | { intentId: number; config?: PerModelConfig }
   | null = null;
@@ -1088,6 +1090,7 @@ export function useChatModelRuntime() {
       if (run.cancelPromise) return run.cancelPromise;
 
       const model = loadingModelRef.current;
+      modelLoadCancelEpoch += 1;
       run.abortController.abort();
       loadAbortRef.current = null;
       loadingModelRef.current = null;
@@ -1288,6 +1291,11 @@ export function useChatModelRuntime() {
 
   const isModelSelectionIntentCurrent = useCallback(
     (intentId: number) => modelSelectionIntentEpoch === intentId,
+    [],
+  );
+
+  const readModelLoadEpochs = useCallback(
+    () => ({ intent: modelSelectionIntentEpoch, cancels: modelLoadCancelEpoch }),
     [],
   );
 
@@ -4188,6 +4196,7 @@ export function useChatModelRuntime() {
     discardExternalReplacement,
     restoreConfigForExternalReplacement,
     isModelSelectionIntentCurrent,
+    readModelLoadEpochs,
     loadingModel,
     loadProgress,
     loadToastDismissed,

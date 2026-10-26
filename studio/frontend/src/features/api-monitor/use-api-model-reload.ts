@@ -63,11 +63,13 @@ function servedTarget(model: ReloadableModel): LastLoadRecord {
 export function useApiModelReload({
   selectModel,
   loadNpuModel,
+  readModelLoadEpochs,
   onSettled,
   residencyKey,
 }: {
   selectModel: Runtime["selectModel"];
   loadNpuModel: Runtime["loadNpuModel"];
+  readModelLoadEpochs: Runtime["readModelLoadEpochs"];
   onSettled: () => void;
   residencyKey: string;
 }) {
@@ -170,10 +172,20 @@ export function useApiModelReload({
         for (const model of [...models].sort(
           (a, b) => Number(a.active) - Number(b.active),
         )) {
+          const before = readModelLoadEpochs();
           await load(servedTarget(model));
+          // A cancelled or superseded load resolves quietly; stop rather than start the next
+          // one over the user's Stop or newer pick. Each load here takes one intent itself.
+          const after = readModelLoadEpochs();
+          if (
+            after.cancels !== before.cancels ||
+            after.intent > before.intent + 1
+          ) {
+            return;
+          }
         }
       }),
-    [run, load],
+    [run, load, readModelLoadEpochs],
   );
 
   const reloadAllTitle = (served: ReloadableModel[]): string => {
