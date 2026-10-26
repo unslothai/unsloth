@@ -80,7 +80,7 @@ def _device(root):
 
 
 def _gib(n):
-    return f"{n / (1 << 30):.2f} GiB"
+    return f"{n / (1 << 30):.2f} GiB" if n >= (1 << 30) // 10 else f"{n / _MiB:.1f} MiB"
 
 
 def _marked(model, flag):
@@ -162,8 +162,8 @@ def _free_bytes(device):
         gc.collect()
         torch.cuda.empty_cache()
         free, _ = torch.cuda.mem_get_info(device)
-        return free, f"free on {device}"
-    return _host_free(), "available host RAM"
+        return free, "free on its GPU"
+    return _host_free(), "of available host RAM"
 
 
 def _host_free():
@@ -186,16 +186,6 @@ def _comm_device(group, device):
     if "nccl" in backend or "xccl" in backend or "hccl" in backend:
         return device
     return torch.device("cpu")
-
-
-def _agree(ok, device):
-    """Every rank's verdict ANDed (all ranks run the gather or none does)."""
-    dist = _dist()
-    if dist is None:
-        return ok
-    flag = torch.tensor([1 if ok else 0], dtype = torch.int32, device = _comm_device(None, device))
-    dist.all_reduce(flag, op = dist.ReduceOp.MIN)
-    return bool(flag.item())
 
 
 def _gather_cat(local, dim, group, tp):
@@ -276,35 +266,46 @@ class _Replica:
             d[key] = value
 
 
+def _room(need, free, device):
+    """Every rank's (need, free) in bytes, rank order (all ranks run the gather or none does)."""
+    dist = _dist()
+    mine = torch.tensor([float(need), float(free)], dtype = torch.float64, device = _comm_device(None, device))
+    if dist is None:
+        return [(need, free)]
+    rows = [torch.empty_like(mine) for _ in range(dist.get_world_size())]
+    dist.all_gather(rows, mine)
+    return [(int(r[0].item()), int(r[1].item())) for r in rows]
+
+
+def _short(room):
+    """The first rank without room, or None."""
+    return next((r for r, (need, free) in enumerate(room) if need and need + _margin(need) > free), None)
+
+
 def _plan(root, select, keep, what, allow_cpu):
     """(items, device) for the gather, after every rank agreed it fits; raises with the numbers otherwise."""
     items = _items(root, select)
     need = sum(_bytes(p) for p, _ in items) if keep else 0
     device = _device(root)
     free, where = _free_bytes(device)
-    ok = need + _margin(need) <= free if keep else True
-    if _agree(ok, device):
+    room = _room(need, free, device)
+    short = _short(room)
+    if short is None:
         return items, device
     if allow_cpu and device.type != "cpu":
-        host = _host_free()
-        ok_cpu = need + _margin(need) <= host if keep else True
-        if _agree(ok_cpu, device):
+        cpu_room = _room(need, _host_free(), device)
+        if _short(cpu_room) is None:
             if keep:
                 print(
                     f"Unsloth: tensor parallel `{what}`: the whole model ({_gib(need)}) does not fit "
-                    f"{device} ({_gib(free)} free); gathering it to the CPU ({_gib(host)} available) instead."
+                    f"{device} ({_gib(free)} free); gathering it to the CPU instead."
                 )
             return items, torch.device("cpu")
-        where = f"{where}, {_gib(host)} available host RAM"
-    if keep:
-        detail = (
-            f"the whole model needs {_gib(need)} more (+ {_gib(_margin(need))} headroom) on every rank, and "
-            f"not every rank has it (rank {_rank()}: {_gib(free)} {where})"
-        )
-    else:
-        detail = "rank 0 has no room for it (see rank 0's error)"
+        where = f"{where}, {_gib(cpu_room[short][1])} of available host RAM"
+    need_s, free_s = room[short]
     raise RuntimeError(
-        f"Unsloth: tensor parallel `{what}` gathers a whole single-GPU replica of the model, but {detail}. "
+        f"Unsloth: tensor parallel `{what}` gathers a whole single-GPU replica of the model, but rank {short} "
+        f"needs {_gib(need_s)} more for it (+ {_gib(_margin(need_s))} headroom) and has {_gib(free_s)} {where}. "
         "Free memory (e.g. del trainer; gc.collect(); torch.cuda.empty_cache()), or save the adapter with "
         "model.save_pretrained(...) and run this on one GPU."
     )

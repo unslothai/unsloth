@@ -314,7 +314,7 @@ def _case_refuse(rank, world, tmp):
     sharded = dict(model.named_parameters())
     real = tp_replica._free_bytes
     if rank == 1:
-        tp_replica._free_bytes = lambda device: (1 << 10, "free on test")
+        tp_replica._free_bytes = lambda device: (1 << 10, "free on its GPU")
     out = {"for_inference": _raised(lambda: FastLanguageModel.for_inference(model))}
     out["generate"] = _raised(lambda: model.generate(input_ids = _batch(model)[:1, :4], max_new_tokens = 2))
     tp_replica._free_bytes = real
@@ -400,7 +400,7 @@ def test_tp2_generate_on_replica_equals_one_process(arch):
         assert res["loss_err_2"] == 0.0 and res["dtensor_grads"], res
 
 
-def test_tp2_x_dp2_generate_and_save_per_tp_group():
+def test_tp2_x_dp2_generate_per_tp_group():
     """dp 2 x tp 2 (DDP-style dp): each tp group gathers its replica and copies its own tp rank 0's RNG."""
     results = _spawn("generate", 4, arch = "llama", tp = 2)
     for rank, res in enumerate(results):
@@ -482,6 +482,6 @@ def test_tp2_replica_that_does_not_fit_is_refused_on_every_rank():
     for rank, res in enumerate(_spawn("refuse", 2)):
         for key in ("for_inference", "generate"):
             assert res[key] and "gathers a whole single-GPU replica" in res[key], (rank, key, res[key])
-            assert "GiB" in res[key], res[key]
+            assert "rank 1 needs" in res[key] and "MiB more" in res[key] and "has 0.0 MiB" in res[key], res[key]
         assert res["untouched"] and not res["replica"], res
         assert res["pp_for_inference"] and "pipeline parallel" in res["pp_for_inference"], res
