@@ -206,6 +206,11 @@ def gkd_trainer_generate_before_counting(function_name, function):
             _, count = super().get_batch_samples(
                 prepared_batches(), len(batches), *batch_args, **batch_kwargs
             )
+            # TRL 1.7-1.8 mask EOS when it is the pad token, so an all-EOS window counts 0: sum / 0 is NaN.
+            if torch.is_tensor(count):
+                count = count.clamp_min(1)
+            elif count is not None:
+                count = max(count, 1)
             for batch in batches:
                 batch["_unsloth_gkd_num_items"] = count
 
