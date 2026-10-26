@@ -28,6 +28,7 @@ def models(rag_home, stub_embeddings, monkeypatch):
     monkeypatch.setattr(embeddings, "encode", encode)
     monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(reembed, "_jobs", {})
+    monkeypatch.setattr(reembed, "_checked", set(), raising = False)
     monkeypatch.setattr(reembed, "_RETIRE_JOIN_SECONDS", 0.2)
     current = lambda fresh = False: state["model"] if fresh else state.get("cached", state["model"])
     monkeypatch.setattr(config, "effective_embedding_model", current)
@@ -75,6 +76,54 @@ def test_stale_documents_regain_dense_search_under_the_same_ids(models, tmp_path
     with _connect() as c:
         hits = retrieval.retrieve_dense(c, scope, "delta echo foxtrot", k = 5, model_name = NEW)
     assert hits[0].chunk_id == chunks[1][1][0]
+
+
+def test_documents_the_same_model_wrote_through_another_backend_re_embed_on_search(
+    models, tmp_path, monkeypatch
+):
+    scope = store.kb_scope("K10")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    doc = _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    llama = _row(doc)[0]
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    assert reembed.stale_counts() == {"documents": 1, "archived": 0}
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = OLD)
+    assert reembed.status() is not None
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "completed"
+    assert _row(doc)[0] == embeddings.embedding_identity(OLD) != llama
+    with _connect() as c:
+        hits = retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = OLD)
+    assert hits[0].chunk_id == f"{doc}:0"
+
+
+def test_a_model_switch_leaves_re_embedding_to_the_user(models, tmp_path):
+    scope = store.kb_scope("K11")
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    models["model"] = NEW
+    with _connect() as c:
+        assert retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = NEW) == []
+    assert reembed.status() is None
+
+
+def test_documents_left_from_a_model_switch_keep_re_embedding_with_the_user(
+    models, tmp_path, monkeypatch
+):
+    other = "org/other-embedder"
+    monkeypatch.setitem(WIDTHS, other, WIDTHS[OLD])
+    scope = store.kb_scope("K12")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    (tmp_path / "b.txt").write_text("charlie delta", encoding = "utf-8")
+    ingestion.start_ingestion(
+        scope, None, None, "b.txt", str(tmp_path / "b.txt"), model_name = other, background = False
+    )
+    assert reembed.stale_counts() == {"documents": 2, "archived": 0}
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = OLD)
+    assert reembed.status() is None
 
 
 def test_failures_keep_the_old_index_and_only_a_streak_ends_the_job(models, tmp_path, monkeypatch):

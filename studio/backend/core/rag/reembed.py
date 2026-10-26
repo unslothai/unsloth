@@ -28,6 +28,7 @@ _MAX_CONSECUTIVE_FAILURES = 3
 _RETIRE_JOIN_SECONDS = 10.0
 
 _jobs: dict = {}
+_checked: set = set()
 _lock = threading.Lock()
 
 
@@ -225,6 +226,24 @@ def start() -> dict:
         # Under the lock, so retirement never finds a registered job it cannot join yet.
         job.thread.start()
     return started
+
+
+def start_after_backend_change(identity: str) -> None:
+    key = account_key("reembed")
+    with _lock:
+        if (key, identity) in _checked or key in _jobs:
+            return
+        _checked.add((key, identity))
+    model = config.embedding_identity_model(identity)
+    if model != config.effective_embedding_model():
+        return
+    conn = rag_db.get_connection()
+    try:
+        stale = _stale_documents(conn, identity)
+    finally:
+        conn.close()
+    if stale and all(config.embedding_identity_model(d["embedding_model"]) == model for d in stale):
+        start()
 
 
 def status() -> dict | None:
