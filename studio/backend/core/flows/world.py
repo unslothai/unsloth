@@ -1159,13 +1159,16 @@ def options_prompt(
         f"You plan what {npc['name']} does next, a character in the game world \"{world.get('title')}\". "
         "Answer in JSON."
     )
+    # Stable persona and rules first so the server reuses the cached prefix; memories, needs and time last.
     prompt = (
         f"Persona: {npc.get('persona') or 'a friendly local'}\n{npc_life(world, npc)}"
-        f"What {npc['name']} remembers:\n{memory_lines(memories, names)}\n{feel}"
-        f"It is {clock_text(clock)}. List 3 to {MAX_OPTIONS} things {npc['name']} does next, in order, until 22:00. "
+        f"List 3 to {MAX_OPTIONS} things {npc['name']} does next, in order, until 22:00. "
         f"Each has an activity, a place (one of: {', '.join(places)}), an action ({', '.join(OPTION_ACTIONS)}) and "
         "when it ends: `until` time (at `at`, HH:MM), need (when `need` rises above `above`), item (once they hold "
-        "`item`) or place (once they reach the place). Keep any appointments remembered above."
+        "`item`) or place (once they reach the place); fill unused fields with \"\" or 0. Keep any appointments "
+        "remembered below.\n\n"
+        f"What {npc['name']} remembers:\n{memory_lines(memories, names)}\n{feel}"
+        f"It is {clock_text(clock)}."
     )
     return system, prompt
 
@@ -1258,9 +1261,10 @@ def reflect_prompt(world: dict, npc: dict, records: list[dict]) -> tuple[str, st
     )
     system = f"You help {npc['name']} reflect on their memories. Answer in JSON."
     prompt = (
-        f"Persona: {npc.get('persona') or 'a friendly local'}\nStatements:\n{listing}\n\n"
-        f"What 1 to 3 high-level insights can {npc['name']} infer from the statements above? For each, list the "
-        "numbers of the statements it rests on and rate its importance from 1 to 10."
+        f"Persona: {npc.get('persona') or 'a friendly local'}\n"
+        f"What 1 to 3 high-level insights can {npc['name']} infer from the statements below? For each, list the "
+        "numbers of the statements it rests on and rate its importance from 1 to 10.\n\n"
+        f"Statements:\n{listing}"
     )
     return system, prompt
 
@@ -1310,6 +1314,7 @@ SOCIAL_NOTES_SCHEMA = {
             "from": {"type": "integer", "minimum": 0, "maximum": 10},
         },
         "required": ["text", "importance", "from"],
+        "additionalProperties": False,
     },
 }
 FEELS_SCHEMA = {
@@ -1319,6 +1324,7 @@ FEELS_SCHEMA = {
         "fact": {"type": "string"},
     },
     "required": ["affinity", "fact"],
+    "additionalProperties": False,
 }
 
 
@@ -1329,14 +1335,21 @@ def chat_schema(
 ) -> dict:
     if social:
         base = chat_schema(a, b)
+        lines = base["properties"]["lines"]
         props = {
             **base["properties"],
+            "lines": {**lines, "items": {**lines["items"], "additionalProperties": False}},
             "a_learns": SOCIAL_NOTES_SCHEMA,
             "b_learns": SOCIAL_NOTES_SCHEMA,
             "a_feels": FEELS_SCHEMA,
             "b_feels": FEELS_SCHEMA,
         }
-        return {**base, "properties": props, "required": [*base["required"], "a_feels", "b_feels"]}
+        return {
+            **base,
+            "properties": props,
+            "required": [*base["required"], "a_feels", "b_feels"],
+            "additionalProperties": False,
+        }
     return {
         "type": "object",
         "properties": {
@@ -1401,21 +1414,22 @@ def _social_chat_prompt(
     world: dict, a: dict, b: dict, mem_a: list[dict], mem_b: list[dict], state: dict, place: str
 ) -> str:
     names = {n["id"]: n["name"] for n in world.get("npcs") or []}
+    # Personas and rules first (cacheable per pair); feelings, memories, time and place last.
     return (
-        f"It is {clock_text(state.get('clock'))}" + (f", at {place}" if place else "") + ".\n"
         f"{a['name']}: {a.get('persona') or 'a friendly local'}\n{npc_life(world, a)}"
-        f"{rel_line(a['name'], b['name'], state.get('rel_a'))}"
-        f"{a['name']} remembers:\n{_numbered(mem_a, names)}\n\n"
-        f"{b['name']}: {b.get('persona') or 'a friendly local'}\n{npc_life(world, b)}"
-        f"{rel_line(b['name'], a['name'], state.get('rel_b'))}"
-        f"{b['name']} remembers:\n{_numbered(mem_b, names)}\n\n"
+        f"{b['name']}: {b.get('persona') or 'a friendly local'}\n{npc_life(world, b)}\n"
         f"{a['name']} and {b['name']} bump into each other. Write 2 to 6 short lines of their chat "
         f"(under 25 words each). `a_learns` is what {a['name']} newly learns from {b['name']} and `b_learns` what "
         f"{b['name']} learns from {a['name']}, written from the listener's point of view with an importance from 1 "
         "to 10 and `from` = the number of the speaker's memory it repeats (0 if new); pass on news, plans and "
         "invitations they would share. Empty lists when nothing new comes up. `a_feels` and `b_feels`: how the chat "
         "changed each one's liking of the other (-3 to 3) and one short fact they now know about the other "
-        "(empty if none)."
+        "(empty if none).\n\n"
+        f"{rel_line(a['name'], b['name'], state.get('rel_a'))}"
+        f"{a['name']} remembers:\n{_numbered(mem_a, names)}\n\n"
+        f"{rel_line(b['name'], a['name'], state.get('rel_b'))}"
+        f"{b['name']} remembers:\n{_numbered(mem_b, names)}\n\n"
+        f"It is {clock_text(state.get('clock'))}" + (f", at {place}" if place else "") + "."
     )
 
 

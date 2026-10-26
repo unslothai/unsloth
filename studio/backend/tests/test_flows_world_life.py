@@ -5,12 +5,16 @@ import copy
 
 from core.flows.nodes import world as world_nodes
 from core.flows.world import (
+    REFLECT_SCHEMA,
     chat_prompt,
     chat_schema,
     clean_options,
     memory_lines,
     normalize_world,
     options_blocks,
+    options_prompt,
+    options_schema,
+    reflect_prompt,
     validate_chat,
 )
 
@@ -309,3 +313,55 @@ def test_clean_options_drops_past_times_and_blocks_chain():
     assert options_blocks(opts, 600) == [
         {"start": 600, "minutes": 60, "activity": "x", "place": "cafe"}
     ]
+
+
+def _objects(schema, depth = 0):
+    if isinstance(schema, dict):
+        if schema.get("type") == "object":
+            yield schema, depth
+            depth += 1
+        for v in schema.values():
+            yield from _objects(v, depth)
+    elif isinstance(schema, list):
+        for v in schema:
+            yield from _objects(v, depth)
+
+
+def test_new_schemas_are_flat_and_strict():
+    world = _world(**LIFE)
+    a, b = world["npcs"]
+    for schema in (options_schema(["Cafe"], ["Rod"]), REFLECT_SCHEMA, chat_schema(a, b, True)):
+        for obj, depth in _objects(schema):
+            assert obj.get("additionalProperties") is False
+            assert set(obj["required"]) == set(obj["properties"])
+            assert depth <= 2
+
+
+def test_prompts_keep_a_stable_prefix_per_villager():
+    world = _world(**LIFE)
+    npc, other = world["npcs"]
+    s1, p1 = options_prompt(world, npc, [_record(0, "a")], 600, {"hunger": 40})
+    s2, p2 = options_prompt(world, npc, [_record(1, "b"), _record(2, "c")], 1300, {"hunger": 90})
+    head = p1.split("What Bea remembers")[0]
+    assert s1 == s2 and head and p2.startswith(head) and "Persona" in head and "It is" not in head
+    assert p1.endswith("It is Day 1, 10:00.")
+    r1 = reflect_prompt(world, npc, [_record(0, "a")])
+    r2 = reflect_prompt(world, npc, [_record(0, "b")])
+    assert r1[0] == r2[0] and r1[1].split("Statements:")[0] == r2[1].split("Statements:")[0]
+    c1 = chat_prompt(world, npc, other, [], [], {"clock": 600, "place": "Cafe"}, True)
+    c2 = chat_prompt(
+        world,
+        npc,
+        other,
+        [_record(0, "x")],
+        [],
+        {"clock": 900, "rel_a": {"affinity": 5, "facts": []}},
+        True,
+    )
+    prefix = c1[1].split("Bea remembers")[0].split("Bea feels")[0]
+    assert (
+        c1[0] == c2[0]
+        and c2[1].startswith(prefix)
+        and "It is" not in prefix
+        and "(empty if none)" in prefix
+    )
