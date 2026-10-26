@@ -3,7 +3,7 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Delete02Icon, ImageAdd02Icon, ImageCropIcon } from "@hugeicons/core-free-icons";
+import { Delete02Icon, ImageCropIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { Button } from "@/components/ui/button";
@@ -54,9 +54,7 @@ export function ImageDropzone({
 }: {
   value: string | null;
   onChange: (dataUrl: string | null) => void;
-  /** Prompt shown in the empty state. */
   label?: string;
-  /** Accessible remove-button name. */
   removeLabel?: string;
   className?: string;
   /** Larger uploads are downscaled to this per side; null keeps them as chosen. */
@@ -65,11 +63,9 @@ export function ImageDropzone({
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
-  // File reads can finish after another picker action. Only the newest
-  // selection may update the shared field.
+  // Only the newest selection may update the shared field.
   const selection = useRef(0);
-  // The sequence is per instance, so it cannot see a read outliving this
-  // picker: `onChange` is shared, and a late write lands on whoever holds it.
+  // `onChange` is shared, so a read outliving this picker would land on whoever holds it.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -77,9 +73,7 @@ export function ImageDropzone({
       mounted.current = false;
     };
   }, []);
-  // The reference slots are keyed by index, so removing one shifts a different
-  // image into a picker that stays mounted. A `value` this picker did not set
-  // means a read in flight is for the slot as it used to be.
+  // Slots are keyed by index; a `value` this picker did not set invalidates a read in flight.
   const seen = useRef(value);
   useEffect(() => {
     if (seen.current === value) return;
@@ -179,7 +173,7 @@ export function ImageDropzone({
     return (
       <div
         data-reload-snapshot-sensitive
-        className={cn("relative overflow-hidden rounded-[10px] border border-border", className)}
+        className={cn("relative overflow-hidden rounded-lg border border-border", className)}
       >
         {/* Checkerboard behind the preview, so a transparent upload shows its alpha. */}
         <img
@@ -257,12 +251,12 @@ export function ImageDropzone({
       className={cn(
         "flex h-28 w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed text-xs transition-colors",
         dragging
-          ? "border-primary/60 bg-primary/5 text-foreground"
+          ? "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5 text-foreground"
           : "border-border text-muted-foreground hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
         className,
       )}
     >
-      <HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />
+      <HugeiconsIcon icon={PlusSignIcon} className="size-5" />
       <span>{label}</span>
       <input
         ref={inputRef}

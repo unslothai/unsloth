@@ -59,6 +59,7 @@ export function ReactPreview({
   onConsoleOpenChange,
   onOutputCountChange,
   onFixWithModel,
+  onFrameReady,
 }: {
   source: string;
   lang: "jsx" | "tsx";
@@ -68,6 +69,7 @@ export function ReactPreview({
   onConsoleOpenChange?: (open: boolean) => void;
   onOutputCountChange?: (counts: { errors: number; total: number }) => void;
   onFixWithModel?: (prompt: string) => void;
+  onFrameReady?: (frame: HTMLIFrameElement) => (() => void) | undefined;
 }) {
   const t = useT();
   const key = `${lang}\u0000${source}`;
@@ -124,6 +126,7 @@ export function ReactPreview({
       onConsoleOpenChange={onConsoleOpenChange}
       onOutputCountChange={onOutputCountChange}
       onFixWithModel={onFixWithModel}
+      onFrameReady={onFrameReady}
     />
   );
 }

@@ -104,10 +104,7 @@ def read_export(folder: str | Path) -> dict[str, Any] | None:
 
 
 def served_files(folder: str | Path, layout: str) -> tuple[str, Path, Path | None] | None:
-    """(quantization, model path, mmproj path or None) of the folder's current export, else None.
-
-    An export whose fingerprint no longer matches the folder is stale and ignored (logged once).
-    """
+    """Current export's (quantization, model, mmproj) or None; a stale fingerprint is ignored."""
     folder = Path(folder)
     data = read_export(folder)
     if data is None or data["layout"] != layout:

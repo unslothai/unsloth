@@ -101,7 +101,7 @@ function mountForm(
         route: string,
         commit: () => void,
       ) => {
-        // Transitions key on the immutable account id when the server sent one, since usernames are reusable.
+        // Usernames are reusable, so key on the immutable account id when available.
         const identity =
           typeof account === "string"
             ? { username: account, accountId: null }
@@ -135,7 +135,8 @@ function mountForm(
           routes.push(to);
         },
     },
-    "lucide-react": { Eye: "Eye", EyeOff: "EyeOff" },
+    "@hugeicons/core-free-icons": { ViewIcon: "ViewIcon", ViewOffSlashIcon: "ViewOffSlashIcon" },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "../api": {
       refreshSession: async () => true,
       refreshSessionOutcome: async () => session.outcome ?? "ok",

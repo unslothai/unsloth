@@ -20,8 +20,7 @@ from utils.transformers_version import (
 )
 
 
-# unsloth/save.py's _LLM_COMPRESSOR_SPEC (drift-tested). Not imported: this runs in the Studio
-# parent, which must not pull in unsloth / torch (see main.py).
+# Keep in sync with unsloth/save.py _LLM_COMPRESSOR_SPEC; not imported to avoid torch.
 _LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
 
 
@@ -47,8 +46,7 @@ def probe_llm_compressor_for_compressed_export() -> Dict[str, Any]:
     # Same pip-first choice as save.py's llm_compressor_manual_install_command.
     has_pip = importlib.util.find_spec("pip") is not None
 
-    # Any provisionable shadow is asked for even when the workspace copy exists: export.py prefers it,
-    # and the workspace copy cannot run models above its transformers ceiling.
+    # Ask for a provisionable shadow even with a workspace copy: export.py prefers it, but the workspace copy cannot run models above its transformers ceiling.
     consent_kind = None
     install_summary = None
     blocked_reason = None

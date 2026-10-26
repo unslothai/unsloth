@@ -835,8 +835,7 @@ def test_auth_schema_setup_runs_once_per_database_file(auth_env, tmp_path):
     conn = storage.get_connection()
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
-    # The recreated file may reuse the inode and reach the same schema version, so the key can
-    # collide with the first one; the schema running again is the observable requirement.
+    # A recreated file may reuse the inode and collide on the key; check the schema reran.
     assert "auth_user" in tables
 
 
@@ -901,3 +900,36 @@ def test_a_database_failure_after_retirement_puts_the_roots_back(matrix, monkeyp
     assert (
         client.delete(f"/api/accounts/{account.account_id}", headers = headers()).status_code == 204
     )
+
+
+def test_api_keys_cannot_manage_accounts(auth_env):
+    # A setup code signs in as the account, so a leaked owner API key must not mint one.
+    client, _auth, _accounts = auth_env
+    account = create(client).json()["account"]
+    raw, _row = storage.create_api_key("unsloth", "script")
+    key = {"Authorization": "Bearer " + raw}
+    url = f"/api/accounts/{account['account_id']}"
+    for response in (
+        client.get("/api/accounts", headers = key),
+        client.post("/api/accounts", headers = key, json = {"username": "mallory"}),
+        client.post(url + "/setup-code", headers = key),
+        client.patch(url, headers = key, json = {"is_active": False}),
+        client.delete(url, headers = key),
+    ):
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Account management requires a UI session."
+    assert client.get("/api/accounts", headers = headers()).status_code == 200
+    assert client.post(url + "/setup-code", headers = headers()).status_code == 200
+
+
+def test_keyless_callers_cannot_manage_accounts(auth_env):
+    import asyncio
+
+    _client, _auth, accounts = auth_env
+    keyless = authentication.HTTPAuthorizationCredentials(
+        scheme = authentication.KEYLESS_SCHEME, credentials = ""
+    )
+    via_api_key = asyncio.run(authentication.authenticated_via_api_key(keyless))
+    with pytest.raises(accounts.HTTPException) as refused:
+        accounts._require_ui_session(via_api_key)
+    assert refused.value.status_code == 403

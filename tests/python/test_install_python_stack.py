@@ -365,6 +365,115 @@ class TestUvSafePathHardening:
         assert Path(value).read_text() == "transformers>=4.57.6\n"
 
 
+class TestUvSafePathWindowsNo8dot3:
+    """Windows volumes without 8.3 names (#14487: D:\\Program Files) must still get a space-free path."""
+
+    def _spaced_constraints(self, tmp_path):
+        src = tmp_path / "Program Files" / "constraints.txt"
+        src.parent.mkdir(parents = True)
+        src.write_text("idna<4\n")
+        return src
+
+    def test_no_short_name_copies_to_a_space_free_path(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+        out = uvps.uv_safe_path(str(src))
+
+        assert " " not in out, f"uv would split this -c path: {out!r}"
+        assert Path(out).read_text() == "idna<4\n"
+        assert any(out.startswith(d) for d in uvps._UV_SAFE_PATH_TMPDIRS)
+
+    def test_resolving_short_name_is_used_without_a_copy(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: "C:\\PROGRA~1\\constraints.txt")
+        before = list(uvps._UV_SAFE_PATH_TMPDIRS)
+
+        assert uvps.uv_safe_path(str(src)) == "C:\\PROGRA~1\\constraints.txt"
+        assert uvps._UV_SAFE_PATH_TMPDIRS == before
+
+    def test_spaced_temp_without_short_name_keeps_the_original(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        spaced_tmp = tmp_path / "First Last" / "Temp"
+        spaced_tmp.mkdir(parents = True)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+        monkeypatch.setattr(uvps.tempfile, "mkdtemp", lambda *a, **k: str(spaced_tmp))
+
+        assert uvps.uv_safe_path(str(src)) == str(src)
+
+    def test_uv_accepts_the_returned_constraint_path(self, tmp_path, monkeypatch):
+        """End to end against the real uv. uv < 0.13 cuts a spaced -c path at the space; 0.13 reads it."""
+        import shutil
+        import subprocess
+        import sys
+
+        from backend.utils import uv_path_safety as uvps
+
+        if shutil.which("uv") is None:
+            pytest.skip("uv not available")
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+
+        def dry_run(constraint):
+            return subprocess.run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--dry-run",
+                    "--offline",
+                    "--python",
+                    sys.executable,
+                    "-c",
+                    constraint,
+                    "pytest",  # installed wherever this runs, so the offline plan resolves
+                ],
+                capture_output = True,
+                text = True,
+            )
+
+        safe = uvps.uv_safe_path(str(src))
+        spaced = dry_run(str(src))
+        if spaced.returncode != 0:
+            assert "File not found" in spaced.stderr, spaced.stderr
+            assert str(src).split(" ")[0] in spaced.stderr, spaced.stderr
+            if " " in uvps.tempfile.gettempdir():
+                pytest.skip("temp dir has a space and no short name: nothing uv < 0.13 can read")
+            assert " " not in safe
+        accepted = dry_run(safe)
+        assert accepted.returncode == 0, accepted.stderr
+
+    @pytest.mark.skipif(not ips.IS_WINDOWS, reason = "real NTFS 8.3 names")
+    def test_real_directory_without_a_short_name(self, tmp_path):
+        """A real spaced directory whose 8.3 alias was stripped, as on a D: with 8.3 creation off."""
+        import subprocess
+
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        if uvps._windows_short_path(str(src)) is not None:
+            # Needs admin (SeRestorePrivilege), which CI runners have.
+            subprocess.run(
+                ["fsutil", "file", "setshortname", str(src.parent), ""], capture_output = True
+            )
+        if uvps._windows_short_path(str(src)) is not None:
+            pytest.skip("could not remove the 8.3 name on this volume")
+
+        out = uvps.uv_safe_path(str(src))
+
+        assert " " not in out, f"uv would split this -c path: {out!r}"
+        assert Path(out).read_text() == "idna<4\n"
+
+
 class TestPinnedIndexClearsUvEnv:
     """Pinned installs must clear inherited UV_INDEX and UV_EXTRA_INDEX_URL, so the pinned index wins."""
 
@@ -2771,23 +2880,52 @@ class TestDesktopBackendVersionConstraint:
     """UNSLOTH_DESKTOP_BACKEND_VERSION floors the unsloth upgrade, lowered only for a lagging index (#14031)."""
 
     @staticmethod
-    def _fake_uv(have, zoo = None):
+    def _fake_uv(
+        have,
+        zoo = None,
+        floors = None,
+    ):
+        """uv pip compile over a fake index: unsloth 2026.10.2..have, unsloth-zoo 2026.10.2..zoo.
+
+        Each unsloth requires unsloth-zoo>=its own version unless *floors* says otherwise; the
+        zoo floor is only enforced when the probe resolves dependencies.
+        """
+        from packaging.requirements import Requirement
+
+        def releases(top):
+            return [f"2026.10.{n}" for n in range(2, 10) if Version(f"2026.10.{n}") <= Version(top)]
+
+        unsloth = releases(have)
+        zoos = releases(zoo or have)
+        floor_of = {v: (floors or {}).get(v, v) for v in unsloth}
+
         def run(
             argv,
             input = None,
             **kwargs,
         ):
-            assert argv[:3] == ["uv", "pip", "compile"] and "--no-deps" in argv
+            assert argv[:3] == ["uv", "pip", "compile"]
+            deps = "--no-deps" not in argv
             out = Path(argv[argv.index("--output-file") + 1])
-            floor = re.search(r">=(\S+)", input)
-            if floor and Version(floor.group(1)) > Version(have):
-                return subprocess.CompletedProcess(argv, 1)
-            if input.strip() == "unsloth-zoo":
-                out.write_text(f"unsloth-zoo=={zoo or have} \\\n", encoding = "utf-8")
+            reqs = {r.name: r.specifier for r in map(Requirement, input.split())}
+            u_ok = [v for v in unsloth if v in reqs.get("unsloth", v)]
+            z_ok = [v for v in zoos if v in reqs.get("unsloth-zoo", v)]
+            picked = {}
+            if "unsloth" in reqs:
+                for v in sorted(u_ok, key = Version, reverse = True):
+                    fit = [z for z in z_ok if not deps or Version(z) >= Version(floor_of[v])]
+                    if fit:
+                        picked["unsloth"] = v
+                        if deps or "unsloth-zoo" in reqs:
+                            picked["unsloth-zoo"] = max(fit, key = Version)
+                        break
+                else:
+                    return subprocess.CompletedProcess(argv, 1)
+            elif z_ok:
+                picked["unsloth-zoo"] = max(z_ok, key = Version)
             else:
-                cap = re.search(r"<=(\S+)", input)
-                pick = min(have, cap.group(1), key = Version) if cap else have
-                out.write_text(f"unsloth=={pick}\n", encoding = "utf-8")
+                return subprocess.CompletedProcess(argv, 1)
+            out.write_text("".join(f"{k}=={v} \\\n" for k, v in picked.items()), encoding = "utf-8")
             return subprocess.CompletedProcess(argv, 0)
 
         return run
@@ -2799,6 +2937,8 @@ class TestDesktopBackendVersionConstraint:
         have = "2026.10.3",
         package = "unsloth",
         zoo = None,
+        floors = None,
+        full = False,
     ):
         with (
             mock.patch.dict(os.environ, env, clear = True),
@@ -2814,17 +2954,22 @@ class TestDesktopBackendVersionConstraint:
                     "default_index": None,
                 },
             ),
-            mock.patch.object(ips.subprocess, "run", side_effect = self._fake_uv(have, zoo)) as run,
+            mock.patch.object(
+                ips.subprocess, "run", side_effect = self._fake_uv(have, zoo, floors)
+            ) as run,
         ):
-            return ips._desktop_unsloth_spec(package), run.call_count
+            specs = ips._desktop_unsloth_spec(package)
+            return (specs if full else specs[0]), run.call_count
 
     def test_spec_includes_floor_when_env_set(self, tmp_path):
-        spec, calls = self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"})
-        assert spec == "unsloth>=2026.8.15"
+        spec, calls = self._spec(
+            tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"}, full = True
+        )
+        assert spec == ("unsloth>=2026.8.15", "unsloth-zoo>=2026.10.3")
         assert calls == 1, "an index that has the release answers the one probe"
 
     def test_spec_bare_when_env_unset(self, tmp_path):
-        assert self._spec(tmp_path, {})[0] == "unsloth"
+        assert self._spec(tmp_path, {}, full = True)[0] == ("unsloth", "unsloth-zoo")
         assert (
             self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}, package = "x")[0]
             == "x"
@@ -2845,6 +2990,48 @@ class TestDesktopBackendVersionConstraint:
         assert spec == "unsloth>=2026.10.6"
         assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
 
+    def test_lowered_unsloth_carries_its_zoo_pin(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
+        assert self._spec(tmp_path, env, full = True)[0] == (
+            "unsloth==2026.10.3",
+            "unsloth-zoo==2026.10.3",
+        )
+
+    def test_zoo_behind_requested_unsloth_lowers_to_resolvable_pair(self, tmp_path):
+        # unsloth 2026.10.6 is on the index but its zoo floor is not: the requested floor
+        # cannot resolve, the 2026.10.3 pair can.
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
+        spec, _ = self._spec(tmp_path, env, have = "2026.10.6", zoo = "2026.10.3", full = True)
+        assert spec == ("unsloth==2026.10.3", "unsloth-zoo==2026.10.3")
+        marker = json.loads((tmp_path / ips.FEED_CEILING_MARKER).read_text(encoding = "utf-8"))
+        assert marker == {"requested": "2026.10.6", "available": "2026.10.3"}
+
+    def test_unsloth_ahead_of_zoo_with_met_floor_is_untouched(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
+        spec, calls = self._spec(
+            tmp_path,
+            env,
+            have = "2026.10.6",
+            zoo = "2026.10.3",
+            floors = {"2026.10.6": "2026.10.3"},
+            full = True,
+        )
+        assert spec == ("unsloth>=2026.10.6", "unsloth-zoo>=2026.10.3")
+        assert calls == 1
+        assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
+
+    def test_lowered_pair_prefers_newest_unsloth_whose_floor_is_met(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
+        spec, _ = self._spec(
+            tmp_path,
+            env,
+            have = "2026.10.6",
+            zoo = "2026.10.3",
+            floors = {"2026.10.5": "2026.10.3"},
+            full = True,
+        )
+        assert spec == ("unsloth==2026.10.5", "unsloth-zoo==2026.10.3")
+
     def test_extra_index_beside_pypi_counts(self, tmp_path):
         # first-index: a lagging UV_INDEX mirror shadows PyPI for the packages it carries.
         env = {
@@ -2863,11 +3050,20 @@ class TestDesktopBackendVersionConstraint:
             "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
             "UV_INDEX": "https://feed.example/simple",
         }
-        assert self._spec(tmp_path, env, zoo = "2026.10.2")[0] == "unsloth==2026.10.2"
+        assert self._spec(tmp_path, env, zoo = "2026.10.2", full = True)[0] == (
+            "unsloth==2026.10.2",
+            "unsloth-zoo==2026.10.2",
+        )
 
     def test_upload_cutoff_alone_counts(self, tmp_path):
         env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6", "UV_EXCLUDE_NEWER": "2026-10-09"}
         assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+
+    def test_core_installs_pass_the_zoo_spec(self):
+        src = inspect.getsource(ips)
+        assert src.count("unsloth_spec, zoo_spec = _desktop_unsloth_spec(package_name)") == 2
+        assert src.count("                unsloth_spec,\n                zoo_spec,\n") == 1
+        assert src.count("            unsloth_spec,\n            zoo_spec,\n") == 1
 
 
 class TestRecordlessDistributionRecovery:

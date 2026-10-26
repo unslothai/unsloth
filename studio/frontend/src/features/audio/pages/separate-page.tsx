@@ -398,7 +398,6 @@ export function SeparateOutput({
     lastResult !== null &&
     selected !== null &&
     (lastResult.groupId === null || selected.groupId === lastResult.groupId);
-  // Once only; later re-renders keep focus where the user put it.
   const [focusedGroup, setFocusedGroup] = useState<string | null>(null);
   useEffect(() => {
     if (fresh && selected) setFocusedGroup(selected.groupId);
@@ -450,7 +449,7 @@ export function SeparateOutput({
         )}
       >
         {pendingRun ? (
-          <output className="corner-squircle grid w-full gap-1 rounded-4xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]">
+          <output className="corner-squircle grid w-full gap-1 rounded-2xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]">
             <span className="block truncate text-ui-13 font-medium text-foreground">
               {pendingRun.title}
             </span>
@@ -582,7 +581,7 @@ export function SeparateOutput({
                     >
                       {audioModelLabel(group.model)}
                     </span>
-                    <span className="shrink-0 rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground group-hover:bg-background">
+                    <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground group-hover:bg-background">
                       {group.complete
                         ? `${group.stems.length} stems`
                         : `${group.stems.length} of ${group.expectedStems} stems`}

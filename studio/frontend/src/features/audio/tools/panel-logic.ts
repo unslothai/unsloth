@@ -63,7 +63,6 @@ export interface EmotionValue {
   vector: number[];
   alpha: number;
   source: AudioSourceSelection | null;
-  /** Why the emotion clip cannot be sent yet (uploading, failed, expired); set by its input. */
   sourceProblem?: string | null;
 }
 
@@ -330,6 +329,26 @@ export const vibeVoiceDialogueLogic: AudioToolPanelLogic<null> = {
   claims: [],
   initial: () => null,
   toRequest: () => ({}),
+};
+
+// audio.cpp model_specs/supertonic.json; anything else fails its tokenizer.
+export const SUPERTONIC_LANGUAGES: readonly string[] = (
+  "en ko ja ar bg cs da de el es et fi fr hi hr hu id it lt lv nl pl pt ro ru " +
+  "sk sl sv tr uk vi"
+).split(" ");
+
+/** Language code, "" for the model's default (English). */
+export const supertonicLanguageLogic: AudioToolPanelLogic<string> = {
+  id: "supertonic-language",
+  families: ["supertonic"],
+  workflows: ["speak"],
+  title: "Language",
+  claims: [],
+  initial: () => "",
+  toRequest: (value) =>
+    typeof value === "string" && SUPERTONIC_LANGUAGES.includes(value)
+      ? { language: value }
+      : {},
 };
 
 export const CLONE_PANEL_LOGIC = [

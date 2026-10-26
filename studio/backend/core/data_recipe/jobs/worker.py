@@ -141,8 +141,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
 
-        # DataDesigner resets root logging in __init__; attach the queue handler to the named loggers so
-        # parser events survive.
+        # DataDesigner resets root logging; attach to the named loggers.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
         for logger_name in (

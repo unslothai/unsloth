@@ -149,13 +149,7 @@ def legacy_studio_columns() -> dict[str, tuple[str, ...]]:
 
 
 def legacy_studio_rows(path: Path) -> dict[str, list[tuple]]:
-    """Every row of every legacy table, read through its legacy columns only.
-
-    A current build adds columns to studio.db as it opens it (`ALTER TABLE ... ADD COLUMN`), which
-    changes the file's bytes but not a byte of what the old build wrote. This is the part an upgrade
-    has to preserve, and the part an old build reading its own named columns would see. A dropped or
-    renamed legacy column raises here rather than comparing equal.
-    """
+    """Read legacy tables through their legacy columns only, so a dropped or renamed column raises here."""
     rows = {}
     with closing(sqlite3.connect(f"file:{path}?mode=ro", uri = True)) as conn:
         for table, columns in legacy_studio_columns().items():
