@@ -540,3 +540,24 @@ test("with background calls turned off the day still ends, on the current plans"
   assert.equal(asked, 0);
   assert.equal(out.state.turn, s.turn + 1);
 });
+
+test("a cancelled turn's queued job makes no call and gives its slot back", async () => {
+  const queue = new S.BackgroundQueue(1);
+  let calls = 0;
+  const stale = R.queuedCall(
+    queue,
+    "rivals:1:1:oak",
+    async () => {
+      calls++;
+      return null;
+    },
+    () => false,
+  );
+  assert.equal(await stale, null);
+  const fresh = await R.queuedCall(queue, "rivals:1:2:oak", async () => {
+    calls++;
+    return "plan";
+  });
+  assert.equal(fresh, "plan");
+  assert.equal(calls, 1);
+});
