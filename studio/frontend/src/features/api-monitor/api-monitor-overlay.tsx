@@ -23,10 +23,10 @@ import {
   ExpandIcon,
   DragDropVerticalIcon,
   ApiIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { XIcon } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
@@ -467,7 +467,7 @@ function ApiMonitorPanel({
               aria-label="Close API monitor"
               className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <XIcon className="size-3.5" strokeWidth={1.75} />
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" strokeWidth={1.75} />
             </button>
           </div>
         </div>

@@ -1007,6 +1007,75 @@ def _fully_shard(fully_shard, module, **kwargs):
         fully_shard_module.FSDPModule = original
 
 
+def _block_cudagraphs_requested():
+    block_compile = sys.modules.get(f"{__package__}._block_compile") if __package__ else None
+    options = getattr(block_compile, "_COMPILE_OPTIONS", None)
+    if isinstance(options, dict):
+        return bool(options.get("triton.cudagraphs"))
+    return os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1"
+
+
+def _skip_free_unsharded_param():
+    return None
+
+
+def _compiled_block_modules(model):
+    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)."""
+    inside = set()
+    for module in model.modules():
+        if id(module) in inside or not getattr(
+            type(module).forward, "_unsloth_block_compiled", False
+        ):
+            continue
+        if module.__dict__.get("_unsloth_block_mode", 1) == 0:
+            continue
+        inside.update(id(m) for m in module.modules())
+    return inside
+
+
+def _keep_unsharded_for_block_cudagraphs(model):
+    """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
+    step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
+    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph."""
+    if not _block_cudagraphs_requested():
+        return 0
+    blocks = _compiled_block_modules(model)
+    if not blocks:
+        return 0
+    FSDPModule = _fsdp_module_class()
+    kept, nbytes = 0, 0
+    for module in model.modules():
+        if not isinstance(module, FSDPModule):
+            continue
+        try:
+            group = getattr(module._get_fsdp_state(), "_fsdp_param_group", None)
+        except Exception:
+            group = None
+        for fsdp_param in getattr(group, "fsdp_params", None) or ():
+            if getattr(fsdp_param, "_unsloth_keep_unsharded", False):
+                continue
+            info = getattr(fsdp_param, "_module_info", None)
+            if id(getattr(info, "module", None)) not in blocks:
+                continue
+            if not callable(getattr(type(fsdp_param), "free_unsharded_param", None)):
+                return kept  # a torch without this FSDP2 internal: graphs re-record as before
+            fsdp_param.free_unsharded_param = _skip_free_unsharded_param
+            fsdp_param._unsloth_keep_unsharded = True
+            kept += 1
+            try:
+                dtype = getattr(fsdp_param, "param_dtype", None) or fsdp_param.orig_dtype
+                nbytes += fsdp_param._orig_size.numel() * dtype.itemsize
+            except Exception:
+                pass
+    if kept:
+        _print_rank0(
+            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
+            f"{kept} parameters allocated ({nbytes / 2**30:.2f} GiB per rank) so the block CUDA graphs "
+            "replay instead of re-recording every step."
+        )
+    return kept
+
+
 def _post_shard(
     model,
     units,
@@ -1037,6 +1106,7 @@ def _post_shard(
         _print_rank0(
             f"Unsloth: native FSDP2 post-shard step skipped ({type(exc).__name__}: {exc})."
         )
+    _keep_unsharded_for_block_cudagraphs(model)
     try:
         from .fsdp2_save import reduce_unsharded_trainable_grads
         replicated = reduce_unsharded_trainable_grads(model)

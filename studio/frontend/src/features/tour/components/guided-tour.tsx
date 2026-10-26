@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Cancel01Icon,
-  CheckmarkCircle01Icon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
@@ -373,7 +373,7 @@ export function GuidedTour({
                             className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/90"
                             onClick={() => requestClose("complete")}
                           >
-                            <HugeiconsIcon icon={CheckmarkCircle01Icon} className="size-4" />
+                            <HugeiconsIcon icon={CheckmarkCircle02Icon} className="size-4" />
                             Done
                           </Button>
                         ) : (

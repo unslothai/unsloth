@@ -24,7 +24,7 @@ import {
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import { useRouterState } from "@tanstack/react-router";
-import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
+import { CpuIcon, GripVerticalIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
@@ -41,6 +41,8 @@ import {
   getFloatingMonitorLayout,
 } from "./floating-monitor-layout";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
@@ -340,7 +342,7 @@ function FloatingMonitorPanel({
               title={t("common.close")}
               aria-label={t("common.close")}
             >
-              <XIcon className="size-3" />
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
             </Button>
           </div>
         </div>

@@ -3,11 +3,8 @@
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { MenuTickIcon } from "@/lib/tick-icon";
-import { McpServerIcon } from "@hugeicons/core-free-icons";
+import { McpServerIcon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  XIcon,
-} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -377,7 +374,7 @@ export function McpComposerButton({
                 className="size-[calc(15px*var(--ui-space-scale,1))]"
                 strokeWidth={2}
               />
-              <XIcon className="composer-pill-x" />
+              <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
             </span>
             <span>MCP</span>
             <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
