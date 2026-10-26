@@ -338,6 +338,16 @@ def test_unsloth_backend_writes_results(env, tmp_path):
     assert saved["results"]["gsm8k"]["exact_match,strict"] == 0.42
 
 
+def test_default_output_keeps_every_run(env, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for model in ("org/base", "org/tuned"):
+        result = _run(model, "--tasks", "gsm8k")
+        assert result.exit_code == 0, result.output
+    saved = sorted(p.parent.name for p in (tmp_path / "eval_results").rglob("results.json"))
+    assert len(saved) == 2, saved
+    assert saved[0].startswith("org_base_") and saved[1].startswith("org_tuned_")
+
+
 def _adapter(tmp_path, tokenizer = False):
     adapter = tmp_path / "lora"
     adapter.mkdir()

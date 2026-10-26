@@ -8,6 +8,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
@@ -507,8 +508,11 @@ def evaluate(
     target_key: str = typer.Option(
         "answer", "--target-key", help = "Answer field for a .jsonl/.csv dataset task."
     ),
-    output_dir: Path = typer.Option(
-        Path("./eval_results"), "--output-dir", "-o", help = "Directory for results.json."
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help = "Directory for results.json. Default: a new eval_results/<model>_<time> folder per run.",
     ),
     confirm_run_unsafe_code: bool = typer.Option(
         False,
@@ -539,6 +543,13 @@ def evaluate(
         limit = int(limit) if limit >= 1 else limit
     if max_seq_length <= 0:
         _fail("--max-seq-length must be a positive integer.")
+    if output_dir is None:
+        from unsloth_cli._inference import ensure_studio_backend_path
+
+        ensure_studio_backend_path(seed_cache_env = False)
+        from utils.paths import default_run_dir_name
+
+        output_dir = Path("eval_results") / f"{default_run_dir_name(model)}_{int(time.time())}"
     # find_spec, not import: lm_eval imports transformers, which must come after unsloth
     if "lm_eval" not in sys.modules and find_spec("lm_eval") is None:
         _fail("evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.", code = 1)
