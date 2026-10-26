@@ -16,12 +16,12 @@ import re
 from collections import deque
 from typing import Any, Optional
 
-from core.flows.authoring import AuthoringError, string_enum
+from core.flows.authoring import AuthoringError, strict_schema, string_enum
 from core.flows.story import slug
 from core.flows.world import OPEN_PROPS, PROP_KINDS, props3d
 
 KINDS = tuple(k for k in PROP_KINDS if k != "model")
-RELATIONS = ("near", "against_wall", "facing", "in_area")
+RELATIONS = ("near", "against_wall", "facing", "in_area", "before_gate")
 RELAX_ORDER = ("facing", "near", "against_wall", "in_area")
 AREA_SIZES = {"small": 1, "medium": 2, "large": 3}
 MAX_AREAS = 4
@@ -36,53 +36,55 @@ WINDOW = (
 _WALL_PROPS = {"house", "fence", "stall"}
 _STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
-SCENE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "name": {"type": "string"},
-        "areas": {
-            "type": "array",
-            "maxItems": MAX_AREAS,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "size": string_enum(AREA_SIZES),
+SCENE_SCHEMA = strict_schema(
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "areas": {
+                "type": "array",
+                "maxItems": MAX_AREAS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "size": string_enum(AREA_SIZES),
+                    },
+                    "required": ["id", "size"],
                 },
-                "required": ["id", "size"],
+            },
+            "props": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_GROUPS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "kind": string_enum(KINDS),
+                        "count": {"type": "integer", "minimum": 1, "maximum": MAX_COUNT},
+                        "area": {"type": "string"},
+                    },
+                    "required": ["id", "kind", "count", "area"],
+                },
+            },
+            "relations": {
+                "type": "array",
+                "maxItems": 24,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": string_enum(RELATIONS),
+                        "a": {"type": "string"},
+                        "b": {"type": "string"},
+                    },
+                    "required": ["type", "a", "b"],
+                },
             },
         },
-        "props": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": MAX_GROUPS,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "kind": string_enum(KINDS),
-                    "count": {"type": "integer", "minimum": 1, "maximum": MAX_COUNT},
-                    "area": {"type": "string"},
-                },
-                "required": ["id", "kind", "count", "area"],
-            },
-        },
-        "relations": {
-            "type": "array",
-            "maxItems": 24,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "type": string_enum(RELATIONS),
-                    "a": {"type": "string"},
-                    "b": {"type": "string"},
-                },
-                "required": ["type", "a", "b"],
-            },
-        },
-    },
-    "required": ["name", "areas", "props", "relations"],
-}
+        "required": ["name", "areas", "props", "relations"],
+    }
+)
 
 SCENE_SYSTEM = (
     "You lay out a small place in a cozy low-poly 3D village. Do not give coordinates. Answer in JSON with: `name`; "
@@ -91,7 +93,8 @@ SCENE_SYSTEM = (
     + ", ".join(KINDS)
     + "), a `count` from 1 to 8 and the `area` id it stands in; and "
     "`relations` between them: `near` (prop a close to prop b), `against_wall` (prop a backs onto a wall or "
-    "building, b empty), `facing` (prop a turned towards prop b), `in_area` (prop a inside area b). Keep it to what "
+    "building, b empty), `facing` (prop a turned towards prop b), `in_area` (prop a inside area b), `before_gate` "
+    "(prop a reachable without passing a locked gate, b empty; for keys and levers). Keep it to what "
     "the description needs, at most 40 props in all."
 )
 
@@ -150,7 +153,9 @@ def validate_scene(raw: Any) -> dict:
             raise AuthoringError(f"relation in_area needs `b` to be an area id, got {r.get('b')!r}")
         if kind in ("near", "facing") and a == b:
             continue
-        relations.append({"type": kind, "a": a, "b": b if kind != "against_wall" else ""})
+        relations.append(
+            {"type": kind, "a": a, "b": b if kind not in ("against_wall", "before_gate") else ""}
+        )
     return {
         "name": str(raw.get("name") or "A place")[:80],
         "areas": areas,
@@ -210,7 +215,8 @@ def fallback_scene(text: str) -> dict:
 
 
 class Grid:
-    """The walkable map: rows of ``#`` (solid), ``.`` (open) and ``R`` (open, but kept clear: spawn, NPCs, items)."""
+    """The walkable map: rows of ``#`` (solid), ``.`` (open), ``R`` (open, but kept clear: spawn, NPCs, items) and
+    ``D`` (a locked gate: kept clear, walkable once unlocked, a wall for what must be reachable before it)."""
 
     def __init__(
         self,
@@ -222,7 +228,10 @@ class Grid:
         if not self.w or not self.h:
             raise AuthoringError("the map is empty")
         self.solid = [[(r[x] if x < len(r) else "#") == "#" for x in range(self.w)] for r in rows]
-        self.reserved = {(x, y) for y, r in enumerate(rows) for x, c in enumerate(r) if c == "R"}
+        self.gates = {(x, y) for y, r in enumerate(rows) for x, c in enumerate(r) if c == "D"}
+        self.reserved = {
+            (x, y) for y, r in enumerate(rows) for x, c in enumerate(r) if c == "R"
+        } | self.gates
         self.wall = [row[:] for row in self.solid]
         if spawn is None or not self.open(*spawn):
             spawn = next(
@@ -254,14 +263,15 @@ class Grid:
     def open(self, x: int, y: int) -> bool:
         return self.inside(x, y) and not self.solid[y][x]
 
-    def reach(self) -> set[tuple[int, int]]:
+    def reach(self, locked: bool = False) -> set[tuple[int, int]]:
+        """Tiles walkable from spawn; ``locked`` treats gates as walls."""
         seen = {self.spawn}
         todo = deque([self.spawn])
         while todo:
             x, y = todo.popleft()
             for dx, dy in _STEPS:
                 n = (x + dx, y + dy)
-                if n not in seen and self.open(*n):
+                if n not in seen and self.open(*n) and not (locked and n in self.gates):
                     seen.add(n)
                     todo.append(n)
         return seen
@@ -302,6 +312,7 @@ def solve(
     """Place ``spec`` (from ``validate_scene``) on ``grid``. Never fails: what cannot fit is reported in ``dropped``."""
     rng = random.Random(seed)
     reach = grid.reach()
+    before = grid.reach(locked = True)
     free = {c for c in reach if c not in grid.reserved and c != grid.spawn}
     if focus is None or focus not in reach:
         f = focus or grid.spawn
@@ -332,7 +343,9 @@ def solve(
     placed: dict[str, list[tuple[int, int]]] = {}
     occupied: set[tuple[int, int]] = set()
     solid_spots: list[tuple[int, int]] = []
+    key_spots: set[tuple[int, int]] = set()
     reach_count = len(reach)
+    before_count = len(before)
     out: list[dict] = []
     relaxed: list[dict] = []
     dropped: list[str] = []
@@ -349,6 +362,8 @@ def solve(
         if rel["type"] == "in_area":
             a = areas[rel["b"]]
             return _cheb(c, a["centre"]) <= a["r"]
+        if rel["type"] == "before_gate":
+            return c in before
         if rel["type"] == "against_wall":
             return wall_next(c) is not None
         others = placed.get(rel["b"]) or []
@@ -365,6 +380,11 @@ def solve(
         grid.solid[c[1]][c[0]] = True
         now = grid.reach()
         ok = len(now) == reach_count - 1 and all(touches(s, now) for s in (*solid_spots, c))
+        if ok and grid.gates:
+            locked = grid.reach(locked = True)
+            ok = len(locked) == before_count - (c in before) and all(
+                touches(s, locked) if s in key_spots else True for s in (*solid_spots, c)
+            )
         if not ok:
             grid.solid[c[1]][c[0]] = False
         return ok
@@ -396,10 +416,14 @@ def solve(
                         rng.random(),
                     )
                 )
+                gated = any(r["type"] == "before_gate" for r in active)
                 for c in cands:
+                    if gated:
+                        key_spots.add(c)
                     if not solid or keeps_reach(c):
                         spot = c
                         break
+                    key_spots.discard(c)
                 if spot is not None:
                     break
                 droppable = next(
@@ -414,6 +438,7 @@ def solve(
                 continue
             if solid:
                 reach_count -= 1
+                before_count -= spot in before
                 solid_spots.append(spot)
                 if group["kind"] in _WALL_PROPS:
                     grid.wall[spot[1]][spot[0]] = True
@@ -453,11 +478,14 @@ def solve(
                 }
             )
     final = grid.reach()
-    reachable = all(
-        (int(p["x"]), int(p["y"])) in final
-        if not p["solid"]
-        else any((int(p["x"]) + dx, int(p["y"]) + dy) in final for dx, dy in _STEPS)
-        for p in out
+    final_locked = grid.reach(locked = True)
+
+    def walkable_to(p: dict, cells: set[tuple[int, int]]) -> bool:
+        c = (int(p["x"]), int(p["y"]))
+        return touches(c, cells) if p["solid"] else c in cells
+
+    reachable = all(walkable_to(p, final) for p in out) and all(
+        walkable_to(p, final_locked) for p in out if (int(p["x"]), int(p["y"])) in key_spots
     )
     return {
         "name": spec["name"],

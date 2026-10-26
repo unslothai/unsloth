@@ -12,7 +12,7 @@ import re
 from typing import Any, Optional
 
 from core.flows import assets as asset_store
-from core.flows.authoring import string_enum
+from core.flows.authoring import strict_schema, string_enum
 from core.flows.expr import Prng, seed_from
 from core.flows.schema import WorldSpec
 from core.flows.story import _unique, input_values, most_downstream, node_value, slug
@@ -568,32 +568,34 @@ SUMMARY_SCHEMA = {
 }
 
 
-DIRECTOR_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "title": {"type": "string"},
-        "description": {"type": "string"},
-        "reward_text": {"type": "string"},
-        "giver": {"type": "string"},
-        "item": {"type": "string"},
-        "new_item_name": {"type": "string"},
-        "new_item_description": {"type": "string"},
-        "new_npc_name": {"type": "string"},
-        "new_npc_persona": {"type": "string"},
-        "new_npc_greeting": {"type": "string"},
-        "new_npc_role": {"type": "string", "enum": ["", *NPC_ROLES]},
-        "region": {"type": "string"},
-    },
-    "required": [
-        "title",
-        "description",
-        "reward_text",
-        "giver",
-        "item",
-        "new_item_name",
-        "new_npc_name",
-    ],
-}
+DIRECTOR_SCHEMA = strict_schema(
+    {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "reward_text": {"type": "string"},
+            "giver": {"type": "string"},
+            "item": {"type": "string"},
+            "new_item_name": {"type": "string"},
+            "new_item_description": {"type": "string"},
+            "new_npc_name": {"type": "string"},
+            "new_npc_persona": {"type": "string"},
+            "new_npc_greeting": {"type": "string"},
+            "new_npc_role": {"type": "string", "enum": ["", *NPC_ROLES]},
+            "region": {"type": "string"},
+        },
+        "required": [
+            "title",
+            "description",
+            "reward_text",
+            "giver",
+            "item",
+            "new_item_name",
+            "new_npc_name",
+        ],
+    }
+)
 
 
 def has_memory(state: dict) -> bool:
@@ -938,7 +940,7 @@ def director_schema(state: dict) -> dict:
     regions = [r.get("id") for r in world.get("regions") or []]
     if regions:
         props["region"] = string_enum(regions, allow_empty = True)
-    return {**DIRECTOR_SCHEMA, "properties": props}
+    return strict_schema({**DIRECTOR_SCHEMA, "properties": props})
 
 
 def fallback_quest(state: dict) -> dict:

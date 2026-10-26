@@ -5,7 +5,13 @@
 
 import pytest
 
-from core.flows.authoring import AuthoringError, constrained_call, schema_errors, string_enum
+from core.flows.authoring import (
+    AuthoringError,
+    constrained_call,
+    schema_depth,
+    schema_errors,
+    string_enum,
+)
 from core.flows.nodes import world as world_nodes
 from core.flows.nodes._common import first_json
 from core.flows.raid import ENEMY_KINDS, fallback_raid, generate_raid, raid_schema
@@ -56,6 +62,9 @@ def _ok(raw):
 
 def _well_formed(schema, path = "$"):
     """Every enum non-empty and of its type, every required key declared."""
+    if schema.get("type") == "object":
+        assert schema.get("additionalProperties") is False, path
+        assert schema["required"] == list(schema["properties"]), path
     if "enum" in schema:
         assert schema["enum"] and all(isinstance(v, str) for v in schema["enum"]), path
     for key in schema.get("required") or []:
@@ -70,6 +79,7 @@ def test_schemas_are_well_formed_and_fallbacks_satisfy_them():
     state = {"world": {"npcs": [{"id": "a", "name": "A"}], "items": [], "regions": []}}
     for schema in (SCENE_SCHEMA, raid_schema(["Bell"]), director_schema(state), DIRECTOR_SCHEMA):
         _well_formed(schema)
+        assert schema_depth(schema) <= 2
     assert SCENE_SCHEMA["properties"]["props"]["items"]["properties"]["kind"]["enum"] == list(KINDS)
     assert "model" not in KINDS
     assert director_schema(state)["properties"]["item"] == {"type": "string"}, "no empty enum"
@@ -384,3 +394,70 @@ def test_a_raid_without_every_bark_event_is_refused():
     ctx = FakeCtx("world.describe_place", llm = lambda **kw: raw)
     out = run(generate_raid(ctx, seed = 4))
     assert out.fallback and "none for lost, hurt, flank, retreat" in ctx.llm_calls[1]["prompt"]
+
+
+GATED = [
+    "##########",
+    "#....#...#",
+    "#....D...#",
+    "#....#...#",
+    "##########",
+]
+
+
+def test_before_gate_props_stay_reachable_with_the_gate_locked():
+    spec = _spec(
+        [
+            {"id": "key_crate", "kind": "crate", "count": 2, "area": "main"},
+            {"id": "rocks", "kind": "rock", "count": 3, "area": "main"},
+        ],
+        [{"type": "before_gate", "a": "key_crate", "b": "x"}],
+    )
+    grid = Grid(GATED, (1, 1))
+    out = solve(spec, grid, focus = (7, 2), seed = 0)
+    keys = [(int(p["x"]), int(p["y"])) for p in out["props3d"] if p["name"] == "key crate"]
+    assert len(keys) == 2 and all(x < 5 for x, _ in keys), "on the spawn side of the gate"
+    assert (5, 2) not in _tiles(out) and (4, 2) not in _tiles(
+        out
+    ), "the gate and its approach stay clear"
+    assert out["reachable"] and not any(r["prop"].startswith("key_crate") for r in out["relaxed"])
+    locked = Grid(GATED, (1, 1))
+    for x, y in _tiles(out):
+        locked.solid[y][x] = (
+            locked.solid[y][x] or out["props3d"][_tiles(out).index((x, y))]["solid"]
+        )
+    before = locked.reach(locked = True)
+    assert all(
+        any((x + dx, y + dy) in before for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+        for x, y in keys
+    )
+
+
+def test_before_gate_is_never_relaxed():
+    sealed = ["#####", "#.D.#", "#####"]
+    spec = _spec(
+        [{"id": "key", "kind": "crate", "count": 1, "area": "main"}],
+        [{"type": "before_gate", "a": "key", "b": ""}],
+    )
+    out = solve(spec, Grid(sealed, (1, 1)), focus = (3, 1), seed = 0)
+    assert out["props3d"] == [] and out["dropped"] == ["key#1"]
+
+
+def test_fixed_instructions_come_first_so_the_prompt_cache_hits():
+    calls = []
+    for text in ("a market", "a forest glade"):
+        ctx = TextCtx(
+            "world.describe_place",
+            inputs = {"request": {"text": text, "rows": OPEN}},
+            llm = _replies("nope", SPEC_JSON),
+        )
+        run(world_nodes.world_describe_place(ctx))
+        calls += ctx.llm_calls
+    assert len({c["system"] for c in calls}) == 1
+    assert calls[0]["prompt"].endswith("a market\n") and calls[1]["prompt"].startswith(
+        calls[0]["prompt"]
+    )
+    ctx = FakeCtx("world.describe_place", llm = lambda **kw: {})
+    run(generate_raid(ctx, {"title": "A"}, "spooky", seed = 1))
+    run(generate_raid(ctx, {"title": "B"}, "", seed = 1))
+    assert len({c["system"] for c in ctx.llm_calls}) == 1

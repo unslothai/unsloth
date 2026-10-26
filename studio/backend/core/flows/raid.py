@@ -10,7 +10,13 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from core.flows.authoring import AuthoringError, Authored, constrained_call, string_enum
+from core.flows.authoring import (
+    AuthoringError,
+    Authored,
+    constrained_call,
+    strict_schema,
+    string_enum,
+)
 from core.flows.expr import Prng
 
 ENEMY_KINDS = ("grunt", "scout", "brute", "archer", "captain")
@@ -43,38 +49,43 @@ _BARKS = {
 
 
 def raid_schema(items: list[str]) -> dict:
-    return {
-        "type": "object",
-        "properties": {
-            "theme": string_enum(CAMP_THEMES),
-            "camp_name": {"type": "string"},
-            "roster": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": MAX_ROSTER,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "kind": string_enum(ENEMY_KINDS),
-                        "count": {"type": "integer", "minimum": 1, "maximum": 4},
+    return strict_schema(
+        {
+            "type": "object",
+            "properties": {
+                "theme": string_enum(CAMP_THEMES),
+                "camp_name": {"type": "string"},
+                "roster": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_ROSTER,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": string_enum(ENEMY_KINDS),
+                            "count": {"type": "integer", "minimum": 1, "maximum": 4},
+                        },
+                        "required": ["kind", "count"],
                     },
-                    "required": ["kind", "count"],
+                },
+                "loot": {"type": "array", "maxItems": 4, "items": string_enum([*LOOT, *items])},
+                "barks": {
+                    "type": "array",
+                    "minItems": MIN_BARKS,
+                    "maxItems": MAX_BARKS,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "event": string_enum(BARK_EVENTS),
+                            "text": {"type": "string"},
+                        },
+                        "required": ["event", "text"],
+                    },
                 },
             },
-            "loot": {"type": "array", "maxItems": 4, "items": string_enum([*LOOT, *items])},
-            "barks": {
-                "type": "array",
-                "minItems": MIN_BARKS,
-                "maxItems": MAX_BARKS,
-                "items": {
-                    "type": "object",
-                    "properties": {"event": string_enum(BARK_EVENTS), "text": {"type": "string"}},
-                    "required": ["event", "text"],
-                },
-            },
-        },
-        "required": ["theme", "camp_name", "roster", "loot", "barks"],
-    }
+            "required": ["theme", "camp_name", "roster", "loot", "barks"],
+        }
+    )
 
 
 def validate_raid(raw: Any, items: Optional[list[str]] = None) -> dict:

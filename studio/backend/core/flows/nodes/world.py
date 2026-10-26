@@ -376,7 +376,7 @@ async def _direct(ctx: NodeContext, state: dict) -> dict:
         system = system,
         temperature = 0.9,
         max_tokens = 500,
-        defaults = {k: "" for k in DIRECTOR_SCHEMA["required"]},
+        defaults = {k: "" for k in DIRECTOR_SCHEMA["properties"]},
     )
     return {"reply": {"patch": out.value}}
 

@@ -46,6 +46,28 @@ def string_enum(names: Iterable[Any], *, allow_empty: bool = False) -> dict:
     return {"type": "string", "enum": out} if out else {"type": "string"}
 
 
+def strict_schema(schema: dict) -> dict:
+    """Every object closed (additionalProperties false) with every key required: llama.cpp grammars handle optional
+    and open structures worst, so absent values are sent as "", 0 or [] sentinels instead."""
+    out = dict(schema)
+    if isinstance(out.get("properties"), dict):
+        out["properties"] = {k: strict_schema(v) for k, v in out["properties"].items()}
+        out["required"] = list(out["properties"])
+        out["additionalProperties"] = False
+    if isinstance(out.get("items"), dict):
+        out["items"] = strict_schema(out["items"])
+    return out
+
+
+def schema_depth(schema: dict) -> int:
+    """Object nesting levels: a flat object is 1, an array of flat objects inside it is 2."""
+    subs = [*(schema.get("properties") or {}).values()]
+    if isinstance(schema.get("items"), dict):
+        subs.append(schema["items"])
+    inner = max((schema_depth(s) for s in subs), default = 0)
+    return inner + (1 if schema.get("type") == "object" else 0)
+
+
 def schema_errors(
     value: Any,
     schema: dict,
