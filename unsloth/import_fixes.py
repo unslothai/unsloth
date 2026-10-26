@@ -7622,6 +7622,103 @@ def fix_cudnn_sdpa_d256_masked_backward():
     )
 
 
+_SDPA_GRAD_LAYOUT_FLAG = "_unsloth_gives_sdpa_backward_the_output_layout"
+_SDPA_GRAD_LAYOUT_FUNCTION = []
+
+
+def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version):
+    """True where torch's cuDNN SDPA backward reuses a cached plan across grad_output layouts.
+
+    torch 2.6 - 2.13 key that plan without grad_output's strides, so two same-shape backwards
+    whose grad_output layouts differ share one plan and the second gets wrong dQ / dK / dV.
+    torch 2.14.0 adds the strides to the key (pytorch/pytorch#191576). Builds on cuDNN < 9.5.1
+    copy grad_output into the output's layout first, so they never vary it.
+    """
+    try:
+        torch_version = TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return False
+    if not (TrueVersion("2.6") <= torch_version < TrueVersion("2.14")):
+        return False
+    return cudnn_version is not None and int(cudnn_version) >= 90501
+
+
+def _sdpa_grad_layout_function():
+    """Identity on the SDPA output whose backward hands on a gradient laid out like that output."""
+    if _SDPA_GRAD_LAYOUT_FUNCTION:
+        return _SDPA_GRAD_LAYOUT_FUNCTION[0]
+    import torch
+
+    class _GradInOutputLayout(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, out):
+            ctx.out_size = out.size()
+            ctx.out_stride = out.stride()
+            return out.view_as(out)
+
+        @staticmethod
+        def backward(ctx, grad):
+            if grad.stride() == ctx.out_stride:
+                return grad
+            return torch.empty_strided(
+                ctx.out_size, ctx.out_stride, dtype = grad.dtype, device = grad.device
+            ).copy_(grad)
+
+    _SDPA_GRAD_LAYOUT_FUNCTION.append(_GradInOutputLayout)
+    return _GradInOutputLayout
+
+
+def fix_cudnn_sdpa_backward_grad_layout():
+    """Give every CUDA SDPA backward a grad_output in the output's own layout on torch 2.6 - 2.13.
+
+    Their cuDNN backward plan cache ignores grad_output strides, so a training step that backprops
+    one attention output through a transpose (HF modeling code) and another directly (same shape)
+    gets wrong gradients on the second. The output's layout follows the query layout, which is in
+    the key, so fixing grad_output to it makes the key complete. HF modeling code already hands
+    that layout, so no copy runs there. UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX=1 opts out.
+    """
+    if os.environ.get("UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX", "0") == "1":
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return
+        if not _cudnn_sdpa_backward_cache_ignores_grad_layout(
+            torch.__version__, torch.backends.cudnn.version()
+        ):
+            return
+        grad_in_output_layout = _sdpa_grad_layout_function()
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA backward layout fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, False):
+        return
+
+    original = F.scaled_dot_product_attention
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(*args, **kwargs):
+        out = original(*args, **kwargs)
+        if (
+            isinstance(out, torch.Tensor)
+            and out.requires_grad
+            and out.is_cuda
+            and not out.is_nested
+        ):
+            return grad_in_output_layout.apply(out)
+        return out
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        f"Unsloth: torch {torch.__version__} reuses cuDNN SDPA backward plans across gradient "
+        "layouts; SDPA gradients are given the output's layout"
+    )
+
+
 def _rocm_windows_broken_sdpa_backends():
     """Fused SDPA backends ("flash", "mem_efficient") failing on this process's Windows ROCm GPU.
 
