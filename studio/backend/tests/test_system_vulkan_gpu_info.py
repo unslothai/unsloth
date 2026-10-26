@@ -26,11 +26,13 @@ def test_system_monitor_ignores_spark_npu_telemetry(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        hardware, "get_backend_visible_gpu_info",
+        hardware,
+        "get_backend_visible_gpu_info",
         lambda: {**nvidia.get_backend_visible_gpu_info([0, 1], None), "backend": "cuda"},
     )
     monkeypatch.setattr(
-        hardware, "get_visible_gpu_utilization",
+        hardware,
+        "get_visible_gpu_utilization",
         lambda: {
             "backend": "cuda",
             "devices": [
