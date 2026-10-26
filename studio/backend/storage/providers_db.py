@@ -41,12 +41,7 @@ _LEGACY_CUSTOM_PRESET_TYPES = {
 
 
 def _migrate_legacy_custom_provider_types(conn: sqlite3.Connection) -> None:
-    """Align rows created before Custom had its own backend provider types.
-
-    Older Studio builds saved every OpenAI-compatible connection as ``openai``. A
-    non-OpenAI URL may still be an OpenAI reverse proxy, so only an exact built-in
-    custom/preset label is sufficient evidence to change the stored provider type.
-    """
+    """Rows saved as openai change type only on an exact built-in label; a URL may be an OpenAI proxy."""
     updates: list[tuple[str, str]] = []
     rows = conn.execute(
         "SELECT id, display_name, base_url FROM llm_providers WHERE provider_type = 'openai'"
@@ -60,8 +55,7 @@ def _migrate_legacy_custom_provider_types(conn: sqlite3.Connection) -> None:
         except ValueError:
             host = ""
 
-        # A display name is user-editable metadata. Never let it turn an OpenAI-managed
-        # endpoint into a custom connection, even if it happens to equal a preset label.
+        # Display name is user-editable; never let it turn an OpenAI endpoint into a custom one.
         if host == "api.openai.com" or host.endswith(
             (".openai.azure.com", ".services.ai.azure.com")
         ):
@@ -184,12 +178,8 @@ def get_connection() -> sqlite3.Connection:
 
 @contextmanager
 def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
-    """Atomically mutate a provider row and its saved credentials. Provider metadata and encrypted credentials
-    share ``studio.db``, so a single SQLite write transaction prevents other processes from observing a new
-    endpoint with the previous key (or the inverse) while a provider edit is in progress.
-    """
-    # Ensure both tables exist before opening the transaction. The credential module commits schema
-    # initialization on its own connection.
+    """One SQLite write transaction, so no other process sees a new endpoint paired with the old key."""
+    # Both tables must exist before the transaction; credential_secrets commits its own schema.
     from storage import credential_secrets
 
     credential_secrets.ensure_schema()

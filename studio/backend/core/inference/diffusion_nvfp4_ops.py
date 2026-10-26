@@ -165,10 +165,8 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
 
 
 def _claim_first_call_tune(m: int, k: int, n: int) -> bool:
-    """True exactly once per ``(M, K, N)`` not yet autotuned, and only outside a CUDA graph
-    capture, where profiling is illegal (the warm-up before a capture is eager, so a graphed
-    shape tunes there). Shares ``nvfp4_prewarm``'s process-wide set, so a prewarmed shape is
-    never profiled twice."""
+    """Claims the one autotune for a shape, never inside a CUDA graph capture, where profiling is
+    illegal."""
     from .diffusion_nvfp4_linear import _TUNED_SHAPES
 
     key = (int(m), int(k), int(n))
