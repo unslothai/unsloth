@@ -14,6 +14,7 @@ import {
   type SttModel,
   migrateVoiceSettings,
 } from "./stt-model-catalog";
+import { syncSttDevicePreference } from "../api/stt-device";
 
 export * from "./stt-model-catalog";
 
@@ -226,13 +227,6 @@ const quotaSafeLocalStorage = {
   },
 };
 
-// Server copy of "Load into" for device-less API loads (#15280); localStorage stays the UI's source.
-function syncSttDevice(device: SttDevice): void {
-  void import("../api/stt-device")
-    .then(({ syncSttDevicePreference }) => syncSttDevicePreference(device))
-    .catch(() => {});
-}
-
 export const useVoiceSettingsStore = create<VoiceSettingsState>()(
   persist(
     (set) => ({
@@ -266,7 +260,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         const sttDevice = normalizeSttDevice(value);
         set({ sttDevice });
         // Server default for cold /v1/audio/transcriptions loads (#15280).
-        syncSttDevice(sttDevice);
+        syncSttDevicePreference(sttDevice);
       },
 
       sttProviderId: "",
@@ -442,12 +436,6 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),
           ttsVolume: clampNumber(saved?.ttsVolume, 0, 1, 1),
         };
-      },
-      onRehydrateStorage: () => (state) => {
-        // Only a non-default choice: a fresh browser must not reset what another one saved.
-        if (state && state.sttDevice !== DEFAULT_STT_DEVICE) {
-          syncSttDevice(state.sttDevice);
-        }
       },
     },
   ),

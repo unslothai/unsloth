@@ -10,6 +10,7 @@ const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
 const adapter = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
 const voiceStore = readSrc("features/settings/stores/voice-settings-store.ts");
 const sttDeviceApi = readSrc("features/settings/api/stt-device.ts");
+const root = readSrc("app/routes/__root.tsx");
 
 test("changing the dictation device releases only this tab's model", () => {
   // Unscoped, the unload can tear down a model this tab never owned.
@@ -48,11 +49,13 @@ test("Load into is synced to the server for cold API STT loads", () => {
   assert.match(sttDeviceApi, /from "@\/features\/auth\/api"/);
   assert.match(
     voiceStore,
-    /set\(\{ sttDevice \}\);\s*\/\/[^\n]*\n\s*syncSttDevice\(sttDevice\)/,
+    /set\(\{ sttDevice \}\);\s*\/\/[^\n]*\n\s*syncSttDevicePreference\(sttDevice\)/,
   );
-  // A fresh browser still on the default must not overwrite what another one saved.
+  // Startup sync waits for sign-in (desktop port known); a fresh browser on the default sends nothing.
+  assert.doesNotMatch(voiceStore, /onRehydrateStorage/);
   assert.match(
-    voiceStore,
-    /onRehydrateStorage[\s\S]*?state\.sttDevice !== DEFAULT_STT_DEVICE[\s\S]*?syncSttDevice\(state\.sttDevice\)/,
+    root,
+    /function SttDeviceSyncMount[\s\S]*?hasSettledAuthSession\(\)[\s\S]*?settled && device !== DEFAULT_STT_DEVICE[\s\S]*?syncSttDevicePreference\(device\)/,
   );
+  assert.match(root, /<SttDeviceSyncMount \/>/);
 });
