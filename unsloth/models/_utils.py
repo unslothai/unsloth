@@ -1478,8 +1478,7 @@ def _flex_preferred_fits(config, dtype = None):
     try:
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
             return True
-        # sm86 / sm89 with torch >= 2.10: the flex wrapper passes tiles that fit, at 2-byte dtypes
-        # only. float32 doubles every tile (147456 B forward on sm89, over the 101376 B limit).
+        # sm86 / sm89, torch >= 2.10: small tiles fit 2-byte dtypes only; fp32 overflows smem.
         if _flex_small_smem_device_ok():
             return dtype is not torch.float32
         return all(

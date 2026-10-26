@@ -116,9 +116,7 @@ def test_rocm_cpu_and_a_failing_probe_keep_flex(cards, monkeypatch):
 
 
 def test_l4_float32_gemma3_does_not_get_the_small_tiles(cards, monkeypatch):
-    # The sm8x small tiles fit 2-byte dtypes; at float32 the same tiles need 147456 B forward on an
-    # L4 (101376 B available) and Inductor raises "No valid triton configs", so an fp32 load keeps
-    # the route it had before the tiles (eager: Gemma 3's bundled SDPA is disabled by name).
+    # fp32 small tiles overflow L4 smem ("No valid triton configs"), so fp32 keeps eager.
     import torch
 
     monkeypatch.setattr(_utils.torch, "__version__", "2.10.0+cu130")
@@ -131,6 +129,5 @@ def test_l4_float32_gemma3_does_not_get_the_small_tiles(cards, monkeypatch):
     assert resolve(torch.bfloat16) == "flex_attention"
     assert resolve(torch.float16) == "flex_attention"
     assert resolve(None) == "flex_attention"
-    # Cards whose default template fits are unchanged at float32.
     cards(A100)
     assert resolve(torch.float32) == "flex_attention"
