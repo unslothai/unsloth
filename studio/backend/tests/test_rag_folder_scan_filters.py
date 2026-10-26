@@ -259,3 +259,65 @@ def test_every_failed_file_is_listed_with_its_reason(rag_home, stub_embeddings, 
     view = _folder_view(_folder_row(folder["id"]))
     assert view["failureCount"] == 5
     assert view["failures"][0] == {"path": "bad0.txt", "error": "embed unavailable"}
+
+
+def _mapped(folder_id: str) -> set[str]:
+    with closing(rag_db.get_connection()) as conn:
+        return {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?", (folder_id,)
+            )
+        }
+
+
+
+def _gitignore_the_folder(source, monkeypatch):
+    _write(source, ".gitignore", "build/\n")
+
+
+def _empty_the_file(source, monkeypatch):
+    _write(source, "build/plan.txt", "")
+
+
+def _add_a_project_manifest(source, monkeypatch):
+    _write(source, "package.json", "{}")
+
+
+def _shrink_the_text_limit(source, monkeypatch):
+    monkeypatch.setattr(config, "FOLDER_MAX_TEXT_BYTES", 10)
+
+
+def _lower_the_file_cap(source, monkeypatch):
+    monkeypatch.setattr(config, "FOLDER_MAX_FILES", 1)
+
+
+@requires_sqlite_vec
+@pytest.mark.parametrize(
+    "exclude",
+    [
+        _gitignore_the_folder,
+        _empty_the_file,
+        _add_a_project_manifest,
+        _shrink_the_text_limit,
+        _lower_the_file_cap,
+    ],
+)
+def test_a_file_the_scan_now_skips_is_removed_from_the_index(
+    rag_home, stub_embeddings, monkeypatch, exclude
+):
+    source = rag_home / "source"
+    _write(source, "a-notes.md", "notes")
+    _write(source, "build/plan.txt", "draft plan " * 10)
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(source), name = "Docs"
+    )
+    assert _run(folder["id"])["status"] == "completed"
+    assert _mapped(folder["id"]) == {"a-notes.md", "build/plan.txt"}
+
+    exclude(source, monkeypatch)
+    job = _run(folder["id"])
+    assert job["status"] == "completed", job["error"]
+    assert job["deleted"] == 1
+    assert _mapped(folder["id"]) - {"package.json"} == {"a-notes.md"}
+    assert (source / "build" / "plan.txt").is_file()

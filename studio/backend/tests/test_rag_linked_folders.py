@@ -1014,8 +1014,9 @@ def test_large_windows_file_identity_round_trips_through_sqlite(
         root,
         expected_identity = None,
         report = None,
+        excluded = None,
     ):
-        found, root_identity = real_scan(root, expected_identity, report)
+        found, root_identity = real_scan(root, expected_identity, report, excluded)
         for metadata in found.values():
             metadata["scanned"], (metadata["device"], metadata["inode"]) = (
                 (metadata["device"], metadata["inode"]),
