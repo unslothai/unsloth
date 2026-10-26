@@ -318,7 +318,10 @@ def _write_tiny_tokenizer(path):
     tok = Tokenizer(WordLevel(vocab, unk_token = "[UNK]"))
     tok.pre_tokenizer = Whitespace()
     PreTrainedTokenizerFast(
-        tokenizer_object = tok, unk_token = "[UNK]", bos_token = "[BOS]", eos_token = "[EOS]",
+        tokenizer_object = tok,
+        unk_token = "[UNK]",
+        bos_token = "[BOS]",
+        eos_token = "[EOS]",
         pad_token = "[EOS]",
     ).save_pretrained(path)
 
