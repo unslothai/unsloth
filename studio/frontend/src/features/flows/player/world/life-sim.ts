@@ -420,7 +420,7 @@ export function cachedPlan(
             planDay: day,
             ...lifePlanned(
               m,
-              got.options ? { options: got.options } : null,
+              cfg.options && got.options ? { options: got.options } : null,
               clock,
             ),
           },
