@@ -1468,7 +1468,7 @@ def _enable_flex_attention_support(model_class, model_type = ""):
 _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY = 151552
 
 
-def _flex_preferred_fits(config):
+def _flex_preferred_fits(config, dtype = None):
     """False when a visible CUDA card lacks that shared memory; fails open on ROCm / no CUDA."""
     head_dim = _text_attention_head_dim(config)
     if head_dim is None or not (
@@ -1478,9 +1478,10 @@ def _flex_preferred_fits(config):
     try:
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
             return True
-        # sm86 / sm89 with torch >= 2.10: the flex wrapper passes tiles that fit.
+        # sm86 / sm89 with torch >= 2.10: the flex wrapper passes tiles that fit, at 2-byte dtypes
+        # only. float32 doubles every tile (147456 B forward on sm89, over the 101376 B limit).
         if _flex_small_smem_device_ok():
-            return True
+            return dtype is not torch.float32
         return all(
             torch.cuda.get_device_properties(index).shared_memory_per_block_optin
             >= _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY
@@ -1490,7 +1491,7 @@ def _flex_preferred_fits(config):
         return True
 
 
-def _supports_flex_attention(model_class, config, model_type):
+def _supports_flex_attention(model_class, config, model_type, dtype = None):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
     if not getattr(model_class, "_supports_flex_attn", False):
@@ -1499,7 +1500,7 @@ def _supports_flex_attention(model_class, config, model_type):
         return False
     if not _flex_attention_gpu_is_supported():
         return False
-    if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config):
+    if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config, dtype):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -2983,12 +2984,14 @@ def resolve_attention_implementation(
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
-    supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+    supports_flex_attention = _supports_flex_attention(model_class, config, model_type, dtype)
     # Before the ladder, since every branch below reads supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
-            supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+            supports_flex_attention = _supports_flex_attention(
+                model_class, config, model_type, dtype
+            )
     # An explicit 1 forces flex over flash_attention_2 too, but only when flex can be scoped to the decoder
     flex_forced_for_head_dim = (
         _flex_large_head_dim_override() is True
