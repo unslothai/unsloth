@@ -15,6 +15,9 @@ export const PROP_KINDS: readonly WorldPropKind[] = [
   "rock",
   "bench",
   "stall",
+  "door",
+  "chest",
+  "lever",
 ];
 
 export const PROP_LABELS: Record<WorldPropKind, string> = {
@@ -27,12 +30,16 @@ export const PROP_LABELS: Record<WorldPropKind, string> = {
   rock: "Rock",
   bench: "Bench",
   stall: "Market stall",
+  door: "Door",
+  chest: "Chest",
+  lever: "Lever",
   model: "Model",
 };
 
 export const OPEN_PROPS: ReadonlySet<WorldPropKind> = new Set([
   "lamp",
   "bench",
+  "lever",
 ]);
 export const MAX_PROPS = 400;
 export const MAX_GLB_BYTES = 20 * 1024 * 1024;

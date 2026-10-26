@@ -7,7 +7,8 @@
 import * as Phaser from "phaser";
 
 import { Prng, seedFrom } from "../../expr";
-import type { WorldItem, WorldNpc, WorldSpec } from "../../types";
+import type { WorldItem, WorldNpc, WorldProp3d, WorldSpec } from "../../types";
+import { type PropStates, closedProps, isOpen, isUsable } from "./action-verbs";
 import {
   type Point,
   SOLID,
@@ -17,7 +18,7 @@ import {
   findPath,
   isSolid,
 } from "./procgen";
-import type { WorldEditor } from "./props3d";
+import { PROP_LABELS, type WorldEditor, blockedCells } from "./props3d";
 import {
   canvas,
   coverImage,
@@ -28,9 +29,10 @@ import {
 } from "./sprites";
 
 export interface Interactable {
-  kind: "npc" | "item";
+  kind: "npc" | "item" | "prop";
   id: string;
   name: string;
+  prop?: WorldProp3d;
 }
 
 export interface WorldBridge {
@@ -39,6 +41,7 @@ export interface WorldBridge {
   onRegion(regionId: string | null): void;
   locked(): boolean;
   action?: unknown;
+  props?: PropStates;
   onEvent?(text: string): void;
   safeAt?(p: Point): boolean;
 }
@@ -66,6 +69,11 @@ export interface WorldGameHandle {
   say(id: string, text: string, ms?: number): void;
   openEditor?(): Promise<WorldEditor>;
   actionState?(): unknown;
+  setPropStates?(
+    states: PropStates,
+    changed: readonly string[],
+    loud: boolean,
+  ): void;
 }
 
 export interface Area {
@@ -85,6 +93,9 @@ const PROP_MARKS: Record<string, number> = {
   rock: 0x8d8a83,
   bench: 0x9a6b42,
   stall: 0xd9534f,
+  door: 0x7a5233,
+  chest: 0xc89b3c,
+  lever: 0x6d7a8a,
   model: 0x8f7ae6,
 };
 
@@ -128,7 +139,28 @@ export function createWorldGame(
           ? "snow"
           : "grass";
   let sceneRef: WorldScene | null = null;
+  const npcSpecs = new Map<string, WorldNpc>();
+  for (const n of spec.npcs) if (!npcSpecs.has(n.id)) npcSpecs.set(n.id, n);
   const pendingMarkers = new Map<string, [Point, string, string]>();
+  let propState: PropStates = bridge.props ?? {};
+  const usable = (map.props ?? []).filter(isUsable);
+  const propMarks = new Map<string, Phaser.GameObjects.Graphics>();
+  const reblock = () => {
+    if (map.props?.length)
+      map.blocked = blockedCells(map, closedProps(map.props, propState));
+  };
+  // The map may come from an earlier game where a door stood open: always derive blocking from this state.
+  if (usable.length) reblock();
+  const propTarget = (p: WorldProp3d): Interactable => ({
+    kind: "prop",
+    id: p.id,
+    name:
+      (p.name ?? PROP_LABELS[p.kind]) +
+      (p.kind === "door" && p.locked_by && !propState[p.id]?.unlocked
+        ? " (locked)"
+        : ""),
+    prop: p,
+  });
 
   class WorldScene extends Phaser.Scene {
     player!: Actor;
@@ -222,6 +254,18 @@ export function createWorldGame(
           T * 0.12,
         );
         mark.setDepth(cy);
+        if (isUsable(p)) {
+          propMarks.set(p.id, mark);
+          if (isOpen(p, propState)) mark.setAlpha(0.35);
+        }
+        // Graphics are re-tessellated every frame; skip the ones the camera cannot see.
+        const drawable = mark.willRender.bind(mark);
+        mark.willRender = (cam) =>
+          drawable(cam) &&
+          cx + T > cam.worldView.x &&
+          cx - T < cam.worldView.right &&
+          cy + T > cam.worldView.y &&
+          cy - T < cam.worldView.bottom;
       }
       this.physics.world.setBounds(0, 0, map.width * T, map.height * T);
 
@@ -552,12 +596,11 @@ export function createWorldGame(
       for (const n of this.npcs) {
         const nb = n.body.body as Phaser.Physics.Arcade.Body;
         const close = this.distTo(n.body.x, n.body.y) < T * 1.8;
-        const spec_ = spec.npcs.find((x) => x.id === n.id);
         if (
           this.talking === n.id ||
           n.busy ||
           close ||
-          spec_?.wander === false
+          npcSpecs.get(n.id)?.wander === false
         ) {
           nb.setVelocity(0, 0);
           n.path = [];
@@ -627,7 +670,21 @@ export function createWorldGame(
           by = it.at.y * T - T * 0.25;
         }
       }
-      if ((best?.id ?? null) !== (this.nearby?.id ?? null)) {
+      for (const p of usable) {
+        const cx = Math.floor(p.x) * T + T / 2;
+        const cy = Math.floor(p.y) * T + T / 2;
+        const d = this.distTo(cx, cy);
+        if (d < bestD) {
+          bestD = d;
+          best = propTarget(p);
+          bx = cx;
+          by = cy - T * 0.7;
+        }
+      }
+      if (
+        (best?.id ?? null) !== (this.nearby?.id ?? null) ||
+        best?.name !== this.nearby?.name
+      ) {
         this.nearby = best;
         bridge.onNearby(best);
       }
@@ -719,6 +776,19 @@ export function createWorldGame(
   }
 
   return {
+    setPropStates(states, changed) {
+      propState = states;
+      reblock();
+      for (const id of changed) {
+        const p = usable.find((x) => x.id === id);
+        if (!p) continue;
+        propMarks.get(id)?.setAlpha(isOpen(p, propState) ? 0.35 : 1);
+        const tx = Math.floor(p.x);
+        const ty = Math.floor(p.y);
+        if (p.kind === "door")
+          sceneRef?.layer.getTileAt(tx, ty)?.setCollision(isSolid(map, tx, ty));
+      }
+    },
     destroy() {
       document.removeEventListener("visibilitychange", onVisibility);
       game.destroy(true);

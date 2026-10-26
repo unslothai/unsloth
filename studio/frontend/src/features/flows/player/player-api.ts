@@ -333,6 +333,7 @@ export const playerApi: PlayerApi = {
 
 const MAX_URLS = 96;
 const urlCache = new Map<string, Promise<string>>();
+const readyUrls = new Map<string, string>();
 
 export function mediaObjectUrl(
   api: PlayerApi,
@@ -345,7 +346,11 @@ export function mediaObjectUrl(
     urlCache.set(key, hit);
     return hit;
   }
-  const p = api.mediaBlob(media).then((b) => URL.createObjectURL(b));
+  const p = api.mediaBlob(media).then((b) => {
+    const url = URL.createObjectURL(b);
+    if (urlCache.get(key) === p) readyUrls.set(key, url);
+    return url;
+  });
   p.catch(() => urlCache.delete(key));
   urlCache.set(key, p);
   while (urlCache.size > MAX_URLS) {
@@ -354,13 +359,19 @@ export function mediaObjectUrl(
       Promise<string>,
     ];
     urlCache.delete(oldKey);
+    readyUrls.delete(oldKey);
     oldUrl.then((u) => URL.revokeObjectURL(u)).catch(() => undefined);
   }
   return p;
+}
+
+export function cachedMediaUrl(media: MediaValue): string | null {
+  return readyUrls.get(media.ref + (media.url ?? "")) ?? null;
 }
 
 export function clearMediaUrls(): void {
   for (const p of urlCache.values())
     p.then((u) => URL.revokeObjectURL(u)).catch(() => undefined);
   urlCache.clear();
+  readyUrls.clear();
 }
