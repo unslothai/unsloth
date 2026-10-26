@@ -729,7 +729,8 @@ def test_every_whole_model_export_is_guarded():
     """Static: every export patch_saving_functions binds, and every writer behind them, refuses TP / PP first."""
     import ast
 
-    tree = ast.parse(open(os.path.join(REPO, "unsloth", "save.py")).read())
+    with open(os.path.join(REPO, "unsloth", "save.py"), encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
     functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     bound = set()
     for node in ast.walk(functions["patch_saving_functions"]):
