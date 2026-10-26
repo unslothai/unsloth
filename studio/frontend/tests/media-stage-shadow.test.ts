@@ -5,8 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
-// #15221: WebKitGTK repaints the whole view per keystroke, and the blurred shadow on full-size media
-// made each repaint ~150 ms. Only the Linux desktop app drops it.
 test("only the Linux desktop app drops the full-size media shadow", () => {
   const css = readSrc("index.css");
   const rules = [

@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DeferredTextarea } from "@/components/deferred-textarea";
-// DeferredTextarea under an owner whose every render is slow, as the Images page is in WebKitGTK. No backend.
-// The owner is impure on purpose: it burns time and counts renders where the harness can read them.
+// DeferredTextarea under a deliberately slow, impure owner (the Images page in WebKitGTK). No backend.
 /* eslint-disable react-hooks/purity, react-hooks/immutability, react-refresh/only-export-components */
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -39,7 +38,6 @@ function Owner() {
   if (inKey) window.ownerRendersInKey += 1;
   const until = performance.now() + SLOW_MS;
   while (performance.now() < until) {
-    // Stands in for the thousands of controls the Images page re-renders.
   }
   return (
     <div className="flex max-w-xl flex-col gap-3 p-6">

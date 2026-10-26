@@ -12,8 +12,7 @@ type DeferredTextareaProps = Omit<
   onValueChange: (value: string) => void;
 };
 
-/** Echoes keystrokes itself and hands them to its owner as a transition, so a slow owner re-render
- *  (the whole Images page) yields to the next key instead of blocking it (#15221). */
+/** Echoes keys itself and hands them to the owner as a transition, so a slow owner render yields to the next key (#15221). */
 export function DeferredTextarea({
   value,
   onValueChange,

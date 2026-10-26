@@ -20,8 +20,7 @@ def check(page):
     generated = page.get_by_label("Generated")
     expect(box).to_have_value("seed prompt")
 
-    # Every key lands in the box without the slow owner rendering inside that key's input event:
-    # the owner catches up in a transition after it.
+    # The slow owner must never render inside a key's input event.
     box.click()
     box.press("End")
     box.press_sequentially(TYPED)
@@ -37,13 +36,11 @@ def check(page):
         json.dumps(["seed prompt" + TYPED + " now"], separators = (",", ":"))
     )
 
-    # Values the owner sets itself replace the draft.
     page.get_by_role("button", name = "Recall", exact = True).click()
     expect(box).to_have_value("from recall")
     page.get_by_role("button", name = "Append", exact = True).click()
     expect(box).to_have_value("from recall, transparent background")
 
-    # Typing after an owner-set value continues from it, and undo still works natively.
     box.click()
     box.press("End")
     box.press_sequentially("!")
