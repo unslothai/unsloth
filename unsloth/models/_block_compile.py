@@ -27,11 +27,159 @@ _COMPILE_OPTIONS = {
 if os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1":
     _COMPILE_OPTIONS["triton.cudagraphs"] = True
 # Shape cap: variable lengths recorded a graph set per length (3.5x slower, pool grew every step).
-# Past the cap graphs go off for the whole layer kind; admitted shapes alone still grew the pool.
+# Two shapes = one fixed length plus a short last batch. Past the cap graphs go off for every block
+# and the graph pool is released (T4: 8 shapes cost 15-65 s over 40 steps and kept 3-4.75 GB).
 try:
-    _CUDAGRAPH_MAX_SHAPES = max(0, int(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "8")))
+    _CUDAGRAPH_MAX_SHAPES = max(0, int(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "2")))
 except ValueError:
-    _CUDAGRAPH_MAX_SHAPES = 8
+    _CUDAGRAPH_MAX_SHAPES = 2
+# Process wide: every block class shares one cudagraph tree (one pool per device).
+# off: why graphs went off (None = on); release: None, "done" or "kept"; ours: compile ids of the
+# tree functions block calls created; devices: CUDA indices block graphs ran on.
+_CUDAGRAPH_STATE = {"off": None, "release": None, "ours": set(), "devices": set(), "notes": set()}
+
+
+_PACKED_NOTE = (
+    "Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 does not apply to packed / padding-free rows (their total "
+    "length changes every step, so a graph would be recorded per step); blocks run without CUDA graphs."
+)
+_SHAPES_NOTE = (
+    "Unsloth: block CUDA graphs turned off: more than {} distinct batch shapes (variable padded "
+    "lengths). Pad every batch to one length (padding='max_length') to keep them, or raise "
+    "UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES."
+)
+
+
+def _rank0_note(key, message):
+    state = _CUDAGRAPH_STATE
+    if key in state["notes"]:
+        return
+    state["notes"].add(key)
+    try:
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+            return
+    except Exception:
+        pass
+    print(message, flush = True)
+
+
+def _graphs_off(reason, message):
+    """Every block runs its graphs-off copy from now on; the pool is released at a later call."""
+    if _CUDAGRAPH_STATE["off"] is None:
+        _CUDAGRAPH_STATE["off"] = reason
+        _rank0_note("off", message)
+
+
+def _tree_manager(device):
+    if device is None:
+        return None
+    try:
+        from torch._inductor import cudagraph_trees
+        return cudagraph_trees.get_manager(device, create_if_none_exists = False)
+    except Exception:
+        return None
+
+
+def _graphed_call(compiled, device, *args, **kwargs):
+    """Call the graphs-on region; note the compile ids of tree functions it created (forward here,
+    the backward of the same compile later), so the release can tell its pool is only ours."""
+    manager = _tree_manager(device)
+    before = len(manager.ids_to_funcs) if manager is not None else 0
+    out = compiled(*args, **kwargs)
+    after = _tree_manager(device)
+    if after is not None:
+        _CUDAGRAPH_STATE["devices"].add(device)
+        if after is not manager:
+            before = 0
+        if len(after.ids_to_funcs) > before:
+            ids = list(after.ids_to_funcs)[before:]
+            _CUDAGRAPH_STATE["ours"].update(after.id_to_compile_id.get(i) for i in ids)
+    return out
+
+
+def _pool_release_verdict(managers, ours):
+    """"ok" when every tree function belongs to a block compile and nothing in the pool is alive
+    (no pending backward), "pending" to retry at a later call, "foreign" when another torch.compile
+    region also records into this tree: resetting would break its next call."""
+    for manager in managers:
+        if any(cid is None or cid not in ours for cid in manager.id_to_compile_id.values()):
+            return "foreign"
+    for manager in managers:
+        if manager.running_forwards_with_pending_backwards:
+            return "pending"
+        if manager.live_cudagraph_pool_storages_in_curr_execution():
+            return "pending"
+    return "ok"
+
+
+def _release_graph_pool():
+    """After graphs went off: free the cudagraph tree pool (torch keeps it while the tree lives).
+    reset_cudagraph_trees() shuts down every device's tree; an old tree function called afterwards
+    fails ("Running CUDAGraph after shutdown"), so it runs only when every tree function is ours."""
+    state = _CUDAGRAPH_STATE
+    if state["release"] is not None:
+        return
+    try:
+        from torch._inductor import cudagraph_trees
+        containers = cudagraph_trees.get_obj(cudagraph_trees.local, "tree_manager_containers")
+        managers = [c.tree_manager for c in list(containers.values()) if c.tree_manager is not None]
+    except Exception:
+        state["release"] = "kept"
+        return
+    if not managers:
+        state["release"] = "done"  # nothing was recorded
+        return
+    verdict = _pool_release_verdict(managers, state["ours"])
+    if verdict == "pending":
+        return
+    if verdict == "foreign":
+        state["release"] = "kept"
+        _rank0_note(
+            "kept",
+            "Unsloth: block CUDA graphs are off; their memory pool stays allocated because another "
+            "compiled region records into the same CUDA graph tree.",
+        )
+        return
+    devices = sorted(state["devices"])
+    before = sum(torch.cuda.memory_reserved(d) for d in devices)
+    cudagraph_trees.reset_cudagraph_trees()
+    torch.cuda.empty_cache()
+    freed = before - sum(torch.cuda.memory_reserved(d) for d in devices)
+    state["release"] = "done"
+    _rank0_note(
+        "released",
+        f"Unsloth: released the block CUDA graph pool ({max(freed, 0) / 2**30:.2f} GiB reserved freed).",
+    )
+
+
+def _packed_kwargs(kwargs):
+    return any(
+        kwargs.get(key) is not None
+        for key in ("packed_seq_lengths", "cu_seq_lens_q", "cu_seq_lens_k", "cu_seqlens")
+    )
+
+
+def _trainable(layer):
+    params = layer.__dict__.get("_unsloth_block_params")
+    if params is None:
+        params = layer.__dict__["_unsloth_block_params"] = list(layer.parameters())
+    return any(p.requires_grad for p in params)
+
+
+def _pool_outputs_stay_valid(layer, hidden_states):
+    """A grad-mode call outside backward leaves a forward pending, and cudagraph trees start no new
+    generation while one is pending (can_start_new_generation, torch/_inductor/cudagraph_trees.py:
+    2.10 L2377, 2.13 L2557, 2.14 L2820; run() sets the flag after every FORWARD node: 2.10 L2037,
+    2.13 L2182, 2.14 L2410). The next block and the backward then read this call's outputs and
+    produce the input gradient inside the same generation, so neither needs a copy out of the
+    pool. Checkpointed blocks run without grad (forward) or inside backward (recompute), where a
+    block call can start a new generation and overwrite what the previous block handed on."""
+    return (
+        torch.is_grad_enabled()
+        and torch._C._current_graph_task_id() == -1
+        and (hidden_states.requires_grad or _trainable(layer))
+    )
 
 
 class _CloneGrad(torch.autograd.Function):
@@ -824,7 +972,6 @@ def _wrap(
             **isolate,
         )
     graph_shapes = set()
-    graphs_off = [False]
 
     def run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
@@ -837,18 +984,33 @@ def _wrap(
         try:
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
             with capture_scratch():
-                if graphs and not graphs_off[0]:
+                if graphs and _CUDAGRAPH_STATE["off"] is None:
                     shape = tuple(hidden_states.shape)
-                    if shape not in graph_shapes:
-                        graph_shapes.add(shape)
-                        graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
-                if graphs and (graphs_off[0] or _in_nonreentrant_checkpoint()):
+                    if _packed_kwargs(kwargs):
+                        _graphs_off("packed", _PACKED_NOTE)
+                    elif shape not in graph_shapes:
+                        if len(graph_shapes) >= _CUDAGRAPH_MAX_SHAPES:
+                            _graphs_off("shapes", _SHAPES_NOTE.format(_CUDAGRAPH_MAX_SHAPES))
+                        else:
+                            graph_shapes.add(shape)
+                if graphs and (
+                    _CUDAGRAPH_STATE["off"] is not None
+                    or self.__dict__.get("_unsloth_block_graphs_off", False)
+                    or _in_nonreentrant_checkpoint()
+                ):
+                    if _CUDAGRAPH_STATE["off"] is not None and _CUDAGRAPH_STATE["release"] is None:
+                        _release_graph_pool()
                     return plain(self, hidden_states, *args, **kwargs)
                 if graphs:
                     _param_grads_out_of_pool(self)
+                    device = hidden_states.device.index
+                    if _pool_outputs_stay_valid(self, hidden_states):
+                        return _graphed_call(compiled, device, self, hidden_states, *args, **kwargs)
                     if hidden_states.requires_grad and torch.is_grad_enabled():
                         hidden_states = _CloneGrad.apply(hidden_states)
-                    return _clone_outputs(compiled(self, hidden_states, *args, **kwargs))
+                    return _clone_outputs(
+                        _graphed_call(compiled, device, self, hidden_states, *args, **kwargs)
+                    )
                 return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
@@ -885,6 +1047,8 @@ def _wrap(
             # PrefixGrouper's int segment table would recompile at every new GRPO length.
             or (unsloth_forward and kwargs.get("prefix_seg_info") is not None)
         ):
+            if graphs and self.training and _CUDAGRAPH_STATE["off"] is None and _packed_kwargs(kwargs):
+                _graphs_off("packed", _PACKED_NOTE)
             return original(self, hidden_states, *args, **kwargs)
         if tracing:
             # Inside a user's torch.compile the enclosing graph owns the layer: no dynamic marking

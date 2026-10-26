@@ -40,6 +40,13 @@ def _block_env(monkeypatch):
     # the eager path, so the graph-cap test would see no compiled call at all.
     for key in ("UNSLOTH_BLOCK_COMPILE", "UNSLOTH_COMPILE_DISABLE", "UNSLOTH_FORCE_FLOAT32"):
         monkeypatch.delenv(key, raising = False)
+    # Graphs go off process wide; every test starts with them on.
+    monkeypatch.setattr(
+        bc,
+        "_CUDAGRAPH_STATE",
+        {"off": None, "release": None, "ours": set(), "devices": set(), "notes": set()},
+        raising = False,
+    )
 
 
 def test_clone_grad_is_identity_with_copied_gradient():
@@ -132,7 +139,10 @@ def test_cap_reads_the_environment(monkeypatch):
         monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "3")
         assert _load()._CUDAGRAPH_MAX_SHAPES == 3
         monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "junk")
-        assert _load()._CUDAGRAPH_MAX_SHAPES == 8
+        assert _load()._CUDAGRAPH_MAX_SHAPES == 2
+        monkeypatch.delenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES")
+        # One fixed length plus a short last batch; T4 variable lengths paid 15-65 s for 8.
+        assert _load()._CUDAGRAPH_MAX_SHAPES == 2
     finally:
         monkeypatch.delenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", raising = False)
         _load()
@@ -277,3 +287,271 @@ def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
         assert len(seen) == 2 and set(seen) == want
         assert x.grad is not None
     assert not bc._in_nonreentrant_checkpoint()
+
+
+def _tagging_compile(monkeypatch, calls):
+    def fake_compile(fn, **kwargs):
+        tag = "graphs" if kwargs.get("options", {}).get("triton.cudagraphs") else "plain"
+
+        def run(*args, **kw):
+            calls.append(tag)
+            return fn(*args, **kw)
+
+        return run
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+
+def _linear_layer_class(name, module = None):
+    def __init__(self):
+        torch.nn.Module.__init__(self)
+        self.proj = torch.nn.Linear(8, 8)
+
+    def forward(self, hidden_states, **kwargs):
+        return self.proj(hidden_states)
+
+    if module is not None:
+        forward.__module__ = module
+    return type(name, (torch.nn.Module,), {"__init__": __init__, "forward": forward})
+
+
+def test_past_the_cap_every_block_class_goes_off_and_the_pool_is_released(monkeypatch):
+    """One cudagraph tree (one pool) per device serves every block class: graphs go off for all of
+    them together, so the release can free the whole pool."""
+    calls, released = [], []
+    _tagging_compile(monkeypatch, calls)
+    monkeypatch.setattr(bc, "_CUDAGRAPH_MAX_SHAPES", 1)
+    monkeypatch.setattr(
+        bc, "_release_graph_pool", lambda: released.append(1) or bc._CUDAGRAPH_STATE.update(release = "done")
+    )
+    A, B = _linear_layer_class("ADecoderLayer"), _linear_layer_class("BDecoderLayer")
+    for cls in (A, B):
+        bc._wrap(cls, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    a, b = A().train(), B().train()
+
+    def step(L):
+        calls.clear()
+        x = torch.randn(2, L, 8, requires_grad = True)
+        b(a(x)).sum().backward()
+        return list(calls)
+
+    assert step(16) == ["graphs", "graphs"]
+    assert step(16) == ["graphs", "graphs"]
+    assert not released
+    assert step(24) == ["plain", "plain"]  # A saw the new length first: B is off too
+    assert bc._CUDAGRAPH_STATE["off"] == "shapes"
+    assert released == [1]
+    assert step(16) == ["plain", "plain"]
+    assert released == [1]
+
+
+def test_cap_notice_is_printed_once(monkeypatch, capsys):
+    calls = []
+    _tagging_compile(monkeypatch, calls)
+    monkeypatch.setattr(bc, "_CUDAGRAPH_MAX_SHAPES", 1)
+    A = _linear_layer_class("NoteDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = A().train()
+    for L in (8, 16, 24, 32):
+        layer(torch.randn(2, L, 8, requires_grad = True)).sum().backward()
+    out = capsys.readouterr().out
+    assert out.count("block CUDA graphs turned off") == 1
+    assert "UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES" in out
+
+
+@pytest.mark.parametrize("key", ["packed_seq_lengths", "cu_seq_lens_q"])
+def test_packed_rows_turn_graphs_off_before_any_recording(monkeypatch, capsys, key):
+    """Packed / padding-free rows change total length every step: decide before recording."""
+    calls = []
+    _tagging_compile(monkeypatch, calls)
+    A = _linear_layer_class("PackedDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = A().train()
+    lengths = torch.tensor([5, 11], dtype = torch.int32)
+    layer(torch.randn(1, 16, 8, requires_grad = True), **{key: lengths}).sum().backward()
+    assert calls == ["plain"]
+    assert bc._CUDAGRAPH_STATE["off"] == "packed"
+    calls.clear()
+    layer(torch.randn(2, 16, 8, requires_grad = True)).sum().backward()  # later padded rows too
+    assert calls == ["plain"]
+    assert capsys.readouterr().out.count("packed / padding-free rows") == 1
+
+
+def test_packed_rows_on_unsloth_forward_say_graphs_do_not_apply(monkeypatch, capsys):
+    # Unsloth's own forwards run packed rows stock (no compiled call at all): say so once.
+    calls = []
+    _tagging_compile(monkeypatch, calls)
+    A = _linear_layer_class("UPackedDecoderLayer", module = "unsloth.models.fake")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = A().train()
+    lengths = torch.tensor([5, 11], dtype = torch.int32)
+    layer(torch.randn(1, 16, 8, requires_grad = True), packed_seq_lengths = lengths).sum().backward()
+    assert calls == []
+    assert bc._CUDAGRAPH_STATE["off"] == "packed"
+    assert "packed / padding-free rows" in capsys.readouterr().out
+
+
+def test_flag_unset_ignores_packed_rows(monkeypatch, capsys):
+    calls = []
+    _tagging_compile(monkeypatch, calls)
+    A = _linear_layer_class("NoFlagDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": False})
+    layer = A().train()
+    lengths = torch.tensor([5, 11], dtype = torch.int32)
+    layer(torch.randn(1, 16, 8, requires_grad = True), packed_seq_lengths = lengths).sum().backward()
+    assert calls == ["plain"]
+    assert bc._CUDAGRAPH_STATE["off"] is None
+    assert capsys.readouterr().out == ""
+
+
+def _counting_clones(monkeypatch):
+    seen = {"outputs": 0, "grad": 0}
+    clone_outputs = bc._clone_outputs
+
+    def counted(out):
+        seen["outputs"] += 1
+        return clone_outputs(out)
+
+    class Counted(bc._CloneGrad):
+        @staticmethod
+        def forward(ctx, x):
+            seen["grad"] += 1
+            return x.view_as(x)
+
+    monkeypatch.setattr(bc, "_clone_outputs", counted)
+    monkeypatch.setattr(bc, "_CloneGrad", Counted)
+    return seen
+
+
+@pytest.mark.parametrize("trainable_input", [True, False])
+def test_no_pool_copies_outside_checkpointing(monkeypatch, trainable_input):
+    """A grad-mode block call outside backward leaves a forward pending, so cudagraph trees keep
+    the next block and the backward in the same generation: its outputs need no copy."""
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    seen = _counting_clones(monkeypatch)
+    A = _linear_layer_class("FreeDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layers = [A().train() for _ in range(3)]
+    x = torch.randn(2, 4, 8, requires_grad = trainable_input)
+    y = x
+    for layer in layers:
+        y = layer(y)
+    y.sum().backward()
+    assert seen == {"outputs": 0, "grad": 0}
+    assert all(layer.proj.weight.grad is not None for layer in layers)
+
+
+@pytest.mark.parametrize("reentrant_kind", ["checkpoint", "no_grad"])
+def test_pool_copies_kept_where_a_block_call_starts_a_generation(monkeypatch, reentrant_kind):
+    from torch.utils.checkpoint import checkpoint
+
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    seen = _counting_clones(monkeypatch)
+    A = _linear_layer_class("CopyDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layers = [A().train() for _ in range(3)]
+    x = torch.randn(2, 4, 8, requires_grad = True)
+    if reentrant_kind == "no_grad":
+        with torch.no_grad():
+            for layer in layers:
+                x = layer(x)
+        assert seen == {"outputs": 3, "grad": 0}
+        return
+    y = x
+    for layer in layers:
+        y = checkpoint(layer, y, use_reentrant = True)
+    y.sum().backward()
+    # Forward under no_grad: outputs copied; recompute inside backward: outputs and input grads.
+    assert seen == {"outputs": 6, "grad": 3}
+
+
+def test_frozen_block_without_grad_input_still_copies(monkeypatch):
+    # Nothing requires grad: an inference graph, which may start a new generation per call.
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    seen = _counting_clones(monkeypatch)
+    A = _linear_layer_class("FrozenDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = A().train().requires_grad_(False)
+    layer(torch.randn(2, 4, 8))
+    assert seen == {"outputs": 1, "grad": 0}
+
+
+class _FakeManager:
+    def __init__(self, compile_ids, pending = False, live = ()):
+        self.id_to_compile_id = dict(enumerate(compile_ids))
+        self.ids_to_funcs = dict.fromkeys(self.id_to_compile_id)
+        self.running_forwards_with_pending_backwards = pending
+        self._live = list(live)
+
+    def live_cudagraph_pool_storages_in_curr_execution(self):
+        return self._live
+
+
+def test_pool_release_verdict():
+    ours = {"a", "b"}
+    assert bc._pool_release_verdict([_FakeManager(["a", "b", "a"])], ours) == "ok"
+    assert bc._pool_release_verdict([_FakeManager(["a", "c"])], ours) == "foreign"
+    assert bc._pool_release_verdict([_FakeManager(["a", None])], ours) == "foreign"
+    assert bc._pool_release_verdict([_FakeManager(["a"], pending = True)], ours) == "pending"
+    assert bc._pool_release_verdict([_FakeManager(["a"], live = [object()])], ours) == "pending"
+
+
+@pytest.mark.parametrize("ids", [["a", "a"], ["a", "x"]])
+def test_release_resets_the_trees_only_when_every_function_is_ours(monkeypatch, capsys, ids):
+    from types import SimpleNamespace
+
+    from torch._inductor import cudagraph_trees
+
+    manager = _FakeManager(ids)
+    resets = []
+    containers = {0: SimpleNamespace(tree_manager = manager)}
+    monkeypatch.setattr(cudagraph_trees, "get_obj", lambda local, name: containers)
+    monkeypatch.setattr(cudagraph_trees, "reset_cudagraph_trees", lambda: resets.append(1))
+    reserved = [6 * 2**30]
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: reserved[0])
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: reserved.__setitem__(0, 2 * 2**30))
+    bc._CUDAGRAPH_STATE["ours"].add("a")
+    bc._CUDAGRAPH_STATE["devices"].add(0)
+    bc._release_graph_pool()
+    out = capsys.readouterr().out
+    if ids == ["a", "a"]:
+        assert resets == [1] and bc._CUDAGRAPH_STATE["release"] == "done"
+        assert "4.00 GiB reserved freed" in out
+    else:
+        assert resets == [] and bc._CUDAGRAPH_STATE["release"] == "kept"
+        assert "stays allocated" in out
+    bc._release_graph_pool()  # decided: never again
+    assert len(resets) == (1 if ids == ["a", "a"] else 0)
+
+
+def test_release_waits_for_a_pending_backward(monkeypatch):
+    from types import SimpleNamespace
+
+    from torch._inductor import cudagraph_trees
+
+    manager = _FakeManager(["a"], pending = True)
+    resets = []
+    monkeypatch.setattr(
+        cudagraph_trees, "get_obj", lambda local, name: {0: SimpleNamespace(tree_manager = manager)}
+    )
+    monkeypatch.setattr(cudagraph_trees, "reset_cudagraph_trees", lambda: resets.append(1))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: 0)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    bc._CUDAGRAPH_STATE["ours"].add("a")
+    bc._release_graph_pool()
+    assert resets == [] and bc._CUDAGRAPH_STATE["release"] is None
+    manager.running_forwards_with_pending_backwards = False
+    bc._release_graph_pool()
+    assert resets == [1] and bc._CUDAGRAPH_STATE["release"] == "done"
+
+
+def test_block_marked_by_fsdp2_runs_without_graphs(monkeypatch):
+    calls = []
+    _tagging_compile(monkeypatch, calls)
+    A = _linear_layer_class("MarkedDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    kept, marked = A().train(), A().train()
+    marked.__dict__["_unsloth_block_graphs_off"] = True
+    marked(kept(torch.randn(2, 4, 8, requires_grad = True))).sum().backward()
+    assert calls == ["graphs", "plain"]
+    assert bc._CUDAGRAPH_STATE["off"] is None
