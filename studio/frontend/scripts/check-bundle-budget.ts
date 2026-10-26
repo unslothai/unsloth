@@ -430,8 +430,11 @@ export const BUDGET = {
   // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
   // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
   // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
-  transferBytes: 2_096_327,
-  rawBytes: 6_958_713,
+  // The control heights and API page round (#15232) adds 2,639 B raw / 717 B transfer, mostly its token table,
+  // regenerate and tooltip strings in the eager locales (6,945,181 -> 6,947,820 B raw, 2,095,616 -> 2,096,333 B
+  // transfer against 6eeb690f8d, one machine and build, 105 chunks). Raised by that growth.
+  transferBytes: 2_097_044,
+  rawBytes: 6_961_352,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
