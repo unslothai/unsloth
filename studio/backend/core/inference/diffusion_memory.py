@@ -6259,6 +6259,9 @@ ENCODER_BACKGROUND_PIN_ENV = "UNSLOTH_DIFFUSION_ENCODER_BACKGROUND_PIN"
 PARTIAL_ENCODER_PIN_ENV = "UNSLOTH_DIFFUSION_PARTIAL_ENCODER_PIN"
 _ENCODER_PIN_REQUEST_ATTR = "_unsloth_background_encoder_pin_requested"
 _PARTIAL_PIN_MIN_MIB = 256
+# "0": a video load's deferred registered pins are priced per tensor at a power of two (the allocator's pin) and a
+# streamed encoder that does not fit that price whole pins nothing, as before.
+VIDEO_EXACT_PIN_PLAN_ENV = "UNSLOTH_VIDEO_EXACT_PIN_PLAN"
 
 
 def request_background_encoder_pins(pipe: Any) -> None:
@@ -6288,6 +6291,32 @@ def _encoder_background_pin_wanted(pipe: Any) -> bool:
         and _background_pin_enabled()
         and _fast_pin_supported()
     )
+
+
+def _video_exact_pins(pipe: Any) -> bool:
+    """A video load whose deferred pins are registered copies (page-rounded bytes, not powers of two)."""
+    return (
+        bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False))
+        and not _env_off(VIDEO_EXACT_PIN_PLAN_ENV)
+        and _fast_pin_supported()
+    )
+
+
+def _late_encoder_pin_cap(pipe: Any, module: Any) -> Callable[[], int]:
+    """Byte cap for a streamed encoder's deferred pin, read when its pinner starts (after the load) rather than at the
+    plan: a Wan fp32 load still holds its source shards when the plan runs (5.6-7.2 GiB pinnable on a 31 GiB Kaggle
+    host, 17 GiB once the load returned). Pins the earlier pinners of ``pipe`` have not placed yet come off the cap."""
+
+    def cap() -> int:
+        budget = _streamed_pin_leftover_mib(0, False)
+        owed = 0
+        for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+            if pinner.module is module:
+                break
+            owed += max(0, pinner.planned_bytes() - int(pinner.pinned))
+        return max(0, (int(budget) << 20) - owed)
+
+    return cap
 
 
 def _streamed_pin_leftover_mib(transformer_mib: int, pin_transformer: bool) -> int:
@@ -6489,8 +6518,12 @@ class _GroupPinner:
         import threading
 
         self.fast = bool(fast)
-        # Pin whole groups in order while they fit; the rest stay pageable (diffusers pins them per onload).
-        self.byte_cap = None if byte_cap is None else max(0, int(byte_cap))
+        # Pin whole groups in order while they fit; the rest stay pageable (diffusers pins them per onload). A callable
+        # cap is read when the worker starts (_late_encoder_pin_cap).
+        if byte_cap is None or callable(byte_cap):
+            self.byte_cap = byte_cap
+        else:
+            self.byte_cap = max(0, int(byte_cap))
         self.module = module
         self.label = type(module).__name__
         self.groups = groups
@@ -6562,6 +6595,21 @@ class _GroupPinner:
         except Exception:  # noqa: BLE001 - registration refused: the allocator's pin for this tensor
             return src.pin_memory()
 
+    def planned_bytes(self) -> int:
+        """Host bytes this pinner still has to place (its cap when it has one)."""
+        try:
+            need = sum(
+                _page_bytes(src.nbytes)
+                for group in self.groups
+                for _t, src in self._unpinned(group)
+            )
+        except Exception:  # noqa: BLE001 - unreadable: owes nothing
+            return 0
+        cap = self.byte_cap
+        if callable(cap) or cap is None:
+            return need
+        return min(need, int(cap))
+
     def _capped_groups(self) -> list:
         if self.byte_cap is None:
             return list(self.groups)
@@ -6584,6 +6632,14 @@ class _GroupPinner:
         failed = None
         pool = None
         try:
+            if callable(self.byte_cap):
+                self.byte_cap = max(0, int(self.byte_cap()))
+                if self.logger is not None:
+                    self.logger.info(
+                        "diffusion.memory: %s pins up to %.1f GiB of its offload groups (cap read at pin start)",
+                        self.label,
+                        self.byte_cap / 2**30,
+                    )
             if self.byte_cap is not None:
                 kept = self._capped_groups()
                 kept_ids = {id(g) for g in kept}
@@ -7133,6 +7189,17 @@ def _apply_group_offload(
         )
         # an up-front pin packs into slabs (_apply_group_offloading_packed); a deferred one pins per tensor
         pin_mib = _module_host_mib if defer else _module_pin_mib
+        # Video loads defer into registered copies: page-rounded bytes. The power-of-two price read Wan's 12.5 GiB UMT5
+        # as 17 GiB and its 9.1 GiB 5B DiT as 15.3 GiB, so the encoder never pinned on 31-51 GiB hosts.
+        exact_defer = defer and _video_exact_pins(pipe)
+        if exact_defer:
+            _host_price = pin_mib
+
+            def pin_mib(module: Any) -> int:
+                if _torchao_weight_classes(module):
+                    return _host_price(module)
+                return _module_registered_mib(module)
+
         # Image loads: only the streamed encoders defer (registered pins, priced at weight bytes); torchao ones cannot.
         encoders_defer = (
             not defer
@@ -7167,6 +7234,19 @@ def _apply_group_offload(
             pin_streamed = (False, False)
             gkwargs["low_cpu_mem_usage"] = True
         encoder_cap_mib = 0
+        # Video: an encoder that does not fit whole pins the prefix that fits, its cap read once the load has returned
+        late_prefix = (
+            exact_defer
+            and stream_text_encoders
+            and not pin_streamed[1]
+            and not small_host
+            and not _env_off(PARTIAL_ENCODER_PIN_ENV)
+        )
+        if late_prefix and logger is not None:
+            logger.info(
+                "diffusion.memory: streamed encoders pin the prefix of their offload groups that fits the host RAM "
+                "free when the load returns"
+            )
         if encoders_defer and stream_text_encoders and not pin_streamed[1] and not small_host:
             encoder_cap_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_streamed[0])
             if encoder_cap_mib and logger is not None:
@@ -7229,6 +7309,16 @@ def _apply_group_offload(
                 if defer and whole:
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
                     _defer_pinning(pipe, module, onload, logger)
+                elif late_prefix and use_stream and not _torchao_weight_classes(module):
+                    apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
+                    _defer_pinning(
+                        pipe,
+                        module,
+                        onload,
+                        logger,
+                        fast = True,
+                        byte_cap = _late_encoder_pin_cap(pipe, module),
+                    )
                 elif _encoder_defers(module) and (whole or encoder_left_mib > 0):
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
                     cap = None if whole else int(encoder_left_mib) << 20
