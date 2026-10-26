@@ -16,6 +16,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactElement, useEffect, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
 export function MonitorLink(): ReactElement {
@@ -44,7 +45,8 @@ export function MonitorLink(): ReactElement {
 
   return (
     <SettingsSection title={t("settings.resources.liveMonitor.apiTitle")}>
-      <div className="flex flex-col gap-2">
+      {/* pt-3: the card starts where a first row's text would, as under the other headings. */}
+      <div className="flex flex-col pt-3">
         <button
           type="button"
           onClick={() => {
@@ -88,21 +90,16 @@ export function MonitorLink(): ReactElement {
         </button>
 
         {/* Where the panel's own "stop opening this" gets turned back on. */}
-        <div className="flex items-center justify-between gap-3 rounded-md px-1 py-1">
-          <span className="flex min-w-0 flex-col">
-            <span className="text-sm text-foreground">
-              {t("settings.resources.liveMonitor.autoOpen")}
-            </span>
-            <span className="text-xs text-muted-foreground">
-              {t("settings.resources.liveMonitor.autoOpenDescription")}
-            </span>
-          </span>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.autoOpen")}
+          description={t("settings.resources.liveMonitor.autoOpenDescription")}
+        >
           <Switch
             checked={autoOpen}
             onCheckedChange={setAutoOpen}
             aria-label={t("settings.resources.liveMonitor.autoOpen")}
           />
-        </div>
+        </SettingsRow>
       </div>
     </SettingsSection>
   );

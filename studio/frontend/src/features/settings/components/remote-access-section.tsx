@@ -327,7 +327,7 @@ export function RemoteAccessSection() {
       data-settings-label="Remote access"
       className="overflow-hidden rounded-xl border border-border/70"
     >
-      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+      <div className="flex items-start justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon

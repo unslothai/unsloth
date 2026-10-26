@@ -14,8 +14,6 @@ import { usePlatformStore } from "@/config/env";
 import { translate, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { McpServerIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
   useEffect,
@@ -142,42 +140,25 @@ export function McpAccessSection({
     : null;
   const agentDetails = detailsFor(agent);
 
+  // Rows under the API tab's Agents heading, not a card of its own.
   return (
-    <section
+    <div
       data-settings-label={t("settings.apiKeys.mcp.title")}
-      className="overflow-hidden rounded-xl border border-border/70"
+      className="flex min-w-0 flex-col"
     >
-      <div className="flex items-start gap-3 bg-muted/30 p-4">
-        <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
-          <HugeiconsIcon
-            icon={McpServerIcon}
-            className="size-4 text-foreground"
-          />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <h2 className="settings-heading text-base font-semibold font-heading">
-            {t("settings.apiKeys.mcp.title")}
-          </h2>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.apiKeys.mcp.description")}
-          </p>
-        </div>
-      </div>
-
       {error ? (
-        <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-destructive">
-          {error}
-        </p>
+        <p className="pt-2 text-xs leading-snug text-destructive">{error}</p>
       ) : null}
 
       {settings ? (
-        <div className="border-t border-border/60 px-4 py-1">
+        <>
           <SettingsRow
-            label={t("settings.apiKeys.mcp.enable")}
+            label={t("settings.apiKeys.mcp.title")}
+            hint={t("settings.apiKeys.mcp.enableDescription")}
             description={
               settings.forcedByEnv
                 ? t("settings.apiKeys.mcp.lockedByEnv", { name: ENV_FORCE })
-                : t("settings.apiKeys.mcp.enableDescription")
+                : t("settings.apiKeys.mcp.description")
             }
           >
             <Switch
@@ -271,8 +252,8 @@ export function McpAccessSection({
               </div>
             </>
           ) : null}
-        </div>
+        </>
       ) : null}
-    </section>
+    </div>
   );
 }

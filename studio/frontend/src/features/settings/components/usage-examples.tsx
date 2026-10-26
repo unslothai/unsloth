@@ -39,6 +39,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -535,8 +536,11 @@ export function UsageExamples({
   keylessScope = "off",
   keylessTools = false,
   keylessExposure = null,
+  agentsExtra = null,
 }: {
   apiKey?: string | null;
+  /** More agent controls (MCP access) under the Agents heading. */
+  agentsExtra?: ReactNode;
   useTunnel: boolean;
   onUseTunnelChange: (next: boolean) => void;
   /** which routes keyless api access serves, so a placeholder is only used where it works */
@@ -932,7 +936,7 @@ export function UsageExamples({
         <div className="flex items-center justify-between gap-3">
           <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
             <HugeiconsIcon icon={BotIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-            {t("settings.apiKeys.codingAgents")}
+            {t("settings.tabs.agents")}
           </h2>
           {/* Agents is owner-only (settings-tab-visibility.ts): other accounts would land
               on General, so they get the agent's docs instead. The tab restores its agent
@@ -1040,6 +1044,7 @@ export function UsageExamples({
             {t("settings.agents.vscodeNote")}
           </p>
         )}
+        {agentsExtra}
       </div>
     </section>
   );

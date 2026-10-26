@@ -290,7 +290,7 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
             entries.map((entry) => (
               <div
                 key={entry.key}
-                className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 py-2.5"
+                className="flex flex-wrap items-start justify-between gap-2 border-t border-border/60 py-2.5"
               >
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <span className="text-sm text-foreground">

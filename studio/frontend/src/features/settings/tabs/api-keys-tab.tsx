@@ -254,15 +254,12 @@ export function ApiKeysTab() {
         keylessScope={keyless.scope}
         keylessTools={keyless.tools}
         keylessExposure={keyless.exposure}
+        // MCP access and Keyless API access are installation-wide: owner-only routes.
+        agentsExtra={isOwner ? <McpAccessSection apiKey={revealed} /> : null}
       />
 
-      {/* Installation-wide controls: owner-only routes. */}
       {isOwner ? (
-        <>
-          <KeylessApiAccessSection onSettingsChange={setKeyless} />
-
-          <McpAccessSection apiKey={revealed} />
-        </>
+        <KeylessApiAccessSection onSettingsChange={setKeyless} />
       ) : null}
 
       <MonitorLink />

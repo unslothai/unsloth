@@ -41,14 +41,14 @@ export function SettingsRow({
       className={cn(
         // Controls are fixed-width and shrink-0, so an unwrapped row starves the label. justify-end
         // right-aligns a wrapped control without breaking items-stretch for flex-col callers.
-        "flex flex-wrap items-center justify-end gap-x-6 gap-y-2 py-3",
+        "flex flex-wrap items-start justify-end gap-x-6 gap-y-2 py-3",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,
       )}
     >
       <div
         // Widest floor that leaves already-fitting rows unchanged.
-        className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-center gap-2.5"
+        className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-start gap-2.5"
       >
         {icon ? (
           <span className="flex shrink-0 items-center text-foreground">
