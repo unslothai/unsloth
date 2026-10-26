@@ -47,6 +47,7 @@ _unattended: contextvars.ContextVar[bool] = contextvars.ContextVar(
 # The (id, quant) idle-unload last freed, so an alias/unknown request that would otherwise 503 against an empty backend
 # can reload it (set on unload, cleared on reload). The quant lets the reload restore the exact freed variant.
 _last_unloaded_model = None
+_last_unloaded_mlx = False
 # Slot KV manifest saved by the idle unload; whoever pops it owns deleting its files.
 _kv_resume = None
 # Process-wide, not per-loop: the backend slot is shared across every event loop.
@@ -536,11 +537,18 @@ def get_last_unloaded_model():
         return _last_unloaded_model
 
 
-def _set_last_unloaded(value) -> None:
-    global _last_unloaded_model, _kv_resume
+def stash_is_mlx(identity) -> bool:
+    """Whether ``identity``, as get_last_unloaded_model() returned it, is an MLX model idle unload freed."""
+    with _lock:
+        return _last_unloaded_mlx and _last_unloaded_model is identity
+
+
+def _set_last_unloaded(value, mlx: bool = False) -> None:
+    global _last_unloaded_model, _last_unloaded_mlx, _kv_resume
     stale = None
     with _lock:
         _last_unloaded_model = value
+        _last_unloaded_mlx = mlx and value is not None
         if value is None and _kv_resume is not None:
             stale, _kv_resume = _kv_resume, None
     if stale:
@@ -928,7 +936,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    _set_last_unloaded(freed)  # let an alias request reload it
+                    _set_last_unloaded(freed, mlx = mlx is not None)  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")

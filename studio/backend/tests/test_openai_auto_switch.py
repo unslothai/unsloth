@@ -75,6 +75,7 @@ def _reset_keepwarm():
     kw._pending = 0
     kw._last_active = time.monotonic() - 3600
     kw._last_unloaded_model = None
+    kw._last_unloaded_mlx = False
     kw._kv_resume = None
 
 
@@ -9311,12 +9312,25 @@ def test_idle_unload_frees_an_api_loaded_mlx_primary_and_the_next_request_reload
     _wire_on(monkeypatch, resolves_to = None, backend = llama, recorder = _load)
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orch)
     monkeypatch.setattr(inference_route, "_reject_unservable_model", _noop_reject)
-    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    # The resolver index is cold, so the stashed id alone would be read as a GGUF.
+    assert resolver.local_target_is_gguf("/models/Qwen-MLX", "org/Qwen-MLX-Alias") is True
     _run_hook(inference_route._RELOAD_ONLY_MODEL)
 
     assert [c.model_path for c in calls] == ["/models/Qwen-MLX"]
     assert orch._openai_advertised_id == "org/Qwen-MLX-Alias"
     assert orch._loaded_by_user_action is False
+
+
+def test_the_stash_format_belongs_to_that_stash_only():
+    mlx_stash = ("mlx-community/Qwen-MLX", None, "mlx-community/Qwen-MLX")
+    kw._set_last_unloaded(mlx_stash, mlx = True)
+    assert kw.stash_is_mlx(kw.get_last_unloaded_model()) is True
+    # An equal tuple from elsewhere (a test, another stash) is not the stash the loop recorded.
+    assert kw.stash_is_mlx(tuple(list(mlx_stash))) is False
+
+    gguf_stash = ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF")
+    kw.stash_for_reload(gguf_stash)
+    assert kw.stash_is_mlx(kw.get_last_unloaded_model()) is False
 
 
 @pytest.mark.parametrize(

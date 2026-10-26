@@ -10800,6 +10800,7 @@ async def _maybe_auto_switch_model(
         model_load_gate,
         note_admitted_inference,
         preview_swapped_since_entry,
+        stash_is_mlx,
     )
 
     generation_cancel_event = getattr(
@@ -10935,6 +10936,7 @@ async def _maybe_auto_switch_model(
         resolved = None
         repo_level_companion_resolution = False
         stashed_gguf_companion_roots: tuple[str, ...] = ()
+        stashed_mlx = False
         if auto_switch_on and not reload_only:
             # audio.cpp GGUFs load via the audio worker, not llama-server; the HF cache resolves them.
             resolved = await asyncio.to_thread(_audio_cpp_switch_target, requested_model)
@@ -10991,6 +10993,7 @@ async def _maybe_auto_switch_model(
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
+            stashed_mlx = stash_is_mlx(last)
             # Held-back keyless callers may restore only the model they named; check before loading.
             if keyless_held_back and not reload_only:
                 requested_base, requested_variant = split_model_ref(requested_model)
@@ -11015,8 +11018,11 @@ async def _maybe_auto_switch_model(
         # Not inferred from the quant; audio.cpp GGUFs are read only by audiocpp_server.
         from core.inference.audio_cpp_models import looks_like_audio_cpp
 
-        target_is_gguf = not looks_like_audio_cpp(target_id) and await asyncio.to_thread(
-            local_target_is_gguf, target_id, override_id
+        # A cold resolver index reads an unknown repo id as GGUF, so trust the stash's own format.
+        target_is_gguf = (
+            not stashed_mlx
+            and not looks_like_audio_cpp(target_id)
+            and await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
         )
         gguf_companion_roots: tuple[str, ...] = ()
         if target_is_gguf:
