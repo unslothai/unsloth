@@ -3,14 +3,8 @@
 
 """Hosted bf16 VAE for a bf16 diffusers pipeline load whose base repo stores its VAE in fp32.
 
-``DiffusionFamily.hosted_bf16_vae`` names, per upstream base, a hosted single-file bf16 copy of ``vae/``. A bf16
-``from_pretrained`` casts the fp32 file to bf16 on load, so reading the bf16 copy gives the same module from half the
-bytes. Used only when the load dtype is bf16 and the pick is a full pipeline; fp16 / fp32 loads keep ``vae/``.
-
-The download plan drops the base's dense ``vae/`` weights only when the hosted file resolves on the Hub
-(``hosted_vae_plan_files``). The load (``hosted_vae_pipe_kwargs``) builds the VAE strictly from the base's own
-``vae/config.json`` and checks every tensor is bf16; any failure logs the reason and loads the base ``vae/`` instead,
-fetching it first when the plan left it out. ``UNSLOTH_DIFFUSION_HOSTED_VAE=0`` turns the whole path off.
+Same module as bf16 ``from_pretrained`` of the fp32 ``vae/``, half the bytes. Any load failure falls back to the
+base ``vae/``, fetching it when the plan dropped it. ``UNSLOTH_DIFFUSION_HOSTED_VAE=0`` disables.
 """
 
 from __future__ import annotations
@@ -67,8 +61,7 @@ def hosted_vae_plan_files(
 ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
     """``{"vae": (repo_id, [(filename, size)])}`` when the plan may drop the base's dense ``vae/`` weights, else {}.
 
-    Only a file the Hub lists with a size earns the drop, so a missing or unreachable artifact keeps ``vae/`` in the
-    plan. Offline, nothing is dropped (the load still prefers a cached hosted file). Never raises."""
+    Only a Hub-listed file earns the drop; offline, nothing is dropped. Never raises."""
     src = hosted_vae_wanted(fam, base, kind = kind, dtype = dtype)
     if src is None or local_files_only:
         return {}
@@ -146,13 +139,11 @@ def hosted_vae_pipe_kwargs(
 ) -> dict[str, Any]:
     """``{"vae": module}`` for ``from_pretrained``, or {} to let it read the base's ``vae/``.
 
-    ``dense_staged`` False means the plan dropped the dense ``vae/`` weights for the hosted file, so a failure here
-    loads the base VAE itself (from the Hub cache, downloading it if needed) rather than leave ``from_pretrained``
-    without weights."""
+    ``dense_staged`` False: the plan dropped ``vae/``, so a failure must load the base VAE itself, never return {}."""
     src = hosted_vae_wanted(fam, base, kind = kind, dtype = dtype)
     source = config_source or str(base)
     if src is None:
-        # Planned at a bf16 target but loading at another dtype: the dropped vae/ still has to come from somewhere.
+        # Planned at bf16, loading at another dtype: the dropped vae/ must still be loaded.
         if dense_staged:
             return {}
         if logger is not None:

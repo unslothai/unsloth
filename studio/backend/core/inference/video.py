@@ -869,8 +869,7 @@ def _assert_video_precision_for_target(
         and family_te_int8_convrot(fam, "text_encoder") is not None
         and int8_convrot_te_runs_on(target)
     ):
-        # Only when the file is there: a named but unpublished file (the Wan UMT5 one) otherwise passed here and
-        # failed inside the load, after the eviction, as a memory-plan error.
+        # An unpublished file otherwise failed inside the load, after the eviction.
         missing = explicit_int8_unavailable_reason(fam, getattr(fam, "base_repo", None), target)
         if missing:
             raise RuntimeError(

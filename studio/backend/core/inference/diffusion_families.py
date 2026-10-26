@@ -212,9 +212,7 @@ class DiffusionFamily:
     # diffusers; sd-cli also needs a (repo_id, filename) VAE + text encoder(s), each with a trailing SdCppModelFiles
     # field name.
     sd_cpp_vae: Optional[tuple[str, str]] = None
-    # Hosted bf16 copies of a base repo's fp32 VAE for the DIFFUSERS pipeline path, as (base_repo, repo_id, filename)
-    # rows keyed on the upstream base. Read only by a bf16 pipeline load (diffusion_hosted_vae), where the fp32 file
-    # would be cast to the same bf16 values on load anyway; every other dtype keeps the base repo's vae/.
+    # (base_repo, repo_id, filename); read only by a bf16 pipeline load, every other dtype keeps vae/.
     hosted_bf16_vae: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # VAE latent-format override for sd-cli (--vae-format): "flux2" for FLUX.2, None otherwise
     sd_cpp_vae_format: Optional[str] = None
@@ -1066,10 +1064,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # 2.1 has its own VAE class, so the qwen-image or Wan 2.2 file decodes to noise here
         # rather than failing.
         sd_cpp_vae = ("unsloth/Qwen-Image-2.1-FP8", "vae/qwen_image_2.1_vae_bf16.safetensors"),
-        # The same file serves a bf16 diffusers load of the base: its 238 tensors are bit-identical to the fp32
-        # vae/ cast to bf16, which is exactly what from_pretrained(torch_dtype=bf16) does with it, and the pipeline
-        # decodes in vae.dtype (no fp32 upcast), so the render cannot change while the read halves (1.35 -> 0.68 GB).
-        # Turbo is not listed: its own vae/ already ships bf16. UNSLOTH_DIFFUSION_HOSTED_VAE=0 reads vae/ again.
+        # Bit-identical to the fp32 vae/ cast to bf16, so a bf16 render cannot change. Turbo's vae/ is already bf16.
         hosted_bf16_vae = (
             (
                 "Qwen/Qwen-Image-2.1",

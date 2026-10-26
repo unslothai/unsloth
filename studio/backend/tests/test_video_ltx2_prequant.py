@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hosted LTX-2 (2.0) DiT checkpoints (unsloth/LTX-2-FP8): only the 2.0 base seeds them, only fp8 resolves, and the
-metadata the published files carry is what this runtime accepts (fp8) or refuses (int8). Network-free and torch-free.
-The metadata below is copied from the published safetensors headers (HfApi.parse_safetensors_file_metadata)."""
+"""Hosted LTX-2 (2.0) DiT checkpoints (unsloth/LTX-2-FP8): only the 2.0 base seeds them, only fp8 resolves.
+Network-free and torch-free; metadata copied from the published safetensors headers."""
 
 from __future__ import annotations
 
@@ -77,7 +76,6 @@ def fam():
 
 def test_the_20_base_resolves_the_hosted_fp8_file(fam):
     assert video_family_prequant_repo(fam, "fp8", BASE) == REPO
-    # The byte-identical mirror folds onto the upstream it copies.
     assert video_family_prequant_repo(fam, "fp8", REPO) == REPO
     src = resolve_prequant_source(fam, "fp8", base_repo = BASE)
     assert (src.kind, src.location, src.filename) == ("repo", REPO, "LTX-2-FP8.safetensors")
@@ -132,7 +130,6 @@ def test_an_explicit_fp8_pipeline_load_plans_the_seed(fam, monkeypatch):
     monkeypatch.setattr(vdp, "hosted_denoiser_refused", lambda *a, **k: False)
     sources = vdp.denoiser_prequant_sources(fam, "fp8", BASE)
     assert set(sources) == {"transformer"} and sources["transformer"].location == REPO
-    # auto / int8 / the 2.3 single-file release never seed it.
     assert vdp.denoiser_prequant_sources(fam, "auto", BASE) is None
     assert vdp.denoiser_prequant_sources(fam, "int8", BASE) is None
     assert vid._planned_denoiser_components(fam, "pipeline") == ("transformer",)

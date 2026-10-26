@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hosted bf16 VAE (diffusion_hosted_vae): Qwen-Image-2.1's bf16 diffusers load reads the hosted single file, which
-builds the same module from_pretrained(torch_dtype=bf16) makes from the fp32 vae/; every other dtype / kind keeps vae/,
-and a missing or mismatched file falls back to the base VAE. CPU, tiny, no network."""
+"""Hosted bf16 VAE (diffusion_hosted_vae). CPU, tiny, no network."""
 
 from __future__ import annotations
 

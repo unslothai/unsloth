@@ -4489,7 +4489,6 @@ class DiffusionBackend:
         elif te_effective is not None and not te_quant_supported(target, te_effective):
             te_reason = te_quant_unsupported_reason(te_effective)
             if normalize_te_quant(te_mode) == "int8":
-                # Apple Silicon runs int8 only from the hosted file: name the missing file, not just the fp8 fallback.
                 from .diffusion_te_prequant import explicit_int8_unavailable_reason
                 missing = explicit_int8_unavailable_reason(
                     fam,
@@ -5718,7 +5717,6 @@ class DiffusionBackend:
                 ).items()
                 if c not in replaced
             }
-            # Hosted bf16 VAE (diffusion_hosted_vae): drops the dense vae/ weights only when the file resolves.
             vae_hosted_files = (
                 {}
                 if "vae" in replaced
@@ -7254,7 +7252,6 @@ class DiffusionBackend:
             )
         te_prequant_bytes = _prequant_plan_bytes(te_files)
         required_total += te_prequant_bytes + _prequant_plan_bytes(vae_hosted_files)
-        # The hosted VAE replaces the dropped vae/ shards in the resident footprint too.
         te_prequant_bytes += _prequant_plan_bytes(vae_hosted_files)
         # The prequant replacing the dropped transformer/ shards is footprint nothing else reports.
         dit_prequant_bytes = int(dit_prequant[2]) if dit_prequant is not None else 0
@@ -8405,7 +8402,6 @@ class DiffusionBackend:
         _pipeline_prequant_skipped: tuple[str, ...] = (),
         _prequant_unreachable: tuple[str, ...] = (),
         _te_prequant_resolved: bool = True,
-        # True when the plan dropped the base's dense vae/ weights for the hosted bf16 VAE (diffusion_hosted_vae).
         _hosted_vae_planned: bool = False,
         # begin_load's ``normalize_token`` of the request token: False stays the anonymous sentinel.
         _hub_token: Any = None,
@@ -9686,7 +9682,7 @@ class DiffusionBackend:
                                         ),
                                     )
                                 )
-                                # Hosted bf16 VAE on a bf16 load; a miss reads vae/ (fetched here when the plan dropped it).
+                                # A miss reads vae/, fetched here when the plan dropped it.
                                 if "vae" not in pipe_kwargs:
                                     pipe_kwargs.update(
                                         hosted_vae_pipe_kwargs(

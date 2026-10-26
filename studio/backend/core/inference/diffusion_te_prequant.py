@@ -481,11 +481,8 @@ def explicit_int8_unavailable_reason(
     local_files_only: Optional[bool] = None,
 ) -> Optional[str]:
     """Why an explicit int8 request cannot take the int8 ConvRot file(s) ``fam`` names, or None when it can (or the
-    family names none). Names each file that is not confirmed (on disk, or listed by the Hub), so a refusal on a host
-    that runs only that file (Apple Silicon) says the file is missing instead of blaming the fp8 fallback it lacks.
-    Several families name a file that is not published yet (outputs of ``scripts/build_te_int8_convrot_checkpoint.py``
-    still to be uploaded); on CUDA their explicit int8 loads the hosted fp8 file behind it and reports so. Never
-    raises."""
+    family names none). Names each unconfirmed file so an int8-only host (Apple Silicon) reports the missing file.
+    Never raises."""
     try:
         name = str(getattr(fam, "name", "") or "").strip().lower()
         named = []
@@ -505,8 +502,7 @@ def explicit_int8_unavailable_reason(
                 components = (component,),
                 **({"standalone_component_bases": standalone} if standalone else {}),
             ).get(component)
-            # Only a resolved int8 FILE that is not there; a kept lm_head, a foreign base or a device that runs
-            # neither file are other refusals with their own reasons.
+            # Only a missing int8 FILE; other refusals carry their own reasons.
             if got is None or got.kind != "repo" or _is_fp8_te_name(got.filename):
                 continue
             if not te_prequant_sources_confirmed(
@@ -1330,8 +1326,7 @@ def load_prequant_text_encoder(
         _cast_fp8(encoder, target)
         setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "fp8")
         if logger is not None:
-            # The FILE's scheme, not the request's: an int8 request served by the fp8 file behind a missing int8 one
-            # used to log "loaded text_encoder int8 checkpoint" here.
+            # The FILE's scheme, not the request's (an fp8 fallback used to log int8).
             logger.info(
                 "diffusion.te_prequant: loaded %s fp8 checkpoint (%s)%s",
                 component,

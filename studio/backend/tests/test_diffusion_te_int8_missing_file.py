@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An explicit text_encoder_quant=int8 on a family whose named int8 ConvRot file is not published (FLUX.1 T5,
-FLUX.2-klein 4B / 9B, Z-Image, HiDream, ideogram-4, Lumina-2, the Wan UMT5): CUDA takes the hosted fp8 file behind it
-and reports the fallback; a host that runs only the int8 file (Apple Silicon) refuses up front, naming the file.
-Never a crash, never a silent dense encoder. Network-free: the Hub listing is stubbed."""
+"""Explicit int8 TE quant with an unpublished int8 file: CUDA falls back to fp8 and says so; Apple Silicon refuses
+up front, naming the file. Network-free."""
 
 from __future__ import annotations
 
@@ -82,8 +80,6 @@ def test_the_affected_set_is_the_survey_list():
 
 @pytest.mark.parametrize("name", AFFECTED)
 def test_cuda_explicit_int8_has_the_hosted_fp8_file_behind_the_missing_one(name, hub, monkeypatch):
-    # The chain the loader walks on a 404: the int8 name first, then the same repo's fp8 names, so a missing int8 file
-    # costs neither the dense shards nor the load.
     _cuda(monkeypatch)
     fam = _ALL[name]
     sources = tpq.te_prequant_sources_for_base(
@@ -98,7 +94,6 @@ def test_cuda_explicit_int8_has_the_hosted_fp8_file_behind_the_missing_one(name,
         chain = tpq.te_candidate_filenames(source)
         assert chain[0] in UNPUBLISHED
         assert any("fp8" in n.lower() for n in chain[1:]), chain
-    # The precision gate plans the fp8 cast the load will report, rather than refusing or passing int8.
     assert prec.preflight_te_quant("int8", fam, fam.base_repo, CUDA_BF16) == "fp8"
 
 
@@ -178,7 +173,6 @@ def test_cuda_video_explicit_int8_still_passes_the_gate(hub, monkeypatch):
 
 
 def test_cuda_load_reports_the_fp8_fallback_for_an_explicit_int8(monkeypatch):
-    # What the badge says after the fp8 file loaded in the int8 file's place: fell back, with the reason.
     monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: True)
     monkeypatch.setattr(prec, "_cast_fp8", lambda enc, tgt: None)
     encoder = types.SimpleNamespace(**{tpq.TE_PREQUANT_SCHEME_ATTR: "fp8"})
