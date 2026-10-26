@@ -480,29 +480,26 @@ export function lifeJobs(
       key: `reflect:${id}`,
       kind: "reflect",
       run: async (signal) => {
-        let insights: Note[] = [];
-        try {
-          const out = (await call(
-            {
-              task: "reflect",
-              world: spec,
-              npc_id: id,
-              memory: m.memory.filter((r) => !r.guess).slice(-30),
-            },
-            signal,
-          )) as { insights?: Note[] } | undefined;
-          insights = (out?.insights ?? []).filter(
-            (x) => typeof x?.text === "string",
-          );
-        } finally {
-          if (!signal.aborted)
-            update((st) => {
-              const mind = st.npc[id];
-              if (!mind) return st;
-              const next = remember(mind, insights, st.clock, "reflection");
-              return { ...st, npc: { ...st.npc, [id]: { ...next, since: 0 } } };
-            });
-        }
+        // A failed call keeps the importance sum, so the reflection is tried again.
+        const out = (await call(
+          {
+            task: "reflect",
+            world: spec,
+            npc_id: id,
+            memory: m.memory.filter((r) => !r.guess).slice(-30),
+          },
+          signal,
+        )) as { insights?: Note[] } | undefined;
+        if (signal.aborted) return;
+        const insights = (out?.insights ?? []).filter(
+          (x) => typeof x?.text === "string",
+        );
+        update((st) => {
+          const mind = st.npc[id];
+          if (!mind) return st;
+          const next = remember(mind, insights, st.clock, "reflection");
+          return { ...st, npc: { ...st.npc, [id]: { ...next, since: 0 } } };
+        });
       },
     });
   }
@@ -666,7 +663,7 @@ function notableSince(m: NpcMind | undefined, clock: number): boolean {
     (r) =>
       r.kind === "observation" &&
       r.importance >= NOTABLE &&
-      r.t_created * 60 >= clock,
+      r.t_created * 60 > clock,
   );
 }
 

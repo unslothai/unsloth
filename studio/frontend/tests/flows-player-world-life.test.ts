@@ -345,6 +345,19 @@ test("reflection waits for summed importance to cross the threshold, then resets
   s = W.withMind(s, "v0", (m) =>
     S.remember(m, [{ text: "c", importance: 2 }], 600),
   );
+  const failing = L.lifeJobs(
+    sp,
+    cfg,
+    s,
+    async () => {
+      throw new Error("model down");
+    },
+    (fn) => {
+      s = fn(s);
+    },
+  );
+  await assert.rejects(failing[0].run(new AbortController().signal));
+  assert.equal(s.npc.v0.since, 20, "a failed reflection keeps the sum");
   const asked: Record<string, unknown>[] = [];
   const jobs = L.lifeJobs(
     sp,
@@ -546,6 +559,10 @@ test("small talk replaces a model chat only for pairs who already talked today w
     S.remember(m, [{ text: "Fire!", importance: 9 }], 650),
   );
   assert.equal(talk(news, 700), false, "notable news goes to the model");
+  const heard = W.withMind(s, "v1", (m) =>
+    S.remember(m, [{ text: "Told in that chat", importance: 9 }], 600),
+  );
+  assert.equal(talk(heard, 700), true, "notes from that chat are not news");
   assert.equal(
     L.smallTalk({
       cfg: L.lifeOf(spec({})),
