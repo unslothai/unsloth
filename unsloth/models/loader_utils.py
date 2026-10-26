@@ -4587,6 +4587,15 @@ def _holds_float8(t, depth = 0):
     return False
 
 
+def _ddp_can_flatten(t):
+    """DDP's start-up broadcast flattens every parameter (_flatten_dense_tensors); probe that on the weight."""
+    try:
+        torch._utils._flatten_dense_tensors([t.detach()])
+        return True
+    except Exception:
+        return False
+
+
 def _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = False):
     """Frozen tensor subclass weights (load_in_fp8's Float8Tensor) stay out of DDP: every rank loads and
     quantizes the same checkpoint, so there is nothing to broadcast, and a frozen weight has no gradient to
@@ -4597,9 +4606,10 @@ def _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = False):
             continue
         if not p.requires_grad:
             frozen.append(name)
-        elif _holds_float8(p):
-            # Only FP8 storage is refused: trainable subclasses without it (torchao's int8 mixed
-            # precision training weight) implement the flatten DDP needs and train as before.
+        elif _holds_float8(p) or not _ddp_can_flatten(p):
+            # FP8 storage, and weights DDP's broadcast cannot flatten (Int8Tensor, AffineQuantizedTensor),
+            # are refused: trainable subclasses that flatten (torchao's int8 mixed precision training
+            # weight, NF4Tensor) train as before.
             trainable.append(name)
     if trainable and refuse_trainable:
         raise NotImplementedError(

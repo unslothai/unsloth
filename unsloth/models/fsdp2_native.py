@@ -1265,31 +1265,15 @@ _FLOAT8 = tuple(
 )
 
 
-def _holds_float8(t, depth = 0):
-    """True when a tensor, or a tensor subclass's inner tensors (__tensor_flatten__), stores float8."""
-    if t.dtype in _FLOAT8:
-        return True
-    if depth > 3 or not hasattr(t, "__tensor_flatten__"):
-        return False
-    try:
-        names = t.__tensor_flatten__()[0]
-    except Exception:
-        return False
-    for name in names:
-        inner = getattr(t, name, None)
-        if isinstance(inner, torch.Tensor) and _holds_float8(inner, depth + 1):
-            return True
-    return False
-
-
 def _is_torchao_float8_weight(t):
-    """A torchao inference FP8 weight (load_in_fp8's Float8Tensor, a float8 AffineQuantizedTensor). It
-    reports the high precision dtype (bfloat16), not float8, and implements only the ops its linear needs:
-    fully_shard's sharding (aten.new_zeros) fails on it. Other torchao subclasses (NF4Tensor, int8 mixed
-    precision training weights) store no float8 and implement FSDP2's hooks, so fully_shard keeps them."""
+    """A torchao inference weight that fully_shard cannot shard: load_in_fp8's Float8Tensor, and likewise
+    Int8Tensor / IntxUnpackedToInt8Tensor / AffineQuantizedTensor / MX / NVFP4. They report the high
+    precision dtype, implement only the ops their linear needs (fully_shard's aten.new_zeros / slice fail),
+    and implement no FSDP2 all-gather extension. torchao subclasses that do implement it (NF4Tensor, the
+    int8 / BitNet quantized training weights, torchao.float8's training weights) go to fully_shard."""
     if not any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__):
         return False
-    return _holds_float8(t)
+    return not hasattr(type(t), "fsdp_pre_all_gather")
 
 
 def _float8_params(model):

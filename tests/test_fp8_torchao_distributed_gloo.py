@@ -61,6 +61,7 @@ def _ddp_helpers():
                 "_ROTARY_INV_FREQ_BUFFER_NAMES",
                 "_is_tensor_subclass_weight",
                 "_holds_float8",
+                "_ddp_can_flatten",
                 "_frozen_tensor_subclass_names_for_ddp",
                 "_exclude_rope_inv_freq_from_ddp",
             },
@@ -404,3 +405,25 @@ def test_ddp_keeps_trainable_non_float8_torchao_weights():
     assert lu._frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = True) == ["1.weight"]
     native = _load_native()
     assert native._float8_params(model) == set()
+
+
+def test_frozen_int8_inference_weights_stay_replicated_and_trainable_ones_refused():
+    # torchao's Int8Tensor (Int8WeightOnlyConfig, the portable INT8 export) stores int8, not float8, but
+    # implements no FSDP2 all-gather extension: fully_shard fails on it, so frozen ones stay replicated as
+    # under #15001, and DDP's broadcast cannot flatten it, so a trainable one is refused up front.
+    Q = pytest.importorskip("torchao.quantization")
+    if not hasattr(Q, "Int8Tensor"):
+        pytest.skip("torchao without Int8Tensor")
+    lin = torch.nn.Linear(64, 64, bias = False)
+    Q.quantize_(lin, Q.Int8WeightOnlyConfig(version = 2))
+    assert type(lin.weight).__name__ == "Int8Tensor"
+    lin.weight.requires_grad_(False)
+    native = _load_native()
+    assert native._float8_params(lin) == {lin.weight}
+    lu, _ = _ddp_helpers()
+    assert lu._frozen_tensor_subclass_names_for_ddp(lin, refuse_trainable = True) == ["weight"]
+    lin.weight.requires_grad_(True)
+    with pytest.raises(NotImplementedError, match = "native FSDP2 cannot shard"):
+        native._float8_params(lin)
+    with pytest.raises(NotImplementedError, match = "DDP cannot train"):
+        lu._frozen_tensor_subclass_names_for_ddp(lin, refuse_trainable = True)
