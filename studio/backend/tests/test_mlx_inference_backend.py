@@ -2690,6 +2690,117 @@ def test_mlx_reasoning_tool_turn_keeps_provenance_across_buffered_segments(monke
     assert [call["function"]["name"] for call in calls] == ["terminal"]
 
 
+def _decode_alone_and_batched(
+    monkeypatch,
+    turn,
+    markers,
+    cancel_after = None,
+    **request,
+):
+    """*turn* answered by the single path and by a text batch row: every snapshot each emits."""
+    import threading
+
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt",
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt, reasoning_channel_markers = markers
+        ),
+    )
+    rows, last = {}, "stop" if turn._ends == "stop" else "length"
+
+    def step():
+        events = [(uid, ids.pop(0)) for uid, ids in rows.items() if ids]
+        return [], [
+            SimpleNamespace(uid = uid, token = token, finish_reason = None if rows[uid] else last)
+            for uid, token in events
+        ]
+
+    generator = SimpleNamespace(
+        insert = lambda *_a, **_k: [rows.setdefault(len(rows), list(turn.ids)) and len(rows) - 1],
+        next = step,
+        remove = lambda uids, **_k: [rows[uid].clear() for uid in uids] and {},
+        close = lambda: None,
+    )
+    for name, attrs in (
+        ("mlx_lm", {"stream_generate": lambda *_a, **_k: turn.stream()}),
+        (
+            "mlx_lm.sample_utils",
+            {"make_sampler": lambda **_k: None, "make_logits_processors": None},
+        ),
+        ("mlx_lm.generate", {"BatchGenerator": lambda *_a, **_k: generator}),
+    ):
+        module = types.ModuleType(name)
+        module.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer, backend._is_vlm = object(), turn, False
+    request = {"messages": [{"role": "user", "content": "run it"}], "max_new_tokens": 99, **request}
+    cancel, alone = threading.Event(), []
+    for snapshot in backend.generate_chat_response(**request, cancel_event = cancel):
+        alone.append(snapshot)
+        if len(alone) == cancel_after:
+            cancel.set()
+
+    backend._batch_prompt_row = lambda _prompt, _state: ([], [0], None, None, [0])
+    session = mlx_inference._TextBatchSession(backend, width = 2)
+    # Two rows decoding together, so no state a row keeps can be shared or misrouted.
+    batched = {row: [prefix] if (prefix := session.admit(request, row)) else [] for row in (0, 1)}
+    while session.rows_in_flight:
+        cut = cancel_after is not None and len(batched[0]) >= cancel_after
+        events = session.withdraw([0, 1]) if cut else session.step()
+        for row, snapshot in events:
+            if snapshot is not None:
+                batched[row].append(snapshot)
+    session.close()
+    return alone, batched
+
+
+_TOOL = [{"type": "function", "function": {"name": "terminal"}}]
+_CHANNELS = ("<|channel>thought", "<channel|>")
+_GEMMA_SPECIALS = ("<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>", "<pad>", "<eos>")
+_GEMMA_TOOL_TURN = (
+    *("<|channel>", "thought", "\n", "weighing", "<pad>", "▁it", "<channel|>"),
+    *("<|tool_call>", "call:terminal{command:id}", "<tool_call|>", "<eos>"),
+)
+
+
+@pytest.mark.parametrize(
+    "markers, request_, last, ends, cancel_after",
+    [
+        (_CHANNELS, {"tools": _TOOL}, "<eos>", "stop", None),
+        (None, {"tools": _TOOL}, "<eos>", "stop", None),
+        (None, {"tools": [], "tool_protocol_active": True}, "<eos>", "stop", None),
+        # Stopping on the call's closer keeps it; stopping on an opener closes nothing.
+        (None, {"tools": _TOOL}, "<tool_call|>", "stop", None),
+        (None, {"tools": _TOOL}, "<|tool_call>", "stop", None),
+        (_CHANNELS, {"tools": _TOOL}, "call:terminal{command:id}", "length", None),
+        (_CHANNELS, {"tools": _TOOL, "stop": ["{command"]}, "<eos>", "stop", None),
+        # Text held to the end, its tail a stop sequence's first characters.
+        (_CHANNELS, {"tools": _TOOL, "stop": ["<tool_call|>!"]}, "<eos>", "stop", None),
+        (_CHANNELS, {"tools": _TOOL}, "<eos>", "stop", 3),
+        (_CHANNELS, {}, "<eos>", "stop", None),
+    ],
+)
+def test_a_batched_tool_row_decodes_what_the_reply_alone_does(
+    monkeypatch, markers, request_, last, ends, cancel_after
+):
+    pieces = _GEMMA_TOOL_TURN[: _GEMMA_TOOL_TURN.index(last) + 1]
+    specials = tuple(special for special in _GEMMA_SPECIALS if special in pieces)
+    eos = last if ends == "stop" else None
+    # Built before the fake mlx modules land, so the real detokenizer still imports.
+    turn = _SpmTurn(pieces, specials = specials, eos = eos, chat_template = "x", ends = ends)
+    alone, batched = _decode_alone_and_batched(monkeypatch, turn, markers, cancel_after, **request_)
+    assert alone and batched == {0: alone, 1: alone}
+
+
 def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -3287,7 +3398,7 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     backend._make_row_cache = lambda: ["cache"]
     backend._batch_prompt_row = lambda prompt, _state: ([], [9], ["text cache"], "key", [9])
     plan = SimpleNamespace(
-        prompt = "P", max_tokens = 4, sampler = None, processors = (), detokenizes = False, think_prefix = ""
+        prompt = "P", max_tokens = 4, sampler = None, processors = (), streamed = None, think_prefix = ""
     )
     backend._plan_text_row = lambda messages, **_kw: rendered.append(messages) or plan
     with monkeypatch.context() as patch:
@@ -3850,7 +3961,7 @@ def test_mlx_batch_releases_an_over_budget_cache_while_another_row_decodes(monke
                 uid = handle,
                 cache_key = handle,
                 all_tokens = [],
-                plan = SimpleNamespace(stream = stream),
+                plan = SimpleNamespace(stream = stream, streamed = None),
                 ready_at = None,
                 processing_at = None,
                 prompt_len = 1,
@@ -8222,13 +8333,11 @@ def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeyp
         {"images_base64": ["AAAA"]},
         {"video": "AAAAGGZ0eXBtcDQy"},
         {"video_base64": "AAAAGGZ0eXBtcDQy"},
-        {"tools": [{"type": "function", "function": {"name": "lookup"}}]},
-        {"tool_protocol_active": True},
         {"response_format": {"type": "json_object"}},
     ),
 )
 def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
-    """Replayed tool images, a clip and the native tool protocol live only on the"""
+    """Replayed tool images and a clip live only on the single path."""
     from core.inference.mlx_inference import MLXInferenceBackend
 
     engine = _batch_engine(monkeypatch)
@@ -8242,6 +8351,25 @@ def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
     assert backend.batch_unavailable_reason([plain, plain]) is None
     assert backend.resident_unavailable_reason({**plain, **extra}) is not None
     assert backend.batch_unavailable_reason([plain, {**plain, **extra}]) is not None
+
+
+@pytest.mark.parametrize(
+    "extra", ({"tools": [{"type": "function"}]}, {"tool_protocol_active": True})
+)
+def test_a_tool_reply_joins_a_text_batch_but_not_a_vision_one(monkeypatch, extra):
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: None)
+    monkeypatch.setattr(mlx_inference, "_batched_vision_engine_gap", lambda _engine: None)
+    backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
+    backend._model, backend._tokenizer, backend._is_vlm = object(), object(), False
+    assert backend.batch_unavailable_reason([{}, extra]) is None
+    backend._model, backend._is_vlm = SimpleNamespace(_is_vlm_model = True), True
+    backend._processor, backend._speculative_draft = object(), None
+    backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, None
+    assert backend.resident_unavailable_reason({}) is None
+    assert backend.resident_unavailable_reason(extra) == "a reply runs the tool protocol"
 
 
 def test_a_quantized_or_budgeted_kv_cache_does_not_batch(monkeypatch):

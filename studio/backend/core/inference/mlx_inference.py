@@ -1905,7 +1905,10 @@ class _MlxStreamedText:
         token_id = getattr(response, "token", None)
         if token_id is None:
             return ""
-        token_id = int(token_id)
+        return self.feed_token(int(token_id))
+
+    def feed_token(self, token_id: int) -> str:
+        """One sampled id, for a runtime that reports ids one at a time."""
         if token_id in self._stop_ids:
             self._held_stops.append(token_id)
             return ""
@@ -1944,6 +1947,19 @@ class _MlxStreamedText:
             if closes_an_open_envelope(settled + text, text):
                 closing += text
         return closing
+
+
+def _native_reply_text(decoder, token_ids, stop_ids, prefix) -> str:
+    """A native-protocol reply re-decoded from its ids. A runtime may stop on an allowlisted
+    control (<|end_message|>): the trailing stop id stays only when it closes an open envelope,
+    judged with the prefill, since a restored <think> lives in the prompt."""
+    ids = list(token_ids)
+    if ids and ids[-1] in stop_ids:
+        whole = decoder.decode(ids)
+        closer = whole[len(decoder.decode(ids[:-1])) :]
+        if not closes_an_open_envelope(prefix + whole, closer):
+            ids = ids[:-1]
+    return decoder.decode(ids)
 
 
 def _mlx_stop_cut(text: str, stops) -> tuple[int, bool]:
@@ -3849,6 +3865,14 @@ class _RowStream:
             return [self._prefix + self.sampled[: self._cut]]
         return []
 
+    def flush(self, text):
+        """Text a decoder held until the reply ended; under stop sequences ``settle`` delivers it."""
+        if not self._sequences:
+            return self.feed(text = text)
+        self.sampled += text
+        self._cut, self.stopped = _mlx_stop_cut(self.sampled, self._sequences)
+        return []
+
     def settle(self):
         if not self._sequences:
             if self._decode is not None and self.sampled.endswith("\ufffd"):
@@ -3919,8 +3943,6 @@ def _request_batch_gap(request):
         return "a reply replays tool images"
     if request.get("video") is not None or request.get("video_base64"):
         return "a reply carries a video clip"
-    if request.get("tools") or request.get("tool_protocol_active"):
-        return "a reply runs the tool protocol"
     if request.get("response_format") is not None or request.get("grammar") is not None:
         return "a reply is constrained to a response format"
     if request.get("n_probs"):
@@ -3951,7 +3973,7 @@ class _TextRowPlan:
         "sampler",
         "processors",
         "max_tokens",
-        "detokenizes",
+        "streamed",
     )
 
     def __init__(
@@ -3963,12 +3985,12 @@ class _TextRowPlan:
         sampler,
         processors,
         max_tokens,
-        detokenizes = False,
+        streamed = None,
     ):
         self.prompt = prompt
         self.think_prefix = think_prefix
         self.stream = stream
-        self.detokenizes = detokenizes
+        self.streamed = streamed
         self.sampler = sampler
         self.processors = processors
         self.max_tokens = max_tokens
@@ -3983,14 +4005,13 @@ class _TextBatchRow:
         "all_tokens",
         "prompt_len",
         "cached",
-        "detokenizer",
         "generated",
         "reason",
         "processing_at",
         "ready_at",
     )
 
-    def __init__(self, *, handle, plan, cache_key, all_tokens, prompt_len, cached, detokenizer):
+    def __init__(self, *, handle, plan, cache_key, all_tokens, prompt_len, cached):
         self.handle = handle
         self.plan = plan
         self.uid = None
@@ -3998,7 +4019,6 @@ class _TextBatchRow:
         self.all_tokens = all_tokens
         self.prompt_len = prompt_len
         self.cached = cached
-        self.detokenizer = detokenizer
         self.generated = 0
         self.reason = None
         self.processing_at = None
@@ -4095,6 +4115,7 @@ class _TextBatchSession:
             _messages_with_system_prompt(messages, request.get("system_prompt", ""))
             if image is None
             else backend._conversation_to_render(messages, request.get("system_prompt", ""), image),
+            tool_protocol_active = request.get("tool_protocol_active"),
             **row_kwargs,
         )
         began = time.perf_counter()
@@ -4121,7 +4142,6 @@ class _TextBatchSession:
             all_tokens = all_tokens,
             prompt_len = len(remainder) if image is None else len(all_tokens),
             cached = len(prefix) if image is None else 0,
-            detokenizer = backend._tokenizer.detokenizer if plan.detokenizes else None,
         )
         if image is not None:
             row.processing_at = began
@@ -4174,18 +4194,9 @@ class _TextBatchSession:
 
     def _feed(self, row, event):
         stream = row.plan.stream
-        text = None
-        if event.finish_reason is None:
-            if row.detokenizer is not None:
-                row.detokenizer.add_token(event.token)
-                text = row.detokenizer.last_segment
-        else:
-            text = ""
-            if row.detokenizer is not None:
-                if event.finish_reason == "length":
-                    row.detokenizer.add_token(event.token)
-                row.detokenizer.finalize()
-                text = row.detokenizer.last_segment
+        # A stop id is held, not written: the end-of-reply flush decides whether it closes markup.
+        streamed = row.plan.streamed
+        text = "" if streamed is None else streamed.feed_token(int(event.token))
         row.generated += 1
         yield from (
             (row.handle, snapshot) for snapshot in stream.feed(token = event.token, text = text)
@@ -4234,6 +4245,11 @@ class _TextBatchSession:
         self._rows.pop(row.handle, None)
         self._by_uid.pop(row.uid, None)
         stream = row.plan.stream
+        if row.plan.streamed is not None and not stream.stopped:
+            tail = stream.flush(row.plan.streamed.finish(stream.sampled))
+            yield from ((row.handle, snap) for snap in tail)
+            if stream.stopped:
+                row.reason = "stop"
         yield from ((row.handle, snap) for snap in stream.settle())
         yield from ((row.handle, snap) for snap in stream.drain(cancelled = cancelled))
         ready_at = row.ready_at or time.perf_counter()
@@ -6433,18 +6449,9 @@ class MLXInferenceBackend:
                         # Re-decoding every id rebuilds rather than extends, so an invalid byte sequence can revise
                         # characters already shown. Predates stop handling and affects plain replies too.
                         if native_token_decoder is not None:
-                            # A runtime may stop on an allowlisted control (<|end_message|>): drop only the trailing id, so a real tool closer survives
-                            _ids = list(token_ids)
-                            if _ids and _ids[-1] in _mlx_stop_token_ids(
-                                self._tokenizer, self._model
-                            ):
-                                # Only without tool markup: the same marker can be the closer that strict parsing needs.
-                                _whole = native_token_decoder.decode(_ids)
-                                _closer = _whole[len(native_token_decoder.decode(_ids[:-1])) :]
-                                # Include the prefill: a restored <think> lives in the prompt, and judging the closer on generated ids alone left the block open
-                                if not closes_an_open_envelope(think_prefix + _whole, _closer):
-                                    _ids = _ids[:-1]
-                            sampled = native_token_decoder.decode(_ids)
+                            sampled = _native_reply_text(
+                                native_token_decoder, token_ids, stop_token_ids, think_prefix
+                            )
                         else:
                             sampled = self._tokenizer.decode(
                                 token_ids,
@@ -6610,6 +6617,7 @@ class MLXInferenceBackend:
             penalty_prompt = prompt_ids,
         )
 
+        preserve_native_channels = reasoning_channel_markers is not None
         normalizer = (
             make_reasoning_normalizer(
                 reasoning_channel_markers,
@@ -6617,28 +6625,56 @@ class MLXInferenceBackend:
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
             )
-            if reasoning_channel_markers is not None
+            if preserve_native_channels
             else None
         )
+        # As _generate_text decodes the reply, so a batched turn shows the same native controls.
+        native_token_decoder = (
+            NativeToolTokenDecoder(
+                self._tokenizer,
+                preserved_tokens = reasoning_control_tokens(reasoning_channel_markers),
+            )
+            if tools or preserve_native_channels or tool_protocol_active
+            else None
+        )
+        stop_token_ids = (
+            _mlx_stop_token_ids(self._tokenizer, self._model)
+            if native_token_decoder is not None
+            else ()
+        )
+        streamed = (
+            _MlxStreamedText(
+                _mlx_stream_detokenizer(self._tokenizer),
+                native_token_decoder,
+                self._tokenizer,
+                stop_token_ids,
+            )
+            if preserve_native_channels
+            else None
+        )
+        if streamed is not None:
+            decode = None
+        elif native_token_decoder is not None:
+            decode = lambda ids: _native_reply_text(
+                native_token_decoder, ids, stop_token_ids, think_prefix
+            )
+        else:
+            decode = lambda ids: self._tokenizer.decode(
+                ids,
+                skip_special_tokens = True,
+                **({"clean_up_tokenization_spaces": False} if prompt_ids is not None else {}),
+            )
         row = _RowStream(
             prefix = think_prefix,
             sequences = _mlx_stop_sequences(stop),
             normalizer = normalizer,
-            decode = (
-                None
-                if normalizer is not None
-                else lambda ids: self._tokenizer.decode(
-                    ids,
-                    skip_special_tokens = True,
-                    **({"clean_up_tokenization_spaces": False} if prompt_ids is not None else {}),
-                )
-            ),
+            decode = decode,
         )
         return _TextRowPlan(
             prompt = prompt,
             think_prefix = think_prefix,
             stream = row,
-            detokenizes = normalizer is not None,
+            streamed = streamed,
             sampler = sampler,
             processors = logits_processors,
             max_tokens = (
@@ -7468,6 +7504,9 @@ class MLXInferenceBackend:
         gap = _row_processor_gap(engine, requests)
         if gap is not None:
             return gap
+        if any(request.get("tools") or request.get("tool_protocol_active") for request in requests):
+            # The batch reports text, not ids, so native tool controls cannot be decoded as alone.
+            return "a reply runs the tool protocol"
         if any(request.get("prompt_ids") is not None for request in requests):
             # The batch detokenizer keeps control tokens and trims the first leading space.
             return "a raw prompt on a vision model decodes on its own"
