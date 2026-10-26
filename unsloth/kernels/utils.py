@@ -1139,12 +1139,9 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 device = device,
             )
 
-        if DEVICE_TYPE == "xpu":
-            m = 1
-            n = shape[0]
-        else:
-            n = 1
-            m = shape[0]
+        # The xpu gemv takes m = 1, n = rows (the CUDA one is transposed).
+        m = 1
+        n = shape[0]
         k = shape[1]
         lda = shape[0]
         ldc = shape[0]
