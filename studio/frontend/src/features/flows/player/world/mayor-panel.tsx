@@ -134,10 +134,10 @@ export function MayorHud({
     () => new CitySim(city ?? newCity(spec), ground),
   );
   const [written, setWritten] = useState<CityState | undefined>(city);
-  if (city && city !== written) {
-    // A loaded save or a reset: rebuild the simulation from it.
+  if (city !== written) {
+    // A loaded save or a reset (a save with no city starts a fresh one): rebuild the simulation from it.
     setWritten(city);
-    setSim(new CitySim(city, ground));
+    setSim(new CitySim(city ?? newCity(spec), ground));
   }
   const live = useRef(sim);
   useEffect(() => {

@@ -406,6 +406,20 @@ test("the advisor digest carries the exact simulation numbers and no tile coordi
   assert.equal(A.cityDigest(s, c, "advice").petitions, false);
 });
 
+test("the district to name is always in the report, however many zones come first", () => {
+  const s = spec();
+  const c = town(s);
+  const r = c.zones.find((z) => z.kind === "R")!;
+  for (const z of c.zones) z.name ??= "Old Town";
+  for (let i = 0; i < 30; i++)
+    c.zones.push({ ...r, id: `filler${i}`, name: `Street ${i}` });
+  c.zones.push({ ...r, id: "late", name: undefined, pop: 3 });
+  const d = A.cityDigest(s, c, "month");
+  assert.equal(d.unnamed, "late");
+  assert.equal(d.zones.length, 24);
+  assert.ok(d.zones.some((z) => z.id === "late"));
+});
+
 test("a mayor reply only lands what the digest supports", () => {
   const s = spec();
   const c = town(s);

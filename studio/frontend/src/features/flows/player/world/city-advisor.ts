@@ -99,6 +99,13 @@ export function cityDigest(
     });
   }
   const trips = sim.monthTrips;
+  const unnamed =
+    kind === "month"
+      ? sim.zones.find((z) => !z.name && z.kind !== "P" && z.pop > 0)
+      : undefined;
+  const shown = sim.zones.slice(0, MAX_ZONES);
+  // The naming candidate must be in the report, or the backend drops its name.
+  if (unnamed && !shown.includes(unnamed)) shown[MAX_ZONES - 1] = unnamed;
   return {
     title: spec.title,
     kind,
@@ -125,7 +132,7 @@ export function cityDigest(
     trips_ok: trips.ok,
     trips_failed: trips.failed,
     trips_no_road: trips.noRoad,
-    zones: sim.zones.slice(0, MAX_ZONES).map((z) => ({
+    zones: shown.map((z) => ({
       id: z.id,
       kind: z.kind,
       pop: z.pop,
@@ -134,11 +141,7 @@ export function cityDigest(
       name: z.name ?? "",
     })),
     residents,
-    unnamed:
-      kind === "month"
-        ? (sim.zones.find((z) => !z.name && z.kind !== "P" && z.pop > 0)?.id ??
-          "")
-        : "",
+    unnamed: unnamed?.id ?? "",
   };
 }
 
