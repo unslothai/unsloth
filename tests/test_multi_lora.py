@@ -670,3 +670,40 @@ def test_packed_rows_of_eight_adapters_match_each_sequence_alone(attn):
     # Negative control: without restarting positions the sequences attend to each other.
     contaminated, _ = packed(torch.arange(T).expand(2, T))
     assert not torch.allclose(contaminated, losses, rtol = 1e-3, atol = 1e-4)
+
+
+def _absent_adapter_case(dtype):
+    # Every token is adapter 0's; adapter 1 is absent from the batch.
+    X, W, A, B, scales, _ = _case(U = 2, M = 9, K = 16, N = 12, R = 4, dtype = torch.float64)
+    ids = torch.zeros(X.shape[0], dtype = torch.long)
+    batch = ml.MultiLoraBatch.from_adapter_ids(ids, 2)
+    want = (X @ W.t() + scales[0] * (X @ A[0].t()) @ B[0].t()).to(dtype)
+    cast = lambda t: t.to(dtype)
+    return cast(X), cast(W), cast(A), cast(B), scales, batch, want
+
+
+@pytest.mark.parametrize("poison", ["nan_A", "nan_B", "inf_B", "fp16_overflow"])
+def test_an_absent_adapter_cannot_corrupt_present_tokens_in_the_reference_path(poison):
+    dtype = torch.float16 if poison == "fp16_overflow" else torch.float64
+    X, W, A, B, scales, batch, want = _absent_adapter_case(dtype)
+    A, B = A.clone(), B.clone()
+    if poison == "nan_A":
+        A[1, 0, 0] = float("nan")
+    elif poison == "nan_B":
+        B[1, 0, 0] = float("nan")
+    elif poison == "inf_B":
+        B[1, 0, 0] = float("inf")
+    else:  # finite fp16 weights whose X @ A.T overflows to inf
+        A[1] = 6.0e4
+    X = X.requires_grad_()
+    A = A.requires_grad_()
+    B = B.requires_grad_()
+    Y = X @ W.t() + ml.multi_lora_delta(X, A, B, scales, batch)
+    assert torch.isfinite(Y).all()
+    tol = dict(rtol = 1e-2, atol = 1e-2) if dtype == torch.float16 else {}
+    torch.testing.assert_close(Y, want, **tol)
+    Y.float().pow(2).sum().backward()
+    assert torch.isfinite(A.grad[0]).all() and torch.isfinite(B.grad[0]).all()
+    assert A.grad[0].abs().max() > 0
+    if poison != "nan_A":  # a NaN weight in an absent adapter's A is still multiplied into dX
+        assert torch.isfinite(X.grad).all()
