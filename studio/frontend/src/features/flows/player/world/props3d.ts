@@ -117,10 +117,6 @@ export function blockedCells(
   return out;
 }
 
-/**
- * Put `props` on the map in place: both renderers read map.props and walk around map.blocked. `open` tiles stay
- * walkable whatever stands on them (the tile the player is on while editing, so a prop never traps them).
- */
 export function setMapProps(
   map: WorldMap,
   props: readonly WorldProp3d[],
@@ -349,10 +345,6 @@ export interface WorldEditor {
   close(): void;
 }
 
-/**
- * Save until what is saved is what the editor shows, so an edit made while a save is in flight is saved too.
- * `save` writes the editor's state at the time it is called. False when a save fails or edits keep coming.
- */
 export async function saveUntilCurrent(
   current: () => string,
   saved: string,

@@ -18,7 +18,6 @@ export function TriggerPanel({
   const [trigger, setTrigger] = useState<FlowTrigger | null>(null);
   const [ownerOnly, setOwnerOnly] = useState(false);
 
-  // Another block or flow: never show the last one's secret URL while this one loads.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on identity change only
   useEffect(() => {
     setTrigger(null);

@@ -262,7 +262,6 @@ def parse_lines(
                 if stage:
                     lines.append({"speaker": None, "text": "", "stage": stage})
             continue
-        # `[Thunder rumbles]` stays narration as before; a lowercase unknown verb is likely a typo.
         if found and warnings is not None and raw.strip()[1:2].islower():
             warnings.append(
                 f"{raw.strip()}: not a direction (show, hide, scene, sound, pause); shown as narration"
@@ -796,7 +795,6 @@ def repair_generated(
             later = [x for x in order[i + 1 :] if x != s["id"]]
             s["next"] = later[0] if later else ending_ids[rng.randint(0, len(ending_ids) - 1)]
 
-    # Every scene must be able to reach an ending (no closed loops).
     good = _reaches_ending(by_id)
     for s in scenes:
         if s["id"] not in good:

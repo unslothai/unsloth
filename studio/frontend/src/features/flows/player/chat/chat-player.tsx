@@ -32,7 +32,6 @@ export function ChatPlayer({
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [thinking, setThinking] = useState(false);
-  // Sending before the saved conversation arrives would drop it from the model's history and overwrite the save.
   const [loaded, setLoaded] = useState(false);
   const generation = useRef(0);
   const inflight = useRef<AbortController | null>(null);
@@ -53,7 +52,6 @@ export function ChatPlayer({
         setLoaded(true);
       })
       .catch(() => {
-        // A failed read stays blocked: replying on an empty history would save over the real conversation.
         if (live)
           toast("Could not load this conversation", {
             action: { label: "Retry", onClick: () => setAttempt((n) => n + 1) },
@@ -65,7 +63,6 @@ export function ChatPlayer({
     };
   }, [api, flowId, attempt]);
 
-  // One save at a time, in order, so an earlier reply's save can never land after New chat cleared the slot.
   const persist = (next: ChatTurn[]) => {
     saves.current = saves.current
       .catch(() => undefined)

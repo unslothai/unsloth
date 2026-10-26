@@ -114,7 +114,6 @@ def test_python_runs_only_for_the_owner_once_its_code_is_approved(client):
     assert "not approved" in snap["nodes"]["p"]["error"]
     assert _approve(client, "py1").status_code == 200
     assert _run(client, "py1")["nodes"]["p"]["status"] == "done"
-    # The owner's API key (and MCP, which forwards with a key) never runs it, approved or not.
     by_key = _run(client, "py1", "owner_api")
     assert by_key["nodes"]["p"]["status"] == "failed"
     assert "API key" in by_key["nodes"]["p"]["error"]

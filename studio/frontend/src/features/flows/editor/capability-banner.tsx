@@ -16,7 +16,6 @@ export function CapabilityBanner({ flowId }: { flowId: string }) {
   const [busy, setBusy] = useState(false);
   const saveState = useUiStore((s) => s.saveState);
 
-  // Only the answer for the flow on screen counts: a late one for the last flow must not be approved here.
   const current = useRef(flowId);
   current.current = flowId;
   const refresh = useCallback(() => {

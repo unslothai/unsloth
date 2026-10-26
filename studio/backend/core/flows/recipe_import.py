@@ -38,7 +38,6 @@ def _template_names(text: str) -> list[str]:
         return names
     free = meta.find_undeclared_variables(tree)
     names = [n.name for n in tree.find_all(nodes.Name) if n.name in free]
-    # Hyphenated column names are kept whole too, in case a prompt means the column and not a subtraction.
     for block in _JINJA_BLOCK.finditer(text):
         body = block.group(1) if block.group(1) is not None else block.group(2)
         names.extend(t for t in _NAME.findall(body) if "-" in t)

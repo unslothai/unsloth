@@ -110,7 +110,6 @@ test("a patch adds a quest, item and villager on reachable free tiles, and the m
 });
 
 test("placement never picks a tile the player cannot reach or one next to something placed", () => {
-  // 12x12, open ground inside a wall border, with a walled pocket at x 6..8, y 6..8 (only 7,7 is open).
   const w = 12;
   const grass = P.TILE_KINDS.indexOf("grass");
   const wall = P.TILE_KINDS.indexOf("wall");
@@ -284,10 +283,8 @@ test("the player keeps the map from the generated world and adds through the gam
   assert.match(src, /h\?\.addNpc\(n, n\)/);
   assert.match(src, /h\?\.addItem\(i, i\)/);
   assert.match(src, /deserialize\(baseSpec, rec\.state\)/);
-  // The director reads the state the reply just produced, not one React has yet to commit.
   assert.match(src, /await direct\(completed, state\)/);
   assert.match(src, /const s = from \?\? wsRef\.current;/);
-  // A summary cancelled by a new message or a load does not go on to start the director.
   assert.match(src, /if \(turn === messages\.current\) await direct/);
   assert.match(src, /loads\.current \+= 1;[^}]*messages\.current \+= 1;/);
   assert.match(src, /for \(const n of specRef\.current\.npcs\)/);

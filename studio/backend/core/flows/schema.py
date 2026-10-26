@@ -140,7 +140,6 @@ class FlowDocument(_Strict):
 
 class MediaValue(_Strict):
     kind: Literal["image", "audio", "video"]
-    # A gallery id ("image:<id>", ...), an embedded asset ("sha256:<hex>") or an engine output ("flowasset:<id>").
     ref: str
     url: Optional[str] = None
     mime: Optional[str] = None
@@ -290,7 +289,6 @@ class StoryManifest(_Strict):
     vars: dict[str, Any] = Field(default_factory = dict)
     characters: list[StoryCharacter] = Field(default_factory = list)
     scenes: list[StoryScene] = Field(default_factory = list)
-    # "infinite": the player asks the flow's `next_scene` entrypoint for a new scene after every choice.
     mode: Literal["fixed", "live", "infinite"] = "fixed"
     style: Optional[str] = None
     sounds: Optional[dict[str, dict[str, Any]]] = None

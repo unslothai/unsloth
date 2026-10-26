@@ -41,10 +41,8 @@ from core.flows.world import (
 )
 
 RECALL_K = 8
-# Village memories are short and repeat across calls, so vectors stay here instead of in every save and request.
 _VECTORS: "OrderedDict[str, list[float]]" = OrderedDict()
 _VECTORS_MAX = 20000
-# Past this, memories rank by keywords and the late vectors are cached.
 REPLY_RECALL_BUDGET_S = 0.6
 
 WORLD_SYSTEM = """You design a tiny cozy top-down RPG world.

@@ -37,7 +37,6 @@ def studio(monkeypatch):
         if repo not in held if state.get("keep") else held != [repo]:
             await asyncio.sleep(0.2)  # the load itself
             state["loads"].append((repo, time.monotonic()))
-            # "keep": Keep multiple models loaded, so a load adds to what is resident instead of replacing it.
             state["slots"]["llm"] = [*held, repo] if state.get("keep") else [repo]
             ctx.note_loaded("llm", repo)
         ctx.resident["llm"] = repo
@@ -207,7 +206,6 @@ async def test_the_first_gpu_step_keeps_what_studio_already_has_loaded(studio):
 
 @run_async
 async def test_unload_after_the_run_frees_only_what_the_run_loaded(studio):
-    # m1 was loaded before the run (and the run uses it), m0 too (unrelated): only m2, which the run loaded, goes.
     studio["keep"] = True
     studio["slots"]["llm"] = ["m0", "m1"]
     eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
@@ -262,7 +260,6 @@ async def test_no_early_load_swaps_the_model_a_use_loaded_model_step_runs_on(stu
         return await _gen(ctx)
 
     async def template(ctx):
-        # t1 feeds the "use the loaded model" step and ends first; t2 feeds the m2 step.
         await asyncio.sleep(0.5 if ctx.node_id == "t1" else 0.9)
         return {"text": "t"}
 
@@ -329,7 +326,6 @@ async def test_unload_after_the_run_leaves_a_slot_it_could_not_read(studio, monk
 
     async def resident_slots(caller):
         reads.append(1)
-        # The start-of-run read of the chat slot failed, so whether m1 / m2 were there before is unknown.
         if len(reads) == 1:
             return {"image": []}
         return {k: list(v) for k, v in studio["slots"].items()}
@@ -355,7 +351,6 @@ async def test_unload_after_the_run_waits_for_the_gpu(studio, monkeypatch):
         if rs.nodes["g2"].status in ("done", "cached"):
             break
         await asyncio.sleep(0.05)
-    # Another flow's GPU step holds the GPU: unloading now could cancel its generation.
     async with lock:
         await asyncio.sleep(1.5)
         assert studio["unloads"] == []
@@ -441,7 +436,6 @@ async def test_stopping_an_early_load_never_unloads_inside_another_flows_gpu_ste
 
 @run_async
 async def test_unload_after_the_run_leaves_a_model_another_run_loaded(studio, monkeypatch):
-    # The slot was empty at the start, then another run loaded m1, which this run's step just used.
     reads = []
 
     async def resident_slots(caller):
@@ -505,7 +499,6 @@ async def test_no_early_load_into_another_slot_evicts_the_model_a_use_loaded_mod
             return None
         if kind == "image":
             await asyncio.sleep(0.2)
-            # Keep multiple models loaded is off: loading the image model evicts the chat model.
             studio["slots"]["llm"] = []
             studio["slots"]["image"] = [repo]
             ctx.resident["image"] = repo
@@ -604,7 +597,6 @@ async def test_an_agent_seeing_an_image_on_the_loaded_vision_model_blocks_early_
     )
     rs = await _run(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
-    # The Agent sees its picture with the vision model already loaded (m1): nothing may replace it first.
     assert seen["ag"] == ["m1"]
 
 
@@ -675,7 +667,6 @@ async def test_a_controlnet_image_step_is_not_loaded_early(studio):
     )
     rs = await _run(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
-    # ControlNet reloads the model unquantized when the step starts: an early load would be thrown away.
     assert rs.prefetched == 0
 
 

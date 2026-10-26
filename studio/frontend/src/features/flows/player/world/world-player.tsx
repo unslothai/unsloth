@@ -173,7 +173,6 @@ async function loadArt(
         const blob = await api.mediaBlob({ kind: "image", ref });
         if (art.models) art.models[ref] = await blob.arrayBuffer();
       } catch {
-        // keep the placeholder
       }
     }),
   );
@@ -259,7 +258,6 @@ export function WorldPlayer({
   onExit,
   onReady,
 }: WorldPlayerProps) {
-  // The map comes from the generated world only, so quests, items and villagers added while playing never move it.
   const map = useMemo(() => generateMap(baseSpec), [baseSpec]);
   const host = useRef<HTMLDivElement>(null);
   const game = useRef<WorldGameHandle | null>(null);
@@ -297,7 +295,6 @@ export function WorldPlayer({
     spec.render === "3d" && webglAvailable() ? "3d" : "2d",
   );
   const lastTile = useRef<{ x: number; y: number } | null>(null);
-  // Scenery edits and villager positions outlive a view switch; the renderer only holds a copy of the map.
   const carried = useRef<{
     map: WorldMap;
     props: WorldMap["props"];
@@ -505,10 +502,8 @@ export function WorldPlayer({
             map,
             props: world.props,
             blocked: world.blocked,
-            // A loaded save brings its own villager positions.
             npcs: loads.current === bootedFor ? handle.npcTiles() : undefined,
           };
-        // A view switch keeps the fight going; a loaded save brings its own.
         const action = handle.actionState?.() as WorldState["action"];
         if (action && loads.current === bootedFor) {
           wsRef.current = { ...wsRef.current, action };
@@ -568,8 +563,6 @@ export function WorldPlayer({
       toast(e instanceof Error ? e.message : String(e));
     }
   }, [api, toast]);
-  // Saves run one at a time and each writes the props as they are when it starts, so an older save never lands
-  // after a newer one; `lastSaved` is what the server holds.
   const saves = useRef(new SaveQueue());
   const lastSaved = useRef(savedProps);
   const saveScene = useCallback(
@@ -687,9 +680,7 @@ export function WorldPlayer({
     });
   }, [turns.length, thinking, live?.text]);
 
-  // Bumped on every load, so a reply to a conversation from before the load is dropped.
   const loads = useRef(0);
-  // Bumped on every message and load: a summary cancelled by either must not go on to start the director.
   const messages = useRef(0);
   const offlineNoted = useRef(false);
 
@@ -733,7 +724,6 @@ export function WorldPlayer({
   const directorRun = useRef<AbortController | null>(null);
   const events = useRef<string[]>([]);
   const direct = useCallback(
-    // `from` is the state a reply just produced: React may not have committed it yet when this runs.
     async (justCompleted: boolean, from?: WorldState) => {
       const s = from ?? wsRef.current;
       const played = specRef.current;
@@ -789,7 +779,6 @@ export function WorldPlayer({
     if (ready && started) void direct(false);
   }, [ready, started, direct]);
 
-  // Village life: no new background call while the player talks, and the one in flight is dropped.
   useEffect(() => {
     queue.setPaused(!ready || lockedRef.current);
     queue.pump();
@@ -996,7 +985,6 @@ export function WorldPlayer({
             if (npc[id]) npc[id] = { ...npc[id], needs };
           return { ...st, npc };
         });
-      // Only look for a chat when nothing else waits, so an encounter is never stale by the time it runs.
       if (chatEntry && !queue.busy && !queue.pending && queue.allows()) {
         const pair = findEncounter(
           g.npcTiles(),
@@ -1059,9 +1047,7 @@ export function WorldPlayer({
 
   const flags = useMemo(() => autonomyOf(baseSpec), [baseSpec]);
   const autoOn = useMemo(() => autonomyOn(baseSpec), [baseSpec]);
-  // Combat runs only in the 3D view; the map view keeps the usual hostile encounters.
   const shooterOn = baseSpec.action?.shooter === true && view === "3d";
-  // Safe places for the 3D shooter: refreshed by each village beat (none without autonomy).
   const safeRef = useRef<(p: Point) => boolean>(() => false);
   const autoSteered = useRef(new Set<string>());
   useEffect(() => {
@@ -1094,7 +1080,6 @@ export function WorldPlayer({
         npcs: g.npcTiles(),
       });
       safeRef.current = (p) => safeAt(ground, out.state.auto ?? base.auto!, p);
-      // In a shooter the hostiles fight instead of stopping the player for an encounter.
       if (shooterOn && out.state.auto?.encounter && !base.auto?.encounter) {
         out.state = {
           ...out.state,
@@ -1110,7 +1095,6 @@ export function WorldPlayer({
           g.setNpcStatus(id, "");
         }
       autoSteered.current = now;
-      // Merged into the latest state, so a clock tick or a reply landing in between is kept.
       setWs((st) => {
         const npc = { ...st.npc };
         for (const [id, m] of Object.entries(out.state.npc))
@@ -1307,7 +1291,6 @@ export function WorldPlayer({
       );
       toast(message);
     } finally {
-      // A reply from before a load must not unlock the newer request still in flight.
       if (generation === loads.current) setThinking(false);
       if (replyRun.current === run) replyRun.current = null;
     }

@@ -352,7 +352,6 @@ async def reflect(ctx: NodeContext) -> dict:
         if got is not None:
             _set_vectors(new, *got)
         stream["records"].extend(new)
-    # Reflections reset the counter even when the model wrote none, so a dull stream does not ask again every step.
     stream["since_reflection"] = 0.0
     return {"memory": stream, "insights": [r["text"] for r in new], "reflected": bool(new)}
 

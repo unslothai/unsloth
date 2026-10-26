@@ -323,7 +323,6 @@ export function DownloadRunDialog() {
   );
 }
 
-/** The flow's "Unload models when the run ends": frees what a run loaded, so the next app gets the memory back. */
 function UnloadAfterRunToggle() {
   const extra = useDocStore((s) => s.meta.meta);
   const setMeta = useDocStore((s) => s.setMeta);

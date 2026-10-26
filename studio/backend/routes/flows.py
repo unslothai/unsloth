@@ -38,7 +38,6 @@ from utils.account_context import current_account
 logger = get_logger(__name__)
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
-# Webhook triggers: authenticated by the secret in the URL alone, so outside services can call them.
 hooks_router = APIRouter()
 WEBHOOK_MAX_BYTES = 256 * 1024
 
@@ -117,7 +116,6 @@ def _save(doc: dict, base: Optional[int]) -> dict:
             detail = "This flow was changed in another window. Reload it to keep editing.",
         )
     if current_account().via_api_key:
-        # A flow an API key or MCP changed no longer starts on its own until the owner approves its triggers again.
         approved = flows_db.get_capabilities(record["id"])
         if approved.get("triggers"):
             flows_db.set_capabilities(record["id"], {**approved, "triggers": False})
@@ -251,7 +249,6 @@ async def upload_asset(
 ) -> dict:
     data = await _read_body(request, MAX_ASSET_BYTES)
     hint = asset_store.text_hint(mime, name)
-    # Text sniffing decodes the whole upload; keep it off the event loop.
     sniffed = asset_store.sniff_mime(data) or await asyncio.to_thread(
         asset_store.sniff_text, data, hint
     )
@@ -560,7 +557,6 @@ async def plan_flow(request: Request, flow_id: str, body: PlanBody) -> dict:
     }
 
 
-# Model kinds that take turns on the GPU: with Keep multiple models loaded off, each switch is a full reload.
 SWAPPING_KINDS = ("chat", "vision", "tts", "audio", "image", "video")
 
 
@@ -964,7 +960,6 @@ def approve_capabilities(flow_id: str, body: ApproveBody) -> dict:
     record = _flow_or_404(flow_id)
     need = capabilities.doc_needs(record["doc"])
     before = flows_db.get_capabilities(flow_id)
-    # Approve only what the owner was shown and the flow still needs; anything added since stays pending.
     approved = {
         "python": [
             h

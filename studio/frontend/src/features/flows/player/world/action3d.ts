@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Action play in the 3D view: a kinematic capsule (walk, sprint, crouch, jump, gravity) against the terrain, solid
- * tiles and editor props as oriented boxes, stepped at a fixed 60 Hz so every frame rate moves the same; and the
- * shooter rules (hitscan, health, ammo, hostiles shooting back). Pure: no three.js, so node tests drive it.
- * Units are tiles; heights are the terrain's world units (one tile wide).
- */
 
 import type { WorldProp3d, WorldPropKind } from "../../types";
 
@@ -20,12 +14,9 @@ const GRAVITY = 16;
 const JUMP_V = 5.2;
 const COYOTE_S = 0.1;
 const JUMP_BUFFER_S = 0.12;
-// Solid tiles (walls, trees, water) are columns nobody jumps over.
 const WALL_H = 6;
-// Ground that rises more than this per tile is a wall unless it is a short step.
 const MAX_SLOPE = 1.2;
 
-/** An upright box, rotated about the vertical axis. */
 export interface Box {
   cx: number;
   cy: number;
@@ -38,7 +29,6 @@ export interface Box {
   id?: string;
 }
 
-/** Footprint (tiles) and height of each prop kind at scale 1; the shapes props-scene3d draws. */
 const PROP_BOX: Record<WorldPropKind, [number, number, number]> = {
   house: [0.9, 0.9, 1.35],
   tree: [0.25, 0.25, 1.7],
@@ -55,11 +45,8 @@ const PROP_BOX: Record<WorldPropKind, [number, number, number]> = {
 export interface ActionWorld {
   width: number;
   height: number;
-  /** Terrain height under a point. */
   ground(x: number, y: number): number;
-  /** Walls, trees and water: whole tiles nothing passes. */
   solidTile(x: number, y: number): boolean;
-  /** Boxes by tile cell, so a query looks at a few cells. */
   cells: Map<number, Box[]>;
   boxes: Box[];
 }
@@ -86,7 +73,6 @@ export function propBox(
   };
 }
 
-/** The colliders for a world: rebuilt whenever the props change (the editor saves). */
 export function buildActionWorld(
   width: number,
   height: number,
@@ -119,7 +105,6 @@ function nearBoxes(w: ActionWorld, x: number, y: number, r: number): Box[] {
   return [...out];
 }
 
-/** Whether a circle of radius r at (x, y) overlaps the box's footprint. */
 export function circleHitsBox(
   b: Box,
   x: number,
@@ -149,7 +134,6 @@ function tileBlocked(w: ActionWorld, x: number, y: number, r: number): boolean {
   );
 }
 
-/** The highest surface under the capsule at or below `reach` (terrain, or a box top it can stand on). */
 function floorAt(w: ActionWorld, x: number, y: number, reach: number): number {
   let floor = w.ground(x, y);
   for (const b of nearBoxes(w, x, y, RADIUS))
@@ -158,7 +142,6 @@ function floorAt(w: ActionWorld, x: number, y: number, reach: number): number {
   return floor;
 }
 
-/** Whether a body from z to z + h at (x, y) is inside something it cannot step onto. */
 function blocked(
   w: ActionWorld,
   x: number,
@@ -180,7 +163,6 @@ function blocked(
 export interface Body {
   x: number;
   y: number;
-  /** Feet height. */
   z: number;
   vz: number;
   grounded: boolean;
@@ -188,19 +170,15 @@ export interface Body {
   coyote: number;
   jumpBuffer: number;
   acc: number;
-  /** A jump pressed on a frame that ran no physics step, kept for the next step. */
   jumpQueued?: boolean;
 }
 
 export interface MoveInput {
-  /** Wanted direction in the ground plane (any length; normalised). */
   dx: number;
   dy: number;
   sprint: boolean;
   crouch: boolean;
-  /** True on the frame Jump was pressed. */
   jump: boolean;
-  /** Tiles left to go (a route waypoint): the move stops there instead of overshooting it. */
   limit?: number;
 }
 
@@ -218,12 +196,10 @@ export const newBody = (w: ActionWorld, x: number, y: number): Body => ({
 
 export const bodyHeight = (b: Body) => (b.crouched ? CROUCH_H : STAND_H);
 
-/** Thinner than the thinnest collider (a fence, 0.1) plus the body's diameter. */
 const SUB_MOVE = 0.2;
 
 function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): number {
   const dt = STEP_S;
-  // Standing up needs room overhead.
   if (input.crouch) b.crouched = true;
   else if (b.crouched && !blocked(w, b.x, b.y, b.z, STAND_H))
     b.crouched = false;
@@ -238,7 +214,6 @@ function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): number {
     1,
     Math.ceil(Math.max(Math.abs(mx), Math.abs(my)) / SUB_MOVE),
   );
-  // One axis at a time: a wall stops that axis only, so the body slides along it.
   for (let i = 0; i < subs; i++)
     for (const [ax, ay] of [
       [mx / subs, 0],
@@ -250,7 +225,6 @@ function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): number {
       if (!blocked(w, nx, ny, b.z, h)) {
         const floor = floorAt(w, nx, ny, b.z + STEP_UP);
         const rise = floor - b.z;
-        // Steep ground is a wall unless the rise is a short step.
         if (
           b.grounded &&
           rise > STEP_UP &&
@@ -259,7 +233,6 @@ function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): number {
           continue;
         b.x = nx;
         b.y = ny;
-        // Up a step at once (also mid-jump, onto a ledge); down one by falling, but stay on a gentle slope.
         if (rise > 0 && rise <= STEP_UP) b.z = floor;
         else if (b.grounded && rise < 0 && rise > -STEP_UP) b.z = floor;
       }
@@ -273,7 +246,6 @@ function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): number {
   }
   b.vz -= GRAVITY * dt;
   let z = b.z + b.vz * dt;
-  // Heads stop at what is overhead.
   if (b.vz > 0)
     for (const box of nearBoxes(w, b.x, b.y, RADIUS))
       if (
@@ -299,7 +271,6 @@ function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): number {
   return len > 0 ? go : 0;
 }
 
-/** Advance by `dt` seconds of real time in fixed steps; a jump press counts once. Returns the steps taken. */
 export function advance(
   w: ActionWorld,
   b: Body,
@@ -323,7 +294,6 @@ export function advance(
   return n;
 }
 
-// Shooter rules.
 
 export const MAX_HEALTH = 100;
 export const START_AMMO = 24;
@@ -345,9 +315,7 @@ export interface Combat {
   health: number;
   ammo: number;
   cooldown: number;
-  /** Hostile villagers' health, and when a knocked-out one gets back up (game seconds). */
   enemies: Record<string, { health: number; down: number; cooldown: number }>;
-  /** Pickups taken (ids); they come back on a new game only. */
   taken: string[];
   clock: number;
 }
@@ -365,12 +333,10 @@ export interface Target {
   id: string;
   x: number;
   y: number;
-  /** Feet height. */
   z: number;
   hostile: boolean;
 }
 
-/** Distance along the ray (in the ground plane, ignoring height) to the first wall or solid box, else Infinity. */
 export function wallDistance(
   w: ActionWorld,
   ox: number,
@@ -395,10 +361,6 @@ export function wallDistance(
   return Number.POSITIVE_INFINITY;
 }
 
-/**
- * A hitscan shot from the eye along (dx, dy, dz): the nearest villager capsule in range that no wall hides.
- * Only hostiles take damage; a friendly one in the way just stops the shot. Returns who was hit, if anyone.
- */
 export function shoot(
   w: ActionWorld,
   c: Combat,
@@ -415,7 +377,6 @@ export function shoot(
   let bestT = Number.POSITIVE_INFINITY;
   for (const t of targets) {
     if ((c.enemies[t.id]?.down ?? 0) > c.clock) continue;
-    // Closest approach of the ray to the villager's axis, in the ground plane.
     const ux = dir.x / flat;
     const uy = dir.y / flat;
     const along = (t.x - eye.x) * ux + (t.y - eye.y) * uy;
@@ -458,10 +419,6 @@ export function shoot(
   return { fired: true, hit: best.id, downed };
 }
 
-/**
- * Hostiles in range with a clear line of sight shoot back on their own cooldown; never from or into a safe place.
- * Returns the ids that fired. A player at zero health is respawned by the caller.
- */
 export function enemiesAct(
   w: ActionWorld,
   c: Combat,
@@ -491,7 +448,6 @@ export function enemiesAct(
       eyeZ,
       dx,
       dy,
-      // Aim inside the body as it stands now, so crouching behind cover hides the player.
       player.z + 0.7 * (player.h ?? STAND_H) - eyeZ,
       d,
     );
@@ -503,13 +459,11 @@ export function enemiesAct(
   return fired;
 }
 
-/** Time passes for the cooldowns and knockouts. */
 export function tick(c: Combat, dt: number): void {
   c.clock += dt;
   c.cooldown = Math.max(0, c.cooldown - dt);
 }
 
-/** Defeat: back to full health at the start with the starting clip; ammo picked up is lost. */
 export function respawn(c: Combat): void {
   c.health = MAX_HEALTH;
   c.ammo = START_AMMO;
@@ -522,7 +476,6 @@ export interface Pickup {
   y: number;
 }
 
-/** Pickups placed on open, reachable-looking tiles around the map, from the world seed; same seed, same spots. */
 export function placePickups(
   open: readonly { x: number; y: number }[],
   seed: number,
@@ -554,7 +507,6 @@ export function placePickups(
   return out;
 }
 
-/** Take a pickup within reach once; returns it, or null. */
 export function takePickup(
   c: Combat,
   pickups: readonly Pickup[],
@@ -574,7 +526,6 @@ export function takePickup(
   return null;
 }
 
-/** A saved combat state, or a fresh one for anything else (old saves have none). */
 export function combatOf(raw: unknown): Combat {
   const r = (raw ?? {}) as Partial<Combat>;
   const num = (v: unknown, d: number, max: number) =>

@@ -56,7 +56,6 @@ def pane_center(page) -> tuple[float, float]:
 
 def pan_metrics(page, label: str) -> None:
     box = page.locator(".react-flow__pane").bounding_box()
-    # Start in the corner: fitView leaves padding there, so the drag grabs the pane, not a node.
     x, y = box["x"] + 230, box["y"] + 90
     transform = "() => document.querySelector('.react-flow__viewport').style.transform"
     before = page.evaluate(transform)
@@ -174,7 +173,6 @@ def main() -> int:
                 f"() => document.querySelectorAll('.react-flow__node-flowNode').length >= {PERF_NODES}",
                 timeout = 60_000,
             )
-            # From navigation start, in the page clock: module load + catalog + first full paint of every node.
             metrics["perf_time_to_all_nodes_ms"] = page.evaluate("() => performance.now()")
             metrics["perf_doc_edges"] = page.evaluate(
                 "() => window.__flowsSmoke.doc.getState().graph.edgeOrder.length"

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Sims-style needs: decay with the game clock, places advertise what they restore. Pure and seeded.
 
 import type { WorldPlace } from "../../types";
 import type { PlanBlock } from "./world-sim";
@@ -34,7 +33,6 @@ export interface Doing {
   label?: string;
 }
 
-/** Points lost per game minute: hunger empties in about 5 hours, energy in about a day. */
 const DECAY: Needs = { energy: 0.07, hunger: 0.3, social: 0.2, fun: 0.16 };
 
 interface ActionDef {
@@ -105,7 +103,6 @@ export interface Offer {
   strength: number;
 }
 
-/** An action no place names is offered everywhere at half strength. */
 export function advertisements(places: WorldPlace[]): Offer[] {
   const out: Offer[] = [];
   const seen = new Set<ActionKind>();
@@ -141,7 +138,6 @@ export function clampNeeds(raw: unknown, fallback: Needs): Needs {
   return out;
 }
 
-/** mulberry32 over a string hash: the same NPC at the same minute always draws the same number. */
 export function seeded(...parts: (string | number)[]): () => number {
   let h = 2166136261;
   for (const ch of parts.join("|")) {
@@ -180,7 +176,6 @@ export function tickNeeds(
   return out;
 }
 
-/** Low needs shout louder: a need at 20 weighs 0.64, one at 80 only 0.04. */
 const urgency = (v: number) => ((100 - clamp(v)) / 100) ** 2;
 
 const SERVES: Record<ActionKind, Need[]> = {
@@ -209,7 +204,6 @@ function score(
   return s;
 }
 
-/** Draws among the top three offers in proportion to score, so villagers are not clockwork. */
 export function chooseAction(opts: {
   needs: Needs;
   offers: Offer[];

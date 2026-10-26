@@ -123,7 +123,6 @@ def recency(records: list[dict], now: float, decay: float, mode: str) -> list[fl
         for rank, i in enumerate(order):
             out[i] = decay**rank
         return out
-    # Time 0 is a real time (a game clock starts there), so only a missing stamp counts as "now".
     return [
         decay ** max(0.0, now - (now if r.get("t_access") is None else float(r["t_access"])))
         for r in records
@@ -172,7 +171,6 @@ def top(records: list[dict], scores: list[dict], k: int) -> list[int]:
 def cap(stream: dict, max_records: int) -> None:
     """Drop the least important, least recently used records past the cap; a record a reflection cites stays."""
     records = stream["records"]
-    # Dropping a reflection frees what it cited, so protection is recomputed until the cap holds.
     while len(records) > max_records:
         cited = {c for r in records for c in r.get("cites") or []}
         removable = sorted(
@@ -191,7 +189,6 @@ def context_text(records: Iterable[dict]) -> str:
 
 
 def round_vector(vec: Any) -> Optional[list[float]]:
-    # Five decimals keep cosine ranking intact and the stream about 3x smaller in saves and run history.
     if not isinstance(vec, list) or not vec:
         return None
     return [round(float(x), 5) for x in vec]

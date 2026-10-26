@@ -147,7 +147,6 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
         if got is None:
             return value
         data, mime = got
-        # The inline preview was scrubbed with the document; the full rows need the same treatment.
         try:
             parsed = json.loads(data)
         except (UnicodeDecodeError, ValueError):
@@ -348,7 +347,6 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
                         raise PackageError(f"{info.filename} is not valid JSON") from None
                     mime = "application/json"
                 elif mime is None:
-                    # Documents (Markdown, HTML, text) carry no magic bytes; their extension names the type.
                     mime = asset_store.sniff_text(blob, asset_store.EXT_MIME.get(ext))
                 if mime is None or asset_store.MIME_EXT.get(mime) != ext:
                     raise PackageError(f"{info.filename} is not the media type its name says")

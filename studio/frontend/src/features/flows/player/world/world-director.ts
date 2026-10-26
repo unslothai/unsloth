@@ -22,7 +22,6 @@ export interface WorldAdditions {
   quests: WorldQuest[];
 }
 
-/** What the NPC Reply node returns for `task: "director"`; new entities carry the region they should appear in. */
 export interface DirectorPatch {
   quest: WorldQuest;
   npcs?: (WorldNpc & { region?: string })[];
@@ -88,7 +87,6 @@ export function roleAllowed(spec: WorldSpec, s: WorldState, role: NpcRole) {
   return on && added.length < MAX_ADDED_ROLE;
 }
 
-/** A walkable tile the player can reach, inside `area` when one has room, away from everything already placed. */
 export function placeFree(
   map: WorldMap,
   occupied: Point[],
@@ -129,7 +127,6 @@ const taken = (spec: WorldSpec) =>
     ),
   );
 
-/** Null when anything does not resolve: a reused id, an unknown giver or item, or a limit reached. */
 export function applyPatch(
   spec: WorldSpec,
   map: WorldMap,

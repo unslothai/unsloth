@@ -220,7 +220,6 @@ def compile_flow(doc: dict) -> Plan:
                 errors.append(issue(f"Parameter {key} is too long", node_id = nid))
 
     members = _members(nodes)
-    # Innermost owner: a member of F whose own For Each is also a member of F belongs to that inner one.
     owner: dict[str, Optional[str]] = {nid: None for nid in nodes}
     for fid, found in members.items():
         for nid in found:
@@ -236,7 +235,6 @@ def compile_flow(doc: dict) -> Plan:
             seen.add(cursor)
             cursor = owner.get(cursor)
     if any(e["message"] == "For Each groups are nested in a loop" for e in errors):
-        # Every check below walks owners upward and would never end.
         raise CompileError(errors)
     bodies = {fid: [n for n in nodes if owner.get(n) == fid] for fid in members}
 
@@ -310,7 +308,6 @@ def compile_flow(doc: dict) -> Plan:
             else:
                 collect[dst] = (src, sport["id"])
             continue
-        # Values made inside a body stay inside it; results leave through `results`.
         src_owner = owner.get(src)
         if src_owner is not None and not inside(dst, src_owner):
             errors.append(

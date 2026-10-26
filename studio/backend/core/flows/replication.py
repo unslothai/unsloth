@@ -62,7 +62,6 @@ def models_used(doc: dict) -> list[dict]:
         if not _HUB_ID.match(repo) or ".." in repo:
             continue
         variant = choice.get("variant") if isinstance(choice.get("variant"), str) else None
-        # Repo-relative keys ("weights/model-Q6_K") are valid variants; anything path-like beyond that is not.
         if variant and (
             len(variant) > 200
             or variant.startswith("/")
@@ -101,7 +100,6 @@ def cached_gguf(
         files = [p.relative_to(root).as_posix() for p in root.rglob("*.gguf")]
     except OSError:
         return None
-    # The loader's own matching, so F16 never records a BF16 file.
     from core.inference.llama_cpp import _gguf_files_for_variant
 
     names = _gguf_files_for_variant(files, variant)

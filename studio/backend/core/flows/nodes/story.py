@@ -153,7 +153,6 @@ async def _expression_portraits(
         ctx.check_cancelled()
         if progress:
             progress(i, expr)
-        # An instruction moves the face; a description of the character only redraws the reference as it was.
         cue = _EXPRESSION_CUES.get(expr.lower().strip(), "clearly readable at a glance")
         prompt = (
             f"Change only {name}'s facial expression to {expr}: {cue}. Keep the same character, outfit, colors, "
@@ -343,7 +342,6 @@ async def story_narrate(ctx: NodeContext) -> dict:
 async def story_compile(ctx: NodeContext) -> dict:
     if isinstance(ctx.inputs.get("story"), dict):
         return {"story": finalize(copy.deepcopy(_story_input(ctx)), [])}
-    # Unconnected: the authored Story/Scene graph compiles when the player opens (GET /story).
     ctx.log("The authored Story and Scene nodes compile when you press Play.")
     return {}
 

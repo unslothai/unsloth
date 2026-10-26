@@ -44,7 +44,6 @@ export interface DocState {
   flowId: string | null;
   meta: DocMeta;
   graph: DocGraph;
-  /** Bumps on every semantic change; autosave and dirty tracking key off it. */
   version: number;
   past: Snapshot[];
   future: Snapshot[];
@@ -376,7 +375,6 @@ export const useDocStore = create<DocState>((set, get) => {
         };
         let nodes = omit(s.graph.nodes, dropNodes);
         if (dropGroups.size) {
-          // Membership drives For Each bodies, so a deleted frame must release the nodes it held.
           for (const [id, n] of Object.entries(nodes)) {
             if (n.group && dropGroups.has(n.group)) {
               if (nodes === s.graph.nodes) nodes = { ...nodes };
@@ -471,7 +469,6 @@ export const useDocStore = create<DocState>((set, get) => {
         const groups = { ...s.graph.groups, [group.id]: group };
         const graph = { ...s.graph, groups };
         const nodes = { ...s.graph.nodes };
-        // The compiler reads `group`, not geometry, so nodes the new rectangle takes in or leaves out change membership.
         for (const id of s.graph.nodeOrder) {
           const node = nodes[id];
           const before = node.group ?? null;

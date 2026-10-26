@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Requests are built from the state each choice would reach, so a cached scene is exactly what the live call would send.
 
 import type { StoryCharacter, StoryManifest, StoryScene } from "../../types";
 import {
@@ -85,7 +84,6 @@ function stable(v: unknown): string {
   return JSON.stringify(v) ?? "null";
 }
 
-/** Cache key: playthrough rev, the scene being filled and the exact request body (vars and history included). */
 export function writeKey(s: StoryState, req: NextSceneRequest): string {
   return `${s.rev}|${s.pending?.sceneId ?? ""}|${stable(req)}`;
 }
@@ -161,11 +159,9 @@ interface Job extends PlannedWrite {
   failed?: boolean;
   running?: Promise<StoryScene>;
   ctl?: AbortController;
-  /** A player call is waiting on this run: it is never aborted. */
   adopted?: boolean;
 }
 
-/** Background writer; a player call that misses aborts the running write (retried later if still wanted). */
 export class WriteAhead {
   private jobs = new Map<string, Job>();
   private queue: string[] = [];
@@ -291,7 +287,6 @@ export class WriteAhead {
       })
       .catch(() => {
         if (this.jobs.get(run.key) !== run) return;
-        // Preempted by a player call: write it again later. A real failure is left to the live call.
         if (ctl.signal.aborted && !run.adopted) this.queue.unshift(run.key);
         else run.failed = true;
       })

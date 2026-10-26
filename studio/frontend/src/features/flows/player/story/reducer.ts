@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Scene conventions match studio/backend/core/flows/story.py.
 
 import {
   ExprError,
@@ -54,7 +53,6 @@ export interface StoryState {
   backgrounds: Record<string, MediaValue>;
   pending: { sceneId: string; choice: string } | null;
   error: string | null;
-  /** Bumped on restart/load so late live results for an older playthrough are dropped. */
   rev: number;
   seed: number;
 }
@@ -263,7 +261,6 @@ function enter(
       backlog: withBacklog(s, scene, lines[first]),
     };
   }
-  // Its dialogue is being written: wait on the scene (shown as "...") instead of skipping past it.
   if (scene.generate_lines && m.entry_points?.next_scene)
     return { ...s, status: "reading" };
   return leave(m, s, scene, hops + 1);
@@ -528,8 +525,6 @@ function castAfter(
   return cast;
 }
 
-/** Who is on stage at the reader's stop: the scene's `on_stage` plus the directions read so far.
- * Derived, so saves carry no stage state and saves from before directions existed still render. */
 export function stageAt(m: StoryManifest, s: StoryState): StageView {
   const scene = sceneOf(m, s, s.sceneId);
   if (!scene) return { cast: [], leaving: [], sounds: [] };

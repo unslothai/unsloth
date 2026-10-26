@@ -68,7 +68,6 @@ def agent_body(ctx: NodeContext, prompt: Any, system: str, history: list[dict]) 
         "mcp_enabled": False,
     }
     if history:
-        # A resumed chat can outgrow the loaded context: drop its oldest turns instead of failing the reply.
         body["context_overflow"] = "truncate_oldest"
         body["context_policy"] = "rolling"
     if tools:
@@ -95,7 +94,6 @@ async def agent(ctx: NodeContext) -> dict:
     ctx.check_cancelled()
     payload = await ctx.call("POST", "/v1/chat/completions", json = body)
     text = strip_think(_message_text(payload))
-    # The non-streaming answer carries no trace of tool calls, so steps lists the tools offered, not those that ran.
     steps = {
         "tools": body["enabled_tools"],
         "knowledge_base": (body.get("rag_scope") or {}).get("kb_id"),
@@ -137,7 +135,6 @@ async def classify(ctx: NodeContext) -> dict:
     )
     label = value.get("label") if isinstance(value, dict) else None
     if label not in labels:
-        # A model may answer in another case or with extra words: an exact match in any case wins over a substring.
         lowered = str(label or "").strip().lower()
         label = next((c for c in labels if c.lower() == lowered), None) or next(
             (c for c in labels if c.lower() in lowered), labels[-1]

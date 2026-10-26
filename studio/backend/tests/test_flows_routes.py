@@ -52,7 +52,6 @@ def client(monkeypatch):
 
     app.include_router(flows_routes.router, prefix = "/api/flows")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
-    # One event loop for the whole test: without the context manager every request gets its own portal,
     with TestClient(app) as test_client:
         yield test_client
 
@@ -197,7 +196,6 @@ def test_documents_upload_and_come_back_as_plain_text(client):
     page = b"<script>alert(1)</script>"
     html = client.post("/api/flows/assets?name=page.html", content = page).json()["media"]
     served = client.get(html["url"])
-    # An uploaded page is never rendered on Studio's origin.
     assert served.headers["content-type"].startswith("text/plain")
     assert served.headers["x-content-type-options"] == "nosniff"
     assert client.post("/api/flows/assets", content = b"plain words").status_code == 415

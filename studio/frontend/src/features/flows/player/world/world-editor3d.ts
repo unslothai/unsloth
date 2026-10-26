@@ -167,7 +167,6 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
   dom.addEventListener("pointerdown", onDown);
   dom.addEventListener("pointerup", onUp);
 
-  // Blender keys: G move, R rotate, S scale, X / Delete remove; Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo.
   const onKey = (e: KeyboardEvent) => {
     const t = e.target as HTMLElement | null;
     if (

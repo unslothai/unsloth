@@ -15,8 +15,6 @@ from typing import Optional
 MAX_GLB_BYTES = 20 * 1024 * 1024
 MAX_TRIANGLES = 150_000
 GLB_MIME = "model/gltf-binary"
-# Draco / meshopt geometry needs a decoder the player does not load; WebP / Basis textures are fine in browsers but
-# KTX2 needs a transcoder.
 UNSUPPORTED_EXTENSIONS = {
     "KHR_draco_mesh_compression": "Draco compression",
     "EXT_meshopt_compression": "meshopt compression",

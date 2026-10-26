@@ -9,8 +9,6 @@ import type {
   PortType,
 } from "../types";
 
-// React Flow handle ids: data ports `i:<port>` / `o:<port>`, story control `fi` / `fo:<name>`.
-// A flow edge is stored with source_port = <name> and target_port = FLOW_TARGET_PORT.
 export const FLOW_TARGET_PORT = "flow";
 
 export function inHandle(port: string): string {

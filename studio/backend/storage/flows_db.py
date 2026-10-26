@@ -91,7 +91,6 @@ def save_flow(doc: dict, base_updated_at: Optional[int] = None) -> dict:
     conn = get_connection()
     try:
         prior = conn.execute("SELECT updated_at FROM flows WHERE id = ?", (doc["id"],)).fetchone()
-        # Strictly newer than the stored row, so a save within the same millisecond still moves the version.
         updated_at = max(now, prior["updated_at"] + 1) if prior else now
         cur = conn.execute(
             """

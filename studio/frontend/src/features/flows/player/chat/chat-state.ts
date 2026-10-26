@@ -13,7 +13,6 @@ export interface ChatEntry {
   welcome: string;
 }
 
-/** Turns sent back to the flow with each message; the server keeps 50 at most. */
 export const HISTORY_SENT = 40;
 const SAVE_VERSION = 1;
 

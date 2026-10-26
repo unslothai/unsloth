@@ -35,7 +35,6 @@ export function NodeHistory({
     void nodeHistory(flowId, nodeId)
       .then((res) => {
         if (!alive) return;
-        // A new run shifts the indexes, so the viewed entry would point at a different output.
         setEntries(res.entries);
         setViewing(null);
         onView(null);

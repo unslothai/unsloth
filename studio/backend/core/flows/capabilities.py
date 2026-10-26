@@ -67,7 +67,6 @@ def doc_needs(doc: dict) -> dict:
         spec = SPECS_BY_TYPE.get(node.get("type"))
         if spec is None or node.get("disabled"):
             continue
-        # With the defaults filled in, as the engine runs it: a block saved without its code runs the default code.
         for cap, detail in node_needs(spec, param_values(spec, node)):
             if cap == "python" and detail not in need["python"]:
                 need["python"].append(detail)

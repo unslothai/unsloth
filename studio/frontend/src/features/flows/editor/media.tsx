@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { fetchMediaBlob, mediaPath } from "../api";
 import type { MediaValue } from "../types";
 
-// Ref-counted object URLs, revoked once the last viewer unmounts.
 const cache = new Map<
   string,
   { url: Promise<string>; refs: number; resolved?: string }
