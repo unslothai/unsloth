@@ -75,7 +75,8 @@ def require_finite_frames(frames: Any) -> None:
         import torch
     except Exception:  # noqa: BLE001
         return
-    if isinstance(frames, torch.Tensor) and frames.is_floating_point():
+    tensor = getattr(torch, "Tensor", None)
+    if tensor is not None and isinstance(frames, tensor) and frames.is_floating_point():
         if not bool(torch.isfinite(frames).all()):
             raise NonFiniteFramesError(NON_FINITE_FRAMES_MSG)
 
@@ -110,8 +111,13 @@ def _tensor_all_finite(frames: Any) -> bool:
 def refuse_non_finite_tensor(frames: Any) -> None:
     """Raise ``NonFiniteFramesError`` when ``frames`` is a float tensor holding NaN / inf; anything else passes."""
     import torch
+
+    tensor = getattr(
+        torch, "Tensor", None
+    )  # a stubbed torch (tests) has no Tensor: nothing to check
     if (
-        isinstance(frames, torch.Tensor)
+        tensor is not None
+        and isinstance(frames, tensor)
         and frames.is_floating_point()
         and not _tensor_all_finite(frames)
     ):
