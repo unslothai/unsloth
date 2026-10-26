@@ -2087,8 +2087,7 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
     return any(marker in lowered for marker in _ACCELERATOR_DECISIVE_FAILURE_MARKERS)
 
 
-# DLLs the Windows ROCm sd.cpp bundle imports and does NOT ship (it carries amdhip64_7.dll itself):
-# read off the upstream win-rocm zip's stable-diffusion.dll import table. Only the AMD HIP SDK puts it on PATH.
+# Imported by the Windows ROCm bundle but not shipped in it; only the AMD HIP SDK provides it.
 _WINDOWS_ROCM_HOST_DLLS: tuple[str, ...] = ("hipblas.dll",)
 _windows_rocm_skip_logged = False
 
@@ -2098,8 +2097,7 @@ def _on_windows() -> bool:
 
 
 def windows_rocm_build_mode() -> str:
-    """``UNSLOTH_SD_CPP_WINDOWS_ROCM``: ``auto`` (default) takes the ROCm build only when the HIP SDK
-    runtime is on PATH, ``1`` always takes it when ROCm is asked for (the previous behaviour), ``0`` never."""
+    """``UNSLOTH_SD_CPP_WINDOWS_ROCM``: ``auto`` (ROCm only if the HIP SDK is on PATH), ``1`` always, ``0`` never."""
     raw = (os.environ.get("UNSLOTH_SD_CPP_WINDOWS_ROCM", "auto") or "").strip().lower()
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
@@ -2109,7 +2107,6 @@ def windows_rocm_build_mode() -> str:
 
 
 def _windows_dll_search_dirs() -> list[str]:
-    """Where the Windows loader looks for a DLL a child imports, past its own directory."""
     dirs: list[str] = []
     system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
     dirs.append(os.path.join(system_root, "System32"))
@@ -2119,9 +2116,7 @@ def _windows_dll_search_dirs() -> list[str]:
 
 
 def windows_hip_runtime_missing_dlls() -> Optional[list[str]]:
-    """The HIP SDK DLLs the Windows ROCm build needs that the loader cannot find on this host ([] when
-    all are found), or None off Windows. A file search, never a load: loading hipblas.dll into this
-    process would initialise rocBLAS beside torch's own copy."""
+    """Missing HIP SDK DLLs, or None off Windows. File search only: loading hipblas.dll here would clash with torch's rocBLAS."""
     if not _on_windows():
         return None
     dirs = _windows_dll_search_dirs()
@@ -2133,9 +2128,7 @@ def windows_hip_runtime_missing_dlls() -> Optional[list[str]]:
 
 
 def windows_rocm_build_skipped() -> bool:
-    """Whether a ROCm request on Windows goes to the Vulkan build instead: the HIP SDK runtime is not
-    on PATH (or the build is turned off), so the ROCm bundle would die in the loader with exit
-    0xC0000135 and a "hipblas.dll was not found" dialog. The ladder's own kill switch keeps ROCm."""
+    """Whether a Windows ROCm request goes to Vulkan (HIP SDK missing would fail with 0xC0000135)."""
     if not _on_windows() or not sd_cpp_vulkan_fallback_enabled():
         return False
     mode = windows_rocm_build_mode()
@@ -2149,8 +2142,7 @@ def windows_rocm_build_skipped() -> bool:
 def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None) -> str:
     """``accelerator``, or its fallback once shown unrunnable here. Applied at the TOP of an ensure ladder, so a crashed build is not installed and probed again.
 
-    A function of the stored record, plus on Windows one file search: a ROCm request starts at
-    Vulkan when the HIP SDK runtime the ROCm bundle imports is not on PATH (``windows_rocm_build_skipped``)."""
+    On Windows a ROCm request starts at Vulkan when ``windows_rocm_build_skipped``."""
     global _windows_rocm_skip_logged
     chosen = accelerator or "auto"
     klass = _accelerator_class_of(accelerator) or chosen
@@ -2569,9 +2561,8 @@ def _unrunnable_build(exc: BaseException) -> bool:
 
 
 def _install_down_the_ladder(_install: Callable[..., Any], accelerator: str) -> tuple[Any, str]:
-    """``_install`` for ``accelerator``; when the installer shows that bundle cannot START here (the
-    loader refused it in a scratch directory, the managed tree untouched), record that and install the
-    next rung (rocm -> vulkan -> cpu). Returns ``(path, accelerator installed)``; raises the last error."""
+    """Install ``accelerator``, stepping down (rocm -> vulkan -> cpu) while the loader refuses the bundle.
+    Returns ``(path, accelerator installed)``."""
     current = accelerator
     tried: set[str] = set()
     refused: list[str] = []
@@ -2602,8 +2593,7 @@ def _install_down_the_ladder(_install: Callable[..., Any], accelerator: str) -> 
                 raise
             current = nxt
             continue
-        # Keyed on the build that replaced the refused one, as _accelerator_fingerprint reads it back: an
-        # upstream or latest-release fallback carries a tag other than the pin.
+        # Keyed on the installed build: a fallback may carry a tag other than the pin.
         if refused:
             _note_refused(_accelerator_fingerprint(path) if path else _pin_fingerprint())
         return path, current
@@ -2688,7 +2678,6 @@ def ensure_sd_server_binary(
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                # Extracts sd-cli AND sd-server; the ladder may settle on another rung.
                 _path, accelerator = _install_down_the_ladder(_install, accelerator)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A new sd.cpp bundle must START before it replaces the installed one, and a Windows ROCm request
-without the HIP SDK runtime goes to the Vulkan build (upstream's win-rocm zip imports hipblas.dll
-and does not ship it, so it dies in the loader with exit 0xC0000135)."""
+"""A new sd.cpp bundle must start before replacing the installed one; Windows ROCm without the HIP SDK uses Vulkan."""
 
 from __future__ import annotations
 
@@ -28,7 +26,6 @@ _WIN = sys.platform == "win32"
 
 
 def _starting_binary() -> bytes:
-    """Bytes of an executable that starts here."""
     if _WIN:
         return (
             Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "where.exe"
@@ -37,8 +34,7 @@ def _starting_binary() -> bytes:
 
 
 def _refused_binary() -> bytes:
-    """Bytes of an executable the OS loader refuses. Windows: python.exe with its pythonXY.dll import
-    renamed to a DLL nobody has (a real STATUS_DLL_NOT_FOUND). POSIX: the loader's own exit and message."""
+    """An executable the loader refuses (Windows: python.exe with its pythonXY.dll import renamed)."""
     if _WIN:
         data = (Path(sys.base_prefix) / "python.exe").read_bytes()
         dll = f"python{sys.version_info[0]}{sys.version_info[1]}".encode()
@@ -73,7 +69,6 @@ def _names():
 
 
 def _stub_release(monkeypatch, zips: dict):
-    """One release offering ``zips`` (accelerator -> archive bytes) for this host."""
     names = _names()
     release = {
         "tag_name": "master-982-0518b34",
@@ -141,8 +136,7 @@ def test_probe_reports_a_refused_binary_and_passes_a_starting_one(tmp_path):
 
 
 def test_a_bundle_that_cannot_start_never_replaces_the_working_one(tmp_path, monkeypatch):
-    """The reported failure: the leejet ROCm zip swept the working Vulkan build as superseded, then
-    could not start (hipblas.dll missing), so the load had nothing left to run."""
+    """Regression: a refused ROCm zip must not sweep the working Vulkan build."""
     root = _managed_root(tmp_path, monkeypatch)
     old_server = _working_vulkan_install(root)
     before = old_server.read_bytes()
@@ -285,8 +279,7 @@ def test_other_hosts_and_accelerators_are_untouched(backend, monkeypatch):
 
 
 def test_an_unstartable_rocm_bundle_falls_to_the_vulkan_build(tmp_path, monkeypatch, backend):
-    """A fresh install (nothing to keep) whose ROCm bundle the loader refuses ends on the Vulkan
-    build, not on "binary is unavailable", and the host is recorded so later loads start there."""
+    """A fresh install with a refused ROCm bundle ends on Vulkan and records the host."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
     root = sdmod.default_install_dir()
@@ -310,8 +303,7 @@ def test_an_unstartable_rocm_bundle_falls_to_the_vulkan_build(tmp_path, monkeypa
 def test_the_refusal_record_survives_a_fallback_from_another_release(
     tmp_path, monkeypatch, backend
 ):
-    """The Vulkan build that replaces a refused ROCm bundle comes from a release other than the pin
-    (an upstream / latest fallback): the record still applies, so the next load starts at Vulkan."""
+    """The record applies even when the Vulkan fallback comes from a non-pinned release."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
     root = sdmod.default_install_dir()

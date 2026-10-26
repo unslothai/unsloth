@@ -688,10 +688,7 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
 
 
 class UnrunnableBuildError(RuntimeError):
-    """The downloaded bundle was extracted to a scratch directory and the OS loader refused to start
-    its sd-cli / sd-server (a DLL or shared library it imports is not on this host). Raised BEFORE the
-    managed tree is touched, so whatever was installed there is still intact and still runnable.
-    ``accelerator`` is the class asked for, so a caller can record it and install the next rung."""
+    """The OS loader refused the new bundle in a scratch dir; raised before the managed tree is touched."""
 
     def __init__(self, message: str, *, accelerator: str, asset: str, tag: Optional[str]) -> None:
         super().__init__(message)
@@ -710,15 +707,13 @@ _POSIX_LOADER_MARKERS = ("error while loading shared libraries", "Library not lo
 
 
 def verify_install_enabled() -> bool:
-    """``UNSLOTH_SD_CPP_VERIFY_INSTALL=0`` restores the old install: no probe of the new bundle before it replaces the old one."""
+    """``UNSLOTH_SD_CPP_VERIFY_INSTALL=0`` skips probing the new bundle before install."""
     raw = (os.environ.get("UNSLOTH_SD_CPP_VERIFY_INSTALL", "1") or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
 
 
 def loader_refusal(returncode: Optional[int], output: str = "") -> Optional[str]:
-    """Why the OS loader refused to start a binary, from its exit status and output, else None. Only a
-    loader refusal counts: any exit of a process that reached ``main`` (sd-cli exits 1 on some
-    ``--help`` builds) means the image starts."""
+    """Loader refusal reason, else None. Any exit after reaching ``main`` (sd-cli may exit 1 on ``--help``) counts as starting."""
     if returncode is None:
         return None
     code = returncode + (1 << 32) if returncode < 0 else returncode
@@ -735,7 +730,6 @@ def loader_refusal(returncode: Optional[int], output: str = "") -> Optional[str]
 
 
 def _probe_env(binary: Path) -> dict:
-    """The child env the backend gives the binary: its own directory first on the library path."""
     env = dict(os.environ)
     if sys.platform == "win32":
         var = "PATH"
@@ -749,8 +743,7 @@ def _probe_env(binary: Path) -> dict:
 
 
 def _windows_error_mode_suppressed():
-    """Context manager: on Windows, stop the loader's modal "System Error" dialog for a missing DLL
-    (the child inherits the error mode), so a refusal returns an exit status instead of a popup."""
+    """On Windows, suppress the missing-DLL dialog so a refusal returns an exit status."""
     import contextlib
 
     @contextlib.contextmanager
@@ -778,8 +771,7 @@ def _windows_error_mode_suppressed():
 
 
 def probe_binary_starts(binary: Path, *, timeout: float = 30.0) -> Optional[str]:
-    """Run ``binary --help`` the way the backend will. Returns the loader's refusal, or None when it
-    started or when it could not be asked (cannot exec, timeout): only a proven refusal blocks."""
+    """Run ``binary --help``; return the loader's refusal, or None (started, or no verdict)."""
     import subprocess
 
     kwargs: dict = {}
@@ -804,18 +796,14 @@ def probe_binary_starts(binary: Path, *, timeout: float = 30.0) -> Optional[str]
 
 
 def _should_verify(chosen: str) -> bool:
-    """CUDA bundles are left out: they load a host / llama.cpp CUDA runtime the backend adds to the
-    child's path at spawn (and the Windows cudart archive lands after extraction), so a bare probe
-    would refuse a build that runs. CUDA also has no fallback rung."""
+    """Skip CUDA: its runtime is added at spawn, so a bare probe would refuse a working build."""
     return verify_install_enabled() and "cuda" not in chosen.lower()
 
 
 def _verify_bundle_starts(
     archive: Path, target: Path, *, accelerator: str, chosen: str, tag: Optional[str]
 ) -> None:
-    """Extract ``archive`` to a scratch directory beside ``target`` and start its executables there.
-    Raises ``UnrunnableBuildError`` when the loader refuses one; any other problem (no space, an
-    archive the real extraction will reject anyway) is left to the real extraction to report."""
+    """Start the archive's executables in a scratch dir; raise ``UnrunnableBuildError`` on a loader refusal."""
     import tempfile
 
     names = _binary_names()
@@ -1000,8 +988,7 @@ def install(
     try:
         _download(url, archive)
         _verify_sha256(archive, asset.get("digest"))
-        # Start the new build BEFORE it touches the tree, so a bundle the loader refuses
-        # (the upstream Windows ROCm zip without the HIP SDK) never sweeps a working one.
+        # Probe before touching the tree so a refused bundle never sweeps a working one.
         if _should_verify(chosen):
             _verify_bundle_starts(
                 archive,

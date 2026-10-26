@@ -113,7 +113,6 @@ def _zoo_without_gdn_decode_kernel(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
-    # A Windows host's PATH would decide whether ROCm asks start at Vulkan; the Windows ROCm tests opt back in.
     monkeypatch.setenv("UNSLOTH_SD_CPP_WINDOWS_ROCM", "1")
 
 
