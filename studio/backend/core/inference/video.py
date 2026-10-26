@@ -147,6 +147,7 @@ from .diffusion_memory import (
     estimate_safetensors_dense_mib,
     estimate_video_runtime_mib,
     file_size_mib,
+    mps_plan_tight,
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_keeps_transformer_resident,
@@ -499,9 +500,9 @@ def _video_comfy_backends(
 ) -> dict[str, Optional[str]]:
     """``load_comfy_quant_transformer`` backends for a ComfyUI-quantized video DiT: the ones Studio's own int8 / fp8
     quant would run on this card and plan (int8: torchao resident, the torchao-free twin under offload; fp8: torchao
-    resident only; else fp8 storage under offload). ``priced_offload``: the plan was sized with the offloaded
-    backends (``_video_offload_reprice``), so a load that now fits resident keeps them. ``widened_mib``: the planned
-    DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
+    resident only; else fp8 storage under offload or a tight MPS plan). ``priced_offload``: the plan was sized with the
+    offloaded backends (``_video_offload_reprice``), so a load that now fits resident keeps them. ``widened_mib``: the
+    planned DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
     ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
     if not keep:
         return {
@@ -512,23 +513,32 @@ def _video_comfy_backends(
         }
     offload = priced_offload or not _video_comfy_resident(plan, bf16_plan)
     name = getattr(fam, "name", None)
-    storage = _video_fp8_storage(fam, target, offload, widened_mib = widened_mib)
+    # MPS never offloads: there a plan past the resident margin is what makes storage pay
+    store_pays = offload or mps_plan_tight(plan)
+    storage = _video_fp8_storage(fam, target, store_pays, widened_mib = widened_mib)
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
         "fp8_storage": storage,
         "fp8_widen_chosen": not storage
-        and _video_fp8_storage(fam, target, offload, widened_mib = widened_mib, widen_chosen = True),
+        and _video_fp8_storage(fam, target, store_pays, widened_mib = widened_mib, widen_chosen = True),
     }
+
+
+def _video_comfy_reprice(plan: Any, bf16_plan: Any = None) -> bool:
+    """Whether a ComfyUI DiT is re-priced with the offloaded backends: an offloaded plan (fp8 layers dequantize on
+    NVIDIA), or an MPS plan past its resident margin (MPS never offloads; its offloaded backends are its resident ones
+    plus fp8 storage)."""
+    return not _video_comfy_resident(plan, bf16_plan) or mps_plan_tight(plan)
 
 
 def _video_offload_reprice(
     fam: Any, transformer_mib: Optional[int], offload_mib: Optional[int]
 ) -> tuple[Optional[int], bool]:
-    """``(transformer_mib, priced_offload)`` once an offloaded plan re-prices the DiT with the offloaded backends.
-    Larger: re-plan at it. Smaller (fp8 stored, the int8 twin where only it runs): re-plan at it too, and the load must
-    then keep those backends even if the new plan fits resident, else it widens past the size it was planned at.
-    H3 keeps its resident torchao path, so only a larger price moves it."""
+    """``(transformer_mib, priced_offload)`` once an offloaded (or tight MPS) plan re-prices the DiT with the offloaded
+    backends. Larger: re-plan at it. Smaller (fp8 stored, the int8 twin where only it runs): re-plan at it too, and
+    the load must then keep those backends even if the new plan fits resident, else it widens past the size it was
+    planned at. H3 keeps its resident torchao path, so only a larger price moves it."""
     if offload_mib is None or transformer_mib is None or offload_mib == transformer_mib:
         return transformer_mib, False
     if offload_mib < transformer_mib and getattr(fam, "name", None) == "minimax-h3":
@@ -8649,8 +8659,8 @@ class VideoBackend:
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
         comfy_priced_offload = False
-        if comfy_scan is not None and not _video_comfy_resident(plan, bf16_plan):
-            # Offloaded, fp8 layers dequantize on NVIDIA: price the DiT the load will actually build.
+        if comfy_scan is not None and _video_comfy_reprice(plan, bf16_plan):
+            # Price the DiT the load will actually build.
             offload_mib = _video_comfy_resident_mib(
                 fam,
                 base,
