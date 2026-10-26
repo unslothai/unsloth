@@ -101,6 +101,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -3864,7 +3865,7 @@ function VideoGenerator({
           </div>
 
           <Field label="Prompt" hint={status?.prompt_hint || undefined}>
-            <Textarea
+            <DeferredTextarea
               data-type-to-activate="prompt"
               rows={4}
               className={cn(PROMPT_BOX_CLASS, "min-h-32")}
@@ -3875,7 +3876,7 @@ function VideoGenerator({
                 dismissExample("video");
                 setExampleDismissed(true);
               }}
-              onChange={(e) => setPrompt(e.target.value)}
+              onValueChange={setPrompt}
             />
           </Field>
           {status?.supports_cfg !== false && (
@@ -4505,7 +4506,7 @@ function VideoGenerator({
                 alt="Live preview of the first frame being generated"
                 data-testid="video-live-preview"
                 style={livePreviewBox}
-                className="size-full object-contain shadow-sm"
+                className="media-stage-shadow size-full object-contain shadow-sm"
               />
             ) : selected && selectedSrc ? (
               <>
@@ -4531,7 +4532,7 @@ function VideoGenerator({
                     }
                   }}
                   onError={() => remintSrc(selected)}
-                  className="max-h-full max-w-full object-contain shadow-sm"
+                  className="media-stage-shadow max-h-full max-w-full object-contain shadow-sm"
                 />
                 {selected.has_audio && (
                   <div className="absolute left-4 top-4 flex items-center gap-1 rounded-full bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
