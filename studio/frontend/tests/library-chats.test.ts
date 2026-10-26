@@ -449,12 +449,10 @@ test("grid cards share a two-line title and a footer of contents over date", () 
     assert.match(card, /className=\{cn\(CARD_TITLE, !showTile && TILELESS_TITLE\)\}/);
     assert.match(card, /<span className="line-clamp-2">/);
     assert.match(card, /<CardFooter/);
-    // A tab of one kind drops the kind tile; the empty marks row then collapses.
     assert.match(card, /showTile = true,/);
     assert.match(card, /className=\{cn\("flex items-center gap-2", !showTile && TILELESS_ROW\)\}/);
   }
   assert.doesNotMatch(cards[0], /modelLabel|model &&/);
-  // Without the tile, fork and compare show as badges instead.
   assert.match(cards[0], /<ChatBadges chat=\{chat\} marksOnly=\{showTile\} \/>/);
   assert.doesNotMatch(cards[1], /archived/);
   assert.match(cards[0], /<ChatLocation[^>]*plain/);
@@ -464,7 +462,6 @@ test("cards drop the kind tile everywhere but All, which mixes chats, projects a
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /<ChatCard[^>]*showTile=\{shownEntries !== null\}/s);
   assert.match(library, /<ChatRow[^>]*showTile=\{shownEntries !== null\}/s);
-  // Projects and Sections tabs, and a section's projects, in both grid and list.
   assert.equal(library.split("showTile={false}").length - 1, 6);
   const favorites = library.slice(library.indexOf("function favoriteEntries("));
   assert.doesNotMatch(favorites.slice(0, favorites.indexOf("cards:")), /showTile/);

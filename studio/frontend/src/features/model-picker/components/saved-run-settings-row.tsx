@@ -41,7 +41,6 @@ interface RunSettingsPickerProps {
   sets: readonly SavedRunSettings[];
   /** The set the model loads with, or null for the default (recommended) settings. */
   selected: string | null;
-  /** The set every load uses ("Always load with these settings"), if any. */
   pinned?: string | null;
   /** Default with edits: the name they will be saved under. */
   customName: string | null;
@@ -102,8 +101,7 @@ export function RunSettingsPicker({
     if (!isNaming) {
       return;
     }
-    // Escape only cancels the name box. Window capture runs before the picker's or the sheet's own
-    // document-level listener, which skips a prevented event instead of closing the whole panel.
+    // Window capture runs before Radix's document listener, which then skips the prevented Escape.
     const keepPanel = (event: KeyboardEvent) => {
       if (
         event.key === "Escape" &&
@@ -231,7 +229,6 @@ export function RunSettingsPicker({
               key={entry.name}
               className={cn(ITEM, "pr-1.5")}
               onSelect={() => onPick(entry.name)}
-              // Arrow keys move between rows only, so the row icons need keys of their own.
               aria-keyshortcuts="F2 Delete"
               onKeyDown={(event) => {
                 if (event.key === "F2") {

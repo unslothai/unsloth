@@ -3,8 +3,7 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// App-wide stop and pause. The stock glyphs are squircles that read as circles once filled at
-// small sizes; these are square with a small corner radius, on the stock 24 grid and stroke.
+// The stock squircles read as circles once filled small; these keep a small corner radius.
 export const StopIcon: IconSvgElement = [
   [
     "path",

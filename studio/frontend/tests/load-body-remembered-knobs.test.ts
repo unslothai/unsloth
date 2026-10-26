@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Source-level: both load bodies are built inside async flows with no renderer here.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -30,7 +29,6 @@ test("a picker load sanitizes its stored extra args before sending them", () => 
   assert.ok(start > 0);
   const block = RUNTIME.slice(start, start + 1400);
   assert.match(block, /isGguf &&\s*!targetIsDiffusion &&/);
-  // null and [] stay as they are: only a non-empty list is rewritten.
   assert.match(
     block,
     /loadLlamaExtraArgs != null &&\s*loadLlamaExtraArgs\.length > 0/,
@@ -40,6 +38,5 @@ test("a picker load sanitizes its stored extra args before sending them", () => 
     block,
     /sanitizeStoredExtraArgs\(\s*loadLlamaExtraArgs,\s*managed\?\.managed \?\? new Set<string>\(\),\s*\{\s*maxBytes: managed\?\.maxBytes,\s*windowsCommandBudget: managed\?\.windowsCommandBudget,/,
   );
-  // Fully stripped stays an explicit [] (none), as auto-load sends it, never undefined.
   assert.match(block, /loadLlamaExtraArgs = cleaned;/);
 });

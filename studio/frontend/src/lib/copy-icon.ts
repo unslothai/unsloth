@@ -3,8 +3,7 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// App-wide copy glyph: two equal rounded squares a short step apart, the back one drawn only where
-// the front one leaves it showing. The stock Copy01 has a larger back square set further off.
+// Two equal squares a short step apart; the back one only where it shows.
 export const Copy01Icon: IconSvgElement = [
   [
     "path",

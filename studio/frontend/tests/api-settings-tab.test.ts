@@ -48,10 +48,8 @@ test("jump links above the token form reach the tab's APIs from any page, which 
     assert.match(links, new RegExp(`target: "${target}"`));
   }
   assert.match(links, /openDialog\("api-keys", \{ scrollTarget: link\.target \}\)/);
-  // Agents and MCP hold their section in place like the other API sections.
   assert.match(examples, /scrollTarget !== "api-keys-agents" && scrollTarget !== "api-keys-mcp"/);
   assert.match(examples, /consumeScrollTarget\(target\)/);
-  // Per-instance refs, and the API page's copies stay out of Settings navigation.
   assert.match(examples, /<div ref=\{agentsRef\} className=/);
   assert.match(examples, /<div ref=\{mcpRef\}>\{agentsExtra\}<\/div>/);
   assert.match(examples, /if \(agentsOnly\) return;\s*if \(scrollTarget !== "api-keys-agents"/);
@@ -65,10 +63,8 @@ test("jump links above the token form reach the tab's APIs from any page, which 
   }
   assert.ok(TAB.indexOf("<ApiJumpLinks") > 0);
   assert.ok(TAB.indexOf("<ApiJumpLinks") < TAB.indexOf("<CreateKeyForm"));
-  // The token form and list share one section heading.
   assert.match(TAB, /<h2 className="settings-heading text-base font-semibold font-heading">\s*\{t\("settings\.apiKeys\.accessTokens"\)\}\s*<\/h2>\s*<AnimatePresence/);
   assert.equal(TAB.split('t("settings.apiKeys.accessTokens")').length - 1, 1);
-  // The API page shows the other APIs' examples itself, a tab each, headings left to the tab.
   const monitor = readSrc("features/api-monitor/api-monitor-page.tsx");
   assert.doesNotMatch(monitor, /<ApiJumpLinks/);
   for (const part of [
@@ -80,17 +76,14 @@ test("jump links above the token form reach the tab's APIs from any page, which 
     assert.match(monitor, part);
   }
   assert.match(monitor, /\.\.\.\(isOwner\s*\? \[\{ id: "decision" as const/);
-  // No MCP tab: it is a setting, not an example.
   assert.doesNotMatch(monitor, /McpAccessSection|id: "mcp"/);
   assert.match(monitor, /font-heading text-ui-15/);
   assert.match(examples, /\{agentsOnly \? null : \(/);
-  // Each tab carries the icon its Settings section has.
   for (const icon of ["MessageCircleIcon", "Image01Icon", "AiSpeechIcon", "TaskDone01Icon", "BotIcon"]) {
     assert.match(monitor, new RegExp(`label: "[^"]+", icon: ${icon} \\}`));
   }
   assert.ok(TAB.indexOf("<MediaApiExamples") < TAB.indexOf("<AudioApiExamples"));
   assert.ok(TAB.indexOf("<AudioApiExamples") < TAB.indexOf("<DecisionApiSection"));
-  // The Decision API has a heading like the other API sections, outside its card.
   const decision = readSrc("features/settings/components/decision-api-section.tsx");
   assert.match(
     decision,

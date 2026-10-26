@@ -35,8 +35,7 @@ import {
   publishLanUrls,
   useSettingsDialogStore,
 } from "@/features/settings";
-// Direct, not through the barrel: these pull in the chat feature, which every barrel importer
-// would then load.
+// Not through the barrel: these pull in chat, which every barrel importer would then load.
 import { RAISED_SURFACE } from "@/features/library/surface";
 import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
 import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
@@ -874,7 +873,6 @@ function QuickStart({
   const isOwner = useIsAccountOwner();
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
   const [kind, setKind] = useState<QuickStartKind>("chat");
-  // The other APIs' examples, with the icons Settings > API gives them; Decision is owner-only there too.
   const kinds: { id: QuickStartKind; label: string; icon: IconSvgElement }[] = [
     { id: "chat", label: "Chat", icon: MessageCircleIcon },
     { id: "media", label: "Images / Video", icon: Image01Icon },
@@ -903,7 +901,6 @@ function QuickStart({
             : "Load a model, then send a request to see it here."}
         </p>
       </div>
-      {/* The Library's tab row: Hellix, no track, the current tab lifted. */}
       <nav aria-label="Example" className="flex flex-wrap justify-center gap-1">
         {kinds.map((entry) => (
           <button
@@ -913,7 +910,7 @@ function QuickStart({
             onClick={() => setKind(entry.id)}
             className={cn(
               "flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 font-heading text-ui-15 text-foreground/80 transition-colors hover:text-foreground",
-              // On the card, the lift is one step up from it, not the card colour itself.
+              // On a card, so a step above it, not the card colour.
               entry.id === kind &&
                 cn(
                   RAISED_SURFACE,

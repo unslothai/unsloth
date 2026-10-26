@@ -525,9 +525,7 @@ export function UsageExamples({
   agentsOnly = false,
 }: {
   apiKey?: string | null;
-  /** Only the Agents block, for the API page, where a tab names it. */
   agentsOnly?: boolean;
-  /** More agent controls (MCP access) under the Agents heading. */
   agentsExtra?: ReactNode;
   useTunnel: boolean;
   onUseTunnelChange: (next: boolean) => void;
@@ -549,7 +547,6 @@ export function UsageExamples({
     const target = scrollTarget;
     const section = (target === "api-keys-agents" ? agentsRef : mcpRef).current;
     if (!section) return;
-    // As the other API sections do: hold the section in place while the cards above it load.
     const pin = () => scrollIntoPane(section);
     const observer = new ResizeObserver(pin);
     observer.observe(section.parentElement ?? section);

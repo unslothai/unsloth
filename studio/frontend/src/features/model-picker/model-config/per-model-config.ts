@@ -1523,7 +1523,6 @@ function findModelOverrideKeyOwners(
   return owners;
 }
 
-/** The model + quant records the server keys name. */
 export function modelOverrideKeyOwners(
   overrideKeys: readonly string[],
 ): { modelId: string; ggufVariant: string | null }[] {

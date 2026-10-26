@@ -83,7 +83,6 @@ export function AudioApiExamples({
   showHeading = true,
 }: {
   apiKey?: string | null;
-  /** Off on the API page, where a tab names the section. */
   showHeading?: boolean;
   useTunnel: boolean;
   keylessScope?: KeylessApiAccessScope;
@@ -131,7 +130,7 @@ export function AudioApiExamples({
   }, [audioApiRequested]);
 
   useEffect(() => {
-    // The API page's copy (no heading) must not answer, or the dialog's section never scrolls.
+    // The API page's copy (no heading) must not answer, or the dialog's never scrolls.
     if (!showHeading || scrollTarget !== "api-keys-audio-api") return;
     const section = sectionRef.current;
     if (!section) return;

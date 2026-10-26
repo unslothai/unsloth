@@ -86,7 +86,6 @@ function errorMessage(error: unknown): string | null {
 export function DecisionApiSection({
   showHeading = true,
 }: {
-  /** Off on the API page, where a tab names the section. */
   showHeading?: boolean;
 } = {}): ReactElement | null {
   const t = useT();
@@ -155,7 +154,7 @@ export function DecisionApiSection({
   }, []);
 
   useEffect(() => {
-    // The API page's copy (no heading) must not answer, or the dialog's section never scrolls.
+    // The API page's copy (no heading) must not answer, or the dialog's never scrolls.
     if (!showHeading || scrollTarget !== "api-keys-decision-api" || !settings)
       return;
     const frame = window.requestAnimationFrame(() => {
@@ -348,7 +347,6 @@ export function DecisionApiSection({
     }
   };
 
-  // A heading like the other API sections, then the controls in a card.
   const header = (
     <div className="flex items-start justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-1">

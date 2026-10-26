@@ -74,8 +74,7 @@ export function ApiKeysTab() {
     tools: boolean;
     exposure: KeylessApiAccessExposure | null;
   }>({ scope: "off", tools: false, exposure: null });
-  // Edited on Remote & LAN; read here so the examples only use a placeholder key where the server
-  // admits one. Owner-only, as that route is. Re-read when a tunnel comes or goes: it changes exposure.
+  // Read for the examples' placeholder key; a tunnel coming or going changes exposure.
   const cloudflareUrl = usePlatformStore((state) => state.cloudflareUrl);
   // biome-ignore lint/correctness/useExhaustiveDependencies: cloudflareUrl is a trigger, not an input
   useEffect(() => {
@@ -287,7 +286,7 @@ export function ApiKeysTab() {
         keylessScope={keyless.scope}
         keylessTools={keyless.tools}
         keylessExposure={keyless.exposure}
-        // MCP access and Keyless API access are installation-wide: owner-only routes.
+        // Installation-wide, so owner-only routes.
         agentsExtra={isOwner ? <McpAccessSection apiKey={revealed} /> : null}
       />
 

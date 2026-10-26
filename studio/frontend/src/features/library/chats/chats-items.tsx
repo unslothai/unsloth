@@ -1160,7 +1160,6 @@ export function ChatCard({
   showProject: boolean;
   showSection: boolean;
   times?: RowTimes;
-  /** Off where every card is a chat; fork and compare then read as badges. */
   showTile?: boolean;
 }) {
   const t = useT();
@@ -1222,10 +1221,9 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
   );
 }
 
-// Without a tile the marks row collapses when empty, and the title clears the corner menu.
+// Without a tile, the empty marks row collapses and the title clears the corner menu.
 const TILELESS_ROW = "empty:hidden pe-8";
 const TILELESS_TITLE = "pe-6";
-// A list row keeps the tile's height, so dropping it does not shorten the row.
 const TILELESS_ROW_NAME = "min-h-13";
 
 const CARD_TITLE =

@@ -172,11 +172,9 @@ export function MediaIdleUnloadSetting({
   );
 }
 
-// The image and video switch also shows in the Images / Video API section; each copy reloads when
-// the other saves, so neither shows a stale value.
+// Also shown in the Images / Video API section; each copy reloads when the other saves.
 const AUTO_SWITCH_UPDATED_EVENT = "unsloth-auto-switch-updated";
 
-/** "Switch image and video model by request", for the Images / Video API section. */
 export function MediaAutoSwitchRow() {
   const t = useT();
   const [settings, setSettings] = useState<OpenAIAutoSwitchSettings | null>(

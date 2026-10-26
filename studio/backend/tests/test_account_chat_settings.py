@@ -519,7 +519,6 @@ def test_managed_default_save_shadows_the_owners_override(client, fresh_override
     owner = run_as(OWNER, resolve_override_for_load, "org/model:Q4_K_M")[1]
     assert owner["llama_extra_args"] == ["--no-warmup"] and owner["max_seq_length"] == 4096
     assert owner["gpu_layers"] == 10
-    # Omitted flags save the same way.
     assert client.put(url, json = {"model_id": "org/model:Q4_K_M", "remove": False}).json()[
         "overrides"
     ] == {"org/model:Q4_K_M": {"llama_extra_args": []}}

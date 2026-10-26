@@ -6,15 +6,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsSection } from "./settings-section";
 
-// The switches live on Remote & LAN, beside the network exposure they depend on; the API tab only
-// points there. English like the section it opens.
+// The switches live on Remote & LAN, beside the exposure they depend on. English like that section.
 export function KeylessApiAccessLink() {
   return (
     <SettingsSection
       title="Keyless API access"
       description="Use Unsloth from other apps without creating an API key. Turn it on in Remote & LAN."
       action={
-        // Same link as "Open in Agents".
         <button
           type="button"
           onClick={() =>

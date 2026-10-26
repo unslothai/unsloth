@@ -2864,8 +2864,7 @@ html[data-chat-font] .aui-root {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
-	/* The API page's cards are elevated, where the shared track sinks below the card; its buttons
-	   lift above the card instead, as on any raised surface. */
+	/* Elevated cards sink the shared track; the API page's buttons lift above them instead. */
 	html.dark .api-monitor-page .elevated-card .btn-fill {
 		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}

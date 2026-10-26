@@ -216,7 +216,6 @@ export function ModelMemorySection({
       ref={ref}
       action={
         full ? undefined : (
-          // Same link as the API tab's "Open in Agents".
           <button
             type="button"
             className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

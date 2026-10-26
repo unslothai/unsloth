@@ -142,7 +142,6 @@ export function McpAccessSection({
     : null;
   const agentDetails = detailsFor(agent);
 
-  // Rows under the API tab's Agents heading, not a card of its own.
   return (
     <div
       data-settings-label={t("settings.apiKeys.mcp.title")}

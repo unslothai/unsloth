@@ -15,8 +15,7 @@ export function RemoteLanTab() {
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
 
-  // The API tab's "Open in Remote & LAN" lands on keyless access, the last section here. Again once
-  // the sections above have read their status: their rows arrive late and push it back down.
+  // Again once the sections above have loaded: their rows arrive late and push it back down.
   useEffect(() => {
     if (scrollTarget !== "remote-lan-keyless") return;
     const land = () => {

@@ -17,7 +17,6 @@ import {
   useSettingsDialogStore,
 } from "../stores/settings-dialog-store";
 
-/** Links to the API settings sections; each section consumes its scroll target, so they work from any page. */
 export function ApiJumpLinks({ className }: { className?: string }) {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -77,7 +76,6 @@ export function ApiJumpLinks({ className }: { className?: string }) {
                 .getState()
                 .openDialog("api-keys", { scrollTarget: link.target })
             }
-            // A filled button's grey, not a selected segment: a row of links, not a toggle.
             className="btn-fill group/jump inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-ui-13 font-medium text-foreground/80 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             <HugeiconsIcon

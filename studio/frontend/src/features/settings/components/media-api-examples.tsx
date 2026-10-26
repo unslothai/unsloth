@@ -51,7 +51,6 @@ export function MediaApiExamples({
   showHeading = true,
 }: {
   apiKey?: string | null;
-  /** Off on the API page, where a tab names the section. */
   showHeading?: boolean;
   useTunnel: boolean;
   keylessScope?: KeylessApiAccessScope;
@@ -85,7 +84,7 @@ export function MediaApiExamples({
   }, [mediaApiRequested]);
 
   useEffect(() => {
-    // The API page's copy (no heading) must not answer, or the dialog's section never scrolls.
+    // The API page's copy (no heading) must not answer, or the dialog's never scrolls.
     if (!showHeading || scrollTarget !== "api-keys-media-api") return;
     const section = sectionRef.current;
     if (!section) return;
@@ -175,7 +174,6 @@ export function MediaApiExamples({
           {t("settings.apiKeys.mediaApi.description")}
         </p>
       </div>
-      {/* The same owner-only setting as under Model auto-switch, where an API caller looks for it. */}
       {isOwner ? (
         <div className="-my-3">
           <MediaAutoSwitchRow />

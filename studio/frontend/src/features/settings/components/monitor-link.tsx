@@ -41,7 +41,6 @@ export function MonitorLink(): ReactElement {
 
   return (
     <SettingsSection title={t("settings.resources.liveMonitor.apiTitle")}>
-      {/* pt-3: the card starts where a first row's text would, as under the other headings. */}
       <div className="flex flex-col pt-3">
         <button
           type="button"
@@ -61,12 +60,10 @@ export function MonitorLink(): ReactElement {
               <span className="absolute right-1 top-1 size-2 rounded-full bg-emerald-500" />
             ) : null}
           </span>
-          {/* The section heading names the monitor, so the card says what it opens. */}
           <span className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-semibold text-foreground">
               {t("settings.resources.liveMonitor.summary")}
             </span>
-            {/* Kept while the snapshot loads, so the card does not grow when it lands. */}
             <span className="min-h-[1lh] truncate text-xs text-muted-foreground">
               {data == null
                 ? null
