@@ -709,7 +709,17 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # gemma_3_12B_it_fp4_mixed; the hosted layerwise fp8 file is the nearest scheme we serve.
         te_quant_auto = "fp8",
         # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
-        prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
+        # Hosted 2.0 DiT (unsloth/LTX-2-FP8, baked from Lightricks/LTX-2's transformer/), keyed on the 2.0 base so 2.3
+        # never resolves it (the loader also refuses it for any other base_model_id). fp8 only: LTX-2-FP8.safetensors
+        # passes this runtime's checks (per-row, empty excludes, activation floor), while LTX-2-INT8.safetensors was
+        # baked before _LTX2_INT8_EXCLUDES and quantizes the audio / av_cross_attn / adaLN Linears the runtime keeps
+        # bf16, so int8 keeps quantizing at load.
+        prequant_variant_repos = (
+            ("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),
+            ("lightricks/ltx-2", "fp8", "unsloth/LTX-2-FP8"),
+        ),
+        # No prequant_resident_gb_by_scheme row: it is per family, so it would also reprice 2.3's quantize-at-load
+        # plan. The generic 0.55 x 37.8 = 20.8 GB over-states LTX-2-FP8.safetensors (18.91 GB) by under 2 GB.
         # no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s)
         cudnn_benchmark = False,
         # Block RMSNorm (hidden 4096) R0_BLOCK 4096 vs 2048 tie on B200: 3 of 6 cold servers rendered another clip.
