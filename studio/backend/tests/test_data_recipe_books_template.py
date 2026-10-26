@@ -33,3 +33,27 @@ def test_books_template_turns_extracted_text_into_text_rows_without_a_model(tmp_
     assert len(rows) == 2
     assert rows["text"][0].startswith("It was a bright cold day")
     assert all(0 < len(text) <= source["chunk_size"] for text in rows["text"])
+
+
+def test_books_template_rows_start_on_a_word_boundary(tmp_path):
+    pytest.importorskip("data_designer")
+    pytest.importorskip("data_designer_unstructured_seed")
+    from core.data_recipe.service import build_config_builder, create_data_designer
+
+    paragraphs = (" ".join(f"word{p}x{w}" + "o" * (w % 5) for w in range(150)) for p in range(30))
+    book = "\n\n".join(paragraphs)
+    extracted = tmp_path / "book.extracted.txt"
+    extracted.write_text(book, encoding = "utf-8")
+    recipe = json.loads(_TEMPLATE.read_text(encoding = "utf-8"))["recipe"]
+    source = recipe["seed_config"]["source"]
+    assert source["chunk_overlap"] > 0
+    source.pop("path")
+    source["paths"] = [str(extracted)]
+
+    designer = create_data_designer(recipe, artifact_path = str(tmp_path / "artifacts"))
+    rows = designer.preview(build_config_builder(recipe), num_records = 4).dataset
+
+    assert len(rows) == 4
+    for text in rows["text"]:
+        start = book.index(text)
+        assert start == 0 or book[start - 1].isspace(), text[:30]

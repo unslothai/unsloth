@@ -16,6 +16,7 @@ DEFAULT_CHUNK_OVERLAP = 200
 MAX_CHUNK_SIZE = 20000
 _MIN_BREAK_RATIO = 0.6
 _CACHE_DIR = LazyPath(unstructured_seed_cache_root)
+_WHITESPACE = re.compile(r"\s+")
 
 _PANDAS = None
 
@@ -238,6 +239,9 @@ def split_text_into_chunks(*, text: str, chunk_size: int, chunk_overlap: int) ->
             break
 
         next_start = end - chunk_overlap
+        if 0 < next_start < end and not text[next_start - 1].isspace():
+            boundary = _WHITESPACE.search(text, next_start, end)
+            next_start = boundary.end() if boundary else end
         if next_start <= start:
             next_start = end
         start = max(0, next_start)
