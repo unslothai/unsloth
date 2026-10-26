@@ -1678,12 +1678,29 @@ def _family_from_content(
     vetoed = fam is None and any(
         _best_family_match(model_identity(n).lower()) is not None for n in needles
     )
+    if fam is None and not vetoed:
+        fam = _family_from_gguf_arch(path)
     name, _ = resolve_family_with_content(fam.name if fam else None, path, "image", vetoed)
     if name is None:
         return None
     if fam is not None and fam.name == name:
         return fam
     return detect_family("", override = name)
+
+
+def _family_from_gguf_arch(path: str) -> Optional[DiffusionFamily]:
+    """Family of a renamed local GGUF whose arch alone names it; the Images listing already offers it by arch."""
+    if not path.lower().endswith(".gguf"):
+        return None
+    try:
+        from utils.gguf_archs import FAMILY_NAMING_DIFFUSION_GGUF_ARCHS
+        from utils.models.gguf_metadata import read_gguf_architecture
+        arch = (read_gguf_architecture(path) or "").strip().lower()
+    except Exception:  # noqa: BLE001 -- an unreadable header leaves the name verdict alone
+        return None
+    if arch not in FAMILY_NAMING_DIFFUSION_GGUF_ARCHS:
+        return None
+    return detect_family("", override = arch)
 
 
 def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
