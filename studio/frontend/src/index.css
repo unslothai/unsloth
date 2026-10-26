@@ -1990,6 +1990,13 @@ html.dark.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-u
 	letter-spacing: 0.023em;
 }
 
+/* WebKitGTK (the Linux desktop webview) repaints the whole view for each keystroke or scroll step, and
+   a blurred shadow on full-size media made every repaint about 150 ms there, so typing beside it lagged
+   (#15221). The image keeps its frame elsewhere. */
+html.tauri.render-linux .media-stage-shadow {
+	box-shadow: none;
+}
+
 /* Chat font: only applies while a custom chat font is set. Elements with
    explicit font utilities (headings, code) keep their own families. */
 html[data-chat-font] .aui-root {
