@@ -613,7 +613,13 @@ def _fp8_tma_descriptor(tensor, rows, cols, block_shape):
     fields = _FP8_TMA_DESC_FIELDS.get(key)
     if fields is None:
         proto = _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
-        fields = _FP8_TMA_DESC_FIELDS[key] = dict(getattr(proto, "__dict__", None) or {})
+        # Tensor-independent fields only: caching `base` would keep the first GEMM's tensor alive.
+        fields = {
+            k: v
+            for k, v in (getattr(proto, "__dict__", None) or {}).items()
+            if k not in ("base", "shape", "strides")
+        }
+        _FP8_TMA_DESC_FIELDS[key] = fields
     view = tensor.view(rows, cols)
     # A sliced weight's row pitch is not its width: from_tensor reads the real strides.
     if not fields or rows <= 0 or cols <= 0 or view.stride() != (cols, 1):

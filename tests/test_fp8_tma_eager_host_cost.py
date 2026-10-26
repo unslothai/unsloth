@@ -129,6 +129,22 @@ def test_descriptor_matches_from_tensor(dtype):
     _same(F8._fp8_tma_descriptor(t, 192, 256, (128, 128)), _reference(t, 192, 256, (128, 128)), t)
 
 
+def test_cached_fields_do_not_keep_the_first_tensor_alive():
+    import gc
+    import weakref
+
+    F8._FP8_TMA_DESC_FIELDS.clear()
+    t = torch.zeros(256, 256, dtype = torch.float16)
+    ref = weakref.ref(t)
+    F8._fp8_tma_descriptor(t, 256, 256, (128, 128))
+    del t
+    gc.collect()
+    assert ref() is None
+    assert all(
+        k not in fields for fields in F8._FP8_TMA_DESC_FIELDS.values() for k in ("base", "shape", "strides")
+    )
+
+
 def test_sliced_rows_fall_back_to_from_tensor():
     # A weight sliced out of a wider buffer has a row pitch above its width: keep its real strides.
     wide = torch.zeros(256, 384, dtype = torch.float8_e4m3fn)
