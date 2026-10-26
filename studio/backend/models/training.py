@@ -596,8 +596,7 @@ class TrainingStartRequest(BaseModel):
             "back to the incoming activation dtype."
         ),
     )
-    # Bounded to what transformers.set_seed (numpy) accepts: an out-of-range value otherwise passes every
-    # preflight and only dies in set_seed once the model has loaded.
+    # numpy's range (transformers.set_seed): out of it, the run only fails after the model loads.
     random_seed: int = Field(
         3407,
         ge = 0,

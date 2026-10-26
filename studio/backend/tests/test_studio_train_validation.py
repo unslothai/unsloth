@@ -136,8 +136,6 @@ class TestLoraAlphaCap:
 
 
 class TestRandomSeedRange:
-    """The seed reaches transformers.set_seed, which numpy limits to [0, 2**32 - 1]."""
-
     @pytest.mark.parametrize("value", [0, 3407, 2**32 - 1])
     def test_in_range_accepts(self, value):
         _check_field("random_seed", value)
