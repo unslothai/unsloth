@@ -250,12 +250,39 @@ def tensor_parallel_env_load(fn):
         mesh = layout.tp_mesh
         _DEPTH["load"] += 1
         try:
-            return _mark_world_save(_load(fn, args, kwargs, values, layout, mesh))
+            if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values):
+                return fn(*args, **kwargs)  # full load; get_peft_model shards it (Params4bit included)
+            from .tp_native import sharded_loading
+
+            try:
+                with sharded_loading(mesh) as state:
+                    out = fn(*args, **kwargs)
+            except ValueError as exc:
+                if not str(exc).startswith("Unsloth: tensor parallel sharded loading"):
+                    raise
+                if _rank0():
+                    print(f"{exc} Loading in full on every rank instead; get_peft_model shards it.")
+                return fn(*args, **kwargs)
+            if not state["models"] and _rank0():
+                print(
+                    "Unsloth: UNSLOTH_TP_SIZE: this loader did not go through transformers from_pretrained; "
+                    "the model loaded in full and is sharded at get_peft_model."
+                )
+            return out
         finally:
             _DEPTH["load"] -= 1
 
     from_pretrained._unsloth_tp_env = True
-    return from_pretrained
+    return _marks_world_save(from_pretrained)
+
+
+def _marks_world_save(from_pretrained):
+    @functools.wraps(from_pretrained)
+    def wrapper(*args, **kwargs):
+        out = from_pretrained(*args, **kwargs)
+        return out if env_layout() is None else _mark_world_save(out)
+
+    return wrapper
 
 
 def _mark_world_save(out):
@@ -283,28 +310,6 @@ def _is_adapter(values):
         return bool(file_exists(name, "adapter_config.json", token = values.get("token")))
     except Exception:
         return False
-
-
-def _load(fn, args, kwargs, values, layout, mesh):
-    if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values):
-        return fn(*args, **kwargs)  # full load; get_peft_model shards it (Params4bit included)
-    from .tp_native import sharded_loading
-
-    try:
-        with sharded_loading(mesh) as state:
-            out = fn(*args, **kwargs)
-    except ValueError as exc:
-        if not str(exc).startswith("Unsloth: tensor parallel sharded loading"):
-            raise
-        if _rank0():
-            print(f"{exc} Loading in full on every rank instead; get_peft_model shards it.")
-        return fn(*args, **kwargs)
-    if not state["models"] and _rank0():
-        print(
-            "Unsloth: UNSLOTH_TP_SIZE: this loader did not go through transformers from_pretrained; "
-            "the model loaded in full and is sharded at get_peft_model."
-        )
-    return out
 
 
 def _model_of(out):
