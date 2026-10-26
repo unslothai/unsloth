@@ -809,11 +809,14 @@ class FlowEngine:
         slot = (account.account_id, account.username)
         spare = self._spare_keys.pop(slot, None)
         found = None
-        if spare is not None:
-            try:
-                found = await spare
-            except Exception:
-                found = None
+        if spare is not None and spare.get_loop() is asyncio.get_running_loop():
+            if not spare.done():
+                try:
+                    found = await spare
+                except Exception:
+                    found = None
+            elif not spare.cancelled() and spare.exception() is None:
+                found = spare.result()
         if found is None:
             found = await asyncio.to_thread(self.mint_key, account)
         self._spare_keys[slot] = asyncio.create_task(self._mint_spare(account))
