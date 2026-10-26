@@ -8081,6 +8081,439 @@ def _build_launch_reasoning_args(
     return args
 
 
+_BACKEND_SAMPLING_FLAGS = frozenset({"-bs", "--backend-sampling"})
+_BACKEND_SAMPLING_OPT_OUT = "UNSLOTH_LLAMA_BACKEND_SAMPLING"
+_SPEC_DRAFT_MODEL_FLAGS = frozenset({"-md", "--model-draft", "--spec-draft-model"})
+_SPEC_DRAFT_MODEL_ENV = ("LLAMA_ARG_MODEL_DRAFT", "LLAMA_ARG_SPEC_DRAFT_MODEL")
+
+
+def _launch_flag_values(argv: Sequence[str], flags: Collection[str]) -> list[str]:
+    """Every value ``argv`` gives one of ``flags``, in order, matched as llama.cpp matches them.
+
+    common/arg.cpp folds a long option's underscores to hyphens (``--sampler_seq`` is
+    ``--sampler-seq``, which Studio's extra args accept too), so names go through ``_flag_name``
+    and ``flags`` lists each short alias by itself; the value is the next token. llama.cpp
+    refuses an attached ``--flag=value`` (as validate_extra_args does), so reading one as the
+    flag only ever turns the GPU sampler off for a launch that would not start anyway.
+    """
+    args = [str(a) for a in argv]
+    values = []
+    for i, raw in enumerate(args):
+        if _flag_name(raw) in flags:
+            _, eq, inline = raw.partition("=")
+            values.append(inline if eq else (args[i + 1] if i + 1 < len(args) else ""))
+    return values
+
+
+def _launch_speculates(argv: Sequence[str], env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether llama-server runs speculative decoding for this argv and env.
+
+    As common/arg.cpp builds the type list: ``LLAMA_ARG_SPEC_TYPE`` first, then every
+    ``--spec-type`` and ``--spec-default`` appends, so a later ``--spec-type none`` does not undo
+    an earlier type (``none`` only drops the rest of its own value). A draft model also drafts.
+    """
+    source_env = os.environ if env is None else env
+
+    def drafts(value) -> bool:
+        return "none" not in [n.strip().lower() for n in str(value).split(",")]
+
+    types = _launch_flag_values(argv, {"--spec-type"})
+    if source_env.get("LLAMA_ARG_SPEC_TYPE") is not None:
+        types.append(source_env["LLAMA_ARG_SPEC_TYPE"])
+    return (
+        any(drafts(value) for value in types)
+        or _extra_args_set_any_flag(argv, {"--spec-default"})
+        or _extra_args_set_any_flag(argv, _SPEC_DRAFT_MODEL_FLAGS)
+        or any(source_env.get(name) for name in _SPEC_DRAFT_MODEL_ENV)
+    )
+
+
+def _backend_sampling_flags(
+    caps: Mapping[str, object],
+    argv: Sequence[str],
+    *,
+    gpus_detected: bool,
+    vulkan: bool,
+    cuda_build: bool = True,
+    platform: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
+    spec_env: Optional[Mapping[str, str]] = None,
+    n_vocab: Optional[int] = None,
+) -> list[str]:
+    """``--backend-sampling`` where llama.cpp's GPU sampler is measured to pay off.
+
+    With it, the per-slot sampler chain runs inside the decode graph, so a step no longer copies
+    every slot's full-vocabulary logits to the host and walks them on the CPU (Colab L4, 4
+    slots, Studio's chains: Qwen3.5-0.8B 20.3 -> 7.0 ms per token, Qwen3-0.6B 7.3 -> 6.1 ms,
+    Qwen3.5 flood throughput 2.2x; each new request pays ~20-25 ms more TTFT for llama.cpp's
+    per-request scheduler re-reserve). It is per request and falls back to the CPU by itself for
+    what it cannot run at all (grammar / tools, a reasoning budget, pre-sampling logprobs). DRY /
+    XTC / typical-p / top-n-sigma / mirostat it would split into a GPU prefix and a CPU suffix
+    that sees masked candidates, so those requests, like every one outside
+    ``_gpu_sampler_envelope_breach``, are sent back to the CPU chain.
+    Off where it is not measured to help: no GPU, a build without the CUDA backend (ROCm,
+    SYCL), Vulkan, macOS, and any speculative decoding (penalties cannot run on the GPU when a
+    step verifies several tokens per slot, and the drafts dominate there). A user's own flag or
+    ``UNSLOTH_LLAMA_BACKEND_SAMPLING=0`` wins; an older build without the flag gets none.
+    ``env`` is the child's environment; ``spec_env`` the spec variables it keeps (the launch
+    scrubs LLAMA_ARG_SPEC_* unless the extras own the spec block); ``n_vocab`` the model's token
+    count, when known, for the launch's own ``--top-k``.
+    """
+    source_env = os.environ if env is None else env
+    opt_out = os.environ.get(
+        _BACKEND_SAMPLING_OPT_OUT, source_env.get(_BACKEND_SAMPLING_OPT_OUT, "")
+    )
+    if str(opt_out).strip().lower() in ("0", "false", "off", "no"):
+        return []
+    if not caps.get("supports_backend_sampling"):
+        return []
+    if (
+        _extra_args_set_any_flag(argv, _BACKEND_SAMPLING_FLAGS)
+        or "LLAMA_ARG_BACKEND_SAMPLING" in source_env
+    ):
+        return []
+    # Measured on CUDA only; ROCm, SYCL and the rest keep CPU sampling until measured.
+    if not gpus_detected or vulkan or not cuda_build or (platform or sys.platform) == "darwin":
+        return []
+    if _device_selection_is_cpu(argv, source_env) or _argv_keeps_layers_on_cpu(argv, source_env):
+        return []
+    if _launch_speculates(argv, source_env if spec_env is None else spec_env):
+        return []
+    # A config.ini applies before argv and env: its spec types are appended to the ones above, and
+    # its layer count stands unless argv or env sets one, so either keeps the CPU sampler.
+    config_files = _llama_config_files(source_env, platform)
+    if _config_files_set_any(config_files, _CONFIG_SPEC_KEYS):
+        return []
+    if (
+        not _launch_flag_values(argv, _GPU_LAYER_FLAGS)
+        and source_env.get("LLAMA_ARG_N_GPU_LAYERS") is None
+        and _config_files_set_any(config_files, _CONFIG_GPU_LAYER_KEYS, value = "0")
+    ):
+        return []
+    # Every request that leaves a field to the launch would take a default the GPU sampler breaks on.
+    if _gpu_sampler_envelope_breach({}, _launch_sampling_defaults(argv, source_env), n_vocab):
+        return []
+    return ["--backend-sampling"]
+
+
+def _argv_keeps_layers_on_cpu(argv: Sequence[str], env: Optional[Mapping[str, str]] = None) -> bool:
+    """The layer count is 0: the output layer, and with it the sampler, is on the CPU.
+
+    The last layer-count flag wins; without one, llama.cpp takes ``LLAMA_ARG_N_GPU_LAYERS``.
+    """
+    values = _launch_flag_values(argv, _GPU_LAYER_FLAGS)
+    if values:
+        return values[-1].strip() == "0"
+    return str((env or {}).get("LLAMA_ARG_N_GPU_LAYERS", "")).strip() == "0"
+
+
+# llama.cpp's GPU sampler (src/llama-sampler.cpp, the *_backend_apply graphs) parts from the CPU
+# chain it replaces on these inputs, so a request carrying one samples on the CPU instead:
+#
+# - min_p: the GPU keeps a token only where logit - (max_logit + log p) > 0, so at p = 1, or close
+#   enough that log p is lost to float rounding of the max logit, it drops even the top token:
+#   every candidate -inf, NaN probabilities, an arbitrary token. The CPU keeps ties. 0.999 is still
+#   exact for any logit under 2^14.
+# - top_k: ggml_top_k asserts k <= its candidates, and every backend sampler is first probed on a
+#   128K-candidate graph, so a k past the vocabulary, or past 128K, aborts the whole server (the
+#   CPU clamps k). A vocabulary Studio could not read is taken as 256, the byte tokens every BPE
+#   vocabulary and SPM byte fallback carry.
+# - min_keep > 1: the GPU top-p and min-p ignore it.
+# - dynatemp_range > 0: the GPU normalises entropy over the candidates top-p / min-p masked rather
+#   than dropped, and at temperature 0 it goes greedy where the CPU samples in [0, range].
+# - a sampler order of the client's own: one that shrinks the candidates (temperature 0, a first
+#   top_k) ahead of top_k hits the same assert, and the CPU samplers after the GPU prefix see
+#   masked candidates where the CPU chain would have dropped them.
+# - logit_bias: the GPU writes the biases with ggml_set_rows, so a token named twice (a repeated
+#   id, a string that tokenizes into repeats, a bias on a token the model or ignore_eos already
+#   bans) keeps one bias where the CPU adds them all.
+# - a fixed seed with top_p off: the GPU top_k hands its candidates to the draw in an order that is
+#   not even stable across runs, so the same seed writes another reply each time, where Studio
+#   promises a fixed seed reproduces (_apply_seeded_llama_request). top_p sorts them first.
+# - a sampler with no backend implementation, active: XTC (probability > 0, threshold <= 0.5), DRY
+#   (multiplier != 0, a nonzero window), typical-p < 1, top-n-sigma > 0, mirostat 1 / 2 (adaptive-p
+#   and infill only through a sampler order, above). llama.cpp then runs the chain's GPU prefix and
+#   hands the rest to the CPU, and those CPU samplers see the candidates the GPU masked to -inf
+#   where the CPU chain had removed them: XTC at threshold 0 counts a masked one as qualifying and
+#   keeps it, with NaN probability. The whole request goes to the CPU instead.
+#
+# The rest matches the CPU (temperature 0, top_p 0 / 1, penalties, n_probs past the vocabulary)
+# or llama-server refuses it either way (repeat_penalty <= 0).
+_GPU_MIN_P_SAFE_MAX = 0.999
+_GPU_TOP_K_PROBE_CANDIDATES = 128 * 1024
+_GPU_TOP_K_UNKNOWN_VOCAB_MAX = 256
+_LLAMA_DEFAULT_SAMPLER_ORDER = (
+    ["penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"],
+    "edskypmxt",
+)
+
+# Request field -> (llama-server flags with every alias, env) whose last value is the default a
+# request omitting the field takes (common/arg.cpp; only these four have a LLAMA_ARG_* variable).
+_LAUNCH_SAMPLING_FIELDS = {
+    "min_p": (("--min-p",), "LLAMA_ARG_MIN_P"),
+    "top_k": (("--top-k",), "LLAMA_ARG_TOP_K"),
+    "top_p": (("--top-p",), "LLAMA_ARG_TOP_P"),
+    "dynatemp_range": (("--dynatemp-range",), None),
+    "seed": (("-s", "--seed"), None),
+    "samplers": (("--samplers", "--sampler-seq", "--sampling-seq"), None),
+    "logit_bias": (("-l", "--logit-bias"), None),
+    "xtc_probability": (("--xtc-probability",), None),
+    "xtc_threshold": (("--xtc-threshold",), None),
+    "dry_multiplier": (("--dry-multiplier",), None),
+    "dry_penalty_last_n": (("--dry-penalty-last-n",), None),
+    "typical_p": (("--typical", "--typical-p"), None),
+    "top_n_sigma": (("--top-nsigma", "--top-n-sigma"), None),
+    "mirostat": (("--mirostat",), None),
+}
+
+
+def _launch_sampling_defaults(argv: Sequence[str], env: Mapping[str, str]) -> dict:
+    """The ``_LAUNCH_SAMPLING_FIELDS`` this launch sets, as the raw strings llama-server parses.
+
+    A field neither the argv nor the env sets is absent: llama.cpp's own default is inside the
+    GPU sampler's envelope for every one of them.
+    """
+    found = {}
+    for field, (flags, env_name) in _LAUNCH_SAMPLING_FIELDS.items():
+        values = _launch_flag_values(argv, flags)  # argv after the env, the last one wins
+        value = values[-1] if values else (env.get(env_name) if env_name else None)
+        if value is not None:
+            found[field] = value
+    default_order = (";".join(_LLAMA_DEFAULT_SAMPLER_ORDER[0]), _LLAMA_DEFAULT_SAMPLER_ORDER[1])
+    if found.get("samplers") in default_order:
+        del found["samplers"]  # --samplers / --sampler-seq spelling the default order
+    return found
+
+
+def _launch_gpu_sampler(argv: Sequence[str], env: Mapping[str, str]) -> Optional[dict]:
+    """``_launch_sampling_defaults`` when the launch enables the GPU sampler, else None.
+
+    ``--backend-sampling`` / ``-bs`` or a truthy ``LLAMA_ARG_BACKEND_SAMPLING`` turns it on.
+    """
+    env_flag = str(env.get("LLAMA_ARG_BACKEND_SAMPLING", "")).strip()
+    if not (
+        _extra_args_set_any_flag(argv, _BACKEND_SAMPLING_FLAGS)
+        or env_flag in ("on", "enabled", "true", "1")
+    ):
+        return None
+    return _launch_sampling_defaults(argv, env)
+
+
+class _UnknownSamplingDefaults(dict):
+    """A GPU-sampling server whose own defaults could not be read back: none is taken as safe."""
+
+
+_SAMPLING_DEFAULTS_UNKNOWN = _UnknownSamplingDefaults()
+
+# The envelope's fields as llama-server's /props reports them, under
+# default_generation_settings.params (task_params::to_json(true), tools/server/server-task.cpp).
+# That is the same common_params every request copies its defaults from (get_res_props and
+# eval_llama_cmpl_schema both read server_routes::params), so it already holds argv, env and
+# config.ini. logit_bias is not in that view, so the argv reading supplies it.
+_PROPS_SAMPLING_FIELDS = (
+    "min_p",
+    "top_k",
+    "top_p",
+    "min_keep",
+    "dynatemp_range",
+    "seed",
+    "samplers",
+    "xtc_probability",
+    "xtc_threshold",
+    "dry_multiplier",
+    "dry_penalty_last_n",
+    "typical_p",
+    "top_n_sigma",
+    "mirostat",
+)
+
+
+def _props_sampling_defaults(props: Optional[Mapping]) -> Optional[tuple[Optional[bool], dict]]:
+    """``(backend_sampling, defaults)`` off a ``/props`` body, or None when it lacks any field.
+
+    ``backend_sampling`` is None on a build that does not report it.
+    """
+    if not isinstance(props, Mapping):
+        return None
+    settings = props.get("default_generation_settings")
+    params = settings.get("params") if isinstance(settings, Mapping) else None
+    if not isinstance(params, Mapping) or any(f not in params for f in _PROPS_SAMPLING_FIELDS):
+        return None
+    defaults = {field: params[field] for field in _PROPS_SAMPLING_FIELDS}
+    if not isinstance(defaults["samplers"], list):
+        return None
+    if defaults["samplers"] == _LLAMA_DEFAULT_SAMPLER_ORDER[0]:
+        del defaults["samplers"]
+    on = params.get("backend_sampling")
+    return (on if isinstance(on, bool) else None), defaults
+
+
+def _llama_config_files(env: Mapping[str, str], platform: Optional[str] = None) -> list[str]:
+    """The llama.cpp config.ini files a child with ``env`` applies before its argv and env.
+
+    common_params_apply_system_config (common/arg.cpp) reads the system-wide one, then the user's
+    (fs_get_config_directory), and sets any llama-server option from them.
+    """
+    if (platform or sys.platform) == "win32":
+        roots = [env.get("PROGRAMDATA"), env.get("APPDATA")]
+    else:
+        home = env.get("HOME")
+        user = env.get("XDG_CONFIG_HOME") or (os.path.join(home, ".config") if home else None)
+        roots = ["/etc", user]
+    paths = [os.path.join(root, "llama.cpp", "config.ini") for root in roots if root]
+    return [path for path in paths if os.path.exists(path)]
+
+
+_CONFIG_LOGIT_BIAS_KEYS = frozenset({"logit-bias", "logit_bias", "l", "llama_arg_logit_bias"})
+
+
+# Config keys are option names without dashes, or their LLAMA_ARG_* names (common/arg.cpp).
+_CONFIG_SPEC_KEYS = frozenset(
+    {
+        "spec-type",
+        "spec_type",
+        "spec-default",
+        "spec_default",
+        "md",
+        "model-draft",
+        "model_draft",
+        "spec-draft-model",
+        "spec_draft_model",
+        "llama_arg_spec_type",
+        "llama_arg_model_draft",
+        "llama_arg_spec_draft_model",
+    }
+)
+_CONFIG_GPU_LAYER_KEYS = frozenset(
+    {"ngl", "gpu-layers", "gpu_layers", "n-gpu-layers", "n_gpu_layers", "llama_arg_n_gpu_layers"}
+)
+
+
+def _config_files_set_any(
+    paths: Sequence[str],
+    keys: Collection[str],
+    value: Optional[str] = None,
+) -> bool:
+    """Whether any llama.cpp config.ini in ``paths`` sets one of ``keys`` (to ``value``, if given).
+
+    True if a file is unreadable. A spec type of ``none`` does not draft, so it does not count.
+    """
+    for path in paths:
+        try:
+            with open(path, encoding = "utf-8", errors = "replace") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return True
+        for line in lines:
+            key, sep, got = line.partition("=")
+            if not sep or key.strip().lstrip("-").lower() not in keys:
+                continue
+            got = got.strip().strip("\"'")
+            if value is not None:
+                if got == value:
+                    return True
+            elif got.lower() != "none":
+                return True
+    return False
+
+
+def _config_files_set_logit_bias(paths: Sequence[str]) -> bool:
+    """Whether any llama.cpp config.ini in ``paths`` may set a logit bias; True if one is unreadable.
+
+    /props leaves logit_bias out, and llama.cpp appends the biases of every section it applies
+    (``[*]`` and the model's), so a config bias is a default the guard cannot otherwise see.
+    """
+    return _config_files_set_any(paths, _CONFIG_LOGIT_BIAS_KEYS)
+
+
+def _gpu_sampler_envelope_breach(
+    payload: Mapping,
+    launch: Mapping,
+    n_vocab: Optional[int] = None,
+) -> Optional[str]:
+    """The first field that takes ``payload`` outside the GPU sampler's safe envelope, or None.
+
+    A field the payload omits (or sends as null) takes the ``launch`` default. A value that does
+    not parse is outside too: the check fails closed, since a raw /v1/completions body is the
+    client's own.
+    """
+
+    def value(name):
+        got = payload.get(name)
+        return got if got is not None else launch.get(name)
+
+    def number(name, default):
+        got = value(name)
+        if got is None:
+            return default
+        if isinstance(got, bool):
+            raise ValueError(name)
+        got = float(got)
+        if math.isnan(got):
+            raise ValueError(name)
+        return got
+
+    top_k_max = min(
+        n_vocab if n_vocab and n_vocab > 0 else _GPU_TOP_K_UNKNOWN_VOCAB_MAX,
+        _GPU_TOP_K_PROBE_CANDIDATES,
+    )
+    checks = (
+        ("min_p", lambda: number("min_p", 0.0) > _GPU_MIN_P_SAFE_MAX),
+        ("top_k", lambda: number("top_k", 0.0) > top_k_max),
+        ("min_keep", lambda: number("min_keep", 0.0) > 1),
+        ("dynatemp_range", lambda: number("dynatemp_range", 0.0) > 0),
+        (
+            "seed",
+            lambda: (int(number("seed", -1)) & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED
+            and number("top_p", 0.95) >= 1,  # llama.cpp's own top_p is 0.95
+        ),
+        ("samplers", lambda: value("samplers") not in (None, *_LLAMA_DEFAULT_SAMPLER_ORDER)),
+        ("logit_bias", lambda: bool(value("logit_bias"))),
+        # No backend implementation: a GPU prefix would hand them masked candidates.
+        (
+            "xtc_probability",
+            lambda: number("xtc_probability", 0.0) > 0 and number("xtc_threshold", 0.1) <= 0.5,
+        ),
+        (
+            "dry_multiplier",
+            lambda: number("dry_multiplier", 0.0) != 0 and number("dry_penalty_last_n", 64) != 0,
+        ),
+        ("typical_p", lambda: number("typical_p", 1.0) < 1),
+        ("top_n_sigma", lambda: number("top_n_sigma", -1.0) > 0),
+        ("mirostat", lambda: number("mirostat", 0.0) != 0),
+    )
+    for name, outside in checks:
+        try:
+            if outside():
+                return name
+        except (TypeError, ValueError, OverflowError):
+            return name
+    return None
+
+
+def _cpu_sampling_outside_gpu_envelope(
+    payload: dict,
+    launch: Optional[Mapping],
+    n_vocab: Optional[int] = None,
+) -> dict:
+    """``payload`` with ``backend_sampling: false`` when it is outside the GPU sampler's envelope.
+
+    ``launch`` is the running server's sampling defaults (read back from its /props, else
+    ``_launch_gpu_sampler`` of its argv), ``_SAMPLING_DEFAULTS_UNKNOWN`` when a GPU-sampling
+    server's could not be read, which pins every request off, or None without the GPU sampler.
+    A client's own ``backend_sampling: true`` opts in on any build, so it is pinned off the same
+    way. Anything else returns ``payload`` itself, so a server without the GPU sampler never sees
+    the field.
+    """
+    if isinstance(launch, _UnknownSamplingDefaults):
+        return {**payload, "backend_sampling": False}
+    if launch is None and not payload.get("backend_sampling"):
+        return payload
+    if _gpu_sampler_envelope_breach(payload, launch or {}, n_vocab) is None:
+        return payload
+    return {**payload, "backend_sampling": False}
+
+
 def _build_reasoning_budget_flags(
     caps: Mapping[str, object], reasoning_budget: int, reasoning_budget_message: str
 ) -> list[str]:
@@ -8978,6 +9411,15 @@ class LlamaCppBackend:
         self._requested_ctx_checkpoints: Optional[int] = None
         self._requested_cache_ram: Optional[int] = None
         self._idle_slot_clearing_active: bool = False
+        # The running server's sampling defaults while it samples on the GPU: _launch_gpu_sampler
+        # of the spawned argv, then what its /props reports (_adopt_server_sampling_defaults).
+        # None means no GPU sampler.
+        self._backend_sampling_launch: Optional[dict] = None
+        # The spawned argv's own reading (_launch_sampling_defaults) and llama.cpp config files.
+        self._launch_sampling_argv: dict = {}
+        self._llama_config_files: list = []
+        # /props defaults of a server without the GPU sampler, for a client's own opt-in.
+        self._server_sampling_defaults: Optional[dict] = None
         self._chat_template: Optional[str] = None
         self._markup_tokens: list = []
         self._markup_profile = None
@@ -9573,6 +10015,81 @@ class LlamaCppBackend:
         of it. False until a load has spawned, which is the safe answer.
         """
         return self._idle_slot_clearing_active
+
+    def guard_gpu_sampler(self, payload: dict) -> dict:
+        """``payload`` for this server, sampled on the CPU where the GPU sampler would not match it.
+
+        Every request that carries sampling fields goes through this: ``_open_stream``, the GGUF
+        TTS POST, and the routes' passthrough and /v1/completions bodies.
+        """
+        launch = getattr(self, "_backend_sampling_launch", None)
+        if launch is None and payload.get("backend_sampling"):
+            # A client's own opt-in samples against the server's real defaults too.
+            launch = getattr(self, "_server_sampling_defaults", None)
+        return _cpu_sampling_outside_gpu_envelope(
+            payload, launch, getattr(self, "_vocab_size", None)
+        )
+
+    def _note_spawned_sampler(self, cmd: Sequence[str], env: Mapping[str, str]) -> None:
+        """Record the GPU sampler as the spawned argv and env set it, until /props confirms."""
+        self._backend_sampling_launch = _launch_gpu_sampler(cmd, env)
+        self._launch_sampling_argv = _launch_sampling_defaults(cmd, env)
+        self._server_sampling_defaults = None
+        self._llama_config_files = _llama_config_files(env)
+        if self._llama_config_files:
+            logger.info(
+                f"llama.cpp config file(s) {', '.join(self._llama_config_files)} apply to this "
+                "llama-server; its sampling defaults are read back from /props once it is up."
+            )
+
+    def _adopt_server_sampling_defaults(self, props: Optional[Mapping]) -> None:
+        """Guard requests against the defaults the running server reports, not a reconstruction.
+
+        ``props`` is its ``/props`` (None when unreadable). /props merges what Studio can see
+        (argv, env) with what it cannot (a llama.cpp config.ini, anything a newer build adds),
+        and says whether the GPU sampler is on at all. A GPU-sampling server whose /props does
+        not carry them pins every request to the CPU; so does one with no readable /props and a
+        config.ini that might have turned it on. Defaults outside the envelope send every request
+        that leaves them unset to the CPU. Runs on every spawn, so a respawn or reload refreshes it.
+        """
+        argv_launch = getattr(self, "_backend_sampling_launch", None)
+        if isinstance(argv_launch, _UnknownSamplingDefaults):
+            argv_launch = {}
+        config_files = getattr(self, "_llama_config_files", [])
+        parsed = _props_sampling_defaults(props)
+        if parsed is None:
+            self._server_sampling_defaults = None
+            if argv_launch is not None or config_files:
+                logger.warning(
+                    "llama-server's /props did not report its sampling defaults; every request "
+                    "samples on the CPU (backend_sampling: false)."
+                )
+                self._backend_sampling_launch = _SAMPLING_DEFAULTS_UNKNOWN
+            return
+        on, reported = parsed
+        if on is None:
+            on = argv_launch is not None
+        # /props wins; the argv reading fills only what /props leaves out (logit_bias).
+        argv_defaults = getattr(self, "_launch_sampling_argv", {})
+        defaults = {
+            **{k: v for k, v in argv_defaults.items() if k not in _PROPS_SAMPLING_FIELDS},
+            **reported,
+        }
+        if not defaults.get("logit_bias") and _config_files_set_logit_bias(config_files):
+            # Its value is not knowable here; any bias is outside the envelope, so say "some".
+            defaults["logit_bias"] = [["config.ini", 0]]
+        if not on:
+            self._backend_sampling_launch = None
+            self._server_sampling_defaults = defaults
+            return
+        self._backend_sampling_launch = defaults
+        self._server_sampling_defaults = None
+        breach = _gpu_sampler_envelope_breach({}, defaults, getattr(self, "_vocab_size", None))
+        if breach:
+            logger.info(
+                f"llama-server's default {breach} is outside the GPU sampler's envelope; "
+                "requests that leave it unset sample on the CPU."
+            )
 
     @property
     def max_context_length(self) -> Optional[int]:
@@ -11215,6 +11732,7 @@ class LlamaCppBackend:
                 "spec_draft_n_max_flag": None,
                 "spec_draft_n_max_default": None,
                 "supports_kv_unified": False,
+                "supports_backend_sampling": False,
                 # Fail OPEN, unlike every key above. These three are emitted on
                 # every launch today, so a failed probe must keep emitting them;
                 # only a build whose --help positively lacks one drops it.
@@ -11279,6 +11797,7 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         spec_draft_n_max_default: Optional[int] = None
         supports_kv_unified = False
+        supports_backend_sampling = False
         supports_trace_verbosity = False
         # See the fallback dict: these fail open.
         supports_no_context_shift = True
@@ -11504,6 +12023,8 @@ class LlamaCppBackend:
                     spec_draft_n_max_default = int(_n_max_default.group(1))
 
             supports_kv_unified = _is_real("--kv-unified")
+            # Fails closed: an unknown argument stops an older llama-server from starting.
+            supports_backend_sampling = _is_real("--backend-sampling")
             # Fails closed: an older build's level 4 may be per-token debug on the decode path.
             supports_trace_verbosity = bool(
                 probe_ok
@@ -11646,6 +12167,7 @@ class LlamaCppBackend:
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "spec_draft_n_max_default": spec_draft_n_max_default,
             "supports_kv_unified": supports_kv_unified,
+            "supports_backend_sampling": supports_backend_sampling,
             "supports_no_context_shift": supports_no_context_shift,
             "supports_jinja": supports_jinja,
             "supports_api_key_file": supports_api_key_file,
@@ -21762,6 +22284,8 @@ class LlamaCppBackend:
         self._requested_ctx_checkpoints = None
         self._requested_cache_ram = None
         self._idle_slot_clearing_active = False
+        self._backend_sampling_launch = None
+        self._server_sampling_defaults = None
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._requested_cache_types = ("f16", "f16")
@@ -26386,6 +26910,8 @@ class LlamaCppBackend:
         # the reference. See issue #5161.
         self._kill_process()
         self._child_gpu_physical_ids = child_gpu_physical_ids
+        # Read off the argv spawned, as the main launch does, for guard_gpu_sampler.
+        self._note_spawned_sampler(cmd, os.environ if env is None else env)
 
         self._stdout_lines = []
         # Tee llama-server output to a dedicated log file so a post-mortem
@@ -32471,6 +32997,18 @@ class LlamaCppBackend:
                 # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
                 cmd.extend(spec_flags)
+                cmd.extend(
+                    _backend_sampling_flags(
+                        server_caps,
+                        [*cmd, *(extra_args or [])],
+                        gpus_detected = bool(_detected_gpus),
+                        vulkan = bool(is_vulkan_backend),
+                        cuda_build = "cuda" in self._installed_ggml_backends(binary),
+                        env = env,
+                        spec_env = _child_spec_env(extra_args, env),
+                        n_vocab = getattr(self, "_vocab_size", None),
+                    )
+                )
 
                 # A *separate* drafter does not inherit the main --gpu-layers:
                 # common_base_params_to_speculative overwrites n_gpu_layers with
@@ -34347,6 +34885,7 @@ class LlamaCppBackend:
                             run_cmd,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
                         )
+                        self._note_spawned_sampler(run_cmd, os.environ if env is None else env)
                         # Check with publication under one lock: a spawn either
                         # publishes first and the sweep kills it, or sees the flag
                         # and never starts. Across Popen only, never the wait.
@@ -36317,6 +36856,8 @@ class LlamaCppBackend:
                             else None
                         ),
                     )
+                # Before publishing, so no request is guarded by the argv reading alone.
+                self._adopt_server_sampling_defaults(self._query_server_props())
                 if not self._publish_healthy():
                     # Teardown began between the 200 and this commit; publishing
                     # would report a model that is gone.
@@ -40209,6 +40750,7 @@ class LlamaCppBackend:
         which differ only in how they parse the SSE body."""
         from core.inference.mcp_images import prepare_image_turn_boundaries
 
+        payload = self.guard_gpu_sampler(payload)
         if "messages" in payload:
             payload = {
                 **payload,
@@ -46081,6 +46623,7 @@ class LlamaCppBackend:
             payload["stop"] = stop
         if need_ids:
             payload["n_probs"] = 1
+        payload = self.guard_gpu_sampler(payload)
 
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")
