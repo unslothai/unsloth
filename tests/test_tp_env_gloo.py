@@ -356,8 +356,7 @@ def _case_dp_average(rank, world, tmp):
 
 
 def _case_dp_average_dtypes(rank, world, tmp):
-    """fp16 gradients whose sum overflows fp16 but whose mean does not; bf16 / fp32 gradients next to
-    them, with the own-dtype all-reduce and divide they had before as the reference."""
+    """fp16 grads whose sum overflows but mean does not, plus bf16 / fp32, vs own-dtype all-reduce."""
     error = _import_checkout_unsloth()
     if error is not None:
         return {"skip": error}
@@ -661,8 +660,6 @@ def test_dp_average_matches_ddp_for_gradients_on_some_replicas():
 
 
 def test_dp_average_keeps_fp16_finite_and_bf16_fp32_unchanged():
-    """Two fp16 gradients of 40000 sum to inf in fp16, so the old in-dtype average gave inf (and NaN
-    after clipping); their mean is 40000. bf16 / fp32 keep the own-dtype sum bitwise."""
     results = _spawn("dp_average_dtypes", 2)
     for res in results:
         fp16 = res[str(torch.float16)]
@@ -670,7 +667,7 @@ def test_dp_average_keeps_fp16_finite_and_bf16_fp32_unchanged():
         assert fp16["dtype"] == [torch.float16] * 2
         assert torch.isfinite(big).all() and torch.isfinite(noise).all(), big
         assert big.tolist() == [40000.0, 35008.0, 0.0010004043579101562, -6e4], big.tolist()
-        assert not torch.isfinite(fp16["reference"][0]).all()  # the old average overflowed
+        assert not torch.isfinite(fp16["reference"][0]).all()
         for dtype in (torch.bfloat16, torch.float32):
             entry = res[str(dtype)]
             assert entry["dtype"] == [dtype] * 2
