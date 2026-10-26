@@ -147,7 +147,8 @@ export function createWorldGame(
     if (map.props?.length)
       map.blocked = blockedCells(map, closedProps(map.props, propState));
   };
-  if (usable.some((p) => isOpen(p, propState))) reblock();
+  // The map may come from an earlier game where a door stood open: always derive blocking from this state.
+  if (usable.length) reblock();
   const propTarget = (p: WorldProp3d): Interactable => ({
     kind: "prop",
     id: p.id,

@@ -725,7 +725,7 @@ export function createWorld3d(
     if (map.props?.length)
       map.blocked = blockedCells(map, closedProps(map.props, propState));
   };
-  if (usable.some((p) => isOpen(p, propState))) doorTiles();
+  if (usable.length) doorTiles();
   const wallTile = (x: number, y: number) =>
     x < 0 ||
     y < 0 ||

@@ -521,7 +521,10 @@ export function splash(
   for (const t of targets) {
     if (!t.hostile || (c.enemies[t.id]?.down ?? 0) > c.clock) continue;
     const d = Math.hypot(t.x - at.x, t.y - at.y);
-    if (d > SPLASH_RADIUS) continue;
+    // Distance to the nearest point of the body, so a burst far above or below falls off too.
+    const dz = Math.max(0, t.z - oz, oz - (t.z + STAND_H));
+    const r = Math.hypot(d, dz);
+    if (r > SPLASH_RADIUS) continue;
     if (
       d > 0.3 &&
       wallDistance(
@@ -537,7 +540,7 @@ export function splash(
         d - 0.25
     )
       continue;
-    const dmg = Math.round(SPLASH_DAMAGE * (1 - d / SPLASH_RADIUS));
+    const dmg = Math.round(SPLASH_DAMAGE * (1 - r / SPLASH_RADIUS));
     if (dmg > 0) out.push({ id: t.id, downed: hurt(c, t.id, dmg) });
   }
   return out;

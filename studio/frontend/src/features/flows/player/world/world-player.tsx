@@ -1097,16 +1097,22 @@ export function WorldPlayer({
       if (!g || lockedRef.current) return;
       const played = specRef.current;
       const added = wsRef.current.additions ?? noAdditions();
+      const chestHeld = new Set(
+        heldInChests(map.props ?? [], wsRef.current.props ?? {}),
+      );
       const ground: Ground = {
         spec: played,
         map,
         areas,
-        items: {
-          ...map.items,
-          ...Object.fromEntries(
-            added.items.map((i) => [i.id, { x: i.x, y: i.y }]),
-          ),
-        },
+        // Items still in an unopened chest are not on the ground to race for.
+        items: Object.fromEntries(
+          Object.entries({
+            ...map.items,
+            ...Object.fromEntries(
+              added.items.map((i) => [i.id, { x: i.x, y: i.y }]),
+            ),
+          }).filter(([id]) => !chestHeld.has(id)),
+        ),
         homes: {
           ...map.npcs,
           ...Object.fromEntries(
