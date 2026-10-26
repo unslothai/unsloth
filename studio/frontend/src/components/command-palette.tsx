@@ -77,7 +77,6 @@ function PaletteShortcut({
   );
 }
 
-// matches sidebar: drop interior bubble paths
 const TestTubeOutlineIcon = TestTube01Icon.slice(0, 3) as typeof TestTube01Icon;
 
 // Through the root's workspace shortcuts: gated (Train, Video) and landing (Chat keeps its thread) as the chords do.
@@ -369,7 +368,6 @@ function PaletteContent() {
             </span>
           </PaletteItem>
         </CommandGroup>
-        {/* Settings pages only once the user types. */}
         {hasQuery && (
           <>
             <CommandSeparator />

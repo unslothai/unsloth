@@ -95,12 +95,8 @@ unsafe fn set_kill_on_close(job: &OwnedHandle, enabled: bool) -> std::io::Result
     Ok(())
 }
 
-/// Keep the updater-launched installer alive after Tauri exits this process.
-///
-/// Called from the updater's pre-exit hook, just before the installer launches.
-/// `cleanup_child_processes` has already reaped the backend tree by then, which
-/// is what has to be gone: a child that outlives the app keeps
-/// `%STUDIO_HOME%\unsloth_studio` open and the next update refuses to run.
+/// Keep the updater-launched installer alive after Tauri exits. The backend tree is already
+/// reaped; a survivor would keep the install dir open and block the next update.
 #[cfg(windows)]
 pub fn suspend_for_update_installer() -> std::io::Result<()> {
     let Some(job) = APP_JOB.get().and_then(Option::as_ref) else {
@@ -112,11 +108,7 @@ pub fn suspend_for_update_installer() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Whether kill-on-close is currently in force.
-///
-/// The webview can reload after a suspension, which resets whatever the UI
-/// remembered while the job stays disarmed, so the UI asks rather than assumes.
-/// No job means nothing to disarm, and the caller has nothing to re-arm.
+/// Whether kill-on-close is in force; the UI asks because a webview reload loses its state.
 #[cfg(windows)]
 pub fn kill_on_close_armed() -> std::io::Result<bool> {
     let Some(job) = APP_JOB.get().and_then(Option::as_ref) else {
@@ -127,8 +119,7 @@ pub fn kill_on_close_armed() -> std::io::Result<bool> {
     Ok(limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE != 0)
 }
 
-/// Re-arm crash cleanup after a suspension that did not end in an exit (a failed
-/// or abandoned install). Without it the app runs on with no reaper at all.
+/// Re-arm crash cleanup after a suspension that did not end in an exit.
 #[cfg(windows)]
 pub fn resume_after_update_installer() -> std::io::Result<()> {
     let Some(job) = APP_JOB.get().and_then(Option::as_ref) else {

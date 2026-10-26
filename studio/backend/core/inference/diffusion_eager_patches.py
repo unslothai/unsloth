@@ -106,9 +106,7 @@ _orig_rmsnorm_forward: Optional[Callable] = None
 
 
 def _rmsnorm_forward(self, hidden_states):
-    # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers: NPU / bias / fp32-weight, a
-    # tuple `dim` (diffusers reduces only the LAST dim), or a dtype mismatch (diffusers computes variance in fp32 from
-    # the ORIGINAL tensor).
+    # Fall back where F.rms_norm differs from diffusers: NPU, bias, tuple dim, dtype mismatch.
     if _NPU or self.bias is not None or _orig_rmsnorm_forward is None or len(tuple(self.dim)) != 1:
         return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
     weight = self.weight
@@ -121,8 +119,7 @@ def _rmsnorm_forward(self, hidden_states):
     return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
 
 
-# Install / uninstall via the shared patch backend: the live original is fingerprinted so a changed forward is left
-# UNPATCHED, and stashed for exact restore.
+# True for families needing multiple denoisers no single file carries (Ideogram 4), so only a full pipeline load is valid
 def _specs():
     return [
         (_AdaLayerNormContinuous, _adaln_continuous_forward),
@@ -137,10 +134,7 @@ _patched: list[type] = []
 
 
 def install_compile_safe_patches() -> int:
-    """Install the shared compile-safe speedup patches (idempotent).
-
-    Returns the number of patches applied. A second call while installed is a no-op.
-    """
+    """Returns the number of patches applied; a second call while installed is a no-op."""
     global _orig_rmsnorm_forward
     if not _patches_enabled():
         uninstall_patches()

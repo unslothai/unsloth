@@ -9,7 +9,6 @@ import {
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-/** Info icon shown beside a field label. */
 export function FieldHint({ text, label }: { text: string; label: string }) {
   return (
     <Tooltip>

@@ -3089,6 +3089,14 @@ def _install_trainer_hooks():
             with fsdp2_gathered(root, trainable_only = True, include = include) as writer:
                 if writer is not False and _trainer_save_writer(self, root)[0]:
                     _save_unwrapped(self, root, output_dir)
+        elif getattr(getattr(type(root), "save", None), "_unsloth_fsdp2_collective", False):
+            # A SentenceTransformer (FastSentenceTransformer): its trainer's _save ignores a state_dict
+            # and calls model.save_pretrained, so gather here; the collective save then just writes.
+            from .fsdp2_save import fsdp2_gathered
+            from .sentence_transformer import fsdp2_st_usage_snippet
+            with fsdp2_st_usage_snippet(root), fsdp2_gathered(root) as writer:
+                if writer is not False and _trainer_save_writer(self, root)[0]:
+                    _save_unwrapped(self, root, output_dir)
         else:
             from .fsdp2_save import _dist, _wait_for_writer, writes_off_rank0
 
@@ -3915,6 +3923,13 @@ def _refuse_save_on_each_node(training_args):
         )
 
 
+def _env_tensor_parallel_dp_mesh(model):
+    if not os.environ.get("UNSLOTH_TP_SIZE"):
+        return None
+    from .tp_env import fsdp2_dp_mesh
+    return fsdp2_dp_mesh(model)
+
+
 def native_fsdp2_trainer_setup(
     trainer = None,
     model = None,
@@ -3940,7 +3955,10 @@ def native_fsdp2_trainer_setup(
         _refuse_projection_optim(training_args)
         _refuse_clef(model)
         _refuse_parallelism_config(training_args)
-        _refuse_tensor_parallel_model(model)
+        # UNSLOTH_TP_SIZE + UNSLOTH_FSDP2=1: the tensor parallel model is sharded over mesh['dp'] below.
+        tp_dp_mesh = _env_tensor_parallel_dp_mesh(model)
+        if tp_dp_mesh is None:
+            _refuse_tensor_parallel_model(model)
         if model_init is not None:
             # Trainer.train / hyperparameter_search call model_init again for a fresh model (and
             # rebuild the accelerator per trial), which would train unsharded.
@@ -3979,6 +3997,8 @@ def native_fsdp2_trainer_setup(
         if _trainer_uses_cpu(training_args):
             config.device = "cpu"  # the Trainer will run on the CPU: no GPU mesh
         _trainer_process_group(training_args, config)
+        if tp_dp_mesh is not None:
+            config.mesh = tp_dp_mesh
         return shard_model(model, config)
     if trainer is not None and is_native_fsdp2(getattr(trainer, "model", None)):
         _scaler_for_native(trainer)

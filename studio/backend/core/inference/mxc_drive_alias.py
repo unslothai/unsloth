@@ -31,8 +31,7 @@ DDD_EXACT_MATCH_ON_REMOVE = 0x4
 _lock = threading.Lock()
 # normcase(target) -> [letter, target, lease count]; the leases this process holds.
 _active: dict[str, list] = {}
-# (letter, target) -> [letter, target, lease count]: held mappings another definition now covers. Still removed, by
-# exact match, when their last lease ends, so ours never resurfaces once the other one goes.
+# Mappings shadowed by another definition; removed by exact match on last lease, so ours never resurfaces once the other goes
 _shadowed: dict[tuple[str, str], list] = {}
 _host = None
 

@@ -251,8 +251,7 @@ async def managed_tool_chat(
     except ValueError as exc:
         raise reject(str(exc)) from exc
     engine = backend._managed_engine
-    # The engine serves config.identifier (a local path for directory loads); clients get the
-    # same public id as every other chat path.
+    # Serves config.identifier (a local path for directory loads); clients get the same public id.
     public = api._orchestrator_public_model_id(backend) or engine.model
     messages = engine.replay_reasoning(messages, payload.preserve_thinking)
     body = {
