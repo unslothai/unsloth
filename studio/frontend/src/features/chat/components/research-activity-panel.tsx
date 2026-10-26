@@ -33,6 +33,7 @@ import { RefreshGlyph } from "@/lib/refresh-icon";
 import { FileGlyph } from "@/lib/file-icon";
 import {
   DashedLineCircleIcon as CircleDashedIcon,
+  Delete02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -43,7 +44,6 @@ import {
   ExternalLink,
   Pencil,
   Plus,
-  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -676,7 +676,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                         }}
                         aria-label={`Remove step ${index + 1}`}
                       >
-                        <Trash2 />
+                        <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
                       </Button>
                     </div>
                     <Textarea
