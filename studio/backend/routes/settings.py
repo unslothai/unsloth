@@ -1456,7 +1456,7 @@ def update_multi_model(
     background_tasks: BackgroundTasks,
     current_subject: str = Depends(get_current_subject),
 ) -> MultiModelResponse:
-    """Off, When they fit or Always. Takes effect on the next load."""
+    """Off, When they fit or Always. Takes effect on the next load; Off also unloads the idle kept models."""
     try:
         mode = payload.mode
         if mode is None:

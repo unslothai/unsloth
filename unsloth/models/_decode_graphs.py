@@ -66,6 +66,8 @@ BUFFER_EPOCH = 0
 GENERATION_EPOCH = 0
 # prompt + max_new_tokens of the running generate() call, 0 when unknown.
 MAX_LEN_HINT = 0
+# 1: size the graph KV cache for prompt + max_new_tokens up front (early stops still hold it all).
+PREALLOC = os.environ.get("UNSLOTH_DECODE_GRAPH_PREALLOC", "0") == "1"
 _SUPPORTED_ATTENTION = set()
 # Tested families only (Qwen2 shares the Llama attention but is untested here).
 _SUPPORTED_MODEL_TYPES = {"llama", "qwen3"}
@@ -197,6 +199,9 @@ def alloc_decode_buffers(
         )
     else:
         rows = _round_up(max(increment + seq_len + 1, MAX_LEN_HINT + 1), BUCKET)
+        if not PREALLOC:
+            # Start at the eager size; resize_decode_buffers grows it.
+            rows = min(rows, _round_up(increment + seq_len + 1, BUCKET))
         store = attn.__dict__.get("_unsloth_graph_buffers")
         if store is None:
             store = attn._unsloth_graph_buffers = {}
@@ -249,6 +254,12 @@ def resize_decode_buffers(attn, increment, bsz, n_heads, n_kv_heads, head_dim):
     """The eager growth of the KV cache by `increment` rows (new rows zeroed with graphs on)."""
     global BUFFER_EPOCH
     rows = attn.paged_attention.shape[0]
+    if "_unsloth_graph_buffers" in attn.__dict__:
+        # Each growth re-captures: double, capped at the hint, so O(log n) re-captures.
+        grown = max(rows + increment, 2 * rows)
+        if MAX_LEN_HINT + 1 > rows:
+            grown = min(grown, MAX_LEN_HINT + 1)
+        increment = _round_up(grown, BUCKET) - rows
     attn.paged_attention.resize_((rows + increment, 2, bsz, n_kv_heads, head_dim))
     attn.paged_attention_K = attn.paged_attention[:, 0]
     attn.paged_attention_V = attn.paged_attention[:, 1]
@@ -525,6 +536,14 @@ def decode_step(
         return None
     if torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling():
         return None
+    index = input_ids.device.index
+    if index is not None and index != torch.cuda.current_device():
+        # Capture on the model's GPU, else the capture fails and decode stays eager.
+        with torch.cuda.device(index):
+            return decode_step(
+                model, fast_forward_inference, logits_fn, mask_fn, input_ids, past_key_values,
+                position_ids, attention_mask,
+            )  # fmt: skip
     state = _state(model)
     if state.disabled is not None:
         return None
@@ -662,6 +681,9 @@ def _capture(
     attention_mask,
     seq_len,
 ):
+    if state.stream is not None and state.stream.device.index != torch.cuda.current_device():
+        state.stream = None
+        state.pool = None
     if state.pool is None:
         state.pool = torch.cuda.graph_pool_handle()
     if state.stream is None:
