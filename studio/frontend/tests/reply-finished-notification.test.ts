@@ -355,9 +355,9 @@ test("the run adapter cancels on start and notifies once after the stream ends, 
   const body = source.slice(start, source.indexOf("\nfunction ", start + 1));
   assert.match(
     body,
-    /yield\* result;\n\s*\} else \{\n\s*yield await result;\n\s*\}\n\s*if \(!options\.abortSignal\?\.aborted\) \{\n\s*notifyReplyFinished\(\);/,
+    /yield\* result;\n\s*\} else \{\n\s*yield await result;\n\s*\}\n\s*if \(!options\.abortSignal\?\.aborted\) \{\n\s*notifyReplyFinished\(adoptedThreadId \?\? options\.unstable_threadId\);/,
   );
-  assert.equal(body.match(/notifyReplyFinished\(\)/g)?.length, 1);
+  assert.equal(body.match(/notifyReplyFinished\(/g)?.length, 1);
   assert.match(body, /async \*run\(options\) \{\n\s*cancelReplyFinishedNotification\(\);/);
 });
 

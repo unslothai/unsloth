@@ -2533,7 +2533,7 @@ function createPersistedRunAdapter(
         yield await result;
       }
       if (!options.abortSignal?.aborted) {
-        notifyReplyFinished();
+        notifyReplyFinished(adoptedThreadId ?? options.unstable_threadId);
       }
     },
   };
