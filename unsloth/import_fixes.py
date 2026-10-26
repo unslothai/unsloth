@@ -4326,19 +4326,49 @@ def fix_vllm_guided_decoding_params():
 
 
 def fix_trl_vllm_ascend():
-    # TRL caches transformers' (bool, version) tuple, which is always truthy; coerce to bool.
     if importlib.util.find_spec("trl") is None:
         return
     try:
         import trl.import_utils as tiu
     except Exception:
         return
+    _coerce_trl_available_checks(tiu)
+
+
+def _coerce_trl_available_checks(tiu):
+    # TRL caches transformers' (bool, version) tuple, which is always truthy; coerce to bool.
     for attr in list(vars(tiu)):
         if not (attr.startswith("_") and attr.endswith("_available")):
             continue
         cached = getattr(tiu, attr)
         if isinstance(cached, tuple):
             setattr(tiu, attr, bool(cached and cached[0]))
+    # TRL 0.27-0.28 call transformers' helper on every is_X_available() instead of caching it, and
+    # transformers >= 5.3 returns (exists, None) there too, so an absent weave is imported by
+    # `from trl import GRPOTrainer`. The global is looked up per call, so rebinding it covers them all.
+    helper = getattr(tiu, "_is_package_available", None)
+    if helper is None or getattr(helper, "_unsloth_bool", False):
+        return
+    try:
+        if not isinstance(helper("_unsloth_absent_package_probe"), tuple):
+            return
+    except Exception:
+        return
+
+    @functools.wraps(helper)
+    def _is_package_available(
+        pkg_name,
+        return_version = False,
+        *args,
+        **kwargs,
+    ):
+        result = helper(pkg_name, return_version, *args, **kwargs)
+        if not return_version and isinstance(result, tuple):
+            return bool(result and result[0])
+        return result
+
+    _is_package_available._unsloth_bool = True
+    tiu._is_package_available = _is_package_available
 
 
 def ignore_logger_messages():
