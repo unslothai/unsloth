@@ -262,4 +262,14 @@ if ! driver_ok; then
        the Unsloth images. Update the driver, reboot, then run: docker run --rm --gpus all --platform ${PLATFORM} ubuntu:24.04 nvidia-smi -L" 3
 fi
 say "Driver ${DRIVER} meets the ${MIN_DRIVER} minimum."
-say "Done. Run: docker run -d --gpus all -p 8000:8000 -p 8888:8888 unsloth/unsloth"
+say "Done. Start Unsloth with:"
+cat <<'EOF'
+docker run -d --name unsloth --gpus all --ipc=host \
+  --ulimit memlock=-1 --ulimit stack=67108864 \
+  -p 8000:8000 -p 8888:8888 \
+  -v "$PWD":/workspace/host \
+  -v unsloth-workspace:/workspace \
+  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
+  -v unsloth-studio:/opt/unsloth-studio \
+  unsloth/unsloth && docker logs -f unsloth
+EOF
