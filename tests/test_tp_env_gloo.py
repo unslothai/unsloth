@@ -355,6 +355,40 @@ def _case_dp_average(rank, world, tmp):
     }
 
 
+def _case_dp_average_dtypes(rank, world, tmp):
+    """fp16 gradients whose sum overflows fp16 but whose mean does not; bf16 / fp32 gradients next to
+    them, with the own-dtype all-reduce and divide they had before as the reference."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models import tp_native
+
+    dist.init_process_group("gloo")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("dp",))
+    torch.manual_seed(rank)
+    out, params = {}, {}
+    for dtype in (torch.float16, torch.bfloat16, torch.float32):
+        big = torch.nn.Parameter(torch.zeros(4, dtype = dtype))
+        big.grad = torch.tensor([40000.0, 40000.0 if rank else 30000.0, 1e-3, -6e4], dtype = dtype)
+        noise = torch.nn.Parameter(torch.zeros(64, dtype = dtype))
+        noise.grad = (torch.randn(64) * 10.0 ** torch.randint(-6, 4, (64,))).to(dtype)
+        params[dtype] = (big, noise)
+        reference = []
+        for p in (big, noise):
+            g = p.grad.clone()
+            dist.all_reduce(g)
+            reference.append(g.div_(world))
+        out[str(dtype)] = {"reference": reference}
+    tp_native._dp_average([p for pair in params.values() for p in pair], mesh["dp"])
+    for dtype, pair in params.items():
+        out[str(dtype)]["got"] = [p.grad.clone() for p in pair]
+        out[str(dtype)]["dtype"] = [p.grad.dtype for p in pair]
+    return out
+
+
 def _case_accelerate_fsdp(rank, world, tmp, ckpt):
     """UNSLOTH_FSDP2=1 that resolves to accelerate's FSDP: the dp dimension would be left unsynced."""
     error = _import_checkout_unsloth()
@@ -388,6 +422,7 @@ CASES = {
     "units": _case_units,
     "env": _case_env,
     "dp_average": _case_dp_average,
+    "dp_average_dtypes": _case_dp_average_dtypes,
     "accelerate_fsdp": _case_accelerate_fsdp,
 }
 
@@ -623,6 +658,26 @@ def test_dp_average_matches_ddp_for_gradients_on_some_replicas():
     for res in _spawn("dp_average", 2):
         assert res["one"] == [2.0] * 3 and res["both"] == [1.5] * 3, res
         assert res["none"] is None and res["frozen"] is None, res
+
+
+def test_dp_average_keeps_fp16_finite_and_bf16_fp32_unchanged():
+    """Two fp16 gradients of 40000 sum to inf in fp16, so the old in-dtype average gave inf (and NaN
+    after clipping); their mean is 40000. bf16 / fp32 keep the own-dtype sum bitwise."""
+    results = _spawn("dp_average_dtypes", 2)
+    for res in results:
+        fp16 = res[str(torch.float16)]
+        big, noise = fp16["got"]
+        assert fp16["dtype"] == [torch.float16] * 2
+        assert torch.isfinite(big).all() and torch.isfinite(noise).all(), big
+        assert big.tolist() == [40000.0, 35008.0, 0.0010004043579101562, -6e4], big.tolist()
+        assert not torch.isfinite(fp16["reference"][0]).all()  # the old average overflowed
+        for dtype in (torch.bfloat16, torch.float32):
+            entry = res[str(dtype)]
+            assert entry["dtype"] == [dtype] * 2
+            for got, want in zip(entry["got"], entry["reference"]):
+                assert torch.equal(got, want), (dtype, got, want)
+    for a, b in zip(results[0][str(torch.float16)]["got"], results[1][str(torch.float16)]["got"]):
+        assert torch.equal(a, b)
 
 
 def test_env_tp_x_accelerate_fsdp_is_refused():

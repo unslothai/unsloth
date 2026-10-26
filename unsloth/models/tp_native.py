@@ -2530,6 +2530,11 @@ def _dp_average(params, mesh):
     with torch.no_grad():
         for tensors in buckets.values():
             flat = _flatten_dense_tensors(tensors)
+            if flat.dtype == torch.float16:
+                # n finite fp16 gradients can sum past 65504 (inf, then NaN after clipping) although
+                # their mean is finite: sum in fp32 (tp trains adapters only, so the copy is small) and
+                # round once on the copy back. bf16 / fp32 keep their own-dtype sum, as DDP / FSDP2 do.
+                flat = flat.float()
             dist.all_reduce(flat, group = group)
             flat.div_(n)
             for t, value in zip(tensors, _unflatten_dense_tensors(flat, tensors)):
