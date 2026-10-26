@@ -1718,6 +1718,9 @@ class _ResidentBatch:
             else:
                 self._fail_all(exc)
             raise
+        watch = getattr(self.session, "watch_progress", None)
+        if cmd.get("generation_progress") and not rows and callable(watch):
+            watch(handles[0], _progress_sender(self.resp_queue, request_id))
         logger.info(
             "Admitted request_id=%s (%d replies) to a batch of %d",
             request_id,

@@ -3146,10 +3146,17 @@ class _LiveProgress:
         self._first_token = None
         self._decode_at = None
 
-    def prefill(self, processed, total):
+    def prefill(
+        self,
+        processed,
+        total,
+        started = None,
+    ):
+        """``started``: when the first reported chunk began, for a runtime that reports a chunk
+        only after running it."""
         now = time.perf_counter()
         if self._started is None:
-            self._started = now
+            self._started = now if started is None else started
         sample = {
             "prompt_progress": {
                 "total": self._cached + int(total),
@@ -5391,9 +5398,21 @@ class _TextBatchRow:
         "processing_at",
         "ready_at",
         "failure",
+        "live",
+        "prefills_in_batch",
     )
 
-    def __init__(self, *, handle, plan, cache_key, all_tokens, prompt_len, cached):
+    def __init__(
+        self,
+        *,
+        handle,
+        plan,
+        cache_key,
+        all_tokens,
+        prompt_len,
+        cached,
+        prefills_in_batch = True,
+    ):
         self.handle = handle
         self.plan = plan
         self.uid = None
@@ -5406,6 +5425,8 @@ class _TextBatchRow:
         self.processing_at = None
         self.ready_at = None
         self.failure = None
+        self.live = None
+        self.prefills_in_batch = prefills_in_batch
 
 
 def _failing_alone(row, processors):
@@ -5527,6 +5548,12 @@ class _TextBatchSession:
         """The usage a retired reply settled with, once."""
         return self._settled.pop(handle, None)
 
+    def watch_progress(self, handle, sink):
+        """Send an admitted reply's live progress to ``sink``, as ``generation_progress_sink``."""
+        row = self._rows.get(handle)
+        if row is not None:
+            row.live = _LiveProgress(sink, row.cached)
+
     def admit(self, request, handle):
         """Take one reply in, answering with the text preceding its first token."""
         backend = self.backend
@@ -5574,6 +5601,8 @@ class _TextBatchSession:
             all_tokens = all_tokens,
             prompt_len = len(remainder) if image is None else len(all_tokens),
             cached = len(prefix) if image is None else 0,
+            # An image prompt is prefilled above; the batch sees only its last token.
+            prefills_in_batch = image is None,
         )
         if image is not None:
             row.processing_at = began
@@ -5611,8 +5640,13 @@ class _TextBatchSession:
         now = time.perf_counter() if (events or prompt_events) else None
         for event in prompt_events:
             row = self._by_uid.get(event.uid)
-            if row is not None and row.processing_at is None:
+            if row is None:
+                continue
+            if row.processing_at is None:
                 row.processing_at = began
+            if row.live is not None and row.prefills_in_batch:
+                # Each chunk is reported by the next() that runs it, so the pass began with that step.
+                row.live.prefill(*event.progress, started = row.processing_at)
         # A processor runs a step ahead, so the single path raises before yielding this token;
         # reported first, so a sibling ending in this step cannot answer the request as done.
         for row in [row for row in self._rows.values() if row.failure is not None]:
@@ -5637,6 +5671,8 @@ class _TextBatchSession:
         streamed = row.plan.streamed
         text = "" if streamed is None else streamed.feed_token(int(event.token))
         row.generated += 1
+        if row.live is not None:
+            row.live.decode(row.generated)
         yield from (
             (row.handle, snapshot) for snapshot in stream.feed(token = event.token, text = text)
         )

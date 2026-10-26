@@ -3707,7 +3707,76 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
         ([[2]], [["cache"]], [[1, 5, 5]]),
     ]
     assert session._rows[1].cache_key is None and session._rows[1].prompt_len == 4
+    # Its prompt was prefilled at admission, so the batch's one-token report is not its progress.
+    samples = []
+    session.watch_progress(1, samples.append)
+    generator.next = lambda: ([SimpleNamespace(uid = 2, progress = (1, 1))], [])
+    list(session.step())
+    assert samples == []
     session.close()
+
+
+def test_a_watched_batch_row_reports_prefill_past_its_cached_prefix_and_decode(monkeypatch):
+    from core.inference import mlx_inference
+
+    clock = {"now": 10.0}
+    monkeypatch.setattr(mlx_inference.time, "perf_counter", lambda: clock["now"])
+    token = lambda n: SimpleNamespace(uid = 1, token = n, finish_reason = None)  # noqa: E731
+    steps = [
+        ([SimpleNamespace(uid = 1, progress = (2048, 3000))], []),
+        # mlx-lm moves a finished prompt to decoding a step before its first token.
+        ([SimpleNamespace(uid = 1, progress = (3000, 3000))], []),
+        ([], [token(5)]),
+        ([], [token(6)]),
+    ]
+
+    def next_step():
+        clock["now"] += 1.0  # each step runs one chunk or token
+        return steps.pop(0)
+
+    generator = SimpleNamespace(
+        insert = lambda *_a, **_k: [1],
+        next = next_step,
+        remove = lambda *_a, **_k: {},
+        close = lambda: None,
+    )
+    generate = types.ModuleType("mlx_lm.generate")
+    generate.BatchGenerator = lambda *_a, **_k: generator
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+    backend._is_vlm, backend._reads_vision = False, False
+    backend._batch_prompt_row = lambda _p, _s: (list(range(1000)), list(range(3000)), [], "k", [])
+    backend._plan_text_row = lambda _messages, **_kw: SimpleNamespace(
+        prompt = "P",
+        max_tokens = 8,
+        sampler = None,
+        processors = (),
+        streamed = None,
+        think_prefix = "",
+        stream = SimpleNamespace(feed = lambda **_k: [], stopped = False),
+    )
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "mlx_lm.generate", generate)
+        session = mlx_inference._TextBatchSession(backend, width = 2)
+    session.admit({"messages": [{"role": "user", "content": "hi"}]}, ("r1", None))
+    samples = []
+    session.watch_progress(("r1", None), samples.append)
+    for _ in range(4):
+        list(session.step())
+    session.close()
+
+    # Timed from the step that ran the first chunk; decode from the first token.
+    assert samples == [
+        {
+            "prompt_progress": {"total": 4000, "processed": 3048, "cache": 1000, "time_ms": 1000.0},
+            "prompt_per_second": 2048.0,
+        },
+        {
+            "prompt_progress": {"total": 4000, "processed": 4000, "cache": 1000, "time_ms": 2000.0},
+            "prompt_per_second": 1500.0,
+        },
+        {"predicted_n": 2, "predicted_per_second": 1.0},
+    ]
 
 
 @pytest.mark.parametrize("limit", [None, 16])
