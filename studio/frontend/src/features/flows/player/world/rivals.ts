@@ -181,7 +181,6 @@ export function normPosture(raw: Partial<Record<string, unknown>>): Posture {
   return out;
 }
 
-/** Half the L1 distance between two postures: 0 = same, 1 = opposite. */
 export const postureDelta = (a: Posture, b: Posture) =>
   POSTURE_KEYS.reduce((s, k) => s + Math.abs(a[k] - b[k]), 0) / 2;
 
@@ -684,7 +683,6 @@ export function applyPlan(
   return next;
 }
 
-/** Freeciv-style wants: need x posture weight, on a 0-100 scale. */
 export function wants(
   b: Board,
   s: RivalsState,
@@ -792,7 +790,6 @@ function tradeFor(
   };
 }
 
-/** The managers: spend this day's actions on the highest wants the village can afford. */
 export function runManagers(
   b: Board,
   s: RivalsState,
@@ -1171,7 +1168,6 @@ export function describe(b: Board, a: RivalAction): string {
   }
 }
 
-/** Accept an AI's offer to the player: it runs as the player's action through the same gate. */
 export function acceptOffer(b: Board, s: RivalsState, id: number): ActResult {
   const o = s.offers.find((x) => x.id === id);
   if (!o) return { state: s, ok: false, why: "that offer is gone" };
@@ -1304,7 +1300,6 @@ export function rivalsOf(
   };
 }
 
-/** Calls per real minute when the world has no simulation to set the background budget. */
 export const RIVALS_CALLS_PER_MINUTE = 12;
 const MAX_REQUEUES = 20;
 
@@ -1338,7 +1333,7 @@ export function queuedCall(
   });
 }
 
-/** End the player's day: one strategist call per AI village still in the game (in parallel), then the
+/** End the player's day: one strategist call per AI village still in the game, then the
  *  deterministic turn. A failed or missing call keeps that village's current plan. */
 export async function playTurn(
   spec: WorldSpec,

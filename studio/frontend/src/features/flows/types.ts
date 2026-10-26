@@ -483,7 +483,6 @@ export interface WorldFaction {
   color?: string | null;
 }
 
-/** Village Rivals: 2-4 factions playing a turn-based 4X-lite on the world map. */
 export interface WorldRivals {
   factions: WorldFaction[];
   max_turns?: number;
