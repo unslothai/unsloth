@@ -157,6 +157,13 @@ def _bytes(param):
     return param.data.numel() * param.data.element_size() * tp + extra
 
 
+def _workspace(items):
+    """Peak transient bytes one gather step allocates on the model's device, on every participating rank, kept
+    or not: the all-gather pieces, the concatenated whole tensor and the part reorder of the largest tensor
+    (each tensor is gathered, kept or dropped, before the next one)."""
+    return 3 * max((_bytes(p) for p, _ in items), default = 0)
+
+
 def _free_bytes(device):
     if device.type == "cuda":
         gc.collect()
@@ -288,29 +295,37 @@ def _short(room):
 
 
 def _plan(root, select, keep, what, allow_cpu):
-    """(items, device) for the gather, after every rank agreed it fits; raises with the numbers otherwise."""
+    """(items, device) for the gather, after every rank agreed it fits; raises with the numbers otherwise.
+    Every participating rank needs the gather workspace (one tensor at a time) on the model's device; a rank
+    that keeps the replica also needs the replica, there or (allow_cpu) in host RAM."""
     items = _items(root, select)
-    need = sum(_bytes(p) for p, _ in items) if keep else 0
+    kept = sum(_bytes(p) for p, _ in items) if keep else 0
+    workspace = _workspace(items)
     device = _device(root)
     free, where = _free_bytes(device)
-    room = _room(need, free, device)
+    room = _room(kept + workspace, free, device)
     short = _short(room)
     if short is None:
         return items, device
     if allow_cpu and device.type != "cpu":
-        cpu_room = _room(need, _host_free(), device)
-        if _short(cpu_room) is None:
+        staging = _room(workspace, free, device)
+        cpu_room = _room(kept, _host_free(), device)
+        if _short(staging) is None and _short(cpu_room) is None:
             if keep:
                 print(
-                    f"Unsloth: tensor parallel `{what}`: the whole model ({_gib(need)}) does not fit "
+                    f"Unsloth: tensor parallel `{what}`: the whole model ({_gib(kept)}) does not fit "
                     f"{device} ({_gib(free)} free); gathering it to the CPU instead."
                 )
             return items, torch.device("cpu")
         where = f"{where}, {_gib(cpu_room[short][1])} of available host RAM"
     need_s, free_s = room[short]
+    detail = (
+        f"{_gib(need_s)} on its device for it ({_gib(need_s - workspace)} for the replica it keeps, "
+        f"{_gib(workspace)} of gather workspace)"
+    )
     raise RuntimeError(
         f"Unsloth: tensor parallel `{what}` gathers a whole single-GPU replica of the model, but rank {short} "
-        f"needs {_gib(need_s)} more for it (+ {_gib(_margin(need_s))} headroom) and has {_gib(free_s)} {where}. "
+        f"needs {detail} (+ {_gib(_margin(need_s))} headroom) and has {_gib(free_s)} {where}. "
         "Free memory (e.g. del trainer; gc.collect(); torch.cuda.empty_cache()), or save the adapter with "
         "model.save_pretrained(...) and run this on one GPU."
     )

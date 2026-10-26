@@ -433,7 +433,43 @@ def _case_processor(rank, world, tmp):
     return out
 
 
+def _case_workspace(rank, world, tmp):
+    """An export gathers to rank 0 only, but every rank all-gathers each whole tensor: a non-writing rank without
+    room for that workspace makes every rank refuse together, before anything is gathered or written; with room
+    for the workspace (not for a whole replica) the export runs."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    from unsloth import save
+    from unsloth.models import tp_native, tp_replica
+
+    model = build(LLAMA)
+    tp_native.apply_tensor_parallel(model, _mesh(world))
+    sharded = dict(model.named_parameters())
+    items = tp_replica._items(model, "all")
+    workspace = 3 * max(tp_replica._bytes(p) for p, _ in items)  # tp_replica._workspace
+    replica = sum(tp_replica._bytes(p) for p, _ in items)
+    real = tp_replica._free_bytes
+    out = {"workspace": workspace, "replica": replica}
+
+    def export(directory):
+        return _raised(lambda: save.unsloth_save_model(model, None, directory, save_method = "lora"))
+
+    if rank == 1:  # the non-writer: room for less than one tensor's gather
+        tp_replica._free_bytes = lambda device: (tp_replica._margin(workspace) + workspace // 2, "free on its GPU")
+    out["short"] = export(os.path.join(tmp, "short"))
+    out["short_wrote"] = os.path.isdir(os.path.join(tmp, "short"))
+    out["untouched"] = all(p is sharded[n] for n, p in model.named_parameters())
+    if rank == 1:  # room for the workspace, not for a whole replica (the writer keeps it, not this rank)
+        tp_replica._free_bytes = lambda device: (tp_replica._margin(workspace) + workspace, "free on its GPU")
+    out["enough"] = export(os.path.join(tmp, "enough"))
+    tp_replica._free_bytes = real
+    out["enough_wrote"] = os.path.isfile(os.path.join(tmp, "enough", "adapter_config.json"))
+    return out
+
+
 CASES = {
+    "workspace": _case_workspace,
     "destructive": _case_destructive,
     "processor": _case_processor,
     "generate": _case_generate,
@@ -607,7 +643,7 @@ def test_tp2_replica_that_does_not_fit_is_refused_on_every_rank():
                 res[key],
             )
             assert (
-                "rank 1 needs" in res[key] and "MiB more" in res[key] and "has 0.0 MiB" in res[key]
+                "rank 1 needs" in res[key] and "MiB on its device" in res[key] and "has 0.0 MiB" in res[key]
             ), res[key]
         assert res["untouched"] and not res["replica"], res
         assert res["pp_for_inference"] and "pipeline parallel" in res["pp_for_inference"], res
@@ -639,3 +675,16 @@ def test_tp2_processor_saves_once_per_world():
             assert res[f"{label}_return"] and res[f"{label}_return"][0].endswith(
                 "processor_config.json"
             ), res
+
+
+def test_tp2_non_writer_without_gather_workspace_refuses_with_every_rank():
+    results = _spawn("workspace", 2)
+    for rank, res in enumerate(results):
+        assert res["replica"] > res["workspace"] // 3, res  # the room given below is less than a replica
+        assert res["short"] and "rank 1 needs" in res["short"] and "gather workspace" in res["short"], (
+            rank,
+            res["short"],
+        )
+        assert not res["short_wrote"] and res["untouched"], (rank, res)
+        assert res["enough"] is None, (rank, res["enough"])
+    assert results[0]["enough_wrote"]
