@@ -218,7 +218,10 @@ try:
 except:
     # Old HF Hub versions <= 0.0.25.
     from huggingface_hub.utils._token import get_token
-from triton import __version__ as triton_version
+try:
+    from triton import __version__ as triton_version
+except ImportError:  # AMD Windows wheels ship no Triton
+    triton_version = None
 
 # Not xformers is not None: HAS_XFORMERS is off when no kernel runs here, and then Mistral skips its sliding-window mask
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None

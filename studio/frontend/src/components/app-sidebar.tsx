@@ -148,8 +148,8 @@ import {
   LayerIcon,
   ApiIcon,
   Clock01Icon,
-  Copy01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import {
   AiSpeechIcon,
   MessageCircleIcon,

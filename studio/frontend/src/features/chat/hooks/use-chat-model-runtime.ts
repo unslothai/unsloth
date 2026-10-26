@@ -193,6 +193,7 @@ import {
   invalidateLlamaFlagCatalog,
   loadManagedLlamaFlags,
 } from "@/features/model-picker/api/llama-flags";
+import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
 import {
   DEFAULT_ENGINE_LAUNCH_FIELDS,
@@ -2147,7 +2148,31 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.reasoningBudgetMessage ??
             stateBeforeUnload.reasoningBudgetMessage;
           // No fallback: undefined means unread, and the route keeps stored flags when omitted.
-          const loadLlamaExtraArgs = pendingLoadConfig?.llamaExtraArgs;
+          let loadLlamaExtraArgs = pendingLoadConfig?.llamaExtraArgs;
+          if (
+            isGguf &&
+            !targetIsDiffusion &&
+            loadLlamaExtraArgs != null &&
+            loadLlamaExtraArgs.length > 0
+          ) {
+            // Sanitized like auto-load: a flag managed since it was saved would 400 the load.
+            try {
+              const managed = await loadManagedLlamaFlags();
+              const cleaned = sanitizeStoredExtraArgs(
+                loadLlamaExtraArgs,
+                managed?.managed ?? new Set<string>(),
+                {
+                  maxBytes: managed?.maxBytes,
+                  windowsCommandBudget: managed?.windowsCommandBudget,
+                },
+              );
+              if (cleaned.length !== loadLlamaExtraArgs.length) {
+                loadLlamaExtraArgs = cleaned;
+              }
+            } catch {
+              // A flag-catalogue outage must not stop the load.
+            }
+          }
           let loadNBatch =
             pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
           let loadNUbatch =

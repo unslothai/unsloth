@@ -508,12 +508,12 @@ export function orderRecommendedRows<
 export type CuratedBudget = {
   allowanceGb: number;
   deviceGb: number;
-  device: "GPU" | "RAM";
+  device: "GPU" | "RAM" | "GPU + RAM";
   sizeGb: number;
 };
 
 export function curatedBudget(
-  fit: NonNullable<ReturnType<typeof curatedArtifactFit>>,
+  fit: Omit<NonNullable<ReturnType<typeof curatedArtifactFit>>, "device"> & { device?: CuratedBudget["device"] },
 ): CuratedBudget | undefined {
   const { allowanceGb, deviceGb, device, sizeGb } = fit;
   return allowanceGb != null && deviceGb != null && device && sizeGb != null
@@ -538,7 +538,9 @@ export function curatedBudgetText(
     ? shownBudget.toFixed(1)
     : (Math.floor(budget.allowanceGb * 10 + 1e-9) / 10).toFixed(1);
   const of =
-    budget.device === "RAM"
+    budget.device === "GPU + RAM"
+      ? `${Number(budget.deviceGb.toFixed(2))}GB combined GPU and available RAM`
+      : budget.device === "RAM"
       ? `${Number(budget.deviceGb.toFixed(2))}GB available RAM`
       : `a ${gpuGb}GB GPU`;
   return `Needs ~${needGb}GB for weights (budget: ~${budgetGb}GB, 70% of ${of})`;

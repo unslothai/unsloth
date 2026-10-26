@@ -25,10 +25,10 @@ import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
   Bookmark02Icon,
-  Copy01Icon,
   Delete02Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useEffect, useId, useState } from "react";

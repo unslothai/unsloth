@@ -303,6 +303,7 @@ import {
   retainedContextPin,
   replayMaxTokensCap,
 } from "../presets/preset-policy";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { takeThreadCompactionRequest } from "../stores/compact-request-store";
@@ -3670,6 +3671,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             isDiffusion,
           )
         : null;
+    // Reconciled against the raw pick: a ratio only applies to the GPU set it was saved with.
+    const effectiveTensorSplit = reconcileTensorSplit(
+      config.tensorSplit,
+      config.selectedGpuIds,
+      effectiveGpuIds,
+    );
     // Manual memory with Auto layers lets llama.cpp --fit size context; send 0 or the pin (GGUF).
     const fitMaxSeqLength = resolveFitMaxSeqLength(
       candidate.kind === "gguf",
@@ -3785,12 +3792,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       tensor_parallel: effectiveTensorParallel,
       disable_vision: effectiveDisableVision,
       n_parallel: config.nParallel ?? null,
-      // Split ratio is never remembered (tied to an exact GPU set), so llama.cpp's default applies.
       ...(candidate.kind === "gguf"
         ? {
             gpu_memory_mode: effectiveGpuMemoryMode,
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
+            tensor_split: effectiveTensorSplit ?? undefined,
             gpu_ids: effectiveGpuIds ?? undefined,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),

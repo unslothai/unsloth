@@ -29,7 +29,11 @@ import _zoo_aggressive_cuda_spoof as _spoof
 _spoof.apply()
 import torch
 import unsloth
-_is_cuda = lambda d: isinstance(d, (str, int, torch.device)) and not isinstance(d, bool) and torch.device(d).type == "cuda"
+# A bare index is a CUDA ordinal here (get_current_device() returns one). torch.device(0) resolves it
+# through the accelerator, which raises on a CPU-only torch, so it is not asked.
+_is_cuda = lambda d: (isinstance(d, int) and not isinstance(d, bool)) or (
+    isinstance(d, (str, torch.device)) and torch.device(d).type == "cuda"
+)
 for _name in ("empty", "zeros", "ones", "full", "tensor", "arange", "randn", "rand", "randint",
               "empty_like", "zeros_like", "ones_like"):
     _orig = getattr(torch, _name)

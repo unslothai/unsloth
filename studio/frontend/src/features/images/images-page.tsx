@@ -4127,7 +4127,7 @@ export function ImagesPage({
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = downloadOnly ? undefined : pickToast.show();
+      const pickToastId = downloadOnly ? undefined : pickToast.show(opts.displayRepoId ?? repoId);
       // Read before the await: a pick made meanwhile replaces quantRevert. Download-only owns no slot.
       const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Acted on outside the try: a throwing refusal would otherwise fall through to the load.

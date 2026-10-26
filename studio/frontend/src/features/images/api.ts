@@ -688,6 +688,7 @@ export interface DiffusionTrainingStatus {
   grad_norm?: number | null;
   num_images: number | null;
   in_model_load: boolean;
+  preparation?: { stage?: string | null; done?: number | null; total?: number | null } | null;
   output_dir: string | null;
   lora_path: string | null;
   ema_path?: string | null;
