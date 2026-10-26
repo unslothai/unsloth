@@ -20,6 +20,7 @@ world-size-independent checkpoint. load_state_dict() re-quantizes it: the invers
 blocks are unchanged (same world size), so a resume restores the same 8-bit state.
 """
 
+import contextlib
 import functools
 import os
 
@@ -27,6 +28,7 @@ import torch
 
 __all__ = [
     "bnb_local_shards_enabled",
+    "full_cpu_state_export",
     "is_local_shard_bnb_optimizer",
     "localize_bnb_optimizer",
     "supports_local_shards",
@@ -416,10 +418,14 @@ class _LocalShardMixin:
             for gindex, group in enumerate(self.param_groups)
             for pindex, p in enumerate(group["params"])
         ]
-        state_dict["state"] = {
-            index: self._export_state(slots[index][0], raw, slots[index][1])
-            for index, raw in state_dict["state"].items()
-        }
+        to_cpu = getattr(self, "_unsloth_full_cpu_export", False)
+        exported = {}
+        for index, raw in state_dict["state"].items():
+            out = self._export_state(slots[index][0], raw, slots[index][1])
+            # Gathered and moved to the CPU one parameter at a time, so the float32 copies of every
+            # moment are never all on the device together (see full_cpu_state_export).
+            exported[index] = _gather_to_cpu(out) if to_cpu else out
+        state_dict["state"] = exported
         return state_dict
 
     def _import_state(self, group, p, gindex, pindex, saved):
@@ -468,6 +474,56 @@ class _LocalShardMixin:
             for saved_id, saved in state_dict["state"].items():
                 if saved_id in slot_of:
                     self._import_state(*slot_of[saved_id], saved)
+
+
+def _gather_to_cpu(entry):
+    """One parameter's exported state as torch's full_state_dict + cpu_offload export makes it
+    (torch.distributed._state_dict_utils._gather_state_dict): each DTensor redistributed to Replicate
+    and its local tensor copied to the CPU on global rank 0; other ranks keep None (torch gives them an
+    empty state dict). Plain tensors are copied to the CPU on rank 0 too."""
+    DTensor = _dtensor_class()
+    dist = torch.distributed
+    keep = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+    out = {}
+    for key, value in entry.items():
+        if DTensor is not None and isinstance(value, DTensor):
+            from torch.distributed.tensor import Replicate
+
+            mesh = value.device_mesh
+            if value.device.type != mesh.device_type:
+                value = value.to(mesh.device_type)
+            value = value.redistribute(
+                device_mesh = mesh, placements = [Replicate() for _ in value.placements]
+            ).to_local()
+            try:
+                from torch.distributed._functional_collectives import AsyncCollectiveTensor
+            except ImportError:
+                AsyncCollectiveTensor = None
+            if AsyncCollectiveTensor is not None and isinstance(value, AsyncCollectiveTensor):
+                value = value.wait()  # as torch: synchronous with the main stream
+        if torch.is_tensor(value):
+            value = value.to("cpu") if keep else None
+        out[key] = value
+    return out
+
+
+@contextlib.contextmanager
+def full_cpu_state_export(optimizer):
+    """For get_optimizer_state_dict(full_state_dict = True, cpu_offload = True): torch calls
+    optimizer.state_dict() first and gathers / offloads after, so the dequantized float32 moments of
+    every parameter (8 bytes per element, against the 2 bytes the 8-bit state takes) would all sit on
+    the device until the whole state dict exists. Inside this block a local-shard bitsandbytes
+    optimizer gathers and offloads each parameter's state as it is exported instead; the result is
+    the tensors torch would have produced. Every rank must enter it (the gathers are collective).
+    Other optimizers are unchanged."""
+    if not is_local_shard_bnb_optimizer(optimizer):
+        yield
+        return
+    optimizer._unsloth_full_cpu_export = True
+    try:
+        yield
+    finally:
+        optimizer._unsloth_full_cpu_export = False
 
 
 def _sync_device(p):
