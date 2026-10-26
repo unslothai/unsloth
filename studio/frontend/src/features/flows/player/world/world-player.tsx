@@ -16,6 +16,7 @@ import {
   XIcon,
 } from "lucide-react";
 import {
+  type RefObject,
   Suspense,
   lazy,
   useCallback,
@@ -23,6 +24,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import { cn } from "@/lib/utils";
@@ -248,6 +250,136 @@ function SpriteThumb({
     <div className="flex size-9 items-center justify-center rounded-lg bg-gradient-to-br from-violet-400/60 to-sky-400/60 font-bold text-sm">
       {fallback.slice(0, 1)}
     </div>
+  );
+}
+
+interface LiveStore {
+  get(): LiveReply | null;
+  set(next: LiveReply | null): void;
+  subscribe(fn: () => void): () => void;
+}
+
+function liveStore(): LiveStore {
+  let value: LiveReply | null = null;
+  const subs = new Set<() => void>();
+  return {
+    get: () => value,
+    set(next) {
+      if (next === value) return;
+      value = next;
+      for (const fn of subs) fn();
+    },
+    subscribe(fn) {
+      subs.add(fn);
+      return () => subs.delete(fn);
+    },
+  };
+}
+
+// Streamed tokens re-render only this bubble, not the whole player.
+function ReplyStatus({
+  live: store,
+  talking,
+  thinking,
+  warmed,
+  scroller,
+}: {
+  live: LiveStore;
+  talking: string;
+  thinking: boolean;
+  warmed: boolean;
+  scroller: RefObject<HTMLDivElement | null>;
+}) {
+  const live = useSyncExternalStore(store.subscribe, store.get);
+  const shown = useRef(live?.text);
+  useEffect(() => {
+    if (shown.current === live?.text) return;
+    shown.current = live?.text;
+    scroller.current?.scrollTo({
+      top: scroller.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [live?.text, scroller]);
+  return thinking && live && live.npcId === talking ? (
+    <div
+      className="max-w-[85%] self-start rounded-2xl bg-white/10 px-3.5 py-2 text-sm leading-relaxed"
+      data-testid="world-npc-streaming"
+    >
+      {live.text}
+    </div>
+  ) : thinking && !warmed ? (
+    <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm text-white/70">
+      Waking up the villagers...
+    </div>
+  ) : thinking ? (
+    <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          style={{
+            animation: `flows-dots 1.2s ${i * 0.2}s infinite`,
+          }}
+        >
+          •
+        </span>
+      ))}
+    </div>
+  ) : null;
+}
+
+// Owns the draft so typing re-renders only the form.
+function SayForm({
+  npcName,
+  thinking,
+  draft: kept,
+  onSend,
+  onBye,
+}: {
+  npcName: string;
+  thinking: boolean;
+  draft: RefObject<string>;
+  onSend: (text: string) => boolean;
+  onBye: () => void;
+}) {
+  const [draft, setDraft] = useState(kept.current);
+  const edit = (text: string) => {
+    kept.current = text;
+    setDraft(text);
+  };
+  return (
+    <form
+      className="flex gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (onSend(draft)) edit("");
+      }}
+    >
+      <input
+        // biome-ignore lint/a11y/noAutofocus: the conversation box is the only thing to type into
+        autoFocus={true}
+        value={draft}
+        onChange={(e) => edit(e.target.value)}
+        placeholder={`Say something to ${npcName}...`}
+        className="min-w-0 flex-1 rounded-full bg-white/10 px-4 py-2 text-sm outline-none ring-1 ring-white/10 placeholder:text-white/35 focus:ring-white/30"
+        data-testid="world-say"
+      />
+      <button
+        type="submit"
+        disabled={thinking || !draft.trim()}
+        className="rounded-full bg-white px-4 text-black disabled:opacity-40"
+        aria-label="Send"
+        title="Send"
+      >
+        <SendIcon className="size-4" />
+      </button>
+      <button
+        type="button"
+        onClick={onBye}
+        className="rounded-full bg-white/10 px-3 text-sm hover:bg-white/20"
+      >
+        Bye
+      </button>
+    </form>
   );
 }
 
@@ -684,9 +816,9 @@ export function WorldPlayer({
     }
   }, [editor, spec.title]);
 
-  const [draft, setDraft] = useState("");
+  const draft = useRef("");
   const [thinking, setThinking] = useState(false);
-  const [live, setLive] = useState<LiveReply | null>(null);
+  const live = useMemo(() => liveStore(), []);
   const replyEntry = spec.entry_points?.npc_reply;
   const [warmed, setWarmed] = useState(true);
   useEffect(() => {
@@ -718,7 +850,7 @@ export function WorldPlayer({
       top: scroller.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [turns.length, thinking, live?.text]);
+  }, [turns.length, thinking]);
 
   const loads = useRef(0);
   const messages = useRef(0);
@@ -965,14 +1097,28 @@ export function WorldPlayer({
     [api, chatEntry, flowId, npcById, sim, spec],
   );
 
+  // One 1 Hz timer for the sim, errand and autonomy ticks, so their updates land in one render.
+  const ticks = useRef<((() => void) | null)[]>([null, null, null]);
+  const tickWs = useCallback((fn: (s: WorldState) => WorldState) => {
+    wsRef.current = fn(wsRef.current);
+    setWs(fn);
+  }, []);
+  useEffect(() => {
+    if (!ready || !started) return;
+    const timer = window.setInterval(() => {
+      for (const tick of ticks.current) tick?.();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [ready, started]);
+
   useEffect(() => {
     if (!sim || !ready || !started) return;
-    const timer = window.setInterval(() => {
+    ticks.current[0] = () => {
       const g = game.current;
       if (!g || lockedRef.current) return;
       const s = wsRef.current;
       const clock = s.clock + sim.minutes_per_second;
-      setWs((st) => ({ ...st, clock: st.clock + sim.minutes_per_second }));
+      tickWs((st) => ({ ...st, clock: st.clock + sim.minutes_per_second }));
       const day = dayOf(clock);
       const places = new Map(sim.places.map((p) => [p.id, p]));
       const lives: Record<
@@ -1017,7 +1163,7 @@ export function WorldPlayer({
         g.setNpcStatus(n.id, block ? activityEmoji(block.activity) : "");
       }
       if (Object.keys(lives).length || Object.keys(ticked).length)
-        setWs((st) => {
+        tickWs((st) => {
           const npc = { ...st.npc };
           for (const [id, life] of Object.entries(lives))
             if (npc[id]) npc[id] = { ...npc[id], ...life };
@@ -1034,7 +1180,7 @@ export function WorldPlayer({
           sim.chat_cooldown_min,
         );
         if (pair) {
-          setWs((st) => ({
+          tickWs((st) => ({
             ...st,
             npc: markChat(st.npc, pair[0], pair[1], st.clock),
           }));
@@ -1046,8 +1192,10 @@ export function WorldPlayer({
         }
       }
       queue.pump();
-    }, 1000);
-    return () => window.clearInterval(timer);
+    };
+    return () => {
+      ticks.current[0] = null;
+    };
   }, [
     sim,
     ready,
@@ -1061,11 +1209,12 @@ export function WorldPlayer({
     withNeeds,
     offers,
     areas,
+    tickWs,
   ]);
 
   useEffect(() => {
     if (!ready || !started) return;
-    const timer = window.setInterval(() => {
+    ticks.current[1] = () => {
       const g = game.current;
       if (!g) return;
       const { steered: now, expired } = steerActions(
@@ -1076,14 +1225,16 @@ export function WorldPlayer({
       );
       steered.current = now;
       if (expired.length)
-        setWs((st) => {
+        tickWs((st) => {
           const errands = { ...(st.errands ?? {}) };
           for (const id of expired) delete errands[id];
           return { ...st, errands };
         });
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [ready, started, areas]);
+    };
+    return () => {
+      ticks.current[1] = null;
+    };
+  }, [ready, started, areas, tickWs]);
 
   const flags = useMemo(() => autonomyOf(baseSpec), [baseSpec]);
   const autoOn = useMemo(() => autonomyOn(baseSpec), [baseSpec]);
@@ -1092,7 +1243,7 @@ export function WorldPlayer({
   const autoSteered = useRef(new Set<string>());
   useEffect(() => {
     if (!autoOn || !ready || !started) return;
-    const timer = window.setInterval(() => {
+    ticks.current[2] = () => {
       const g = game.current;
       if (!g || lockedRef.current) return;
       const played = specRef.current;
@@ -1141,7 +1292,7 @@ export function WorldPlayer({
           g.setNpcStatus(id, "");
         }
       autoSteered.current = now;
-      setWs((st) => {
+      tickWs((st) => {
         const npc = { ...st.npc };
         for (const [id, m] of Object.entries(out.state.npc))
           if (m !== base.npc[id] && npc[id])
@@ -1155,9 +1306,11 @@ export function WorldPlayer({
       });
       for (const n of out.notes) toast(n);
       events.current = [...events.current, ...out.notes].slice(-6);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [autoOn, ready, started, map, areas, toast, shooterOn]);
+    };
+    return () => {
+      ticks.current[2] = null;
+    };
+  }, [autoOn, ready, started, map, areas, toast, shooterOn, tickWs]);
 
   const deal = (
     fn: (st: WorldState) => { state: WorldState; note: string } | null,
@@ -1173,11 +1326,13 @@ export function WorldPlayer({
   const [offer, setOffer] = useState<{ npc: string; good: Good } | null>(null);
 
   const replyRun = useRef<AbortController | null>(null);
-  const send = async () => {
-    const text = draft.trim();
-    if (!text || !talking || thinking) return;
-    setDraft("");
-    const npcId = talking;
+  const send = (raw: string): boolean => {
+    const text = raw.trim();
+    if (!text || !talking || thinking) return false;
+    void reply(text, talking);
+    return true;
+  };
+  const reply = async (text: string, npcId: string) => {
     const turn = ++messages.current;
     summaryRun.current?.abort();
     summaryRun.current = null;
@@ -1241,13 +1396,19 @@ export function WorldPlayer({
         {
           signal: run.signal,
           onDelta: (piece) =>
-            setLive((l) =>
-              appendReplyDelta(l, npcId, generation, loads.current, piece),
+            live.set(
+              appendReplyDelta(
+                live.get(),
+                npcId,
+                generation,
+                loads.current,
+                piece,
+              ),
             ),
         },
       );
       if (generation !== loads.current) return;
-      setLive(null);
+      live.set(null);
       const reply = res.outputs.reply as NpcReply | undefined;
       if (!reply?.text) throw new Error("No reply");
       const prior = wsRef.current;
@@ -1306,7 +1467,7 @@ export function WorldPlayer({
       })();
     } catch (e) {
       if (generation !== loads.current) return;
-      setLive(null);
+      live.set(null);
       const message = e instanceof Error ? e.message : String(e);
       if (isNoChatModelError(message)) {
         const npc = npcById.get(npcId);
@@ -1389,7 +1550,7 @@ export function WorldPlayer({
     busy.current.clear();
     setBackground(null);
     setThinking(false);
-    setLive(null);
+    live.set(null);
     setWs(state);
     setTalking(null);
     setPanel(null);
@@ -1839,31 +2000,13 @@ export function WorldPlayer({
                     {t.text}
                   </div>
                 ))}
-                {thinking && live && live.npcId === talking ? (
-                  <div
-                    className="max-w-[85%] self-start rounded-2xl bg-white/10 px-3.5 py-2 text-sm leading-relaxed"
-                    data-testid="world-npc-streaming"
-                  >
-                    {live.text}
-                  </div>
-                ) : thinking && !warmed ? (
-                  <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm text-white/70">
-                    Waking up the villagers...
-                  </div>
-                ) : thinking ? (
-                  <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm">
-                    {[0, 1, 2].map((i) => (
-                      <span
-                        key={i}
-                        style={{
-                          animation: `flows-dots 1.2s ${i * 0.2}s infinite`,
-                        }}
-                      >
-                        •
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
+                <ReplyStatus
+                  live={live}
+                  talking={talkNpc.id}
+                  thinking={thinking}
+                  warmed={warmed}
+                  scroller={scroller}
+                />
               </div>
               {talkHeld.length || (flags.trade && ws.auto) ? (
                 <div
@@ -1930,42 +2073,16 @@ export function WorldPlayer({
                     : null}
                 </div>
               ) : null}
-              <form
-                className="flex gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void send();
+              <SayForm
+                npcName={talkNpc.name}
+                thinking={thinking}
+                draft={draft}
+                onSend={send}
+                onBye={() => {
+                  setTalking(null);
+                  game.current?.faceNpc(null);
                 }}
-              >
-                <input
-                  // biome-ignore lint/a11y/noAutofocus: the conversation box is the only thing to type into
-                  autoFocus={true}
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder={`Say something to ${talkNpc.name}...`}
-                  className="min-w-0 flex-1 rounded-full bg-white/10 px-4 py-2 text-sm outline-none ring-1 ring-white/10 placeholder:text-white/35 focus:ring-white/30"
-                  data-testid="world-say"
-                />
-                <button
-                  type="submit"
-                  disabled={thinking || !draft.trim()}
-                  className="rounded-full bg-white px-4 text-black disabled:opacity-40"
-                  aria-label="Send"
-                  title="Send"
-                >
-                  <SendIcon className="size-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTalking(null);
-                    game.current?.faceNpc(null);
-                  }}
-                  className="rounded-full bg-white/10 px-3 text-sm hover:bg-white/20"
-                >
-                  Bye
-                </button>
-              </form>
+              />
             </div>
           </div>
         </div>

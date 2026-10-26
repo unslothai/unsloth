@@ -4,17 +4,19 @@
 import { useEffect, useState } from "react";
 
 import type { MediaValue } from "../types";
-import { type PlayerApi, mediaObjectUrl } from "./player-api";
+import { type PlayerApi, cachedMediaUrl, mediaObjectUrl } from "./player-api";
 
 export function useMediaUrl(
   api: PlayerApi,
   media: MediaValue | null | undefined,
 ): string | null {
   const key = media ? media.ref + (media.url ?? "") : "";
-  const [state, setState] = useState<{ key: string; url: string | null }>({
-    key: "",
-    url: null,
-  });
+  const [state, setState] = useState<{ key: string; url: string | null }>(
+    () => {
+      const url = media ? cachedMediaUrl(media) : null;
+      return { key: url ? key : "", url };
+    },
+  );
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` identifies the media; the object changes identity every render
   useEffect(() => {
     if (!media) {
@@ -23,7 +25,8 @@ export function useMediaUrl(
     let live = true;
     mediaObjectUrl(api, media)
       .then((url) => {
-        if (live) setState({ key, url });
+        if (live)
+          setState((s) => (s.key === key && s.url === url ? s : { key, url }));
       })
       .catch(() => {
         if (live) setState({ key, url: null });
@@ -33,5 +36,6 @@ export function useMediaUrl(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, key]);
-  return state.key === key ? state.url : null;
+  if (state.key === key) return state.url;
+  return media ? cachedMediaUrl(media) : null;
 }

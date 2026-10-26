@@ -127,6 +127,8 @@ function hash2(x: number, y: number, seed: number): number {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
+let measure: CanvasRenderingContext2D | null = null;
+
 function textCanvas(
   text: string,
   opts: { bubble?: boolean; px?: number; maxW?: number } = {},
@@ -134,7 +136,8 @@ function textCanvas(
   const px = opts.px ?? 44;
   const maxW = opts.maxW ?? 900;
   const font = `600 ${px}px Inter, system-ui, sans-serif`;
-  const [, probe] = canvas(4, 4);
+  if (!measure) [, measure] = canvas(4, 4);
+  const probe = measure;
   probe.font = font;
   const words = text.split(/\s+/);
   const lines: string[] = [];
@@ -215,16 +218,15 @@ export function createWorld3d(
   const view = resolveView3d(spec);
   const light = TIMES[view.time_of_day];
   const terrain: Terrain = buildTerrain(map, spec.seed, view.terrain);
-  const disposables: { dispose(): void }[] = [];
+  const disposables = new Set<{ dispose(): void }>();
   const keep = <T extends { dispose(): void }>(x: T): T => {
-    disposables.push(x);
+    disposables.add(x);
     return x;
   };
   const drop = (x: { dispose(): void } | null | undefined) => {
     if (!x) return;
     x.dispose();
-    const i = disposables.indexOf(x);
-    if (i >= 0) disposables.splice(i, 1);
+    disposables.delete(x);
   };
   const dropSprite = (sprite: three.Sprite) => {
     sprite.removeFromParent();
@@ -471,6 +473,7 @@ export function createWorld3d(
     const roofMat = keep(
       new three.MeshLambertMaterial({ color: "#a2533c", flatShading: true }),
     );
+    let roofGeo: three.ConeGeometry | null = null;
     for (const s of decor.wall) {
       if (seen.has(`${s.x},${s.y}`)) continue;
       let x0 = s.x;
@@ -509,10 +512,8 @@ export function createWorld3d(
       const bw = x1 - x0 + 1;
       const bd = y1 - y0 + 1;
       if (bw > 10 || bd > 10) continue;
-      const roof = new three.Mesh(
-        keep(new three.ConeGeometry(Math.SQRT1_2, 1, 4)),
-        roofMat,
-      );
+      roofGeo ??= keep(new three.ConeGeometry(Math.SQRT1_2, 1, 4));
+      const roof = new three.Mesh(roofGeo, roofMat);
       const cx = x0 + bw / 2;
       const cz = y0 + bd / 2;
       roof.rotation.y = Math.PI / 4;
@@ -610,6 +611,12 @@ export function createWorld3d(
   };
 
   const npcs: Npc[] = [];
+  const bodyMats = new Map<number, three.MeshLambertMaterial>();
+  let fallback: {
+    body: three.CapsuleGeometry;
+    head: three.SphereGeometry;
+    skin: three.MeshLambertMaterial;
+  } | null = null;
   const spawnNpc = (n: WorldNpc, at: Point) => {
     const g = new three.Group();
     const img = art.sprites[n.id];
@@ -633,20 +640,23 @@ export function createWorld3d(
         n.id.charCodeAt(0),
         n.id.charCodeAt(n.id.length - 1),
       );
-      const m = keep(
-        new three.MeshLambertMaterial({
-          color: new three.Color().setHSL(hue, 0.55, 0.55),
-        }),
-      );
-      const cap = new three.Mesh(
-        keep(new three.CapsuleGeometry(0.2, 0.5, 4, 10)),
-        m,
-      );
+      let m = bodyMats.get(hue);
+      if (!m) {
+        m = keep(
+          new three.MeshLambertMaterial({
+            color: new three.Color().setHSL(hue, 0.55, 0.55),
+          }),
+        );
+        bodyMats.set(hue, m);
+      }
+      fallback ??= {
+        body: keep(new three.CapsuleGeometry(0.2, 0.5, 4, 10)),
+        head: keep(new three.SphereGeometry(0.15, 12, 10)),
+        skin: keep(new three.MeshLambertMaterial({ color: "#f1c9a5" })),
+      };
+      const cap = new three.Mesh(fallback.body, m);
       cap.position.y = 0.45;
-      const head = new three.Mesh(
-        keep(new three.SphereGeometry(0.15, 12, 10)),
-        keep(new three.MeshLambertMaterial({ color: "#f1c9a5" })),
-      );
+      const head = new three.Mesh(fallback.head, fallback.skin);
       head.position.y = 0.98;
       g.add(cap, head);
     }
@@ -1109,16 +1119,19 @@ export function createWorld3d(
         Math.hypot(n.pos.x - me.x, n.pos.y - me.y) >= 0.42,
     );
 
-  const targets = (): Target[] =>
-    npcs
-      .filter((n) => n.group.visible)
-      .map((n) => ({
-        id: n.id,
-        x: n.pos.x,
-        y: n.pos.y,
-        z: heightAt(terrain, n.pos.x, n.pos.y),
-        hostile: hostile.has(n.id),
-      }));
+  const targets = (hostileOnly = false): Target[] => {
+    const out: Target[] = [];
+    for (const n of npcs)
+      if (n.group.visible && (!hostileOnly || hostile.has(n.id)))
+        out.push({
+          id: n.id,
+          x: n.pos.x,
+          y: n.pos.y,
+          z: heightAt(terrain, n.pos.x, n.pos.y),
+          hostile: hostile.has(n.id),
+        });
+    return out;
+  };
   const say = (n: Npc, text: string) => handle.say(n.id, text, 1600);
   function fight(dt: number) {
     if (!aw || !body) return;
@@ -1178,7 +1191,7 @@ export function createWorld3d(
       aw,
       combat,
       { x: body.x, y: body.y, z: body.z, h: bodyHeight(body) },
-      targets().filter((t) => t.hostile),
+      targets(true),
       safe,
     );
     for (const id of fired) {
@@ -1505,16 +1518,15 @@ export function createWorld3d(
         it.sprite.position.y = it.base + Math.sin(now / 450 + it.at.x) * 0.06;
     }
 
-    let best: Interactable | null = null;
+    let bestNpc: Npc | null = null;
+    let bestItem: Item | null = null;
     let bestD = REACH;
-    let bp: three.Vector3 | null = null;
     for (const n of npcs) {
       if (!n.group.visible) continue;
       const d = Math.hypot(n.pos.x - me.x, n.pos.y - me.y);
       if (d < bestD) {
         bestD = d;
-        best = { kind: "npc", id: n.id, name: n.name };
-        bp = n.group.position.clone().setY(n.group.position.y + ACTOR_H + 0.12);
+        bestNpc = n;
       }
     }
     for (const it of items.values()) {
@@ -1522,16 +1534,15 @@ export function createWorld3d(
       const d = Math.hypot(it.at.x + 0.5 - me.x, it.at.y + 0.5 - me.y);
       if (d < bestD) {
         bestD = d;
-        best = { kind: "item", id: it.id, name: it.name };
-        bp = it.sprite.position.clone().setY(it.base + 0.7);
+        bestItem = it;
       }
     }
+    let bestProp: WorldProp3d | null = null;
     for (const p of usable) {
       const d = Math.hypot(p.x - me.x, p.y - me.y);
       if (d < bestD) {
         bestD = d;
-        best = propTarget(p);
-        bp = propTip.set(p.x, heightAt(terrain, p.x, p.y) + 1.3, p.y);
+        bestProp = p;
       }
       const goal = isOpen(p, propState) ? 1 : 0;
       const pose = poses.get(p.id);
@@ -1546,15 +1557,37 @@ export function createWorld3d(
         if (obj) setOpenPose(obj, next);
       }
     }
+    // The props loop runs last, so a prop found there is the closest; then an item, then a villager.
+    if (bestProp) {
+      bestItem = null;
+      bestNpc = null;
+      prompt.position.set(
+        bestProp.x,
+        heightAt(terrain, bestProp.x, bestProp.y) + 1.3,
+        bestProp.y,
+      );
+    } else if (bestItem)
+      prompt.position.copy(bestItem.sprite.position).setY(bestItem.base + 0.7);
+    else if (bestNpc)
+      prompt.position
+        .copy(bestNpc.group.position)
+        .setY(bestNpc.group.position.y + ACTOR_H + 0.12);
+    const best = bestProp ?? bestItem ?? bestNpc;
+    const propNow = bestProp ? propTarget(bestProp) : null;
     if (
       (best?.id ?? null) !== (nearby?.id ?? null) ||
-      best?.name !== nearby?.name
+      (propNow !== null && propNow.name !== nearby?.name)
     ) {
-      nearby = best;
-      bridge.onNearby(best);
+      nearby =
+        propNow ??
+        (bestItem
+          ? { kind: "item", id: bestItem.id, name: bestItem.name }
+          : bestNpc
+            ? { kind: "npc", id: bestNpc.id, name: bestNpc.name }
+            : null);
+      bridge.onNearby(nearby);
     }
-    prompt.visible = Boolean(best && bp && !locked);
-    if (bp) prompt.position.copy(bp);
+    prompt.visible = Boolean(best && !locked);
 
     regionTimer -= dt * 1000;
     if (regionTimer <= 0) {

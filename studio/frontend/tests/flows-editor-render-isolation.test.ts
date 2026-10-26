@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { doc, edge, node } from "./flows-editor-fixtures.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -199,4 +199,16 @@ test("a failed node keeps the backend's error text", () => {
     }),
   ]);
   assert.equal(next.nodes.a.error, "No chat model is loaded");
+});
+
+test("the canvas hands React Flow stable props, so a re-render does not reset its store", () => {
+  const canvas = readSrc("features/flows/editor/canvas.tsx");
+  const props = canvas.slice(canvas.indexOf("<ReactFlow<"));
+  assert.doesNotMatch(props, /=\{\{/, "no inline object props");
+  assert.doesNotMatch(props, /=\{\[/, "no inline array props");
+  const onNodesChange = canvas.slice(
+    canvas.indexOf("const onNodesChange"),
+    canvas.indexOf("const onEdgesChange"),
+  );
+  assert.match(onNodesChange, /\},\n {4}\[\],\n {2}\);\s*$/);
 });
