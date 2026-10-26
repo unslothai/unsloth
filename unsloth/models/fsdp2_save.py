@@ -537,9 +537,9 @@ def _host_available_bytes():
 
 def gather_on_accelerator_if_it_fits(model):
     """`fsdp2_gathered` options for an export that quantizes the weights in place, where they sit
-    (torchao's QAT convert). On one GPU they sit on the GPU, and torchao's CPU kernels do not round
-    exactly as its GPU ones do, so the writer keeps the gathered weights on its accelerator when they
-    fit there (with 1 GiB or 10% of the card spare); otherwise they go to the CPU as for any export."""
+    (torchao's QAT convert). On one GPU they sit on the GPU, so the writer keeps the gathered weights
+    on its accelerator when they fit there (with 1 GiB or 10% of the card spare), and the checkpoint
+    is the one a single GPU writes. Otherwise they go to the CPU as for any other export."""
     on_cpu = dict(offload_to_cpu = True, offload_4bit = True)
     if not isinstance(model, torch.nn.Module):
         return on_cpu
@@ -560,6 +560,12 @@ def gather_on_accelerator_if_it_fits(model):
         return on_cpu
     need = _gathered_host_bytes(model, offload_to_cpu = True, offload_4bit = True)
     if need + max(_GIB, total // 10) > free:
+        if mesh_writer_rank(model) == (_dist().get_rank() if _dist() is not None else 0):
+            print(
+                f"Unsloth: FSDP2 export: the gathered model ({need / _GIB:.1f} GiB) does not fit the "
+                f"{free / _GIB:.1f} GiB free on {device}, so it is converted on the CPU, not where a "
+                "single GPU converts it."
+            )
         return on_cpu
     return dict(offload_to_cpu = False, offload_4bit = False)
 

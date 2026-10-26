@@ -130,6 +130,28 @@ def test_whole_model_exports_run_on_rank0_under_fsdp2(monkeypatch, method, call,
         assert "offload_4bit" in seen[0][2], seen
 
 
+def test_qat_torchao_export_converts_where_one_gpu_would(monkeypatch):
+    """A QAT model saved with its own config is converted in place: rank 0 keeps the gathered
+    weights on its GPU when they fit (as one GPU converts them). A given torchao_config quantizes a
+    reload of a 16-bit save, so the weights go to the CPU as for every other export."""
+    seen = []
+
+    def export(model, run, name, trainable_only = False, **options):
+        seen.append(options)
+
+    monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: False)
+    monkeypatch.setattr(fsdp2_save, "fsdp2_export_on_writer", export)
+    monkeypatch.setattr(
+        fsdp2_save, "gather_on_accelerator_if_it_fits", lambda model: {"offload_to_cpu": "gpu"}
+    )
+    model = _tiny_llama()
+    model._torchao_config = object()
+    unsloth_save.unsloth_save_pretrained_torchao(model, "out")
+    unsloth_save.unsloth_save_pretrained_torchao(model, "out", torchao_config = object())
+    assert seen == [{"offload_to_cpu": "gpu"}, dict(offload_to_cpu = True, offload_4bit = True)]
+
+
 def test_rank0_export_passes_through_without_fsdp2(monkeypatch):
     monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [])
     export = unsloth_save._fsdp2_export_on_rank0("save_pretrained_gguf")(
