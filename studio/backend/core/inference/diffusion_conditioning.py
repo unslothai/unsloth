@@ -93,10 +93,7 @@ def check_output_size(fam: Any, width: int, height: int) -> None:
 
 
 def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -> tuple[int, int]:
-    """Output (width, height) with the source's aspect ratio at a ``resolution`` squared area, on
-    the family grid and inside its bounds. Upstream's ``calculate_dimensions`` rounding, but from
-    Image 1 rather than the LAST reference. A source too elongated for both bounds keeps the short
-    side at the minimum and caps the long side, so the size is always one the request accepts."""
+    """Source aspect ratio at the target area, snapped to the family grid and bounds, from Image 1."""
     multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
     max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
     max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)

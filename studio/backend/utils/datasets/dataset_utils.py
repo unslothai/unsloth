@@ -334,11 +334,7 @@ def _apply_user_mapping_alpaca(
     mapping: dict,
     batch_size: int = 1000,
 ):
-    """convert user mappings to Alpaca instruction, input, and output columns.
-
-    role names are normalized through ``_TO_CHATML`` and ``__label_mapping`` names label values.
-    ``__system_prompt`` prepends instruction because mapped system columns already fill input.
-    """
+    """__system_prompt is prepended to instruction, since a mapped system column already fills input."""
     meta = {k: v for k, v in mapping.items() if k.startswith("__")}
     column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
     system_prompt = meta.get("__system_prompt", "")
