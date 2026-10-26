@@ -126,47 +126,46 @@ def _decoded_frames(output: Any) -> Any:
     return output if sample is None else sample
 
 
+FINITE_DECODE_LAYER = "video_finite_decode"
+
+
 @contextlib.contextmanager
 def finite_video_decode(pipe: Any, attrs: "tuple[str, ...]" = ("vae",)) -> Iterator[None]:
     """While active, a ``vae.decode`` whose pixels hold NaN / inf raises ``NonFiniteFramesError``: checked on the
     device before any pipeline clamp (MiniMax-H3 clamps to [0, 1] first) or PIL / uint8 conversion hides it. The
-    output is returned untouched. Sits above load-time decode wrappers (the fp16 decode's fp32 rerun has run)."""
+    output is returned untouched. A decode layer (decode_layers) over the load-time wrappers, so the fp16 decode's
+    fp32 rerun has run; it carries no below-scope marker, so the OOM scope stays intact (re-asserted after the wrap)."""
     if not nonfinite_check_enabled():
         yield
         return
-    restore: list = []
+    from . import decode_layers
+    from .diffusion_vae_oom import ensure_outermost
 
-    def _wrap(original: Any) -> Any:
+    def make(inner: Any, _layer: Any) -> Any:
         def decode(*args: Any, **kwargs: Any) -> Any:
-            output = original(*args, **kwargs)
+            output = inner(*args, **kwargs)
             refuse_non_finite_tensor(_decoded_frames(output))
             return output
 
-        decode.__wrapped__ = (
-            original  # the decode stack stays walkable (diffusion_vae_oom checks its scope)
-        )
         return decode
 
+    layers: list = []
     for name in attrs:
         owner = getattr(pipe, name, None)
-        original = getattr(owner, "decode", None) if owner is not None else None
-        if not callable(original):
+        if owner is None or not callable(getattr(owner, "decode", None)):
             continue
-        had_own = "decode" in getattr(owner, "__dict__", {})
         try:
-            owner.decode = _wrap(original)
-        except Exception:  # noqa: BLE001 - a decoder that refuses assignment keeps the postprocess / encoder checks
+            layers.append(decode_layers.wrap(owner, "decode", FINITE_DECODE_LAYER, make))
+        except Exception:  # noqa: BLE001 - a decoder that refuses the layer keeps the postprocess / encoder checks
             continue
-        restore.append((owner, original, had_own))
+        ensure_outermost(owner)
     try:
         yield
     finally:
-        for owner, original, had_own in reversed(restore):
+        for layer in reversed(layers):
             try:
-                if had_own:
-                    owner.decode = original
-                else:
-                    del owner.decode
+                decode_layers.unwrap(layer)
+                ensure_outermost(layer.owner)
             except Exception:  # noqa: BLE001 - cleanup is best-effort
                 pass
 

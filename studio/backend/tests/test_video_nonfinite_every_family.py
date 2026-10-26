@@ -180,3 +180,52 @@ def test_kill_switch_restores_the_previous_behaviour(family, monkeypatch):
 def test_the_render_stack_enters_the_decode_check():
     source = (Path(VF.__file__).with_name("video.py")).read_text(encoding = "utf-8")
     assert "stack.enter_context(finite_video_decode(pipe))" in source
+
+
+class _ScopedVAE(torch.nn.Module):
+    """A VAE whose public decode calls ``_decode`` (stock diffusers shape), so the OOM ladder and scope install."""
+
+    def __init__(self, pixels):
+        super().__init__()
+        self.pixels = pixels
+        self.use_tiling = False
+
+    def enable_tiling(self):
+        self.use_tiling = True
+
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
+        return (self.pixels,)
+
+    def decode(
+        self,
+        z,
+        return_dict = True,
+    ):
+        return self._decode(z, return_dict = return_dict)
+
+
+@pytest.mark.parametrize("bad", [None, float("nan")])
+def test_the_oom_scope_stays_intact_and_is_put_back(bad):
+    from core.inference import decode_layers
+    from core.inference import diffusion_vae_oom as O
+
+    pixels = _pixels(bad)
+    vae = _ScopedVAE(pixels)
+    assert O.install(vae)
+    scope = vars(vae)["decode"]
+    assert O._scope_intact(vae)
+    with _finite_video_decode(types.SimpleNamespace(vae = vae)):
+        assert vars(vae)["decode"] is not scope
+        assert O._scope_intact(vae)  # the finiteness layer sits over the scope without breaking it
+        assert decode_layers.find(vae, "decode", "video_finite_decode") is not None
+        if bad is None:
+            assert vae.decode(None)[0] is pixels
+        else:
+            with pytest.raises(NonFiniteFramesError):
+                vae.decode(None)
+    assert vars(vae)["decode"] is scope and O._scope_intact(vae)
+    assert decode_layers.find(vae, "decode", "video_finite_decode") is None
