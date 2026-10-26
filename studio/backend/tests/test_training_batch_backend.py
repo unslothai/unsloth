@@ -242,9 +242,13 @@ def test_start_training_builds_batch_members_config(db, tmp_path):
         captured["config"] = kwargs["config"]
         return real_spec(module, fn, cache_env, kwargs)
 
+    def _select(gpu_ids, **kwargs):
+        captured["sizing"] = kwargs
+        return [0], {}
+
     backend = TrainingBackend()
     with (
-        patch("core.training.training.prepare_gpu_selection", return_value = ([0], {})),
+        patch("core.training.training.prepare_gpu_selection", side_effect = _select),
         patch("core.training.training._CTX.Queue", side_effect = [object(), object()]),
         patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
         patch("core.training.training.threading.Thread", return_value = _DummyThread()),
@@ -260,6 +264,7 @@ def test_start_training_builds_batch_members_config(db, tmp_path):
                     "hf_token": "hf_secret",
                     "local_datasets": [f"/data/{run_id}.jsonl"],
                     "lora_r": 8 * (i + 1),
+                    "batch_size": i + 1,
                 }
                 for i, run_id in enumerate(MEMBERS)
             ],
@@ -268,8 +273,12 @@ def test_start_training_builds_batch_members_config(db, tmp_path):
             hf_token = "hf_secret",
             local_datasets = ["/data/job_a.jsonl"],
             lora_r = 8,
+            gpu_ids = [0],
         )
     assert ok
+    # The GPU is chosen for every member's rows and adapters together, not the first member's.
+    assert captured["sizing"]["batch_size"] == 1 + 2 + 3
+    assert captured["sizing"]["lora_rank"] == 8 + 16 + 24
     config = captured["config"]
     assert config["batch_id"] == BATCH
     assert config["hf_token"] == "hf_secret"
@@ -307,3 +316,62 @@ def test_start_training_without_batch_is_unchanged(db, tmp_path):
     assert "batch_id" not in captured["config"]
     assert backend.batch_member_ids() == []
     assert db.get_run("job_single")["status"] == "running"
+
+
+def test_batch_start_sizes_chat_coexistence_for_every_member(monkeypatch):
+    import asyncio
+    import contextlib
+
+    import routes.training as tr
+    import routes.training_vram as vram
+    from models import TrainingStartRequest
+
+    class _Backend:
+        current_job_id = None
+
+        def is_training_active(self):
+            return False
+
+        def start_training(
+            self,
+            job_id,
+            *,
+            before_spawn = None,
+            **kwargs,
+        ):
+            self.current_job_id = job_id
+            before_spawn()
+            return True
+
+    asked = []
+    monkeypatch.setattr(tr, "get_training_backend", lambda: _Backend())
+    monkeypatch.setattr(tr, "_diffusion_training_active", lambda: False)
+    monkeypatch.setattr(tr, "_diffusion_gpu_admission", contextlib.nullcontext)
+    monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
+    monkeypatch.setattr(tr, "_remote_untrainable_model_format", lambda *a, **k: None)
+    monkeypatch.setattr("utils.hardware.ensure_hardware_detected", lambda: None)
+    monkeypatch.setattr(vram, "coordinate_models_for_training", lambda keep: [keep()])
+    monkeypatch.setattr(
+        vram, "can_keep_chat_during_training", lambda **kw: asked.append(kw) or True
+    )
+
+    def request(r, batch_size):
+        return TrainingStartRequest(
+            model_name = "unsloth/tiny-model",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            load_in_4bit = False,
+            lora_r = r,
+            batch_size = batch_size,
+        )
+
+    started = asyncio.run(
+        tr.start_training_batch(
+            [request(8, 2), request(16, 4), request(32, 1)],
+            current_subject = "alice",
+            via_api_key = True,
+        )
+    )
+    assert [s.status for s in started] == ["queued"] * 3
+    assert [(kw["batch_size"], kw["lora_rank"]) for kw in asked] == [(2 + 4 + 1, 8 + 16 + 32)]

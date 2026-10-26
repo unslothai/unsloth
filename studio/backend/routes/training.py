@@ -2536,14 +2536,16 @@ async def start_training(
                 )
 
                 def _can_keep_resident_models():
+                    members = batch_members or [training_kwargs]
                     return can_keep_chat_during_training(
                         model_name = training_kwargs["model_name"],
                         hf_token = hf_token,
                         training_type = training_kwargs["training_type"],
                         load_in_4bit = training_kwargs["load_in_4bit"],
-                        batch_size = training_kwargs["batch_size"],
+                        # A batch trains every member's rows and adapter at once.
+                        batch_size = sum(m["batch_size"] for m in members),
                         max_seq_length = training_kwargs["max_seq_length"],
-                        lora_rank = training_kwargs["lora_r"],
+                        lora_rank = sum(m["lora_r"] for m in members),
                         target_modules = training_kwargs["target_modules"],
                         gradient_checkpointing = training_kwargs["gradient_checkpointing"],
                         optimizer = training_kwargs["optim"],

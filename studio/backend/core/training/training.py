@@ -1842,9 +1842,14 @@ class TrainingBackend:
             hf_token = hf_token,
             training_type = config["training_type"],
             load_in_4bit = config["load_in_4bit"],
-            batch_size = config.get("batch_size", 4),
+            # A batch (its members include this first one) trains every member's rows and adapter at once.
+            batch_size = sum(int(m.get("batch_size") or 4) for m in batch_members)
+            if batch_members
+            else config.get("batch_size", 4),
             max_seq_length = config.get("max_seq_length", 2048),
-            lora_rank = config.get("lora_r", 16),
+            lora_rank = sum(int(m.get("lora_r") or 16) for m in batch_members)
+            if batch_members
+            else config.get("lora_r", 16),
             target_modules = config.get("target_modules"),
             gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
             optimizer = config.get("optim", DEFAULT_TRAINING_OPTIMIZER),
