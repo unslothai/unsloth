@@ -8,8 +8,10 @@ import { useSyncExternalStore } from "react";
 import { normalizeModelIdentity } from "./model-identity";
 import {
   type PerModelConfig,
+  deletePerModelConfigsForOverrideKeys,
   fromStoredPerModelConfig,
   isChatTemplateWithinLimit,
+  modelOverrideKeyOwners,
   toStoredPerModelConfig,
 } from "./per-model-config";
 
@@ -183,6 +185,19 @@ export function saveRunSettings(
   return writeMap(map);
 }
 
+/** True when ``name`` would be a new set and the model already keeps the most it can. */
+export function isRunSettingsLimitReached(
+  modelId: string,
+  name: string,
+): boolean {
+  const cleanName = normalizeSavedRunSettingsName(name);
+  return (
+    entriesFor(readMap(), modelKey(modelId)).filter(
+      (entry) => !named(entry, cleanName),
+    ).length >= SAVED_RUN_SETTINGS_PER_MODEL_MAX
+  );
+}
+
 function selectionsNaming(
   selections: SelectionMap,
   modelId: string,
@@ -309,6 +324,28 @@ export function setSelectedRunSettings(
   return writeSelections(selections);
 }
 
+/**
+ * deletePerModelConfigsForOverrideKeys, with those quants back on Default: a selection left behind
+ * shows a set that no longer loads, and the next Save writes the defaults over it.
+ */
+export function forgetPerModelConfigsForOverrideKeys(
+  overrideKeys: readonly string[],
+): boolean {
+  const selections = readSelections();
+  let changed = false;
+  for (const { modelId, ggufVariant } of modelOverrideKeyOwners(overrideKeys)) {
+    const key = selectionKey(modelId, ggufVariant);
+    if (typeof selections[key] === "string") {
+      selections[key] = null;
+      changed = true;
+    }
+  }
+  if (changed) {
+    writeSelections(selections);
+  }
+  return deletePerModelConfigsForOverrideKeys(overrideKeys);
+}
+
 /** "<model> custom settings", numbered past the names already taken. */
 export function newRunSettingsName(
   list: readonly SavedRunSettings[],
@@ -327,48 +364,6 @@ function withSuffix(base: string, suffix: string): string {
   return normalizeSavedRunSettingsName(
     `${normalizeSavedRunSettingsName(base).slice(0, SAVED_RUN_SETTINGS_NAME_MAX - suffix.length)}${suffix}`,
   );
-}
-
-// Names earlier builds gave sets: an adopted record, then "Custom setting for <model>[ N]".
-const LEGACY_ADOPTED_NAME = "Saved settings";
-
-function legacyRename(
-  name: string,
-  list: readonly SavedRunSettings[],
-  modelName: string,
-): string | null {
-  if (sameName(name, LEGACY_ADOPTED_NAME)) {
-    return newRunSettingsName(list, modelName);
-  }
-  const old = `Custom setting for ${modelName}`;
-  const suffix = name.slice(old.length);
-  if (!sameName(name.slice(0, old.length), old) || !/^( \d+)?$/.test(suffix)) {
-    return null;
-  }
-  return withSuffix(`${modelName} custom settings`, suffix);
-}
-
-export function hasLegacyRunSettings(
-  list: readonly SavedRunSettings[],
-  modelName: string,
-): boolean {
-  return list.some(
-    (entry) => legacyRename(entry.name, list, modelName) !== null,
-  );
-}
-
-export function renameLegacyRunSettings(
-  modelId: string,
-  modelName: string,
-): string[] {
-  const renamed: string[] = [];
-  for (const { name } of listSavedRunSettings(modelId)) {
-    const to = legacyRename(name, listSavedRunSettings(modelId), modelName);
-    if (to !== null && renameSavedRunSettings(modelId, name, to)) {
-      renamed.push(to);
-    }
-  }
-  return renamed;
 }
 
 /** Remembered settings saved before named sets existed: list them as a set and select it. Returns its name. */

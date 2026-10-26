@@ -303,6 +303,7 @@ import {
   retainedContextPin,
   replayMaxTokensCap,
 } from "../presets/preset-policy";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { takeThreadCompactionRequest } from "../stores/compact-request-store";
@@ -3556,7 +3557,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     is_lora: boolean;
     gguf_variant?: string | null;
     // GGUF-only: the guard must be told the placement policy /load will use, since Auto sizes
-    // conservatively and Manual bypasses the estimate. Layer/MoE/split are not sent.
+    // conservatively and Manual bypasses the estimate. /validate takes no n_cpu_moe and validateModel
+    // forwards no tensor_split (the estimate budgets per device, not per share), so neither is sent.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
@@ -3767,6 +3769,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             isDiffusion,
           )
         : null;
+    // Reconciled against the raw pick, as the picker does: a ratio only applies to the GPU set it was saved with.
+    const effectiveTensorSplit = reconcileTensorSplit(
+      config.tensorSplit,
+      config.selectedGpuIds,
+      effectiveGpuIds,
+    );
     // Under Manual GPU memory with Auto layers llama.cpp's --fit owns context sizing, so send 0
     // or the per-model pin (GGUF-only).
     const fitMaxSeqLength = resolveFitMaxSeqLength(
@@ -3884,13 +3892,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       tensor_parallel: effectiveTensorParallel,
       disable_vision: effectiveDisableVision,
       n_parallel: config.nParallel ?? null,
-      // GGUF-only; the split ratio is never remembered (it is bound to an exact GPU set), so
-      // llama.cpp's free-VRAM default stays in charge.
       ...(candidate.kind === "gguf"
         ? {
             gpu_memory_mode: effectiveGpuMemoryMode,
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
+            tensor_split: effectiveTensorSplit ?? undefined,
             gpu_ids: effectiveGpuIds ?? undefined,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),

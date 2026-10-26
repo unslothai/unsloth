@@ -1103,13 +1103,12 @@ def test_same_click_commit_covers_all_numeric_inputs():
     )
 
 
-def test_context_commit_rechecks_persistence_only_shortcut():
-    """Committed context changes must bypass persistence-only saves."""
+def test_load_always_runs_the_committed_config():
+    """Load has no save-only shortcut left: Save is its own button, so a committed edit always loads."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const effectiveConfig =" in src
-    assert "perModelConfigsEqual(effectiveConfig, baseline, {" in src
-    assert "const effectivePersistenceOnly =" in src
-    assert "if (effectivePersistenceOnly)" in src
+    assert "const { effectiveRuntimeConfig, effectiveMaxSeqLengthValue } = commitDraft();" in src
+    assert "effectivePersistenceOnly" not in src
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():
@@ -3204,10 +3203,10 @@ def test_run_settings_page_keeps_its_identifying_controls():
     assert "const next = entry?.config ?? DEFAULT_PER_MODEL_CONFIG;" in page
 
 
-def test_the_primary_action_keeps_its_four_labels():
+def test_the_primary_action_keeps_its_labels():
     """The driver sweeps these names to find the one button the panel shows."""
     page = _read("features/model-picker/components/model-config-page.tsx")
-    for label in ('"Save settings"', '"Forget settings"', '"Reload model"', '"Load model"'):
+    for label in ('"Reload model"', '"Load model"'):
         assert label in page, label
     # The labels live in a calculation, so require a button that renders them. Other props
     # contain braces, so match whole elements first.

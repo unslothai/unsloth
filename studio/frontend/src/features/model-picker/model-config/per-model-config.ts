@@ -1601,6 +1601,13 @@ function findModelOverrideKeyOwners(
   return owners;
 }
 
+/** The model + quant records the server keys name. */
+export function modelOverrideKeyOwners(
+  overrideKeys: readonly string[],
+): { modelId: string; ggufVariant: string | null }[] {
+  return overrideKeys.flatMap(findModelOverrideKeyOwners);
+}
+
 /** Delete the records the server keys name; false when one was left behind. */
 export function deletePerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],

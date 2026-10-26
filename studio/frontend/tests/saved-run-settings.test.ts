@@ -16,9 +16,10 @@ const { store } = installLocalStorageFake();
 const saved = await import(
   "../src/features/model-picker/model-config/saved-run-settings.ts"
 );
-const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig } = await import(
+const perModel = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
+const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig } = perModel;
 
 const MODEL = "unsloth/Repo-GGUF";
 const config = (customContextLength: number | null) => ({
@@ -212,39 +213,47 @@ test("settings remembered before named sets show up as one, and are not duplicat
   assert.equal(saved.listSavedRunSettings(MODEL).length, 2);
 });
 
-test("sets named by earlier builds take the model's custom settings name", () => {
-  const legacy = "unsloth/Legacy-GGUF";
-  saved.saveRunSettings(legacy, "Saved settings", config(4096));
-  saved.saveRunSettings(legacy, "Custom setting for SmolLM 2", config(2048));
-  saved.saveRunSettings(
-    legacy,
-    "Custom setting for SmolLM tuned",
-    config(1024),
-  );
-  saved.setSelectedRunSettings(legacy, "Q4_K_M", "Saved settings");
-  assert.ok(
-    saved.hasLegacyRunSettings(saved.listSavedRunSettings(legacy), "SmolLM"),
-  );
-  saved.renameLegacyRunSettings(legacy, "SmolLM");
-  // A name the user typed that only starts the same way is theirs, not an old default.
+test("a name the user picks is kept as typed", () => {
+  saved.saveRunSettings(MODEL, "Fast", config(4096));
+  assert.ok(saved.renameSavedRunSettings(MODEL, "Fast", "Saved settings"));
+  saved.saveRunSettings(MODEL, "Custom setting for Repo-GGUF", config(2048));
   assert.deepEqual(
     saved
-      .listSavedRunSettings(legacy)
-      .map((entry: { name: string }) => entry.name)
-      .sort(),
-    [
-      "Custom setting for SmolLM tuned",
-      "SmolLM custom settings",
-      "SmolLM custom settings 2",
-    ],
+      .listSavedRunSettings(MODEL)
+      .map((entry: { name: string }) => entry.name),
+    ["Custom setting for Repo-GGUF", "Saved settings"],
   );
   assert.equal(
-    saved.getSelectedRunSettings(legacy, "Q4_K_M"),
-    "SmolLM custom settings",
+    "renameLegacyRunSettings" in saved || "hasLegacyRunSettings" in saved,
+    false,
   );
-  assert.ok(
-    !saved.hasLegacyRunSettings(saved.listSavedRunSettings(legacy), "SmolLM"),
-  );
+});
+
+test("the per-model limit is reported only for a new name", () => {
+  for (let n = 0; n < saved.SAVED_RUN_SETTINGS_PER_MODEL_MAX; n++) {
+    assert.ok(saved.saveRunSettings(MODEL, `Set ${n}`, config(1024 + n * 128)));
+  }
+  assert.equal(saved.isRunSettingsLimitReached(MODEL, "One more"), true);
+  assert.equal(saved.saveRunSettings(MODEL, "One more", config(4096)), false);
+  // Overwriting an existing set is still allowed.
+  assert.equal(saved.isRunSettingsLimitReached(MODEL, "set 3"), false);
+  assert.ok(saved.saveRunSettings(MODEL, "Set 3", config(4096)));
+});
+
+test("forgetting a quant's server settings puts its selection back on Default", () => {
+  const { savePerModelConfig } = perModel;
+  saved.saveRunSettings(MODEL, "Fast", config(4096));
+  assert.ok(savePerModelConfig(MODEL, "Q4_K_M", config(4096)));
+  assert.ok(savePerModelConfig(MODEL, "Q8_0", config(4096)));
+  saved.setSelectedRunSettings(MODEL, "Q4_K_M", "Fast");
+  saved.setSelectedRunSettings(MODEL, "Q8_0", "Fast");
+  assert.ok(saved.forgetPerModelConfigsForOverrideKeys([`${MODEL}:q4_k_m`]));
+  assert.equal(resolveInitialConfig(MODEL, "Q4_K_M").remembered, false);
+  assert.equal(saved.getSelectedRunSettings(MODEL, "Q4_K_M"), null);
+  // Another quant, and the set itself, are left alone.
+  assert.equal(saved.getSelectedRunSettings(MODEL, "Q8_0"), "Fast");
+  assert.deepEqual(saved.quantsSelectingRunSettings(MODEL, "Fast"), ["Q8_0"]);
+  assert.equal(saved.listSavedRunSettings(MODEL).length, 1);
 });
 
 test("run settings use one dropdown and one Save, with no Remember checkbox", () => {
@@ -358,4 +367,50 @@ test("row icons never pick their row", () => {
   assert.equal(row.match(/onPointerUp=\{keepRow\}/g)?.length, 2);
   // New settings come from editing Default, so the menu has no create entry.
   assert.doesNotMatch(row, /Save as new/);
+});
+
+test("a set whose record was forgotten is not offered, and deleting one asks first", () => {
+  const page = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Only once the server copy is read, and never for a set at defaults, which keeps no record.
+  assert.match(
+    page,
+    /const selectionStale =\s*persistedEntry !== null &&\s*!extraArgsHydrating &&\s*!storedRecord\.remembered &&\s*!savedRemember &&\s*!isDefaultConfig\(forSetStore\(persistedEntry\.config\)\);/,
+  );
+  assert.match(
+    page,
+    /if \(selectionStale\) \{\s*setSelectedRunSettings\(configId, target\.ggufVariant, null\);/,
+  );
+  assert.match(page, /selectionStale \? null : \(persistedSet \?\? null\)/);
+  // The trash icon opens a confirmation; only its Delete removes the set.
+  assert.match(page, /onDelete=\{setPendingDelete\}/);
+  assert.match(
+    page,
+    /if \(pendingDelete !== null\) \{\s*deleteSet\(pendingDelete\);/,
+  );
+  // The limit is named rather than a bare failure.
+  assert.match(page, /isRunSettingsLimitReached\(configId, name\)/);
+  assert.doesNotMatch(page, /persistenceOnly|rememberChanged/);
+});
+
+test("rows can be renamed and deleted from the keyboard", () => {
+  const row = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/saved-run-settings-row.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(row, /aria-keyshortcuts="F2 Delete"/);
+  // Escape in the name box must reach only the box: Radix overlays dismiss from a document capture listener
+  // unless the event is already prevented, so the guard sits on window capture.
+  assert.match(row, /window\.addEventListener\("keydown", keepPanel, true\)/);
+  assert.match(row, /closest\("\[data-run-settings-name\]"\)[\s\S]{0,40}event\.preventDefault\(\)/);
+  assert.match(row, /event\.key === "F2"[\s\S]{0,80}rename\(entry\.name\)/);
+  assert.match(row, /event\.key === "Delete"[\s\S]{0,80}remove\(entry\.name\)/);
 });

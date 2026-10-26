@@ -18,7 +18,12 @@ import {
   Edit03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { MouseEvent, PointerEvent } from "react";
+import {
+  type MouseEvent,
+  type PointerEvent,
+  useEffect,
+  useState,
+} from "react";
 import {
   SAVED_RUN_SETTINGS_NAME_MAX,
   type SavedRunSettings,
@@ -88,6 +93,26 @@ export function RunSettingsPicker({
   onNamingSubmit,
   onDelete,
 }: RunSettingsPickerProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const isNaming = naming !== null;
+  useEffect(() => {
+    if (!isNaming) {
+      return;
+    }
+    // Escape only cancels the name box. Window capture runs before the picker's or the sheet's own
+    // document-level listener, which skips a prevented event instead of closing the whole panel.
+    const keepPanel = (event: KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        event.target instanceof Element &&
+        event.target.closest("[data-run-settings-name]")
+      ) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", keepPanel, true);
+    return () => window.removeEventListener("keydown", keepPanel, true);
+  }, [isNaming]);
   if (naming) {
     return (
       // The sidebar is too narrow for a readable name beside the buttons, so they go below it.
@@ -99,6 +124,7 @@ export function RunSettingsPicker({
       >
         <Input
           autoFocus={true}
+          data-run-settings-name=""
           value={naming.name}
           onFocus={(event) => event.currentTarget.select()}
           onChange={(event) =>
@@ -149,9 +175,18 @@ export function RunSettingsPicker({
       </div>
     );
   }
+  // Closed first: the rename box replaces the menu, and the delete confirmation must not open under it.
+  const rename = (name: string) => {
+    setMenuOpen(false);
+    onNamingChange({ mode: "rename", name, target: name });
+  };
+  const remove = (name: string) => {
+    setMenuOpen(false);
+    onDelete(name);
+  };
   return (
     <div className="flex min-w-0 items-center gap-1.5">
-      <DropdownMenu>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger asChild={true} disabled={disabled}>
           <button
             type="button"
@@ -193,22 +228,31 @@ export function RunSettingsPicker({
               key={entry.name}
               className={cn(ITEM, "pr-1.5")}
               onSelect={() => onPick(entry.name)}
+              // Arrow keys move between rows only, so the row icons need keys of their own.
+              aria-keyshortcuts="F2 Delete"
+              onKeyDown={(event) => {
+                if (event.key === "F2") {
+                  event.preventDefault();
+                  rename(entry.name);
+                } else if (event.key === "Delete") {
+                  event.preventDefault();
+                  remove(entry.name);
+                }
+              }}
             >
               <Check on={entry.name === selected} />
               <span className="min-w-0 flex-1 truncate">{entry.name}</span>
               <button
                 type="button"
                 aria-label={`Rename ${entry.name}`}
+                title="Rename (F2)"
+                tabIndex={-1}
                 className={ROW_ICON}
                 onPointerDown={keepRow}
                 onPointerUp={keepRow}
                 onClick={(event) => {
                   keepRow(event);
-                  onNamingChange({
-                    mode: "rename",
-                    name: entry.name,
-                    target: entry.name,
-                  });
+                  rename(entry.name);
                 }}
               >
                 <HugeiconsIcon
@@ -220,12 +264,14 @@ export function RunSettingsPicker({
               <button
                 type="button"
                 aria-label={`Delete ${entry.name}`}
+                title="Delete (Del)"
+                tabIndex={-1}
                 className={ROW_ICON}
                 onPointerDown={keepRow}
                 onPointerUp={keepRow}
                 onClick={(event) => {
                   keepRow(event);
-                  onDelete(entry.name);
+                  remove(entry.name);
                 }}
               >
                 <HugeiconsIcon

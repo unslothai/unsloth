@@ -13,7 +13,7 @@ import {
   fetchModelOverrides,
   putModelOverride,
 } from "@/features/model-picker/api/model-overrides";
-import { deletePerModelConfigsForOverrideKeys } from "@/features/model-picker/model-config/per-model-config";
+import { forgetPerModelConfigsForOverrideKeys } from "@/features/model-picker/model-config/saved-run-settings";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -176,7 +176,7 @@ export function SavedModelSettingsPanel(): ReactElement {
           listedKeys: Object.keys(overrides ?? {}),
           removeRemote: (modelId, ggufVariant) =>
             putModelOverride(modelId, ggufVariant, null),
-          removeLocal: deletePerModelConfigsForOverrideKeys,
+          removeLocal: forgetPerModelConfigsForOverrideKeys,
           reload: load,
           onError: (message) => {
             toast.error(message);
