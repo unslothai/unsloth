@@ -165,6 +165,7 @@ from core.inference.llama_admission import (
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
 from core.inference import model_slots
 from core.inference.llama_cpp import (
+    _TERMINAL_RETIREMENT_HOOKS,
     _llama_chunk_has_generated_output,
     _local_ssl_context,
     register_serving_backend,
@@ -11562,6 +11563,57 @@ def reap_dead_managed_engine(backend) -> None:
         account_access.clear_resident("chat")
 
 
+def _orchestrator_occupied(orchestrator) -> bool:
+    """A standard, MLX or managed-engine model held or loading, as release_chat_gpu_claim counts it."""
+    if orchestrator is None:
+        return False
+    return bool(
+        getattr(orchestrator, "_managed_engine", None) is not None
+        or getattr(orchestrator, "active_model_name", None)
+        or tuple(getattr(orchestrator, "loading_models", ()) or ())
+    )
+
+
+def _primary_seat_occupied() -> bool:
+    """A non-GGUF model holds or is loading into the primary seat (call in the primary's slot)."""
+    return _orchestrator_occupied(_peek_inference_backend()) or _resident_npu_model() is not None
+
+
+def _release_after_terminal_retirement(backend, epoch) -> None:
+    """A llama-server stopped for good by a second Metal out-of-memory strike unloads itself
+    (llama_cpp._retire_device_lost_server); finish it as a manual unload would. A kept slot is
+    dropped at once (dead, it holds nothing a request could still use, so its refs do not keep
+    it) and leaves the primary's residency alone; the primary clears its own sharers. CHAT goes
+    once nothing else holds it. A reload that landed since the strike owns the slot and the
+    residency now, so nothing is touched then (checked under the lock every load takes).
+    A non-GGUF model holding or loading into the seat (primary or kept slot) owns it too."""
+    primary = backend is _llama_cpp_backend
+    with backend._while_still_retired(epoch) as retired:
+        filling = model_slots.loading[0] if model_slots.loading else None
+        if not retired or (filling is not None and filling.llama is backend):
+            return
+        for slot in [
+            s
+            for s in list(model_slots.slots)
+            if s.llama is backend and not _orchestrator_occupied(s.orchestrator)
+        ]:
+            try:
+                model_slots.drop(slot)
+            except Exception as exc:  # noqa: BLE001 -- drop() keeps a stuck slot for retry
+                logger.warning("Could not drop a kept model after its Metal out-of-memory: %s", exc)
+        if primary and not model_slots.in_slot(None, _primary_seat_occupied):
+            account_access.clear_resident("chat")
+    # The arbiter lock comes before the backend's: released outside it, and release_if
+    # re-checks that nothing is resident.
+    if primary:
+        release_chat_gpu_claim()
+    else:
+        release_chat_after_kept_models()
+
+
+_TERMINAL_RETIREMENT_HOOKS.append(_release_after_terminal_retirement)
+
+
 def reap_dead_worker(backend) -> None:
     """Cleared, never respawned: every routed request runs this, so an OOM respawn would loop."""
     from core.inference.gpu_arbiter import CHAT, holds
@@ -14727,12 +14779,36 @@ def _wait_for_native_audio_gpu_free_gb(
 
 
 async def _unload_llama_before_standard_load(llama_backend) -> None:
-    """Tear down llama-server and wait for asynchronous driver VRAM reclaim."""
-    if not llama_backend.is_loaded:
+    """Tear down llama-server and wait for asynchronous driver VRAM reclaim.
+
+    Unloads even when nothing is loaded, under the lock that every GGUF load and a terminal
+    Metal retirement's cleanup (_release_after_terminal_retirement) hold: the unload advances
+    the epoch, so a cleanup still pending sees this load replaced the retired server, and one
+    already past its check finishes first."""
+
+    def handoff() -> Optional[float]:
+        # getattr: a stand-in backend has no load to order against.
+        lock = getattr(llama_backend, "_serial_load_lock", None)
+        if lock is not None:
+            # As the unload would: a recovery reload holding the lock stops instead of finishing.
+            llama_backend._cancel_event.set()
+        with lock or nullcontext():
+            if not llama_backend.is_loaded:
+                if lock is None:
+                    return None
+                kill_started = time.monotonic()
+                llama_backend.unload_model()
+                # A starting or recovering server was killed: wait for it like a loaded one.
+                last_kill = getattr(llama_backend, "_last_kill_monotonic", 0.0) or 0.0
+                return kill_started if last_kill >= kill_started else None
+            logger.info("Unloading GGUF model before loading Unsloth model")
+            kill_started = time.monotonic()
+            llama_backend.unload_model()
+            return kill_started
+
+    kill_started = await asyncio.to_thread(handoff)
+    if kill_started is None:
         return
-    logger.info("Unloading GGUF model before loading Unsloth model")
-    kill_started = time.monotonic()
-    await asyncio.to_thread(llama_backend.unload_model)
     await asyncio.to_thread(
         llama_backend._wait_for_vram_settle,
         since_kill = kill_started,

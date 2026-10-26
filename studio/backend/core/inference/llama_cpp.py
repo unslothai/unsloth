@@ -16,6 +16,7 @@ import ctypes
 import errno
 import functools
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -657,7 +658,33 @@ class _LlamaStreamCancelled(Exception):
 
 # vulkan-hpp formats DeviceLostError as "vk::Queue::submit: ErrorDeviceLost".
 _GPU_DEVICE_LOST_MARKERS = ("ErrorDeviceLost", "VK_ERROR_DEVICE_LOST")
+# ggml-metal latches a failed command buffer ("recreate the backend to recover"); the child then
+# answers "Compute error.".
+_METAL_BACKEND_POISONED_MARKERS = (
+    "backend is in error state from a previous command buffer failure",
+    "kIOGPUCommandBufferCallbackErrorOutOfMemory",
+)
+_DRAFT_CONTEXT_FAILURE_MARKERS = (
+    "llama_process(ctx_dft) failed",
+    "failed to process speculative batch",
+)
 _DEVICE_LOST_LOG_GRACE_S = 2.0
+# Run after a terminal Metal OOM unload, outside every backend lock (routes/inference.py registers
+# them).
+_TERMINAL_RETIREMENT_HOOKS: list = []
+
+# Set during automatic recovery loads: only those inherit a Metal OOM strike.
+_AUTO_RECOVERY_LOAD = threading.local()
+
+
+@contextlib.contextmanager
+def _automatic_recovery_load():
+    prev = getattr(_AUTO_RECOVERY_LOAD, "active", False)
+    _AUTO_RECOVERY_LOAD.active = True
+    try:
+        yield
+    finally:
+        _AUTO_RECOVERY_LOAD.active = prev
 
 
 def _is_gpu_device_lost(exc: BaseException) -> bool:
@@ -4675,6 +4702,179 @@ def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> 
         return False
 
 
+# No --help flag or build number announces it: read the trace string the new fit path compiles in.
+_FIT_MEASURES_BORROWED_DRAFT_MARKER = (
+    b"measuring the extra model next to an allocation-free target context"
+)
+_LLAMA_COMMON_LIB_NAMES = (
+    "libllama-common.so.0",
+    "libllama-common.so",
+    "libllama-common.0.dylib",
+    "libllama-common.dylib",
+    "llama-common.dll",
+)
+# The server links libllama-server-impl, which links libllama-common.
+_LLAMA_SERVER_IMPL_LIB_NAMES = (
+    "libllama-server-impl.so",
+    "libllama-server-impl.dylib",
+    "llama-server-impl.dll",
+)
+
+
+# (path, mtime_ns, size) -> embedded library names; the server binary is ~100 MB.
+_LINKED_LIB_NAMES_CACHE: dict = {}
+
+
+def _linked_llama_libs(binary: Path, lib_dir: Path) -> list:
+    """The server-impl / common libraries ``binary`` links by name (DT_NEEDED, LC_LOAD_DYLIB, PE
+    imports), not stray siblings."""
+    try:
+        st = binary.stat()
+        key = (str(binary), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return []
+    embedded = _LINKED_LIB_NAMES_CACHE.get(key)
+    if embedded is None:
+        try:
+            data = binary.read_bytes()
+        except OSError:
+            return []
+        embedded = tuple(
+            tuple(n for n in names if n.encode() in data)
+            for names in (_LLAMA_SERVER_IMPL_LIB_NAMES, _LLAMA_COMMON_LIB_NAMES)
+        )
+        _LINKED_LIB_NAMES_CACHE[key] = embedded
+    linked = []
+    for names in embedded:
+        hit = next((n for n in names if (lib_dir / n).exists()), None)
+        if hit is not None:
+            linked.append(lib_dir / hit)
+    return linked
+
+
+_CUDA_LIKE_DEVICE_RE = re.compile(r"(?i)(cuda|rocm|hip)\d+$")
+
+
+def _spawn_draft_on_target(
+    run_cmd: List[str],
+    spawn_devices: Optional[str],
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether the spawned argv's CUDA / ROCm draft pin names the target's device."""
+    pin = _extra_args_draft_device_pin(run_cmd)
+    if pin is not None:
+        distinct = {d.strip() for d in pin.split(",") if d.strip()}
+        pin = distinct.pop() if len(distinct) == 1 else pin
+    if pin is None or not _CUDA_LIKE_DEVICE_RE.match(pin.strip()):
+        return True
+    if spawn_devices:
+        named = [d.strip().lower() for d in spawn_devices.split(",") if d.strip()]
+        if _split_mode_confines_to_one_device(run_cmd, env):
+            # Only devices[main_gpu] is kept (main_gpu 0 by default).
+            main = LlamaCppBackend._effective_main_gpu(run_cmd, env)
+            main = 0 if main is None else main
+            return 0 <= main < len(named) and pin.strip().lower() == named[main]
+        return set(named) == {d.strip().lower() for d in pin.split(",") if d.strip()}
+    return int(re.sub(r"\D", "", pin)) == (LlamaCppBackend._effective_main_gpu(run_cmd, env) or 0)
+
+
+def _sidecar_borrows_output(path: Optional[str]) -> bool:
+    """Whether the draft's logits use the target's output head (src/models/dflash.cpp); unknown
+    counts as borrowed."""
+    if not path:
+        return True
+    try:
+        from utils.models.gguf_metadata import _gguf_shard_has_named_tensor
+        from utils.models.model_config import colocated_split_shards
+
+        shards, complete = colocated_split_shards(Path(path))
+        return not (
+            complete
+            and any(
+                _gguf_shard_has_named_tensor(str(shard), "output.weight") is True
+                for shard in shards
+            )
+        )
+    except Exception:
+        return True
+
+
+def _sidecar_borrows_target_tensors(path: Optional[str]) -> bool:
+    """Whether the draft borrows token_embd or output, which the fitter cannot measure
+    (src/llama-context.cpp)."""
+    if not path:
+        return True
+    try:
+        from utils.models.gguf_metadata import _gguf_shard_has_named_tensor
+        from utils.models.model_config import colocated_split_shards
+
+        shards, complete = colocated_split_shards(Path(path))
+        if not complete or not shards:
+            return True
+        return any(
+            not any(_gguf_shard_has_named_tensor(str(shard), name) is True for shard in shards)
+            for name in ("token_embd.weight", "output.weight")
+        )
+    except Exception:
+        return True
+
+
+def _draft_pin_device_index(
+    pin: Optional[str], spawn_devices: Optional[str], device_count: int
+) -> Optional[int]:
+    """The child device index a one-card draft pin names, or None."""
+    names = {d.strip().lower() for d in (pin or "").split(",") if d.strip()}
+    if len(names) != 1:
+        return None
+    (name,) = names
+    if spawn_devices:
+        listed = [d.strip().lower() for d in spawn_devices.split(",") if d.strip()]
+        if name not in listed or len(set(listed)) != len(listed):
+            return None
+        return listed.index(name)
+    if not _CUDA_LIKE_DEVICE_RE.match(name):
+        return None
+    k = int(re.sub(r"\D", "", name))
+    return k if 0 <= k < device_count else None
+
+
+def _distinct_device_count(devices) -> int:
+    """Distinct names in a ``--device`` list: a repeated card is one memory pool."""
+    return len({d.strip().lower() for d in str(devices).split(",") if d.strip()})
+
+
+def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
+    """Whether ``bin_path``'s fitter sizes a borrowed-tensor draft itself; fails closed."""
+    if not bin_path:
+        return False
+    candidates = [Path(bin_path)]
+    try:
+        # A wrapper script execs the real server.
+        server = Path(_resolve_llama_binary(bin_path))
+        candidates.append(server)
+        lib_dir = _llama_lib_dir(bin_path)
+        for lib in _linked_llama_libs(server, lib_dir):
+            candidates.append(lib)
+            candidates.extend(l for l in _linked_llama_libs(lib, lib_dir) if l not in candidates)
+    except Exception:  # noqa: BLE001 -- an unreadable lib dir is "not known"
+        pass
+    seen: set = set()
+    for candidate in candidates:
+        try:
+            candidate = candidate.resolve()
+            if candidate in seen or not candidate.is_file():
+                continue
+            seen.add(candidate)
+            st = candidate.stat()
+        except OSError:
+            continue
+        if _binary_has_marker(
+            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKER
+        ):
+            return True
+    return False
+
+
 def _swa_full_from_args_or_env(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -5606,6 +5806,155 @@ def _extra_args_mtp_draft_path(
     return _extra_args_mtp_draft_source(extra_args, env)[0]
 
 
+def _single_device_fit_margin(
+    args: Iterable[str], env: Optional[Mapping[str, str]]
+) -> Optional[float]:
+    """The margin the one launched device keeps: the FIRST entry of a ``--fit-target`` list.
+
+    ``fit_target_margin_in`` takes the largest entry because it prices every device it
+    credits; a single-device launch only ever uses device 0's entry (common/arg.cpp), so a
+    larger later entry must not be added under the sidecar reserve."""
+    raw = _last_flag_value(args, {"-fitt", "--fit-target"})
+    if raw is None and env:
+        raw = env.get("LLAMA_ARG_FIT_TARGET")
+    if raw is None:
+        return None
+    first = str(raw).replace("/", ",").split(",")[0].strip()
+    try:
+        return float(first)
+    except ValueError:
+        return None
+
+
+def _fit_target_values(user_args: Iterable[str], env: Optional[Mapping[str, str]]) -> list[str]:
+    """Every --fit-target value llama.cpp applies, env first then argv order."""
+    found = []
+    if env and env.get("LLAMA_ARG_FIT_TARGET"):
+        found.append(str(env["LLAMA_ARG_FIT_TARGET"]))
+    tokens = [str(a) for a in user_args]
+    for i, raw in enumerate(tokens):
+        _, eq, inline = raw.partition("=")
+        if _flag_name(raw) in ("-fitt", "--fit-target"):
+            value = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else None)
+            if value is not None:
+                found.append(value)
+    return found
+
+
+def _fit_margins_by_device(
+    user_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]],
+    base_margin_mib: float,
+    count: int,
+) -> list[float]:
+    """Each card's user --fit-target margin as common/arg.cpp applies it; unset cards keep
+    ``base_margin_mib``."""
+    margins = [float(base_margin_mib)] * count
+    for raw in _fit_target_values(user_args or (), env):
+        entries = [e.strip() for e in str(raw).replace("/", ",").split(",") if e.strip()]
+        try:
+            values = [float(e) for e in entries]
+        except ValueError:
+            continue
+        if len(values) == 1:
+            margins = values * count
+        else:
+            margins[: len(values)] = values[:count]
+    return margins
+
+
+def _sidecar_reserve_margin_flags(
+    child_args: Iterable[str],
+    user_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]],
+    base_margin_mib: float,
+    reserve_mib: int,
+    *,
+    per_device: Optional[list[int]] = None,
+    base_by_device: Optional[list[float]] = None,
+) -> list[str]:
+    """``--fit-target`` keeping an unsized sidecar's reserve free on top of the user's margin, read
+    off the child's argv + env."""
+    args = [str(a) for a in child_args]
+    if not reserve_mib or not _extra_args_mtp_draft_path(args, env = env):
+        return []
+    if not fit_is_effectively_on(args, env):
+        return []
+    # A scalar --fit-target is broadcast to every device, so a multi-device launch needs a
+    # per-device list.
+    devices = _extra_args_main_device(args) or (os.environ if env is None else env).get(
+        "LLAMA_ARG_DEVICE"
+    )
+    if (
+        not per_device
+        and devices
+        and _distinct_device_count(devices) > 1
+        and not _split_mode_confines_to_one_device(args, env)
+    ):
+        return []
+    if per_device:
+        bases = (
+            base_by_device
+            if base_by_device and len(base_by_device) == len(per_device)
+            else [base_margin_mib] * len(per_device)
+        )
+        margins = _fit_margins_by_device(user_args, env, 0.0, len(per_device))
+        want_list = ",".join(
+            str(math.ceil(max(b, m) + r)) for b, m, r in zip(bases, margins, per_device)
+        )
+        if _last_flag_value(args, {"-fitt", "--fit-target"}) == want_list:
+            return []
+        return ["--fit-target", want_list]
+    # Studio's per-card margin, not the host-wide scalar a lowered budget sizes by the largest card.
+    if base_by_device and len(set(base_by_device)) == 1:
+        base_margin_mib = base_by_device[0]
+    want = math.ceil(
+        max(base_margin_mib, _single_device_fit_margin(user_args or (), env) or 0.0) + reserve_mib
+    )
+    have = _single_device_fit_margin(args, None)
+    if have is not None and have >= want:
+        return []
+    return ["--fit-target", str(want)]
+
+
+def _drop_sidecar_margins(
+    cmd: List[str],
+    integrity_flags: List[str],
+    rebuilt_integrity: List[str],
+    override_pairs: Iterable[List[str]],
+    *,
+    user_args: Iterable[str] = (),
+) -> List[str]:
+    """``cmd`` without Studio's sidecar margins; a user's own pairs survive, so it is idempotent."""
+    out = list(cmd)
+    user = [str(a) for a in user_args]
+
+    def _count(tokens: List[str], pair: List[str]) -> int:
+        return sum(tokens[i : i + len(pair)] == pair for i in range(len(tokens) - len(pair) + 1))
+
+    def _studio_owns(pair: List[str]) -> bool:
+        return bool(pair) and _count(out, pair) > _count(user, pair)
+
+    if "--fit-target" in integrity_flags:
+        old_at = integrity_flags.index("--fit-target")
+        old_margin = integrity_flags[old_at : old_at + 2]
+        new_margin: List[str] = []
+        if "--fit-target" in rebuilt_integrity:
+            new_at = rebuilt_integrity.index("--fit-target")
+            new_margin = rebuilt_integrity[new_at : new_at + 2]
+        at = _subsequence_index(out, old_margin, 0)
+        if out[at : at + 2] == old_margin and _studio_owns(old_margin):
+            out[at : at + 2] = new_margin
+    for pair in reversed(list(override_pairs)):
+        if not _studio_owns(pair):
+            continue
+        for i in range(len(out) - len(pair), -1, -1):
+            if out[i : i + len(pair)] == pair:
+                del out[i : i + len(pair)]
+                break
+    return out
+
+
 _HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
 _LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
 
@@ -5677,6 +6026,9 @@ _BREAKDOWN_DEVICE_ROW_RE = re.compile(
 _BREAKDOWN_HOST_ROW_RE = re.compile(
     r"\|\s*-\s*(?P<name>[^|]+?)\s*\|\s*\d+\s*=\s*(?P<model>\d+)\s*\+"
 )
+
+
+_METAL_FIT_PROBE_TIMEOUT_S = 120
 
 
 def _parse_metal_memory_breakdown(output: str) -> Optional[tuple[int, int, int]]:
@@ -5790,6 +6142,115 @@ def _draft_is_split_across_host(
     if count <= 0:
         return False
     return not (n_draft_layers and count > n_draft_layers)
+
+
+_DRAFT_OVERRIDE_TENSOR_FLAGS = frozenset(
+    {"-otd", "--override-tensor-draft", "--spec-draft-override-tensor"}
+)
+_DRAFT_CPU_MOE_FLAGS = frozenset({"--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft"})
+_DRAFT_N_CPU_MOE_FLAGS = frozenset(
+    {"--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"}
+)
+
+
+def _draft_card_share_unknown(
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    n_draft_layers: Optional[int] = None,
+) -> bool:
+    """True when the drafter is not wholly on the target's card, so its whole file is not
+    the share to reserve there: a positive -ngld below its depth (split with the host), or
+    a draft tensor override, which llama.cpp applies per weight while picking buffers (the
+    same flags the fit-voiding list treats as placement changes), or the draft CPU-MoE
+    switches, which llama.cpp turns into draft tensor overrides."""
+    if _extra_args_set_any_flag(extra_args, _DRAFT_OVERRIDE_TENSOR_FLAGS | _DRAFT_CPU_MOE_FLAGS):
+        return True
+    source_env = os.environ if env is None else env
+    if source_env.get("LLAMA_ARG_SPEC_DRAFT_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    # Each positive count appends draft CPU overrides, so any positive one is a placement.
+    if _is_positive_int(source_env.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE")):
+        return True
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, raw in enumerate(args):
+        _, eq, inline = raw.partition("=")
+        if _flag_name(raw) in _DRAFT_N_CPU_MOE_FLAGS and _is_positive_int(
+            inline if eq else (args[i + 1] if i + 1 < len(args) else None)
+        ):
+            return True
+    return _draft_is_split_across_host(extra_args, env, n_draft_layers = n_draft_layers)
+
+
+def _sidecar_child_ctx(
+    args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]],
+    native_ctx: Optional[int],
+    n_parallel: Optional[int],
+    kv_unified: bool,
+) -> int:
+    """The context the child allocates: last positive -c, else LLAMA_ARG_CTX_SIZE, else the native
+    length."""
+    ctx = parse_ctx_override(args)
+    if ctx is None:
+        try:
+            ctx = int(
+                str((os.environ if env is None else env).get("LLAMA_ARG_CTX_SIZE", "")).strip()
+            )
+        except (TypeError, ValueError):
+            ctx = None
+    if ctx and ctx > 0:
+        return ctx
+    # Without -c, --kv-unified-per-slot N sizes the pool to n_parallel * N
+    # (tools/server/server.cpp).
+    source_env = os.environ if env is None else env
+    tokens = [str(a) for a in args] if args else []
+    full_window = str(source_env.get("LLAMA_ARG_CTX_SIZE", "")).strip() == "0"
+    if str(source_env.get("LLAMA_ARG_FIT_CTX", "")).strip():
+        full_window = False
+    per_slot = source_env.get("LLAMA_ARG_KV_UNIFIED_PER_SLOT")
+    for i, raw in enumerate(tokens):
+        flag = _flag_name(raw)
+        if flag not in ("-c", "--ctx-size", "-fitc", "--fit-ctx", "--kv-unified-per-slot"):
+            continue
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else "")
+        if flag == "--kv-unified-per-slot":
+            per_slot = value
+        elif flag in ("-fitc", "--fit-ctx"):
+            full_window = False
+        elif str(value).strip() == "0":
+            full_window = True
+    if _is_positive_int(per_slot) and not full_window:
+        return int(str(per_slot).strip()) * max(1, int(n_parallel or 1))
+    bound = int(native_ctx or 0) or _LLAMA_FIT_MIN_CTX
+    if not kv_unified:
+        bound *= max(1, int(n_parallel or 1))
+    return bound
+
+
+def _draft_n_ubatch(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """A positive --spec-draft-n-ubatch (env twin overridden by argv), else None."""
+    found = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_DRAFT_N_UBATCH")
+    tokens = [str(a) for a in args] if args else []
+    for i, raw in enumerate(tokens):
+        _, eq, inline = raw.partition("=")
+        if _flag_name(raw) == "--spec-draft-n-ubatch":
+            found = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else None)
+    return int(str(found).strip()) if _is_positive_int(found) else None
+
+
+def _capped_draft_n_ubatch(args, env, ctx, *batch_defaults) -> Optional[int]:
+    """--spec-draft-n-ubatch capped as llama_context caps it: at --batch-size, then a positive
+    context. ``batch_defaults`` are _named_batch_sizes' fallbacks."""
+    ub = _draft_n_ubatch(args, env)
+    if ub:
+        ub = min(ub, _named_batch_sizes(args, env, *batch_defaults)[0] & 0xFFFFFFFF)
+        if ctx and ctx > 0:
+            ub = min(ub, int(ctx))
+    return ub
 
 
 _SIDECAR_ADAPTER_FLAGS = (
@@ -6148,8 +6609,8 @@ def _extra_args_split_mode(
         found = str(raw).strip().lower()
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
-        name, _, inline = arg.partition("=")
-        if name not in _SPLIT_MODE_FLAGS:
+        _, _, inline = arg.partition("=")
+        if _flag_name(arg) not in _SPLIT_MODE_FLAGS:
             continue
         value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
         if value.strip():
@@ -6168,9 +6629,9 @@ def _extra_args_tensor_split(
         raw = str(env_value).strip()
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
-        name, _, inline = arg.partition("=")
-        if name not in _TENSOR_SPLIT_FLAGS:
+        if _flag_name(arg) not in _TENSOR_SPLIT_FLAGS:
             continue
+        _, _, inline = arg.partition("=")
         value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
         if value.strip():
             raw = value.strip()
@@ -7082,12 +7543,32 @@ def _arm_load_probe_memo() -> None:
 @contextlib.contextmanager
 def _load_probe_memo_scope():
     """Guarantee the memo cannot outlive a load however it exits. Arming is the
-    narrower `_arm_load_probe_memo`, taken around the placement decision."""
+    narrower `_arm_load_probe_memo`, taken around the placement decision. The whole
+    load also keeps a llama-fit-params failure that is not cached across loads (a
+    timeout, a crash) and the Metal fit lines already logged, so a second budget pass
+    neither waits on the probe again nor repeats its message."""
+    prev = (
+        getattr(_LOAD_PROBE_STATE, "metal_transient", None),
+        getattr(_LOAD_PROBE_STATE, "logged", None),
+    )
+    _LOAD_PROBE_STATE.metal_transient = {}
+    _LOAD_PROBE_STATE.logged = set()
     try:
         yield
     finally:
         _LOAD_PROBE_STATE.armed = False
         _LOAD_PROBE_STATE.rows = None
+        _LOAD_PROBE_STATE.metal_transient, _LOAD_PROBE_STATE.logged = prev
+
+
+def _info_once_per_load(msg: str, *args) -> None:
+    """``logger.info`` that a load says once (_load_probe_memo_scope); always outside one."""
+    seen = getattr(_LOAD_PROBE_STATE, "logged", None)
+    if seen is not None:
+        if (msg, args) in seen:
+            return
+        seen.add((msg, args))
+    logger.info(msg, *args)
 
 
 # "Probed, no usable answer", kept apart from None = "not probed yet".
@@ -7601,6 +8082,9 @@ class LlamaCppBackend:
         # True when the launch actually runs MTP (Unsloth- or user/env-driven);
         # gates the watchdog and recovery so pass-through MTP is covered.
         self._mtp_runtime_fallback_active = False
+        # (load key, count) of Metal OOM retirements, and the key that stopped respawning.
+        self._metal_oom_strikes = None
+        self._metal_oom_terminal_key = None
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # Wakes the health probe on subprocess readiness/exit, not left to the 500 ms fallback poll.
@@ -7685,7 +8169,14 @@ class LlamaCppBackend:
     @property
     def is_active(self) -> bool:
         """True if a llama-server process exists (loading or loaded)."""
-        return self._process is not None
+        proc = self._process
+        if proc is None:
+            return False
+        return not (
+            not self._healthy
+            and proc is getattr(self, "_retired_process", None)
+            and getattr(self, "_metal_oom_terminal_key", None) is not None
+        )
 
     def resident_memory_mib(self) -> Optional[int]:
         """Best-effort MiB the loaded model holds: its GPU model buffers when known, else the
@@ -9364,6 +9855,7 @@ class LlamaCppBackend:
                 "flash_attn_takes_value": True,
                 "supports_fit_ctx": False,
                 "supports_fit_target": False,
+                "fit_measures_borrowed_drafts": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
                 "ctx_checkpoints_flag": None,
@@ -9399,16 +9891,26 @@ class LlamaCppBackend:
             mtime_ns = 0
             size = 0
         cache_key = (bin_path, mtime_ns, size)
+        hit = None
         with cls._capability_cache_lock:
             cached = cls._capability_cache.get(cache_key)
             if cached is not None:
-                if not cached.get("mtp_probe_inconclusive"):
-                    return cached
                 retry_after = cls._capability_retry_after.get(cache_key)
-                if retry_after is not None and time.monotonic() < retry_after:
-                    return cached
-                cls._capability_cache.pop(cache_key, None)
-                cls._capability_retry_after.pop(cache_key, None)
+                if not cached.get("mtp_probe_inconclusive") or (
+                    retry_after is not None and time.monotonic() < retry_after
+                ):
+                    hit = cached
+                else:
+                    cls._capability_cache.pop(cache_key, None)
+                    cls._capability_retry_after.pop(cache_key, None)
+        if hit is not None:
+            # A copy: the cached dict is shared across threads.
+            if hit.get("supports_fit_target"):
+                hit = {
+                    **hit,
+                    "fit_measures_borrowed_drafts": _fit_measures_borrowed_drafts(bin_path),
+                }
+            return hit
 
         mtp_token: Optional[str] = None
         supports_dspark = False
@@ -9746,6 +10248,8 @@ class LlamaCppBackend:
             "flash_attn_takes_value": flash_attn_takes_value,
             "supports_fit_ctx": supports_fit_ctx,
             "supports_fit_target": supports_fit_target,
+            "fit_measures_borrowed_drafts": supports_fit_target
+            and _fit_measures_borrowed_drafts(bin_path),
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "ctx_checkpoints_flag": ctx_checkpoints_flag,
@@ -12306,27 +12810,49 @@ class LlamaCppBackend:
         self, binary: Optional[str], model_path: Optional[str]
     ) -> Optional[tuple[int, int, int]]:
         """Measures full-offload model buffers with the sibling llama-fit-params; None if that probe
-        fails."""
+        fails, with the reason in ``_metal_probe_failure``."""
+        self._metal_probe_failure = None
         if not binary or not model_path:
+            self._metal_probe_failure = "no binary or model path"
             return None
         try:
             probe = _llama_lib_dir(binary) / "llama-fit-params"
+        except OSError:
+            self._metal_probe_failure = "llama-fit-params not found"
+            return None
+        try:
             probe_stat = probe.stat()
+        except OSError:
+            self._metal_probe_failure = f"llama-fit-params not found at {probe}"
+            return None
+        try:
             model_stat = os.stat(model_path)
         except OSError:
+            self._metal_probe_failure = "model file unreadable"
+            return None
+        if os.name != "nt" and not os.access(probe, os.X_OK):
+            self._metal_probe_failure = f"llama-fit-params at {probe} is not executable"
             return None
         key = (
             str(probe),
             probe_stat.st_size,
             probe_stat.st_mtime_ns,
+            probe_stat.st_mode,
             model_path,
             model_stat.st_size,
             model_stat.st_mtime_ns,
         )
         cached = getattr(self, "_metal_model_mib_cache", None)
         if cached is not None and cached[0] == key:
+            self._metal_probe_failure = cached[2]
             return cached[1]
+        transient = getattr(_LOAD_PROBE_STATE, "metal_transient", None)
+        if transient is not None and key in transient:
+            self._metal_probe_failure = transient[key]
+            return None
         measured: Optional[tuple[int, int, int]] = None
+        failure: Optional[str] = None
+        cacheable = True
         try:
             env = self._llama_server_env_for_binary(str(binary))
             for name in tuple(env):
@@ -12339,18 +12865,38 @@ class LlamaCppBackend:
                 encoding = "utf-8",
                 errors = "replace",
                 # A cold Metal shader compile lands here instead of at the launch.
-                timeout = 120,
+                timeout = _METAL_FIT_PROBE_TIMEOUT_S,
                 check = False,
                 env = env,
                 **_windows_hidden_subprocess_kwargs(),
             )
-            if result.returncode == 0:
-                measured = _parse_metal_memory_breakdown(
-                    (result.stdout or "") + "\n" + (result.stderr or "")
+            output = (result.stdout or "") + "\n" + (result.stderr or "")
+            if result.returncode != 0:
+                failure = f"llama-fit-params exited with code {result.returncode}"
+                cacheable = False
+            else:
+                measured = _parse_metal_memory_breakdown(output)
+                if measured is None:
+                    failure = "llama-fit-params printed no Metal memory breakdown"
+            if failure:
+                tail = " | ".join(
+                    line.strip() for line in output.strip().splitlines()[-3:] if line.strip()
                 )
+                if tail:
+                    failure = f"{failure}: {tail[-300:]}"
+        except subprocess.TimeoutExpired:
+            failure = f"llama-fit-params timed out after {_METAL_FIT_PROBE_TIMEOUT_S} s"
+            cacheable = False
         except Exception as e:
-            logger.debug(f"llama-fit-params memory probe failed: {e}")
-        self._metal_model_mib_cache = (key, measured)
+            failure = f"llama-fit-params could not run: {e}"
+            cacheable = False
+        if failure:
+            logger.debug(f"llama-fit-params memory probe failed: {failure}")
+        self._metal_probe_failure = failure
+        if cacheable:
+            self._metal_model_mib_cache = (key, measured, failure)
+        elif transient is not None:
+            transient[key] = failure
         return measured
 
     def _metal_demand_paged_embedding_bytes(
@@ -12414,9 +12960,10 @@ class LlamaCppBackend:
             return 0
         measured = self._metal_measured_model_mib(binary, model_path)
         if measured is None:
-            logger.info(
-                "Metal fit: could not measure how llama.cpp maps this model (llama-fit-params "
-                "missing or unreadable), so its %.2f GB of input embeddings stay charged.",
+            _info_once_per_load(
+                "Metal fit: could not measure how llama.cpp maps this model (%s), so its "
+                "%.2f GB of input embeddings stay charged.",
+                getattr(self, "_metal_probe_failure", None) or "llama-fit-params unavailable",
                 embeddings / (1024**3),
             )
             return 0
@@ -12427,7 +12974,7 @@ class LlamaCppBackend:
         mapped = int(layout.tensor_bytes) - int(layout.excluded_block_bytes)
         unmapped = min(embeddings, max(0, mapped - charged))
         if not unmapped:
-            logger.info(
+            _info_once_per_load(
                 "Metal fit: llama.cpp maps this model's %.2f GB of input embeddings into Metal, "
                 "so they stay charged. A llama.cpp update may remove that.",
                 embeddings / (1024**3),
@@ -16109,6 +16656,18 @@ class LlamaCppBackend:
             draft_width = getattr(db, "_compute_activation_width", lambda: 0)()
             if draft_width > 0:
                 width = draft_width + 2 * (getattr(self, "_embedding_length", None) or 0)
+            if getattr(db, "_architecture", None) == "dflash" and draft_width > 0:
+                # The DSpark/DFlash prompt graph grows with -ub (DeepSeek-V4.1 DSpark: 725.5 MiB at
+                # 512, 2900.5 MiB at 2048).
+                vocab = (
+                    getattr(db, "_vocab_size", None)
+                    or getattr(self, "_vocab_size", None)
+                    or _ASSUMED_MAX_VOCAB
+                )
+                heads = (getattr(db, "_n_heads", None) or 0) * (
+                    getattr(db, "_kv_key_length", None) or 0
+                )
+                width = max(width, 2 * vocab + 2 * heads + draft_width)
         activations = int(width * ub * 4 * self._COMPUTE_BUFFER_SAFETY)
         spec = verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
         if getattr(db, "_architecture", None) == "dflash":
@@ -16825,6 +17384,7 @@ class LlamaCppBackend:
         levelled = to_info = False
         proc = self._process
         device_lost_seen = False
+        metal_poison = {"draft": False}
         try:
             for line in proc.stdout:
                 line = line.rstrip()
@@ -16851,13 +17411,27 @@ class LlamaCppBackend:
                         levelled = True
                         to_info = level.group(1) in "WE" or (ready and level.group(1) == "I")
                         # E lines only: unprefixed lines can be a request dump with user text.
-                        if (
-                            not device_lost_seen
-                            and level.group(1) == "E"
-                            and any(marker in line for marker in _GPU_DEVICE_LOST_MARKERS)
-                        ):
-                            device_lost_seen = True
-                            self._retire_device_lost_server_soon(proc)
+                        if level.group(1) == "E":
+                            if any(m in line for m in _DRAFT_CONTEXT_FAILURE_MARKERS):
+                                metal_poison["draft"] = True
+                            if not device_lost_seen and any(
+                                marker in line for marker in _GPU_DEVICE_LOST_MARKERS
+                            ):
+                                device_lost_seen = True
+                                self._retire_device_lost_server_soon(proc)
+                            elif (
+                                not device_lost_seen
+                                and not metal_poison.get("pending")
+                                and any(
+                                    marker in line for marker in _METAL_BACKEND_POISONED_MARKERS
+                                )
+                            ):
+                                # Not latched: a request can echo this text, so retirement confirms
+                                # a compute failure first.
+                                metal_poison["pending"] = True
+                                self._retire_device_lost_server_soon(
+                                    proc, metal_poison = metal_poison
+                                )
                     elif not levelled:
                         to_info = ready or _llama_line_is_warning_or_error(line, line_lower)
                     try:
@@ -17970,6 +18544,11 @@ class LlamaCppBackend:
         self._kv_cache_context_total = None
         # False means confirmed to hold no VRAM and makes the coordinator skip the unload, so claim it only for a zero-layer split.
         self._gpu_offload_active = not holds_no_gpu
+        # A runner crash must neither replay the replaced chat load nor meet its Metal OOM latch.
+        self._last_load_intent = None
+        self._mtp_runtime_fallback_active = False
+        self._metal_oom_strikes = None
+        self._metal_oom_terminal_key = None
         # Record the applied split and reset the other knobs so status and reload dedup agree.
         self._gpu_memory_mode = gpu_memory_mode if manual_ngl is not None else "auto"
         self._gpu_layers = manual_ngl if manual_ngl is not None else -1
@@ -22761,6 +23340,19 @@ class LlamaCppBackend:
                 _metal_full_offload_pinned = False
                 # --fit-target floor from the Metal wired headroom; 0 off Apple Silicon.
                 _metal_fit_target_floor_mib = 0.0
+                # --fit-target headroom for a DSpark/DFlash sidecar the child's fitter cannot size.
+                _sidecar_fit_reserve_mib = 0
+                _sidecar_fit_reserve_eligible_mib = 0
+                _sidecar_compute_mib = 0
+                _fit_device_count = 1
+                _sidecar_reserve_graph_mib = [0]
+                _sidecar_draft_layers: Optional[int] = None
+                _sidecar_owns_output = False
+                _sidecar_override_flags: List[str] = []
+                _sidecar_override_pairs: List[List[str]] = []
+                _sidecar_reserve_logged: list = []
+                _sidecar_reserve_reprice: Optional[Callable[..., int]] = None
+                _sidecar_kind_for_fit = None
                 # The fit and launch must use the same Model Memory snapshot.
                 from utils.model_memory_settings import capture_model_memory_settings
 
@@ -23235,6 +23827,98 @@ class LlamaCppBackend:
                     _cpu_draft_path = _mtp_draft_for_budget if _draft_on_cpu else None
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
+
+                    def _launch_split_env() -> dict:
+                        e = dict(os.environ)
+                        if not tensor_parallel:
+                            sm = (e.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower()
+                            if sm and sm != "layer":
+                                e.pop("LLAMA_ARG_SPLIT_MODE", None)
+                                e.pop("LLAMA_ARG_TENSOR_SPLIT", None)
+                        return e
+
+                    def _sidecar_planned_device_count() -> int:
+                        count = len(gpu_indices if gpu_indices is not None else _detected_gpus)
+                        if not _gpu_ids_own_device_flags:
+                            named = _extra_args_main_device(extra_args) or os.environ.get(
+                                "LLAMA_ARG_DEVICE"
+                            )
+                            if named:
+                                count = _distinct_device_count(named)
+                        if count > 1 and _split_mode_confines_to_one_device(
+                            extra_args, _launch_split_env()
+                        ):
+                            return 1
+                        return count
+
+                    def _draft_on_target_device_now(apple_budget_mib: Optional[int] = None) -> bool:
+                        # A draft pinned to another device allocates there (on Apple Silicon only
+                        # MTL0 / Vulkan0 is the target's).
+                        pin = _extra_args_draft_device_pin(extra_args)
+                        if pin is None:
+                            return True
+                        distinct = {d.strip() for d in pin.split(",") if d.strip()}
+                        pin = distinct.pop() if len(distinct) == 1 else pin
+                        apple = _apple_budget_mib if apple_budget_mib is None else apple_budget_mib
+                        # The picker strips competing device extras and env twins at emission, so
+                        # this is the launch's placement.
+                        _pl_args = (
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
+                        _pl_env = _launch_split_env()
+                        if gpu_memory_mode == "manual":
+                            self._clear_manual_placement_env(_pl_env)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_pl_env)
+                        main = _extra_args_main_device(_pl_args)
+                        if main is None and not _gpu_ids_own_device_flags:
+                            main = _pl_env.get("LLAMA_ARG_DEVICE") or None
+                        if main is None and is_vulkan_backend:
+                            ids = (
+                                gpu_indices
+                                if gpu_indices is not None
+                                else [g[0] for g in _detected_gpus]
+                            )
+                            main = ",".join(f"Vulkan{i}" for i in ids) or (
+                                "Vulkan0" if apple > 0 else None
+                            )
+                        elif main is None and apple > 0:
+                            main = "MTL0"
+                        elif (main is None and pin.strip()) and all(
+                            _CUDA_LIKE_DEVICE_RE.match(d.strip())
+                            for d in pin.split(",")
+                            if d.strip()
+                        ):
+                            # CUDA / ROCm pins are remapped into the child's mask: only the spawned
+                            # argv can tell (_spawn_draft_on_target).
+                            return True
+
+                        if main and _split_mode_confines_to_one_device(_pl_args, _pl_env):
+                            listed = [d.strip() for d in str(main).split(",") if d.strip()]
+                            if len(listed) > 1:
+                                at = self._effective_main_gpu(_pl_args, _pl_env)
+                                at = 0 if at is None else at
+                                main = listed[at] if 0 <= at < len(listed) else None
+
+                        def _names(value: str) -> set:
+                            return {d.strip().lower() for d in str(value).split(",") if d.strip()}
+
+                        return bool(main) and bool(_names(pin)) and _names(pin) <= _names(main)
+
+                    _draft_share_unknown = bool(
+                        _mtp_draft_for_budget
+                        and _draft_card_share_unknown(
+                            extra_args,
+                            os.environ,
+                            n_draft_layers = getattr(
+                                self._draft_backend_for(_mtp_draft_for_budget),
+                                "_n_layers",
+                                None,
+                            ),
+                        )
+                    )
                     _mtp_draft_weights = 0
                     if _mtp_draft_for_budget:
                         try:
@@ -23306,6 +23990,18 @@ class LlamaCppBackend:
                                 _kv_unified: bool = planned_kv_unified,
                                 _n_ubatch: Optional[int] = _effective_ubatch,
                             ) -> int:
+                                # Applied here, not in a wrapper, so every gate taking this callback
+                                # prices the draft micro-batch.
+                                _n_ubatch = (
+                                    _capped_draft_n_ubatch(
+                                        extra_args,
+                                        os.environ,
+                                        ctx,
+                                        _emitted_n_batch(n_batch, _np),
+                                        n_ubatch,
+                                    )
+                                    or _n_ubatch
+                                )
                                 v = self._estimate_mtp_overhead_bytes(
                                     ctx,
                                     spec_draft_n_max = _n,
@@ -23688,6 +24384,8 @@ class LlamaCppBackend:
                         # llama.cpp loads a bare --model-draft anyway (has_dft()), so keep the reserve.
                         and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
                         and not _draft_cpu_no_embedded
+                        and not _draft_share_unknown
+                        and _draft_on_target_device_now(apple_budget_mib = 0)
                         and not tensor_parallel
                         and gpus
                         and effective_ctx > 0
@@ -24724,6 +25422,121 @@ class LlamaCppBackend:
                                 + _cc_bytes(ctx)
                             ) / (1024 * 1024)
 
+                        # Auto only: drop the drafter when the target fits Metal alone but not with
+                        # the sidecar reserve.
+                        if (
+                            use_fit
+                            and _mtp_will_engage
+                            and _mtp_reserves_gpu
+                            and _mtp_effective in ("dspark", "dflash")
+                            and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+                            and not _extra_args_set_spec_type(extra_args)
+                            # A bare --model-draft in extras still loads (has_dft()).
+                            and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                            and not _draft_share_unknown
+                            and _draft_on_target_device_now()
+                            # Zero KV would read as a target that fits alone.
+                            and self._can_estimate_kv()
+                        ):
+                            # _apple_fit_budget_mib already holds back a flat fraction for this
+                            # drafter.
+                            _sc_ctx = (
+                                effective_ctx
+                                if explicit_ctx
+                                else min(_metal_floor_ctx, native_ctx_for_cap or _metal_floor_ctx)
+                            )
+                            _sc_target_mib = (
+                                _apple_model_size_fit
+                                + _kv_bytes(_sc_ctx, _fit_ctx_checkpoints)
+                                + _cc_bytes(_sc_ctx)
+                            ) / (1024 * 1024)
+                            _sc_draft_ub = _capped_draft_n_ubatch(
+                                extra_args,
+                                os.environ,
+                                _sc_ctx,
+                                _emitted_n_batch(n_batch, n_parallel),
+                                n_ubatch,
+                            )
+                            _sc_with_draft_mib = _sc_target_mib + self._sidecar_fit_reserve_mib(
+                                _mtp_bytes(
+                                    _sc_ctx,
+                                    slots = _extra_args_n_parallel(extra_args, os.environ),
+                                    ubatch = _sc_draft_ub,
+                                ),
+                                mtp_draft_path,
+                                flat_mib = math.ceil(_flat_mtp_reserve * max(0, _apple_budget_mib)),
+                            )
+                            # An explicit context is refused past the wired limit when that is
+                            # readable.
+                            _sc_wired_mib = (
+                                self._apple_metal_wired_ceiling_bytes() // (1024 * 1024)
+                                if explicit_ctx
+                                and not _caller_owns_budget
+                                and not _paravirtual_cpu_forced
+                                else 0
+                            )
+                            _sc_over_limit = _apple_budget_mib < _sc_with_draft_mib or (
+                                0 < _sc_wired_mib < _sc_with_draft_mib
+                            )
+                            # Only when both do not fit: the draft-free embedding discount can cost
+                            # a cold llama-fit-params run.
+                            _sc_host_embd_without_draft = _apple_host_embd
+                            _sc_target_only_mib = _sc_target_mib
+                            if _sc_over_limit:
+                                _sc_host_embd_without_draft = (
+                                    self._metal_demand_paged_embedding_bytes(
+                                        model_path,
+                                        extra_args,
+                                        binary = binary,
+                                        requested_load_mode = load_mode,
+                                        supports_load_mode = bool(
+                                            server_caps.get("supports_load_mode")
+                                        ),
+                                        settings = _mem_settings,
+                                        layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
+                                        mtp_may_engage = False,
+                                    )
+                                )
+                                _sc_target_only_mib = _sc_target_mib - (
+                                    self._MTP_DRAFT_COMPUTE_BYTES
+                                    + _sc_host_embd_without_draft
+                                    - _apple_host_embd
+                                ) / (1024 * 1024)
+                            if _sc_target_only_mib <= _apple_budget_mib < _sc_with_draft_mib or (
+                                _sc_wired_mib > 0
+                                and _sc_target_only_mib <= _sc_wired_mib < _sc_with_draft_mib
+                            ):
+                                logger.info(
+                                    "Auto: the %s sidecar does not fit in unified memory "
+                                    "alongside the model, so it is dropped.",
+                                    "DSpark" if _mtp_effective == "dspark" else "DFlash",
+                                )
+                                _spec_dropped_no_vram = True
+                                _mtp_will_engage = False
+                                _mtp_reserves_gpu = False
+                                mtp_overhead_fn = None
+                                _mtp_kv_unsized = False
+                                # Derived after the discrete drop: undo them, or Auto keeps a
+                                # smaller context than Off.
+                                _mtp_gpu_bytes_remain = False
+                                _flat_mtp_engages = False
+                                _flat_mtp_reserve = 0.0
+                                _pin_fraction = _vram_frac
+                                _apple_fit_budget_mib = _apple_budget_mib
+                                _soft_overhead -= self._MTP_DRAFT_COMPUTE_BYTES
+                                model_size_fit -= self._MTP_DRAFT_COMPUTE_BYTES
+                                _apple_embd_logged = bool(_apple_host_embd)
+                                _apple_host_embd = _sc_host_embd_without_draft
+                                _apple_model_size_fit = model_size_fit - _apple_host_embd
+                                if _apple_host_embd and not _apple_embd_logged:
+                                    logger.info(
+                                        "Metal fit: %.2f GB of input embeddings stay in the CPU "
+                                        "file mapping; charging %.2f GB of weights to unified "
+                                        "memory.",
+                                        _apple_host_embd / (1024**3),
+                                        _apple_model_size_fit / (1024**3),
+                                    )
+
                         if self._can_estimate_kv():
                             cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_MIN_CTX)
                             _cap_footprint_mib = _apple_footprint_mib(cap)
@@ -25336,6 +26149,297 @@ class LlamaCppBackend:
                         if _mtp_will_engage
                         else 0
                     )
+                    # DSpark/DFlash borrow the target's token_embd/output, so llama.cpp's fitter
+                    # cannot measure the draft
+                    # (common/fit.cpp "fitting without it"); carry the planner's reserve in the
+                    # child's --fit-target.
+                    _sidecar_kind_for_fit = (
+                        _mtp_effective if _mtp_effective in ("dspark", "dflash") else None
+                    )
+                    if _extra_args_set_spec_type(extra_args):
+                        _child_spec_types = _accumulated_spec_types(extra_args, env = _spec_env)
+                        _sidecar_kind_for_fit = (
+                            "dspark"
+                            if "draft-dspark" in _child_spec_types
+                            else ("dflash" if "draft-dflash" in _child_spec_types else None)
+                        )
+                    _fit_device_count = _sidecar_planned_device_count()
+                    _draft_on_target_device = _draft_on_target_device_now()
+                    if (
+                        _mtp_will_engage
+                        and _mtp_reserves_gpu
+                        and _sidecar_kind_for_fit is not None
+                        and _draft_on_target_device
+                        # Builds whose fitter measures borrowed-tensor drafts need no reserve.
+                        and not server_caps.get("fit_measures_borrowed_drafts")
+                        and _sidecar_borrows_target_tensors(_mtp_draft_for_budget or mtp_draft_path)
+                    ):
+                        # Priced even under --fit off: a startup-OOM retry turns the fitter on with
+                        # the drafter loaded.
+                        _sidecar_auto_ctx = effective_ctx <= 0
+                        _sidecar_reserve_ctx = (
+                            _sidecar_child_ctx(
+                                extra_args,
+                                os.environ,
+                                self._context_length,
+                                n_parallel,
+                                planned_kv_unified,
+                            )
+                            if _sidecar_auto_ctx
+                            else effective_ctx
+                        )
+                        _sidecar_compute_mib = math.ceil(
+                            self._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024)
+                        )
+                        _sidecar_reserve_path = _mtp_draft_for_budget or mtp_draft_path
+                        try:
+                            _sidecar_draft_layers = getattr(
+                                self._draft_backend_for(_sidecar_reserve_path), "_n_layers", None
+                            )
+                        except Exception:  # noqa: BLE001 - an unread drafter shares by memory alone
+                            _sidecar_draft_layers = None
+                        _sidecar_owns_output = not _sidecar_borrows_output(_sidecar_reserve_path)
+                        # The fitter measures the target's rollback copies itself.
+                        _sidecar_only_bytes = _mtp_bytes(
+                            _sidecar_reserve_ctx, n_parallel, _effective_ubatch
+                        )
+                        if _target_rollback and _mtp_eff_n_max:
+                            _sidecar_only_bytes -= (
+                                self._rollback_state_bytes(n_parallel) * _mtp_eff_n_max
+                            )
+                        # An unsized sidecar carries the planner's flat fraction, or the fitter
+                        # spends it on target layers.
+                        _sidecar_flat_mib = 0
+                        if _flat_mtp_reserve > 0:
+                            _flat_pool_mib = (
+                                _apple_budget_mib
+                                if _apple_budget_mib > 0
+                                else max(
+                                    (
+                                        free
+                                        for idx, free in (gpus or _detected_gpus)
+                                        if gpu_indices is None or idx in gpu_indices
+                                    ),
+                                    default = 0,
+                                )
+                            )
+                            _sidecar_flat_mib = math.ceil(
+                                _flat_mtp_reserve * max(0, _flat_pool_mib)
+                            )
+                        _sidecar_fit_reserve_eligible_mib = (
+                            self._sidecar_fit_reserve_mib(
+                                max(0, _sidecar_only_bytes),
+                                _sidecar_reserve_path,
+                                flat_mib = _sidecar_flat_mib,
+                            )
+                            + _sidecar_compute_mib
+                        )
+
+                        def _sidecar_child_on_discrete_gpus(
+                            run_args: List[str], child_env: Mapping[str, str]
+                        ) -> bool:
+                            """Whether every card the drafter runs on is discrete; positive evidence
+                            only."""
+                            if _apple_budget_mib:
+                                return False
+                            active = gpu_indices
+                            if (
+                                not is_vulkan_backend
+                                and _child_gpu_physical_ids is not None
+                                and _child_gpu_physical_ids is not _parent_view_gpu_ids
+                            ):
+                                active = list(_child_gpu_physical_ids)
+                                if not active:
+                                    return False
+                            override = self._effective_device_ids(run_args, child_env)
+                            if override is not None:
+                                if not override or any(
+                                    d.lower() in _CPU_DEVICE_VALUES for d in override
+                                ):
+                                    return False
+                                # This backend's own names only: Vulkan0 is not CUDA0.
+                                if not all(
+                                    (
+                                        re.fullmatch(r"(?i)vulkan\d+", d)
+                                        if is_vulkan_backend
+                                        else _CUDA_LIKE_DEVICE_RE.match(d)
+                                    )
+                                    for d in override
+                                ):
+                                    return False
+                                studio_pin = (
+                                    [f"vulkan{i}" for i in _vulkan_pin_ids]
+                                    if is_vulkan_backend and _vulkan_pin_ids
+                                    else None
+                                )
+                                if [d.lower() for d in override] != studio_pin:
+                                    listed = {
+                                        d.lower()
+                                        for d in (
+                                            self._enumerated_gpu_devices(binary, child_env) or []
+                                        )
+                                    }
+                                    if not {d.lower() for d in override} <= listed:
+                                        return False
+                            seen = {idx for idx, _free in (_detected_gpus or ())}
+                            shared = set(_shared_gpu_ids or ())
+                            if (
+                                is_vulkan_backend
+                                and override
+                                and not {int(d[6:]) for d in override} <= seen
+                            ):
+                                # Vulkan Auto drops its iGPUs from the probe.
+                                return False
+                            if (
+                                seen
+                                and not (seen & shared)
+                                and self._discrete_gpu_for_expert_spill(
+                                    None, _detected_gpus, _shared_gpu_ids
+                                )
+                            ):
+                                return True
+                            # A mixed host: narrow only through an order the child provably shares.
+                            if not is_vulkan_backend and (
+                                self._positional_child_order_unproven(child_env)
+                                or any(
+                                    not all(
+                                        t.strip().isdigit()
+                                        for t in str(child_env.get(name)).split(",")
+                                        if t.strip()
+                                    )
+                                    for name in (
+                                        "CUDA_VISIBLE_DEVICES",
+                                        "HIP_VISIBLE_DEVICES",
+                                        "ROCR_VISIBLE_DEVICES",
+                                    )
+                                    if child_env.get(name) is not None
+                                )
+                            ):
+                                return False
+                            active, compact = self._effective_gpu_selection(
+                                binary, child_env, active, run_args, is_vulkan = is_vulkan_backend
+                            )
+                            pos = _draft_pin_device_index(
+                                _extra_args_draft_device_pin(run_args),
+                                ",".join(override) if override else None,
+                                len(compact or active or _detected_gpus or ()),
+                            )
+                            if (
+                                pos is None
+                                and _extra_args_draft_device_pin(run_args) is None
+                                and _split_mode_confines_to_one_device(run_args, child_env)
+                            ):
+                                main = self._effective_main_gpu(run_args, child_env)
+                                pos = 0 if main is None else (main if override else None)
+                            if pos is not None:
+                                if override:
+                                    if not (compact and 0 <= pos < len(compact)):
+                                        return False
+                                    active = self._physical_ordinals(
+                                        [compact[pos]], child_env, is_vulkan_backend
+                                    )
+                                elif is_vulkan_backend or not self._positional_child_order_unproven(
+                                    child_env
+                                ):
+                                    active = self._physical_ordinals(
+                                        [pos], child_env, is_vulkan_backend
+                                    )
+                            on = set(active) if active else seen
+                            if not on or not on <= seen - shared:
+                                return False
+                            return self._discrete_gpu_for_expert_spill(
+                                sorted(on), _detected_gpus, _shared_gpu_ids
+                            )
+
+                        def _sidecar_reserve_reprice(
+                            run_args: List[str],
+                            child_env: Mapping[str, str],
+                            _ctx: int = _sidecar_reserve_ctx,
+                            _n: int = _mtp_eff_n_max,
+                            _dp: Optional[str] = _sidecar_reserve_path,
+                            _w: int = _mtp_draft_weights,
+                            _np: int = n_parallel,
+                            _mtp: bool = _engaged_is_mtp,
+                            _swa_full: bool = swa_full,
+                            _kv_unified: bool = planned_kv_unified,
+                            _ub: Optional[int] = _effective_ubatch,
+                            _floor: int = _sidecar_compute_mib,
+                            _flat: int = _sidecar_flat_mib,
+                            _native: Optional[int] = self._context_length,
+                        ) -> int:
+                            # Read off the argv: a --flash-attn off respawn pads the draft cache to
+                            # f16, extras can change slots.
+                            _ck, _cv = _extra_args_draft_cache_types(run_args, child_env)
+                            _np = _extra_args_n_parallel(run_args, child_env) or _np
+                            _kv_unified = _kv_unified_from_args(
+                                run_args, default = _kv_unified, env = child_env
+                            )
+                            try:
+                                _ctx = _sidecar_child_ctx(
+                                    run_args, child_env, _native, _np, _kv_unified
+                                )
+                            except ValueError:
+                                pass  # a malformed -c is the launch's error to report, not this
+                            # llama_context caps the micro-batch at the batch, and a causal batch at
+                            # the context.
+                            _ub = _capped_draft_n_ubatch(run_args, child_env, _ctx) or _ub
+                            if _ub and _ctx and _ctx > 0:
+                                _ub = min(_ub, int(_ctx))
+                            _kv_kw = dict(
+                                drafter_path = _dp,
+                                draft_cache_type_k = _ck,
+                                draft_cache_type_v = _cv,
+                                n_parallel = _np,
+                                swa_full = _swa_full,
+                                kv_unified = _kv_unified,
+                                n_ubatch = _ub,
+                                flash_attn = _flash_attn_enabled_from_args(
+                                    run_args, default = planned_flash_attn, env = child_env
+                                ),
+                            )
+                            _v = self._estimate_mtp_overhead_bytes(
+                                _ctx,
+                                spec_draft_n_max = _n,
+                                draft_weights_bytes = _w,
+                                mtp_keeps_target_ctx = _mtp,
+                                target_rollback = False,
+                                **_kv_kw,
+                            )
+                            # The draft context copies -nkvo, so its KV stays in host buffers.
+                            if (
+                                _v
+                                and not _kv_offload_from_args(run_args, child_env)
+                                and _sidecar_child_on_discrete_gpus(run_args, child_env)
+                            ):
+                                _host_kv = self._mtp_draft_kv_bytes(_ctx, **_kv_kw)
+                                if _host_kv:
+                                    _v = max(0, _v - _host_kv)
+                            try:
+                                _sidecar_reserve_graph_mib[0] = math.ceil(
+                                    self._mtp_draft_compute_bytes(
+                                        _ctx,
+                                        drafter_path = _dp,
+                                        n_ubatch = _ub,
+                                        n_parallel = _np,
+                                        spec_draft_n_max = _n,
+                                    )
+                                    / (1024 * 1024)
+                                )
+                            except Exception:  # noqa: BLE001 - unsized: the shares carry it
+                                _sidecar_reserve_graph_mib[0] = 0
+                            return (
+                                self._sidecar_fit_reserve_mib(_v or 0, _dp, flat_mib = _flat) + _floor
+                            )
+
+                        if _draft_share_unknown:
+                            # Drafter partly off the card: its weight share is unpriced, keep only
+                            # the compute floor.
+                            _sidecar_fit_reserve_eligible_mib = _sidecar_compute_mib
+                            _sidecar_reserve_reprice = None
+                        # A scalar --fit-target suits only a single-device launch; priced anyway,
+                        # since a retry can narrow to one card.
+                        if use_fit and (_apple_budget_mib > 0 or _fit_device_count == 1):
+                            _sidecar_fit_reserve_mib = _sidecar_fit_reserve_eligible_mib
                     if _mtp_will_engage:
                         _mtp_note = self._mtp_reserve_note(
                             _mtp_reserve_bytes,
@@ -26250,14 +27354,20 @@ class LlamaCppBackend:
                     if _fit_target_priced and use_fit and not _metal_fit_target_floor_mib
                     else None
                 )
-                if _metal_fit_target_floor_mib:
+                if _metal_fit_target_floor_mib or _sidecar_fit_reserve_mib:
                     # Rebuilt after the price is read: the floor is the machine's
-                    # margin, not the budget slider's.
+                    # margin and the sidecar reserve the drafter's, not the budget
+                    # slider's.
                     _integrity_flags = self._ctx_integrity_flags(
                         *_integrity_args,
                         fit_target_delta_mib = _fit_target_delta_mib,
                         fit_target_floor_mib = _metal_fit_target_floor_mib,
+                        # The reserve rides on the spawn's trailing pair, which retry cleanup must
+                        # tell apart from a user's value.
+                        fit_target_reserve_mib = 0,
                     )
+                    if _sidecar_fit_reserve_mib and not server_caps.get("supports_fit_target"):
+                        _sidecar_fit_reserve_mib = 0
                 cmd.extend(_integrity_flags)
                 offload_overridden = _extra_args_set_any_flag(
                     extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
@@ -26448,14 +27558,25 @@ class LlamaCppBackend:
                 if _gpu_ids_own_device_flags:
                     _spec_placement_extras = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_spec_placement_env)
+                _spec_placement_argv = [*cmd, *(_spec_placement_extras or [])]
                 # A device the launch really carries, and not the CPU spelling of it.
                 # Only consulted where the probe found nothing: it is the one remaining
                 # way the child can still be pointed at a GPU.
                 _spec_device_pick = _extra_args_main_device(
-                    [*cmd, *(_spec_placement_extras or [])]
+                    _spec_placement_argv
                 ) or _spec_placement_env.get("LLAMA_ARG_DEVICE")
                 _spec_extras_pick_a_gpu = bool(_spec_device_pick) and not _device_selection_is_cpu(
-                    [*cmd, *(_spec_placement_extras or [])], _spec_placement_env
+                    _spec_placement_argv, _spec_placement_env
+                )
+                # Log-only; a priced reserve is reported by the spawn (_log_sidecar_fit_reserve).
+                _sidecar_fit_sized = (
+                    not fit_is_effectively_on(_spec_placement_argv, _spec_placement_env)
+                    or bool(_sidecar_fit_reserve_eligible_mib)
+                    or bool(server_caps.get("fit_measures_borrowed_drafts"))
+                    or (
+                        bool(launch_mtp_draft_path)
+                        and not _sidecar_borrows_target_tensors(launch_mtp_draft_path)
+                    )
                 )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
@@ -26469,9 +27590,9 @@ class LlamaCppBackend:
                         None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
                     ),
                     dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
-                    dspark_fit_sized = not use_fit,
+                    dspark_fit_sized = _sidecar_fit_sized,
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
-                    dflash_fit_sized = not use_fit,
+                    dflash_fit_sized = _sidecar_fit_sized,
                     # So the fallback says unopenable, not missing. DSpark/DFlash never
                     # reach the drop.
                     mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),
@@ -27123,6 +28244,36 @@ class LlamaCppBackend:
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
                     )
+                # Reconcile the reserve with the child as launched: extras can turn the fitter on or
+                # add a margin.
+                _sidecar_user_tokens = list(_emit_extra_args) if _mem_extras else []
+                if (
+                    _sidecar_fit_reserve_eligible_mib
+                    and server_caps.get("supports_fit_target")
+                    # Re-read: a failed GPU selection falls back to every card.
+                    and (_apple_budget_mib > 0 or _sidecar_planned_device_count() == 1)
+                ):
+                    _sidecar_child_env = dict(os.environ)
+                    if gpu_memory_mode == "manual":
+                        self._clear_manual_placement_env(_sidecar_child_env)
+                    _sidecar_override_flags = _sidecar_reserve_margin_flags(
+                        cmd,
+                        _emit_extra_args if _mem_extras else (),
+                        _sidecar_child_env,
+                        max(
+                            _VRAM_FLOOR_RESERVE_MIB,
+                            self._fit_target_margin_mib(
+                                auto_fit = auto_fit,
+                                fit_target_delta_mib = _fit_target_delta_mib,
+                                floor_mib = _metal_fit_target_floor_mib,
+                            ),
+                        ),
+                        _sidecar_fit_reserve_eligible_mib,
+                    )
+                    if _sidecar_override_flags:
+                        _sidecar_fit_reserve_mib = _sidecar_fit_reserve_eligible_mib
+                        _sidecar_override_pairs.append(list(_sidecar_override_flags))
+                        cmd.extend(_sidecar_override_flags)
                 # Last so it wins: the Metal drafter CPU pin is a correctness fix.
                 if _pv_draft_cpu_pin:
                     cmd.extend(_pv_draft_cpu_pin)
@@ -27162,8 +28313,6 @@ class LlamaCppBackend:
                     )
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
-
-                logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
@@ -27520,6 +28669,7 @@ class LlamaCppBackend:
                 _companion_added_device: Optional[list[str]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
+                _parent_view_gpu_ids = _child_gpu_physical_ids
 
                 # The CUDA SM gate goes here, where the child's GPU visibility is
                 # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so no
@@ -27930,7 +29080,7 @@ class LlamaCppBackend:
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
-                    nonlocal _sched_abort_seen
+                    nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib
                     # Single revocation point for the tensor-spill plan; label is empty only on the first spawn.
                     if label:
                         run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
@@ -27980,8 +29130,277 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.warning(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
+                        # Every launch: a retry can turn the fitter on or re-mask onto several
+                        # cards.
+                        _spawn_devices = _extra_args_main_device(run_cmd) or env.get(
+                            "LLAMA_ARG_DEVICE"
+                        )
+                        _spawn_device_count = (
+                            _distinct_device_count(_spawn_devices)
+                            if _spawn_devices
+                            else max(len(_child_gpu_physical_ids or ()), len(_detected_gpus))
+                            if _child_gpu_physical_ids is None
+                            or _child_gpu_physical_ids is _parent_view_gpu_ids
+                            else len(_child_gpu_physical_ids)
+                        )
+                        if _sidecar_fit_reserve_eligible_mib:
+                            # Re-derived each spawn: drop Studio's earlier reserve-bearing margins,
+                            # keep the user's.
+                            run_cmd = _drop_sidecar_margins(
+                                list(run_cmd),
+                                _integrity_flags,
+                                self._ctx_integrity_flags(
+                                    *_integrity_args,
+                                    fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_floor_mib = _metal_fit_target_floor_mib,
+                                ),
+                                _sidecar_override_pairs,
+                                user_args = _sidecar_user_tokens,
+                            )
+                            _sidecar_fit_reserve_mib = 0
                         run_cmd = self._per_device_fit_target_argv(
                             run_cmd, env, _fit_target_margins_by_idx
+                        )
+                        _spawn_base_by_dev: Optional[list[float]] = None
+                        if _fit_target_margins_by_idx:
+                            try:
+                                _spelled = [
+                                    float(v)
+                                    for v in str(
+                                        _last_flag_value(run_cmd, {"-fitt", "--fit-target"})
+                                    ).split(",")
+                                ]
+                            except ValueError:
+                                _spelled = []
+                            if len(_spelled) == 1:
+                                _spelled = _spelled * _spawn_device_count
+                            if len(_spelled) == _spawn_device_count:
+                                _spawn_base_by_dev = _spelled
+                        # --rpc devices come first in the child's list, so local positional shares
+                        # would land on the wrong cards.
+                        _spawn_rpc = not _spawn_devices and bool(
+                            (_extra_args_device(run_cmd, {"--rpc"}) or "").strip()
+                            or str(env.get("LLAMA_ARG_RPC", "")).strip()
+                        )
+                        # Several cards: each keeps its share of the drafter (whole draft layers) in
+                        # a per-device list.
+                        _spawn_shares: Optional[list[float]] = [1.0]
+                        _spawn_output_dev: Optional[int] = None
+                        _spawn_pinned_at: Optional[int] = None
+                        _spawn_cpu_only = _device_selection_is_cpu(run_cmd, env) or (
+                            _child_gpu_physical_ids is not None
+                            and _child_gpu_physical_ids is not _parent_view_gpu_ids
+                            and not _child_gpu_physical_ids
+                        )
+                        if _spawn_cpu_only:
+                            _spawn_shares = None
+                        elif (
+                            _spawn_device_count > 1
+                            and _extra_args_split_mode(run_cmd, env) == "tensor"
+                        ):
+                            # --split-mode tensor folds the cards into one device: no per-device
+                            # reserve.
+                            _spawn_shares = None
+                        elif _spawn_rpc:
+                            _spawn_shares = None
+                        elif _spawn_device_count > 1 and _split_mode_confines_to_one_device(
+                            run_cmd, env
+                        ):
+                            if _spawn_base_by_dev and len(set(_spawn_base_by_dev)) > 1:
+                                # llama.cpp keeps only devices[main_gpu] (src/llama.cpp): the
+                                # reserve goes in entry 0 of a list that keeps the other margins.
+                                _main = self._effective_main_gpu(run_cmd, env) or 0
+                                if 0 <= _main < _spawn_device_count:
+                                    _spawn_shares = [
+                                        1.0 if i == 0 else 0.0 for i in range(_spawn_device_count)
+                                    ]
+                                    _spawn_output_dev = 0
+                                else:
+                                    _spawn_shares = None
+                        elif _spawn_device_count > 1:
+                            _spawn_shares = None
+                            _spawn_pinned_at = _draft_pin_device_index(
+                                _extra_args_draft_device_pin(run_cmd),
+                                _spawn_devices,
+                                _spawn_device_count,
+                            )
+                            if _spawn_pinned_at is not None:
+                                _spawn_shares = [
+                                    1.0 if i == _spawn_pinned_at else 0.0
+                                    for i in range(_spawn_device_count)
+                                ]
+                                _spawn_output_dev = _spawn_pinned_at
+                            # Positional shares need the child to enumerate in the ids' order.
+                            _spawn_order_unproven = self._positional_child_order_unproven(env)
+                            if (
+                                not is_vulkan_backend
+                                and not _spawn_devices
+                                and _extra_args_draft_device_pin(run_cmd) is None
+                                and not _spawn_order_unproven
+                            ):
+                                _free_by_idx = dict(gpus or _detected_gpus or ())
+                                if (
+                                    _child_gpu_physical_ids is None
+                                    or _child_gpu_physical_ids is _parent_view_gpu_ids
+                                ):
+                                    _det_ids = [idx for idx, _free in _detected_gpus]
+                                    _spawn_ids = (
+                                        self._inherited_child_gpu_order(_det_ids) or _det_ids
+                                    )
+                                else:
+                                    _spawn_ids = list(_child_gpu_physical_ids)
+                                _spawn_free = [_free_by_idx.get(i) for i in _spawn_ids]
+                                # The drafter inherits the target's --tensor-split
+                                # (common_base_params_to_speculative).
+                                _spawn_base = self._fit_target_margin_mib(
+                                    auto_fit = auto_fit,
+                                    fit_target_delta_mib = _fit_target_delta_mib,
+                                    floor_mib = _metal_fit_target_floor_mib,
+                                )
+                                _weights = None
+                                if _spawn_free and all(f and f > 0 for f in _spawn_free):
+                                    _spawn_margins = _fit_margins_by_device(
+                                        extra_args, env, 0.0, len(_spawn_free)
+                                    )
+                                    _bases = (
+                                        _spawn_base_by_dev
+                                        if _spawn_base_by_dev
+                                        and len(_spawn_base_by_dev) == len(_spawn_free)
+                                        else [_spawn_base] * len(_spawn_free)
+                                    )
+                                    _weights = [
+                                        max(1.0, float(f) - max(b, m))
+                                        for f, m, b in zip(_spawn_free, _spawn_margins, _bases)
+                                    ]
+                                _ts = _extra_args_tensor_split(run_cmd, env)
+                                if _ts and _spawn_ids:
+                                    _ts_w = [
+                                        float(_ts[i]) if i < len(_ts) else 0.0
+                                        for i in range(len(_spawn_ids))
+                                    ]
+                                    if sum(_ts_w) > 0 and all(w >= 0 for w in _ts_w):
+                                        _weights = _ts_w
+                                if _weights:
+                                    _layers = _sidecar_draft_layers or 0
+                                    _cum = list(
+                                        itertools.accumulate(w / sum(_weights) for w in _weights)
+                                    )
+                                    # "row" assigns blocks like "layer" (CUDA / ROCm register no
+                                    # split buffer type).
+                                    if _layers > 0:
+                                        # llama.cpp's layer split: block il goes to the first device
+                                        # whose cumulative share exceeds il / (n_layer + 1).
+                                        _counts = [0] * len(_weights)
+                                        for _il in range(_layers):
+                                            _dev = bisect.bisect_right(_cum, _il / (_layers + 1))
+                                            _counts[min(_dev, len(_weights) - 1)] += 1
+                                        _spawn_shares = [c / _layers for c in _counts]
+                                    else:
+                                        _spawn_shares = [w / sum(_weights) for w in _weights]
+                                    # Logits over a borrowed output run on the card holding the
+                                    # target's layer n_layer.
+                                    _t_layers = (
+                                        _layers
+                                        if _sidecar_owns_output
+                                        else int(getattr(self, "_n_layers", 0) or 0) or _layers
+                                    )
+                                    if _t_layers > 0:
+                                        _spawn_output_dev = min(
+                                            bisect.bisect_right(_cum, _t_layers / (_t_layers + 1)),
+                                            len(_weights) - 1,
+                                        )
+                        if (
+                            _sidecar_fit_reserve_eligible_mib
+                            and _spawn_shares is not None
+                            and (
+                                _spawn_pinned_at is not None
+                                or _spawn_draft_on_target(run_cmd, _spawn_devices, env)
+                            )
+                            and server_caps.get("supports_fit_target")
+                        ):
+                            _spawn_total = (
+                                _sidecar_reserve_reprice(list(run_cmd), env)
+                                if _sidecar_reserve_reprice is not None
+                                else _sidecar_fit_reserve_eligible_mib
+                            )
+                            # The vocabulary-wide graph stays whole on the output card.
+                            _spawn_graph = min(
+                                _sidecar_reserve_graph_mib[0] if len(_spawn_shares) > 1 else 0,
+                                max(0, _spawn_total - _sidecar_compute_mib),
+                            )
+                            _spawn_body = max(0, _spawn_total - _sidecar_compute_mib - _spawn_graph)
+                            _last = (
+                                _spawn_output_dev
+                                if _spawn_output_dev is not None
+                                else max(i for i, f in enumerate(_spawn_shares) if f > 0)
+                                if any(f > 0 for f in _spawn_shares)
+                                else len(_spawn_shares) - 1
+                            )
+                            _spawn_head = 0
+                            if (
+                                _sidecar_owns_output
+                                and len(_spawn_shares) > 1
+                                and not _draft_share_unknown
+                            ):
+                                _head_layout = self._tensor_spill_layout(
+                                    _sidecar_reserve_path, all_shards = True
+                                )
+                                if _head_layout is not None and _head_layout.complete:
+                                    _spawn_head = min(
+                                        _spawn_body,
+                                        math.ceil(_head_layout.lm_head_bytes / (1024 * 1024)),
+                                    )
+                                    _spawn_body -= _spawn_head
+                                else:
+                                    _spawn_head = _spawn_body
+                            _spawn_per_device = [
+                                math.ceil(_spawn_body * f)
+                                + (_sidecar_compute_mib if f > 0 or i == _last else 0)
+                                + (_spawn_graph + _spawn_head if i == _last else 0)
+                                for i, f in enumerate(_spawn_shares)
+                            ]
+                            _spawn_reserve = max(_spawn_per_device)
+                            _spawn_flags = _sidecar_reserve_margin_flags(
+                                run_cmd,
+                                extra_args,
+                                env,
+                                self._fit_target_margin_mib(
+                                    auto_fit = auto_fit,
+                                    fit_target_delta_mib = _fit_target_delta_mib,
+                                    floor_mib = _metal_fit_target_floor_mib,
+                                ),
+                                _spawn_reserve,
+                                per_device = _spawn_per_device
+                                if len(_spawn_per_device) > 1
+                                else None,
+                                base_by_device = _spawn_base_by_dev,
+                            )
+                            if _spawn_flags:
+                                run_cmd = [*run_cmd, *_spawn_flags]
+                                if _spawn_total != _sidecar_fit_reserve_eligible_mib:
+                                    logger.info(
+                                        "Sidecar reserve repriced for this launch's argv: "
+                                        "%.2f GB.",
+                                        _spawn_total / 1024,
+                                    )
+                                _sidecar_fit_reserve_mib = _spawn_reserve
+                                if list(_spawn_flags) not in _sidecar_override_pairs:
+                                    _sidecar_override_pairs.append(list(_spawn_flags))
+                        if (
+                            _sidecar_fit_reserve_eligible_mib
+                            and _sidecar_kind_for_fit
+                            and not _spawn_cpu_only
+                        ):
+                            self._log_sidecar_fit_reserve(
+                                run_cmd,
+                                env,
+                                _sidecar_kind_for_fit,
+                                _sidecar_reserve_path,
+                                _sidecar_fit_reserve_mib,
+                                _sidecar_reserve_logged,
+                            )
+                        logger.info(
+                            f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(run_cmd))}"
                         )
                         _last_spawn_cmd = list(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
@@ -28185,6 +29604,8 @@ class LlamaCppBackend:
                                 # common/fit.cpp aborts a multi-device fit on a set split.
                                 _run = _without_subsequence(_run, self._mixed_split_flags)
                                 self._auto_tensor_split_emitted = None
+                            # The --fit off launch emitted no margin; the next spawn adds the
+                            # reserve.
                             # Same reasoning as the page-lock below, one step
                             # earlier: the fit picked "none" because it had proved
                             # the load fits, and that proof is what just failed, so
@@ -29164,6 +30585,28 @@ class LlamaCppBackend:
                         # Read by admission control; left as-is Studio over-admits.
                         n_parallel = 1  # allow-slot-clamp: llama-server refused more
                         kv_cache_unified = False
+                        # The reserve was priced for the dropped slots: reprice for one sequence.
+                        if (
+                            _sidecar_fit_reserve_eligible_mib
+                            and _sidecar_reserve_reprice is not None
+                        ):
+                            cmd = _drop_sidecar_margins(
+                                cmd,
+                                _integrity_flags,
+                                self._ctx_integrity_flags(
+                                    *_integrity_args,
+                                    fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_floor_mib = _metal_fit_target_floor_mib,
+                                ),
+                                _sidecar_override_pairs,
+                                user_args = _sidecar_user_tokens,
+                            )
+                            _sidecar_override_pairs.clear()
+                            _sidecar_reserve_reprice = functools.partial(
+                                _sidecar_reserve_reprice, _np = 1, _kv_unified = False
+                            )
+                            _sidecar_fit_reserve_eligible_mib = _sidecar_reserve_reprice(cmd, env)
+                            _sidecar_fit_reserve_mib = 0
                         # LLAMA_ARG_SPEC_TYPE reaches the child only if extras set --spec-type; else the launch scrubs it.
                         if _auto_ckpt_emitted:
                             cmd = self._without_flag_pairs(cmd, _auto_ckpt_emitted)
@@ -29373,6 +30816,22 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
+                    # A user-owned drafter in the extras or env still loads and keeps its reserve.
+                    if _sidecar_fit_reserve_mib and not _extra_args_mtp_draft_path(
+                        fallback_cmd, env = env
+                    ):
+                        _fb_integrity = self._ctx_integrity_flags(
+                            *_integrity_args,
+                            fit_target_delta_mib = _fit_target_delta_mib,
+                            fit_target_floor_mib = _metal_fit_target_floor_mib,
+                        )
+                        fallback_cmd = _drop_sidecar_margins(
+                            fallback_cmd,
+                            _integrity_flags,
+                            _fb_integrity,
+                            _sidecar_override_pairs,
+                            user_args = _sidecar_user_tokens,
+                        )
                     # Restore the cut slots; if they fail (unified KV refused), retry as cut.
                     _fb_cut = (
                         (
@@ -29626,9 +31085,15 @@ class LlamaCppBackend:
                                 )
                                 self._mmproj_fallback_reason = "projector_startup_failure"
                             cmd = self._strip_mmproj_args(_vision_gpu_cmd)
-                            cmd = self._per_device_fit_target_argv(
-                                cmd, env, _fit_target_margins_by_idx
-                            )
+                            # Keep a trailing sidecar pair: rewriting it would drop the drafter's
+                            # reserve.
+                            if [
+                                "--fit-target",
+                                str(_last_flag_value(cmd, {"-fitt", "--fit-target"})),
+                            ] not in _sidecar_override_pairs:
+                                cmd = self._per_device_fit_target_argv(
+                                    cmd, env, _fit_target_margins_by_idx
+                                )
                             _unified_withdraw_if_unneeded(cmd, why = "The text-only retry")
                             # This retry bypasses _spawn_and_wait, so refresh the launched-argv snapshot here.
                             _last_spawn_cmd = list(cmd)
@@ -29878,6 +31343,11 @@ class LlamaCppBackend:
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery
                 # re-resolves the file instead of trusting a path this request verified.
                 self._last_load_intent = replace(intent, verified_gguf = None)
+                if not getattr(_AUTO_RECOVERY_LOAD, "active", False):
+                    # A caller's load starts a fresh OOM episode; only automatic recovery carries
+                    # the strike count.
+                    self._metal_oom_strikes = None
+                    self._metal_oom_terminal_key = None
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
@@ -30619,6 +32089,10 @@ class LlamaCppBackend:
 
     def matches_load_source(self, intent: GgufLoadIntent) -> bool:
         """Whether the resident model has the intent's identity and weights."""
+        # A retired child stays recorded until respawned: an identical load must replace it.
+        _retired = getattr(self, "_retired_process", None)
+        if _retired is not None and getattr(self, "_process", None) is _retired:
+            return False
         if not self.is_loaded or (self._model_identifier or "").lower() != (
             intent.model_identifier.lower()
         ):
@@ -30791,6 +32265,8 @@ class LlamaCppBackend:
             self._cpu_fallback_reason = None
             self._last_load_intent = None
             self._mtp_runtime_fallback_active = False
+            self._metal_oom_strikes = None
+            self._metal_oom_terminal_key = None
             self._hf_variant = None
             self._is_vision = False
             self._disable_vision = False
@@ -31175,11 +32651,7 @@ class LlamaCppBackend:
         finally:
             self._kill_process_group(_pgid)
             _surviving_descendants = self._terminate_descendants(_descendants)
-            # getattr: teardown must tolerate a partially-built backend (failed
-            # __init__ or a __new__-built instance), as with _llama_log_fh below.
-            if getattr(self, "_stats_logger", None) is not None:
-                self._stats_logger.stop()
-                self._stats_logger = None
+            self._stop_stats_logger()
             # Forget the pid only once confirmed gone, so a startup sweep can still reap survivors.
             _killed_pid = getattr(self._process, "pid", None)
             _exit_code = getattr(self._process, "poll", lambda: None)()
@@ -32312,24 +33784,36 @@ class LlamaCppBackend:
             if resp.status_code != 200:
                 logger.debug(f"slot {entry.get('id')} restore returned HTTP {resp.status_code}")
 
-    def _maybe_recover_from_mtp_crash(self, exc: Optional[BaseException] = None) -> bool:
+    def _maybe_recover_from_mtp_crash(
+        self,
+        exc: Optional[BaseException] = None,
+        *,
+        sidecar_oom: bool = False,
+    ) -> bool:
         """Schedule one background reload without MTP after a mid-generation death.
 
         An MTP launch can pass /health and the load-time fallback, then abort on
         a later decode (MTP+tensor flash-attn, Gemma 4 on Apple Silicon #13253).
         Not a persistent ban: a fresh load re-tries MTP. Returns True if scheduled.
+        ``sidecar_oom`` is the Metal-retirement caller: an Auto DSpark / DFlash launch
+        whose server was just killed after running out of Metal memory.
         """
         # Cheap async-safe gate: only our live MTP launch, not cancelled, with a
         # snapshot to replay.
         if self._cancel_event.is_set():
             return False
-        if not self._mtp_runtime_fallback_active:
+        if not (self._mtp_runtime_fallback_active or sidecar_oom):
             return False
         # Read before claiming: a raise after the claim strands the flag, and nothing
         # else clears it, blocking every later respawn.
         snapshot = self._last_load_intent
         proc = self._process
         if snapshot is None or proc is None:
+            return False
+        if self._metal_oom_is_terminal(snapshot):
+            return False
+        # Stopped on purpose (Metal OOM, lost device): the next request's respawn replays it.
+        if not sidecar_oom and proc is getattr(self, "_retired_process", None):
             return False
         # Still serving: a transient error, so leave the caller its normal retry.
         if proc.poll() is None and self._server_socket_is_open():
@@ -32349,11 +33833,12 @@ class LlamaCppBackend:
                 if proc.poll() is None:
                     logger.debug("Generation error but llama-server is alive; keeping MTP.")
                     return
-                logger.warning(
-                    "llama-server exited mid-generation with MTP speculative "
-                    "decoding (%s); reloading without speculative decoding.",
-                    type(exc).__name__ if exc is not None else "server exited",
-                )
+                if not sidecar_oom:
+                    logger.warning(
+                        "llama-server exited mid-generation with MTP speculative "
+                        "decoding (%s); reloading without speculative decoding.",
+                        type(exc).__name__ if exc is not None else "server exited",
+                    )
                 # Re-check under the load lock so a newer load isn't clobbered.
                 requested_mode = snapshot.speculative_type
                 with self._serial_load_lock:
@@ -32367,7 +33852,14 @@ class LlamaCppBackend:
                         if self._last_load_intent != snapshot:
                             logger.info("MTP-crash reload skipped: load settings changed.")
                             return
+                        if self._metal_oom_is_terminal(snapshot):
+                            logger.info("MTP-crash reload skipped: out of Metal memory twice.")
+                            return
+                        if not sidecar_oom and proc is getattr(self, "_retired_process", None):
+                            logger.info("MTP-crash reload skipped: the server was retired.")
+                            return
                         unload_epoch = self._unload_epoch
+                        dropped_draft = self._mtp_draft_path or self._mtp_draft_suppressed_path
                     # llama.cpp appends spec types, so strip them from extras.
                     _ea = list(snapshot.extra_args or ())
                     fallback_extra_args = snapshot.extra_args
@@ -32387,7 +33879,8 @@ class LlamaCppBackend:
                         speculative_type = "off",
                         extra_args = fallback_extra_args,
                     )
-                    started = bool(self.load_model(fallback))
+                    with _automatic_recovery_load():
+                        started = bool(self.load_model(fallback))
                     if not started:
                         logger.info("MTP-crash reload stopped before the replacement was ready.")
                         return
@@ -32413,13 +33906,18 @@ class LlamaCppBackend:
                                 else _canonicalize_spec_mode(requested_mode)
                             )
                             self._spec_fallback_reason = "runtime_error"
+                            # Keep the Auto identity so the same request matches instead of
+                            # relaunching the sidecar.
+                            if dropped_draft:
+                                self._mtp_draft_path = None
+                                self._mtp_draft_suppressed_path = dropped_draft
                     if undo_reload:
                         logger.info(
                             "MTP-crash reload undone: the model was unloaded during reload."
                         )
                         self.unload_model()
                         return
-                logger.info("Reloaded without MTP after the mid-generation crash.")
+                logger.info("Reloaded without speculative decoding after the mid-generation crash.")
             except Exception as e:
                 logger.error(f"Reload without MTP failed: {e}")
             finally:
@@ -32745,6 +34243,29 @@ class LlamaCppBackend:
         base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
         return max(_VRAM_FLOOR_RESERVE_MIB, base + fit_target_delta_mib, floor_mib)
 
+    def _sidecar_fit_reserve_mib(
+        self,
+        reserve_bytes: int,
+        sidecar_path: Optional[str],
+        *,
+        flat_mib: int = 0,
+    ) -> int:
+        """MiB a DSpark/DFlash sidecar needs kept free by the child's ``--fit-target``.
+
+        The planner's byte-accurate reserve (draft weights + draft KV + draft compute +
+        target verification rows), never less than the sidecar file itself, which is
+        all that is known when the reserve fell back to the flat fraction (0 bytes).
+        ``flat_mib``: that fraction of the target's pool, passed only when the planner held
+        it back, so it is a floor: the child keeps at least what the plan kept.
+        Rounded up: a short MiB is a short allocation.
+        """
+        try:
+            file_bytes = int(self._get_gguf_size_bytes(sidecar_path) or 0) if sidecar_path else 0
+        except Exception:
+            file_bytes = 0
+        need = max(int(reserve_bytes or 0), file_bytes)
+        return max(math.ceil(need / (1024 * 1024)), max(0, int(flat_mib or 0)))
+
     @staticmethod
     def _fit_target_margins_mib(
         *,
@@ -32812,6 +34333,67 @@ class LlamaCppBackend:
             return False
         return True
 
+    def _log_sidecar_fit_reserve(
+        self,
+        run_cmd: List[str],
+        env: Mapping[str, str],
+        kind: str,
+        sidecar_path: Optional[str],
+        reserved_mib: int,
+        logged: list,
+    ) -> None:
+        """Report whether the spawned argv reserves the DSpark / DFlash sidecar that
+        llama.cpp's --fit cannot size. Once per outcome per load (``logged`` holds the
+        last one), so a retry that changes it says so and a repeat stays quiet."""
+        if not fit_is_effectively_on(run_cmd, env) or not _extra_args_mtp_draft_path(
+            run_cmd, env = env
+        ):
+            return
+        outcome = (kind, bool(reserved_mib))
+        if logged and logged[-1] == outcome:
+            return
+        logged.append(outcome)
+        label = "DSpark" if kind == "dspark" else "DFlash"
+        if reserved_mib:
+            logger.info(
+                "%s under --fit on: llama.cpp cannot size the sidecar, so "
+                "--fit-target keeps %.2f GB free for it.",
+                label,
+                reserved_mib / 1024,
+            )
+            return
+        # Not a blocker: the fit step cannot measure a borrowed-tensor draft
+        # (llama-context.cpp:153-160).
+        logger.info(
+            "%s under --fit on: llama.cpp cannot size the sidecar during "
+            "fitting, so its ~%.1f GB is not reserved. Pin GPU Layers in "
+            "Manual mode if the load runs out of VRAM.",
+            label,
+            (self._get_gguf_size_bytes(sidecar_path) or 0) / 1e9,
+        )
+
+    def _positional_child_order_unproven(self, child_env: Mapping[str, str]) -> bool:
+        """Whether a per-card list built over the parent's GPU ids may not line up with the
+        child's CUDA enumeration (planning and spawn share it).
+
+        nvidia-smi ids follow PCI order, so the child must run under PCI_BUS_ID
+        (FASTEST_FIRST is CUDA's default) with a mask a resolver maps, unless the uuid
+        mask order is known. Torch-fallback ids are CUDA ordinals in the parent's own
+        order, so a child switched to another order (a GPU pick pins PCI_BUS_ID) counts
+        them differently. HIP ignores CUDA_DEVICE_ORDER.
+        """
+        child_order = str(child_env.get("CUDA_DEVICE_ORDER", "")).strip().upper()
+        if self._GPU_IDS_ARE_PCI_INDICES is True:
+            return (
+                child_order != "PCI_BUS_ID" or self._visibility_mask_is_unmappable()
+            ) and self._smi_uuid_mask_order() is None
+        if self._GPU_IDS_ARE_PCI_INDICES is False:
+            parent_order = (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
+            return (parent_order or "FASTEST_FIRST") != (
+                child_order or "FASTEST_FIRST"
+            ) and not self._host_torch_is_rocm()
+        return False
+
     @staticmethod
     def _per_device_fit_target_argv(
         cmd: list[str], env: Mapping[str, str], margins_by_idx: Optional[Mapping[int, float]]
@@ -32876,9 +34458,11 @@ class LlamaCppBackend:
         *,
         fit_target_delta_mib: float = 0.0,
         fit_target_floor_mib: float = 0.0,
+        fit_target_reserve_mib: int = 0,
     ) -> list[str]:
         """Explicit --parallel drops the --kv-unified default and splits -c per slot; restore the
-        shared pool."""
+        shared pool. ``fit_target_reserve_mib`` is added on top for a sidecar the fitter cannot
+        measure."""
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
             flags.append("--kv-unified")
@@ -32896,6 +34480,8 @@ class LlamaCppBackend:
                 fit_target_delta_mib = fit_target_delta_mib,
                 floor_mib = fit_target_floor_mib,
             )
+            # On top of every margin, not max(): the sidecar's bytes must stay free.
+            _target += max(0, fit_target_reserve_mib)
             # The legacy path stays silent when it would only restate llama.cpp's
             # own default, so an untouched slider leaves the command unchanged.
             if auto_fit or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
@@ -33388,6 +34974,12 @@ class LlamaCppBackend:
                     intent = self._last_load_intent
                     if intent is None:
                         return False
+                    if self._metal_oom_is_terminal(intent):
+                        logger.error(
+                            f"Not restarting llama-server for '{self._model_identifier}': "
+                            "it ran out of Metal memory twice with these settings."
+                        )
+                        return False
                     epoch = self._unload_epoch
                     self._healthy = False
                 logger.warning(
@@ -33395,7 +34987,8 @@ class LlamaCppBackend:
                     f"(code {proc.returncode}); respawning to recover the session"
                 )
                 try:
-                    started = bool(self.load_model(intent))
+                    with _automatic_recovery_load():
+                        started = bool(self.load_model(intent))
                 except Exception as exc:
                     logger.error(f"Failed to respawn llama-server: {exc}")
                     return False
@@ -33406,9 +34999,37 @@ class LlamaCppBackend:
                     return False
                 return started
 
-    def _retire_device_lost_server(self, served_by) -> None:
-        """Kills the llama-server that hit VK_ERROR_DEVICE_LOST if still current: it survives but fails later requests; a dead child is handled by _respawn_if_dead."""
-        with self._respawn_lock:
+    def _stop_stats_logger(self) -> None:
+        """Stop the engine-stats poller of the child going away. getattr: teardown must
+        tolerate a partially-built backend (failed __init__ or a __new__-built instance)."""
+        if getattr(self, "_stats_logger", None) is not None:
+            self._stats_logger.stop()
+            self._stats_logger = None
+
+    def _retire_device_lost_server(
+        self,
+        served_by,
+        metal_poison: Optional[dict] = None,
+    ) -> None:
+        """Kill the llama-server that hit a lost GPU device, if it is still current (#11453).
+
+        It survives VK_ERROR_DEVICE_LOST but fails every later request; a dead child is
+        what _respawn_if_dead already recovers. ``metal_poison`` marks the Metal variant:
+        a failed command buffer (usually out of memory) latches the backend the same way.
+        """
+        if metal_poison is not None:
+            # Outside the locks: the probe waits on the child up to its timeout.
+            if (
+                served_by is None
+                or served_by is not self._process
+                or served_by.poll() is not None
+                or self._cancel_event.is_set()
+                or not self._metal_compute_failure_confirmed()
+            ):
+                metal_poison["pending"] = False
+                return
+        # _serial_load_lock too: no load may publish another model between the kill and the strike.
+        with self._respawn_lock, self._serial_load_lock:
             if (
                 served_by is None
                 or served_by is not self._process
@@ -33416,35 +35037,201 @@ class LlamaCppBackend:
                 or self._cancel_event.is_set()
             ):
                 return
-            # Else the MTP watchdog reads this kill as an MTP crash.
+            # First, or the MTP watchdog reads this kill as an MTP crash.
             self._stop_mtp_crash_watchdog()
+            self._retired_process = served_by
             try:
                 served_by.kill()
                 served_by.wait(timeout = 10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+            # Else it polls the dead child's port, which another server may reuse.
+            self._stop_stats_logger()
+            if metal_poison is not None:
+                # Under _respawn_lock, or a request could respawn the speculative config.
+                terminal = False
+                with self._lock:
+                    if self._process is served_by and not self._cancel_event.is_set():
+                        terminal = self._after_metal_poisoned_server(
+                            bool(metal_poison.get("draft"))
+                        )
+                if not terminal:
+                    return
+                # Nothing will respawn it: unload it like any other model, still under
+                # _serial_load_lock.
+                self.unload_model()
+                # A reload queued on _serial_load_lock may land before the hooks run.
+                retired_epoch = self._unload_epoch
+        if metal_poison is not None:
+            # Outside every backend lock (gpu_arbiter._lock comes first).
+            for hook in list(_TERMINAL_RETIREMENT_HOOKS):
+                try:
+                    hook(self, retired_epoch)
+                except Exception as exc:  # noqa: BLE001 -- best effort, as a reap
+                    logger.debug("Terminal retirement cleanup failed: %s", exc)
+            return
         try:
             logger.warning(
                 f"llama-server for '{self._model_identifier}' lost its GPU device "
-                "(the graphics driver reset it); restarted it. On Intel Arc with "
-                "Vulkan, GGML_VK_DISABLE_COOPMAT=1 may avoid the reset."
+                "(the graphics driver reset it); stopped it so the next request starts "
+                "a fresh one. On Intel Arc with Vulkan, GGML_VK_DISABLE_COOPMAT=1 may "
+                "avoid the reset."
             )
         except Exception:
             # The logger raises once stdout is closed; recovery must not.
             pass
 
-    def _retire_device_lost_server_soon(self, served_by) -> None:
-        """Retires a server whose log shows a device loss, after a grace for chat requests to retry
-        first."""
+    def _metal_compute_failure_confirmed(self) -> bool:
+        """Whether the child really fails compute: a poisoned Metal backend rejects every
+        graph, so a one-token request comes back 500 "Compute error.". The log marker
+        alone is not proof, since request text can reach the server's error output. An
+        --embedding server is restricted to embeddings, so it is probed on the native
+        /embedding route, which computes under every pooling type but RANK (/v1/embeddings
+        400s on NONE pooling before compute). RANK pools n_cls_out floats while
+        send_embedding reads n_embd_out of them, so a reranker (--rerank or --pooling rank)
+        is probed on /rerank, and one ranking only by the GGUF's default (/rerank refuses
+        it) is not probed at all."""
+        try:
+            embedding = bool(self.is_embedding_gguf)
+        except Exception:
+            embedding = False
+        args = [str(a) for a in (self._extra_args or ())]
+        # Argv only (load_model strips inherited LLAMA_ARG_POOLING); last-wins, as common/arg.cpp
+        # applies them.
+        pooling = None
+        for i, raw in enumerate(args):
+            flag = _flag_name(raw)
+            if flag in ("--embedding", "--embeddings"):
+                embedding = True
+            elif flag in ("--rerank", "--reranking"):
+                embedding = True
+                pooling = "rank"
+            elif flag == "--pooling":
+                _, eq, inline = raw.partition("=")
+                value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+                pooling = value.strip().lower() or pooling
+        if embedding and pooling == "rank":
+            route, body = "/rerank", {"query": " ", "documents": [" "]}
+        elif embedding and pooling is None and getattr(self, "_pooling_type", None) == 4:
+            return False
+        elif embedding:
+            route, body = "/embedding", {"content": " "}
+        else:
+            route, body = "/completion", {"prompt": " ", "n_predict": 1, "stream": False}
+        try:
+            resp = httpx.post(
+                f"{self.base_url}{route}",
+                json = body,
+                headers = self._auth_headers,
+                timeout = 10.0,
+                trust_env = False,
+            )
+            if resp.status_code < 500:
+                return False
+            error = resp.json().get("error", {})
+            message = error.get("message", "") if isinstance(error, dict) else error
+            return (
+                str(message)
+                .rstrip()
+                .endswith(("Compute error.", "failed to process speculative batch"))
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _metal_oom_key(intent):
+        """The load an OOM strike is charged to: the speculative mode is what the fallback
+        changes, so it is left out and the no-drafter reload keeps the strike count. The
+        verified-cache hint is per request (the committed snapshot drops it), so it is left
+        out too, or a hinted explicit reload and the snapshot it commits disagree."""
+        try:
+            return replace(intent, speculative_type = None, verified_gguf = None)
+        except TypeError:
+            return intent
+
+    def _metal_oom_is_terminal(self, intent) -> bool:
+        """Whether ``intent`` already ran out of Metal memory twice (no more replays)."""
+        terminal = getattr(self, "_metal_oom_terminal_key", None)
+        return (
+            terminal is not None and intent is not None and self._metal_oom_key(intent) == terminal
+        )
+
+    @contextlib.contextmanager
+    def _while_still_retired(self, epoch):
+        """Hold _serial_load_lock, which every load takes, and yield whether this backend is
+        still the one a terminal Metal strike unloaded at ``epoch``: nothing spawned since and
+        no other unload. A cleanup acting on a replacement would kill it."""
+        with self._serial_load_lock:
+            yield self._process is None and getattr(self, "_unload_epoch", None) == epoch
+
+    def _after_metal_poisoned_server(self, draft_failed: bool) -> bool:
+        """Choose the recovery after a Metal-poisoned server was retired; True on the terminal
+        second strike."""
+        intent = self._last_load_intent
+        key = self._metal_oom_key(intent) if intent is not None else None
+        prior = getattr(self, "_metal_oom_strikes", None)
+        strikes = prior[1] + 1 if prior is not None and key is not None and prior[0] == key else 1
+        self._metal_oom_strikes = (key, strikes)
+        where = "the speculative draft context" if draft_failed else "a decode"
+        try:
+            name = self._model_identifier
+            if strikes >= 2:
+                # Not replaced: an identical explicit load must spawn a new child.
+                self._healthy = False
+                self._metal_oom_terminal_key = key
+                logger.error(
+                    f"llama-server for '{name}' ran out of Metal memory again in {where} "
+                    "after a restart; not restarting it. Lower the context length or the "
+                    "GPU layers, turn off speculative decoding, or choose a smaller quant, "
+                    "then load the model again."
+                )
+                return True
+            requested_mode = getattr(intent, "speculative_type", None)
+            recovery_extras = list(getattr(intent, "extra_args", None) or ())
+            # A bare --model-draft in the extras survives an Off reload (has_dft()).
+            auto_sidecar = (
+                self._speculative_type in ("draft-dspark", "draft-dflash")
+                and _canonicalize_spec_mode(requested_mode) in (None, "auto")
+                and not _extra_args_set_spec_type(recovery_extras)
+                and not _extra_args_mtp_draft_path(
+                    recovery_extras, env = _child_spec_env(recovery_extras)
+                )
+            )
+            if auto_sidecar and self._maybe_recover_from_mtp_crash(sidecar_oom = True):
+                logger.warning(
+                    f"llama-server for '{name}' ran out of Metal memory in {where} with the "
+                    f"{self._speculative_type.split('-', 1)[1]} drafter and its Metal backend "
+                    "cannot recover; reloading once without speculative decoding."
+                )
+                return False
+            logger.warning(
+                f"llama-server for '{name}' ran out of Metal memory in {where} and its Metal "
+                "backend cannot recover; stopped it so the next request starts a fresh one."
+            )
+        except Exception:
+            pass
+        return strikes >= 2
+
+    def _retire_device_lost_server_soon(
+        self,
+        served_by,
+        metal_poison: Optional[dict] = None,
+    ) -> None:
+        """Retire after a device loss in the server log, for the passthrough routes.
+
+        The grace lets a chat request that hit the same error retire and retry first.
+        """
 
         def _retire():
             time.sleep(_DEVICE_LOST_LOG_GRACE_S)
-            self._retire_device_lost_server(served_by)
+            self._retire_device_lost_server(served_by, metal_poison = metal_poison)
 
         try:
             threading.Thread(target = _retire, daemon = True, name = "llama-device-lost").start()
         except RuntimeError:
-            pass
+            if metal_poison is not None:
+                # No retirement will run: let a later poison line try again.
+                metal_poison["pending"] = False
 
     @contextlib.contextmanager
     def _open_chat_stream_with_respawn_retry(
