@@ -121,7 +121,6 @@ test("warnings and stop requests stay visible while preparing", () => {
     message: warning,
   });
   assert.equal(firstStep.detail, warning);
-  // The service's own phase captions keep the friendlier explanation.
   assert.match(
     diffusionTrainingProgress({
       ...running,
@@ -132,7 +131,6 @@ test("warnings and stop requests stay visible while preparing", () => {
 });
 
 test("a run stopped mid-preparation does not read as starting while its worker exits", () => {
-  // Real snapshot shape: the stop lands before the process has exited.
   const progress = diffusionTrainingProgress({
     active: true,
     status: "stopped",

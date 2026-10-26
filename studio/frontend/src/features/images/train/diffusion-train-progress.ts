@@ -14,7 +14,6 @@ type Status = Pick<
   | "preparation"
 >;
 
-// The service's own phase captions; anything else (a warning, a stop request, a resume) is news worth showing.
 const PHASE_MESSAGE =
   /^(?:Loading base model\.\.\.|Training\.\.\.|Preparing \(.*\)\.\.\.)$/;
 const TERMINAL_STATUSES = new Set(["completed", "stopped", "error"]);
@@ -25,11 +24,9 @@ function backendNote(message: string | null | undefined): string | null {
   return message && !PHASE_MESSAGE.test(message) ? message : null;
 }
 
-/** Preparation and optimization have different units; each bar reports its own stage. */
 export function diffusionTrainingProgress(status: Status | null) {
   const running = status?.active === true || status?.status === "running";
-  // A stopped / failed run reports its terminal status while the worker is still exiting (active stays true for
-  // a moment); that is not a run starting over.
+  // A stopped / failed run can still report active while its worker exits; not a restart.
   const terminal = TERMINAL_STATUSES.has(status?.status ?? "");
   const preparing =
     running &&

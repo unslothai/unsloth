@@ -348,7 +348,6 @@ def test_terminal_events_clear_preparation_counts(event):
 def _dies_while_preparing(*, event_queue, stop_queue, config):
     event_queue.put({"type": "model_load_started", "num_images": 60})
     event_queue.put({"type": "preparing", "stage": "cache_latents", "done": 12, "total": 60})
-    # Returns with no terminal event, like a worker OOM-killed while caching latents.
 
 
 def test_worker_dying_mid_preparation_clears_preparation_counts():
