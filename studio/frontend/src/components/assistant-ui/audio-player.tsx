@@ -6,9 +6,9 @@
 import { Button } from "@/components/ui/button";
 import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon, PauseIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { PauseIcon, PlayIcon } from "lucide-react";
+import { PlayIcon } from "lucide-react";
 import { type FC, useRef, useState } from "react";
 
 interface AudioPlayerProps {
@@ -98,7 +98,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
         onClick={togglePlay}
       >
         {isPlaying ? (
-          <PauseIcon className="size-4" />
+          <HugeiconsIcon icon={PauseIcon} className="size-4" />
         ) : (
           <PlayIcon className="size-4" />
         )}

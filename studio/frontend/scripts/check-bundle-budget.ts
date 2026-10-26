@@ -412,6 +412,33 @@ export const BUDGET = {
   // Skill ZIP import/export (#14181) adds 2,721 B raw / 758 B transfer to the eager Skills dialog
   // and locale strings (6,929,934 -> 6,932,655 B raw, 2,087,782 -> 2,088,540 B transfer against
   // fb104d2b57, one machine and build, Node 22.23.2, unchanged at 99 chunks). Raised by that growth.
+  // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
+  // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
+  // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
+  // Per-account chat preferences (#15025): +338 B raw / +93 B transfer over the line above (Node 22.23.2, 99 chunks).
+  // Live prefill progress, the Generation details setting and the loaded placement readout (#14582): the
+  // stream frame reader, live store slice, reply footer line and timing tooltip rows in the eager chat
+  // chunk, +8,585 B raw / +2,268 B transfer over main (6,932,829 -> 6,941,414 B raw, 2,088,586 ->
+  // 2,090,854 B transfer against 1492952a09, Node 22, 99 chunks). Raised by that on top of #15084 and #15025.
+  // The pinned Run settings footer adds 25 B raw / 49 B transfer to the eager model picker (6,932,829 -> 6,932,854 B
+  // raw, 2,088,616 -> 2,088,665 B transfer against 2c2e04474b, Node 26, unchanged at 99 chunks). Raised by that.
+  // Storage overview in Library and System settings (#15083) adds 360 B raw / 56 B transfer, its strings in the
+  // eager en locale plus 46 B in the settings chunk; the overview itself is a lazy chunk (6,932,829 -> 6,933,189 B
+  // raw, 2,088,616 -> 2,088,672 B transfer against cfc593f0bd, Node 26, unchanged at 99 chunks). Raised by that.
+  // Its "System and Engine" page title adds 11 B raw / 34 B transfer to the eager en locale (6,933,189 -> 6,933,200 B
+  // raw, 2,088,699 -> 2,088,733 B transfer merged with f49cbdf535, Node 26, 99 chunks). Raised by that.
+  // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
+  // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
+  // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
+  // The control heights and API page round (#15232) adds 2,639 B raw / 717 B transfer, mostly its token table,
+  // regenerate and tooltip strings in the eager locales (6,945,181 -> 6,947,820 B raw, 2,095,616 -> 2,096,333 B
+  // transfer against 6eeb690f8d, one machine and build, 105 chunks). Raised by that growth.
+  // The run settings dropdown per model (#15247: saved settings store, dropdown, pencil and Reset to Default)
+  // adds 9.9 KB raw / 3.2 KB transfer inside the eager model config page: 6,787.4 -> 6,797.3 KB raw, 2,047.9 ->
+  // 2,051.1 KB transfer against d4be247222, one machine and build, Node 26, 105 chunks. Raised by that growth.
+  // Settings and the row menu on the loaded model in Recommended (#15249) add 82 B raw / 176 B transfer to the eager
+  // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
+  // build, Node 26, 105 chunks). Raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -450,8 +477,11 @@ export const BUDGET = {
   // plus about 1.4 KB raw / 1.1 KB transfer.
   // Merged with main at a4a6350830: measured 6,790.3 KB raw / 2,048.8 KB transfer (Node 24, 105 chunks), set to that plus
   // about 1.4 KB raw / 1.1 KB transfer.
-  transferBytes: 2_099_100,
-  rawBytes: 6_954_700,
+  // Merged with main at 6c3dcdd4b0 (limits 2,100,497 B transfer / 6,971,572 B raw): measured 6,791.6 KB raw /
+  // 2,050.3 KB transfer (104 chunks). Raw kept at main's limit, which is above it; transfer set to the
+  // measured build plus about 1.2 KB, as main's limit sat below it.
+  transferBytes: 2_100_700,
+  rawBytes: 6_971_572,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

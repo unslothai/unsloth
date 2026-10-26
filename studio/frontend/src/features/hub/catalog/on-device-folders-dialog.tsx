@@ -333,7 +333,7 @@ export function OnDeviceFoldersDialog({
                     (downloadCacheLoaded ? "Unavailable" : "Loading...")
                   }
                   title={downloadCache?.cacheHome}
-                  className="field-soft h-9 min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12"
+                  className="field-soft h-control min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12"
                 />
                 <div className="flex shrink-0 items-center gap-2">
                   <Button
@@ -342,7 +342,6 @@ export function OnDeviceFoldersDialog({
                     size="sm"
                     onClick={() => void changeDownloadLocation()}
                     disabled={!downloadCache?.editable || downloadSaving}
-                    className="h-9 rounded-full px-3 text-ui-12p5"
                   >
                     {downloadSaving ? (
                       <Spinner className="size-3.5" />
@@ -493,7 +492,7 @@ export function OnDeviceFoldersDialog({
                     placeholder="Paste a folder path"
                     spellCheck={false}
                     autoComplete="off"
-                    className="field-soft h-9 min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12 placeholder:font-sans"
+                    className="field-soft h-control min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12 placeholder:font-sans"
                   />
                   <div className="flex shrink-0 items-center gap-2">
                     <Button
@@ -502,7 +501,6 @@ export function OnDeviceFoldersDialog({
                       size="sm"
                       onClick={() => void browseLocations()}
                       disabled={pending !== null}
-                      className="h-9 rounded-full px-3 text-ui-12p5"
                     >
                       <HugeiconsIcon
                         icon={FolderSearchIcon}
@@ -516,7 +514,6 @@ export function OnDeviceFoldersDialog({
                       type="submit"
                       size="sm"
                       disabled={!path.trim() || pending !== null}
-                      className="h-9 rounded-full px-3 text-ui-12p5"
                     >
                       {pending === "add" ? (
                         <Spinner className="size-3.5" />

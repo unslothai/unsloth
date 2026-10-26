@@ -11,7 +11,6 @@ import { MascotImg } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
@@ -40,6 +39,8 @@ import {
   setMustChangePassword,
   storeAuthTokens,
 } from "../session";
+import { ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 type AuthMode = "login" | "change-password";
 
@@ -435,9 +436,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 onClick={() => setShowPassword((prev) => !prev)}
               >
                 {showPassword ? (
-                  <EyeOff className="h-4 w-4" />
+                  <HugeiconsIcon icon={ViewOffSlashIcon} className="h-4 w-4" />
                 ) : (
-                  <Eye className="h-4 w-4" />
+                  <HugeiconsIcon icon={ViewIcon} className="h-4 w-4" />
                 )}
               </Button>
             </div>
@@ -471,9 +472,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                     onClick={() => setShowPassword((prev) => !prev)}
                   >
                     {showPassword ? (
-                      <EyeOff className="h-4 w-4" />
+                      <HugeiconsIcon icon={ViewOffSlashIcon} className="h-4 w-4" />
                     ) : (
-                      <Eye className="h-4 w-4" />
+                      <HugeiconsIcon icon={ViewIcon} className="h-4 w-4" />
                     )}
                   </Button>
                 </div>
@@ -508,9 +509,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                   onClick={() => setShowNewPassword((prev) => !prev)}
                 >
                   {showNewPassword ? (
-                    <EyeOff className="h-4 w-4" />
+                    <HugeiconsIcon icon={ViewOffSlashIcon} className="h-4 w-4" />
                   ) : (
-                    <Eye className="h-4 w-4" />
+                    <HugeiconsIcon icon={ViewIcon} className="h-4 w-4" />
                   )}
                 </Button>
               </div>
