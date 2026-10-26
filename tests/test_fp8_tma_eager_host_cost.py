@@ -141,7 +141,9 @@ def test_cached_fields_do_not_keep_the_first_tensor_alive():
     gc.collect()
     assert ref() is None
     assert all(
-        k not in fields for fields in F8._FP8_TMA_DESC_FIELDS.values() for k in ("base", "shape", "strides")
+        k not in fields
+        for fields in F8._FP8_TMA_DESC_FIELDS.values()
+        for k in ("base", "shape", "strides")
     )
 
 
