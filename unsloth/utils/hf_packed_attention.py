@@ -729,6 +729,9 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
     entry = _BLOCK_PREP.get(window)
     if (
         entry is not None
+        # Live tensors only: a dead weakref is None, and so is a missing mask.
+        and isinstance(seq_lengths, torch.Tensor)
+        and isinstance(mask, torch.Tensor)
         and entry[0]() is seq_lengths
         and entry[1]() is mask
         and entry[2] == (hidden_states.device, seq_lengths._version, mask._version)
