@@ -1732,9 +1732,9 @@ test("a pick asks the status about its own model and keeps or replaces the other
   assert.equal(USE_CHAT_MODEL_RUNTIME.match(/await readPickStatus\(\)/g)?.length, 2);
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /let keepsOthers =\s*keepModelsLoaded && !forceReload && \(paramsNow\.engine \?\? "auto"\) === "auto";[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(paramsNow\.checkpoint\) && loadedNow\.length > 1;/,
+    /let keepsOthers =\s*keepModelsLoaded && !forceReload && \(paramsNow\.engine \?\? "auto"\) === "auto";[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(modelId\) && loadedNow\.length > 1;/,
   );
-  assert.match(USE_CHAT_MODEL_RUNTIME, /touchesOnlySelected \? \(paramsNow\.checkpoint \?\? undefined\) : undefined,/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /touchesOnlySelected \? modelId : undefined,/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, keepsOthers \|\| touchesOnlySelected\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!keepsOthers && !touchesOnlySelected\) \{\s*requestLocalPromptQueueStop\(\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(currentCheckpoint && !keepsOthers\)/);

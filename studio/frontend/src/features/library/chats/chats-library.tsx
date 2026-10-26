@@ -62,7 +62,6 @@ import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  CheckmarkSquare02Icon,
   Delete02Icon,
   Folder02Icon,
   FolderAddIcon,
@@ -72,6 +71,7 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -1611,7 +1611,7 @@ export function ChatsLibrary({
                     <DropdownMenuItem
                       onSelect={() => setSelection(new Set(shownChats.map((chat) => chat.id)))}
                     >
-                      <HugeiconsIcon icon={CheckmarkSquare02Icon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={CheckmarkCircle02Icon} strokeWidth={1.75} className="size-icon" />
                       {t("settings.data.library.selectAll")}
                     </DropdownMenuItem>
                   )}

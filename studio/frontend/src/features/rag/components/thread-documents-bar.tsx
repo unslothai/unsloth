@@ -13,7 +13,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { PlusIcon, XIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
@@ -21,6 +20,7 @@ import {
   Folder02Icon,
   FolderAttachmentIcon,
   PlusSignIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import {
   AttachmentKindIcon,
@@ -330,7 +330,7 @@ function LinkedFolderCard({
       <ProjectBadge />
       <div
         title={title}
-        className={cn("flex overflow-hidden rounded-lg", CARD_SIZE, CARD_EDGE)}
+        className={cn("flex overflow-hidden rounded-[14px]", CARD_SIZE, CARD_EDGE)}
       >
         <FileCardBody
           name={label}
@@ -540,12 +540,12 @@ function DocumentCard({
       onClick={onRemove}
       aria-label={`Remove ${doc.filename}`}
       className={cn(
-        "absolute flex size-5 items-center justify-center rounded-full bg-foreground text-background opacity-0 shadow-sm transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100",
+        "absolute flex size-5 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-sm ring-1 ring-black/15 dark:bg-black dark:text-white dark:ring-white/20 transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100",
         compact ? "top-1/2 right-1.5 -translate-y-1/2" : "top-1.5 right-1.5",
       )}
     >
       {/* Inline 12px: the font-scaled svg size rules give 11.25px, an odd inset that sits off centre. */}
-      <XIcon className="stroke-[2.5px]" style={{ width: 12, height: 12 }} />
+      <HugeiconsIcon icon={Cancel01Icon} className="stroke-[2.5px]" style={{ width: 12, height: 12 }} />
     </button>
   ) : null;
   const wrapDialog = (trigger: ReactElement) =>
@@ -619,7 +619,7 @@ function DocumentCard({
       <button
         {...buttonProps}
         className={cn(
-          "flex overflow-hidden rounded-lg text-left transition-colors disabled:cursor-default",
+          "flex overflow-hidden rounded-[14px] text-left transition-colors disabled:cursor-default",
           CARD_SIZE,
           CARD_EDGE,
           canOpen && CARD_SURFACE,
@@ -678,11 +678,11 @@ function AddFilesCard({
         disabled={disabled}
         onClick={onClick}
         className={cn(
-          "unsloth-files-add-card flex flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(35%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
+          "unsloth-files-add-card flex flex-col items-center justify-center gap-1.5 rounded-[14px] border border-dashed border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(35%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
           CARD_SIZE,
         )}
       >
-        <PlusIcon className="size-5 stroke-[1.5px]" />
+        <HugeiconsIcon icon={PlusSignIcon} className="size-5 stroke-[1.5px]" />
         Add files
       </button>
     </div>
@@ -773,7 +773,7 @@ function ChatFilesPanel({
     >
       {acceptsDrop ? (
         <div className="unsloth-files-panel-drop-overlay" aria-hidden={true}>
-          <PlusIcon className="size-5" />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-5" />
           Drop to chat with these files
         </div>
       ) : null}
@@ -837,7 +837,7 @@ function ChatFilesPanel({
                 onClick={onClose}
                 aria-label={closeLabel ?? "Close"}
               >
-                <XIcon style={HEADER_ICON} />
+                <HugeiconsIcon icon={Cancel01Icon} style={HEADER_ICON} />
               </button>
             </HeaderTip>
           ) : null}

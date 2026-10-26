@@ -528,6 +528,252 @@ def pin_streamed_block_groups(transformer: Any, logger: Any = None) -> tuple[int
     return pinned, len(blocks)
 
 
+H3_BLOCK_BACKGROUND_PIN_ENV = "UNSLOTH_H3_BACKGROUND_BLOCK_PIN"
+# Groups queued ahead of the swap: keeps 8 copy threads busy while bounding pageable sources held beside pins.
+_H3_PIN_LOOKAHEAD = 2
+
+
+def _host_leaves(tensor: Any) -> list:
+    from .diffusion_pinned_arena import _plain_leaves
+    return [leaf for leaf in _plain_leaves(tensor) if leaf.numel() > 0]
+
+
+def _pin_host_tensor(src: Any) -> Any:
+    """Pinned copy of ``src``; torchao wrapper subclasses are rebuilt from pinned inner tensors like ``PinnedArena.pin``."""
+    import torch
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    from .diffusion_memory import registered_host_copy
+    from .diffusion_pinned_arena import _packable
+
+    if is_traceable_wrapper_subclass(src):
+        names, ctx = src.__tensor_flatten__()
+        inner = {name: _pin_host_tensor(getattr(src, name)) for name in names}
+        return type(src).__tensor_unflatten__(inner, ctx, src.size(), src.stride())
+    if type(src) is torch.Tensor and _packable(src):
+        try:
+            return registered_host_copy(src)
+        except Exception:  # noqa: BLE001 -- registration refused: the allocator's pin for this tensor
+            pass
+    return src.pin_memory()
+
+
+def _reads(tensor: Any, src: Any) -> bool:
+    try:
+        if getattr(tensor, "device", None) is None or tensor.device.type != "cpu":
+            return False
+        mine, theirs = _host_leaves(tensor), _host_leaves(src)
+        return len(mine) == len(theirs) and all(
+            a.data_ptr() == b.data_ptr() for a, b in zip(mine, theirs)
+        )
+    except Exception:  # noqa: BLE001 -- unreadable: leave it, its next offload re-points it
+        return False
+
+
+def _h3_block_pinner_cls() -> Any:
+    from .diffusion_memory import _FAST_PIN_THREADS, _bump_placement_epoch, _GroupPinner
+    from .diffusion_pinned_arena import _repoint
+
+    class _H3BlockPinner(_GroupPinner):
+        """Pins torchao weights too and re-reads the budget per group; refused groups are pinned per onload."""
+
+        def __init__(
+            self,
+            module: Any,
+            groups: list,
+            device: Any,
+            logger: Any = None,
+            admit: Any = None,
+        ):
+            super().__init__(module, groups, device, logger, fast = True)
+            self.admit = admit
+            self.groups_pinned = 0
+            self.stopped_at: Optional[int] = None
+            # (seconds since start, pinned bytes) after each group
+            self.timeline: list = []
+
+        def _unpinned(self, group: Any) -> list:
+            out = []
+            for tensor, src in list(group.cpu_param_dict.items()):
+                if getattr(src, "device", None) is None or src.device.type != "cpu":
+                    continue
+                leaves = _host_leaves(src)
+                if leaves and not all(leaf.is_pinned() for leaf in leaves):
+                    out.append((tensor, src))
+            return out
+
+        def _run(self) -> None:
+            import time
+
+            import torch
+
+            start = time.perf_counter()
+            failed = None
+            pool = None
+            try:
+                if (
+                    getattr(self.device, "type", None) == "cuda"
+                    and getattr(self.device, "index", None) is not None
+                ):
+                    torch.cuda.set_device(self.device)
+                from concurrent.futures import ThreadPoolExecutor
+
+                pool = ThreadPoolExecutor(
+                    max_workers = _FAST_PIN_THREADS,
+                    thread_name_prefix = "unsloth-fast-pin",
+                    initializer = torch.cuda.set_device,
+                    initargs = (torch.cuda.current_device(),),
+                )
+                order = list(self.groups)
+                queued: dict = {}
+                nxt = 0
+                for i, group in enumerate(order):
+                    if self._stop.is_set():
+                        break
+                    while (
+                        nxt < min(i + 1 + _H3_PIN_LOOKAHEAD, len(order)) and self.stopped_at is None
+                    ):
+                        ahead = order[nxt]
+                        if self.admit is not None and not self.admit(ahead):
+                            self.stopped_at = nxt
+                            break
+                        queued[id(ahead)] = [
+                            (tensor, src, pool.submit(_pin_host_tensor, src))
+                            for tensor, src in self._unpinned(ahead)
+                        ]
+                        nxt += 1
+                    if id(group) not in queued:
+                        break
+                    placed = [
+                        (tensor, src, self._fast_result(future, src))
+                        for tensor, src, future in queued.pop(id(group))
+                    ]
+                    cpu = group.cpu_param_dict
+                    for tensor, src, pinned in placed:
+                        if cpu.get(tensor) is src:
+                            cpu[tensor] = pinned
+                            if _reads(tensor, src):
+                                _repoint(tensor, pinned)
+                            self.pinned += sum(leaf.nbytes for leaf in _host_leaves(src))
+                    del placed
+                    self.groups_pinned += 1
+                    self.timeline.append((time.perf_counter() - start, self.pinned))
+                    # Done before the epoch: a capture check that sees the new epoch must also see this group ready.
+                    self._done[id(group)].set()
+                    _bump_placement_epoch()
+            except Exception as exc:  # noqa: BLE001 -- the rest is pinned per onload
+                failed = exc
+            finally:
+                if pool is not None:
+                    pool.shutdown(wait = True, cancel_futures = True)
+                for event in self._done.values():
+                    event.set()
+                if failed is not None:
+                    _bump_placement_epoch()
+            if self.logger is not None:
+                try:
+                    if failed is not None:
+                        self.logger.warning(
+                            "video.h3_block_pin: background pin stopped (%s); the rest pins on each onload",
+                            failed,
+                        )
+                    self.logger.info(
+                        "video.h3_block_pin: %d of %d streamed block groups pinned in place in the background "
+                        "(%.2f GB in %.1f s, onloads waited %.1f s%s)",
+                        self.groups_pinned,
+                        len(self.groups),
+                        self.pinned / 1e9,
+                        time.perf_counter() - start,
+                        self.waited_s,
+                        ", stopped by the pin budget" if self.stopped_at is not None else "",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+    return _H3BlockPinner
+
+
+def defer_streamed_block_pins(
+    pipe: Any,
+    transformer: Any,
+    device: Any,
+    logger: Any = None,
+) -> Any:
+    """``pin_streamed_block_groups`` on Studio's background pinner: the same in-place pin, off the load path.
+
+    Each group's onload waits for its pin, so nothing reads a copy being replaced. Returns the pinner, or None for
+    the up-front pin. ``UNSLOTH_H3_BACKGROUND_BLOCK_PIN=0`` off."""
+    off = ("0", "off", "false", "no")
+    if str(os.environ.get(H3_BLOCK_PIN_ENV, "")).strip().lower() in off:
+        return None
+    if str(os.environ.get(H3_BLOCK_BACKGROUND_PIN_ENV, "")).strip().lower() in off:
+        return None
+    _top, blocks = h3_offload_groups(transformer)
+    lazy = [
+        g
+        for g in blocks
+        if getattr(g, "low_cpu_mem_usage", False)
+        and getattr(g, "stream", None) is not None
+        and not getattr(g, "offload_to_disk_path", None)
+        and isinstance(getattr(g, "cpu_param_dict", None), dict)
+        and not is_resident(g)
+    ]
+    if not blocks or len(lazy) != len(blocks):
+        return None
+    from .diffusion_memory import (
+        _PENDING_PINS_ATTR,
+        _background_pin_enabled,
+        _fast_pin_supported,
+        _pinned_memory_capped,
+        install_group_pin_wait,
+    )
+    from .diffusion_pinned_arena import pin_arena_enabled
+    from .video_minimax_h3_te import h3_te_pin_allowed
+
+    if not pin_arena_enabled() or _pinned_memory_capped():
+        return None
+    if not _background_pin_enabled() or not _fast_pin_supported():
+        return None
+    for group in lazy:
+        cpu = group.cpu_param_dict
+        for tensor in _group_tensors(group):
+            if (
+                getattr(tensor, "device", None) is None
+                or tensor.device.type != "cpu"
+                or tensor not in cpu
+            ):
+                return None
+    if not h3_te_pin_allowed(group_payload_bytes(lazy[0])):
+        return None
+    pending = getattr(pipe, _PENDING_PINS_ATTR, None)
+    if pending is None:
+        pending = []
+        try:
+            setattr(pipe, _PENDING_PINS_ATTR, pending)
+        except Exception:  # noqa: BLE001 -- nowhere to park it: pin up front
+            return None
+    install_group_pin_wait()
+    pinner = _h3_block_pinner_cls()(
+        transformer,
+        lazy,
+        device,
+        logger,
+        admit = lambda g: h3_te_pin_allowed(group_payload_bytes(g)),
+    )
+    # cpu_param_dict already maps each tensor to its pageable host copy; onloads read it until the pin swaps it
+    for group in lazy:
+        group.low_cpu_mem_usage = False
+    pending.append(pinner)
+    pinner.start()
+    if logger is not None:
+        logger.info(
+            "video.h3_block_pin: pinning %d streamed block groups in place in the background (%.2f GB)",
+            len(lazy),
+            sum(group_payload_bytes(g) for g in lazy) / 1e9,
+        )
+    return pinner
+
+
 H3_STREAM_PREFETCH_ENV = "UNSLOTH_H3_STREAM_PREFETCH"
 
 
