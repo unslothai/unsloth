@@ -260,9 +260,22 @@ def _input_grad_must_leave_pool(hidden_states):
                 return True  # a checkpoint (or other Python autograd Function) may recompute first
         if name == "AccumulateGrad" and not fresh:
             return True  # a view / add of a leaf (inputs_embeds = param.view(...)) keeps the pool gradient
-        fresh = fresh or name.startswith(_ALLOCATING_BACKWARD)
-        stack.extend((n, fresh) for n, _ in node.next_functions if n is not None)
+        allocates = name.startswith(_ALLOCATING_BACKWARD)
+        for i, (n, _) in enumerate(node.next_functions):
+            if n is None:
+                continue
+            edge_fresh = fresh or allocates
+            if allocates and i == 0 and name.startswith(_ADDITIVE_BACKWARD):
+                # addmm / baddbmm hand their additive input `grad` itself (beta = 1), unless it was
+                # broadcast (a bias), which the engine sums to its shape in new storage
+                full = 3 if name.startswith("Baddbmm") else 2
+                variable = getattr(n, "variable", None)
+                edge_fresh = fresh or (variable is not None and variable.dim() < full)
+            stack.append((n, edge_fresh))
     return False
+
+
+_ADDITIVE_BACKWARD = ("AddmmBackward", "BaddbmmBackward")
 
 
 # Backward nodes that write their input gradient to new storage (a view, add, clone or cat passes

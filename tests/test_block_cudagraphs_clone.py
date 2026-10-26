@@ -447,7 +447,7 @@ def test_no_pool_copies_outside_checkpointing(monkeypatch, trainable_input):
     assert (x.grad is not None) is trainable_input
 
 
-@pytest.mark.parametrize("through", ["view", "view_add", "cat", "embedding"])
+@pytest.mark.parametrize("through", ["view", "view_add", "cat", "addmm_input", "addmm_bias", "embedding"])
 def test_input_viewing_a_trainable_param_copies_its_gradient(monkeypatch, through):
     """inputs_embeds = param.view(...): the view's backward passes the pool gradient straight to
     AccumulateGrad, so the parameter's first .grad would alias the pool. An embedding lookup writes
@@ -464,12 +464,18 @@ def test_input_viewing_a_trainable_param_copies_its_gradient(monkeypatch, throug
         x = param.view(2, 4, 8)
         if through == "view_add":
             x = x + torch.zeros(2, 4, 8)
+        elif through in ("addmm_input", "addmm_bias"):
+            # addmm's backward passes `grad` itself to its additive input; a broadcast bias is summed
+            a, b = torch.randn(8, 8), torch.randn(8, 8)
+            if through == "addmm_bias":
+                param = torch.nn.Parameter(torch.randn(8))
+            x = torch.addmm(param, a, b).view(2, 4, 8)
         elif through == "cat":
             # cat's backward hands each input a narrowed view of the incoming gradient
             param = torch.nn.Parameter(torch.randn(4, 8))
             x = torch.cat([param.view(1, 4, 8), torch.zeros(1, 4, 8)], dim = 0)
     layer(x).sum().backward()
-    assert seen["grad"] == (0 if through == "embedding" else 1), seen
+    assert seen["grad"] == (0 if through in ("embedding", "addmm_bias") else 1), seen
     assert param.grad is not None
 
 
