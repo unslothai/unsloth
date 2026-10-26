@@ -9006,6 +9006,7 @@ def _nvfp4_qat_linear_op():
         _addmm_nvfp4_dispatch,
         per_tensor_amax_to_scale,
     )
+    from torchao.prototype.mx_formats.utils import hp_data_dims_to_swizzled_scale_dims_nvfp4
 
     def quantize(t, per_tensor, swizzled):
         scale = per_tensor_amax_to_scale(torch.max(torch.abs(t))) if per_tensor else None
@@ -9020,47 +9021,52 @@ def _nvfp4_qat_linear_op():
     name = "unsloth::nvfp4_qat_linear"
     forward_schema = (
         "(Tensor x, Tensor weight, Tensor? bias, bool act_per_tensor, bool w_per_tensor, "
-        "bool w_swizzled, bool w_triton, ScalarType? mm_dtype) -> (Tensor, Tensor, Tensor, Tensor)"
+        "bool w_swizzled, bool w_triton, ScalarType? mm_dtype) "
+        "-> (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)"
     )
     backward_schema = (
-        "(Tensor grad, Tensor x_qdata, Tensor x_scale, Tensor x_per_tensor_scale, Tensor weight, "
-        "ScalarType x_dtype, bool act_per_tensor, bool w_per_tensor, bool w_swizzled, "
-        "ScalarType? mm_dtype) -> (Tensor, Tensor)"
+        "(Tensor grad, Tensor x_qdata, Tensor x_scale, Tensor x_per_tensor_scale, Tensor w_qdata, "
+        "Tensor w_scale, Tensor w_per_tensor_scale, ScalarType x_dtype, ScalarType w_dtype, "
+        "bool act_per_tensor, bool w_per_tensor, bool w_swizzled, ScalarType? mm_dtype) -> (Tensor, Tensor)"
     )
+
+    def per_tensor(t, like):
+        scale = t.per_tensor_scale
+        return like.new_ones((), dtype = torch.float32) if scale is None else scale.float()
 
     @torch.library.custom_op(name, mutates_args = (), schema = forward_schema)
     def forward(x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype):
         # Activations: torchao's QAT config always uses unswizzled scales and the plain quantizer.
         x_q = quantize(x, act_per_tensor, False)
-        out = _addmm_nvfp4_dispatch(
-            x_q, quantize_weight(weight, w_per_tensor, w_swizzled, w_triton).t(), None, bias
+        w_q = quantize_weight(weight, w_per_tensor, w_swizzled, w_triton)
+        out = _addmm_nvfp4_dispatch(x_q, w_q.t(), None, bias)
+        if out.dtype != x.dtype:  # older torchao adds a float32 bias without casting; the fake impl says x.dtype
+            out = out.to(x.dtype)
+        # Save the quantized weight as torchao does: no requantization in the backward.
+        return (
+            out, x_q.qdata, x_q.scale, per_tensor(x_q, x),
+            w_q.qdata, w_q.scale, per_tensor(w_q, x),
         )
-        scale = x_q.per_tensor_scale
-        scale = x.new_ones((), dtype = torch.float32) if scale is None else scale.float()
-        return out, x_q.qdata, x_q.scale, scale
 
     @forward.register_fake
     def _(x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype):
         M, K = x.shape
+        N = weight.shape[0]
+        w_scale = hp_data_dims_to_swizzled_scale_dims_nvfp4(N, K) if w_swizzled else (N, K // 16)
         return (
-            x.new_empty((M, weight.shape[0])),
+            x.new_empty((M, N)),
             x.new_empty((M, K // 2), dtype = torch.uint8),
             x.new_empty((M, K // 16), dtype = torch.float8_e4m3fn),
+            x.new_empty((), dtype = torch.float32),
+            x.new_empty((N, K // 2), dtype = torch.uint8),
+            x.new_empty(w_scale, dtype = torch.float8_e4m3fn),
             x.new_empty((), dtype = torch.float32),
         )
 
     @torch.library.custom_op(name + "_backward", mutates_args = (), schema = backward_schema)
     def backward_op(
-        grad,
-        x_qdata,
-        x_scale,
-        x_per_tensor_scale,
-        weight,
-        x_dtype,
-        act_per_tensor,
-        w_per_tensor,
-        w_swizzled,
-        mm_dtype,
+        grad, x_qdata, x_scale, x_per_tensor_scale, w_qdata, w_scale, w_per_tensor_scale, x_dtype,
+        w_dtype, act_per_tensor, w_per_tensor, w_swizzled, mm_dtype,
     ):
         x_q = NVFP4Tensor(
             x_qdata,
@@ -9070,42 +9076,36 @@ def _nvfp4_qat_linear_op():
             per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
         )
         x_dq = x_q.dequantize(x_dtype)
-        w_dq = quantize_weight(weight, w_per_tensor, w_swizzled, False).dequantize(weight.dtype)
-        if (
-            mm_dtype is not None
-        ):  # torchao's backward runs under the forward's autocast (custom_bwd)
+        # Positional: the swizzle flag is `_is_swizzled_scales` in torchao 0.15, `is_swizzled_scales` later.
+        w_q = NVFP4Tensor(
+            w_qdata, w_scale, 16, w_dtype, w_per_tensor_scale if w_per_tensor else None, None, w_swizzled
+        )
+        w_dq = w_q.dequantize(w_dtype)
+        if mm_dtype is not None:  # torchao's backward runs under the forward's autocast (custom_bwd)
             grad, x_dq, w_dq = grad.to(mm_dtype), x_dq.to(mm_dtype), w_dq.to(mm_dtype)
         return torch.mm(grad, w_dq), torch.mm(grad.t(), x_dq)
 
     @backward_op.register_fake
     def _(
-        grad,
-        x_qdata,
-        x_scale,
-        x_per_tensor_scale,
-        weight,
-        x_dtype,
-        act_per_tensor,
-        w_per_tensor,
-        w_swizzled,
-        mm_dtype,
+        grad, x_qdata, x_scale, x_per_tensor_scale, w_qdata, w_scale, w_per_tensor_scale, x_dtype,
+        w_dtype, act_per_tensor, w_per_tensor, w_swizzled, mm_dtype,
     ):
         dtype = grad.dtype if mm_dtype is None else mm_dtype
+        N, K = w_qdata.shape[0], w_qdata.shape[1] * 2
         return (
-            grad.new_empty((grad.shape[0], weight.shape[1]), dtype = dtype),
-            grad.new_empty(weight.shape, dtype = dtype),
+            grad.new_empty((grad.shape[0], K), dtype = dtype),
+            grad.new_empty((N, K), dtype = dtype),
         )
 
     def setup_context(ctx, inputs, output):
         x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, _, mm_dtype = inputs
-        _, x_qdata, x_scale, x_per_tensor_scale = output
-        ctx.save_for_backward(x_qdata, x_scale, x_per_tensor_scale, weight)
-        ctx.mark_non_differentiable(x_qdata, x_scale, x_per_tensor_scale)
-        ctx.args = (x.dtype, act_per_tensor, w_per_tensor, w_swizzled, mm_dtype)
+        saved = output[1:]
+        ctx.save_for_backward(*saved)
+        ctx.mark_non_differentiable(*saved)
+        ctx.args = (x.dtype, weight.dtype, act_per_tensor, w_per_tensor, w_swizzled, mm_dtype)
 
     def backward(ctx, grad, *_):
-        x_qdata, x_scale, x_per_tensor_scale, weight = ctx.saved_tensors
-        grad_x, grad_w = backward_op(grad, x_qdata, x_scale, x_per_tensor_scale, weight, *ctx.args)
+        grad_x, grad_w = backward_op(grad, *ctx.saved_tensors, *ctx.args)
         grad_bias = grad.sum(0) if ctx.needs_input_grad[2] else None
         return grad_x, grad_w, grad_bias, None, None, None, None, None
 
