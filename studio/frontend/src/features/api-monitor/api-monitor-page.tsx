@@ -48,7 +48,6 @@ import {
   Cancel01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
-  Copy01Icon,
   Delete02Icon,
   FileSearchIcon,
   FlashIcon,
@@ -59,6 +58,7 @@ import {
   Settings02Icon,
   Timer01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";

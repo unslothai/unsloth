@@ -30,7 +30,6 @@ import { toast } from "@/lib/toast";
 import {
   ArrowUpRight01Icon,
   BubbleChatAddIcon,
-  Copy01Icon,
   Download01Icon,
   File01Icon,
   FolderOpenIcon,
@@ -38,6 +37,7 @@ import {
   Link01Icon,
   LinkSquare02Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { sandboxRoutePrefix } from "./sandbox-files";

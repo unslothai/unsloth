@@ -34,12 +34,13 @@ import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
   BotIcon,
-  Copy01Icon,
   Image01Icon,
   InformationCircleIcon,
+  McpServerIcon,
   SourceCodeIcon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -589,6 +590,7 @@ export function UsageExamples({
   // A manual pick is kept only until the model's GGUF-ness changes under it.
   const clickedUnderGgufRef = useRef<boolean | null>(null);
   const agentsRef = useRef<HTMLDivElement | null>(null);
+  const mcpRef = useRef<HTMLDivElement | null>(null);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   // server_url is the bind address, which an SSH forward or reverse proxy does not expose.
   const base =
@@ -862,6 +864,19 @@ export function UsageExamples({
                 if (agentsRef.current) scrollIntoPane(agentsRef.current);
               },
             },
+            // MCP access rides in agentsExtra, which only the owner gets.
+            ...(agentsExtra
+              ? [
+                  {
+                    key: "mcp",
+                    icon: McpServerIcon,
+                    label: "MCP",
+                    go: () => {
+                      if (mcpRef.current) scrollIntoPane(mcpRef.current);
+                    },
+                  },
+                ]
+              : []),
             {
               key: "media",
               icon: Image01Icon,
@@ -966,16 +981,6 @@ export function UsageExamples({
           </button>
         </div>
       ) : null}
-      <ExampleToggle
-        label={t("settings.apiKeys.exampleRequest")}
-        variant="toggle"
-        value={variant}
-        options={VARIANTS.map((option) => ({
-          id: option.id,
-          label: t(option.labelKey),
-        }))}
-        onChange={(next) => pickExample(exampleType(language, next))}
-      />
       {model ? null : (
         <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.usageNoModel")}
@@ -986,6 +991,17 @@ export function UsageExamples({
         language={shikiLang}
         label={t("settings.apiKeys.usageExamples")}
         redactFromReload={Boolean(apiKey)}
+        topRow={
+          <ExampleToggle
+            label={t("settings.apiKeys.exampleRequest")}
+            value={variant}
+            options={VARIANTS.map((option) => ({
+              id: option.id,
+              label: t(option.labelKey),
+            }))}
+            onChange={(next) => pickExample(exampleType(language, next))}
+          />
+        }
         pills={
           <ExampleToggle
             label={t("settings.apiKeys.exampleLanguage")}
@@ -1109,7 +1125,7 @@ export function UsageExamples({
             {t("settings.agents.vscodeNote")}
           </p>
         )}
-        {agentsExtra}
+        {agentsExtra ? <div ref={mcpRef}>{agentsExtra}</div> : null}
       </div>
     </section>
   );

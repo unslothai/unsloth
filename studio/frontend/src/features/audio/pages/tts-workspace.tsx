@@ -25,11 +25,11 @@ import { PillTabs } from "@/features/model-picker/components/model-selector/pill
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Copy01Icon,
   DiceFaces03Icon,
   FloppyDiskIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { StopIcon } from "@/lib/media-control-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";

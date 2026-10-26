@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
+import { useIsAccountOwner } from "@/features/auth";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { Image01Icon } from "@hugeicons/core-free-icons";
@@ -16,6 +17,7 @@ import {
   subscribeOpenAIAutoSwitchSettings,
 } from "../api/openai-auto-switch";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { MediaAutoSwitchRow } from "./model-auto-switch-section";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
   ExampleCodeBox,
@@ -151,6 +153,7 @@ export function MediaApiExamples({
     if (stored) setStoredLang(stored);
   };
 
+  const isOwner = useIsAccountOwner();
   return (
     <section
       ref={sectionRef}
@@ -166,6 +169,12 @@ export function MediaApiExamples({
           {t("settings.apiKeys.mediaApi.description")}
         </p>
       </div>
+      {/* The same owner-only setting as under Model auto-switch, where an API caller looks for it. */}
+      {isOwner ? (
+        <div className="-my-3">
+          <MediaAutoSwitchRow />
+        </div>
+      ) : null}
       <ExampleToggle
         label={t("settings.apiKeys.exampleKind")}
         variant="toggle"

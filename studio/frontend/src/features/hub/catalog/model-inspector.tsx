@@ -26,7 +26,6 @@ import { cn, formatCompact } from "@/lib/utils";
 import {
   Calendar03Icon,
   CalendarAdd01Icon,
-  Copy01Icon,
   CpuIcon,
   CubeIcon,
   Database02Icon,
@@ -40,6 +39,7 @@ import {
   PackageIcon,
   LinkSquare02Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";

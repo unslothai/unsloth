@@ -4096,13 +4096,15 @@ export function ModelConfigPage({
       setPinnedRunSettings(configId, target.ggufVariant, null);
       return;
     }
-    if (selectedSet === null || !setPinnedRunSettings(configId, target.ggufVariant, selectedSet)) {
+    // An edited Default is saved as its custom setting first, as Save would.
+    const name = selectedSet ?? customName;
+    if (name === null || !setPinnedRunSettings(configId, target.ggufVariant, name)) {
       return;
     }
-    const message = `"${selectedSet}" now loads every time.`;
+    const message = `"${name}" now loads every time.`;
     // Edits go into the set first; either way it becomes what loads, as a pick would make it.
-    if (setUnsaved) {
-      if (!handleSave(selectedSet, message, selectedSet)) {
+    if (selectedSet === null || setUnsaved) {
+      if (!handleSave(name, message, name)) {
         setPinnedRunSettings(configId, target.ggufVariant, pinnedSet);
       }
       return;
@@ -4503,7 +4505,7 @@ export function ModelConfigPage({
             checked={selectedSet !== null && selectedSet === pinnedSet}
             disabled={
               naming !== null ||
-              selectedSet === null ||
+              (selectedSet === null && customName === null) ||
               sharedVariantUnresolved ||
               extraArgsHydrating ||
               budgetSettling
@@ -4513,8 +4515,8 @@ export function ModelConfigPage({
           <label
             htmlFor={alwaysLoadId}
             title={
-              selectedSet === null
-                ? "Pick or save a setting to always load it"
+              selectedSet === null && customName === null
+                ? "Change a setting or pick a saved one to always load it"
                 : "Every load of this model uses these settings, even after you load it once with others"
             }
             className="shrink-0 cursor-pointer select-none text-ui-12 text-muted-foreground peer-disabled:cursor-default peer-disabled:opacity-60"

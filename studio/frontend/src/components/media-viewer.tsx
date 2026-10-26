@@ -6,13 +6,13 @@ import {
   ArrowRight02Icon,
   ArrowTurnBackwardIcon,
   Cancel01Icon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
   Image02Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { type KeyboardEventHandler, type ReactNode, useRef, useState } from "react";
 

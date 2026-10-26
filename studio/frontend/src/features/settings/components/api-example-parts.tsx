@@ -16,7 +16,7 @@ import type { TranslationKey } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -237,6 +237,7 @@ export function ExampleCodeBox({
   label,
   redactFromReload,
   pills,
+  topRow = null,
   os,
   onOsChange,
   fitContent = false,
@@ -246,6 +247,8 @@ export function ExampleCodeBox({
   label: string;
   redactFromReload: boolean;
   pills: ReactNode;
+  /** A row above the language pills, inside the box (e.g. which example). */
+  topRow?: ReactNode;
   os: ExampleOs;
   onOsChange: (os: ExampleOs) => void;
   /** Show the whole example up to most of the viewport instead of starting eight lines tall. */
@@ -291,6 +294,11 @@ export function ExampleCodeBox({
   return (
     <div className="relative min-w-0 overflow-hidden rounded-xl border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
       {/* Square scroller: this overflow-hidden rounds its scrollbars off at the corners. */}
+      {topRow ? (
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/60 px-2 py-1.5">
+          {topRow}
+        </div>
+      ) : null}
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-2 pt-1.5">
         {pills}
         <div className="ml-auto">

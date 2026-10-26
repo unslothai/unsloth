@@ -471,7 +471,7 @@ test("while a set is pinned, picking or loading another uses it once", () => {
   // Ticking the box pins what is shown and makes it what loads, saving its edits first.
   assert.match(
     page,
-    /const setAlwaysLoad = [\s\S]*?setPinnedRunSettings\(configId, target\.ggufVariant, selectedSet\)[\s\S]*?if \(setUnsaved\) \{\s*if \(!handleSave\(selectedSet, message, selectedSet\)\)[\s\S]*?pickSet\(selectedSet, selectedSet\);/,
+    /const setAlwaysLoad = [\s\S]*?const name = selectedSet \?\? customName;[\s\S]*?setPinnedRunSettings\(configId, target\.ggufVariant, name\)[\s\S]*?if \(selectedSet === null \|\| setUnsaved\) \{\s*if \(!handleSave\(name, message, name\)\)[\s\S]*?pickSet\(selectedSet, selectedSet\);/,
   );
   assert.match(page, /Always load with these settings/);
   // The box and the status share the one row under the dropdown.

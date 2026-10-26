@@ -81,14 +81,15 @@ test("every API example section has a platform toggle that follows the user's ma
   );
 });
 
-test("Request and Image or video are toggles above the code box; Audio keeps its grouped Example dropdown", () => {
+test("Request is a row inside the code box, Image or video a toggle above it; Audio keeps its grouped Example dropdown", () => {
   const usage = readSrc("features/settings/components/usage-examples.tsx");
   const media = readSrc("features/settings/components/media-api-examples.tsx");
   const audio = readSrc("features/settings/components/audio-api-examples.tsx");
-  for (const [src, key] of [
-    [usage, "exampleRequest"],
-    [media, "exampleKind"],
-  ]) {
+  assert.match(
+    usage,
+    /topRow=\{\s*<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleRequest"\)\}/,
+  );
+  for (const [src, key] of [[media, "exampleKind"]]) {
     const toggle = src.search(
       new RegExp(
         `<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.${key}"\\)\\}\\s*variant="toggle"`,
