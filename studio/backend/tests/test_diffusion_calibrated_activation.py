@@ -629,7 +629,7 @@ def test_sdxl_measured_activation_only_ever_adds_the_resident_tier():
 
 @pytest.mark.parametrize("width, height", [(1024, 1024), (1152, 896), (768, 768)])
 def test_sdxl_controlnet_still_runs_after_the_t4_resident_promotion(monkeypatch, width, height):
-    """Resident SDXL on a T4 must not refuse the ControlNet requests whole-module offload ran (a U-Net adds no tokens)."""
+    """Resident SDXL on a T4 must not refuse ControlNet requests that whole-module offload ran."""
     monkeypatch.setattr(dm, "_vram_budget_fraction", lambda: 0.97)
     hint = "sdxl stabilityai/stable-diffusion-xl-base-1.0"
     flat, plan = _t4_plan(None), _t4_plan(calibrated_image_activation("sdxl"))
@@ -651,7 +651,6 @@ def test_sdxl_controlnet_still_runs_after_the_t4_resident_promotion(monkeypatch,
 
 
 def test_controlnet_surcharge_still_applies_to_transformer_families_named_like_sdxl():
-    """Only a hint whose family is the U-Net drops the surcharge; a transformer family mentioning sdxl keeps it."""
     assert dm._resident_only_hint("sdxl stabilityai/stable-diffusion-xl-base-1.0")
     assert not dm._resident_only_hint("flux.1 someone/flux-sdxl-style")
     assert not dm._resident_only_hint("")

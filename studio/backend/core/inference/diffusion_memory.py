@@ -1639,7 +1639,6 @@ _RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
 
 
 def _resident_only_hint(family: Optional[str]) -> bool:
-    """Whether a variant hint (family name first, see ``_image_variant_hint``) names a resident-only U-Net family."""
     parts = str(family or "").split()
     return bool(parts) and parts[0] in _RESIDENT_ONLY_CALIBRATED
 
@@ -7635,7 +7634,7 @@ def image_activation_verdict(
         if budget is None:
             return ImageActivationVerdict(ACTIVATION_RUN)
         # Calibrated tiers measured only the unconditioned denoise; a ControlNet counts as one output-sized image.
-        # Not on a U-Net: its ControlNet adds no tokens, only an encoder pass that stays under the measured decode peak.
+        # Not on a U-Net: its ControlNet adds no tokens and stays under the measured decode peak.
         if controlnet and _resident_only_hint(family):
             controlnet = False
         input_pixels = max(0, int(condition_pixels or 0))
