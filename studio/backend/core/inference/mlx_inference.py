@@ -1228,6 +1228,12 @@ class VLMPromptCacheSession:
         self._keeps_rows = None
         self._pending = []
 
+    @property
+    def resumed_tokens(self):
+        """Positions the first forward resumed from: unlike ``reused_tokens`` (the offer), 0 when
+        mlx-vlm declined it, and without media rows produced here."""
+        return max((self._forward.record.resume_offset or 0) - self.produced_tokens, 0)
+
     def __enter__(self):
         self._forward.__enter__()
         self._patched_hosts = [
@@ -2160,6 +2166,21 @@ def _iter_vlm_responses(responses):
         if close is not None:
             with _vlm_generation_context():
                 close()
+
+
+def _vlm_prefill_scope(live, session):
+    """Where mlx-vlm's prefill chunks are reported to ``live``, when unsloth-zoo can read them."""
+    if live is None:
+        return nullcontext()
+    try:
+        from unsloth_zoo.mlx.generate import vlm_prefill_progress
+    except ImportError:
+        return nullcontext()
+    return vlm_prefill_progress(
+        lambda processed, total: live.prefill(
+            processed, total, cached = None if session is None else session.resumed_tokens
+        )
+    )
 
 
 @contextmanager
@@ -3151,12 +3172,15 @@ class _LiveProgress:
         processed,
         total,
         started = None,
+        cached = None,
     ):
-        """``started``: when the first reported chunk began, for a runtime that reports a chunk
-        only after running it."""
+        """``started``: when the first chunk began, else the rate is timed from the first report.
+        ``cached``: the reused prefix, where it is known only once the prefill has started."""
         now = time.perf_counter()
+        if cached is not None:
+            self._cached = int(cached)
         if self._started is None:
-            self._started = now if started is None else started
+            self._started = (now, int(processed)) if started is None else (started, 0)
         sample = {
             "prompt_progress": {
                 "total": self._cached + int(total),
@@ -3164,10 +3188,11 @@ class _LiveProgress:
                 "cache": self._cached,
             }
         }
-        elapsed = now - self._started
+        started_at, from_processed = self._started
+        elapsed = now - started_at
         sample["prompt_progress"]["time_ms"] = elapsed * 1000.0
-        if processed and elapsed > 0:
-            sample["prompt_per_second"] = processed / elapsed
+        if processed > from_processed and elapsed > 0:
+            sample["prompt_per_second"] = (processed - from_processed) / elapsed
         self._send(sample)
 
     def decode(self, tokens):
@@ -5804,6 +5829,7 @@ class _VisionBatchRow:
         "cancelled",
         "drafts",
         "failure",
+        "live",
     )
 
     def __init__(
@@ -5825,6 +5851,7 @@ class _VisionBatchRow:
         self.cancelled = False
         self.drafts = None
         self.failure = None
+        self.live = None
 
 
 def _vision_batch_reports_ids(engine, speculative):
@@ -5951,7 +5978,14 @@ class _VisionBatchSession:
             backend._release_vlm_snapshots()
         elif state is None:
             backend._release_held_vlm_snapshots()
-        resume = {} if state is None else {"prompt_cache_state": state}
+        options = {} if state is None else {"prompt_cache_state": state}
+        # Only a reply that asked: a reporting row waits for each of its chunks to run.
+        if (
+            request.get("generation_progress")
+            and self._speculative is None
+            and "prompt_progress" in getattr(GenerationRequest, "__dataclass_fields__", ())
+        ):
+            options["prompt_progress"] = functools.partial(self._prefilled, handle)
         clips = _batch_clips(self._held, [plan], backend._processor)[0] if plan.videos else {}
         admitted_at = time.perf_counter()
         try:
@@ -5963,7 +5997,7 @@ class _VisionBatchSession:
                     sampling = SamplingParams(**plan.sampling),
                     logits_processors = plan.processors and _failing_alone(row, plan.processors),
                     **clips,
-                    **resume,
+                    **options,
                 )
             )
         except BatchRowRefused as refusal:
@@ -5986,6 +6020,17 @@ class _VisionBatchSession:
         """Alone means no other row decodes beside handle; leaving rows count until they end."""
         rows, leaving = self._rows, self._leaving
         return lambda: all(other == handle for other in (*rows, *leaving))
+
+    def watch_progress(self, handle, sink):
+        """Send an admitted reply's live progress to ``sink``, as ``generation_progress_sink``."""
+        row = self._rows.get(handle)
+        if row is not None:
+            row.live = _LiveProgress(sink)
+
+    def _prefilled(self, handle, processed, total, cached):
+        row = self._rows.get(handle)
+        if row is not None and row.live is not None:
+            row.live.prefill(processed, total, cached = cached)
 
     def step(self, waiting = None):
         now, stopped = None, {}
@@ -6013,6 +6058,8 @@ class _VisionBatchSession:
                 now = time.perf_counter()
             if row.ready_at is None:
                 row.ready_at = now
+            if row.live is not None:
+                row.live.decode(event.generated_tokens)
             streamed = row.plan.streamed
             text = (
                 event.delta
@@ -9359,6 +9406,7 @@ class MLXInferenceBackend:
                     _vlm_prepared_inputs(self._model, self._processor, prompt, images)
                 )
             )
+        live = self._live_progress()
 
         def _stream_vlm_snapshots():
             nonlocal stopped
@@ -9418,17 +9466,20 @@ class MLXInferenceBackend:
                     # Emit prefilled <think> first; inside the adapter so unsupported requests raise before any output.
                     if prefill:
                         yield prefill
-                    with closing(
-                        _iter_vlm_responses(
-                            vlm_stream(
-                                self._model,
-                                self._processor,
-                                prompt,
-                                images,
-                                **vlm_kwargs,
+                    with (
+                        closing(
+                            _iter_vlm_responses(
+                                vlm_stream(
+                                    self._model,
+                                    self._processor,
+                                    prompt,
+                                    images,
+                                    **vlm_kwargs,
+                                )
                             )
-                        )
-                    ) as responses:
+                        ) as responses,
+                        _vlm_prefill_scope(live, session),
+                    ):
                         raw_ids = [] if prompt_ids is not None else None
                         raw_text = (
                             _ReplyText(
@@ -9444,6 +9495,8 @@ class MLXInferenceBackend:
                                 getattr(response, "token", None) if raw_ids is not None else None
                             )
                             filled = getattr(response, "generation_tokens", None)
+                            if live is not None and filled is not None:
+                                live.decode(int(filled))
                             if raw_id is not None and (
                                 filled is None or int(filled) == len(raw_ids) + 1
                             ):

@@ -219,6 +219,8 @@ def test_only_a_single_reply_that_asked_has_its_progress_sent():
     batch.admit(_cmd("r2"), None)
     batch.admit(_cmd("r3", generation_progress = True, rows = [{"seed": 1}, {"seed": 2}]), None)
     assert list(batch.session.watched) == [("r1", None)]
+    asked = [h for h, request in batch.session.admitted if request.get("generation_progress")]
+    assert asked == [("r1", None)]
     batch.session.watched[("r1", None)]({"predicted_n": 2})
     sent = resp.sent[-1]
     assert (sent["type"], sent["request_id"]) == ("generation_progress", "r1")

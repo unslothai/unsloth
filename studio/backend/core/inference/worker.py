@@ -1684,6 +1684,10 @@ class _ResidentBatch:
         rows = cmd.get("rows") or []
         shared = _generation_kwargs(self.backend, cmd, cancel_event)
         shared.pop("cancel_event", None)
+        watched = bool(cmd.get("generation_progress")) and not rows
+        if watched:
+            # A vision row has to ask for its prefill chunks as it is admitted.
+            shared["generation_progress"] = True
         requests = [{**shared, **row} for row in rows] if rows else [shared]
 
         if self.session is None:
@@ -1719,7 +1723,7 @@ class _ResidentBatch:
                 self._fail_all(exc)
             raise
         watch = getattr(self.session, "watch_progress", None)
-        if cmd.get("generation_progress") and not rows and callable(watch):
+        if watched and callable(watch):
             watch(handles[0], _progress_sender(self.resp_queue, request_id))
         logger.info(
             "Admitted request_id=%s (%d replies) to a batch of %d",

@@ -3895,6 +3895,31 @@ def test_a_row_whose_own_processor_fails_leaves_and_its_neighbour_decodes_on(mon
         )
 
 
+def test_a_single_vision_reply_reports_mlx_vlm_prefill_chunks_once_they_have_run(monkeypatch):
+    from core.inference import mlx_inference as mi
+
+    clock, scopes, samples = [5.0], [], []
+    monkeypatch.setattr(mi.time, "perf_counter", lambda: clock[0])
+    scope = contextmanager(lambda callback: (yield scopes.append(callback)))
+    monkeypatch.setattr(_batch_engine(monkeypatch), "vlm_prefill_progress", scope, raising = False)
+
+    def run():  # each chunk is reported once it has run
+        for done in (256, 512):
+            clock[0] += 1
+            scopes[-1](done, 1000)
+
+    backend = mi.MLXInferenceBackend()
+    backend.generation_progress_sink = samples.append
+    _drive_vlm_generation(backend, monkeypatch, on_stream = run)
+    assert [s.get("prompt_per_second") for s in samples[:2]] == [None, 256.0]
+    assert samples[1]["prompt_progress"] == {
+        "total": 1000,
+        "processed": 512,
+        "cache": 0,
+        "time_ms": 1000.0,
+    }
+
+
 def test_mlx_text_without_lru_prompt_cache_prefills_the_full_prompt(monkeypatch):
     from core.inference import mlx_inference
 
@@ -9519,7 +9544,8 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     from core.inference import mlx_inference
 
     engine = _batch_engine(monkeypatch)
-    monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
+    request = type("R", (SimpleNamespace,), {"__dataclass_fields__": ("prompt_progress",)})
+    monkeypatch.setattr(engine, "GenerationRequest", request, raising = False)
     monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
     monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
     monkeypatch.setattr(engine, "row_prompt_cache_unavailable_reason", lambda: None, raising = False)
@@ -9549,10 +9575,12 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session._resumes_rows = mlx_inference._row_prompt_cache_gap() is None
     added = []
     session.stream = SimpleNamespace(add = lambda request: added.append(request) or len(added) - 1)
+    monkeypatch.setattr(mlx_inference.time, "perf_counter", lambda: len(added))
 
     session._retires_rows = True
-    session.admit({}, "text")
+    session.admit({"generation_progress": True}, "text")
     assert added[0].prompt_cache_state._store is store and len(store) == 2
+    assert callable(added[0].prompt_progress) and session._rows["text"].admitted_at == 1
     alone = added[0].prompt_cache_state._alone
     assert alone()
     backend._model = SimpleNamespace(config = SimpleNamespace(image_token_id = 9))
@@ -9560,6 +9588,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session.admit({"images": [object()]}, "image")
     assert list(store._entries) == [("m|img", (1,))] and not store._held and not alone()
     assert added[1].prompt_cache_state._store is store
+    assert not hasattr(added[1], "prompt_progress")
     backend._model.config.use_bidirectional_attention = "vision"
     session.admit({"images": [object()]}, "block")
     assert added[2].prompt_cache_state._store is None and len(store) == 0
@@ -9595,10 +9624,11 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     backend._kv_quant = {"kv_bits": 4}
     with pytest.raises(mlx_inference.RowRefused):
         session.admit({}, "unquantized")
-    session._resumes_rows = True
+    session._resumes_rows, session._speculative = True, "draft"
     backend._vlm_prompt_cache_store = lambda: None
-    session.admit({"images": [object()]}, "quantized")
+    session.admit({"images": [object()], "generation_progress": True}, "quantized")
     assert added[5].prompt_cache_state._store is None
+    assert not hasattr(added[5], "prompt_progress")
 
 
 def _batch_engine(monkeypatch):
