@@ -35,13 +35,22 @@ def _qlora(nested):
     model = Tiny()
     dense = model.proj.weight.data.clone()
     q = bnb.nn.Linear4bit(
-        256, 192, bias = False, compute_dtype = torch.bfloat16, compress_statistics = nested, quant_type = "nf4"
+        256,
+        192,
+        bias = False,
+        compute_dtype = torch.bfloat16,
+        compress_statistics = nested,
+        quant_type = "nf4",
     )
-    q.weight = bnb.nn.Params4bit(dense, requires_grad = False, compress_statistics = nested, quant_type = "nf4")
+    q.weight = bnb.nn.Params4bit(
+        dense, requires_grad = False, compress_statistics = nested, quant_type = "nf4"
+    )
     model.proj = q
     model = model.cuda()  # quantizes on the GPU
     torch.manual_seed(1)
-    return get_peft_model(model, LoraConfig(r = 8, lora_alpha = 16, target_modules = ["proj"], init_lora_weights = False))
+    return get_peft_model(
+        model, LoraConfig(r = 8, lora_alpha = 16, target_modules = ["proj"], init_lora_weights = False)
+    )
 
 
 @pytest.mark.parametrize("nested", [True, False])
@@ -60,7 +69,12 @@ def test_cpu_staged_4bit_replica_merges_on_its_gpu(nested, triton_nf4, monkeypat
     real = save.fast_dequantize
     devices = []
 
-    def cuda_only(W, quant_state = None, *args, **kwargs):
+    def cuda_only(
+        W,
+        quant_state = None,
+        *args,
+        **kwargs,
+    ):
         devices.append((W.device.type, quant_state.absmax.device.type))
         assert W.is_cuda and quant_state.absmax.is_cuda, devices[-1]
         return real(W, quant_state, *args, **kwargs)
