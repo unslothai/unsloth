@@ -27,7 +27,7 @@ export function formatCardTime(ts: number, locale: Locale, now: number = Date.no
   if (!Number.isFinite(ts)) return "";
   const then = new Date(ts);
   const today = new Date(now);
-  // Rounded: a day with a daylight-saving change is 23 or 25 hours long.
+  // Rounded: DST days are 23 or 25 hours long.
   const days = Math.round((startOfDay(today) - startOfDay(then)) / DAY_MS);
   if (days === 0) {
     return then.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });

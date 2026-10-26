@@ -23,9 +23,7 @@ type GgufVariantTransfer = Pick<
   "download_size_bytes" | "size_bytes" | "download_remaining_bytes" | "partial"
 >;
 
-/** What starting this variant now would transfer. On a partial that is the
- * remainder the backend measured; everywhere else it is the full size. An
- * unmeasured partial falls back to the total, the costlier of the two. */
+/** On a partial, the measured remainder; unmeasured falls back to the total. */
 export function ggufVariantTransferBytes(variant: GgufVariantTransfer): number {
   const total = ggufVariantDownloadSizeBytes(variant);
   if (!variant.partial) return total;
@@ -33,9 +31,7 @@ export function ggufVariantTransferBytes(variant: GgufVariantTransfer): number {
   return typeof remaining === "number" && remaining >= 0 ? remaining : total;
 }
 
-/** Labelled form of the above. A partial says what is LEFT: the full size there
- * reads as "this downloads all over again", which is only true for a one-file
- * quant. */
+/** A partial says what is left. */
 export function ggufVariantTransferLabel(variant: GgufVariantTransfer): string {
   const label = formatBytes(ggufVariantTransferBytes(variant));
   return variant.partial ? `${label} left` : label;
@@ -122,7 +118,6 @@ export function resolveLocalGgufVariant<T extends { quant: string }>(
     options.activeVariant,
     options.defaultVariant,
   ]) {
-    // Blank candidates must not match a blank variant key.
     if (!candidate?.trim()) {
       continue;
     }

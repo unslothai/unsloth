@@ -76,6 +76,7 @@ from .loader_utils import (
     raise_if_fast_inference_under_fsdp2,
 )
 import os, contextlib, functools, sys
+from .tp_env import tensor_parallel_env_load, tensor_parallel_env_peft
 
 try:
     from huggingface_hub import get_token
@@ -1199,6 +1200,7 @@ class FastLanguageModel(FastLlamaModel):
 
     # Text-diffusion models load through FastModel's slow path; these route them there for the PEFT / mode helpers.
     @staticmethod
+    @tensor_parallel_env_peft
     @functools.wraps(FastLlamaModel.get_peft_model)
     def get_peft_model(model, *args, **kwargs):
         raise_if_unsaved_reap(model)
@@ -1230,6 +1232,7 @@ class FastLanguageModel(FastLlamaModel):
         return get_mtp_head(model, *args, **kwargs)
 
     @staticmethod
+    @tensor_parallel_env_load
     @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
     @_offline_aware_load
@@ -2163,6 +2166,7 @@ class FastModel(FastBaseModel):
         return model
 
     @staticmethod
+    @tensor_parallel_env_peft
     def get_peft_model(model, *args, **kwargs):
         raise_if_unsaved_reap(model)
         # Route text-diffusion models (slow path) to the transformers-only PEFT helper.
@@ -2188,6 +2192,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @tensor_parallel_env_load
     @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
     @_restore_load_scoped_env

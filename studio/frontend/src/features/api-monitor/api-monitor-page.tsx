@@ -5,9 +5,6 @@ import { useAppShellReadySignal } from "@/components/app-readiness";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { apiMonitorTourSteps } from "./tour";
 
-// Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
-// configuration (keys, auto-switch, examples); this page owns observability.
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -468,7 +465,6 @@ function ContextUsageBar({ value }: { value?: number | null }): ReactElement {
         <div
           className={cn(
             "h-full rounded-full transition-[width]",
-            // Near-full context is the usual cause of truncated replies.
             pct >= 90
               ? "bg-red-500"
               : pct >= 75
@@ -503,7 +499,6 @@ const RequestRow = memo(function RequestRow({
     entry.reply_preview ||
     entry.prompt_preview ||
     (entry.status === "running" ? "Waiting for output…" : "No preview");
-  // A lifecycle row has no payload, so it reads as a status line.
   if (isLifecycleEntry(entry)) {
     return (
       <div className="flex w-full min-w-0 flex-col gap-0.5 rounded-md px-3 py-2">
@@ -596,7 +591,6 @@ const RequestRow = memo(function RequestRow({
           ) : null}
         </span>
       </div>
-      {/* A prompt or reply excerpt, same as the expanded payload below it. */}
       <p
         data-reload-snapshot-sensitive
         className={cn(
@@ -747,8 +741,7 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
-  // The detail fetch can describe an older state of a streaming entry, so prefer it
-  // only once it is as fresh as the list row, or the panel rewinds.
+  // Prefer the detail only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&
     detail.status === entry.status &&
@@ -1000,8 +993,7 @@ export function ApiMonitorPage(): ReactElement {
           if (!checkpoint) {
             return null;
           }
-          // Both spellings, since status reports the load path while the store may
-          // hold the advertised repo id.
+          // Both spellings: status reports the load path, the store may hold the repo id.
           return {
             checkpoint,
             aliases: [checkpoint, status.active_model].filter(
@@ -1011,9 +1003,7 @@ export function ApiMonitorPage(): ReactElement {
         },
         unload: (checkpoint) => unloadModel({ model_path: checkpoint }),
       });
-      // As in the chat eject flow, but only when the store holds a model just unloaded: chat
-      // can have an external provider selected while a local model stays resident, and
-      // clearCheckpoint would delete a selection this button never touched.
+      // Only clear when the store holds the model just unloaded: an external provider may be selected.
       const store = useChatRuntimeStore.getState();
       const selected = store.params.checkpoint;
       if (
@@ -1092,8 +1082,7 @@ export function ApiMonitorPage(): ReactElement {
     [modelEntries],
   );
 
-  // Refetch the selected entry while it streams. Keyed on identity and revision, never
-  // on `details`: the fetch rewrites it on success, so depending on it loops.
+  // Keyed on identity and revision, never `details`, which the fetch rewrites (loop).
   const selectedId_ = selected?.id ?? null;
   const selectedUpdatedAt = selected?.updated_at ?? null;
   const selectedIsMissing = selectedId_ != null && details[selectedId_] == null;
@@ -1109,14 +1098,11 @@ export function ApiMonitorPage(): ReactElement {
     if (selectedId_ == null || detailInFlight) {
       return;
     }
-    // `updated_at` advances per poll and settles when terminal; a missing payload
-    // always retries, covering a fetch that failed late.
     const revision = `${selectedId_}@${selectedUpdatedAt ?? ""}`;
     if (!selectedIsMissing && lastFetchedRef.current === revision) {
       return;
     }
-    // A terminal row's revision never advances, so a failed fetch had nothing to re-run
-    // this effect. `loadingDetails` settling is the trigger; the count bounds it.
+    // A terminal row's revision never advances; `loadingDetails` settling re-runs this, bounded by count.
     if (attemptsRef.current.revision !== revision) {
       attemptsRef.current = { revision, count: 0 };
     }
@@ -1124,8 +1110,7 @@ export function ApiMonitorPage(): ReactElement {
       return;
     }
     attemptsRef.current.count += 1;
-    // Only when a fetch started: the guard can refuse, and recording it anyway skips
-    // that revision for good.
+    // Only when a fetch started; recording a refused one skips that revision for good.
     if (requestDetail(selectedId_)) {
       lastFetchedRef.current = revision;
       setRetryTick(0);

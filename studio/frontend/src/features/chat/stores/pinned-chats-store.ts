@@ -4,13 +4,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-// Client-side pin state for chats, keyed by stable chat id. Kept in localStorage, not the chat DB.
-// New pins are prepended so the most recently pinned chat sorts first in the Pinned section.
+// Kept in localStorage, not the chat DB; new pins are prepended so the newest pin sorts first.
 export interface PinnedChatsState {
   pinnedIds: string[];
   togglePin: (id: string) => void;
   unpin: (id: string) => void;
-  /** Pins or unpins a whole selection in one write. */
   setPinned: (ids: string[], pinned: boolean) => void;
 }
 
@@ -36,7 +34,6 @@ export const usePinnedChatsStore = create<PinnedChatsState>()(
               pinnedIds: state.pinnedIds.filter((id) => !dropping.has(id)),
             };
           }
-          // Already pinned chats keep their place; the rest lead, as one pin does.
           const additions = ids.filter((id) => !state.pinnedIds.includes(id));
           if (additions.length === 0) return state;
           return { pinnedIds: [...additions, ...state.pinnedIds] };

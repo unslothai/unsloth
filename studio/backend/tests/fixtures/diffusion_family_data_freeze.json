@@ -369,13 +369,8 @@
   },
   "flux.2-klein": {
    "cudnn_benchmark": false,
-   "filter_reduction_configs": false,
-   "filter_reduction_configs_archs": [
-    [
-     10,
-     0
-    ]
-   ],
+   "filter_reduction_configs": true,
+   "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
   "flux.3-klein": {

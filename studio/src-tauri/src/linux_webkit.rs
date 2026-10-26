@@ -15,19 +15,18 @@ const DEFAULT_WAYLAND_SOCKET: &str = "wayland-0";
 const GDK_BACKEND: &str = "GDK_BACKEND";
 const FORCE_SHARED_MEMORY: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
 const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
-// disable-nvidia-dmabuf.patch's own opt-out, read inside isNVIDIA(). WebKit returns on
-// DISABLE_DMABUF first, so it never gets there unless we honour it ourselves.
+// disable-nvidia-dmabuf.patch's opt-out, read in isNVIDIA(). WebKit returns on DISABLE_DMABUF
+// first, so we must honour it ourselves.
 const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 // Turns accelerated compositing off outright, a level above the transport switches above.
 // Presence alone is an operator override; compositing_disabled_by says which values turn it off.
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
 // Ours, not WebKit's; compositing_setting parses it.
 const DISABLE_COMPOSITING_SETTING: &str = "UNSLOTH_WEBKIT_DISABLE_COMPOSITING";
-// Comma-joined list of the variables we set, so a relaunch tells our own inherited output
-// from an operator's value. Tauri's process::restart does not env_clear. WebKit never reads it.
+// The variables we set, so a relaunch (process::restart keeps env) tells ours from an operator's.
 const APPLIED_WORKAROUND: &str = "UNSLOTH_WEBKIT_RENDERER_WORKAROUND";
 const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
-// both the proprietary and open nvidia modules publish this; nouveau does not and is unaffected
+// Proprietary and open nvidia modules publish this; nouveau does not and is unaffected.
 const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
 
 const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
@@ -44,17 +43,15 @@ const COMPOSITING_FORCED_REASON: &str = "compositing workaround requested by the
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenderingWorkaround {
     ForceSharedMemory,
-    /// Only for a host the probe confirmed is NVIDIA. On a patched library isNVIDIA()
-    /// returns before mode.add(SharedMemory), so FORCE_DMABUF stands that check down and
-    /// lets selection reach FORCE_SHM. Unpatched libraries ignore the variable.
+    /// Only for a confirmed NVIDIA host: FORCE_DMABUF stands down the patched isNVIDIA() check so
+    /// selection reaches FORCE_SHM. Unpatched libraries ignore it.
     ForceSharedMemoryOnNvidia,
     DisableCompositingOnNvidiaX11,
     /// Compositing off on top of the NVIDIA Wayland transport, not instead of it: since
     /// WebKitGTK 2.53 non-composited mode still renders over DMA-BUF (#13875).
     DisableCompositingOnNvidiaWayland,
     DisableDmabuf,
-    /// Not a transport at all. The others choose how buffers reach the compositor; this
-    /// stops WebKit compositing on the GPU at all.
+    /// Not a transport: stops WebKit compositing on the GPU at all.
     DisableCompositing,
 }
 
@@ -75,21 +72,12 @@ impl RenderingWorkaround {
 
 #[derive(Debug, PartialEq, Eq)]
 enum RenderingPlan {
-    /// The workaround to apply, and why, for the startup log.
     Apply(RenderingWorkaround, &'static str),
     PreserveEnvironment,
 }
 
-/// Resolve GDK_BACKEND the way gdk_display_manager_open_display does: g_strsplit on ',',
-/// no trimming, g_str_equal so matching is exact and case sensitive, entries tried in
-/// order, and the first backend whose display opens wins. '*' expands to the built-in
-/// order, which is wayland before x11 on Linux. Membership is not selection: `x11,wayland`
-/// runs on X11 whenever an X display opens, and on NVIDIA that decides between the
-/// X11 compositing fallback and the empty transport set.
-///
-/// A display cannot be opened here, so `wayland_open` is the socket probe below standing in
-/// for GDK's own opener. A named backend that cannot open is not the selection, it is
-/// skipped, so wayland,x11 lands on X11 when no compositor answers.
+/// Resolve GDK_BACKEND as gdk_display_manager_open_display does: exact comma entries in order,
+/// first that opens wins, '*' is wayland then x11. `wayland_open` stands in for GDK's opener.
 fn selected_backend_is_wayland(backends: &OsStr, wayland_open: bool, x11_display: bool) -> bool {
     let mut named_wayland = false;
     for backend in backends.to_string_lossy().split(',') {
@@ -102,9 +90,7 @@ fn selected_backend_is_wayland(backends: &OsStr, wayland_open: bool, x11_display
             _ => continue,
         }
     }
-    // Wayland was asked for and nothing else could open. GTK will fail to start if the
-    // compositor really is absent, so the workaround choice is moot either way; keep the
-    // Wayland one so a socket we cannot see from here is not treated as an X11 session.
+    // Wayland asked and nothing else opened: keep Wayland so an unseen socket is not read as X11.
     named_wayland
 }
 
@@ -112,8 +98,7 @@ fn supports_force_shared_memory((major, minor, _micro): (u32, u32, u32)) -> bool
     (major, minor) >= FORCE_SHARED_MEMORY_MIN_VERSION
 }
 
-/// `forceDMABuf && *forceDMABuf != '0'` from disable-nvidia-dmabuf.patch: first byte
-/// only, so an empty value is a request and `0` is not.
+/// `forceDMABuf && *forceDMABuf != '0'`: first byte only, so an empty value is a request.
 fn force_dmabuf_requested(value: &OsStr) -> bool {
     value.as_encoded_bytes().first() != Some(&b'0')
 }
@@ -143,14 +128,8 @@ fn rendering_plan(
     wayland_socket: bool,
     x11_open: bool,
 ) -> RenderingPlan {
-    // Either renderer variable is an operator override when present, `=0` and an empty
-    // value included, unless the marker says we wrote it. Without that test a launch
-    // reads its own inherited output back as an instruction and the first decision is
-    // pinned for the life of the process tree, even after the display server changes.
-    //
-    // DISABLE_DMABUF=0 is how a host this over-triggers on gets its accelerated path
-    // back: WebKit reads it as unset (`g_strcmp0(v, "0")`), and a patched library's own
-    // GL_VENDOR probe then declines on an iGPU. An empty value is not that request.
+    // Either variable is an operator override when present (even `=0` or empty) unless the marker
+    // says we wrote it. DISABLE_DMABUF=0 is how a host gets its accelerated path back.
     let applied_by_this_app = env(APPLIED_WORKAROUND).unwrap_or_default();
     let ours = |variable: &str| {
         applied_by_this_app
@@ -176,18 +155,16 @@ fn rendering_plan(
     }
     let operator_compositing_off = operator_compositing.is_some();
 
-    // Stands the NVIDIA branch down and nothing else: it answers that patch's question,
-    // not the missing-GLES one below, and that launch cannot render without its fallback.
+    // Stands the NVIDIA branch down only, not the missing-GLES fallback below.
     let force_dmabuf = !ours(FORCE_DMABUF)
         && env(FORCE_DMABUF)
             .as_deref()
             .is_some_and(force_dmabuf_requested);
 
     let is_appimage = env(APPIMAGE).is_some();
-    // What matters is which backend opens, not what WAYLAND_DISPLAY and DISPLAY say: both
-    // are inherited by clients of the other server and both outlive the thing they name.
-    // Each flag is the answer from a probe of the socket that opener would use. An unset
-    // GDK_BACKEND is GDK's own "*", which tries wayland before x11 (gdk_backends[]).
+    // Decide by which backend opens: WAYLAND_DISPLAY and DISPLAY are inherited and outlive
+    // their servers.
+    // Unset GDK_BACKEND is GDK's "*" (wayland before x11).
     let wayland_session = selected_backend_is_wayland(
         env(GDK_BACKEND).as_deref().unwrap_or(OsStr::new("*")),
         wayland_socket,
@@ -225,11 +202,8 @@ fn rendering_plan(
         return RenderingPlan::Apply(workaround, COMPOSITING_FORCED_REASON);
     }
 
-    // Per display server, not per GPU. Wayland: DISABLE_DMABUF, FORCE_SHM still hits the
-    // failing explicit-sync path (bug 315436). X11: SHM plus compositing off for the
-    // sync-file leak (#10795); DISABLE_DMABUF is WRONG there, it can leave no backing-store
-    // transport at all (block/buzz#3654). Over-matches a PRIME iGPU laptop, which opts out
-    // with WEBKIT_DISABLE_DMABUF_RENDERER=0 or UNSLOTH_WEBKIT_DISABLE_COMPOSITING=0.
+    // Wayland: DISABLE_DMABUF (FORCE_SHM hits bug 315436). X11: SHM plus compositing off;
+    // DISABLE_DMABUF can leave no transport there. PRIME laptops opt out with the =0 variables.
     if nvidia_driver_loaded && !force_dmabuf {
         let missing_appimage_gles = is_appimage && !gles_usable;
         let reason = if missing_appimage_gles {
@@ -241,8 +215,7 @@ fn rendering_plan(
         } else {
             NVIDIA_REASON
         };
-        // FORCE_SHM still reaches the failing libepoxy path in AppImages, and 2.44 is
-        // where WebKitGTK started reading it at all, so both keep the stronger switch.
+        // FORCE_SHM still hits the failing libepoxy path in AppImages, and needs WebKitGTK 2.44+.
         let workaround = if wayland_session
             || missing_appimage_gles
             || !supports_force_shared_memory(webkit_version)
@@ -256,7 +229,7 @@ fn rendering_plan(
         return RenderingPlan::Apply(workaround, reason);
     }
 
-    // libepoxy loads GLES at runtime; disabling DMA-BUF handles a missing copy (#8343).
+    // libepoxy loads GLES at runtime; disabling DMA-BUF handles a missing copy.
     if is_appimage && !gles_usable {
         return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, APPIMAGE_GLES_REASON);
     }
@@ -269,28 +242,17 @@ fn rendering_plan(
         // FORCE_SHM still reaches the failing libepoxy path in AppImages.
         RenderingWorkaround::DisableDmabuf
     } else if supports_force_shared_memory(webkit_version) {
-        // Plain FORCE_SHM: nothing here confirmed NVIDIA, so leave the library's own
-        // detection alone. Standing it down would force wl_shm on a host it would have
-        // taken off DMA-BUF itself, which is the commit path bug 315436 disconnects on.
+        // Plain FORCE_SHM: NVIDIA is unconfirmed, so leave the library's own detection alone.
         RenderingWorkaround::ForceSharedMemory
     } else {
-        // FORCE_SHM was added with WebKitGTK 2.44. Older host libraries ignore
-        // it, so use the renderer-disable workaround supported by 2.42.
+        // FORCE_SHM needs WebKitGTK 2.44; 2.42 supports only the renderer-disable workaround.
         RenderingWorkaround::DisableDmabuf
     };
     RenderingPlan::Apply(workaround, WAYLAND_REASON)
 }
 
-/// Whether the socket wl_display_connect would use accepts connections. Existence is not
-/// enough and a set WAYLAND_DISPLAY is not either: a dead compositor leaves both behind,
-/// and GDK's opener would then fail over to x11 while this said Wayland. Connecting fails
-/// the same way GDK does, and touches no GL state, so it is safe before GTK init.
-///
-/// Same resolution as libwayland: WAYLAND_SOCKET is an inherited fd and settles it on its
-/// own, an absolute WAYLAND_DISPLAY is the path (1.15+), otherwise it is a name under
-/// XDG_RUNTIME_DIR, defaulting to wayland-0. The fallback is on unset, not on empty, so
-/// `WAYLAND_DISPLAY=` resolves to the runtime directory itself and cannot connect. That is
-/// how a session forces itself through XWayland, and it must not read as Wayland.
+/// Whether wl_display_connect's socket accepts connections (a dead compositor leaves the socket
+/// and the variable). Resolved as libwayland does; `WAYLAND_DISPLAY=` must not read as Wayland.
 fn wayland_socket_connectable(
     runtime_dir: Option<OsString>,
     display: Option<OsString>,
@@ -320,11 +282,8 @@ fn wayland_socket_present() -> bool {
     )
 }
 
-/// Whether the X display DISPLAY names accepts connections, so the x11 arm is decided the
-/// same way as the wayland one rather than on the variable alone. Deliberately fail-safe:
-/// only a local `:N` display is probed, and only both of Xorg's listeners refusing counts
-/// as closed. Guessing "closed" for a live server would put DISABLE_DMABUF on an X11
-/// webview, which is the empty transport set, so anything unrecognized stays trusted.
+/// Fail-safe: only a local `:N` display is probed, and only both listeners refusing counts as
+/// closed, since a wrong "closed" would leave X11 with no transport.
 fn x11_display_open(display: Option<OsString>, socket_dir: &str) -> bool {
     let Some(display) = display.filter(|display| !display.is_empty()) else {
         return false;
@@ -369,8 +328,7 @@ fn gles_is_usable() -> bool {
 }
 
 fn runtime_webkit_version() -> (u32, u32, u32) {
-    // These accessors read compile-time version constants from the already
-    // linked WebKitGTK library; they do not initialize GTK or a web view.
+    // Compile-time version constants of the linked library; no GTK or web view init.
     unsafe {
         (
             webkit2gtk_sys::webkit_get_major_version(),
@@ -380,8 +338,7 @@ fn runtime_webkit_version() -> (u32, u32, u32) {
     }
 }
 
-/// Unset the variables an earlier launch of this process tree claimed and `drop` selects,
-/// then retire the claim. Only claimed names are touched, never an operator's value.
+/// Only names an earlier launch of this tree claimed are touched, never an operator's value.
 fn release_claimed(drop: impl Fn(&str) -> bool) {
     let claimed = std::env::var_os(APPLIED_WORKAROUND).unwrap_or_default();
     for name in claimed.to_string_lossy().split(',') {
@@ -392,9 +349,7 @@ fn release_claimed(drop: impl Fn(&str) -> bool) {
     std::env::remove_var(APPLIED_WORKAROUND);
 }
 
-/// Select a compatible WebKitGTK rendering transport before GTK initialization.
-///
-/// Returns the variable applied by this launch and the reason for it, if any.
+/// Must run before GTK initialization.
 pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
     let gles_usable = std::env::var_os(APPIMAGE).is_none() || gles_is_usable();
     match rendering_plan(
@@ -416,9 +371,7 @@ pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
             Some((variables, reason))
         }
         RenderingPlan::PreserveEnvironment => {
-            // Drop the values too, not just the claim. Leaving one set keeps a workaround
-            // this launch decided against, and the next launch, seeing it unmarked, would
-            // read it as an operator override and preserve it for good.
+            // Drop the values too, or the next launch would read them as operator overrides.
             release_claimed(|_| true);
             None
         }
@@ -437,7 +390,6 @@ mod tests {
         gles_usable: bool,
         nvidia_driver_loaded: bool,
     ) -> RenderingPlan {
-        // A fixture that names a display means a live one, which is what the probe answers.
         let live = named(vars, WAYLAND_DISPLAY);
         plan_on_host_with_socket(
             vars,
@@ -455,7 +407,6 @@ mod tests {
         nvidia_driver_loaded: bool,
         wayland_socket: bool,
     ) -> RenderingPlan {
-        // As above for DISPLAY: a fixture that names one models a server that answers.
         let x11_open = named(vars, X11_DISPLAY);
         plan_on_displays(
             vars,
@@ -575,7 +526,6 @@ mod tests {
 
     #[test]
     fn nvidia_on_x11_below_244_keeps_the_legacy_renderer_switch() {
-        // FORCE_SHM arrived in 2.44; older libraries ignore it entirely.
         assert_eq!(
             plan_on_host(&[], (2, 42, 7), true, true),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
@@ -600,7 +550,6 @@ mod tests {
 
     #[test]
     fn the_distribution_force_dmabuf_opt_out_outranks_the_nvidia_default() {
-        // Checked inside isNVIDIA(), which WebKit never reaches once DISABLE_DMABUF is set.
         for value in ["1", "", "yes"] {
             assert_eq!(
                 plan_on_nvidia(&[(FORCE_DMABUF, value)]),
@@ -612,8 +561,6 @@ mod tests {
 
     #[test]
     fn force_dmabuf_does_not_defeat_the_missing_gles_fallback() {
-        // That fallback answers a packaging failure, not this variable's question, and the
-        // AppImage cannot render without it (#8343).
         assert_eq!(
             plan_on_host(
                 &[(FORCE_DMABUF, "1"), (APPIMAGE, "/tmp/Unsloth.AppImage")],
@@ -627,7 +574,6 @@ mod tests {
 
     #[test]
     fn force_dmabuf_still_leaves_the_wayland_workaround_in_place() {
-        // It speaks to the NVIDIA patch, not the Wayland rule that predates it.
         assert_eq!(
             plan_on_nvidia(&[(FORCE_DMABUF, "1"), (WAYLAND_DISPLAY, "wayland-0")]),
             RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
@@ -636,7 +582,6 @@ mod tests {
 
     #[test]
     fn a_zero_force_dmabuf_value_does_not_stand_the_workaround_down() {
-        // The patch tests the first byte against '0', so "0" is not a request.
         assert_eq!(
             plan_on_nvidia(&[(APPIMAGE, "/tmp/Unsloth.AppImage"), (FORCE_DMABUF, "0")]),
             RenderingPlan::Apply(
@@ -656,7 +601,6 @@ mod tests {
 
     #[test]
     fn an_operator_force_shm_value_is_preserved_on_nvidia_too() {
-        // Unmarked, so it came from a launcher or environment.d rather than from us.
         for value in ["0", "1", "", "true"] {
             assert_eq!(
                 plan_on_nvidia(&[(FORCE_SHARED_MEMORY, value)]),
@@ -668,7 +612,6 @@ mod tests {
 
     #[test]
     fn nvidia_relaunch_re_decides_over_its_own_inherited_force_shm() {
-        // Marked, so it is our own state from an earlier launch, and Wayland escalates it.
         assert_eq!(
             plan_on_nvidia(&[
                 (WAYLAND_DISPLAY, "wayland-0"),
@@ -681,8 +624,7 @@ mod tests {
 
     #[test]
     fn a_relaunch_re_reaches_the_same_decision_it_made_first_time() {
-        // process::restart inherits the environment, so the plan must be a fixed point:
-        // feed a launch's own output back in and it must not drift.
+        // process::restart inherits the environment, so the plan must be a fixed point.
         let hosts = [
             (&[][..], true),
             (&[(WAYLAND_DISPLAY, "wayland-0")][..], true),
@@ -729,8 +671,6 @@ mod tests {
 
         release_claimed(|_| true);
 
-        // Leaving it set would keep a workaround this launch decided against, and the
-        // next launch would read the unmarked value as an operator override for good.
         assert!(std::env::var_os(DISABLE_DMABUF).is_none());
         assert!(std::env::var_os(APPLIED_WORKAROUND).is_none());
     }
@@ -757,9 +697,6 @@ mod tests {
 
     #[test]
     fn a_generic_shared_memory_plan_leaves_webkits_own_nvidia_detection_alone() {
-        // Nothing here confirmed NVIDIA: /proc/driver/nvidia can be hidden by a container
-        // or a confined launch while WebKit's GL probe still sees it. Standing the patch
-        // down there would force the wl_shm commit path bug 315436 disconnects on.
         assert_eq!(
             plan(&[(WAYLAND_DISPLAY, "wayland-0")]),
             RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
@@ -780,9 +717,6 @@ mod tests {
 
     #[test]
     fn a_named_wayland_that_cannot_open_falls_through_to_the_next_backend() {
-        // GDK tries wayland first, its opener fails with no socket to connect to, and the
-        // loop continues to x11. Calling that a Wayland session hands an X11 host the
-        // empty transport set.
         assert_eq!(
             plan_on_nvidia(&[(GDK_BACKEND, "wayland,x11"), (X11_DISPLAY, ":0")]),
             RenderingPlan::Apply(
@@ -790,7 +724,6 @@ mod tests {
                 NVIDIA_REASON
             )
         );
-        // Same list, but the default wayland-0 socket is there, so wayland does open.
         assert_eq!(
             plan_on_host_with_socket(
                 &[(GDK_BACKEND, "wayland,x11"), (X11_DISPLAY, ":0")],
@@ -805,8 +738,6 @@ mod tests {
 
     #[test]
     fn a_lone_named_wayland_still_takes_the_wayland_workaround() {
-        // No fallback entry, so GTK either finds a compositor or fails to start. Treating
-        // it as X11 would be a guess against the only backend the operator named.
         assert_eq!(
             plan_on_nvidia(&[(GDK_BACKEND, "wayland")]),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
@@ -815,9 +746,7 @@ mod tests {
 
     #[test]
     fn the_nvidia_x11_fallback_keeps_a_nonempty_transport() {
-        // isNVIDIA() returns before mode.add(SharedMemory) on 2.50.4 and 2.52.6, so
-        // FORCE_SHM on its own is never read there and the set is empty regardless, so
-        // both must survive beside the compositing switch a WebKit may ignore.
+        // On 2.50.4 and 2.52.6 isNVIDIA() returns before FORCE_SHM is read, so both must survive.
         assert_eq!(
             RenderingWorkaround::DisableCompositingOnNvidiaX11.variables(),
             &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
@@ -833,8 +762,7 @@ mod tests {
 
     #[test]
     fn our_own_force_dmabuf_does_not_read_back_as_an_opt_out() {
-        // Older launches set it beside FORCE_SHM; a relaunch must not see its own output
-        // as an operator standing the NVIDIA branch down while migrating to the new plan.
+        // Older launches set it beside FORCE_SHM; a relaunch must not read it as an operator's.
         let claimed = [FORCE_SHARED_MEMORY, FORCE_DMABUF].join(",");
         let inherited = [
             (FORCE_SHARED_MEMORY, "1"),
@@ -860,7 +788,6 @@ mod tests {
 
     #[test]
     fn a_marker_for_the_other_variable_does_not_release_force_shm() {
-        // Only a claim naming FORCE_SHM identifies FORCE_SHM as ours.
         assert_eq!(
             plan_on_nvidia(&[
                 (FORCE_SHARED_MEMORY, "1"),
@@ -896,8 +823,6 @@ mod tests {
 
     #[test]
     fn a_gdk_wildcard_selects_wayland_only_when_a_wayland_display_is_there() {
-        // '*' expands to the built-in order, wayland before x11, and takes the first that
-        // opens. With no WAYLAND_DISPLAY the wayland opener has nothing to connect to.
         assert_eq!(
             plan(&[(GDK_BACKEND, "*"), (WAYLAND_DISPLAY, "wayland-0")]),
             RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
@@ -911,8 +836,6 @@ mod tests {
     #[test]
     fn an_ordered_backend_list_takes_the_first_that_opens() {
         // GDK tries entries in order, so x11,wayland runs on X11 whenever DISPLAY opens.
-        // Membership said Wayland, which on NVIDIA picked the empty transport set for a
-        // session that is actually X11.
         assert_eq!(
             plan_on_nvidia(&[
                 (GDK_BACKEND, "x11,wayland"),
@@ -924,7 +847,6 @@ mod tests {
                 NVIDIA_REASON
             )
         );
-        // Reverse the order and Wayland is what opens first.
         assert_eq!(
             plan_on_nvidia(&[
                 (GDK_BACKEND, "wayland,x11"),
@@ -933,7 +855,6 @@ mod tests {
             ]),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
         );
-        // x11 named first but no X display: GDK falls through to the next entry.
         assert_eq!(
             plan_on_nvidia(&[(GDK_BACKEND, "x11,wayland"), (WAYLAND_DISPLAY, "wayland-0")]),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
@@ -942,8 +863,7 @@ mod tests {
 
     #[test]
     fn backend_matching_is_exact_like_g_str_equal() {
-        // g_strsplit does not trim and g_str_equal is case sensitive, so neither of these
-        // names a backend GDK will match; it falls through to the next entry.
+        // g_strsplit does not trim and g_str_equal is case sensitive.
         for value in [" wayland", "Wayland", "wayland-egl"] {
             assert_eq!(
                 plan(&[(GDK_BACKEND, value), (WAYLAND_DISPLAY, "wayland-0")]),
@@ -1016,8 +936,6 @@ mod tests {
         );
     }
 
-    // GDK_BACKEND unset is "*", so a live default socket opens wayland even with no
-    // WAYLAND_DISPLAY, and this must not be read as the X11 session FORCE_SHM is for.
     #[test]
     fn an_unset_gdk_backend_follows_the_default_socket() {
         assert_eq!(
@@ -1050,7 +968,6 @@ mod tests {
             None,
             false
         ));
-        // The same socket named explicitly, and named by absolute path as libwayland allows.
         assert!(wayland_socket_connectable(
             Some(dir.clone().into()),
             Some(DEFAULT_WAYLAND_SOCKET.into()),
@@ -1064,8 +981,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // A crashed compositor leaves the file behind, and WAYLAND_DISPLAY behind with it;
-    // GDK's opener still fails over to x11, so neither may read as a Wayland session.
+    // A crashed compositor leaves the socket file and WAYLAND_DISPLAY behind.
     #[test]
     fn a_stale_wayland_socket_is_not_a_wayland_session() {
         let dir = socket_dir("stale");
@@ -1080,20 +996,16 @@ mod tests {
             ));
         }
         assert!(!wayland_socket_connectable(None, None, false));
-        // A name with no runtime dir to resolve it against cannot open either.
         assert!(!wayland_socket_connectable(
             None,
             Some(DEFAULT_WAYLAND_SOCKET.into()),
             false
         ));
-        // WAYLAND_SOCKET is an inherited fd: the connection is already made.
         assert!(wayland_socket_connectable(None, None, true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // WAYLAND_DISPLAY= is how a session forces itself through XWayland. libwayland falls
-    // back to wayland-0 on unset, not on empty, so the empty value must not reach the
-    // still-live default socket and read as Wayland.
+    // libwayland falls back to wayland-0 on unset, not on empty.
     #[test]
     fn an_explicitly_empty_wayland_display_is_not_the_default_socket() {
         let dir = socket_dir("empty-display");
@@ -1109,7 +1021,6 @@ mod tests {
             Some(OsString::new()),
             false
         ));
-        // Nor is an empty WAYLAND_SOCKET an inherited fd.
         assert!(!wayland_socket_connectable(
             None,
             Some(OsString::new()),
@@ -1118,9 +1029,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // DISPLAY names a server that may be gone; only a local display is judged, and only
-    // when both of Xorg's listeners refuse, since guessing closed for a live server would
-    // put DISABLE_DMABUF on an X11 webview.
     #[test]
     fn only_a_local_x_display_that_answers_nothing_reads_as_closed() {
         let dir = socket_dir("x11");
@@ -1129,7 +1037,6 @@ mod tests {
 
         assert!(!x11_display_open(None, &sockets));
         assert!(!x11_display_open(Some(OsString::new()), &sockets));
-        // Nothing has bound :0 in this directory yet.
         assert!(!probe(":0"));
         let _listener = std::os::unix::net::UnixListener::bind(dir.join("X0")).unwrap();
         assert!(probe(":0"));
@@ -1141,15 +1048,12 @@ mod tests {
         let _abstract = std::os::unix::net::UnixListener::bind_addr(&abstract_name).unwrap();
         assert!(probe(":1"));
         assert!(!probe(":2"));
-        // Not ours to judge: a remote display, a screen number that is not one, a path.
         assert!(probe("somehost:2"));
         assert!(probe(":abc"));
         assert!(probe("/tmp/.X11-unix/X2"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // A dead X server with an explicit x11-first order: GDK skips the opener that fails and
-    // lands on wayland, so the plan has to land there too.
     #[test]
     fn a_dead_x_server_lets_an_x11_first_order_fall_through_to_wayland() {
         let session = &[(GDK_BACKEND, "x11,wayland"), (X11_DISPLAY, ":0")];
@@ -1166,8 +1070,6 @@ mod tests {
         );
     }
 
-    // The X11 arm of the same failure: WAYLAND_DISPLAY outlives its compositor, DISPLAY
-    // works, and DISABLE_DMABUF on an X11 webview is the empty-transport-set crash.
     #[test]
     fn a_dead_compositor_named_by_wayland_display_falls_back_to_x11() {
         let session = &[(WAYLAND_DISPLAY, "wayland-0"), (X11_DISPLAY, ":0")];
@@ -1292,7 +1194,6 @@ mod tests {
 
     #[test]
     fn the_setting_reads_the_spellings_people_write() {
-        // An unrecognized opt-out is no longer a no-op: it leaves the host on the fallback.
         for off in ["0", "false", "no", "off", "FALSE", "Off", " 0 ", "\tno\n"] {
             assert_eq!(
                 plan_on_graphics(&[(DISABLE_COMPOSITING_SETTING, off)], true),

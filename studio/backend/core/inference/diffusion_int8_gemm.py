@@ -91,8 +91,8 @@ _ARCH_CONFIG = {
 # When the arch tile does not fit this part's shared memory.
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 
-# Per-shape tiles: (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), first match wins, bounds inclusive,
-# M >= _SHAPE_MIN_M only. No L4 rule on purpose: per-GEMM wins there cost s/step end to end (power-capped clocks).
+# First match wins, bounds inclusive. No L4 rule on purpose: power-capped clocks lose end to end.
+# (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), M >= _SHAPE_MIN_M only.
 _SHAPE_TILES: dict = {
     (12, 0): (
         # MiniMax-H3 fused QKV / FFN in
@@ -258,9 +258,7 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
         a = torch.cat([a, a.new_zeros((_MIN_ROWS - m, a.shape[1]))])
     c = torch._int_mm(a, w.t())[:m]
     y = (c * xs.reshape(-1, 1)).to(torch.bfloat16)
-    y = y * ws.reshape(
-        -1
-    )  # bf16 scales: a bf16 product; fp32 (prequant) scales: fp32 until after the bias (v2)
+    y = y * ws.reshape(-1)
     if bias is not None:
         y = y + bias
     return y.to(torch.bfloat16)
@@ -441,9 +439,7 @@ def _probe(index: int, cfg: tuple) -> bool:
             xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16)
             xs = (xs.float() if xs32 else xs).to(dev)
             ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).to(dev)
-            ws = (
-                ws.float() if xs32 else ws
-            )  # fp32 weight scales + bias: the prequant (v2) rounding order
+            ws = ws.float() if xs32 else ws
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
             if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
@@ -883,10 +879,7 @@ def install(
     offload_active: bool = False,
     device: Any = None,
 ) -> int:
-    """Idempotent; returns the (candidate) count. Must run before the first compiled forward.
-
-    ``device``: the onload device of a block-streamed denoiser, whose weights sit on the host between blocks; the
-    probe runs there and the swap happens now. Without it an offloaded denoiser keeps the stock path."""
+    """Idempotent, returns the candidate count; must run before the first compiled forward; block-streamed denoisers need device or keep stock path."""
     if int8_gemm_mode() == "off" or transformer is None:
         return 0
     if device is not None:

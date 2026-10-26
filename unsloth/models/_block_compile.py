@@ -794,6 +794,13 @@ def _wrap(
     original = cls.forward
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
+    try:
+        takes_kwargs = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD
+            for p in inspect.signature(original).parameters.values()
+        )
+    except (TypeError, ValueError):
+        takes_kwargs = False
     isolate = {}
     if _ISOLATE_RECOMPILES:
         isolate = dict(isolate_recompiles = True, recompile_limit = _region_recompile_limit(kinds))
@@ -830,11 +837,19 @@ def _wrap(
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
-        # Packed rows run hf_packed_attention's varlen kernel outside the graph (see there).
-        packed = getattr(sys.modules.get(_PACKED_MODULE), "IN_COMPILED_BLOCK", _NO_PACKED)
+        packed_module = sys.modules.get(_PACKED_MODULE)
+        packed = getattr(packed_module, "IN_COMPILED_BLOCK", _NO_PACKED)
         packed_previous = packed[0]
         packed[0] = True
         try:
+            if (
+                takes_kwargs
+                and packed_module is not None
+                and kwargs.get("packed_seq_lengths") is not None
+            ):
+                varlen = packed_module.block_varlen_kwargs(self, hidden_states, kwargs)
+                if varlen is not None:
+                    kwargs = {**kwargs, packed_module.BLOCK_VARLEN_KWARG: varlen}
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
             with capture_scratch():
                 if graphs and not graphs_off[0]:

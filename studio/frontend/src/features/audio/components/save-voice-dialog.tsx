@@ -35,7 +35,6 @@ export function SaveVoiceDialog({
   onOpenChange: (open: boolean) => void;
   mode: "create" | "edit";
   initial: VoiceDetails;
-  /** The voice being edited, which may keep its own name. */
   voiceId?: string;
   onSubmit: (details: VoiceDetails) => Promise<void>;
 }) {
@@ -77,8 +76,7 @@ function SaveVoiceForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const clean = name.trim();
-  // Voices are picked by name, so two with the same name could not be told apart.
-  // The list loads with the voice picker, which this dialog can open without.
+  // Voices are picked by name, so names must be unique; the list may not be loaded yet.
   useEffect(() => {
     const voices = useAudioVoicesStore.getState();
     if (!voices.loaded) void voices.refresh();

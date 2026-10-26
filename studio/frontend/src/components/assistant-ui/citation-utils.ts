@@ -17,7 +17,6 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-// null if absent so callers fall back to generic JSON shapes.
 function parseSentinelSources(result: unknown): Citation[] | null {
   if (typeof result !== "string") return null;
   const idx = result.indexOf(RAG_SOURCES_SENTINEL);
