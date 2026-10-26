@@ -209,7 +209,6 @@ test("traffic: a random-walk trip passes, fails at a dead end, or finds no road"
   const lone = sim();
   placed(lone, "R", 3, 10);
   assert.equal(lone.makeTraf(lone.zoneOf(3, 10)!, 0), -1);
-  // Industry only drives to developed homes.
   const e = sim();
   placed(e, "I", 3, 10);
   for (let x = 5; x <= 8; x++) placed(e, "road", x, 10);

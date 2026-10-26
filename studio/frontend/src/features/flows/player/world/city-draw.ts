@@ -29,7 +29,6 @@ const ZONE_TINT: Record<string, number> = {
   I: 0xe0b040,
   P: 0x8a8a8a,
 };
-// Same wall colour as the 2D house prop marks; roofs from the house generator palette.
 const HOUSE = 0xe9d7b5;
 const ROOF = 0xb5543c;
 const RING = [

@@ -42,7 +42,6 @@ const PERIM_Y = [-2, -2, -2, -1, 0, 1, 2, 2, 2, 1, 0, -1];
 const DX = [0, 1, 0, -1];
 const DY = [-1, 0, 1, 0];
 
-// Tile kinds in the city grid (saved as one character per tile).
 export const EMPTY = 0;
 export const ROAD = 1;
 export const WIRE = 2;
@@ -220,7 +219,6 @@ function trips(raw: unknown): CityState["trips"] {
   };
 }
 
-/** Parse a saved city; null when it does not fit this map. */
 export function parseCity(raw: unknown, spec: WorldSpec): CityState | null {
   const r = raw as Partial<CityState> | null;
   if (!r || typeof r !== "object" || r.v !== CITY_SAVE_VERSION) return null;
@@ -1141,7 +1139,6 @@ export class CitySim {
     return text;
   }
 
-  /** The numbers at a tile for overlays and petitions. */
   at(
     x: number,
     y: number,
@@ -1166,7 +1163,6 @@ export class CitySim {
     return false;
   }
 
-  /** Busiest road cell next to a zone. */
   zoneTraffic(z: CityZone): number {
     let best = 0;
     for (let k = 0; k < 12; k++) {

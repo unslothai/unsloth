@@ -16,7 +16,6 @@ import {
 export const CITY_CALLS_PER_MINUTE = 2;
 
 export const mayorOn = (spec: WorldSpec): boolean => cityOf(spec) !== null;
-/** Background calls a minute for a city world that has no village simulation budget of its own. */
 export const cityQueueRate = (spec: WorldSpec): number =>
   mayorOn(spec) ? CITY_CALLS_PER_MINUTE : 0;
 const MAX_ZONES = 24;
@@ -221,7 +220,6 @@ export function applyMayorReply(
   return out;
 }
 
-/** The advisor without a model: the same numbers, in a fixed sentence. */
 export function localAdvice(d: CityDigest): string {
   const tips: string[] = [];
   const unpowered = d.zones.filter((z) => z.kind !== "P" && !z.power);

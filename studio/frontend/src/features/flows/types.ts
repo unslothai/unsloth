@@ -473,7 +473,6 @@ export interface WorldSpec {
   city?: WorldCity | null;
 }
 
-/** Mayor mode: zone, build roads and power, and let a Micropolis-style simulation grow the town. */
 export interface WorldCity {
   enabled?: boolean;
   funds?: number;
