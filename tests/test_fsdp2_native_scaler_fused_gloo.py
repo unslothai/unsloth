@@ -31,7 +31,11 @@ class _Handler:
         return {"device": "cpu", "init_scale": 2.0**8}
 
 
-def _run(fused, both = False, unscale = True):
+def _run(
+    fused,
+    both = False,
+    unscale = True,
+):
     native = _load_native()
     rank = torch.distributed.get_rank()
     old = torch.amp.GradScaler("cpu", init_scale = 2.0**8)

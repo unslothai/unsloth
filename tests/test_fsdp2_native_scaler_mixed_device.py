@@ -44,7 +44,9 @@ def world_of_one():
 def test_mixed_device_fused_adamw_skips_an_overflow_step(world_of_one, explicit_unscale, overflow):
     native = _load_native()
     old = torch.amp.GradScaler("cuda", init_scale = 2.0**8)
-    trainer = types.SimpleNamespace(accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _Handler()))
+    trainer = types.SimpleNamespace(
+        accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _Handler())
+    )
     assert native._scaler_for_native(trainer) is True
     scaler = trainer.accelerator.scaler
     torch.manual_seed(0)
@@ -63,6 +65,9 @@ def test_mixed_device_fused_adamw_skips_an_overflow_step(world_of_one, explicit_
     scaler.step(opt)
     scaler.update()
     for p, b in zip((on_cpu, on_cuda), before):
-        assert torch.equal(p.detach().cpu(), b.cpu()), (overflow, "the overflow step changed weights")
+        assert torch.equal(p.detach().cpu(), b.cpu()), (
+            overflow,
+            "the overflow step changed weights",
+        )
         assert float(opt.state[p]["step"]) == 0.0, (overflow, float(opt.state[p]["step"]))
     assert scaler.get_scale() == 2.0**7
