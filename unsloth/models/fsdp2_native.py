@@ -3329,6 +3329,16 @@ def install_native_fsdp2_hooks():
     return a and t
 
 
+def _has_cpu_tensors(optimizer, grads = False):
+    """Any (grad of a) parameter of this optimizer on the CPU (cpu_offload shards)."""
+    for group in optimizer.param_groups:
+        for p in group["params"]:
+            t = p.grad if grads else p
+            if t is not None and t.device.type == "cpu":
+                return True
+    return False
+
+
 def _scaler_for_native(trainer):
     """float16: the GradScaler's inf check must agree over ranks, or one rank skips a step the
     others take. ShardedGradScaler all-reduces it."""
@@ -3373,6 +3383,45 @@ def _scaler_for_native(trainer):
                 found_inf.copy_(on_device)
             self._one_flag(optimizer)
             return state["found_inf_per_device"]
+
+        def _unscale_grads_(self, optimizer, inv_scale, found_inf, allow_fp16 = True):
+            # The replicator hands CPU grads (cpu_offload shards) copies of a CUDA inv_scale / found_inf
+            # made with non_blocking=True: the CPU kernel can read the pinned buffer before the copy
+            # lands, unscaling by garbage and losing the overflow flag. Start from host copies.
+            if inv_scale.device.type != "cpu" and _has_cpu_tensors(optimizer, grads = True):
+                inv_scale, found_inf = inv_scale.cpu(), found_inf.cpu()
+            return super()._unscale_grads_(optimizer, inv_scale, found_inf, allow_fp16)
+
+        def step(self, optimizer, *args, **kwargs):
+            # A fused optimizer moves GradScaler's CUDA grad_scale / found_inf to each parameter device
+            # with non_blocking=True; on CPU its kernel can read them before they land (skip missed,
+            # wrong unscale). Hand it host copies when it steps CPU parameters.
+            if not (
+                self.is_enabled()
+                and self._device != "cpu"
+                and getattr(optimizer, "_step_supports_amp_scaling", False)
+                and _has_cpu_tensors(optimizer)
+            ):
+                return super().step(optimizer, *args, **kwargs)
+            had = "step" in optimizer.__dict__
+            previous = optimizer.__dict__.get("step")
+            real = optimizer.step
+
+            def step_with_host_flags(*a, **k):
+                for name in ("grad_scale", "found_inf"):
+                    t = getattr(optimizer, name, None)
+                    if isinstance(t, torch.Tensor) and t.device.type != "cpu":
+                        setattr(optimizer, name, t.cpu())
+                return real(*a, **k)
+
+            optimizer.step = step_with_host_flags
+            try:
+                return super().step(optimizer, *args, **kwargs)
+            finally:
+                if had:
+                    optimizer.step = previous
+                else:
+                    del optimizer.step
 
         def _one_flag(self, optimizer):
             # The all-reduce SUMS found_inf (the number of ranks that overflowed), and GradScaler.step
