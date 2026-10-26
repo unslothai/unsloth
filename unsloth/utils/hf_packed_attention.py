@@ -768,7 +768,12 @@ def block_packed_plan(layer, hidden_states, args, kwargs):
         one_document = cu_seqlens.shape[0] == 2 and max_seqlen == total
         entry = (lengths, total, (cu_seqlens, _max_carrier(max_seqlen, device), one_document))
         _PLAN_CACHE[device] = entry
-    plan = entry[2]
+    # The SDPA policy is read every call: sdpa_kernel / flash off / deterministic mode take effect on
+    # the next block call, and the plan carries the policy so Dynamo guards the traced choice on it.
+    policy = _sdpa_policy()
+    if policy is None:
+        return None
+    plan = (*entry[2], policy)
     windows = _layer_windows(layer)
     for obj in (*args, *kwargs.values()):
         if isinstance(obj, torch.Tensor) and obj.dim() == 4 and obj.shape[-2:] == (total, total):
@@ -776,16 +781,36 @@ def block_packed_plan(layer, hidden_states, args, kwargs):
     return plan
 
 
+def _sdpa_policy():
+    """The SDPA backend settings the in-graph choice depends on, or None when they ask for SDPA itself
+    (deterministic mode or flash disabled: no varlen kernel may replace it, as _sdpa_requested)."""
+    if torch.are_deterministic_algorithms_enabled():
+        return None
+    cuda = torch.backends.cuda
+    if not cuda.flash_sdp_enabled():
+        return None
+    order = getattr(torch._C, "_get_sdp_priority_order", None)
+    return (
+        bool(cuda.cudnn_sdp_enabled()),
+        bool(cuda.mem_efficient_sdp_enabled()),
+        bool(cuda.math_sdp_enabled()),
+        tuple(int(x) for x in order()) if order is not None else (),
+    )
+
+
 _IN_GRAPH = {}
 
 
-def _in_graph_kernel_eager(device_type, device_index, dtype, head_dim, n_heads, n_kv_heads, window):
+def _in_graph_kernel_eager(
+    device_type, device_index, dtype, head_dim, n_heads, n_kv_heads, window, policy = None
+):
     """True when torch's varlen_attn (a custom op with a fake and a backward, so it traces) runs this
     shape the way the eager wrapper would: CUDA sm80+, flash's head dims, a window it takes, an
     active flash impl that has the shape, and no SDPA policy (flash disabled, math first)."""
-    key = (device_type, device_index, dtype, head_dim, n_heads, n_kv_heads, window)
+    # The policy is part of the key: the probe reads the live backend settings.
+    key = (device_type, device_index, dtype, head_dim, n_heads, n_kv_heads, window, policy)
     if key not in _IN_GRAPH:
-        _IN_GRAPH[key] = _in_graph_kernel_probe(*key)
+        _IN_GRAPH[key] = _in_graph_kernel_probe(*key[:-1])
     return _IN_GRAPH[key]
 
 
@@ -823,7 +848,7 @@ def _in_graph_varlen(module, query, key, value, attention_mask, dropout, scaling
     """Packed row inside a compiled block: torch varlen_attn traced into the block's graph (no graph
     break) with the plan's cu_seqlens and longest segment (a SymInt). None when the eager wrapper
     would not have used torch's varlen for this call."""
-    cu_seqlens, carrier, one_document = PACKED_PLAN[0]
+    cu_seqlens, carrier, one_document, policy = PACKED_PLAN[0]
     max_seqlen = carrier.shape[0]
     window = _sliding_window(module, kwargs)
     if window is _NO_WINDOW:
@@ -864,6 +889,7 @@ def _in_graph_varlen(module, query, key, value, attention_mask, dropout, scaling
             int(n_heads),
             int(n_kv_heads),
             -1 if window is _NO_WINDOW else window,
+            policy,
         )
     ):
         return None

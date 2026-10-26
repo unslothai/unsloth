@@ -401,6 +401,58 @@ def test_rows_varlen_cannot_take_keep_the_previous_path(monkeypatch, gate, why):
         assert "_sdpa_packed_varlen" in reasons
 
 
+def _run_twice(monkeypatch, model, second_policy):
+    """One compiled step with the default SDPA policy, then one under second_policy (a context)."""
+    M, counter, graphs, restore = _wrap_layers(monkeypatch, model)
+    try:
+        _loss(model, _packed_batch([5, 9, 3])).backward()
+        first = _CALLS["fwd"]
+        _CALLS.update(fwd = 0, bwd = 0, max_q = [])
+        with second_policy():
+            _loss(model, _packed_batch([5, 9, 3])).backward()
+    finally:
+        restore[0].forward = restore[1]
+    return first, _CALLS["fwd"]
+
+
+def test_flash_disabled_after_a_step_keeps_sdpa(monkeypatch, gate):
+    """sdpa_kernel(MATH) after an in-graph step: no plan, so the row takes the eager wrapper, which
+    honours the policy (_sdpa_requested) as before this change."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    first, second = _run_twice(monkeypatch, _tiny("qwen3"), lambda: sdpa_kernel([SDPBackend.MATH]))
+    assert first > 0 and second == 0, (first, second)
+
+
+def test_math_first_priority_after_a_step_retraces(monkeypatch, gate):
+    """Flash still enabled but math first: the plan carries the policy, Dynamo guards on it, and the
+    kernel probe (keyed by it) is asked again, so the traced varlen call is not reused."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    math = int(SDPBackend.MATH)
+    monkeypatch.setattr(
+        hpa,
+        "_in_graph_kernel",
+        torch._dynamo.assume_constant_result(lambda *a: not a[-1][-1][:1] == (math,)),
+    )
+    first, second = _run_twice(
+        monkeypatch,
+        _tiny("qwen3"),
+        lambda: sdpa_kernel([SDPBackend.MATH, SDPBackend.FLASH_ATTENTION], set_priority = True),
+    )
+    assert first > 0 and second == 0, (first, second)
+
+
+def test_kernel_verdict_is_cached_per_sdpa_policy(monkeypatch):
+    asked = []
+    monkeypatch.setattr(hpa, "_IN_GRAPH", {})
+    monkeypatch.setattr(hpa, "_in_graph_kernel_probe", lambda *key: asked.append(key) or True)
+    args = ("cuda", 0, torch.bfloat16, 64, 8, 2, None)
+    for policy in ((True, True, True, (1, 2)), (True, True, True, (1, 2)), (True, True, True, (0, 1))):
+        hpa._in_graph_kernel_eager(*args, policy)
+    assert len(asked) == 2 and all(key == args for key in asked)
+
+
 def test_plan_is_only_set_while_a_compiled_block_runs(monkeypatch, gate):
     model = _tiny("qwen3")
     seen = []
