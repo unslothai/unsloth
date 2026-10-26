@@ -103,3 +103,22 @@ def test_hostile_ai_v2_is_opt_in_with_clean_barks_and_survives_the_gameplay_sett
     assert played["ai"] == "v2" and played["barks"] == {"see": ["Raider spotted!", "x" * 80]}
     assert played["verbs"] is True
     assert "action" not in apply_play_view(dict(world), _doc(gameplay = "explore"))
+
+
+def test_new_action_and_prop_fields_round_trip_through_normalize_save_and_the_player_node():
+    import json
+
+    raw = {
+        **RAW,
+        "items": [{"id": "key", "name": "Brass key"}],
+        "action": {"shooter": True, "verbs": True},
+        "props3d": DOORS,
+    }
+    world = normalize_world(raw, seed = 1)
+    # Saved as JSON and normalised again (a reload, or an export read back): nothing changes or drops.
+    again = normalize_world(json.loads(json.dumps(world)), seed = 1)
+    assert again["action"] == world["action"] == {"movement": True, "shooter": True, "verbs": True}
+    assert again["props3d"] == world["props3d"]
+    # The scene editor saves props on the player node; they come back with their links intact.
+    played = apply_play_view(dict(world), _doc(props3d = json.loads(json.dumps(world["props3d"]))))
+    assert played["props3d"] == world["props3d"]
