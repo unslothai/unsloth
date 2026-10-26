@@ -35042,11 +35042,6 @@ class LlamaCppBackend:
                 # The drafterless block a rung-2 plan launched with, and (built on the first
                 # revoke) the one the same load gets without the plan.
                 _plan_spec_flags_at_launch = list(spec_flags) if _spec_dropped_by_planner else None
-                # What followed it: an empty block is found by the tokens after it, so the restored
-                # flags keep their place ahead of the pass-through extras (last-wins).
-                _plan_spec_tail_at_launch = (
-                    list(cmd[_spec_start + len(spec_flags) :]) if _spec_dropped_by_planner else None
-                )
                 _unplanned_spec_flags: Optional[List[str]] = None
 
                 def _revoke_spill_plan(
@@ -35062,59 +35057,48 @@ class LlamaCppBackend:
                     nonlocal _mem_host_resident
                     nonlocal spec_flags, _spec_start, _unplanned_spec_flags
                     nonlocal _spec_dropped_no_vram, _spec_dropped_by_planner, _mtp_will_engage
-                    _mark = "\x00spec\x00"
-                    _drop_input = run_cmd
-                    if _plan_spec_flags_at_launch == [] and _plan_spec_tail_at_launch is not None:
-                        _tail = _plan_spec_tail_at_launch
-                        _t = (
-                            _subsequence_index(run_cmd, _tail, _spec_start)
-                            if _tail
-                            else len(run_cmd)
-                        )
-                        if run_cmd[_t : _t + len(_tail)] == _tail:
-                            _drop_input = [*run_cmd[:_t], _mark, *run_cmd[_t:]]
-                    reverted = self._drop_tensor_spill(_drop_input, why)
-                    if reverted is _drop_input:
+                    reverted = self._drop_tensor_spill(run_cmd, why)
+                    if reverted is run_cmd:
                         return run_cmd
-                    # The drafter the plan dropped comes back with the rest of what it changed.
-                    if _plan_spec_flags_at_launch is not None:
+                    # The drafter the plan dropped comes back with the rest of what it changed, in
+                    # the drafterless block's place (ahead of the pass-through extras, last-wins).
+                    # An empty block marks no place, so that one keeps the drafter dropped.
+                    _n = len(_plan_spec_flags_at_launch or ())
+                    _at = (
+                        _subsequence_index(reverted, _plan_spec_flags_at_launch, _spec_start)
+                        if _n
+                        else 0
+                    )
+                    if _n and reverted[_at : _at + _n] == _plan_spec_flags_at_launch:
                         if _unplanned_spec_flags is None:
                             _unplanned_spec_flags = _spec_slice(
-                                [t for t in reverted if t != _mark], no_vram = False, by_planner = False
+                                reverted, no_vram = False, by_planner = False
                             )
                             _spec_dropped_no_vram = _spec_dropped_by_planner = False
-                            _mtp_will_engage = True
-                        _n = len(_plan_spec_flags_at_launch)
-                        _at = (
-                            reverted.index(_mark)
-                            if _mark in reverted
-                            else _subsequence_index(
-                                reverted, _plan_spec_flags_at_launch, _spec_start
+                            # The rebuild can still stand MTP down (hybrid partial offload).
+                            _mtp_will_engage = any(
+                                _flag_name(t) in _LOCAL_DRAFT_FLAGS
+                                or any(
+                                    k in str(t).lower()
+                                    for k in ("mtp", "draft-dspark", "draft-dflash", "draft-eagle3")
+                                )
+                                for t in _unplanned_spec_flags
                             )
-                        )
-                        _found = _mark in reverted or (
-                            _n and reverted[_at : _at + _n] == _plan_spec_flags_at_launch
-                        )
-                        if _found:
-                            reverted = [
-                                *reverted[:_at],
-                                *_unplanned_spec_flags,
-                                *reverted[_at + (_n or 1) :],
-                            ]
-                            # Restored after any no-flash rewrite, so it gets the same V-cache reset.
-                            if _flash_attn_known_off:
-                                _draft_sym = self._draft_kv_symmetry(reverted, env)
-                                reverted = self._reset_quantized_v_cache(
-                                    reverted,
-                                    "flash attention is off",
-                                    mla = self._target_kv_symmetry(),
-                                    draft_mla = _draft_sym,
-                                )
-                                self._drop_env_quantized_v_cache(
-                                    env, mla = self._target_kv_symmetry(), draft_mla = _draft_sym
-                                )
-                            spec_flags = list(reverted[_at : _at + len(_unplanned_spec_flags)])
-                            _spec_start = _at
+                        reverted = [*reverted[:_at], *_unplanned_spec_flags, *reverted[_at + _n :]]
+                        # Restored after any no-flash rewrite, so it gets the same V-cache reset.
+                        if _flash_attn_known_off:
+                            _draft_sym = self._draft_kv_symmetry(reverted, env)
+                            reverted = self._reset_quantized_v_cache(
+                                reverted,
+                                "flash attention is off",
+                                mla = self._target_kv_symmetry(),
+                                draft_mla = _draft_sym,
+                            )
+                            self._drop_env_quantized_v_cache(
+                                env, mla = self._target_kv_symmetry(), draft_mla = _draft_sym
+                            )
+                        spec_flags = list(reverted[_at : _at + len(_unplanned_spec_flags)])
+                        _spec_start = _at
                     _plan_kept_every_layer = _plan_kept_every_layer_at_launch
                     _spill_keeps_every_layer_on_gpu = False
                     # Re-arm the page-lock and DirectIO like the --fit on crash retry: the fallback may leave

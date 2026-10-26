@@ -164,8 +164,10 @@ def _launch_drafter_dropping_plan(
     planned_starts,
     extra_args = None,
     caps = None,
+    ngram = True,
 ):
-    """An MTP load the plan placed by dropping the drafter (rung 2). The planned launch comes up
+    """An MTP load the plan placed by dropping the drafter (rung 2); with ``ngram`` the build has
+    ngram-mod, so the drafterless block is not empty. The planned launch comes up
     only when ``planned_starts``; otherwise it crashes at startup and the plan is revoked.
     Returns every launched argv and the backend."""
     import subprocess
@@ -191,6 +193,7 @@ def _launch_drafter_dropping_plan(
         "supports_cache_ram": True,
         "mtp_token": "draft-mtp",
         "spec_draft_n_max_flag": "--spec-draft-n-max",
+        **({"ngram_mod_flavor": "new", "supports_ngram_mod": True} if ngram else {}),
         **(caps or {}),
     }
     backend._available_system_memory_mib = lambda: 64 * 1024
@@ -258,8 +261,8 @@ def test_a_revoked_plan_gives_back_the_drafter_it_dropped(tmp_path, monkeypatch)
 
 
 def test_the_restored_drafter_keeps_its_place_ahead_of_the_extras(tmp_path, monkeypatch):
-    """The drafterless block was empty, and appending the restored one at the end put it after
-    the pass-through extras, so Studio's draft depth beat the user's (last-wins)."""
+    """Appending the restored block at the end put it after the pass-through extras, so Studio's
+    draft depth beat the user's (last-wins); it goes back where the drafterless block sat."""
     cmds, _backend = _launch_drafter_dropping_plan(
         tmp_path, monkeypatch, planned_starts = False, extra_args = ["--spec-draft-n-max", "5"]
     )
@@ -298,6 +301,30 @@ def test_a_restored_drafter_on_a_build_without_flash_attention_gets_no_quantized
     retry = cmds[-1]
     assert "--model-draft" in retry, retry
     assert retry[retry.index("--cache-type-v-draft") + 1] not in {"q8_0", "q4_0"}, retry
+
+
+def test_an_empty_drafterless_block_keeps_the_drafter_dropped(tmp_path, monkeypatch):
+    """No ngram-mod: the drafterless block is empty and marks no place in an argv that guards and
+    retries rewrite, so the drafter stays dropped and the status says so."""
+    cmds, backend = _launch_drafter_dropping_plan(
+        tmp_path, monkeypatch, planned_starts = False, ngram = False
+    )
+    retry = cmds[-1]
+    assert "-ot" not in retry and "draft-mtp" not in retry, retry
+    assert backend._spec_fallback_reason == "drafter_planner"
+
+
+def test_a_block_that_cannot_be_found_leaves_the_speculative_state_alone(tmp_path, monkeypatch):
+    """r36: the rebuild ran (and reset the drop bookkeeping and fallback reason) before the block
+    was found, so a miss launched without MTP while the status reported it restored."""
+    from core.inference import llama_cpp as llama_mod
+
+    monkeypatch.setattr(llama_mod, "_subsequence_index", lambda tokens, run, hint: 0)
+    cmds, backend = _launch_drafter_dropping_plan(tmp_path, monkeypatch, planned_starts = False)
+    retry = cmds[-1]
+    assert "-ot" not in retry and "draft-mtp" not in retry, retry
+    assert backend._spec_fallback_reason == "drafter_planner"
+    assert "mtp" not in str(backend._speculative_type).lower(), backend._speculative_type
 
 
 def test_a_plan_that_comes_up_keeps_the_drafter_dropped(tmp_path, monkeypatch):
