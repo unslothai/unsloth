@@ -73,8 +73,7 @@ export interface RivalsPanelProps {
   onTalking?: (talking: boolean) => void;
 }
 
-// A cancelled turn may leave its jobs queued, also across a 2D/3D remount: every attempt gets its own keys
-// so a retry is never dropped as a duplicate.
+// Unique per attempt, across remounts too: a cancelled turn's queued jobs would swallow a retry's keys.
 let turnAttempts = 0;
 
 export function RivalsPanel({
