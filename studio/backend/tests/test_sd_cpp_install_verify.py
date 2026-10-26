@@ -30,7 +30,9 @@ _WIN = sys.platform == "win32"
 def _starting_binary() -> bytes:
     """Bytes of an executable that starts here."""
     if _WIN:
-        return (Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "where.exe").read_bytes()
+        return (
+            Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "where.exe"
+        ).read_bytes()
     return b"#!/bin/sh\necho 'usage: sd-cli [options]'\n"
 
 
@@ -116,7 +118,9 @@ def test_the_loader_refusal_is_read_from_the_exit_status_and_output():
     # Python reports the NTSTATUS signed on some builds.
     assert sdmod.loader_refusal(0xC0000135 - (1 << 32))
     assert sdmod.loader_refusal(0xC0000139)
-    assert sdmod.loader_refusal(127, "sd-cli: error while loading shared libraries: libhipblas.so.3")
+    assert sdmod.loader_refusal(
+        127, "sd-cli: error while loading shared libraries: libhipblas.so.3"
+    )
     # A process that reached main is not refused, whatever it exits with.
     assert sdmod.loader_refusal(0) is None
     assert sdmod.loader_refusal(1, "unknown option --help") is None
@@ -203,9 +207,13 @@ def fake_settings(monkeypatch):
     from storage import studio_db
 
     store: dict = {}
-    monkeypatch.setattr(studio_db, "get_app_setting", lambda key, fallback = None: store.get(key, fallback))
     monkeypatch.setattr(
-        studio_db, "upsert_app_settings", lambda settings, **_k: store.update(settings) or dict(store)
+        studio_db, "get_app_setting", lambda key, fallback = None: store.get(key, fallback)
+    )
+    monkeypatch.setattr(
+        studio_db,
+        "upsert_app_settings",
+        lambda settings, **_k: store.update(settings) or dict(store),
     )
     return store
 
@@ -216,7 +224,10 @@ def backend(monkeypatch, fake_settings):
 
     monkeypatch.setattr(bk, "_accelerator_runtime_failures", {}, raising = False)
     monkeypatch.setattr(
-        bk, "_HOST_FINGERPRINT_MEMO", {"runtime": "7.1", "gpus": ["AMD Radeon 8060S"]}, raising = False
+        bk,
+        "_HOST_FINGERPRINT_MEMO",
+        {"runtime": "7.1", "gpus": ["AMD Radeon 8060S"]},
+        raising = False,
     )
     monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set(), raising = False)
     monkeypatch.setattr(bk, "_failed_pin_upgrades", set(), raising = False)

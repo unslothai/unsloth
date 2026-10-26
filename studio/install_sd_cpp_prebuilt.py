@@ -760,7 +760,6 @@ def _windows_error_mode_suppressed():
             return
         try:
             import ctypes
-
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
             # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
             previous = kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
