@@ -453,6 +453,17 @@ class WorldRivals(_Strict):
     hysteresis: float = Field(default = 0.15, ge = 0, le = 1)  # posture change needed to switch plans
 
 
+class WorldCity(_Strict):
+    """Mayor mode: the player zones and builds, a Micropolis-style simulation grows the town."""
+
+    enabled: bool = True
+    funds: int = Field(default = 20000, ge = 0, le = 1_000_000)
+    tax: int = Field(default = 7, ge = 0, le = 20)
+    advisor: bool = True  # a monthly advisor report from the chat model
+    petitions: bool = True  # residents file 1-2 petitions a month
+    events: bool = True  # the model may pick one event a month from a fixed menu
+
+
 class WorldSpec(_Strict):
     title: str
     seed: int = 0
@@ -478,6 +489,7 @@ class WorldSpec(_Strict):
     props3d: Optional[list[WorldProp3d]] = None
     rivals: Optional[WorldRivals] = None
     player_node: Optional[str] = None
+    city: Optional[WorldCity] = None
 
 
 RunStatus = Literal[

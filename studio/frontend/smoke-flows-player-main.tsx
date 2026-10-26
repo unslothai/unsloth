@@ -347,6 +347,10 @@ const PLAYED: WorldSpec = params.get("clutter")
       ],
     }
   : PLAYED_BASE;
+// `?city=1`: Mayor mode on the same village.
+const SERVED: WorldSpec = params.get("city")
+  ? { ...PLAYED, city: { funds: 20000 } }
+  : PLAYED;
 const PROPS_KEY = "flows-smoke-props3d";
 const MODELS_KEY = "flows-smoke-models";
 const savedProps = (): WorldProp3d[] | null => {
@@ -394,7 +398,7 @@ const mock: PlayerApi = {
   },
   async world() {
     const props = savedProps();
-    return props ? { ...PLAYED, props3d: props } : PLAYED;
+    return props ? { ...SERVED, props3d: props } : SERVED;
   },
   async saveWorldProps(_flowId, props) {
     sessionStorage.setItem(PROPS_KEY, JSON.stringify(props));
@@ -498,7 +502,40 @@ const mock: PlayerApi = {
       inventory: string[];
       player_message: string;
       goods?: { id: string }[];
+      task?: string;
+      city?: {
+        month: number;
+        total_pop: number;
+        demand_r: number;
+        residents: { id: string; zone: string; land_value: number }[];
+      };
     };
+    if (state.task === "mayor" && state.city) {
+      const d = state.city;
+      const who = d.residents[0];
+      return {
+        outputs: {
+          reply: {
+            mayor: {
+              advice: `Month ${d.month} report: population ${d.total_pop}, residential demand ${d.demand_r}.`,
+              petitions: who
+                ? [
+                    {
+                      citizen: who.id,
+                      zone: who.zone,
+                      metric: "land_value",
+                      value: who.land_value,
+                      text: `Land value at home is ${who.land_value}; a park would help.`,
+                    },
+                  ]
+                : [],
+              event: null,
+              name: null,
+            },
+          },
+        },
+      };
+    }
     if (state.goods?.length && /buy|sell|have/.test(state.player_message)) {
       return {
         outputs: {
@@ -568,8 +605,8 @@ window.__flowsPlayerSmoke = {
   calls,
   sessions,
   exited: 0,
-  map: generateMap(PLAYED),
-  props: PLAYED.props3d ?? [],
+  map: generateMap(SERVED),
+  props: SERVED.props3d ?? [],
   world: null,
 };
 

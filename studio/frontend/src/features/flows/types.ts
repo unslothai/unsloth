@@ -476,6 +476,16 @@ export interface WorldSpec {
   props3d?: WorldProp3d[];
   rivals?: WorldRivals | null;
   player_node?: string;
+  city?: WorldCity | null;
+}
+
+export interface WorldCity {
+  enabled?: boolean;
+  funds?: number;
+  tax?: number;
+  advisor?: boolean;
+  petitions?: boolean;
+  events?: boolean;
 }
 
 export interface WorldFaction {

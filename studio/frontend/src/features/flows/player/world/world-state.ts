@@ -5,6 +5,7 @@ import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
 import { type PropStates, type UseOutcome, propStatesOf } from "./action-verbs";
 import { type AutoState, autoOf, initialAuto } from "./autonomy";
+import { type CityState, cityOf, parseCity } from "./city-sim";
 import {
   REPLY_ACTIONS,
   type ReplyAction,
@@ -74,6 +75,7 @@ export interface WorldState {
   auto?: AutoState;
   npcAt?: Record<string, Point>;
   action?: { combat?: unknown; pose?: { z: number } };
+  city?: CityState;
   rivals?: RivalsState;
   life?: LifeState;
   props?: PropStates;
@@ -409,6 +411,7 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   const itemIds = new Set(played.items.map((i) => i.id));
   const questIds = new Set(played.quests.map((q) => q.id));
   const fresh = initialWorldState(played);
+  const city = cityOf(played) ? parseCity(r.city, played) : null;
   const npc: Record<string, NpcMind> = {};
   const optionsOn = lifeOf(played).options;
   for (const id of Object.keys(fresh.npc))
@@ -452,6 +455,7 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
     ...(played.action?.movement && r.action && typeof r.action === "object"
       ? { action: r.action }
       : {}),
+    ...(city ? { city } : {}),
     ...(rivalsOn(spec) && r.rivals
       ? { rivals: rivalsOf(r.rivals, spec, generateMap(spec)) }
       : {}),

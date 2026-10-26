@@ -58,6 +58,8 @@ import {
   isNoChatModelError,
   offlineLine,
 } from "./live-reply";
+import { cityQueueRate, mayorOn } from "./city-advisor";
+import { MayorHud } from "./mayor-panel";
 import { heldInChests, interactProp } from "./action-verbs";
 import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
@@ -480,10 +482,15 @@ export function WorldPlayer({
     () =>
       new BackgroundQueue(
         sim?.calls_per_minute ??
-          (baseSpec.rivals ? RIVALS_CALLS_PER_MINUTE : 0),
+          (mayorOn(baseSpec)
+            ? cityQueueRate(baseSpec)
+            : baseSpec.rivals
+              ? RIVALS_CALLS_PER_MINUTE
+              : 0),
       ),
-    [sim, baseSpec.rivals],
+    [sim, baseSpec],
   );
+  const cityTile = useRef<(p: Point, drag: boolean) => boolean>(() => false);
   useEffect(() => () => queue.clear(), [queue]);
   const busy = useRef(new Set<string>());
   const steered = useRef(new Set<string>());
@@ -660,6 +667,7 @@ export function WorldPlayer({
             props: wsRef.current.props,
             onEvent: (text) => toast(text),
             safeAt: (p) => safeRef.current(p),
+            onTile: (p, drag) => cityTile.current(p, drag),
           },
         );
         game.current = handle;
@@ -1873,6 +1881,24 @@ export function WorldPlayer({
               </button>
             ) : null}
           </div>
+          {mayorOn(baseSpec) && started ? (
+            <MayorHud
+              spec={spec}
+              map={map}
+              city={ws.city}
+              setWs={setWs}
+              game={game}
+              ready={ready}
+              view={view}
+              locked={lockedRef}
+              queue={queue}
+              api={api}
+              flowId={flowId}
+              replyEntry={replyEntry}
+              tileRef={cityTile}
+              toast={toast}
+            />
+          ) : null}
           {background && !talking ? (
             <div
               className="pointer-events-none absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/45 px-3 py-1 text-white/75 text-xs backdrop-blur-md"
@@ -1980,7 +2006,7 @@ export function WorldPlayer({
           </div>
         </Panel>
       ) : null}
-      {ready && started && !editor && spec.rivals ? (
+      {ready && started && !editor && spec.rivals && !mayorOn(spec) ? (
         <RivalsPanel
           api={api}
           flowId={flowId}
