@@ -439,8 +439,10 @@ def test_no_pool_copies_outside_checkpointing(monkeypatch, trainable_input):
     for layer in layers:
         y = layer(y)
     y.sum().backward()
-    assert seen == {"outputs": 0, "grad": 0}
+    # Only a leaf input's gradient is copied: its .grad outlives the generation.
+    assert seen == {"outputs": 0, "grad": 1 if trainable_input else 0}
     assert all(layer.proj.weight.grad is not None for layer in layers)
+    assert (x.grad is not None) is trainable_input
 
 
 @pytest.mark.parametrize("reentrant_kind", ["checkpoint", "no_grad"])

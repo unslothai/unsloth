@@ -1029,6 +1029,9 @@ def _wrap(
                     _param_grads_out_of_pool(self)
                     device = hidden_states.device.index
                     if _pool_outputs_stay_valid(self, hidden_states):
+                        if hidden_states.is_leaf and hidden_states.requires_grad:
+                            # A leaf's .grad outlives the generation (trainable inputs_embeds).
+                            hidden_states = _CloneGrad.apply(hidden_states)
                         return _graphed_call(compiled, device, self, hidden_states, *args, **kwargs)
                     if hidden_states.requires_grad and torch.is_grad_enabled():
                         hidden_states = _CloneGrad.apply(hidden_states)
