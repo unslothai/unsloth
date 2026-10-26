@@ -2695,6 +2695,7 @@ def _decode_alone_and_batched(
     turn,
     markers,
     cancel_after = None,
+    prompt = "prompt",
     **request,
 ):
     """*turn* answered by the single path and by a text batch row: every snapshot each emits."""
@@ -2705,7 +2706,7 @@ def _decode_alone_and_batched(
 
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda *_args, **_kwargs: "prompt",
+        lambda *_args, **_kwargs: prompt,
     )
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.render_with_native_template_fallback",
@@ -2799,6 +2800,54 @@ def test_a_batched_tool_row_decodes_what_the_reply_alone_does(
     turn = _SpmTurn(pieces, specials = specials, eos = eos, chat_template = "x", ends = ends)
     alone, batched = _decode_alone_and_batched(monkeypatch, turn, markers, cancel_after, **request_)
     assert alone and batched == {0: alone, 1: alone}
+
+
+@pytest.mark.parametrize(
+    "markers, request_, allows_reasoning",
+    [
+        (_CHANNELS, {"tools": _TOOL}, False),
+        (_CHANNELS, {"tools": _TOOL, "reasoning_is_extracted": True}, True),
+        (None, {"tools": _TOOL}, True),
+        (None, {}, False),
+    ],
+)
+def test_a_batched_constrained_row_is_planned_as_the_reply_alone_is(
+    monkeypatch, markers, request_, allows_reasoning
+):
+    from core.inference import mlx_inference
+
+    turn = _SpmTurn(
+        _GEMMA_TOOL_TURN, specials = _GEMMA_SPECIALS, eos = "<eos>", chat_template = "x", ends = "stop"
+    )
+    seen, decodes, sampling = [], [], mlx_inference._mlx_sampling_processors
+    decode = turn.decode
+    monkeypatch.setattr(turn, "decode", lambda ids, **kw: decodes.append(kw) or decode(ids, **kw))
+    # A kept </think> is what tells the grammar a closer survives the decode.
+    monkeypatch.setattr(mlx_inference, "decoder_preserves_token", lambda *_a: True)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_build_grammar_constraint",
+        lambda response_format, *_a, **kw: response_format
+        and SimpleNamespace(
+            allows_reasoning = allows_reasoning,
+            decoded_dropping = lambda ids: seen.append((_a, sorted(kw.items()), ids)),
+        ),
+    )
+    monkeypatch.setattr(
+        mlx_inference,
+        "_mlx_sampling_processors",
+        lambda **kw: seen.append(kw["grammar_constraint"] is not None) or sampling(**kw),
+    )
+    request_ = {**request_, "response_format": {"type": "json_object"}}
+    # The template opens <think>, which a document-only reply must not re-emit.
+    alone, batched = _decode_alone_and_batched(
+        monkeypatch, turn, markers, prompt = "P<think>", **request_
+    )
+    assert alone and batched == {0: alone, 1: alone}
+    third = len(seen) // 3
+    assert seen and seen == seen[:third] * 3 and True in seen
+    plain = [kw for kw in decodes if kw.get("skip_special_tokens")]
+    assert all(kw["clean_up_tokenization_spaces"] is False for kw in plain)
 
 
 def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatch):
@@ -3418,6 +3467,76 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     session.close()
 
 
+@pytest.mark.parametrize("ends", [None, "length", "stop"])
+def test_a_row_whose_own_processor_fails_leaves_and_its_neighbour_decodes_on(monkeypatch, ends):
+    import numpy
+
+    from core.inference import mlx_inference
+
+    rows, removed, steps = {}, [], []
+
+    def insert(_prompts, logits_processors, **_kwargs):
+        rows[len(rows)] = logits_processors[0]
+        return [len(rows) - 1]
+
+    def step():
+        steps.append(None)
+        for processors in rows.values():
+            for processor in processors:
+                processor(numpy.array([1]), "logits")
+        # The healthy row runs out of budget every third step, so a swallowed failure ends too.
+        healthy = "length" if len(steps) % 3 == 0 else None
+        return [], [
+            SimpleNamespace(uid = uid, token = 5, finish_reason = healthy if uid else ends)
+            for uid in rows
+        ]
+
+    generator = SimpleNamespace(
+        insert = insert,
+        next = step,
+        remove = lambda uids, **_k: [removed.append(uid) or rows.pop(uid) for uid in uids] and {},
+        close = lambda: None,
+    )
+    generate = types.ModuleType("mlx_lm.generate")
+    generate.BatchGenerator = lambda *_a, **_k: generator
+    monkeypatch.setitem(sys.modules, "mlx_lm.generate", generate)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+    backend._is_vlm = False
+    backend._batch_prompt_row = lambda _prompt, _state: ([], [9], None, None, [9])
+
+    def failing(_tokens, _logits):
+        raise ValueError("schema")
+
+    plans = iter([failing, None])
+    backend._plan_text_row = lambda _messages, **_kw: SimpleNamespace(
+        prompt = "P",
+        think_prefix = "",
+        stream = mlx_inference._RowStream(decode = lambda ids: "x" * len(ids)),
+        streamed = None,
+        sampler = None,
+        processors = [processor] if (processor := next(plans)) else [],
+        max_tokens = 8,
+    )
+    session = mlx_inference._TextBatchSession(backend, width = 2)
+    session.admit({"messages": []}, "bad")
+    session.admit({"messages": []}, "good")
+    (handle, failure), *events = session.step()
+    assert handle == "bad" and isinstance(failure, ValueError) and str(failure) == "schema"
+    # Its token was sampled unconstrained, and the single path raises before yielding it.
+    assert removed == [0] and session.handles == ["good"]
+    assert events == [("good", "x")]
+    assert list(session.step()) == [("good", "xx")]
+    session.close()
+    # The fixed multi-reply command fails as a single reply would.
+    plans = iter([failing, None])
+    backend.last_batch_generation_stats = [None, None]
+    with pytest.raises(ValueError, match = "schema"):
+        list(
+            backend._generate_session_batch([{"messages": []}] * 2, mlx_inference._TextBatchSession)
+        )
+
+
 def test_mlx_text_without_lru_prompt_cache_prefills_the_full_prompt(monkeypatch):
     from core.inference import mlx_inference
 
@@ -3725,14 +3844,16 @@ def test_mlx_batch_rows_plan_a_raw_completion_prompt_untemplated(monkeypatch):
     monkeypatch.setattr(backend, "_render_text_prompt", lambda *_a, **_k: pytest.fail("templated"))
     seen = {}
     monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **kw: seen.update(kw))
+    monkeypatch.setattr(mlx_inference, "_raw_prompt_constraint", _RawConstraint)
     row = mlx_inference._row_kwargs({"prompt_ids": [1, 2, 3], "penalty_window": 2})
-    plan = backend._plan_text_row([], **row)
+    plan = backend._plan_text_row([], grammar = "G", **row)
     assert (plan.prompt, plan.think_prefix, seen["penalty_prompt"], seen["penalty_window"]) == (
         [1, 2, 3],
         "",
         [1, 2, 3],
         2,
     )
+    assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
     backend._make_row_cache = lambda: None
     assert backend._batch_prompt_row(plan.prompt, None)[1] == [1, 2, 3]
     kwargs = []
@@ -3746,7 +3867,6 @@ def test_mlx_batch_rows_plan_a_raw_completion_prompt_untemplated(monkeypatch):
     vision = backend._plan_vlm_request({"prompt_ids": [4, 5], "messages": []})
     assert (vision.prompt, vision.max_tokens) == ([4, 5], ([4, 5], [4, 5]))
     assert backend._vlm_batch_prompt([4, 5]) == {"prompt_token_ids": [4, 5]}
-    assert mlx_inference._request_batch_gap({"grammar": "G"})
 
 
 _COMPLETION_TOK = SimpleNamespace(
@@ -3968,6 +4088,7 @@ def test_mlx_batch_releases_an_over_budget_cache_while_another_row_decodes(monke
                 generated = 1,
                 cached = 0,
                 reason = "stop",
+                failure = None,
             )
             for handle in banked
         }
@@ -8333,7 +8454,6 @@ def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeyp
         {"images_base64": ["AAAA"]},
         {"video": "AAAAGGZ0eXBtcDQy"},
         {"video_base64": "AAAAGGZ0eXBtcDQy"},
-        {"response_format": {"type": "json_object"}},
     ),
 )
 def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
@@ -8354,9 +8474,20 @@ def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
 
 
 @pytest.mark.parametrize(
-    "extra", ({"tools": [{"type": "function"}]}, {"tool_protocol_active": True})
+    "extra, refusal",
+    (
+        ({"tools": [{"type": "function"}]}, "a reply runs the tool protocol"),
+        ({"tool_protocol_active": True}, "a reply runs the tool protocol"),
+        (
+            {"response_format": {"type": "json_object"}},
+            "a reply is constrained to a response format",
+        ),
+        ({"grammar": 'root ::= "a"'}, "a reply is constrained to a response format"),
+    ),
 )
-def test_a_tool_reply_joins_a_text_batch_but_not_a_vision_one(monkeypatch, extra):
+def test_a_tool_or_constrained_reply_joins_a_text_batch_but_not_a_vision_one(
+    monkeypatch, extra, refusal
+):
     from core.inference import mlx_inference
 
     engine = _batch_engine(monkeypatch)
@@ -8369,7 +8500,8 @@ def test_a_tool_reply_joins_a_text_batch_but_not_a_vision_one(monkeypatch, extra
     backend._processor, backend._speculative_draft = object(), None
     backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, None
     assert backend.resident_unavailable_reason({}) is None
-    assert backend.resident_unavailable_reason(extra) == "a reply runs the tool protocol"
+    assert backend.resident_unavailable_reason(extra) == refusal
+    assert backend.resident_unavailable_reason({"response_format": {"type": "text"}}) is None
 
 
 def test_a_quantized_or_budgeted_kv_cache_does_not_batch(monkeypatch):

@@ -3937,14 +3937,18 @@ def _row_processor_gap(engine, requests):
     return unavailable() if callable(unavailable) else None
 
 
+def _constrained(request):
+    return request.get("response_format") not in (None, {"type": "text"}) or (
+        request.get("grammar") is not None
+    )
+
+
 def _request_batch_gap(request):
     """What a reply asks for that only the one-at-a-time decode serves, or None."""
     if request.get("images") or request.get("images_base64"):
         return "a reply replays tool images"
     if request.get("video") is not None or request.get("video_base64"):
         return "a reply carries a video clip"
-    if request.get("response_format") is not None or request.get("grammar") is not None:
-        return "a reply is constrained to a response format"
     if request.get("n_probs"):
         return "a reply reports token probabilities"
     return None
@@ -4009,6 +4013,7 @@ class _TextBatchRow:
         "reason",
         "processing_at",
         "ready_at",
+        "failure",
     )
 
     def __init__(self, *, handle, plan, cache_key, all_tokens, prompt_len, cached):
@@ -4023,6 +4028,24 @@ class _TextBatchRow:
         self.reason = None
         self.processing_at = None
         self.ready_at = None
+        self.failure = None
+
+
+def _failing_alone(row, processors):
+    """A row's processors, whose failure is kept on the row rather than raised through the batch."""
+
+    def guarded(processor):
+        def _processor(tokens, logits):
+            if row.failure is None:
+                try:
+                    return processor(tokens, logits)
+                except Exception as exc:
+                    row.failure = exc
+            return logits
+
+        return _processor
+
+    return [guarded(processor) for processor in processors]
 
 
 def _row_kwargs(request):
@@ -4116,6 +4139,9 @@ class _TextBatchSession:
             if image is None
             else backend._conversation_to_render(messages, request.get("system_prompt", ""), image),
             tool_protocol_active = request.get("tool_protocol_active"),
+            response_format = request.get("response_format"),
+            reasoning_is_extracted = request.get("reasoning_is_extracted", False),
+            grammar = request.get("grammar"),
             **row_kwargs,
         )
         began = time.perf_counter()
@@ -4151,7 +4177,7 @@ class _TextBatchSession:
             caches = [cache],
             all_tokens = [prefix],
             samplers = [plan.sampler],
-            logits_processors = [_row_logits_processors(plan.processors)],
+            logits_processors = [_failing_alone(row, _row_logits_processors(plan.processors))],
         )
         if len(uids) != 1:
             self.generator.remove(list(uids))
@@ -4181,6 +4207,13 @@ class _TextBatchSession:
             row = self._by_uid.get(event.uid)
             if row is not None and row.processing_at is None:
                 row.processing_at = began
+        # A processor runs a step ahead, so the single path raises before yielding this token;
+        # reported first, so a sibling ending in this step cannot answer the request as done.
+        for row in [row for row in self._rows.values() if row.failure is not None]:
+            self.generator.remove([row.uid])
+            self._rows.pop(row.handle, None)
+            self._by_uid.pop(row.uid, None)
+            yield row.handle, row.failure
         for event in events:
             row = self._by_uid.get(event.uid)
             if row is None:
@@ -6561,12 +6594,17 @@ class MLXInferenceBackend:
         tool_protocol_active = None,
         prompt_ids = None,
         penalty_window = None,
+        response_format = None,
+        reasoning_is_extracted = False,
+        grammar = None,
     ) -> "_TextRowPlan":
         from mlx_lm.sample_utils import make_sampler
 
         if prompt_ids is not None:
             prompt, reasoning_channel_markers, think_prefix = list(prompt_ids), None, ""
             _resumed_partial = False
+            preserve_native_channels = False
+            constraint = _raw_prompt_constraint(grammar, self._tokenizer)
         else:
             render_result = self._render_text_prompt(
                 messages,
@@ -6580,18 +6618,30 @@ class MLXInferenceBackend:
             reasoning_channel_markers = render_result.reasoning_channel_markers
             _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
+            preserve_native_channels = reasoning_channel_markers is not None
+            think_close_survives = (
+                bool(tools) or tool_protocol_active or preserve_native_channels
+            ) and decoder_preserves_token(
+                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+            )
             think_prefix = _think_prefix(
                 prompt,
                 getattr(self._tokenizer, "all_special_tokens", None),
                 messages,
                 continue_final_message,
-                preserves_think_close = (
-                    bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
-                )
-                and decoder_preserves_token(
-                    self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
-                ),
+                preserves_think_close = think_close_survives,
             )
+            constraint = _build_grammar_constraint(
+                response_format,
+                self._tokenizer,
+                prompt,
+                reasoning_markers = reasoning_channel_markers,
+                reasoning_is_extracted = reasoning_is_extracted,
+                reply_keeps_special_tokens = preserve_native_channels or think_close_survives,
+            )
+            if constraint is not None and not constraint.allows_reasoning:
+                think_prefix = ""
+                preserve_native_channels = False
         if seed is None:
             sampler = make_sampler(
                 temp = temperature,
@@ -6613,11 +6663,11 @@ class MLXInferenceBackend:
             presence_penalty = presence_penalty,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
         )
 
-        preserve_native_channels = reasoning_channel_markers is not None
         normalizer = (
             make_reasoning_normalizer(
                 reasoning_channel_markers,
@@ -6637,6 +6687,10 @@ class MLXInferenceBackend:
             if tools or preserve_native_channels or tool_protocol_active
             else None
         )
+        if constraint is not None:
+            constraint.decoded_dropping(
+                native_token_decoder.dropped_ids() if native_token_decoder is not None else None
+            )
         stop_token_ids = (
             _mlx_stop_token_ids(self._tokenizer, self._model)
             if native_token_decoder is not None
@@ -6662,7 +6716,11 @@ class MLXInferenceBackend:
             decode = lambda ids: self._tokenizer.decode(
                 ids,
                 skip_special_tokens = True,
-                **({"clean_up_tokenization_spaces": False} if prompt_ids is not None else {}),
+                **(
+                    {"clean_up_tokenization_spaces": False}
+                    if constraint is not None or prompt_ids is not None
+                    else {}
+                ),
             )
         row = _RowStream(
             prefix = think_prefix,
@@ -7507,6 +7565,8 @@ class MLXInferenceBackend:
         if any(request.get("tools") or request.get("tool_protocol_active") for request in requests):
             # The batch reports text, not ids, so native tool controls cannot be decoded as alone.
             return "a reply runs the tool protocol"
+        if any(_constrained(request) for request in requests):
+            return "a reply is constrained to a response format"
         if any(request.get("prompt_ids") is not None for request in requests):
             # The batch detokenizer keeps control tokens and trims the first leading space.
             return "a raw prompt on a vision model decodes on its own"
@@ -7546,6 +7606,9 @@ class MLXInferenceBackend:
     ):
         def report(events):
             for row, snapshot in events:
+                if isinstance(snapshot, BaseException):
+                    # Every row answers one command, which fails as a single reply would.
+                    raise snapshot
                 if snapshot is None:
                     self.last_batch_generation_stats[row] = session.take_stats(row)
                 yield row, snapshot

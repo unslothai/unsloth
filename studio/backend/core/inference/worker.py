@@ -1612,12 +1612,29 @@ class _ResidentBatch:
             return
         try:
             for handle, snapshot in self.session.step(waiting):
-                self._report(handle, snapshot)
+                if not isinstance(snapshot, BaseException):
+                    self._report(handle, snapshot)
+                elif not self._fail_row(handle[0], snapshot):
+                    return
         except Exception as exc:
             logger.error("Batched generation error: %s", exc, exc_info = True)
             self._fail_all(exc)
             return
         self._close_if_empty()
+
+    def _fail_row(self, request_id: str, exc: BaseException) -> bool:
+        """Answer a request whose own decode failed, the batch decoding on. False where it gave up the batch."""
+        if request_id not in self._owed:
+            return True
+        logger.error("A batched reply failed: %s", exc, exc_info = exc)
+        stack = "".join(traceback.format_exception(exc, limit = 20))
+        if not self._forget(request_id, withdraw = True):
+            self._fail_all(exc)
+            return False
+        _send_response(
+            self.resp_queue, {**_generation_error_payload(request_id, exc), "stack": stack}
+        )
+        return True
 
     def _fail_all(self, exc: BaseException) -> None:
         """Give up on the batch: every request in it is owed an error, not silence."""
