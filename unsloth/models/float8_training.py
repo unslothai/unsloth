@@ -237,7 +237,6 @@ def _check_hardware(device, recipe):
 
 def _reattach_dispatch_hooks(model, names, dispatch_hooks):
     from accelerate.hooks import add_hook_to_module
-
     modules = dict(model.named_modules())
     for name in names:
         hook = dispatch_hooks.get(name)
