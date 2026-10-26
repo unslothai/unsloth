@@ -3523,19 +3523,19 @@ export function ModelConfigPage({
       ? noted.name
       : undefined;
   };
-  // Record first: a set holding the pin's values still names itself.
+  const inferOnce =
+    pinnedEntry !== null && pickedSet === undefined && loadedConfig != null && atBaseline;
+  // Record first, null (Default) included: a set holding the pin's values still names itself.
+  const notedOnce = inferOnce ? loadedOnceNamed(loadedConfig) : undefined;
   const loadedOnce =
-    pinnedEntry !== null &&
-    pickedSet === undefined &&
-    loadedConfig != null &&
-    atBaseline
-      ? (loadedOnceNamed(loadedConfig) ??
-        (perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(pinnedEntry.config))
-          ? undefined
-          : (savedSets.find((entry) =>
-              perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(entry.config)),
-            )?.name ?? (isDefaultConfig(forSetStore(loadedConfig)) ? null : undefined))))
-      : undefined;
+    notedOnce !== undefined
+      ? notedOnce
+      : inferOnce &&
+          !perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(pinnedEntry.config))
+        ? (savedSets.find((entry) =>
+            perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(entry.config)),
+          )?.name ?? (isDefaultConfig(forSetStore(loadedConfig)) ? null : undefined))
+        : undefined;
   // Held past the first edit, else Save writes into the pinned set. A new load drops it.
   useEffect(() => {
     if (loadedOnce !== undefined) setPickedSet(loadedOnce);
