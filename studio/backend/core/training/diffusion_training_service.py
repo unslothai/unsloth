@@ -362,6 +362,7 @@ def _idle_state() -> dict[str, Any]:
         "audio_loss": None,
         "num_images": None,
         "in_model_load": False,
+        "preparation": None,
         "output_dir": None,
         "lora_path": None,
         # The optional second (EMA-averaged) adapter, when ema_decay was enabled.
@@ -1077,11 +1078,13 @@ class DiffusionTrainingService:
             s = self._state
             s["updated_at"] = time.time()
             if etype == "model_load_started":
-                s.update(in_model_load = True, status = "running", message = "Loading base model...")
+                s.update(
+                    in_model_load = True, preparation = None, status = "running", message = "Loading base model..."
+                )
                 if ev.get("num_images") is not None:
                     s["num_images"] = ev.get("num_images")
             elif etype == "model_load_completed":
-                s.update(in_model_load = False, message = "Training...")
+                s.update(in_model_load = False, preparation = None, message = "Training...")
             elif etype == "preparing":
                 # A long precompute phase (e.g. the VAE latent cache) before the first step; surfaced so the UI
                 # shows progress instead of a silent stall.
@@ -1090,6 +1093,7 @@ class DiffusionTrainingService:
                 s.update(
                     status = "running",
                     in_model_load = True,
+                    preparation = {"stage": ev.get("stage"), "done": done, "total": total},
                     message = (
                         f"Preparing ({stage} {done}/{total})..."
                         if done is not None and total is not None
@@ -1156,6 +1160,8 @@ class DiffusionTrainingService:
                 s.update(
                     status = "running",
                     step = ev.get("step", s["step"]),
+                    preparation = None,
+                    in_model_load = False,
                     total_steps = ev.get("total_steps", s["total_steps"]),
                     loss = loss,
                     avg_loss = avg_loss,
@@ -1194,6 +1200,7 @@ class DiffusionTrainingService:
                     active = False,
                     in_model_load = False,
                     status = "stopped" if ev.get("stopped") else "completed",
+                    preparation = None,
                     output_dir = ev.get("output_dir"),
                     lora_path = ev.get("lora_path"),
                     ema_path = ev.get("ema_path"),
@@ -1229,6 +1236,7 @@ class DiffusionTrainingService:
                     active = False,
                     in_model_load = False,
                     status = "error",
+                    preparation = None,
                     message = str(ev.get("message", "error")),
                 )
 

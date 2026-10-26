@@ -324,6 +324,27 @@ def test_apply_event_transitions():
     assert svc.status()["status"] == "error" and svc.status()["message"] == "boom"
 
 
+def test_preparation_counts_survive_status_polling_and_clear_for_training():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 48, "total": 60})
+    assert svc.status()["preparation"] == {"stage": "cache_latents", "done": 48, "total": 60}
+    assert svc.status()["in_model_load"] is True
+    svc._apply_event({"type": "model_load_completed"})
+    assert svc.status()["preparation"] is None
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 60, "total": 60})
+    svc._apply_event({"type": "progress", "step": 1, "total_steps": 30, "loss": 0.4})
+    assert svc.status()["preparation"] is None
+    assert svc.status()["in_model_load"] is False
+
+
+@pytest.mark.parametrize("event", [{"type": "complete"}, {"type": "error", "message": "boom"}])
+def test_terminal_events_clear_preparation_counts(event):
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 48, "total": 60})
+    svc._apply_event(event)
+    assert svc.status()["preparation"] is None
+
+
 def test_the_joint_losses_reach_status_and_history():
     """video_loss and audio_loss must reach status and history, index-aligned with steps."""
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
