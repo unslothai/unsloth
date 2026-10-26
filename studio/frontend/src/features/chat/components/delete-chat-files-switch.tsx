@@ -4,9 +4,7 @@
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/i18n";
 
-/** The file half of a chat delete, shown wherever one is confirmed. "Always delete files" makes the
- *  delete destructive beyond the chat itself, so every confirmation has to say so and let the user
- *  turn it off for this one. */
+/** File half of a chat delete; every confirmation must offer opting out of file deletion. */
 export function DeleteChatFilesSwitch({
   id,
   checked,
@@ -17,7 +15,6 @@ export function DeleteChatFilesSwitch({
   id: string;
   checked: boolean;
   onCheckedChange: (next: boolean) => void;
-  /** For a delete covering more than one chat, which reads differently. */
   description?: string;
   label?: string;
 }) {

@@ -21,6 +21,7 @@ DRIVERS = (
     "playwright_prompt_queue_actions.py",
     "playwright_composer_settings.py",
     "playwright_queue_localization.py",
+    "playwright_composer_deferred_prompt.py",
 )
 
 

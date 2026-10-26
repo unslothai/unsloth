@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 import torch
 from typing import Tuple
-from .utils import torch_gpu_device
+from .utils import torch_gpu_device, DEVICE_TYPE
 from .rms_layernorm import (
     _BF16_TRACEABLE,
     _TRACEABLE,
@@ -26,7 +26,19 @@ __all__ = [
     "decode_qk_norm_rope",
 ]
 
-QK_NORM_ROPE_ENABLED = os.environ.get("UNSLOTH_FUSED_QKNORM_ROPE", "0") == "1"
+
+def _qk_norm_rope_default():
+    # UNSLOTH_FUSED_QKNORM_ROPE=0 keeps the unfused path, =1 forces the fused one. Unset: on for
+    # NVIDIA CUDA; ROCm keeps the unfused training path until its backward is measured there.
+    flag = os.environ.get("UNSLOTH_FUSED_QKNORM_ROPE", "").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    return DEVICE_TYPE == "cuda"
+
+
+QK_NORM_ROPE_ENABLED = _qk_norm_rope_default()
 
 
 @triton.jit
@@ -442,7 +454,7 @@ def fast_qk_norm_rope(
             position_ids = position_ids.reshape(1, seq_len).expand(batch, seq_len)
         if position_ids.numel() != batch * seq_len:
             return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)
-        rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device)
+        rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
     else:
         if seq_len > cos2.shape[0]:
             return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)

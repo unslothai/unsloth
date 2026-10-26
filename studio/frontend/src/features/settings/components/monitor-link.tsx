@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The monitor has its own page, normally reached from the floating panel; this card is
-// the way in from Settings.
-
 import { Switch } from "@/components/ui/switch";
 // Direct path, not the barrel: the barrel re-exports the page, defeating its lazy route.
 import { useApiMonitorOverlayStore } from "@/features/api-monitor/overlay-store";
@@ -29,7 +26,6 @@ export function MonitorLink(): ReactElement {
   const autoOpen = useApiMonitorOverlayStore((s) => s.autoOpen);
   const setAutoOpen = useApiMonitorOverlayStore((s) => s.setAutoOpen);
 
-  // One snapshot, not a poll: the live view is the monitor page.
   useEffect(() => {
     let cancelled = false;
     void getApiMonitor()
@@ -55,7 +51,7 @@ export function MonitorLink(): ReactElement {
         }}
         className="flex w-full min-w-0 items-center gap-3 rounded-lg border border-border/70 bg-background px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
-        <span className="relative flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+        <span className="relative flex size-8 shrink-0 items-center justify-center icon-disc">
           <HugeiconsIcon
             icon={ActivityIcon}
             strokeWidth={1.75}

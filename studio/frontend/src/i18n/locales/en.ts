@@ -753,7 +753,6 @@ export const en = {
     shutdown: "Shutdown",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Documentation",
       keyboardShortcuts: "Keyboard Shortcuts",
@@ -816,24 +815,22 @@ export const en = {
       images: "Images",
       video: "Video",
       audio: "Audio",
+      tasks: "Scheduled",
       // Hover text while the row spins, before this machine's capability is measured.
       trainChecking: "Checking this machine for training support...",
       videoChecking: "Checking this machine for video support...",
       more: "More",
-      // Last entry of the More flyout; opens Settings -> Appearance.
       customizeSidebar: "Customize sidebar",
-      // Rendered uppercase in a pill beside a recently shipped tab.
+      // Rendered uppercase in a pill.
       newBadge: "New",
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
-      // Shown under an empty project folder in the sidebar.
       noChats: "No chats",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
+      // Every project is pinned, so the section has no rows.
       allProjectsPinned: "All projects pinned",
-      // Same, when some of them are filed in custom sections instead.
+      // Same, when some are filed in custom sections instead.
       allProjectsFiled: "All projects are pinned or in sections",
-      // Shown in the Projects section when there are no projects yet.
       noProjects: "No projects",
       showMore: "Show more",
       showLess: "Show less",
@@ -898,7 +895,6 @@ export const en = {
       description: "{path} does not exist.",
       backToChat: "Back to chat",
     },
-    // Bulk actions on a multi-row selection.
     selection: {
       pinProjects: "Pin projects",
       unpinProjects: "Unpin projects",
@@ -923,7 +919,6 @@ export const en = {
       deleteChatFilesDescription:
         "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace.",
     },
-    // Sidebar list headers: how chats are grouped and ordered.
     organize: {
       sidebarHeading: "Organize sidebar",
       byProject: "By project",
@@ -936,11 +931,9 @@ export const en = {
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
       sortPinnedChats: "Sort pinned chats",
-      // Header of the menu's section-visibility toggles.
       show: "Show",
       newSection: "New section",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "New section",
       createDescription: "Group chats and projects however you like",
@@ -951,16 +944,14 @@ export const en = {
       edit: "Edit",
       remove: "Remove section",
       markAllRead: "Mark all as read",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Move to",
       section: "Section",
       sectionsHeading: "Sections",
       removeFromProject: "Remove from project",
       newSection: "New section",
       removeFromSection: "Remove from section",
-      // Names the project or section the row leaves; the two above are for when it is not one.
+      // Names the project or section the row leaves.
       removeFrom: "Remove from {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "Drag chats or projects here",
       sectionOptions: "Section options",
       newChatInSection: "New chat in {name}",
@@ -1101,6 +1092,9 @@ export const en = {
       storageDisk: "{free} free of {total} on this disk",
       storageEmpty: "Nothing is stored in the Library yet.",
       storageHidden: "{size} hidden in Content settings",
+      storageHiddenLabel: "Hidden",
+      storageRefresh: "Refresh",
+      storageOpen: "Open",
       storageError: "Could not read Library storage.",
       locationsSection: "Files on disk",
       locationsDescription: "Where Unsloth keeps each kind of file. Library folders are labels inside Unsloth, not folders on disk. Fine-tunes and exports stay where they are, since training and chats refer to them by path.",
@@ -1534,7 +1528,7 @@ export const en = {
       exportFailed: "Could not download the logs.",
       exportTooOld: "Running Unsloth backend is too old to export logs. Update that backend and restart.",
       exportForbidden: "Downloading all logs needs a signed-in Unsloth session. An API key is not enough.",
-      // Not rendered: extra terms the settings search matches this tab on.
+      // Not rendered: extra settings-search terms.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
     voice: {
@@ -2371,7 +2365,7 @@ export const en = {
       },
     },
     resources: {
-      title: "System",
+      title: "System and Engine",
       description: "Monitor this Unsloth server's hardware and storage.",
       liveUpdates: "Live updates",
       floatingWindow: "Floating window",
@@ -2481,7 +2475,7 @@ export const en = {
           updateChecksDisabled:
             "Update checks are disabled (UNSLOTH_DISABLE_UPDATE_CHECK=1), so the available backends are not looked up.",
         },
-        // Not rendered: extra terms the settings search matches these rows on.
+        // Not rendered: extra settings-search terms.
         llamaBackendKeywords:
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
@@ -2494,6 +2488,7 @@ export const en = {
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
         multiModel: "Keep multiple models loaded",
+        openSystemSettings: "System settings",
         multiModelOff: "Off",
         multiModelFit: "When they fit",
         multiModelAlways: "Always",
@@ -2502,7 +2497,7 @@ export const en = {
           "Loading a model keeps the others when they fit. When they don't, it unloads the ones not in use first, then the active one.",
         multiModelDescriptionAlways:
           "Loading a model never unloads another. A model that does not fit is not loaded. Idle auto-unload and training still free memory.",
-        multiModelHint: "Covers chat, speech, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
+        multiModelHint: "Covers chat, speech, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. A model loaded beside others gets the memory they leave free, so it may start with a shorter context. “When they fit” and “Always” never unload a model on another GPU.",
         allowOversizedLoad: "Allow oversized model loads",
         allowOversizedLoadDescription: "Load image and video models even when the memory check says they will not fit.",
         allowOversizedLoadHint: "Applies where the CPU and GPU share one memory pool (Apple Silicon, integrated GPUs). Unsloth refuses a load when its estimate of the model weights is larger than the memory left after reserving room for the operating system. With this on, those loads are attempted anyway. The estimate can be wrong either way: an oversized load can fail, use up all memory, make the computer swap heavily or stop responding, or stop Unsloth. Off by default.",
@@ -2514,7 +2509,7 @@ export const en = {
         reloadRequired: "Reload the model to apply the new memory flags.",
         loadError: "Failed to load model memory settings",
         saveError: "Failed to save model memory settings",
-        // Not rendered: extra terms the settings search matches these rows on.
+        // Not rendered: extra settings-search terms.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
         multiModelKeywords:
@@ -2525,13 +2520,20 @@ export const en = {
       storage: {
         title: "Storage",
         systemDisk: "System disk",
+        systemUsed: "{used} used of {total} on the system disk",
+        modelsDiskSummary: "Models folder drive: {used} used of {total}, {free} free",
+        segmentModels: "Models",
+        segmentCaches: "Caches",
+        segmentOther: "Other",
+        segmentFree: "Free",
+        refreshAction: "Refresh",
         modelsDisk: "Models disk",
         diskUsage: "{used} used / {total}",
         diskFree: "{free} free",
         modelsFolder: "Models folder",
         modelsFolderDescription: "Where downloaded models are stored.",
         modelsFolderHint: "Where downloaded models are stored. Change it to keep models off your system drive. Applies to new downloads only. Models you already have stay where they are.",
-        // Not rendered: extra terms the settings search matches this row on.
+        // Not rendered: extra settings-search terms.
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         futureDownloads: "New downloads only",
@@ -2553,7 +2555,7 @@ export const en = {
           label: "Cache files",
           description: "{size} in caches, of which {reclaimable} can be cleared now.",
           hint: "Package downloads, compiled kernels and transfer caches that Unsloth rebuilds when it needs them. Downloaded models, projects, chats, settings and your Hugging Face token are never cleared here.",
-          // Not rendered: extra terms the settings search matches this row on.
+          // Not rendered: extra settings-search terms.
           keywords:
             "cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
           measuring: "Measuring cache sizes...",
@@ -2813,6 +2815,11 @@ export const en = {
       showReplyTimesDescription: "Show when each reply finished, below the reply.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message",
+      showGenerationDetails: "Generation details",
+      showGenerationDetailsDescription:
+        "Show live prompt and reply speeds with token counts, and where a model's layers loaded.",
+      showGenerationDetailsKeywords:
+        "verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
@@ -3182,13 +3189,22 @@ export const en = {
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",
+      columnName: "Name",
+      columnToken: "Token",
+      columnCreated: "Created",
+      columnLastUsed: "Last used",
+      columnExpires: "Expires",
       loadError: "Couldn't load API access.",
       createError: "Couldn't create access token.",
       revokeError: "Couldn't revoke access token.",
       never: "Never",
-      tokenNamePlaceholder: "Token name (e.g. production)",
+      tokenNamePlaceholder: "Token name",
       newAccessTokenName: "New access token name",
       createToken: "Create token",
+      neverExpiresHint: "Never expires",
+      expiresInDaysHint: "Expires in {n} days",
+      createTokenHint: 'Create a token named "{name}"',
+      defaultTokenName: "New Token {n}",
       creating: "Creating...",
       newTokenCreated: "New access token created",
       accessTokenCopied: "Access token copied",
@@ -3224,13 +3240,16 @@ export const en = {
       expired: "expired",
       expiredStatus: "Expired",
       today: "today",
-      created: "Created {value}",
-      used: "Used {value}",
-      expires: "Expires {value}",
       actionsFor: "Actions for {name}",
       copyPrefix: "Copy prefix",
       copyFailed: "Could not copy",
       revokeToken: "Revoke token",
+      regenerateToken: "Regenerate token",
+      regenerateTitle: 'Regenerate access token "{name}"?',
+      regenerateDescription: "A new token with the same name and expiry period replaces this one. Apps using the current token lose access immediately.",
+      regenerateAction: "Regenerate",
+      regenerating: "Regenerating...",
+      regenerateError: "Couldn't regenerate access token.",
       revokeTitle: 'Revoke access token "{name}"?',
       revokeDescription:
         "Apps using this token immediately lose access. This cannot be undone.",
@@ -4230,7 +4249,7 @@ export const en = {
       "Weights {model} + context {context} = {total} of {budget} usable VRAM",
     readoutWithSpec:
       "Weights {model} + KV {kv} + MTP draft {spec} = {total} of {budget} usable VRAM",
-    // Measured against llama.cpp: the cache is allocated at context creation, sized to n_ctx.
+    // The cache is allocated at context creation, sized to n_ctx.
     kvRate: "KV reserved, ~{rate}/token",
     oomLikely: "With current settings OOM likely",
     tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",
@@ -4314,6 +4333,142 @@ export const en = {
     resetDescription: "Every skill goes back to how a fresh install has it: your skills and Claude skills on, bundled skills off. Your on and off choices are cleared.",
     reset: "Reset",
   },
+  // The Scheduled page: prompts that run on a schedule, each run answered in a new chat.
+  scheduledTasks: {
+    title: "Scheduled",
+    description: "Run prompts on a schedule with your loaded model.",
+    newTask: "New task",
+    upcoming: "Upcoming",
+    // Column headers over the list, and the Repeats value of a monthly task.
+    columns: {
+      repeats: "Repeats",
+      time: "Time",
+      nextRun: "Next run",
+    },
+    monthlyDay: "Monthly, day {day}",
+    // The list's status filter: a menu of Active, Paused and Completed.
+    filterBy: "Filter by",
+    filter: "Filter tasks",
+    active: "Active",
+    noMatches: "No scheduled tasks",
+    search: "Search scheduled tasks",
+    // Read out for the dot on a task whose latest run the user has not opened yet.
+    newResult: "New result",
+    // Above a prompt a task sent; opens that task for editing.
+    sentBy: "Sent by scheduled task",
+    // Read out for the clock on a Recents row a task's run made.
+    chatMark: "Chat from a scheduled task",
+    taskMissing: "This task no longer exists.",
+    emptyTitle: "No scheduled tasks yet",
+    emptyDescription: "Get a daily summary, a weekly reminder, or anything else you want done on a schedule.",
+    createFirst: "Create a task",
+    loadFailed: "Could not load scheduled tasks.",
+    retry: "Retry",
+    // Pills beside a task's name.
+    paused: "Paused",
+    completed: "Completed",
+    running: "Running",
+    // {when} is relative, e.g. "2 hours ago".
+    lastRun: "Last run {when}",
+    // {reason} says why, e.g. "No model was loaded."
+    lastRunFailed: "Last run failed {when}: {reason}",
+    openChat: "Open chat",
+    runNow: "Run now",
+    pause: "Pause",
+    resume: "Resume",
+    edit: "Edit",
+    options: "Task options",
+    schedule: {
+      once: "Once, {date} at {time}",
+      daily: "Every day at {time}",
+      weekdays: "Every weekday at {time}",
+      // {days} is a list of short weekday names, e.g. "Mon, Wed, and Fri".
+      weekly: "Every {days} at {time}",
+      monthly: "Every month on day {day} at {time}",
+    },
+    form: {
+      createTitle: "Schedule a task",
+      editTitle: "Edit scheduled task",
+      name: "Name",
+      // Left blank, the name is taken from the first line of the instructions.
+      namePlaceholder: "Name (optional)",
+      instructions: "Instructions",
+      instructionsHint: "Sent to the model each time the task runs.",
+      instructionsPlaceholder: "Instructions…",
+      repeat: "Repeat",
+      once: "Once",
+      daily: "Daily",
+      weekdays: "Weekdays",
+      weekly: "Weekly",
+      monthly: "Monthly",
+      date: "Date",
+      time: "Time",
+      days: "Days",
+      dayOfMonth: "Day of the month",
+      lastDayNote: "Months without this day run on their last day.",
+      advanced: "Advanced",
+      notifications: "Notifications",
+      // Which of a task's finished runs get a toast and a system notification.
+      notifyAll: "Every run",
+      notifyFailures: "Only failures",
+      notifyNone: "Off",
+      archiveSuccessful: "Archive successful runs",
+      project: "Project",
+      projectNone: "None",
+      model: "Model",
+      modelLoaded: "Whichever model is loaded",
+      modelOnDevice: "On this device",
+      modelNote: "If this model isn't loaded when the task runs, Unsloth asks first.",
+      modelNoteAllowed: "Loads this model only while you're away from Unsloth, then puts back what you had.",
+      modelEmpty: "Download a model in Model hub or add a connection to choose another.",
+      modelMissing: "{model} (not on this device)",
+      allowLoad: "Switch automatically when I'm away",
+      allowLoadHint:
+        "When this task is due and you haven't used Unsloth for 5 minutes, it loads this model without asking, runs the task, then switches back to the model you had. If you're using Unsloth or training at that time, the run is skipped and your model is left alone. Off, Unsloth asks before loading.",
+      reasoning: "Thinking effort",
+      reasoningDefault: "Default",
+      reasoningOff: "Off",
+      reasoningLowest: "Lowest",
+      reasoningHighest: "Highest",
+      create: "Create",
+    },
+    deleteDialog: {
+      title: "Delete scheduled task?",
+      description: "“{title}” will stop running. Chats it already made are kept.",
+    },
+    errors: {
+      noModel: "No model was loaded. Load a model in Chat, then run the task again.",
+      modelNotLoaded: "The task's model wasn't loaded. Load it in Chat, then run the task again.",
+      modelLoadFailed: "Couldn't load the task's model. Make sure it's still downloaded in Model hub.",
+      modelBusy: "Skipped while you were using Unsloth, so your model was left alone.",
+      connectionUnavailable: "The task's connection is missing or turned off. Check it in Connections.",
+      timeout: "The model took too long to answer.",
+      cancelled: "The run was stopped before it finished.",
+      interrupted: "Unsloth closed before the run finished.",
+      empty: "The model returned an empty answer.",
+      unknown: "The run failed.",
+      saveFailed: "Could not save the task",
+      updateFailed: "Could not update the task",
+      deleteFailed: "Could not delete the task",
+      runFailed: "Could not start the task",
+    },
+    // Asked when a task's model is not loaded: loading it replaces the model in Chat.
+    loadPrompt: {
+      title: "Load {model}?",
+      description: "“{title}” runs on {model}, which isn't loaded. Running it loads {model} until it finishes, then puts back what you had.",
+      always: "Don't ask again. Switch only while I'm away from Unsloth.",
+      notNow: "Not now",
+      load: "Load and run",
+    },
+    toast: {
+      finished: "“{title}” is ready",
+      failed: "“{title}” failed",
+      many: "{count} scheduled tasks finished",
+      open: "Open",
+      view: "View",
+    },
+    notificationBody: "Your scheduled task finished. Open Unsloth to read the answer.",
+  },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {
     tabs: {
@@ -4328,7 +4483,6 @@ export const en = {
       all: "All",
       chats: "Chats",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Chats",
@@ -4446,7 +4600,6 @@ export const en = {
         uploadFailed: "Could not upload {name}",
       },
     },
-    // One title and description per tab, shown when it has nothing yet.
     empty: {
       suggestedTitle: "Your library is empty",
       suggestedDescription: "Files you upload or create in chats show up here.",
@@ -4482,11 +4635,10 @@ export const en = {
     searchFolder: "Search folder",
     dropToUpload: "Drop to upload",
     dropToUploadInto: 'Drop to upload to "{folder}"',
-    // Folder cards and list rows. The singular form is used when count is 1.
+    // The singular form is used when count is 1.
     itemCountOne: "{count} item",
     itemCount: "{count} items",
     selectItem: "Select {name}",
-    // The bar that floats over the page while anything is selected.
     selection: {
       startChat: "Start chat",
       move: "Move",
@@ -4509,7 +4661,6 @@ export const en = {
       noFolder: "Library (no folder)",
       deleteFolder: "Delete folder",
     },
-    // Each platform's own name for opening the file manager at a file.
     reveal: {
       finder: "Reveal in Finder",
       explorer: "Show in Explorer",
@@ -4567,7 +4718,7 @@ export const en = {
       modifiedColumn: "Modified",
       justNow: "just now",
     },
-    // File sizes. {value} is already formatted for the locale.
+    // {value} is already formatted for the locale.
     size: {
       bytes: "{value} B",
       kilobytes: "{value} KB",
@@ -4575,7 +4726,6 @@ export const en = {
       gigabytes: "{value} GB",
       terabytes: "{value} TB",
     },
-    // Fine-tuned models, by how they were made.
     modelKind: {
       lora: "LoRA",
       fullFineTune: "Full fine-tune",
@@ -4603,7 +4753,7 @@ export const en = {
       deleteSandbox: "It is also removed from the chat that created it.",
       deleteModel: "This permanently deletes the model from disk.",
       unsavedTitle: "Your changes weren't saved",
-      // {reason} is why the save failed, ending in a full stop.
+      // {reason} ends in a full stop.
       unsavedDescription: "{reason} Try again, or discard your changes to close the file.",
       keepEditing: "Keep editing",
       discardChanges: "Discard changes",
@@ -4634,7 +4784,6 @@ export const en = {
       readOnlyNotUtf8:
         "This file is not UTF-8 text, so it opens read-only here. Some characters may not show correctly.",
     },
-    // The full-window file viewer, shared with the Images, Video and Audio pages.
     viewer: {
       scale: "Scale",
       fit: "Zoom to fit",
@@ -4648,7 +4797,6 @@ export const en = {
       untitledImage: "Untitled image",
       untitledVideo: "Untitled video",
     },
-    // The Project submenu that copies a file into a project.
     project: {
       label: "Project",
       newProject: "New project",
@@ -4713,7 +4861,6 @@ export const en = {
       speechModel: "{name} is a speech model",
       speechModelDescription: "Pick it from the model menu on the Audio page.",
       noMediaLink: "The server returned no link to play this file.",
-      // A Library "View in" link to a gallery entry that is no longer listed.
       imageNotFound: "Could not find this image",
       clipNotFound: "Could not find this clip",
       notFoundDescription: "It may be archived or deleted.",

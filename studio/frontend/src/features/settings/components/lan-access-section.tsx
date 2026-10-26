@@ -286,7 +286,7 @@ export function LanAccessSection() {
           if (mutationEpoch.current !== epoch) {
             return;
           }
-          // a stop from a LAN address kills this page's own origin, so stop polling
+          // a stop from a LAN address kills this page's own origin
           if (selfStopDisconnectExpected.current) {
             setPollEnabled(false);
             return;
@@ -406,7 +406,7 @@ export function LanAccessSection() {
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+          <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon
               icon={Wifi01Icon}
               className="size-4 text-foreground"
@@ -475,8 +475,7 @@ export function LanAccessSection() {
                 }}
               >
                 <SelectTrigger
-                  size="sm"
-                  className="w-32"
+                  className="w-32 data-[size=default]:h-control"
                   aria-label="LAN port mode"
                 >
                   <SelectValue />
@@ -496,7 +495,7 @@ export function LanAccessSection() {
                   aria-label="Custom LAN port"
                   aria-invalid={portInvalid}
                   aria-describedby={portErrorVisible ? portErrorId : undefined}
-                  className="h-8 w-24"
+                  className="h-control w-24"
                   onChange={(event) => {
                     setPortDraft(event.target.value);
                     setPortError(null);
@@ -553,8 +552,7 @@ export function LanAccessSection() {
                   }}
                 >
                   <SelectTrigger
-                    size="sm"
-                    className="w-32"
+                    className="w-32 data-[size=default]:h-control"
                     aria-label="LAN address mode"
                   >
                     <SelectValue />

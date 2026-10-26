@@ -1079,6 +1079,39 @@ def test_upgrade_check_requires_every_missing_type(monkeypatch):
     assert out is not None and out["model_type"] == "zz_new_wrapper"
 
 
+def test_upgrade_check_ignores_inert_nested_types(monkeypatch):
+    """Cosmos3-Edge's projector_config model_type is never registered nor built (a plain dict), so
+    it must not veto the offer the way an unknown backbone does."""
+    _shared_setup_2(monkeypatch)
+    cfg = {
+        "model_type": "cosmos3_edge",
+        "projector_config": {"model_type": "cosmos3_edge_projector"},
+        "text_config": {"model_type": "cosmos3_edge_text"},
+        "vision_config": {"model_type": "cosmos3_edge_vision"},
+    }
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    asked = []
+
+    unregistered = ("cosmos3_edge_projector", "zz_unknown_projector")
+
+    def supports(mt):
+        asked.append(mt)
+        return {
+            "pypi_version": "5.20.2",
+            "supported_in_pypi": mt not in unregistered,
+            "supported_in_main": mt not in unregistered,
+        }
+
+    monkeypatch.setattr(tl, "latest_transformers_supports", supports)
+    out = tl.check_upgrade_for_model("nvidia/Cosmos3-Edge")
+    assert out is not None and out["model_type"] == "cosmos3_edge"
+    assert out["supported_in_pypi"] is True
+    assert "cosmos3_edge_projector" not in asked
+
+    cfg["projector_config"] = {"model_type": "zz_unknown_projector"}
+    assert tl.check_upgrade_for_model("nvidia/Cosmos3-Edge") is None
+
+
 def test_install_success_invalidates_capability_caches(monkeypatch):
     """A successful install must drop tier probes, the latest mapping, and the
     vision-detection cache so the new sidecar takes effect without a restart."""
