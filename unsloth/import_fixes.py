@@ -7701,8 +7701,10 @@ def fix_cudnn_sdpa_backward_grad_layout():
     @functools.wraps(original)
     def scaled_dot_product_attention(*args, **kwargs):
         out = original(*args, **kwargs)
+        # Plain tensors only: a DTensor output (torch context_parallel, DTensor TP) gets a DTensor
+        # gradient, which the plain empty_strided buffer in the backward cannot be copied from.
         if (
-            isinstance(out, torch.Tensor)
+            type(out) is torch.Tensor
             and out.requires_grad
             and out.is_cuda
             and not out.is_nested
