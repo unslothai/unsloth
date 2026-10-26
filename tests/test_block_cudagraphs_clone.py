@@ -484,6 +484,29 @@ def test_returned_hidden_states_keep_their_pool_copies(monkeypatch, exposed):
     bc._HIDDEN_STATES_EXPOSED[0] = False
 
 
+@pytest.mark.parametrize("use_reentrant", [True])
+def test_block_after_a_checkpointed_block_copies_its_input_gradient(monkeypatch, use_reentrant):
+    """Checkpointed blocks then an uncheckpointed one: the checkpoint's backward recomputes (a new
+    torch.compile invocation, a new generation) before it reads the gradient handed to it."""
+    from torch.utils.checkpoint import checkpoint
+
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    seen = _counting_clones(monkeypatch)
+    A = _linear_layer_class("MixedDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layers = [A().train() for _ in range(3)]
+    x = torch.randn(2, 4, 8, requires_grad = True)
+    y = x
+    for layer in layers[:2]:
+        y = checkpoint(layer, y, use_reentrant = use_reentrant)
+    before = dict(seen)
+    out = layers[2](y)
+    # the last block (grad mode, outside backward) still routes its input gradient out of the pool
+    assert seen == {"outputs": before["outputs"], "grad": before["grad"] + 1}
+    out.sum().backward()
+    assert x.grad is not None
+
+
 @pytest.mark.parametrize("reentrant_kind", ["checkpoint", "no_grad"])
 def test_pool_copies_kept_where_a_block_call_starts_a_generation(monkeypatch, reentrant_kind):
     from torch.utils.checkpoint import checkpoint

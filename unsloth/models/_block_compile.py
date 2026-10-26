@@ -233,6 +233,33 @@ def _pool_outputs_stay_valid(layer, hidden_states):
     )
 
 
+def _input_grad_must_leave_pool(hidden_states):
+    """The copy-skip path hands this block's input gradient on inside the pool. Two consumers outlive
+    the generation: a leaf input keeps it as .grad (enable_input_require_grads makes the embedding
+    output one, and the tree then counts it live, so the pool is never released), and a checkpoint's
+    backward reads it only after recomputing its own block, a new torch.compile invocation that starts
+    a new generation once a backward ran (CUDAGraphTreeManager.can_start_new_generation)."""
+    if not hidden_states.requires_grad:
+        return False
+    node = hidden_states.grad_fn
+    if node is None:
+        return True  # leaf: its .grad would be pool memory
+    stack, seen = [node], 0
+    while stack:
+        node = stack.pop()
+        seen += 1
+        if seen > 32:
+            return True
+        if type(node).__name__.startswith("CompiledFunction"):
+            continue  # the previous block's region: its own input is its own call's decision
+        if isinstance(node, torch.autograd.function.BackwardCFunction):
+            forward_cls = getattr(node, "_forward_cls", None)
+            if not (isinstance(forward_cls, type) and issubclass(forward_cls, _CloneGrad)):
+                return True  # a checkpoint (or other Python autograd Function) may recompute first
+        stack.extend(n for n, _ in node.next_functions if n is not None)
+    return False
+
+
 class _CloneGrad(torch.autograd.Function):
     """Identity; backward copies the input gradient out of the CUDA graph pool."""
 
@@ -1056,8 +1083,9 @@ def _wrap(
                     _param_grads_out_of_pool(self)
                     device = hidden_states.device.index
                     if _pool_outputs_stay_valid(self, hidden_states):
-                        if hidden_states.is_leaf and hidden_states.requires_grad:
-                            # A leaf's .grad outlives the generation (trainable inputs_embeds).
+                        if _input_grad_must_leave_pool(hidden_states):
+                            # A leaf's .grad outlives the generation (trainable inputs_embeds); a
+                            # checkpoint's backward recomputes (a new generation) before reading it.
                             hidden_states = _CloneGrad.apply(hidden_states)
                         return _graphed_call(compiled, device, self, hidden_states, *args, **kwargs)
                     if hidden_states.requires_grad and torch.is_grad_enabled():
