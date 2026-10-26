@@ -8253,6 +8253,14 @@ def _trained_drafter_sidecar(model_path):
         return None, False, None
 
 
+def _eagle3_drafter_attaches(canonical_mode, eagle3_draft_path, caps) -> bool:
+    """Whether a launch in ``canonical_mode`` attaches the exported EAGLE-3 drafter: asked for by
+    name, or picked by Auto when the build runs it. Shared by the launch and the planner."""
+    if not eagle3_draft_path or not (caps or {}).get("supports_eagle3"):
+        return False
+    return (canonical_mode or "auto") in ("auto", "eagle3")
+
+
 def _canonicalize_spec_mode(value):
     """Map any accepted ``speculative_type`` input onto a canonical mode.
 
@@ -9140,7 +9148,8 @@ class LlamaCppBackend:
         # /status reporting. Manual mode stores this in _tensor_split.
         self._auto_tensor_split_emitted: Optional[tuple[float, ...]] = None
         self._spill_plan_flags: List[str] = []
-        self._spill_plan_restore: dict[str, str] = {}
+        self._spill_plan_restore: dict[str, Optional[str]] = {}
+        self._spill_plan_append: list[str] = []
         # Ratio the arch gate dropped from this argv, so the duplicate-load check
         # knows the live server already IS this request normalized (#7624).
         self._arch_gate_dropped_tensor_split: Optional[tuple[float, ...]] = None
@@ -31943,6 +31952,16 @@ class LlamaCppBackend:
                         # None once the drafter is CPU-offloaded (_mtp_draft_for_budget
                         # is nulled there), which is the case that really is off-GPU.
                         "separate_draft_on_gpu": bool(_mtp_will_engage and _mtp_draft_for_budget),
+                        # An exported EAGLE-3 drafter (drafter.json) the launch attaches but the
+                        # fit above never sized: no draft bytes, no reserve, not droppable.
+                        "eagle3_drafter_unsized": bool(
+                            not _extra_args_set_spec_type(extra_args)
+                            and _eagle3_drafter_attaches(
+                                _canonicalize_spec_mode(speculative_type),
+                                _trained_drafter_sidecar(model_path)[0],
+                                server_caps,
+                            )
+                        ),
                         # The planner reads the real tensor table, not a bucket
                         # total, so it can spill the MINIMUM set of blocks.
                         "model_path": model_path,
@@ -38209,7 +38228,7 @@ class LlamaCppBackend:
         # _speculative_type ("default" after a fallback) still carries the kind.
         _auto_mode = (canonical_mode or "auto") == "auto"
         if canonical_mode == "eagle3" or (
-            _auto_mode and eagle3_draft_path and caps.get("supports_eagle3")
+            _auto_mode and _eagle3_drafter_attaches(canonical_mode, eagle3_draft_path, caps)
         ):
             self._spec_drafter_kind = "eagle3"
             if not caps.get("supports_eagle3"):
@@ -38972,6 +38991,7 @@ class LlamaCppBackend:
             self._spill_plan_flags = []
             self._spill_plan_restore = {}
             self._spill_plan_append = []
+            self._studio_lazy_mode_flags = []
 
             self._mmproj_fallback_reason = None
             self._capability_probe_inconclusive = False
@@ -40291,6 +40311,12 @@ class LlamaCppBackend:
             logger.debug(
                 "Tensor spill: declined, a fixed -ngld splits the drafter between the GPU "
                 "and host RAM, which nothing here can size"
+            )
+            return None
+        if inputs.get("eagle3_drafter_unsized"):
+            logger.debug(
+                "Tensor spill: declined, the exported EAGLE-3 drafter attaches unsized, and "
+                "--fit off would leave nothing to place it"
             )
             return None
         if inputs.get("cpu_draft_unsized"):

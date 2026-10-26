@@ -438,3 +438,59 @@ def test_a_wedged_nvidia_smi_cannot_hold_the_planner_probes(monkeypatch, probe):
         release.set()
         worker.join(5)
         gpu_query.reset()
+
+
+def test_an_unsized_eagle3_drafter_is_not_planned():
+    """r38: the fit never sizes an exported EAGLE-3 drafter, and a plan pins --fit off, so nothing
+    would place the drafter the launch attaches. Decline, leaving llama.cpp's fitter to place both."""
+    from test_offload_planner_seam import _inputs, _Stub
+
+    env = {"UNSLOTH_SMART_OFFLOAD": "1"}
+    assert _Stub()._planned_tensor_spill(_inputs(), env = env) is not None
+    inputs = _inputs()
+    inputs["eagle3_drafter_unsized"] = True
+    assert _Stub()._planned_tensor_spill(inputs, env = env) is None
+
+
+@pytest.mark.parametrize(
+    "speculative_type, supports, sidecar, attaches",
+    [
+        ("auto", True, True, True),
+        ("eagle3", True, True, True),
+        ("auto", False, True, False),
+        ("auto", True, False, False),
+        ("off", True, True, False),
+        ("mtp", True, True, False),
+    ],
+)
+def test_the_launch_tells_the_seam_when_an_exported_eagle3_drafter_attaches(
+    tmp_path, monkeypatch, speculative_type, supports, sidecar, attaches
+):
+    import json
+
+    from test_offload_planner_launch import _launch_with
+
+    if sidecar:
+        (tmp_path / "eagle3-drafter.gguf").write_bytes(b"GGUF")
+        (tmp_path / "drafter.json").write_text(
+            json.dumps({"strategy": "eagle3", "files": ["eagle3-drafter.gguf"]})
+        )
+    plan = OP.Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,))
+    _cmd, _backend, seen = _launch_with(
+        tmp_path,
+        monkeypatch,
+        plan,
+        caps = {"supports_eagle3": supports},
+        speculative_type = speculative_type,
+    )
+    assert seen["inputs"]["eagle3_drafter_unsized"] is attaches
+
+
+def test_the_plan_bookkeeping_starts_empty_and_unload_clears_the_lazy_mode():
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    assert backend._spill_plan_append == [] and backend._spill_plan_restore == {}
+    backend._studio_lazy_mode_flags = ["-lzm", "on"]
+    backend.unload_model()
+    assert backend._studio_lazy_mode_flags == []
