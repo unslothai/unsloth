@@ -8330,6 +8330,7 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
         think_prefix = "",
         stream = _vlm_row(backend),
         streamed = None,
+        speculates = True,
     )
     backend._plan_vlm_request = lambda request, **_k: plan
     backend._reads_vision = False
@@ -8538,15 +8539,15 @@ def test_a_tool_or_constrained_reply_joins_a_batch_that_decodes_it_from_its_ids(
     assert backend.resident_unavailable_reason({}) is None
     monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
     monkeypatch.setattr(engine, "BatchStream", lambda *_a, **_k: None, raising = False)
-    # Only a resident vision row reported by id, with no draft, decodes as the reply alone does.
     for fields, draft, joins in (
         (("token_ids",), None, True),
         ((), None, False),
         (("token_ids",), 1, False),
+        (("drafts",), 1, False),
+        (("token_ids", "drafts"), 1, True),
     ):
-        monkeypatch.setattr(
-            engine, "GenerationEvent", make_dataclass("Event", fields), raising = False
-        )
+        for name in ("GenerationEvent", "GenerationRequest"):
+            monkeypatch.setattr(engine, name, make_dataclass(name, fields), raising = False)
         backend._speculative_draft = draft
         assert backend.resident_unavailable_reason(extra) == (None if joins else refusal)
         assert mlx_inference._VisionBatchSession(backend, width = 2)._decodes_ids == joins
