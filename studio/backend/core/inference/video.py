@@ -10075,8 +10075,6 @@ class VideoBackend:
                 is_gguf = gguf_transformer,
                 offload_active = speed_offload,
                 audit = load_audit,
-                # without it every speed-layer log line (the fp16 VAE's fp32 fallback, a fused VAE kernel failing)
-                # went to a no-op logger on the Wan / LTX / HunyuanVideo path
                 logger = logger,
                 apply = lambda family, log, view = view: apply_speed_optims(
                     view,
@@ -13886,7 +13884,6 @@ class VideoBackend:
             streamed = claim_stream(video_frames, fps, audio, int(audio_sample_rate))
             if streamed is not None:
                 return streamed
-        # NaN / inf frames crash every encoder below (PyAV's dtype error); fail the render with the reason instead
         require_finite_frames(video_frames)
         from diffusers.utils.export_utils import encode_video
 

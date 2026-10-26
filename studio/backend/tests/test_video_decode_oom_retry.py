@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A Wan decode that runs out of memory untiled during a streamed render, a non-finite clip, and the fp16 VAE's
-fp32 rerun on non-finite latents (the Kaggle T4 8 GiB crash: ``Expected numpy array with dtype uint8``)."""
+"""Kaggle T4 Wan crash: streamed untiled decode OOM, non-finite clip, fp32 rerun on non-finite latents."""
 
 from __future__ import annotations
 
@@ -56,7 +55,6 @@ def _vae():
 
 
 def _stack(monkeypatch):
-    """Studio's resident Wan decode stack: the untiled-when-fits gate, then the OOM ladder + scope on top."""
     monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
     vae = _vae()
     pipe = types.SimpleNamespace(vae = vae, video_processor = VideoProcessor(vae_scale_factor = 8))
@@ -95,19 +93,17 @@ Z = torch.randn(1, 4, 3, 40, 40, generator = torch.Generator().manual_seed(1))
 
 
 def test_streamed_render_untiled_oom_is_handled_by_the_gate(monkeypatch):
-    """Fail-before: the session's decode wrapper hid the gate, so the ladder retried tiled under the gate's
-    untiled attempt; the gate never recorded the OOM and every later render ran out of memory again."""
+    """Fail-before: the wrapper hid the gate, so every later render OOMed again."""
     pipe, vae, fired = _stack(monkeypatch)
     out = _render(pipe, Z)
     assert fired == [True] and bool(torch.isfinite(out).all())
     stats, ladder = _gate_stats(vae), vae._unsloth_vae_oom_stats
     assert stats["oom_fallback"] == 1
     assert ladder["tiled_retry"] == 0
-    # the next render goes tiled without another untiled attempt
     fired.clear()
     fired.append(
         True
-    )  # an untiled attempt would now decode (no OOM armed); count it via the gate instead
+    )
     _render(pipe, Z)
     assert stats["tiled"] == 1 and stats["untiled"] == 0
 
@@ -115,7 +111,7 @@ def test_streamed_render_untiled_oom_is_handled_by_the_gate(monkeypatch):
 def test_streamed_render_leaves_the_oom_scope_installed(monkeypatch):
     """Fail-before: the scope reinstalled itself above the per-render wrapper, which hooks() then dropped."""
     pipe, vae, fired = _stack(monkeypatch)
-    fired.append(True)  # no OOM
+    fired.append(True)
     _render(pipe, Z)
     assert O._scope_intact(vae)
 
@@ -165,7 +161,6 @@ def _half_pipe(monkeypatch):
 
 
 def test_nonfinite_latents_do_not_rerun_the_vae_in_fp32(monkeypatch):
-    """Fail-before: the fp32 rerun doubled the decode's memory (the T4 OOM) and kept every later render in fp32."""
     vae, seen = _half_pipe(monkeypatch)
     z = torch.zeros(1, 1, 2, 4, 4)
     z[0, 0, 1, 2, 2] = float("nan")
@@ -205,7 +200,6 @@ def test_require_finite_frames():
 
 
 def test_encode_mp4_refuses_a_nonfinite_clip_with_a_clear_error(monkeypatch):
-    """Fail-before: PyAV's ``Expected numpy array with dtype uint8 but got float32``."""
     from core.inference import video as V
 
     monkeypatch.setattr(V, "nvenc_gpu", lambda logger = None: None)
@@ -218,8 +212,6 @@ def test_encode_mp4_refuses_a_nonfinite_clip_with_a_clear_error(monkeypatch):
 
 
 def test_video_speed_layer_gets_the_logger():
-    """Fail-before: the video load's run_speed_layer call passed no logger, so the speed layer's warnings (the fp16
-    VAE's fp32 fallback among them) were dropped."""
     src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text()
     calls = [
         n

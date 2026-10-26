@@ -35,9 +35,7 @@ def stream_encode_enabled() -> bool:
 
 
 def _expose_inner(wrapper: Any, original: Any) -> Any:
-    """``__wrapped__`` = the decode below, so decode-chain walkers (diffusion_vae_oom's scope check and its untiled
-    gate lookup) see through this per-render layer; hidden, the OOM ladder retried tiled under the untiled gate,
-    which never learned of the OOM, and the scope was reinstalled above a wrapper the render then dropped."""
+    """Set ``__wrapped__`` so diffusion_vae_oom's chain walkers see the untiled gate below this wrapper."""
     if os.environ.get(STREAM_CHAIN_ENV, "").strip().lower() not in ("0", "false", "no", "off"):
         wrapper.__wrapped__ = original
     return wrapper

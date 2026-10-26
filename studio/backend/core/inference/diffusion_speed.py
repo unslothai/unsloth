@@ -993,8 +993,7 @@ def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> 
             sample = out[0] if isinstance(out, tuple) else getattr(out, "sample", out)
             if not torch.is_tensor(sample) or bool(torch.isfinite(sample).all()):
                 return out
-            # Non-finite latents decode non-finite in any dtype: an fp32 rerun only doubles the decode's memory (it
-            # ran out of memory on a T4) and keeps every later render in fp32. The export refuses the clip.
+            # Non-finite latents stay non-finite in fp32; the rerun only doubles memory (T4 OOM).
             if _vae_input_nonfinite_skips_fp32() and not bool(torch.isfinite(z).all()):
                 if logger is not None:
                     logger.warning(
