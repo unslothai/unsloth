@@ -252,9 +252,7 @@ def test_packed_fp32_cuda_feeds_an_fp32_o_proj(monkeypatch):
     monkeypatch.setattr(ad, "_NATIVE_BEATS_XFORMERS", True)
     lengths = [40, 32, 24]
     T = sum(lengths)
-    leaves = [
-        torch.randn(1, h, T, 64, device = "cuda", requires_grad = True) for h in (H, KV, KV)
-    ]
+    leaves = [torch.randn(1, h, T, 64, device = "cuda", requires_grad = True) for h in (H, KV, KV)]
     o_proj = torch.nn.Linear(H * 64, H * 64, device = "cuda")
     out = _attend(*leaves, _seq_info(lengths, "cuda"), ad.select_attention_backend(True))
     assert out.dtype == torch.float32
