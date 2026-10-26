@@ -47,6 +47,8 @@ test("Load into is synced to the server for cold API STT loads", () => {
   // Browser localStorage alone left /v1/audio/transcriptions on auto/GPU (#15280).
   assert.match(sttDeviceApi, /\/api\/settings\/stt-device/);
   assert.match(sttDeviceApi, /from "@\/features\/auth\/api"/);
+  // One save at a time, so a quick Auto then CPU cannot commit Auto last.
+  assert.match(sttDeviceApi, /pending = pending\s*\.then\(/);
   assert.match(
     voiceStore,
     /set\(\{ sttDevice \}\);\s*\/\/[^\n]*\n\s*syncSttDevicePreference\(sttDevice\)/,

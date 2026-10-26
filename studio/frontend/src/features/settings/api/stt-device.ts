@@ -5,11 +5,17 @@
 import { authFetch } from "@/features/auth/api";
 import type { SttDevice } from "../stores/voice-settings-store";
 
-// Soft-fails: localStorage stays the UI's source of truth (#15280).
+// Soft-fails: localStorage stays the UI's source of truth (#15280). Chained so the last choice lands last.
+let pending: Promise<unknown> = Promise.resolve();
+
 export function syncSttDevicePreference(device: SttDevice): void {
-  void authFetch("/api/settings/stt-device", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ device }),
-  }).catch(() => {});
+  pending = pending
+    .then(() =>
+      authFetch("/api/settings/stt-device", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device }),
+      }),
+    )
+    .catch(() => undefined);
 }
