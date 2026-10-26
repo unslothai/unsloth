@@ -7,6 +7,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -140,11 +141,14 @@ function Tooltip({
   // Drop what is open when a modal takes over, so closing the dialog does not
   // bring the tooltip back on its own. Owners of a controlled tooltip are told,
   // since their state (a `hovered` flag) never sees the pointerleave either.
+  // Latch only a tooltip its owner held open: one already shut never sends another false.
+  const controlledOpenRef = useRef(controlledOpen);
+  controlledOpenRef.current = controlledOpen;
   useEffect(() => {
     if (!blocked) return;
     setHoverOpen(false);
     setClickOpen(false);
-    setDismissedUntilOwnerResets(true);
+    if (controlledOpenRef.current) setDismissedUntilOwnerResets(true);
     controlledOnOpenChange?.(false);
   }, [blocked, controlledOnOpenChange]);
 

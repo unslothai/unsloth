@@ -4,9 +4,8 @@
 import { Badge } from "@/components/assistant-ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { FileEmpty02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon, Folder02Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { XIcon } from "lucide-react";
 import type { ReactElement, ReactNode } from "react";
 import type { DocumentStatus } from "../types/rag";
 
@@ -115,7 +114,7 @@ export function DocumentStatusChip({
           aria-label={`Remove ${filename}`}
           className="shrink-0 rounded-full text-muted-foreground hover:text-foreground"
         >
-          <XIcon className="size-3" />
+          <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
         </button>
       ) : null}
     </Badge>

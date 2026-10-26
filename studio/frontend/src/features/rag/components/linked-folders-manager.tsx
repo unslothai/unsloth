@@ -25,9 +25,8 @@ import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
 import { RefreshGlyph } from "@/lib/refresh-icon";
-import { FolderAddIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderSyncIcon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MoreHorizontalIcon } from "lucide-react";
 import { useState } from "react";
 import type {
   FolderSyncJob,
@@ -173,7 +172,7 @@ export function LinkedFoldersManager({
             {running ? (
               <Spinner className="size-3.5" />
             ) : (
-              <MoreHorizontalIcon className="size-4" />
+              <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
             )}
           </Button>
         </DropdownMenuTrigger>

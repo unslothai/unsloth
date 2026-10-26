@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Cancel01Icon, Download04Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Search01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -172,7 +172,7 @@ function SegmenterDownloadNotice({
               disabled={busy}
               onClick={() => void start()}
             >
-              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download04Icon} className="size-3.5" />}
+              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download01Icon} className="size-3.5" />}
               {size ? `Download (${size})` : "Download"}
             </Button>
           ) : (

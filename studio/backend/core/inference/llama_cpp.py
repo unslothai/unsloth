@@ -66,13 +66,14 @@ from core.inference.context_window import (
     compact_completed_tool_arguments,
     compact_executed_call_arguments,
     compact_refused_tool_arguments,
-    estimate_message_tokens_without_unpriced_media,
-    estimate_messages_tokens_without_unpriced_media,
+    estimate_message_tokens_with_priced_images,
     _reply_floor,
     estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
+    image_dimensions,
+    messages_with_priced_images,
     messages_without_unpriced_media,
     retrieval_budget,
     fit_oversized_attachments,
@@ -112,6 +113,7 @@ from core.inference.llama_server_args import (
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
     extra_args_image_max_tokens,
+    extra_args_image_min_tokens,
     extra_args_mmproj_auto,
     extra_args_select_load_mode,
     fit_is_enabled_in,
@@ -2715,6 +2717,43 @@ def _mcp_image_tokens(backend) -> int:
         return int(_openai_llama_admission_image_tokens(backend))
     except Exception:  # noqa: BLE001 -- sizing must never break a tool call
         return _FALLBACK_IMAGE_TOKENS
+
+
+# mtmd's delimiters around an image's embeddings, as admission allows for them.
+_IMAGE_WRAPPER_TOKENS = 128
+# Qwen-VL merges a 2x2 patch square per embedding: 14 px patches on Qwen2/2.5-VL, 16 on Qwen3-VL.
+_MERGED_PATCH_PX = {"qwen2vl_merger": 28, "qwen2.5vl_merger": 28, "qwen3vl_merger": 32}
+# Fixed per image: Gemma 3 pools 896 px to 16 x 16 (258 measured on Gemma 3 4B, ceiling 4224).
+_FIXED_IMAGE_TOKENS = {"gemma3": 256}
+
+
+def _image_token_price(backend, part: dict) -> int:
+    """One image's prompt cost for the fit and tool-result sizing (#14968): the admission ceiling,
+    unless a known projector gives a closer upper bound (the ceiling evicts history that fits)."""
+    ceiling = _mcp_image_tokens(backend)
+    if ceiling <= 0:
+        return 0
+    projector = str(getattr(backend, "_mmproj_projector_type", None) or "").strip().lower()
+    fixed = _FIXED_IMAGE_TOKENS.get(projector)
+    if fixed:
+        return min(ceiling, fixed + _IMAGE_WRAPPER_TOKENS)
+    merged = _MERGED_PATCH_PX.get(projector)
+    dims = image_dimensions(part) if merged else None
+    if dims is None:
+        return ceiling
+    width, height = dims
+    # Ceil, not round: mtmd may round either side up, and this must stay an upper bound.
+    tokens = math.ceil(width / merged) * math.ceil(height / merged)
+    extra_args = getattr(backend, "_extra_args", None)
+    try:
+        cap = extra_args_image_max_tokens(extra_args) or 0
+        # mtmd resizes against --image-min-tokens on its own rounded grid, which this does not model.
+        if extra_args_image_min_tokens(extra_args):
+            return ceiling
+    except Exception:  # noqa: BLE001 -- pricing must never break a count
+        cap = 0
+    cap = cap or ceiling - _IMAGE_WRAPPER_TOKENS
+    return min(ceiling, min(tokens, cap) + _IMAGE_WRAPPER_TOKENS)
 
 
 # How many times one tool may return a byte-identical result before the model is told the
@@ -9257,6 +9296,23 @@ class LlamaCppBackend:
     @property
     def model_identifier(self) -> Optional[str]:
         return self._model_identifier
+
+    def _price_image(self, part: dict) -> int:
+        return _image_token_price(self, part)
+
+    def _countable_messages(self, messages: list[dict]) -> list[dict]:
+        """The counting copy every fit and size probe uses: images charged, audio and video dropped."""
+        from core.inference.mcp_images import prepare_image_turn_boundaries
+
+        # Before pricing: a stand-in hides an image turn from Ministral's alternation fix-up.
+        messages = prepare_image_turn_boundaries(
+            messages,
+            getattr(self, "_chat_template_override", None) or getattr(self, "_chat_template", None),
+        )
+        return messages_with_priced_images(messages, self._price_image)
+
+    def _estimate_countable_message(self, message: dict) -> int:
+        return estimate_message_tokens_with_priced_images(message, self._price_image)
 
     @property
     def is_vision(self) -> bool:
@@ -40844,7 +40900,7 @@ class LlamaCppBackend:
                     max_tokens = payload["max_tokens"],
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                            self._countable_messages(fitted), None, self.markup_profile
                         ),
                         None,
                         None,
@@ -40853,7 +40909,7 @@ class LlamaCppBackend:
                         continue_final_message = continue_final_message,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
-                    estimate_message = estimate_message_tokens_without_unpriced_media,
+                    estimate_message = self._estimate_countable_message,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky,
                     sticky_is_checkpoint = _sticky_is_checkpoint,
@@ -40886,7 +40942,7 @@ class LlamaCppBackend:
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                messages_without_unpriced_media(fitted),
+                                self._countable_messages(fitted),
                                 None,
                                 self.markup_profile,
                             ),
@@ -41684,7 +41740,7 @@ class LlamaCppBackend:
                     ),
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            messages_without_unpriced_media(fitted),
+                            self._countable_messages(fitted),
                             _markup_cache,
                             self.markup_profile,
                         ),
@@ -41694,7 +41750,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = reasoning_kw,
                         continue_final_message = continue_flag,
                     ),
-                    estimate_message = estimate_message_tokens_without_unpriced_media,
+                    estimate_message = self._estimate_countable_message,
                     anchor_ids = (_rolling_anchor_ids | protect) if protect else _rolling_anchor_ids,
                 )
             except Exception:
@@ -41729,7 +41785,7 @@ class LlamaCppBackend:
             try:
                 _tokens = self.count_chat_tokens(
                     neutralize_control_markup_in_messages(
-                        messages_without_unpriced_media(candidate),
+                        self._countable_messages(candidate),
                         _markup_cache,
                         self.markup_profile,
                     ),
@@ -41900,7 +41956,7 @@ class LlamaCppBackend:
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                messages_without_unpriced_media(fitted),
+                                self._countable_messages(fitted),
                                 _markup_cache,
                                 self.markup_profile,
                             ),
@@ -41914,7 +41970,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
-                        estimate_message = estimate_message_tokens_without_unpriced_media,
+                        estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
@@ -41933,7 +41989,7 @@ class LlamaCppBackend:
                         # messages, priced by the fit with the catalogue and template.
                         _prompt_token_offset = int(
                             truncation.get("prompt_tokens_after") or 0
-                        ) - estimate_messages_tokens_without_unpriced_media(conversation)
+                        ) - sum(self._estimate_countable_message(m) for m in conversation)
                     if truncation:
                         _recalled = _archive_and_recall(
                             conversation,
@@ -41963,7 +42019,7 @@ class LlamaCppBackend:
                             ),
                             count_tokens = lambda fitted: self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
-                                    messages_without_unpriced_media(fitted),
+                                    self._countable_messages(fitted),
                                     _markup_cache,
                                     self.markup_profile,
                                 ),
@@ -42089,7 +42145,7 @@ class LlamaCppBackend:
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                messages_without_unpriced_media(fitted),
+                                self._countable_messages(fitted),
                                 _markup_cache,
                                 self.markup_profile,
                             ),
@@ -42103,7 +42159,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
-                        estimate_message = estimate_message_tokens_without_unpriced_media,
+                        estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
@@ -42227,15 +42283,13 @@ class LlamaCppBackend:
                         self._effective_context_length, _iteration_max_tokens
                     )
                     if (
-                        estimate_messages_tokens_dense(
-                            messages_without_unpriced_media(conversation)
-                        )
+                        estimate_messages_tokens_dense(self._countable_messages(conversation))
                         > 0.7 * _reply_target
                     ):
                         try:
                             _prompt_now = self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
-                                    messages_without_unpriced_media(conversation),
+                                    self._countable_messages(conversation),
                                     _markup_cache,
                                     self.markup_profile,
                                 ),
@@ -43770,7 +43824,7 @@ class LlamaCppBackend:
                         # whole gate.
                         if (
                             estimate_messages_tokens_conservative(
-                                messages_without_unpriced_media(conversation)
+                                self._countable_messages(conversation)
                             )
                             > 0.7 * _room_target
                         ):
@@ -43799,7 +43853,7 @@ class LlamaCppBackend:
                                 try:
                                     _turn_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            messages_without_unpriced_media(
+                                            self._countable_messages(
                                                 [*conversation, _probe_message]
                                             ),
                                             _markup_cache,
@@ -43858,7 +43912,7 @@ class LlamaCppBackend:
                                     try:
                                         _after_tokens = self.count_chat_tokens(
                                             neutralize_control_markup_in_messages(
-                                                messages_without_unpriced_media(_as_if_run),
+                                                self._countable_messages(_as_if_run),
                                                 _markup_cache,
                                                 self.markup_profile,
                                             ),
@@ -44079,9 +44133,7 @@ class LlamaCppBackend:
                                 try:
                                     _exact_prompt_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            messages_without_unpriced_media(
-                                                [*conversation, _size_probe]
-                                            ),
+                                            self._countable_messages([*conversation, _size_probe]),
                                             _markup_cache,
                                             self.markup_profile,
                                         ),
@@ -44112,7 +44164,7 @@ class LlamaCppBackend:
                                     else _exact_prompt_tokens
                                     if _exact_prompt_tokens is not None
                                     else estimate_messages_tokens_dense(
-                                        messages_without_unpriced_media(conversation)
+                                        self._countable_messages(conversation)
                                     )
                                     + (
                                         _prompt_token_offset
@@ -44249,7 +44301,7 @@ class LlamaCppBackend:
                                                 # is handed to the result.
                                                 _spent_after = self.count_chat_tokens(
                                                     neutralize_control_markup_in_messages(
-                                                        messages_without_unpriced_media(
+                                                        self._countable_messages(
                                                             [*conversation, _size_probe]
                                                         ),
                                                         _markup_cache,
@@ -44781,7 +44833,7 @@ class LlamaCppBackend:
                     max_tokens = _final_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                            self._countable_messages(fitted), None, self.markup_profile
                         ),
                         None,
                         _final_tools,
@@ -44789,7 +44841,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
-                    estimate_message = estimate_message_tokens_without_unpriced_media,
+                    estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _final_can_reset,
@@ -44820,7 +44872,7 @@ class LlamaCppBackend:
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                messages_without_unpriced_media(fitted),
+                                self._countable_messages(fitted),
                                 None,
                                 self.markup_profile,
                             ),
@@ -44946,7 +44998,7 @@ class LlamaCppBackend:
                     max_tokens = max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                            self._countable_messages(fitted), None, self.markup_profile
                         ),
                         None,
                         _final_tools,
@@ -44954,7 +45006,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
-                    estimate_message = estimate_message_tokens_without_unpriced_media,
+                    estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
@@ -45102,7 +45154,7 @@ class LlamaCppBackend:
                 return True
             try:
                 _tokens = self.count_chat_tokens(
-                    messages_without_unpriced_media(candidate_messages),
+                    self._countable_messages(candidate_messages),
                     None,
                     _final_tools,
                     strict = True,
