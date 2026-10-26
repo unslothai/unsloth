@@ -30,9 +30,12 @@ def test_one_slot_is_never_short_of_a_parking_budget():
         8 * _GIB, args = ["--preempt-ram", "1024"], env = {}, parallel = 1
     )
     assert shortfall is None
-    assert llama_cpp._exact_parking_shortfall_mib(
-        8 * _GIB, args = ["--preempt-ram", "1024"], env = {}, parallel = 4
-    ) is not None
+    assert (
+        llama_cpp._exact_parking_shortfall_mib(
+            8 * _GIB, args = ["--preempt-ram", "1024"], env = {}, parallel = 4
+        )
+        is not None
+    )
 
 
 def test_the_named_budget_still_sizes_for_the_whole_pool():
@@ -42,6 +45,6 @@ def test_the_named_budget_still_sizes_for_the_whole_pool():
 
 def test_every_exact_writes_figure_uses_the_single_slot_aware_size():
     source = inspect.getsource(llama_cpp.LlamaCppBackend)
-    assert "_exact_parking_need_mib(" not in source, (
-        "an exact-concurrency writes figure still books parking for one slot"
-    )
+    assert (
+        "_exact_parking_need_mib(" not in source
+    ), "an exact-concurrency writes figure still books parking for one slot"

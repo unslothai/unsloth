@@ -449,9 +449,7 @@ class TestTheNamedBudgetIsJudged:
             is None
         )
         unsized = ["--preempt-ram", str(llama_mod._PREEMPT_RAM_UNSIZED_MIB)]
-        short = llama_mod._exact_parking_shortfall_mib(
-            12 * _GIB, args = unsized, env = {}, parallel = 2
-        )
+        short = llama_mod._exact_parking_shortfall_mib(12 * _GIB, args = unsized, env = {}, parallel = 2)
         assert short == (8192, 12 * 1024, 2 * (12 * 1024 + 64))
         assert (
             llama_mod._exact_parking_shortfall_mib(3 * _GIB, args = unsized, env = {}, parallel = 2)
