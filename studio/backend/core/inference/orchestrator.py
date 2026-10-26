@@ -3001,6 +3001,87 @@ class InferenceOrchestrator:
             raise (ValueError if resp.get("invalid") else RuntimeError)(resp["error"])
         return {"ids": list(resp["ids"]), "text": resp["text"], "n_vocab": resp.get("n_vocab")}
 
+    def _serves_mlx(self) -> bool:
+        if getattr(self, "_managed_engine", None) is not None or not self.active_model_name:
+            return False
+        return bool((self.models.get(self.active_model_name) or {}).get("is_mlx"))
+
+    def _prompt_cache_resume_reply(
+        self,
+        cmd: dict,
+        timeout: float,
+        cancelled = None,
+    ):
+        request_id = str(uuid.uuid4())
+        read_one, _drain, release_mailbox = self._direct_reader(request_id)
+        try:
+            self._send_cmd({**cmd, "request_id": request_id})
+            return self._await_reply(
+                read_one,
+                request_id,
+                f"{cmd['type']}_response",
+                "prompt cache",
+                timeout,
+                cancelled,
+            )
+        finally:
+            release_mailbox()
+
+    def save_prompt_cache_for_resume(
+        self,
+        should_abort: Optional[Callable[[], bool]] = None,
+        timeout: float = 120.0,
+    ) -> Optional[dict]:
+        """Have the MLX worker save its newest prompt cache for the next load of this model; the
+        manifest, or None. A save that fails or is abandoned has its directory removed."""
+        if not self._serves_mlx() or not self._gen_lock.acquire(blocking = False):
+            return None
+        directory = manifest = None
+        try:
+            with self._mailbox_lock:
+                dispatched = bool(self._mailboxes)
+            if dispatched or self._unload_pending:
+                return None
+            from utils.paths.storage_roots import mlx_prompt_cache_root
+
+            directory = mlx_prompt_cache_root() / f"resume-{uuid.uuid4().hex}"
+            directory.mkdir(parents = True)
+            resp = self._prompt_cache_resume_reply(
+                {"type": "save_prompt_cache", "directory": str(directory)}, timeout, should_abort
+            )
+            if resp is not None and resp.get("error"):
+                logger.debug("MLX prompt cache save failed: %s", resp["error"])
+            elif resp is not None:
+                manifest = resp.get("result")
+            return manifest
+        finally:
+            self._gen_lock.release()
+            if not manifest and directory is not None:
+                import shutil
+                shutil.rmtree(directory, ignore_errors = True)
+
+    def restore_prompt_cache_for_resume(
+        self,
+        manifest: dict,
+        timeout: float = 120.0,
+    ) -> int:
+        """Have the MLX worker load a saved prompt cache back; how many entries it restored."""
+        if not self._serves_mlx() or not self._gen_lock.acquire(timeout = timeout):
+            return 0
+        try:
+            resp = self._prompt_cache_resume_reply(
+                {"type": "restore_prompt_cache", "manifest": manifest}, timeout
+            )
+        finally:
+            self._gen_lock.release()
+        if resp is None or resp.get("error"):
+            logger.info(
+                "MLX prompt cache restore failed: %s",
+                "timed out" if resp is None else resp["error"],
+            )
+            return 0
+        return int(resp.get("result") or 0)
+
     def generate_completion(
         self,
         prompt_ids: list,

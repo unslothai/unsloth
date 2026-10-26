@@ -116,6 +116,68 @@ def test_whisper_on_a_backend_without_asr_explains_itself(monkeypatch):
     assert "attribute" not in errors[0]["error"].lower()
 
 
+def test_mlx_loop_answers_every_prompt_cache_resume_command(monkeypatch):
+    backend = SimpleNamespace(
+        save_prompt_cache_for_resume = lambda directory: {"dir": directory},
+        restore_prompt_cache_for_resume = lambda manifest: (_ for _ in ()).throw(
+            RuntimeError("unreadable")
+        ),
+    )
+    sent = _run_mlx_loop(
+        monkeypatch,
+        [
+            {"type": "save_prompt_cache", "request_id": "s", "directory": "/d"},
+            {"type": "restore_prompt_cache", "request_id": "r", "manifest": {}},
+        ],
+        backend = backend,
+    )
+    replies = {m["request_id"]: m for m in sent if m.get("request_id") in ("s", "r")}
+    assert replies["s"]["type"] == "save_prompt_cache_response"
+    assert replies["s"]["result"] == {"dir": "/d"}
+    assert replies["r"]["type"] == "restore_prompt_cache_response"
+    assert replies["r"]["error"] == "unreadable"
+
+    resp = _RespQueue()
+    worker._handle_prompt_cache_resume(
+        SimpleNamespace(), {"type": "save_prompt_cache", "request_id": "u"}, resp
+    )
+    assert resp.sent[0]["request_id"] == "u" and "no prompt cache" in resp.sent[0]["error"]
+
+
+@pytest.mark.parametrize("case", ["saved", "error", "abandoned", "dispatched"])
+def test_a_prompt_cache_save_keeps_its_directory_only_with_a_manifest(monkeypatch, tmp_path, case):
+    import threading
+
+    from core.inference import orchestrator as orch_mod
+    from utils.paths import storage_roots
+
+    monkeypatch.setattr(storage_roots, "mlx_prompt_cache_root", lambda: tmp_path)
+    orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch.active_model_name, orch.models = "m", {"m": {"is_mlx": True}}
+    orch._managed_engine, orch._unload_pending = None, False
+    orch._gen_lock, orch._mailbox_lock = threading.Lock(), threading.Lock()
+    orch._mailboxes = {"generation": object()} if case == "dispatched" else {}
+    sent = []
+
+    def reply(
+        cmd,
+        timeout,
+        cancelled = None,
+    ):
+        sent.append(cmd)
+        if case == "saved":
+            return {"result": {"engine": "mlx", "dir": cmd["directory"]}}
+        return {"error": "disk full"} if case == "error" else None
+
+    monkeypatch.setattr(orch, "_prompt_cache_resume_reply", reply)
+    manifest = orch.save_prompt_cache_for_resume()
+    assert not orch._gen_lock.locked() and len(sent) == (case != "dispatched")
+    if case == "saved":
+        assert [str(path) for path in tmp_path.iterdir()] == [manifest["dir"]]
+    else:
+        assert manifest is None and list(tmp_path.iterdir()) == []
+
+
 @pytest.mark.parametrize("cmd_type", ["generate_audio", "generate_video"])
 def test_every_mlx_command_gets_exactly_one_reply(monkeypatch, cmd_type):
     """One reply, not zero and not a duplicate that would confuse the mailbox."""
