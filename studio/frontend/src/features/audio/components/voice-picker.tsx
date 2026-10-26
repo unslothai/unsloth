@@ -16,7 +16,6 @@ import {
   PauseIcon,
   PencilEdit02Icon,
   PlayIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
@@ -25,6 +24,7 @@ import { type AudioVoice, fetchAudioBlob } from "../api";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { SaveVoiceDialog } from "./save-voice-dialog";
 import { formatSeconds } from "./waveform-peaks";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 // About 20 saved voices (30 s of 24 kHz mono each); older previews re-fetch.
 const voiceUrls = new BlobUrlCache(32 * 1024 * 1024);

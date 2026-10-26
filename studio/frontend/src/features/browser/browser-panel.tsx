@@ -98,7 +98,6 @@ import {
   ArrowRight,
   RotateCw,
   ShieldCheck,
-  XIcon,
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -994,7 +993,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                   className={iconButton}
                   onClick={() => setOpen(false)}
                 >
-                  <XIcon strokeWidth={2} className="size-4" />
+                  <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
                 </button>
               </div>
               <div className="mx-3 h-px bg-border" />

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Download01Icon, SentIcon, StopIcon } from "@hugeicons/core-free-icons";
+import { Download01Icon, StopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import { formatRelativeShort } from "@/features/hub/lib/format";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import { AUDIO_WORKFLOWS, type AudioWorkflowId } from "../workflows";
 import { Waveform } from "./waveform";
+import { ArrowUpIcon } from "lucide-react";
 
 export type ClipSendHandlers = Partial<Record<AudioWorkflowId, () => void>>;
 
@@ -33,8 +34,7 @@ export function ClipSendToMenu({ handlers }: { handlers: ClipSendHandlers }) {
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <HugeiconsIcon
-          icon={SentIcon}
+        <ArrowUpIcon
           strokeWidth={1.75}
           className="size-icon"
         />

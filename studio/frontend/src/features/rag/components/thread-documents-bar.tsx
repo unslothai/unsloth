@@ -13,7 +13,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { PlusIcon, XIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
@@ -21,6 +20,7 @@ import {
   Folder02Icon,
   FolderAttachmentIcon,
   PlusSignIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import {
   AttachmentKindIcon,
@@ -545,7 +545,7 @@ function DocumentCard({
       )}
     >
       {/* Inline 12px: the font-scaled svg size rules give 11.25px, an odd inset that sits off centre. */}
-      <XIcon className="stroke-[2.5px]" style={{ width: 12, height: 12 }} />
+      <HugeiconsIcon icon={Cancel01Icon} className="stroke-[2.5px]" style={{ width: 12, height: 12 }} />
     </button>
   ) : null;
   const wrapDialog = (trigger: ReactElement) =>
@@ -682,7 +682,7 @@ function AddFilesCard({
           CARD_SIZE,
         )}
       >
-        <PlusIcon className="size-5 stroke-[1.5px]" />
+        <HugeiconsIcon icon={PlusSignIcon} className="size-5 stroke-[1.5px]" />
         Add files
       </button>
     </div>
@@ -773,7 +773,7 @@ function ChatFilesPanel({
     >
       {acceptsDrop ? (
         <div className="unsloth-files-panel-drop-overlay" aria-hidden={true}>
-          <PlusIcon className="size-5" />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-5" />
           Drop to chat with these files
         </div>
       ) : null}
@@ -837,7 +837,7 @@ function ChatFilesPanel({
                 onClick={onClose}
                 aria-label={closeLabel ?? "Close"}
               >
-                <XIcon style={HEADER_ICON} />
+                <HugeiconsIcon icon={Cancel01Icon} style={HEADER_ICON} />
               </button>
             </HeaderTip>
           ) : null}

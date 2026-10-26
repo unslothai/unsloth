@@ -35,8 +35,8 @@ test("every composer send arrow uses the shared sizing class", () => {
 
 test("every isolated composer stop square keeps its size-3 glyph", () => {
   const stops = componentSources
-    .flatMap((source) => tags(source, "SquareIcon"))
-    .filter((tag) => /\bsize-3\b/.test(tag));
+    .flatMap((source) => tags(source, "HugeiconsIcon"))
+    .filter((tag) => /icon=\{StopIcon\}/.test(tag) && /\bsize-3\b/.test(tag));
 
   assert.equal(stops.length, 6);
 });

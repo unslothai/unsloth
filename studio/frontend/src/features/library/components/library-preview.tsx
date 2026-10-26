@@ -18,7 +18,7 @@ import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { useBlocker } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
-import { Download04Icon, PlayIcon } from "@hugeicons/core-free-icons";
+import { PlayIcon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -273,7 +273,7 @@ function RunStrip({
           </Button>
         ))}
         <Button variant="outline" size="sm" className="ml-auto rounded-full px-3" onClick={onDownloadRun}>
-          <HugeiconsIcon icon={Download04Icon} strokeWidth={1.75} className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
           {t("library.audio.downloadRun")}
         </Button>
       </div>

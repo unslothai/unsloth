@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { TrashIcon, PlusIcon } from "lucide-react";
+import { TrashIcon } from "lucide-react";
 import {
   createOpenAIContainer,
   deleteOpenAIContainer,
@@ -41,6 +41,8 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import { RefreshGlyph } from "@/lib/refresh-icon";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 const DEFAULT_TTL_MINUTES = 20;
 const TTL_MIN = 1;
@@ -597,7 +599,7 @@ export function OpenAICodeExecSection({
           onClick={() => setCreateOpen(true)}
           disabled={!hasCredential}
         >
-          <PlusIcon className="size-3.5 mr-1" />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5 mr-1" />
           New container
         </Button>
       )}

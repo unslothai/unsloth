@@ -19,7 +19,6 @@ import {
   HeadphonesIcon,
   PauseIcon,
   PlayIcon,
-  SentIcon,
   VolumeHighIcon,
   VolumeOffIcon,
 } from "@hugeicons/core-free-icons";
@@ -41,6 +40,7 @@ import {
 import type { StemMixerProps } from "./stem-mixer-types";
 import { WaveformBars } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
+import { ArrowUpIcon } from "lucide-react";
 
 const SEEK_STEP_SECONDS = 5;
 
@@ -175,8 +175,7 @@ export function StemMixer({
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
               <Button type="button" variant="outline" size="sm">
-                <HugeiconsIcon
-                  icon={SentIcon}
+                <ArrowUpIcon
                   strokeWidth={1.75}
                   data-icon="inline-start"
                 />

@@ -138,7 +138,6 @@ import {
   LayoutAlignLeftIcon,
   Settings02Icon,
   Sun03Icon,
-  Tick02Icon,
   UserCircleIcon,
   ViewIcon,
   ViewOffSlashIcon,
@@ -149,6 +148,7 @@ import {
   LayerIcon,
   ApiIcon,
   Clock01Icon,
+  Copy01Icon,
 } from "@hugeicons/core-free-icons";
 import {
   AiSpeechIcon,
@@ -163,7 +163,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, Copy, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, GitBranchIcon, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -323,6 +323,7 @@ import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-
 import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import { translate, useT, type TranslationKey } from "@/i18n";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
@@ -6821,7 +6822,7 @@ export function AppSidebar() {
                               closeMobileIfOpen();
                             }}
                           >
-                            <Copy className="size-icon" />
+                            <HugeiconsIcon icon={Copy01Icon} className="size-icon" />
                             <span>{t("common.duplicate")}</span>
                           </DropdownMenuItem>
                           <DropdownMenuItem onSelect={() => openRenameRun(run)}>

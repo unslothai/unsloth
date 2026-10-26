@@ -108,7 +108,7 @@ test("the pin and the menu are on show, the disclosure follows the cursor", () =
 test("the Updated column names the list's order and turns it around", () => {
   assert.ok(!PAGE.includes(">Modified<"), "the old column name is still rendered");
   assert.match(PAGE, /\n\s*Updated\n(?:\s*\{\/\*[^\n]*\*\/\}\n)?\s*<ArrowDownIcon/);
-  assert.match(PAGE, /import \{ ArrowDownIcon, MoreHorizontalIcon \} from "lucide-react";/);
+  assert.match(PAGE, /import \{ ArrowDownIcon \} from "lucide-react";/);
   assert.match(
     PAGE,
     /onClick=\{\(\) => setSortDir\(\(dir\) => \(dir === "desc" \? "asc" : "desc"\)\)\}/,
