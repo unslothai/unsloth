@@ -874,6 +874,8 @@ export function brainStep(
   for (const a of b.agents) {
     const down = (c.enemies[a.id]?.down ?? 0) > c.clock;
     if (down) {
+      // Knocked out, it hears nothing: on waking, older noises are already behind it.
+      for (const n of noises) if (n.seq > a.heardSeq) a.heardSeq = n.seq;
       if (!a.down) {
         a.down = true;
         a.x = a.homeX;
