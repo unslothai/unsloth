@@ -447,6 +447,28 @@ def test_no_pool_copies_outside_checkpointing(monkeypatch, trainable_input):
     assert (x.grad is not None) is trainable_input
 
 
+@pytest.mark.parametrize("through", ["view", "view_add", "embedding"])
+def test_input_viewing_a_trainable_param_copies_its_gradient(monkeypatch, through):
+    """inputs_embeds = param.view(...): the view's backward passes the pool gradient straight to
+    AccumulateGrad, so the parameter's first .grad would alias the pool. An embedding lookup writes
+    a new gradient, so it needs no copy."""
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    seen = _counting_clones(monkeypatch)
+    A = _linear_layer_class("ViewInputDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = A().train()
+    param = torch.nn.Parameter(torch.randn(8, 8))
+    if through == "embedding":
+        x = torch.nn.functional.embedding(torch.tensor([[0, 1, 2, 3], [4, 5, 6, 7]]), param)
+    else:
+        x = param.view(2, 4, 8)
+        if through == "view_add":
+            x = x + torch.zeros(2, 4, 8)
+    layer(x).sum().backward()
+    assert seen["grad"] == (0 if through == "embedding" else 1), seen
+    assert param.grad is not None
+
+
 @pytest.mark.parametrize("exposed", ["kwarg", "config", None])
 def test_returned_hidden_states_keep_their_pool_copies(monkeypatch, exposed):
     """output_hidden_states hands every block output to the caller, who may keep it past the

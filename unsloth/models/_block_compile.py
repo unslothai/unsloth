@@ -244,20 +244,48 @@ def _input_grad_must_leave_pool(hidden_states):
     node = hidden_states.grad_fn
     if node is None:
         return True  # leaf: its .grad would be pool memory
-    stack, seen = [node], 0
+    # (node, fresh): fresh once the path passed an op whose backward allocates its input gradient.
+    stack, seen = [(node, False)], 0
     while stack:
-        node = stack.pop()
+        node, fresh = stack.pop()
         seen += 1
         if seen > 32:
             return True
-        if type(node).__name__.startswith("CompiledFunction"):
+        name = type(node).__name__
+        if name.startswith("CompiledFunction"):
             continue  # the previous block's region: its own input is its own call's decision
         if isinstance(node, torch.autograd.function.BackwardCFunction):
             forward_cls = getattr(node, "_forward_cls", None)
             if not (isinstance(forward_cls, type) and issubclass(forward_cls, _CloneGrad)):
                 return True  # a checkpoint (or other Python autograd Function) may recompute first
-        stack.extend(n for n, _ in node.next_functions if n is not None)
+        if name == "AccumulateGrad" and not fresh:
+            return True  # a view / add of a leaf (inputs_embeds = param.view(...)) keeps the pool gradient
+        fresh = fresh or name.startswith(_ALLOCATING_BACKWARD)
+        stack.extend((n, fresh) for n, _ in node.next_functions if n is not None)
     return False
+
+
+# Backward nodes that write their input gradient to new storage (a view, add or clone passes it on).
+_ALLOCATING_BACKWARD = (
+    "MmBackward",
+    "AddmmBackward",
+    "BmmBackward",
+    "BaddbmmBackward",
+    "MulBackward",
+    "DivBackward",
+    "EmbeddingBackward",
+    "EmbeddingDenseBackward",
+    "NativeLayerNormBackward",
+    "FusedRmsNormBackward",
+    "SoftmaxBackward",
+    "SiluBackward",
+    "GeluBackward",
+    "CatBackward",
+    "IndexBackward",
+    "SliceBackward",
+    "SelectBackward",
+    "ConvolutionBackward",
+)
 
 
 class _CloneGrad(torch.autograd.Function):
