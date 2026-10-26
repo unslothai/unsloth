@@ -3483,8 +3483,45 @@ _MEASURED_DENSE_BF16_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
 }
 
 
+# Small-host route (diffusion_small_host): a bf16 DiT stored as int8 per-channel weights for fp16 / fp32 compute, eager
+# tier. Worst whole-render CUDA MiB above the resident weights at 1024x1024 (encode + steps + VAE decode), and the
+# largest loaded int8 DiT it covers. FLUX.2-klein-4B, Kaggle T4 fp16, 4 steps, sliced VAE: 2805 MiB on 2 loads (main
+# 7132f8a5). Without it a fresh home placed from the flat estimate: the encoder streamed from memory-mapped storage on
+# every prompt (22-28 s of encode for the first prompts) with the card at 7.4 of 15 GiB. "0" = learned peak alone.
+MEASURED_ACTIVATION_SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_SMALL_HOST"
+_MEASURED_SMALL_HOST_INT8_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
+    "flux.2-klein": (2805, 3800),
+}
+
+
 def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _small_host_int8_seed_mib(
+    family: Optional[str], speed_mode: Optional[str], int8_dit_mib: int, widen: int
+) -> Optional[int]:
+    """Seed MiB for a small-host int8 denoiser (``widen`` = the compute element size), or None."""
+    if _env_off(MEASURED_ACTIVATION_SMALL_HOST_ENV):
+        return None
+    entry = _MEASURED_SMALL_HOST_INT8_EAGER_PEAK_MIB.get(str(family or "").lower())
+    if entry is None or str(speed_mode or "") not in _MEASURED_DENSE_SPEED_MODES:
+        return None
+    if not 0 < int(int8_dit_mib) <= entry[1]:
+        return None
+    return entry[0] * max(2, int(widen)) // 2
+
+
+def pipe_small_host_int8(pipe: Any) -> bool:
+    """Whether the small-host route stored this pipe's denoiser as int8 weights (diffusion_small_host.mark)."""
+    info = getattr(pipe, "_unsloth_small_host", None)
+    comps = info.get("components") if isinstance(info, dict) else None
+    if not isinstance(comps, dict):
+        return False
+    return any(
+        str(comps.get(name, "")).startswith("int8 weights")
+        for name in ("transformer", "transformer_2", "unconditional_transformer")
+    )
 
 
 def dense_bf16_seeded(family: Optional[str]) -> bool:
@@ -3551,6 +3588,7 @@ def measured_image_runtime_mib(
     dense_tier_seeds: bool = False,
     phase: Optional[str] = None,
     dense_bf16: bool = False,
+    small_host_int8: bool = False,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
     ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
@@ -3577,6 +3615,11 @@ def measured_image_runtime_mib(
             max(2, int(compute_bytes or 2)),
             dense_tier_seeds,
             bf16 = dense_bf16,
+        )
+    elif small_host_int8 and dense_transformer_mib is not None and phase is None:
+        # the int8 weights the route stores: a measured table of their own, not the dense one
+        seed = _small_host_int8_seed_mib(
+            family, speed_mode, int(dense_transformer_mib), max(2, int(compute_bytes or 2))
         )
     elif static_seed and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
@@ -4597,6 +4640,10 @@ def _refine_plan_from_loaded_weights(
             fp8_stored
             or (dense_mib is not None and ((compute_bytes is None and not dense_bf16) or packed))
         )
+        # a small-host int8 denoiser (fp16 / fp32 compute) seeds from its own measured table, never the dense one
+        small_host_int8 = bool(
+            packed and not fp8_stored and compute_bytes is not None and pipe_small_host_int8(pipe)
+        )
         quant = learned_peak_label(pipe, attention, model, vae, te, cache, graphs)
         try:
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
@@ -4613,6 +4660,7 @@ def _refine_plan_from_loaded_weights(
             dense_tier_seeds = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False)),
             static_seed = static_seed,
             dense_bf16 = dense_bf16,
+            small_host_int8 = small_host_int8,
         )
         if headroom is None:
             return plan
@@ -4633,6 +4681,7 @@ def _refine_plan_from_loaded_weights(
             measured_compute_bytes = compute_bytes,
             measured_static_seed = static_seed,
             measured_dense_bf16 = dense_bf16,
+            measured_small_host_int8 = small_host_int8,
             measured_learned_cfg_off = bool(cfg_off_only and learned),
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
@@ -5575,6 +5624,7 @@ def measured_request_extra_mib(
     sized["dense_tier_seeds"] = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False))
     sized["static_seed"] = bool(reserve[8]) if len(reserve) > 8 and reserve[8] is not None else True
     sized["dense_bf16"] = bool(len(reserve) > 10 and reserve[10])
+    sized["small_host_int8"] = bool(len(reserve) > 11 and reserve[11])
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers

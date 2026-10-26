@@ -206,6 +206,84 @@ def test_small_host_int8_denoiser_keeps_the_flat_plan(klein_pipe):
     assert _refine(klein_pipe, plan) is plan
 
 
+# A small-host load (diffusion_small_host) stores the bf16 DiT as int8 weights and streams the encoder from
+# memory-mapped storage. On a fresh home it had no seed, so the flat 8 GiB estimate kept 2357 MiB of the 3700 MiB int8
+# DiT resident and the whole encoder streamed per prompt; FLUX.2-klein-4B measured its own peak (2805 MiB, Kaggle T4).
+KLEIN_SMALL_HOST_LOADED = {
+    "transformer": (3700, "dit"),
+    "text_encoder": (5940, "text_encoder"),
+    "vae": (160, "other"),
+}
+KLEIN_SMALL_HOST_HEADROOM = 3328  # 2805 x 1.15, rounded up to 256 MiB
+SMALL_HOST_SEED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_SMALL_HOST"
+
+
+def _small_host_int8_pipe(klein_pipe, monkeypatch):
+    import torch
+
+    import core.inference.diffusion_small_host as sh
+
+    dit = torch.nn.Sequential(torch.nn.Linear(2048, 2048)).to(torch.bfloat16)
+    sh.quantize_int8_weight_(dit, compute_dtype = torch.float16, work_device = "cpu")
+    klein_pipe.transformer = types.SimpleNamespace(dtype = torch.float16, parameters = dit.parameters)
+    sh.mark(
+        klein_pipe,
+        {
+            "components": {
+                "text_encoder": "memory-mapped, layerwise cast (6930 MiB)",
+                "transformer": "int8 weights (3694 MiB, 106 linears)",
+            }
+        },
+    )
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(KLEIN_SMALL_HOST_LOADED))
+    monkeypatch.delenv(SMALL_HOST_SEED_ENV, raising = False)
+    return klein_pipe
+
+
+def test_small_host_int8_klein_places_from_its_measured_seed(klein_pipe, monkeypatch):
+    pipe = _small_host_int8_pipe(klein_pipe, monkeypatch)
+    plan = _flat_plan(12758)
+    new = _refine(pipe, plan)
+    assert new is not plan
+    assert new.estimates["measured_runtime_headroom_mib"] == KLEIN_SMALL_HOST_HEADROOM
+    assert new.estimates["measured_small_host_int8"] is True
+    # the int8 DiT whole, then encoder groups, within the budget left after the measured peak
+    assert new.resident_transformer_mib == 3700
+    assert (new.resident_text_encoder_mib or 0) > 0
+    resident = 3700 + (new.resident_text_encoder_mib or 0) + 160
+    assert resident + KLEIN_SMALL_HOST_HEADROOM + dm.DEFAULT_BASE_OVERHEAD_MIB <= 12758
+
+
+def test_small_host_int8_seed_kill_switch_and_scope(klein_pipe, monkeypatch):
+    pipe = _small_host_int8_pipe(klein_pipe, monkeypatch)
+    plan = _flat_plan(12758)
+    monkeypatch.setenv(SMALL_HOST_SEED_ENV, "0")
+    assert _refine(pipe, plan) is plan
+    monkeypatch.delenv(SMALL_HOST_SEED_ENV)
+    # unmeasured family, a compiled tier, a bigger int8 DiT: the flat plan stands
+    assert _refine(pipe, plan, family = "flux.1") is plan
+    assert dm._small_host_int8_seed_mib("flux.2-klein", "default", 3700, 2) is None
+    assert dm._small_host_int8_seed_mib("flux.2-klein", "off", 9000, 2) is None
+    assert dm._small_host_int8_seed_mib("flux.2-klein", "off", 3700, 4) == 5610
+    # a request the size of the placed one streams nothing back; a 2048^2 one is priced from the seed
+    pipe._unsloth_measured_reserve = (
+        KLEIN_SMALL_HOST_HEADROOM,
+        "flux.2-klein",
+        "off",
+        3700,
+        2,
+        None,
+        None,
+        None,
+        False,
+        False,
+        False,
+        True,
+    )
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
+    assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048) > 0
+
+
 # ------------------------------------------------------------------- learned-only placement (bf16 / packed denoisers)
 # The dense eager table was measured on fp16 / fp32 unpacked weights, so a bf16 denoiser (every Ampere+ card) and a
 # GGUF / int8 packed one used to return before the learned-peak lookup: their renders recorded peaks no load ever read.
