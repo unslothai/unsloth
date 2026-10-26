@@ -31,7 +31,7 @@ NO_BUILTIN_CONTAINER_REASON = (
 
 
 _host_prep_cache: dict[str, str | None] = {}
-# Bumped by invalidate_cache(): a check that started before it must not publish, since nothing expires it.
+# Bumped by invalidate_cache(): a check started before it must not publish.
 _generation = 0
 
 

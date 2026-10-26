@@ -451,7 +451,6 @@ def test_polling_an_answered_tool_never_probes_again(monkeypatch):
 
 
 def test_an_answer_noted_under_another_host_key_is_checked_once(monkeypatch):
-    """Installing bubblewrap moves the key: the gate re-checks without waiting for a tool call."""
     monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
     key = ["no bwrap"]
     monkeypatch.setattr(os_sandbox, "_host_key", lambda: key[0])

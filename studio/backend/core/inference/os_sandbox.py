@@ -1155,7 +1155,7 @@ def cached_tool_isolation(tool: str) -> bool | None:
 
 
 def _host_key() -> str:
-    """Stat-only, unlike _runtime_identity (which can run a bwrap preflight): what a venv swap or a bwrap install changes."""
+    """Stat-only (no bwrap preflight): moves when the venv is swapped or bwrap installed."""
     key = os.path.realpath(sys.executable)
     if sys.platform == "linux":
         from . import sandbox_linux
@@ -1167,8 +1167,7 @@ def _host_key() -> str:
 
 
 def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
-    """Never blocks: last (available, backend, reason) or None; no answer, or one noted under another
-    _host_key(), starts one background check."""
+    """Never blocks: last (available, backend, reason) or None; a missing or other-key answer starts one check."""
     key = _host_key()
     with _tool_isolation_lock:
         entry = _tool_isolation.get(tool)

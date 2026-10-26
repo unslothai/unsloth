@@ -103,7 +103,7 @@ def _classified(reason: str, exc: BaseException | None = None) -> str:
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[bool, str]] = {}
 _generation = 0
-# Probes take a ticket when they start: a slower, older probe must not replace a newer (forced) verdict.
+# A slower, older probe must not replace a newer (forced) verdict.
 _tickets = itertools.count(1)
 _published: dict[tuple[str, str], int] = {}
 
