@@ -1999,9 +1999,7 @@ def native_fsdp2_unsharded(model):
     saved = {}
     try:
         _rebind_swapped_modules(root, units)
-        # Gather first: after a forward outside backward (evaluation) an int reshard_after_forward
-        # leaves a unit on its post-forward sub-mesh, and FSDP2 all-gathers it over that mesh, so
-        # it must still be set. Then keep the units gathered through the forwards inside.
+        # Unshard before clearing reshard_after_forward: FSDP2 all-gathers a post-forward sharded unit over that mesh.
         for unit in units:
             unit.unshard()
         for unit in units:

@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""native_fsdp2_unsharded (the generate / merge context) after an evaluation forward with an int
-reshard_after_forward, on a gloo CPU world of 4.
-
-FSDP2Config(reshard_after_forward = 2) reshards each unit onto a 2-rank sub-mesh after a forward
-outside backward (SHARDED_POST_FORWARD). Entering the context used to clear the post-forward mesh
-before unshard(), but FSDP2 picks the all-gather group of a post-forward sharded unit from that mesh:
-"Expected mesh_info to be FSDPMeshInfo, got NoneType" on every rank. The context now gathers while
-the mesh is still set; outputs must match one process, the setting must be restored, and training
-must still work afterwards."""
+"""native_fsdp2_unsharded after an eval forward with int reshard_after_forward used to clear the
+post-forward mesh before unshard() ("Expected mesh_info to be FSDPMeshInfo, got NoneType")."""
 
 import multiprocessing
 import os
@@ -68,7 +61,7 @@ def _case(native, warm):
     )
     res = {}
     if warm:
-        with torch.no_grad():  # an evaluation forward: units end on the 2-rank post-forward mesh
+        with torch.no_grad():
             model(x)
         res["post_forward_before"] = any(g.is_sharded_post_forward for g in _groups(native, model))
     before = [g.post_forward_mesh_info for g in _groups(native, model)]
@@ -167,7 +160,7 @@ def test_int_mesh_unsharded_context(results, warm):
         r = by_warm[warm]
         assert "error" not in r, (rank, r)
         if warm:
-            assert r["post_forward_before"], (rank, r)  # the case really ran post-forward sharded
+            assert r["post_forward_before"], (rank, r)
         assert r["gathered"] and r["gathered_after_forward"], (rank, r)
         assert r["max_diff"] < 1e-6, (rank, r)
         assert r["restored"] and r["sharded_after"], (rank, r)
