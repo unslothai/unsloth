@@ -42,7 +42,6 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Refresh01Icon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
@@ -52,6 +51,7 @@ import {
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEventHandler,

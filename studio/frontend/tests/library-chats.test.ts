@@ -446,14 +446,33 @@ test("grid cards share a two-line title and a footer of contents over date", () 
     cardOf("export function SectionCard(", "export function SectionRow("),
   ];
   for (const card of cards) {
-    assert.match(card, /className=\{CARD_TITLE\}/);
+    assert.match(card, /className=\{cn\(CARD_TITLE, !showTile && TILELESS_TITLE\)\}/);
     assert.match(card, /<span className="line-clamp-2">/);
     assert.match(card, /<CardFooter/);
+    assert.match(card, /showTile = true,/);
+    assert.match(card, /className=\{cn\("flex items-center gap-2", !showTile && TILELESS_ROW\)\}/);
   }
   assert.doesNotMatch(cards[0], /modelLabel|model &&/);
-  assert.match(cards[0], /<ChatBadges chat=\{chat\} marksOnly \/>/);
+  assert.match(cards[0], /<ChatBadges chat=\{chat\} marksOnly=\{showTile\} \/>/);
   assert.doesNotMatch(cards[1], /archived/);
   assert.match(cards[0], /<ChatLocation[^>]*plain/);
+});
+
+test("cards drop the kind tile everywhere but All, which mixes chats, projects and sections", () => {
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.match(library, /<ChatCard[^>]*showTile=\{shownEntries !== null\}/s);
+  assert.match(library, /<ChatRow[^>]*showTile=\{shownEntries !== null\}/s);
+  assert.equal(library.split("showTile={false}").length - 1, 6);
+  const favorites = library.slice(library.indexOf("function favoriteEntries("));
+  assert.doesNotMatch(favorites.slice(0, favorites.indexOf("cards:")), /showTile/);
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  for (const row of ["export function ChatRow(", "export function ProjectRow(", "export function SectionRow("]) {
+    const body = items.slice(items.indexOf(row), items.indexOf(row) + 2500);
+    assert.match(body, /showTile = true,/, row);
+    assert.match(body, /\{showTile && <(ChatTile|CollectionTile)/, row);
+  }
+  const mixedCards = library.slice(library.indexOf("const entryRow ="), library.indexOf("return (", library.indexOf("const entryRow =")));
+  assert.doesNotMatch(mixedCards, /showTile=\{false\}/);
 });
 
 test("project cards in the grid leave out the instructions", () => {

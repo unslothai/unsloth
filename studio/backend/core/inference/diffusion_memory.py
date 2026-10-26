@@ -5338,6 +5338,136 @@ def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
 
 # "0": pin the denoiser back after every text encoder instead of once per encode_prompt call.
 ENCODE_RELEASE_ONCE_ENV = "UNSLOTH_DIFFUSION_ENCODE_RELEASE_ONCE"
+# "0": the prompt encode always streams the whole surplus, even when free memory holds the encoder's need.
+ENCODE_SHORTFALL_ENV = "UNSLOTH_DIFFUSION_ENCODE_SHORTFALL"
+_ENCODE_SLACK_MIB = 512
+# Per token, in hidden_size x 2 bytes (plus one per layer: output_hidden_states keeps every layer).
+_ENCODE_TOKEN_HIDDEN_FACTOR = 32
+# Vision inputs are not priced.
+_ENCODE_VISUAL_KWARGS = (
+    "pixel_values",
+    "pixel_values_videos",
+    "image_grid_thw",
+    "video_grid_thw",
+    "images",
+)
+
+
+def _encoder_width(module: Any) -> tuple[Optional[int], int, int]:
+    config = getattr(module, "config", None)
+    for cfg in (config, getattr(config, "text_config", None)):
+        hidden = getattr(cfg, "hidden_size", None) or getattr(cfg, "d_model", None)
+        if hidden:
+            heads = (
+                getattr(cfg, "num_attention_heads", None) or getattr(cfg, "num_heads", None) or 1
+            )
+            layers = (
+                getattr(cfg, "num_hidden_layers", None) or getattr(cfg, "num_layers", None) or 0
+            )
+            return int(hidden), int(heads), int(layers)
+    return None, 1, 0
+
+
+def encode_need_mib(module: Any, args: Any, kwargs: Any) -> Optional[int]:
+    """MiB one encoder call needs: the ``depth + 1`` largest streamed groups plus prompt activations, with margin.
+    None when unpriceable (visual inputs, no token ids, unknown width)."""
+    try:
+        import torch
+
+        from .diffusion_offload_prefetch import prefetch_depth
+
+        kwargs = kwargs or {}
+        if any(kwargs.get(name) is not None for name in _ENCODE_VISUAL_KWARGS):
+            return None
+        ids = kwargs.get("input_ids")
+        if ids is None:
+            ids = next(
+                (
+                    a
+                    for a in (args or ())
+                    if isinstance(a, torch.Tensor)
+                    and a.dim() == 2
+                    and not torch.is_floating_point(a)
+                ),
+                None,
+            )
+        if ids is None:
+            embeds = kwargs.get("inputs_embeds")
+            if not isinstance(embeds, torch.Tensor) or embeds.dim() != 3:
+                return None
+            batch, tokens = int(embeds.shape[0]), int(embeds.shape[1])
+        elif isinstance(ids, torch.Tensor) and ids.dim() == 2:
+            batch, tokens = int(ids.shape[0]), int(ids.shape[1])
+        else:
+            return None
+        hidden, heads, layers = _encoder_width(module)
+        if not hidden:
+            return None
+        streamed = sorted(
+            (
+                _group_nbytes(g)
+                for g in (_offload_groups(module) or ())
+                if not getattr(g, "_unsloth_resident", False)
+            ),
+            reverse = True,
+        )
+        window = sum(streamed[: prefetch_depth() + 1])
+        acts = (
+            batch
+            * tokens
+            * (hidden * 2 * (_ENCODE_TOKEN_HIDDEN_FACTOR + layers) + heads * tokens * 4)
+        )
+        return (
+            int(math.ceil((window + acts) / float(1 << 20) * _MEASURED_PEAK_MARGIN))
+            + _ENCODE_SLACK_MIB
+        )
+    except Exception:  # noqa: BLE001 - unpriced: the whole surplus streams
+        return None
+
+
+def encode_available_mib(device: Any = None) -> Optional[int]:
+    """Driver free less the VRAM Budget reserve, plus allocator cache outside CUDA graph pools, in MiB."""
+    try:
+        import torch
+
+        dev = torch.device(device if device is not None else "cuda")
+        if dev.type != "cuda":
+            return None
+        if dev.index is None:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        free, total = (int(x) for x in torch.cuda.mem_get_info(dev))
+        free -= user_budget_reserve_bytes(dev, total)
+        cached = max(
+            0,
+            int(torch.cuda.memory_reserved(dev))
+            - int(torch.cuda.memory_allocated(dev))
+            - _graph_held_cache_bytes(dev.index),
+        )
+        # clamp after adding the cache: a reserve larger than driver free still claims part of it
+        return max(free + cached, 0) >> 20
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _encode_device(pipe: Any) -> Any:
+    for module in (getattr(pipe, "components", {}) or {}).values():
+        device = getattr(module, "_unsloth_resident_device", None)
+        if device is not None and getattr(module, "_unsloth_resident_room", None):
+            return device
+    return None
+
+
+def encode_release_mib(pipe: Any, module: Any, args: Any, kwargs: Any, surplus: int) -> int:
+    """Only the shortfall (ComfyUI's ``free_memory(memory_required - free)``), at most ``surplus``; unpriced: all."""
+    if _env_off(ENCODE_SHORTFALL_ENV):
+        return surplus
+    need = encode_need_mib(module, args, kwargs)
+    if need is None:
+        return surplus
+    available = encode_available_mib(_encode_device(pipe))
+    if available is None:
+        return surplus
+    return max(0, min(int(surplus), int(need) - int(available)))
 
 
 def install_encode_release(
@@ -5367,29 +5497,44 @@ def install_encode_release(
             pipe_ref = lambda: pipe  # noqa: E731 - not weak-referenceable
         disable = getattr(getattr(torch, "compiler", None), "disable", None)
         pending: list = []
+        asked = [0]
+        active = [0]
 
-        def _before(module: Any, args: Any) -> None:
+        def _before(
+            module: Any,
+            args: Any,
+            kwargs: Any = None,
+        ) -> None:
+            active[0] += 1
             owner = pipe_ref()
-            if owner is None or pending:
+            if owner is None or active[0] > 1:
                 return  # nested encoder call: the outer one already released
+            # Each encoder prices its own shortfall; a prompt never streams more than the surplus in total.
+            need = min(
+                encode_release_mib(owner, module, args, kwargs, surplus),
+                surplus - asked[0],
+            )
+            if need <= 0:
+                return
+            asked[0] += need
             restore = release_resident_groups(
-                owner, surplus, logger, denoisers_only = True, reason = "the prompt encode"
+                owner, need, logger, denoisers_only = True, reason = "the prompt encode"
             )
             # No empty_cache: the allocator frees cached segments and retries on OOM; flushing per prompt cost a sync.
-            pending.append(restore)
+            if restore is not None:
+                pending.append(restore)
 
         # encode_prompt calls in flight: their encoders keep one release and the outermost return pins back
         scope = [0]
 
         def _restore_pending() -> None:
-            if not pending:
-                return
-            restore = pending.pop()
-            if restore is not None:
-                restore()
+            asked[0] = 0
+            while pending:
+                pending.pop()()
 
         def _after(module: Any, args: Any, output: Any) -> None:
-            if scope[0] > 0:
+            active[0] = max(0, active[0] - 1)
+            if active[0] > 0 or scope[0] > 0:
                 return  # the next encoder of this prompt reuses the room; encode_prompt's return pins back
             _restore_pending()
 
@@ -5400,7 +5545,7 @@ def install_encode_release(
             if not str(name).startswith("text_encoder") or not isinstance(module, torch.nn.Module):
                 continue
             handles = (
-                module.register_forward_pre_hook(before),
+                module.register_forward_pre_hook(before, with_kwargs = True),
                 # always_call: an encode that raises (cancel, OOM) still pins the denoiser back
                 module.register_forward_hook(after, always_call = True),
             )

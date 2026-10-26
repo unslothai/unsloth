@@ -16,9 +16,9 @@ import {
   DEFAULT_PER_MODEL_CONFIG,
   normalizeMlxKvQuant,
   type PerModelConfig,
-  deletePerModelConfigsForOverrideKeys,
   normalizePerModelConfig,
 } from "../model-config/per-model-config";
+import { forgetPerModelConfigsForOverrideKeys } from "../model-config/saved-run-settings";
 
 const OVERRIDES_URL = "/api/settings/openai-auto-switch/overrides";
 
@@ -567,7 +567,10 @@ async function sendModelOverride(
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { llama_extra_args: [] }
         : {}),
-      ...toApiOverride(config),
+      // {} would leave the engine group and MLX offloads; the defaults omit llama_extra_args.
+      ...toApiOverride(
+        config ?? (options?.keepLaunchFlags ? DEFAULT_PER_MODEL_CONFIG : null),
+      ),
       // Reset markers remove legacy passthrough flags; fill-only migration must never delete.
       ...(options?.resetReasoningBudget && config?.reasoningBudget === -1
         ? {
@@ -612,7 +615,7 @@ export function syncModelOverride(
 ): void {
   void putModelOverride(modelId, ggufVariant, config, options)
     .then(({ removedKeys }) => {
-      if (!deletePerModelConfigsForOverrideKeys(removedKeys)) {
+      if (!forgetPerModelConfigsForOverrideKeys(removedKeys)) {
         console.warn(
           "Forgot model settings on the server, but this browser kept its own copy.",
         );

@@ -29,7 +29,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { ShuffleIcon, TextSelectIcon } from "lucide-react";
 import { type ReactNode, memo, useEffect, useMemo, useState } from "react";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 // Neighbouring tokens alternate shades so their boundaries stay visible.

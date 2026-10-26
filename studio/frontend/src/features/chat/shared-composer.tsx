@@ -125,10 +125,10 @@ import {
   Scroll01Icon,
   MoreHorizontalIcon,
   PlusSignIcon,
-  StopIcon,
   SlidersHorizontalIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";

@@ -32,7 +32,6 @@ import {
   BubbleChatTemporaryIcon,
   Cancel01Icon,
   CollapseIcon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -47,6 +46,7 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ForkIcon } from "@/lib/fork-icon";
 import { type ReactNode, useSyncExternalStore } from "react";
