@@ -535,6 +535,35 @@ def _host_available_bytes():
     return None
 
 
+def gather_on_accelerator_if_it_fits(model):
+    """`fsdp2_gathered` options for an export that quantizes the weights in place, where they sit
+    (torchao's QAT convert). On one GPU they sit on the GPU, and torchao's CPU kernels do not round
+    exactly as its GPU ones do, so the writer keeps the gathered weights on its accelerator when they
+    fit there (with 1 GiB or 10% of the card spare); otherwise they go to the CPU as for any export."""
+    on_cpu = dict(offload_to_cpu = True, offload_4bit = True)
+    if not isinstance(model, torch.nn.Module):
+        return on_cpu
+    DTensor = _dtensor_class()
+    device = next(
+        (
+            p.to_local().device
+            for p in model.parameters()
+            if DTensor is not None and isinstance(p, DTensor)
+        ),
+        None,
+    )
+    if device is None or device.type == "cpu":
+        return on_cpu
+    try:
+        free, total = getattr(torch, device.type).mem_get_info(device)
+    except Exception:
+        return on_cpu
+    need = _gathered_host_bytes(model, offload_to_cpu = True, offload_4bit = True)
+    if need + max(_GIB, total // 10) > free:
+        return on_cpu
+    return dict(offload_to_cpu = False, offload_4bit = False)
+
+
 def _host_ram_refusal(method, need):
     """None when `need` gathered bytes fit this host's available RAM, else the refusal message."""
     if os.environ.get("UNSLOTH_FSDP2_EXPORT_SKIP_RAM_CHECK", "0") == "1":

@@ -4481,13 +4481,14 @@ def _assert_export_target_is_not_base_with_lora_layers(self):
         )
 
 
-def _fsdp2_export_on_rank0(method, adapter_only = None):
+def _fsdp2_export_on_rank0(method, adapter_only = None, gather_options = None):
     """Exports that rebuild or quantize the whole model in this process (GGUF, torchao, OpenVINO)
     on a model FSDP2 shards: every rank makes the call, the shards are gathered to rank 0's CPU,
     rank 0 alone runs the ordinary single-process export, the other ranks wait for it, and every
     rank returns rank 0's result (fsdp2_export_on_writer). Refused on every rank when the gathered
     weights do not fit rank 0's host RAM. `adapter_only(self, arguments)` says the export only
-    reads the LoRA weights (a GGUF LoRA), so only those are gathered. Passed through without
+    reads the LoRA weights (a GGUF LoRA), so only those are gathered. `gather_options(self,
+    arguments)`, when it returns a dict, sets the gather's placement instead. Passed through without
     FSDP2, and inside a gather already in progress (push_to_hub_gguf -> save_pretrained_gguf)."""
 
     def decorate(fn):
@@ -4508,8 +4509,11 @@ def _fsdp2_export_on_rank0(method, adapter_only = None):
                 and isinstance(self, PeftModel)
                 and adapter_only(self, arguments)
             )
+            custom = gather_options(self, arguments) if gather_options is not None else None
             if only:
                 options = dict(include = _fsdp2_peft_saved_frozen(self, arguments))
+            elif custom is not None:
+                options = custom
             elif isinstance(self, PeftModel):
                 # The 16-bit merge every one of these exports starts from (save_pretrained_merged's).
                 options = merged_save_gather_options(self, "merged_16bit")
@@ -4531,6 +4535,17 @@ def _fsdp2_export_on_rank0(method, adapter_only = None):
 
 def _gguf_lora_only(model, arguments):
     return str(arguments.get("save_method") or "").lower() == "lora"
+
+
+def _torchao_gather_options(model, arguments):
+    """A QAT model saved with its own config and no LoRA is quantized in place, on the device its
+    weights sit on; every other torchao export quantizes a reload of a 16-bit save."""
+    if isinstance(model, PeftModel) or arguments.get("torchao_config") is not None:
+        return None
+    if getattr(model, "_torchao_config", None) is None:
+        return None
+    from .models.fsdp2_save import gather_on_accelerator_if_it_fits
+    return gather_on_accelerator_if_it_fits(model)
 
 
 @_model_parallel_refuses_save("save_pretrained_gguf")
@@ -8121,7 +8136,7 @@ def _write_executorch_export_config(
 
 
 @_model_parallel_refuses_save("save_pretrained_torchao")
-@_fsdp2_export_on_rank0("save_pretrained_torchao")
+@_fsdp2_export_on_rank0("save_pretrained_torchao", gather_options = _torchao_gather_options)
 def unsloth_save_pretrained_torchao(
     self,
     save_directory: Union[str, os.PathLike],
