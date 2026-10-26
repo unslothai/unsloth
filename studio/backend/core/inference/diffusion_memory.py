@@ -3483,11 +3483,8 @@ _MEASURED_DENSE_BF16_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
 }
 
 
-# Small-host route (diffusion_small_host): a bf16 DiT stored as int8 per-channel weights for fp16 / fp32 compute, eager
-# tier. Worst whole-render CUDA MiB above the resident weights at 1024x1024 (encode + steps + VAE decode), and the
-# largest loaded int8 DiT it covers. FLUX.2-klein-4B, Kaggle T4 fp16, 4 steps, sliced VAE: 2805 MiB on 2 loads (main
-# 7132f8a5). Without it a fresh home placed from the flat estimate: the encoder streamed from memory-mapped storage on
-# every prompt (22-28 s of encode for the first prompts) with the card at 7.4 of 15 GiB. "0" = learned peak alone.
+# Small-host int8 DiT, eager: (peak MiB above resident weights at 1024^2, largest int8 DiT MiB covered).
+# FLUX.2-klein-4B, Kaggle T4 fp16, 4 steps, sliced VAE. "0" = learned peak alone.
 MEASURED_ACTIVATION_SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_SMALL_HOST"
 _MEASURED_SMALL_HOST_INT8_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
     "flux.2-klein": (2805, 3800),
@@ -3617,7 +3614,6 @@ def measured_image_runtime_mib(
             bf16 = dense_bf16,
         )
     elif small_host_int8 and dense_transformer_mib is not None and phase is None:
-        # the int8 weights the route stores: a measured table of their own, not the dense one
         seed = _small_host_int8_seed_mib(
             family, speed_mode, int(dense_transformer_mib), max(2, int(compute_bytes or 2))
         )
@@ -4640,7 +4636,6 @@ def _refine_plan_from_loaded_weights(
             fp8_stored
             or (dense_mib is not None and ((compute_bytes is None and not dense_bf16) or packed))
         )
-        # a small-host int8 denoiser (fp16 / fp32 compute) seeds from its own measured table, never the dense one
         small_host_int8 = bool(
             packed and not fp8_stored and compute_bytes is not None and pipe_small_host_int8(pipe)
         )
@@ -5637,7 +5632,7 @@ def measured_request_extra_mib(
     tier_moved = bool(getattr(pipe, TIER_MOVED_ATTR, False))
     tier_peak = int(tier_peak_mib) if tier_moved and tier_peak_mib else None
     if (unpriced_references and tier_seeded) or (
-        # the bf16 and small-host int8 seeds are eager-only like a learned peak: same invalidation
+        # eager-only seeds: same invalidation as a learned peak
         (learned or need is None or sized["dense_bf16"] or sized["small_host_int8"])
         and (
             getattr(pipe, "_unsloth_peak_static", False)
