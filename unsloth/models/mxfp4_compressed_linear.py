@@ -308,8 +308,10 @@ def _bounded_dense_matmul_t_eager(
         state = _DENSE_BUDGET[key] = [_free_bytes(device) // 2, _DENSE_RETRY_CALLS]
     lead = x.shape[:-1]
     x2 = x.reshape(-1, N)
+    # Each chunk holds its 16-bit decode and the fp32 copy the fp32 product reads.
+    chunk_row_bytes = row_bytes + K * 4
     while True:
-        step = min(N, state[0] // row_bytes)
+        step = min(N, state[0] // chunk_row_bytes)
         if step < _DENSE_MIN_CHUNK_ROWS:
             return _zoo_mxfp4_matmul(x, packed, scale, trans = True, out = out)
         try:
@@ -326,7 +328,7 @@ def _bounded_dense_matmul_t_eager(
             return y if out is None else out.copy_(y)
         except torch.cuda.OutOfMemoryError:
             buffer = weight = acc = None
-        state[0] = step * row_bytes // 2
+        state[0] = step * chunk_row_bytes // 2
 
 
 _bounded_dense_matmul_op = None
