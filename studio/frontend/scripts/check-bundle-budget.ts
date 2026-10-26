@@ -439,13 +439,13 @@ export const BUDGET = {
   // Settings and the row menu on the loaded model in Recommended (#15249) add 82 B raw / 176 B transfer to the eager
   // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
   // build, Node 26, 105 chunks). Raised by that growth.
-  // System-wide voice typing adds 30,234 B raw / 9,666 B transfer: the background controller, PCM capture and
+  // System-wide voice typing adds 33,795 B raw / 10,231 B transfer: the background controller, PCM capture and
   // pause segmenter, transcript cleanup and the Voice settings rows are shared with the eager composer
-  // dictation path, so they cannot be split without delaying the first recording (6,971,572 -> 7,001,806 B raw,
-  // 2,100,497 -> 2,110,163 B transfer against c9e5d4ab, Node 24, 97 chunks). Raised by that growth plus
-  // about 300 B raw / 200 B transfer, as for #14568.
-  transferBytes: 2_110_363,
-  rawBytes: 7_002_106,
+  // dictation path, so they cannot be split without delaying the first recording (6,957,551 -> 6,991,346 B raw,
+  // 2,097,723 -> 2,107,954 B transfer against 6f7e26e0, one machine and build, Node 24, 96 chunks). Raised by
+  // that growth plus about 300 B raw / 200 B transfer, as for #14568.
+  transferBytes: 2_108_154,
+  rawBytes: 6_991_646,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
