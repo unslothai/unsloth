@@ -430,8 +430,13 @@ export const BUDGET = {
   // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
   // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
   // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
-  transferBytes: 2_096_327,
-  rawBytes: 6_958_713,
+  // System-wide voice typing adds 29,943 B raw / 9,178 B transfer: the background controller, PCM capture and
+  // pause segmenter, transcript cleanup and the Voice settings rows are shared with the eager composer
+  // dictation path, so they cannot be split without delaying the first recording (6,958,713 -> 6,987,656 B raw,
+  // 2,096,327 -> 2,105,505 B transfer against 1185f84cb4, Node 24, 97 chunks). Raised by that growth plus
+  // about 300 B raw / 200 B transfer, as for #14568.
+  transferBytes: 2_105_705,
+  rawBytes: 6_987_956,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
