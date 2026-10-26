@@ -215,11 +215,8 @@ def _scan_shards(
     max_shards: Optional[int] = MAX_SHARDS_READ,
     known_arch: Optional[str] = None,
 ):
-    """(architecture, lazy table bytes under ``mode``) over ``names``, stopping at the first shard that carries the table.
-
-    A lazy ``known_arch`` (the repo's) only orders the reads: the small later-shard headers
-    first, the first shard, which carries the tokenizer, last. The variant's own first-shard
-    metadata still names its architecture, since a repo can hold several families."""
+    """(architecture, lazy table bytes under ``mode``), stopping at the first shard carrying the
+    table."""
     arch: Optional[str] = None
     order = names[:max_shards]
     hinted = lazy_architecture(known_arch) and len(names) > 1

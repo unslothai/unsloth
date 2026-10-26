@@ -16141,7 +16141,6 @@ def _gguf_memory_breakdown(
         LlamaCppBackend._clear_device_placement_env(_lt_env)
     if gpu_memory_mode == "manual":
         LlamaCppBackend._clear_manual_placement_env(_lt_env)
-    # The split env the child gets: load_model drops an inherited non-layer one.
     LlamaCppBackend._reconcile_split_mode_env(_lt_env, tensor_parallel = bool(tensor_parallel))
     if lookup_table_bytes:
         lookup_table_on_disk = _lt_backend.lookup_tables_stream_by_default(
@@ -16213,8 +16212,8 @@ def _gguf_memory_breakdown(
             # A pass-through -c 0 or larger --parallel sizes a cache runtime did not price.
             if _pass_through_reprices_cache(_lt_extras, n_parallel):
                 return False
-            # The launch keeps llama.cpp's default for a CPU child, and Manual Auto layers
-            # with no context leave its size to --fit: no resident verdict to mirror.
+            # A CPU child keeps llama.cpp's default; Manual Auto layers without a context leave it
+            # to --fit.
             if _lt_backend._child_runs_on_cpu(
                 _lt_backend._find_llama_server_binary(),
                 _lt_extras,
@@ -16270,8 +16269,7 @@ def _gguf_memory_breakdown(
                 budget = _lt_backend._apple_metal_memory_budget_bytes()
                 if budget <= 0:
                     return False
-                # Past the wired limit Metal refuses, as the launch's verdict reads it:
-                # None is unknown, 0 is used up.
+                # Metal refuses past the wired limit: None is unknown, 0 used up.
                 wired = _lt_backend._apple_metal_wired_headroom_bytes()
                 if wired is not None:
                     budget = min(budget, wired)
@@ -16311,9 +16309,8 @@ def _gguf_memory_breakdown(
                     footprint,
                     _lt_rows,
                     gpu_indices = pick,
-                    # The launch's classification: Vulkan reports total 0 for an iGPU
-                    # (a CUDA MIG or vGPU slice can too, with VRAM of its own), and ROCm
-                    # APUs and integrated CUDA SoCs pool host RAM whatever their total.
+                    # Vulkan reports total 0 for an iGPU; ROCm APUs and integrated CUDA SoCs pool
+                    # host RAM.
                     shared_gpu_ids = _lt_backend._unified_pool_gpu_ids(
                         _lt_rows,
                         gpu_indices = pick,

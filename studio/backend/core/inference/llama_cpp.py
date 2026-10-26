@@ -7481,9 +7481,7 @@ def _extra_args_tensor_split(
 
 
 def _pass_through_reprices_cache(extra_args: Optional[Iterable[str]], n_parallel) -> bool:
-    """Whether a pass-through llama.cpp reads last changes the cache Studio priced at
-    ``n_parallel`` slots: ``-c 0`` (llama.cpp picks the context) or a larger ``--parallel``.
-    Studio emits ``--parallel`` itself, so only the argv override counts."""
+    """Whether an argv -c 0 or a larger --parallel changes the cache Studio priced."""
     try:
         if parse_ctx_override(extra_args) == 0:
             return True
@@ -8125,9 +8123,7 @@ def _host_pinned_input_bytes(
     lazy_mode: str = "off",
     host_forced: Iterable[str] = (),
 ) -> int:
-    """Bytes of the file llama.cpp keeps on the host however many layers it offloads;
-    ``lazy_mode`` is the mode the child resolves to, ``host_forced`` the archs whose table
-    the build keeps on the host whatever -ot says."""
+    """Bytes llama.cpp keeps on the host however many layers it offloads."""
     if not scan:
         return 0
     architecture, named, _experts = scan
@@ -12198,15 +12194,13 @@ class LlamaCppBackend:
             main = self._effective_main_gpu(extra_args, env)
             main = 0 if main is None else main
             if main < 0:
-                # llama.cpp clears the explicit and the default list alike, RPC included.
                 return False
         if override is not None and one_device:
-            # Split mode none keeps only the main device; an unused RPC entry is not a model device.
             override = [d for d in override if d.lower() not in _CPU_DEVICE_VALUES]
             override = override[main : main + 1]
         if override is not None:
-            # An RPC device reports mmap support (ggml-rpc.cpp device_get_props, b11734-mix and
-            # b11870 alike), so it never turns auto off; only the local devices are looked up.
+            # An RPC device reports mmap support (ggml-rpc.cpp device_get_props), so it never turns
+            # auto off.
             gpu_names = [
                 d
                 for d in override
@@ -12273,10 +12267,7 @@ class LlamaCppBackend:
         cpu_forced: bool = False,
         tensor_parallel: Optional[bool] = None,
     ) -> bool:
-        """Whether the child gets no model device: a CPU-only build, a CPU ``--device``
-        selection, or a launch Studio forces onto the CPU (``cpu_forced``, a paravirtual
-        Metal). Its lookup tables keep llama.cpp's lazy default. ``tensor_parallel`` is the
-        launch's decision (Studio's --split-mode tensor beats the env), else read from both."""
+        """Whether the child gets no model device (CPU build, CPU --device or forced CPU launch)."""
         if (
             cpu_forced
             or self._binary_ships_no_gpu_backend(binary, env)
@@ -12298,9 +12289,8 @@ class LlamaCppBackend:
     def _metal_placement_unset(
         extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]], *, layers_fixed: bool
     ) -> bool:
-        """Whether nothing but Studio places this Metal launch: no fixed layer count, CPU
-        placement, fitter control or pass-through adapter, in argv or env. Only then may
-        a measured discount pin the full offload."""
+        """Whether nothing but Studio places this Metal launch, so a measured discount may pin full
+        offload."""
         source_env = os.environ if env is None else env
         return not (
             layers_fixed
@@ -12311,20 +12301,15 @@ class LlamaCppBackend:
             or _env_places_tensors_on_cpu(source_env)
             or _extra_args_set_any_flag(extra_args, _FIT_CONTROL_FLAGS)
             or any(source_env.get(name) for name in _FIT_CONTROL_ENV_VARS)
-            # Extras are appended after the pin, while inherited values are overridden by it.
             or fit_is_enabled_in(extra_args)
-            # A pass-through adapter is resident on the base tensor's buffer
-            # (llama-adapter.cpp:335, :67) and neither the probe nor model_size carries it,
-            # and nothing on the Apple path charges it the way _fits_without_paging does
-            # off Metal. Spending the discount would hand that budget to the KV cache.
+            # A pass-through adapter sits on the base tensor's buffer (llama-adapter.cpp:335) and
+            # nothing here charges it: keep the discount unspent.
             or _sidecar_adapter_paths(extra_args)
         )
 
     @staticmethod
     def _host_forced_table_archs(binary: Optional[str] = None) -> frozenset[str]:
-        """``_HOST_FORCED_TABLE_ARCHS`` when the build beside ``binary`` keeps their table on
-        the host whatever -ot says (its loader carries ``_HOST_FORCED_TABLE_MARKER``), else
-        none: an unreadable build is priced as honouring the override."""
+        """Archs whose table the build keeps on the host whatever -ot says; none if unreadable."""
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return frozenset()
@@ -12364,14 +12349,12 @@ class LlamaCppBackend:
             )
             if mode != "auto":
                 return mode == "on"
-            # The split env the child gets: load_model drops an inherited non-layer one.
             tensor = (
                 _effective_tensor_parallel(extra_args, False, _env)
                 if tensor_parallel is None
                 else bool(tensor_parallel)
             )
             self._reconcile_split_mode_env(_env, tensor_parallel = tensor)
-            # A CPU child has no model device to turn auto off (RPC aside, read below).
             cpu_child = self._child_runs_on_cpu(binary, extra_args, _env, tensor_parallel = tensor)
             vulkan = not cpu_child and self._is_vulkan_backend(binary)
             rows = []
@@ -13228,15 +13211,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _picker_ordered_gpu_indices(gpu_ids, gpu_indices, tp_tensor_split):
-        """``(gpu_indices, tp_tensor_split)`` in the order the user dragged the picked GPUs.
-
-        No narrower subset (manual, or a failed/file-size selection) pins the whole picked
-        set. A fit that narrowed the pool keeps only its survivors, in the picker's
-        relative order. _plan_tensor_parallel returns its shares positional over the
-        ascending gpu_indices, so the shares move with the devices, and a reorder they
-        cannot follow is vetoed rather than half-applied (as _repoint_emitted_tensor_split
-        does for the mask). Unchanged without ``gpu_ids``.
-        """
+        """``(gpu_indices, tp_tensor_split)`` in the picker's order; a reorder the shares cannot
+        follow is vetoed."""
         if not gpu_ids:
             return gpu_indices, tp_tensor_split
         picked = [int(i) for i in gpu_ids]
@@ -13264,16 +13240,8 @@ class LlamaCppBackend:
         is_vulkan_backend: bool,
         cpu_forced: bool = False,
     ) -> "tuple[Optional[list[int]], Optional[list[int]]]":
-        """``(device order, visibility mask order)`` the spawn will give this child, for
-        previews that run before load_model pins it.
-
-        Device order: gpu_indices after the picker reorder, the list a Vulkan ``--device``
-        and a ``--split-mode none`` main device follow. Mask order: the ids a CUDA/ROCm
-        child's emitted visibility mask holds, so its ``CUDA<k>`` / ``ROCm<k>`` is entry k
-        (the inherited-order rule the spawn applies included); None when the spawn keeps
-        the inherited mask (Vulkan, a CPU child, nothing pinned, or ids the mask cannot
-        name), where the parent's mask still numbers the child's devices.
-        """
+        """``(device order, visibility mask order)`` the spawn will give the child; mask None when
+        inherited."""
         order, split = self._picker_ordered_gpu_indices(gpu_ids, gpu_indices, tp_tensor_split)
         if order is None or is_vulkan_backend or cpu_forced:
             return (None if order is None else [int(i) for i in order]), None
@@ -18165,19 +18133,13 @@ class LlamaCppBackend:
     def _unified_pool_gpu_ids(
         self, rows, *, gpu_indices, shared_gpu_ids, is_vulkan_backend: bool
     ) -> set:
-        """Ids in ``rows`` (``(idx, free)``) whose free "VRAM" is the host RAM pool.
-
-        ``shared_gpu_ids`` already names Vulkan iGPUs (total 0); the ROCm APUs and
-        integrated CUDA SoCs it cannot see are added here, so both end up priced
-        against host RAM alone. The one classification the launch and the estimate
-        route's resident proofs share."""
+        """Ids in ``rows`` whose free VRAM is the host RAM pool (Vulkan iGPUs, ROCm APUs, CUDA
+        SoCs)."""
         rows = list(rows or ())
         shared = set(shared_gpu_ids or ())
         pinned = list(gpu_indices) if gpu_indices is not None else [row[0] for row in rows]
         if rows and not is_vulkan_backend and self._amd_apu_wants_unified_memory(pinned):
-            # Per device, not blanket: the gate above is the cheap "is ANY of them
-            # unified" question, and a discrete card next to an APU still has a pool of
-            # its own, so re-ask per row rather than forfeit a fit that is really there.
+            # Per device: a discrete card beside an APU still has its own pool.
             shared |= {row[0] for row in rows if self._amd_apu_wants_unified_memory([row[0]])}
         # Integrated CUDA SoCs (Jetson, DGX Spark) too. Cache only: _get_gpu_memory filled it.
         _integrated = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
@@ -19129,11 +19091,8 @@ class LlamaCppBackend:
 
     @classmethod
     def _reconcile_split_mode_env(cls, env: dict[str, str], *, tensor_parallel: bool) -> None:
-        """Reconcile the inherited LLAMA_ARG_* split env with Unsloth's final decision.
-
-        Stripping CLI extras on a tensor->layer downgrade can't remove env vars, so the
-        child could run a mode Unsloth didn't budget. Shared by load_model's spawn env and
-        every placement preview, so a preview prices the split the child really gets."""
+        """Clear inherited LLAMA_ARG_* split env that contradicts Studio's split, so previews price
+        what the child runs."""
         if not tensor_parallel:
             # Layer split: clear a non-layer inherited split mode (and any paired
             # tensor-split) so the child can't override the layer plan.
@@ -29558,8 +29517,7 @@ class LlamaCppBackend:
                             ).intersection(i for i, _f in gpus)
                         ):
                             return 0
-                        # The child's own extras and env, and the lazy mode it resolves to:
-                        # a streamed table stays on the host whatever -ot says.
+                        # A streamed table stays on the host whatever -ot says.
                         _inp_extras = (
                             self._strip_device_extra_args(extra_args)
                             if _gpu_ids_own_device_flags
@@ -30902,8 +30860,7 @@ class LlamaCppBackend:
                             mtp_may_engage = _mtp_will_engage,
                         )
                         _apple_probe_embd = _apple_host_embd
-                        # Past the wired limit Metal refuses: the resident verdict obeys it too,
-                        # scaled like the later wired checks; None unknown, 0 used up.
+                        # Metal refuses past the wired limit; None is unknown, 0 used up.
                         _apple_wired = self._apple_metal_wired_headroom_bytes()
                         _apple_resident_budget_mib = (
                             _apple_fit_budget_mib
@@ -30917,7 +30874,6 @@ class LlamaCppBackend:
                                 ),
                             )
                         )
-                        # The extras and env as the child gets them, as the fit below.
                         _apple_extras = (
                             self._strip_device_extra_args(extra_args)
                             if _gpu_ids_own_device_flags
@@ -30945,7 +30901,6 @@ class LlamaCppBackend:
                                 )
                                 if effective_ctx > 0
                                 and not _pass_through_reprices_cache(extra_args, n_parallel)
-                                # An unsized MTP draft prices nothing, as the discrete verdict.
                                 and not _flat_mtp_engages
                                 and (
                                     _apple_cpu_draft := self._cpu_resident_draft_bytes(
@@ -31589,7 +31544,6 @@ class LlamaCppBackend:
                                     supports_fit_target = _supports_fit_target,
                                 )
                         # A lazily read table stays mmap'd on the host, never on the GPU.
-                        # Devices in the order and under the mask the spawn gives the child.
                         _child_order, _child_mask = self._planned_child_gpu_order(
                             gpu_ids = gpu_ids,
                             gpu_indices = gpu_indices,
@@ -32084,9 +32038,8 @@ class LlamaCppBackend:
                         - _kv_bytes(effective_ctx, 0),
                     )
                     # A lazily read table stays mmap'd under every load mode: not pinned RAM.
-                    # An empty inventory beside a GPU (failed probe) may hide an iGPU, where
-                    # auto is off: priced resident, as lookup_tables_stream_by_default does.
-                    # Devices in the order and under the mask the spawn gives the child.
+                    # An empty inventory beside a GPU may hide an iGPU, where auto is off: priced
+                    # resident.
                     _fit_child_order, _fit_child_mask = self._planned_child_gpu_order(
                         gpu_ids = gpu_ids,
                         gpu_indices = gpu_indices,
@@ -32398,7 +32351,6 @@ class LlamaCppBackend:
                 # a failed/file-size selection), pin the whole picked set so the
                 # model can't spill onto an unpicked GPU.
                 if gpu_ids:
-                    # The previews read the same order (_planned_child_gpu_order).
                     gpu_indices, tp_tensor_split = self._picker_ordered_gpu_indices(
                         gpu_ids, gpu_indices, tp_tensor_split
                     )
@@ -32495,7 +32447,6 @@ class LlamaCppBackend:
                     if _gpu_ids_own_device_flags:
                         self._clear_device_placement_env(_apu_lazy_env)
                     self._reconcile_split_mode_env(_apu_lazy_env, tensor_parallel = tensor_parallel)
-                    # Devices in the order and under the mask the spawn gives the child.
                     _apu_child_order, _apu_child_mask = self._planned_child_gpu_order(
                         gpu_ids = gpu_ids,
                         gpu_indices = gpu_indices,
