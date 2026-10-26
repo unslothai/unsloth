@@ -282,6 +282,7 @@ from .video_frames import (
     NON_FINITE_FRAMES_MSG,
     NonFiniteFramesError,
     finite_video_decode,
+    nonfinite_check_enabled,
     require_finite_frames,
     uint8_video_frames,
 )
@@ -1965,6 +1966,26 @@ def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
         return False
     slot.stop(reason)
     return True
+
+
+def _refuse_h3_native_nan_render(path: Any) -> None:
+    """Raise ``NonFiniteFramesError`` for an sd.cpp H3 clip that is a NaN render (``h3_native_clip_is_nan_render``):
+    sd.cpp writes it and exits 0. Off with UNSLOTH_VIDEO_NONFINITE_CHECK=0; a clip the probe cannot read is kept."""
+    if not nonfinite_check_enabled():
+        return
+    from .video_minimax_h3 import h3_native_clip_is_nan_render
+
+    try:
+        broken = h3_native_clip_is_nan_render(Path(path))
+    except Exception as exc:  # noqa: BLE001 - the probe never fails a render on its own
+        logger.debug("video.h3_native_nonfinite_probe_failed: %s", exc)
+        return
+    if broken:
+        logger.warning(
+            "video.h3_native_nonfinite: sd.cpp returned a clip whose every frame is flat black / white and whose "
+            "soundtrack is one full-scale level, the output of a NaN render; refusing to save it"
+        )
+        raise NonFiniteFramesError(NON_FINITE_FRAMES_MSG)
 
 
 def _h3_retry_vram_cap(launched: "Optional[Sequence[str]]", error: str) -> Any:
@@ -13088,6 +13109,7 @@ class VideoBackend:
                 if cudnn is not None:
                     cudnn.end_render()
                 self._gen.update(phase = "export", eta_seconds = None)
+                _refuse_h3_native_nan_render(generated)
                 actual_width, actual_height, actual_frames, has_audio = inspect_video(generated)
                 mp4_bytes = transcode_video_to_mp4(generated, fps = fps)
                 if cancel.is_set():
