@@ -203,7 +203,7 @@ function OwnerAccountsTab() {
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t("settings.accounts.search")}
             aria-label={t("settings.accounts.search")}
-            className="pl-9"
+            className="h-control pl-9"
           />
         </div>
         <Button

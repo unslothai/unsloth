@@ -2478,14 +2478,18 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     assert (
         "pinnable: pinnableBackend && "
         '(d.index_kind === "vulkan" || '
-        '(data?.device_backend !== "xpu" && d.index_kind === "physical")),' in src
+        '(data?.device_backend !== "xpu" && '
+        '(d.index_kind === "physical" || d.index_kind === "cuda_device"))),' in src
     )
     # ROCm reuses torch.cuda.* and physical IDs, so excluding it hides the multi-GPU picker.
     assert (
         "const diffusionBackend = "
         'data?.device_backend === "cuda" || data?.device_backend === "rocm";' in src
     )
-    assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
+    assert (
+        "diffusionPinnable: diffusionBackend && "
+        '(d.index_kind === "physical" || d.index_kind === "cuda_device"),' in src
+    )
 
 
 def test_chat_autoload_records_every_validation_failure():

@@ -358,3 +358,56 @@ def test_nvfp4_accepts_rank4_inputs(monkeypatch):
     for shape in [(6, 64), (2, 3, 64), (2, 3, 5, 64)]:
         out = model(torch.randn(*shape, dtype = torch.bfloat16))
         assert out.shape == (*shape[:-1], 128)
+
+
+def _torchao_nvfp4_contract_forward(self, x):
+    # What torchao's NVFP4 QAT forward accepts: nvfp4_quantize asserts these, then the output follows x.
+    assert x.dim() == 2, x.shape
+    assert x.dtype in (torch.bfloat16, torch.float32), f"{x.dtype} not supported"
+    assert x.is_contiguous(), "Only support contiguous data for now"
+    return (x.float() @ self.weight.float().t()).to(x.dtype)
+
+
+def test_nvfp4_accepts_strided_inputs(monkeypatch):
+    _probe_ok(monkeypatch)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+    ref = model[0].weight.detach().clone()
+    model = _prepare_model_for_qat(model, "nvfp4")
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    base = torch.randn(4, 6, 128, dtype = torch.bfloat16)
+    for x in [base[0, :, ::2], base[:, :, :64], base.transpose(0, 1)[..., 64:].unsqueeze(0)]:
+        assert not x.is_contiguous()
+        out = model(x)
+        assert out.shape == (*x.shape[:-1], 128) and out.dtype == torch.bfloat16
+        expected = (x.float() @ ref.float().t()).to(torch.bfloat16)
+        torch.testing.assert_close(out, expected)
+
+
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+def test_nvfp4_takes_float16_autocast_activations(monkeypatch, weight_dtype):
+    # Linear(63, 64) stays plain (63 is not a multiple of 16) and emits float16 under autocast.
+    _probe_ok(monkeypatch)
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(
+        torch.nn.Linear(63, 64, bias = False), torch.nn.Linear(64, 128, bias = False)
+    ).to(weight_dtype)
+    model = _prepare_model_for_qat(model, "nvfp4")
+    assert not isinstance(model[0], _nvfp4_linear()) and isinstance(model[1], _nvfp4_linear())
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    x = torch.randn(2, 3, 63, dtype = weight_dtype, requires_grad = True)
+    with torch.autocast("cpu", dtype = torch.float16):
+        out = model(x)
+    assert out.dtype == torch.float16 and out.shape == (2, 3, 128)
+    out.float().sum().backward()
+    assert x.grad is not None and model[1].weight.grad is not None
+
+
+def test_nvfp4_float16_activations_under_bfloat16_autocast_return_bfloat16(monkeypatch):
+    _probe_ok(monkeypatch)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+    model = _prepare_model_for_qat(model, "nvfp4")
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    x = torch.randn(2, 3, 64, dtype = torch.float16)
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        out = model(x)
+    assert out.dtype == torch.bfloat16 and out.shape == (2, 3, 128)

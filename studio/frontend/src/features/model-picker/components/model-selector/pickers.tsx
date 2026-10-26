@@ -6487,70 +6487,113 @@ export function HubModelPicker({
             ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
             : selectMeta,
         ];
+    // Its curated row is hidden while loaded, so this row must open the quant list instead.
+    const expandable = Boolean(quant) && !isLocal && isKnownGgufRepo(entry.id);
+    const expanded = expandable && expandedGguf === entry.id;
     return (
-      <div
-        key={optionKey}
-        className={downloadedRowShellClassName(isSelected)}
-      >
-        <div className="min-w-0 flex-1">
-          <ModelRow
-            label={entry.id}
-            tooltipText={entry.id}
-            hideOwner={isUnslothOwned(entry.id)}
-            alignMeta="hub"
-            meta={quant ? "GGUF" : extractParamLabel(entry.id)}
-            tags={quant ? [ggufQuantChipLabel(quant)] : undefined}
-            selected={isSelected}
-            loaded={true}
-            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-            onClick={() => onSelect(checkpoint, selectMeta)}
-            vramStatus={null}
-            className={downloadedRowButtonClassName}
-          />
-        </div>
-        <span className={ROW_ACTIONS_VISIBLE_CLASS}>
-          {onConfigure && (
-            <ModelLoadSettingsAction
-              ariaLabel={`Inference settings for ${entry.id}`}
-              onConfigure={() => onConfigure(...configureArgs)}
+      <div key={optionKey}>
+        <div className={downloadedRowShellClassName(isSelected)}>
+          <div className="min-w-0 flex-1">
+            <ModelRow
+              label={entry.id}
+              tooltipText={entry.id}
+              hideOwner={isUnslothOwned(entry.id)}
+              alignMeta="hub"
+              meta={quant ? "GGUF" : extractParamLabel(entry.id)}
+              tags={quant ? [ggufQuantChipLabel(quant)] : undefined}
+              selected={isSelected}
+              loaded={true}
+              optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+              onClick={() =>
+                expandable
+                  ? setExpandedGguf((prev) =>
+                      prev === entry.id ? null : entry.id,
+                    )
+                  : onSelect(checkpoint, selectMeta)
+              }
+              onArrowDownIntoChildren={
+                expanded ? () => focusFirstChildOption(optionKey) : undefined
+              }
+              vramStatus={null}
+              className={downloadedRowButtonClassName}
             />
-          )}
-          <ModelRowMenu
-            ariaLabel={`More options for ${entry.id}`}
-            cachePath={
-              isLocal ? undefined : { repoId: checkpoint, variant: quant ?? undefined }
-            }
-            // Every loaded row ejects while several are loaded, the active one included.
-            items={
-              ejectsKept
-                ? [
-                    {
-                      key: "eject",
-                      label: "Eject",
-                      icon: (
-                        <HugeiconsIcon
-                          icon={RemoveCircleIcon}
-                          strokeWidth={1.75}
-                          className="size-icon"
-                        />
-                      ),
-                      onSelect: () => onEject?.(checkpoint),
-                    },
-                  ]
-                : undefined
-            }
-            pin={
-              isLocal
-                ? undefined
-                : {
-                    pinned: pinnedSet.has(pinKey(checkpoint, quant ?? undefined)),
-                    pinLabel: "Pin",
-                    unpinLabel: "Unpin",
-                    onToggle: () => togglePinned(checkpoint, quant ?? undefined),
-                  }
-            }
+          </div>
+          <span className={ROW_ACTIONS_VISIBLE_CLASS}>
+            {onConfigure && (
+              <ModelLoadSettingsAction
+                ariaLabel={`Inference settings for ${entry.id}`}
+                onConfigure={() => onConfigure(...configureArgs)}
+              />
+            )}
+            <ModelRowMenu
+              ariaLabel={`More options for ${entry.id}`}
+              cachePath={
+                isLocal ? undefined : { repoId: checkpoint, variant: quant ?? undefined }
+              }
+              // Every loaded row ejects while several are loaded, the active one included.
+              items={
+                ejectsKept
+                  ? [
+                      {
+                        key: "eject",
+                        label: "Eject",
+                        icon: (
+                          <HugeiconsIcon
+                            icon={RemoveCircleIcon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                        ),
+                        onSelect: () => onEject?.(checkpoint),
+                      },
+                    ]
+                  : undefined
+              }
+              pin={
+                isLocal
+                  ? undefined
+                  : {
+                      pinned: pinnedSet.has(pinKey(checkpoint, quant ?? undefined)),
+                      pinLabel: "Pin",
+                      unpinLabel: "Unpin",
+                      onToggle: () => togglePinned(checkpoint, quant ?? undefined),
+                    }
+              }
+            />
+          </span>
+        </div>
+        {expanded && (
+          <GgufVariantExpander
+            diffusionLoad={diffusionLoad}
+            hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+            gpuCount={expanderGpuCount}
+            repoId={entry.id}
+            loadedQuants={loadedQuantsFor(entry.id)}
+            pipelineTag={pipelineTagById.get(entry.id) ?? null}
+            onSelect={onSelect}
+            resolveDownloadFootprint={resolveDownloadFootprint}
+            onConfigure={onConfigure}
+            hfToken={hfToken || undefined}
+            parentOptionKey={optionKey}
+            onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
+            onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
+            gpuGb={expanderGpuGb}
+            systemRamGb={expanderRamGb || undefined}
+            budgetKnown={expanderBudgetGpu.budgetKnown}
+            variantActions={{
+              onDelete: async (variantQuant, cachePath) => {
+                await deleteCachedModel(
+                  entry.id,
+                  variantQuant,
+                  hfToken || undefined,
+                  cachePath ?? undefined,
+                );
+                prunePinnedQuantValidation(entry.id, variantQuant);
+                refreshCachedLists();
+              },
+            }}
           />
-        </span>
+        )}
       </div>
     );
   };
@@ -7078,7 +7121,28 @@ export function HubModelPicker({
               />
             </span>
           ) : (
-            <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
+            // No chevron until the probe rules out a sole quant. The gutter is a mouse target (the row
+            // has the keyboard); pr-2.5 is the heading chevron's column.
+            <span className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6")}>
+              {soleQuants.pending.has(c.repo_id) ? null : (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
+                  className="flex h-full w-full cursor-pointer items-center justify-end pr-2.5 text-muted-foreground/80 hover:text-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={
+                      expanderOpen
+                        ? ChevronDownStandardIcon
+                        : ChevronRightStandardIcon
+                    }
+                    className="size-3"
+                  />
+                </button>
+              )}
+            </span>
           )}
         </div>
         {expanderOpen && (

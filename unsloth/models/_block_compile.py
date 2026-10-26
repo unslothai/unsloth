@@ -10,6 +10,7 @@ import inspect
 import os
 import sys
 import types
+import weakref
 
 import torch
 
@@ -48,6 +49,37 @@ class _CloneGrad(torch.autograd.Function):
 def _clone_outputs(out):
     import torch.utils._pytree as pytree
     return pytree.tree_map(lambda x: x.clone() if torch.is_tensor(x) else x, out)
+
+
+def _param_grads_out_of_pool(layer):
+    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it."""
+    if layer.__dict__.get("_unsloth_block_grad_hooks", False):
+        return
+    layer.__dict__["_unsloth_block_grad_hooks"] = True
+
+    def hook_for(param):
+        ref = weakref.ref(param)
+
+        def hook(grad):
+            p = ref()
+            if p is None or p.grad is not None:
+                return None
+            return grad.clone()
+
+        return hook
+
+    for param in layer.parameters():
+        if param.requires_grad:
+            param.register_hook(hook_for(param))
+
+
+def _in_nonreentrant_checkpoint():
+    """Non-reentrant checkpoint frees recomputed inputs mid graph recording, which cudagraph trees refuse."""
+    try:
+        hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
+    except Exception:
+        return False
+    return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
 
 
 def _isolate_supported():
@@ -629,6 +661,8 @@ def _precheck_band(layer, seq_len, args, kwargs):
 
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
 _IN_BLOCK = [0]
+_PACKED_MODULE = "unsloth.utils.hf_packed_attention"
+_NO_PACKED = [False]
 _OFF, _FULL, _SPLIT = 0, 1, 2
 _DEMOTION = (_FULL, _SPLIT, _OFF)
 _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
@@ -779,7 +813,7 @@ def _wrap(
     # a failure is also the starting mode for later layers of the same kind.
     state = {"reported": set(), "start": {}}
     # Under Unsloth checkpointing each block call is a new cudagraph generation: the next replay
-    # overwrites this block's outputs and input gradient, so both are cloned out of the pool.
+    # overwrites this block's outputs and gradients, so they are cloned out of the pool.
     graphs = bool(compile_options.get("triton.cudagraphs"))
     if graphs:
         plain = torch.compile(
@@ -796,6 +830,10 @@ def _wrap(
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
+        # Packed rows run hf_packed_attention's varlen kernel outside the graph (see there).
+        packed = getattr(sys.modules.get(_PACKED_MODULE), "IN_COMPILED_BLOCK", _NO_PACKED)
+        packed_previous = packed[0]
+        packed[0] = True
         try:
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
             with capture_scratch():
@@ -804,9 +842,10 @@ def _wrap(
                     if shape not in graph_shapes:
                         graph_shapes.add(shape)
                         graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
-                if graphs and graphs_off[0]:
+                if graphs and (graphs_off[0] or _in_nonreentrant_checkpoint()):
                     return plain(self, hidden_states, *args, **kwargs)
                 if graphs:
+                    _param_grads_out_of_pool(self)
                     if hidden_states.requires_grad and torch.is_grad_enabled():
                         hidden_states = _CloneGrad.apply(hidden_states)
                     return _clone_outputs(compiled(self, hidden_states, *args, **kwargs))
@@ -814,6 +853,7 @@ def _wrap(
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
+            packed[0] = packed_previous
 
     def _inline(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]

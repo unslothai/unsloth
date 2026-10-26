@@ -121,7 +121,7 @@ test("the Updated column names the list's order and turns it around", () => {
   assert.ok(!PAGE.includes("Sort by"), "the sort control is still in the header");
   assert.ok(!PAGE.includes("sortMode"), "the sort mode outlived its control");
   assert.match(PAGE, /<div className="relative min-w-0 flex-1 sm:max-w-md">/);
-  assert.match(PAGE, /className="h-9 w-full rounded-full border-none bg-muted pl-10/);
+  assert.match(PAGE, /className="h-control w-full rounded-full border-none bg-muted pl-10/);
   assert.match(
     PAGE,
     /<div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">/,

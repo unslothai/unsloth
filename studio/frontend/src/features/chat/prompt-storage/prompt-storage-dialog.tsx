@@ -23,7 +23,11 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
-import { Download01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  Delete02Icon,
+  Download01Icon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
@@ -33,7 +37,6 @@ import {
   PlayIcon,
   PlusIcon,
   RotateCcwIcon,
-  Trash2Icon,
   UploadIcon,
   XIcon,
 } from "lucide-react";
@@ -1759,7 +1762,7 @@ function PromptDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
@@ -2103,7 +2106,7 @@ function PromptListDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (

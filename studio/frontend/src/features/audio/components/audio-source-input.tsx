@@ -13,11 +13,11 @@ import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   Cancel01Icon,
-  Mic01Icon,
   PlusSignIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { MicIcon } from "@/lib/mic-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -455,10 +455,11 @@ export function AudioSourceInput({
                     : void source.startRecording()
                 }
               >
-                <HugeiconsIcon
-                  icon={recording ? StopIcon : Mic01Icon}
-                  className="size-4"
-                />
+                {recording ? (
+                  <HugeiconsIcon icon={StopIcon} className="size-4" />
+                ) : (
+                  <MicIcon className="size-4" />
+                )}
                 {recording ? "Stop" : "Record"}
               </Button>
               <output
