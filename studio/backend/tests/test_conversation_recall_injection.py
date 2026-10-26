@@ -165,6 +165,28 @@ def test_archive_and_recall_skips_recall_once_already_done(archived):
     assert "recalled_chunks" not in result["counts"]
 
 
+@pytest.mark.parametrize("stopped", [False, True])
+def test_a_stopped_request_skips_the_automatic_recall(archived, monkeypatch, stopped):
+    """Recall embeds the query; a Stopped request must not pay for it (#14519)."""
+    recalls = []
+    monkeypatch.setattr(tools_mod, "build_conversation_recall", lambda *_a, **_k: recalls.append(1))
+    before = _conversation() + [{"role": "user", "content": "evicted turn"}]
+    after = _conversation()
+
+    result = llama_cpp._archive_and_recall(
+        after,
+        before,
+        thread_id = THREAD,
+        style = "tool",
+        recall_done = False,
+        recall_budget_tokens = 100_000,
+        cancel_check = lambda: stopped,
+    )
+
+    assert recalls == ([] if stopped else [1])
+    assert result["recalled"] is False
+
+
 def test_a_refused_fit_still_archives_what_it_evicted(archived):
     """`recall_done` skips recall without skipping the archive write."""
     before = _conversation() + [{"role": "user", "content": "a turn only the fit saw"}]

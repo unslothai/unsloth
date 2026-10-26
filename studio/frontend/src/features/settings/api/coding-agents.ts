@@ -5,9 +5,7 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type CodingAgentsInfo = {
-  // Every agent `unsloth start` supports, in the CLI's declared order.
   agents: string[];
-  // Subset of `agents` whose CLI binary was found on PATH by the backend.
   detected: string[];
 };
 

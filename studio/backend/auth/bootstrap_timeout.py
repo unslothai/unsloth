@@ -25,8 +25,7 @@ DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 3600
 STORAGE_RETRY_SECONDS = 5
 STORAGE_RETRY_WINDOW_SECONDS = 600
 
-# Monotonic expiry, or None when nothing is armed. Read back over HTTP because the
-# stderr warning is lost on the launches that arm it (--secure, external bind).
+# Read back over HTTP because the stderr warning is lost on --secure / external-bind launches.
 _deadline_at: Optional[float] = None
 
 

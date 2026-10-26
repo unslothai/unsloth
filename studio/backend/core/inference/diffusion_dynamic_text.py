@@ -89,6 +89,19 @@ _ZIMAGE_SOURCES: tuple[str, ...] = (
     r".*\['args'\]\[[0-2]\]$",
 )
 
+# Cosmos3 tokenizes the prompt unpadded (pipeline_cosmos3_omni.py ``_tokenize``): every prompt length is a new shape.
+_COSMOS3_SOURCES: tuple[str, ...] = (
+    "L['und_seq']",
+    "L['rotary_emb'][0]",
+    "L['rotary_emb'][1]",
+)
+
+# MOSS-Image: unpadded text (cond and uncond differ), so every prompt is a new length.
+_MOSS_IMAGE_SOURCES: tuple[str, ...] = (
+    "L['x']",
+    "L['rope'][0]",
+    "L['rope'][1]",
+)
 # Prompt-length policy for every denoiser class Studio loads (the ONE list; test_diffusion_prompt_length_policy checks
 # it covers diffusion_families and video_families). A tuple: the denoiser's text length follows the prompt, and these
 # are the repeated block's dynamo sources that carry it. FIXED_LENGTH: the pipeline pads every prompt to one length
@@ -108,9 +121,11 @@ PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "Ideogram4Transformer2DModel": FIXED_LENGTH,  # token ids left-padded into max_sequence_length 2048
     "UNet2DConditionModel": FIXED_LENGTH,  # CLIP padded to 77
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
+    "MOSSImageTransformer": _MOSS_IMAGE_SOURCES,
     "LTX2VideoTransformer3DModel": FIXED_LENGTH,  # Gemma left-padded to max_sequence_length 1024
     "WanTransformer3DModel": FIXED_LENGTH,  # UMT5 padded to max_sequence_length 512
     "HunyuanVideo15Transformer3DModel": FIXED_LENGTH,  # padded to the tokenizer max length
+    "Cosmos3OmniTransformer": _COSMOS3_SOURCES,
 }
 
 
@@ -132,6 +147,7 @@ _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
+    "MOSSImageTransformer": _MOSS_IMAGE_SOURCES,
 }
 
 _ARMED_WHEN_DYNAMIC: frozenset[str] = frozenset({"QwenImageTransformer2DModel"})
@@ -179,10 +195,31 @@ def unbacked_supported() -> bool:
     return callable(getattr(builder, "is_unbacked_source", None))
 
 
+def _torchao_float8_weights(transformer: Any) -> bool:
+    """Whether a torchao float8 tensor holds any of ``transformer``'s weights (wrapped in a plain Parameter or not)."""
+    try:
+        from .diffusion_speed import torchao_weight_tensors
+        for t in torchao_weight_tensors(transformer):
+            if "float8" in type(t).__name__.lower():
+                return True
+            # torchao < 0.12: AffineQuantizedTensor + Float8Layout
+            layout = getattr(t, "_layout", None)
+            if layout is not None and "float8" in type(layout).__name__.lower():
+                return True
+    except Exception:  # noqa: BLE001 - unreadable: keep the family's choice
+        return False
+    return False
+
+
 def unbacked_sources_for(transformer: Any) -> tuple[str, ...]:
     if not unbacked_supported():
         return ()
-    return _FAMILY_UNBACKED.get(type(transformer).__name__, ())
+    unbacked = _FAMILY_UNBACKED.get(type(transformer).__name__, ())
+    if unbacked and _torchao_float8_weights(transformer):
+        # torchao float8 activation quant guards on the row count (``_get_reduction_params``): an unbacked
+        # ``temb`` is a data-dependent error and the compile falls back to eager. Backed costs one respecialise.
+        return ()
+    return unbacked
 
 
 def sources_for(transformer: Any) -> tuple[str, ...]:

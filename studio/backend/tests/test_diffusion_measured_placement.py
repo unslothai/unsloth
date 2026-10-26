@@ -170,14 +170,16 @@ def test_whole_transformer_tier_kill_switch(q21_pipe, monkeypatch):
     assert new.resident_transformer_mib == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
 
 
-def test_whole_transformer_tier_needs_streamed_encoders(q21_pipe, monkeypatch):
-    """A group plan whose encoders stay resident cannot trade them for the DiT: the tier leaves it alone."""
+def test_whole_transformer_tier_streams_resident_encoders(q21_pipe, monkeypatch):
+    """Resident encoders stream when that keeps more of the DiT resident (it runs every step, they once per prompt)."""
     monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
     plan = dm.replace(
         _flat_plan(9550, 12288), offload_policy = dm.OFFLOAD_GROUP, stream_text_encoders = False
     )
     new = _refine(q21_pipe, plan)
-    assert int(new.resident_transformer_mib or 0) < 6922
+    assert new.resident_transformer_mib == 6922
+    assert new.stream_text_encoders
+    assert new.estimates["denoiser_first_resident_te_dit_mib"] < 6922
 
 
 def test_no_room_keeps_flat_plan(q21_pipe):
@@ -807,6 +809,29 @@ def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkey
         assert torch.equal(net(x.cuda()).cpu(), ref)
 
 
+def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
+    """The encode release streams groups and pins them back on every new prompt. It leaves the freed blocks cached:
+    an encoder allocation that needs the room gets it back from the allocator itself. An empty_cache per prompt cost a
+    device sync plus fresh cudaMallocs for the encoder on every render."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    block_mib = 4
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 1
+    flushes = {"n": 0}
+    real = torch.cuda.empty_cache
+
+    def counted():
+        flushes["n"] += 1
+        real()
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", counted)
+    for _ in range(3):
+        enc(torch.randn(2, 8, device = "cuda"))
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2  # the release still ran
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert flushes["n"] == 0
+
+
 def test_encode_release_restores_after_a_failed_encode(monkeypatch):
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     dm.install_encode_release(pipe, _whole_plan(1024, 0), None)
@@ -835,6 +860,217 @@ def test_encode_release_keeps_an_oversized_release_streamed(monkeypatch):
     outer()
     assert on_device() == ["cuda"] * 6
     assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def _two_encoder_pipe(monkeypatch):
+    """FLUX.1-shaped: encode_prompt runs a small and a large encoder back to back (CLIP, then T5)."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    enc2 = type(enc)()
+    pipe.components["text_encoder_2"] = enc2
+    calls = {"release": 0, "restore": 0}
+    real = dm.release_resident_groups
+
+    def counted(*args, **kwargs):
+        restore = real(*args, **kwargs)
+        if restore is None:
+            return None
+        calls["release"] += 1
+
+        def counted_restore(*a, **k):
+            calls["restore"] += 1
+            return restore(*a, **k)
+
+        return counted_restore
+
+    monkeypatch.setattr(dm, "release_resident_groups", counted)
+
+    def encode_prompt(prompt, fail = False):
+        enc(torch.randn(2, 8, device = "cuda"))
+        enc2.fail = fail
+        return enc2(torch.randn(2, 8, device = "cuda"))
+
+    pipe.encode_prompt = encode_prompt
+    return torch, net, enc, enc2, pipe, x, ref, on_device, calls
+
+
+def test_encode_release_streams_the_denoiser_once_per_prompt_with_two_encoders(monkeypatch):
+    """Two encoders in one encode_prompt: the denoiser moves out and back once, not once per encoder."""
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    block_mib = 4
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 2
+    for prompt in range(3):
+        pipe.encode_prompt(f"p{prompt}")
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+        assert enc2.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert calls == {"release": 3, "restore": 3}
+    # outside encode_prompt: pins back on its own return
+    enc2(torch.randn(2, 8, device = "cuda"))
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 4, "restore": 4}
+
+
+def test_encode_release_once_restores_after_a_failed_second_encoder(monkeypatch):
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    with pytest.raises(RuntimeError):
+        pipe.encode_prompt("p", fail = True)
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 1, "restore": 1}
+    pipe.encode_prompt("p")
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_release_once_kill_switch(monkeypatch):
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    monkeypatch.setenv(dm.ENCODE_RELEASE_ONCE_ENV, "0")
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    pipe.encode_prompt("p")
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 2, "restore": 2}  # once per encoder
+
+
+def _token_encoder_pipe(monkeypatch, available_mib):
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+
+    class TokenEncoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = torch.nn.Embedding(16, 8).cuda()
+            self.config = types.SimpleNamespace(
+                text_config = types.SimpleNamespace(
+                    hidden_size = 8, num_attention_heads = 1, num_hidden_layers = 1
+                )
+            )
+            self.seen: list = []
+
+        def forward(
+            self,
+            input_ids = None,
+            attention_mask = None,
+            pixel_values = None,
+        ):
+            self.seen.append(on_device())
+            return self.embed(input_ids)
+
+    tok = TokenEncoder()
+    pipe.components["text_encoder"] = tok
+    monkeypatch.setattr(
+        dm, "encode_available_mib", lambda device = None: available_mib, raising = False
+    )
+    ids = torch.zeros(1, 4, dtype = torch.long, device = "cuda")
+    return torch, net, tok, pipe, x, ref, on_device, ids
+
+
+def test_encode_keeps_the_denoiser_whole_when_free_memory_holds_the_encoder(monkeypatch):
+    """Qwen-Image-2.1 at 12 GB: main streamed the whole surplus out and back on every new prompt."""
+    torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 1 << 20)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 1
+    for _ in range(3):
+        tok(input_ids = ids)
+        assert tok.seen[-1] == ["cuda"] * 6
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_streams_only_the_shortfall(monkeypatch):
+    torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 0)
+    need = dm.encode_need_mib(tok, (), {"input_ids": ids})
+    assert need is not None and need > 0
+    monkeypatch.setattr(dm, "encode_available_mib", lambda device = None: need - 3)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 1
+    tok(input_ids = ids)
+    assert tok.seen[-1] == ["cuda"] * 5 + ["cpu"]
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_shortfall_prices_each_encoder_of_a_prompt(monkeypatch):
+    torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 0)
+    big = type(tok)()
+    big.config = types.SimpleNamespace(
+        hidden_size = 1 << 20, num_attention_heads = 1, num_hidden_layers = 1
+    )
+    pipe.components["text_encoder_2"] = big
+    small_need = dm.encode_need_mib(tok, (), {"input_ids": ids})
+    big_need = dm.encode_need_mib(big, (), {"input_ids": ids})
+    assert small_need < big_need - 3
+    monkeypatch.setattr(dm, "encode_available_mib", lambda device = None: big_need - 3)
+
+    def encode_prompt(prompt):
+        tok(input_ids = ids)
+        return big(input_ids = ids)
+
+    pipe.encode_prompt = encode_prompt
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    for prompt in range(2):
+        pipe.encode_prompt(f"p{prompt}")
+        assert tok.seen[-1] == ["cuda"] * 6
+        assert big.seen[-1] == ["cuda"] * 5 + ["cpu"]
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+@pytest.mark.parametrize("why", ["kill_switch", "visual_input", "unreadable"])
+def test_encode_streams_the_whole_surplus_when_unpriced(monkeypatch, why):
+    torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 1 << 20)
+    kwargs = {"input_ids": ids}
+    if why == "kill_switch":
+        monkeypatch.setenv(dm.ENCODE_SHORTFALL_ENV, "0")
+    elif why == "visual_input":
+        kwargs["pixel_values"] = torch.zeros(4, 3, device = "cuda")
+    else:
+        monkeypatch.setattr(dm, "encode_available_mib", lambda device = None: None)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 1
+    tok(**kwargs)
+    assert tok.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_need_prices_the_largest_streamed_groups_and_the_tokens(monkeypatch):
+    from core.inference import diffusion_offload_prefetch as pf
+
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(pf, "prefetch_depth", lambda: 1)
+    mib = 1 << 20
+    groups = [
+        types.SimpleNamespace(_unsloth_resident = False, n = 100 * mib),
+        types.SimpleNamespace(_unsloth_resident = True, n = 900 * mib),
+        types.SimpleNamespace(_unsloth_resident = False, n = 300 * mib),
+        types.SimpleNamespace(_unsloth_resident = False, n = 200 * mib),
+    ]
+    monkeypatch.setattr(dm, "_offload_groups", lambda module: groups)
+    monkeypatch.setattr(dm, "_group_nbytes", lambda g: g.n)
+    enc = types.SimpleNamespace(
+        config = types.SimpleNamespace(hidden_size = 1024, num_attention_heads = 8, num_hidden_layers = 4)
+    )
+    ids = torch.zeros(2, 64, dtype = torch.long)
+    acts = 2 * 64 * (1024 * 2 * (dm._ENCODE_TOKEN_HIDDEN_FACTOR + 4) + 8 * 64 * 4)
+    want = (
+        int(__import__("math").ceil((500 * mib + acts) / float(mib) * dm._MEASURED_PEAK_MARGIN))
+        + dm._ENCODE_SLACK_MIB
+    )
+    assert dm.encode_need_mib(enc, (ids,), {}) == want
+    assert dm.encode_need_mib(enc, (), {"input_ids": ids}) == want
+    assert dm.encode_need_mib(enc, (), {"input_ids": ids, "image_grid_thw": ids}) is None
+    assert dm.encode_need_mib(types.SimpleNamespace(), (), {"input_ids": ids}) is None
+
+
+def test_encode_available_keeps_a_reserve_larger_than_driver_free(monkeypatch):
+    torch = pytest.importorskip("torch")
+    mib = 1 << 20
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev: (500 * mib, 8000 * mib))
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda dev, total: 2000 * mib)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda dev: 3000 * mib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda dev: 1000 * mib)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda index: 0)
+    # 500 free + 2000 reusable cache - 2000 reserve: the reserve still claims the cache
+    assert dm.encode_available_mib(torch.device("cuda", 0)) == 500
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda dev, total: 3000 * mib)
+    assert dm.encode_available_mib(torch.device("cuda", 0)) == 0
 
 
 def test_encode_release_only_for_the_whole_tier(monkeypatch):

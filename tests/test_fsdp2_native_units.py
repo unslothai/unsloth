@@ -54,7 +54,7 @@ ARCHS = [
     ),
     (
         "Qwen3_5",
-        "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration",
+        "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink",
         "AutoModelForImageTextToText",
     ),
 ]

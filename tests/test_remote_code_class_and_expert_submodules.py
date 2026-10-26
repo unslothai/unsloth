@@ -920,7 +920,9 @@ def test_requested_router_sibling_is_kept_when_attention_is_also_listed(leaves):
         widened, _, _ = U.widen_target_regex_to_expert_submodules(
             model, regex, unrequested, auto_regex = True, explicit_leaves = True
         )
-        assert not any(n.endswith(".block_sparse_moe.gate") and re.fullmatch(widened, n) for n in names)
+        assert not any(
+            n.endswith(".block_sparse_moe.gate") and re.fullmatch(widened, n) for n in names
+        )
 
 
 def test_requested_router_sibling_peft_injects_real_hf_mixtral():

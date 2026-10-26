@@ -6,7 +6,6 @@ export type NoteEncoding = "utf-8" | "utf-16le" | "utf-16be";
 
 export interface NoteFormat {
   encoding: NoteEncoding;
-  /** The file started with a byte order mark, which a save must keep. */
   bom: boolean;
   eol: "\n" | "\r\n";
 }
@@ -29,10 +28,8 @@ function detectEncoding(bytes: Uint8Array): { encoding: NoteEncoding; bom: boole
 }
 
 /**
- * Decode a file's bytes, or the first of them when `truncated`, where a character cut at the end is
- * dropped rather than read as corrupt. The BOM decides the encoding; with none the file must be
- * valid UTF-8 to be editable, since saving a legacy code page as UTF-8 would rewrite every accented
- * letter in it.
+ * The BOM decides the encoding; without one the file must be valid UTF-8 to be editable,
+ * since saving a legacy code page as UTF-8 would rewrite accented letters.
  */
 export function decodeNote(bytes: Uint8Array, truncated = false): DecodedNote {
   const { encoding, bom } = detectEncoding(bytes);

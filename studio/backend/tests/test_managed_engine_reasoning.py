@@ -348,6 +348,40 @@ def test_tool_loop_turns_are_fitted_to_the_engine_window():
     )
 
 
+def test_a_managed_refit_recalls_with_the_first_branch_it_saw(monkeypatch):
+    import asyncio
+
+    from routes import inference as api
+    from routes.managed_engine_chat import _message_fitter
+
+    seen = []
+
+    def fake_fit(
+        messages,
+        payload,
+        *,
+        tools = None,
+        branch = None,
+        tool_loop = False,
+    ):
+        seen.append((list(branch), tool_loop))
+        return messages, None, 64
+
+    monkeypatch.setattr(api, "_fit_external_context", fake_fit)
+    first = [{"role": "user", "content": "Was there a phone number?"}]
+    later = [
+        *first,
+        {"role": "assistant", "content": "Let me check."},
+        {"role": "user", "content": "You described a plan without acting."},
+    ]
+    fit = _message_fitter(
+        _tool_payload(context_overflow = "truncate_oldest"), _Engine(), "m", None, studio_loop = True
+    )
+    asyncio.run(fit(first))
+    asyncio.run(fit(later))
+    assert seen == [(first, True), (first, True)]
+
+
 def test_tool_loop_honors_the_server_default_overflow(monkeypatch):
     from routes.managed_engine_chat import _message_fitter
 

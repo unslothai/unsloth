@@ -57,3 +57,11 @@ test("an uncontrolled tooltip is not held by that latch", () => {
     true,
   );
 });
+
+test("the latch is set only for a controlled tooltip its owner held open", async () => {
+  // Already shut when the modal came, its owner never sends another false, so the latch never cleared.
+  const { readFileSync } = await import("node:fs");
+  const tooltip = readFileSync(new URL("../src/components/ui/tooltip.tsx", import.meta.url), "utf8");
+  assert.match(tooltip, /if \(controlledOpenRef\.current\) setDismissedUntilOwnerResets\(true\);/);
+  assert.doesNotMatch(tooltip, /^\s*setDismissedUntilOwnerResets\(true\);/m);
+});

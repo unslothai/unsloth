@@ -55,8 +55,7 @@ def block_graphs_requested() -> bool:
     return (os.environ.get(BLOCK_GRAPHS_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
-# Default: only where every block stays on the device. Streamed steps are copy-bound (no gain, extra VRAM); model
-# offload re-uploads the weights every render, so every block would record again.
+# Streamed steps are copy-bound; model offload re-records every render.
 OPT_IN_REASON = (
     "offloaded denoiser streams its blocks: per-block CUDA graphs measured no faster (streamed steps are "
     "copy-bound) and hold extra VRAM; set " + BLOCK_GRAPHS_ENV + "=1 to record per block"
@@ -68,8 +67,7 @@ MODEL_OFFLOAD_REASON = (
 )
 
 
-# Call trees. Like diffusion_cuda_graph's, plus the per-layer prefix K/V caches Qwen-Image-2.1 passes to each block:
-# read-only on a cached step, so their two tensors become static buffers too.
+# Auto engages FBCache only at 20+ steps, since its win scales with step count: "dev" schedules qualify, distilled turbo never does
 
 
 def _kv_layer_cache(obj: Any) -> bool:
@@ -249,7 +247,7 @@ _UNSEEN = object()
 
 
 class _Entry:
-    __slots__ = ("graph", "static_in", "static_out", "out_spec", "replays", "slots")
+    __slots__ = ("graph", "static_in", "static_out", "out_spec", "replays", "slots", "pool")
 
 
 import weakref
@@ -595,8 +593,7 @@ class BlockGraph:
                 dst.copy_(src)
             static_args, static_kwargs = _unwalk(key, iter(entry.static_in))
             if slot not in self.shared.warmed:
-                # Once per block class and layout, on the compute stream (its cached blocks stay reusable): any guard
-                # the static buffers trip recompiles here, never inside the recording.
+                # Any guard the static buffers trip recompiles here, never inside the recording.
                 self.compute(*static_args, **static_kwargs)
                 self.shared.warmed.add(slot)
                 self.stats["warmups"] += 1
@@ -607,8 +604,9 @@ class BlockGraph:
             graph = torch.cuda.CUDAGraph()
             pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
-                before = torch.cuda.memory_reserved()
                 with _capturing():
+                    # read after the entry, which first hands back any retired graph pool
+                    before = torch.cuda.memory_reserved()
                     try:
                         # Inside the try: a capture_begin that raised after taking the pool is abandoned too.
                         graph.capture_begin(pool = pool, capture_error_mode = "thread_local")
@@ -642,6 +640,7 @@ class BlockGraph:
         entry.slots = (slot, out_slot)
         self.shared.hold(entry.slots)
         entry.graph = graph
+        entry.pool = pool
         entry.out_spec = out_spec
         entry.replays = 0
         if any(k[0] == full[0] for k in self.cache):
@@ -653,11 +652,11 @@ class BlockGraph:
         from .diffusion_cuda_graph import capture_device, note_capture
 
         self._unsloth_capture_device = capture_device()
-        note_capture(self._unsloth_capture_device)
+        # counted live before the generation moves, so a reader seeing an unchanged generation never misses it
         _LIVE_BLOCKS.add(self)
+        note_capture(self._unsloth_capture_device)
         while len(self.cache) > self.max_graphs:
-            _, evicted = self.cache.popitem(last = False)
-            self._forget(evicted)
+            _drop_entries(self, [self.cache.popitem(last = False)[1]], evicting = True)
             self.stats["evictions"] += 1
         return entry
 
@@ -666,9 +665,9 @@ class BlockGraph:
         self.shared.drop(getattr(entry, "slots", ()))
 
     def _forget_all(self) -> None:
-        for entry in self.cache.values():
-            self._forget(entry)
+        entries = list(self.cache.values())
         self.cache.clear()
+        _drop_entries(self, entries)
 
     def _replay(self, entry: _Entry, live: list) -> Any:
         for dst, src in zip(entry.static_in, live):
@@ -722,7 +721,7 @@ class _SegRecord:
 
 
 class _SegEntry:
-    __slots__ = ("graph", "static_in", "outputs", "record", "slots", "replays")
+    __slots__ = ("graph", "static_in", "outputs", "record", "slots", "replays", "pool")
 
 
 def _root_key_extra(root: Any) -> Any:
@@ -815,9 +814,9 @@ class SegmentGraph:
         self.versions: list = []
 
     def reset(self) -> None:
-        for entry in self.cache.values():
-            self._forget(entry)
+        entries = list(self.cache.values())
         self.cache.clear()
+        _drop_entries(self, entries)
         self.seen.clear()
         self.refused.clear()
         self._reset_forward()
@@ -1049,8 +1048,9 @@ class SegmentGraph:
             graph = torch.cuda.CUDAGraph()
             pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
-                before = torch.cuda.memory_reserved()
                 with _capturing():
+                    # read after the entry, which first hands back any retired graph pool
+                    before = torch.cuda.memory_reserved()
                     try:
                         graph.capture_begin(pool = pool, capture_error_mode = "thread_local")
                         try:
@@ -1081,6 +1081,7 @@ class SegmentGraph:
                 )
             return None
         entry.graph = graph
+        entry.pool = pool
         entry.outputs = outputs
         entry.record = rec
         entry.slots = (slot,)
@@ -1093,8 +1094,7 @@ class SegmentGraph:
         self._unsloth_capture_device = capture_device()
         note_capture(self._unsloth_capture_device)
         while len(self.cache) > self.max_graphs:
-            _, evicted = self.cache.popitem(last = False)
-            self._forget(evicted)
+            _drop_entries(self, [self.cache.popitem(last = False)[1]], evicting = True)
         return entry
 
 
@@ -1413,14 +1413,37 @@ class BlockGraphSet:
         return int(sum(st.pool_bytes + st.static_bytes for st in self._all_shared()) + slots)
 
 
+def _drop_entries(
+    owner: Any,
+    entries: list,
+    evicting: bool = False,
+) -> None:
+    """The one way a block or segment graph drops recordings (eviction, poison, reset): forget them, then count their
+    pool as retired, so no capture records beside its cached segments before a flush. An eviction from the current
+    pool is not counted (the entry just recorded into it keeps it alive); any other drop is."""
+    if not entries:
+        return
+    for entry in entries:
+        owner._forget(entry)
+    current = getattr(getattr(owner, "shared", None), "pool", None)
+    if (
+        evicting
+        and current is not None
+        and all(getattr(e, "pool", None) == current for e in entries)
+    ):
+        return
+    try:
+        from .diffusion_cuda_graph import note_pool_retired
+        note_pool_retired()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _release_cached() -> None:
     try:
-        import gc
-
-        gc.collect()
-        torch = _torch()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        from .diffusion_cuda_graph import release_cached_outside_capture
+        if _torch().cuda.is_available():
+            release_cached_outside_capture()
     except Exception:  # noqa: BLE001
         pass
 
@@ -1621,10 +1644,7 @@ def compile_below_hooks_enabled() -> bool:
 
 
 def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
-    """Compile each offload-hooked block's own ``forward`` so the hooks stay eager outside the compiled region.
-
-    Traced through, the hooks graph-break the block and put residency state into the guards, so every release /
-    re-pin recompiles. Idempotent; returns the blocks moved."""
+    """Compiles each block's own forward, keeping hooks eager; traced hooks recompile on every release."""
     if not compile_below_hooks_enabled():
         return 0
     kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)
