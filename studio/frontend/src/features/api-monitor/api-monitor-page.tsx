@@ -249,7 +249,7 @@ function statusTextClass(status: ApiMonitorEntry["status"]): string {
 
 type ServedModel = {
   name: string;
-  /** The id the monitor logs requests and loads under: an MLX folder's name is not stripped from the label. */
+  /** The id the monitor logs under; the label can carry an MLX folder suffix. */
   id: string;
   checkpoint: string;
   active: boolean;
@@ -389,11 +389,9 @@ function CopyButton({
   );
 }
 
-// Stacked rows indent the facts under the name, past the status dot.
 const FACT_CELL =
   "order-2 min-w-0 @max-3xl/served:pl-3.5 @max-3xl/served:empty:hidden @3xl/served:order-none";
 
-// The icon stands in for the label, which stays for screen readers and the hover title.
 function Fact({
   label,
   icon,
@@ -1320,8 +1318,7 @@ export function ApiMonitorPage(): ReactElement {
         : "No model is loaded";
   const rowFacts = (model: ServedModel): ReactElement => {
     const { id } = model;
-    // Only requests since this model's latest load: an earlier load may have had another window.
-    // A failed or still-running load leaves the resident model serving, so it is no cutoff.
+    // Since the latest completed load: an earlier one may have had another window; a failed one changed nothing.
     let loadedAt = 0;
     for (const entry of entries) {
       if (
@@ -1359,7 +1356,6 @@ export function ApiMonitorPage(): ReactElement {
         <dl className={FACT_CELL}>
           {used != null && windowSize ? (
             <Fact label="Context">
-              {/* -ml-2: the ring, not the hover pill's padding, lines up with the icons below. */}
               <ContextUsageChip
                 ringFirst={true}
                 pinOnClick={true}

@@ -66,7 +66,6 @@ export function expiresText(
   return formatRelativeTime(locale, Math.ceil(diff / 86400000), "day");
 }
 
-// Rows are subgrids of the list's columns, so every column lines up across tokens.
 export const TOKEN_TABLE =
   "grid grid-cols-[minmax(0,1fr)_auto_auto_auto_auto_auto] gap-x-6 max-sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] max-sm:gap-x-4";
 const TOKEN_ROW = "col-span-full grid grid-cols-subgrid items-center px-3";

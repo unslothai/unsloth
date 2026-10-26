@@ -33,7 +33,6 @@ test("both faces draw the ring, not the line", () => {
   assert.match(bar, /\{compactFace === null \? \(\s*<span[^>]*>\s*<UsageRing /);
   // The full face retains the state's ring policy; only the compact fallback can opt into an icon.
   assert.match(bar, /const showRing = state\.compactFace === null;/);
-  // On either side of the count: after it in chat, before it on the API page.
   assert.match(bar, /\{showRing && ringFirst \? <UsageRing percent=\{percent\} stroke=\{severity\.stroke\} \/> : null\}\s*<Face face=\{face\} \/>\s*\{showRing && !ringFirst \? <UsageRing /);
   assert.doesNotMatch(bar, /style=\{\{ width: `\$\{percent\}%` \}\}/);
 });

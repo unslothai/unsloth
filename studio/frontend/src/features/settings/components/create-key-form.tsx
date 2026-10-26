@@ -24,7 +24,6 @@ const EXPIRY_PRESETS = [
   { label: "90d", value: 90 },
 ];
 
-/** The next "New Token N" after every N in use, so an unnamed token never repeats a name. */
 export function nextDefaultTokenNumber(
   names: readonly string[],
   pattern: RegExp,
@@ -52,7 +51,6 @@ export function CreateKeyForm({
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  // Matched in the current language: "{n}" in the message marks the number.
   const [prefix, suffix] = t("settings.apiKeys.defaultTokenName").split("{n}");
   const escape = (text = "") => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const defaultName = t("settings.apiKeys.defaultTokenName", {

@@ -45,7 +45,6 @@ import { MonitorLink } from "../components/monitor-link";
 import { UsageExamples, useApiTunnelPref } from "../components/usage-examples";
 import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
 
-/** The token's original lifetime in whole days, so a regenerated token keeps its period. */
 function expiryDays(key: ApiKey): number | null {
   if (!key.expires_at) return null;
   const ms =
@@ -62,7 +61,6 @@ export function ApiKeysTab() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
-  // Regenerate reuses the revoke confirmation: both cut off apps using the old token.
   const [regenerate, setRegenerate] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [useTunnel, setUseTunnel] = useApiTunnelPref();

@@ -210,8 +210,7 @@ GLYPH_GEOMETRY = """() => {
 
 
 def check_resume_icon_centred(page, base):
-    # Optically centred: the glyph's box centred in the viewBox, then 1/12 of its width
-    # right, since a triangle's weight sits toward its flat side (queue-resume-icon.tsx).
+    # Optically centred: 1/12 of the glyph's width right of centre (queue-resume-icon.tsx).
     seed(page, base)
     page.get_by_role("button", name = "Simulate paused queue", exact = True).click()
     page.get_by_role("button", name = "More options for queued prompt 1", exact = True).click()

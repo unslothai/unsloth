@@ -17,7 +17,6 @@ test("a served row reloads its checkpoint, not the public alias a kept slot is l
 
 test("the Context fact finds requests logged as <id>:<quant>, and shows chat's pinnable chip", () => {
   assert.match(page, /modelIdsMatch\(monitorSelection\(entry\.model\)\.id, id\),/);
-  // A rejected or in-progress load must not wipe the served row's stats.
   assert.match(page, /entry\.event === "load" &&\s*entry\.status === "completed" &&/);
   assert.doesNotMatch(page, /modelIdsMatch\(entry\.model, id\)/);
   assert.match(page, /<ContextUsageChip\s+ringFirst=\{true\}\s+pinOnClick=\{true\}/);
@@ -45,12 +44,10 @@ test("a row reload asks to stop only the reloaded model's chats, not the selecte
 });
 
 test("a file-picked primary reloads through its file grant, and not once the grant expired", () => {
-  // The served row only carries a display label for a desktop-picked GGUF.
   assert.match(hook, /model\.active && fileGrant\s*\?\s*grantedTarget\(fileGrant\)\s*:\s*servedTarget\(model\)/);
   assert.match(hook, /nativePathToken: resident\.nativePathToken \?\? undefined,/);
   assert.match(hook, /loadId: target\.loadId,\s*nativePathToken: target\.nativePathToken,\s*nativePathExpiresAtMs: target\.nativePathExpiresAtMs,/);
   assert.match(hook, /model\.active &&\s*fileGrant &&\s*!residentHasRunSettings\(fileGrant\)/);
-  // Read apart from run-settings eligibility, which drops an expired grant and would re-enable Reload.
   const residentHook = readSrc("features/api-monitor/use-resident-run-target.ts");
   const grantHook = residentHook.slice(residentHook.indexOf("export function useResidentFileGrant("), residentHook.indexOf("export function useResidentRunTarget("));
   assert.doesNotMatch(grantHook, /residentMatchesMonitor|residentHasRunSettings/);
@@ -62,9 +59,7 @@ test("a file-picked primary reloads through its file grant, and not once the gra
 
 test("Reload all stops when a load is cancelled or a newer pick supersedes it", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
-  // A declined stop-and-reload confirmation counts as a cancel in both preflight paths.
   assert.equal(runtime.match(/if \(!stopDecision\.proceed\) \{\s*modelLoadCancelEpoch \+= 1;/g)?.length, 2);
-  // selectModel resolves quietly on abort, so the abort itself is what the batch reads.
   assert.match(runtime, /modelLoadCancelEpoch \+= 1;\s*run\.abortController\.abort\(\);/);
   assert.match(hook, /const before = readModelLoadEpochs\(\);\s*await load\(rowTarget\(model\)\);/);
   assert.match(hook, /after\.cancels !== before\.cancels \|\|\s*after\.intent > before\.intent \+ 1/);

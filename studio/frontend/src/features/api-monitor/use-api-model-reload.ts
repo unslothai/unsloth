@@ -183,7 +183,6 @@ export function useApiModelReload({
     [fileGrant],
   );
 
-  // An expired grant cannot load the file again; picking it anew issues a fresh one.
   const canReload = (model: ReloadableModel): boolean =>
     !(
       model.active &&
@@ -217,8 +216,7 @@ export function useApiModelReload({
         )) {
           const before = readModelLoadEpochs();
           await load(rowTarget(model));
-          // A cancelled or superseded load resolves quietly; stop rather than start the next
-          // one over the user's Stop or newer pick. Each load here takes one intent itself.
+          // selectModel returns quietly on a Stop, a declined prompt or a newer pick; each load takes one intent.
           const after = readModelLoadEpochs();
           if (
             after.cancels !== before.cancels ||

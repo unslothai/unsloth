@@ -144,7 +144,6 @@ export const ContextUsageBar: FC<
     hoverClassName?: string;
     /** Side padding of the face, in --spacing units; the widths below count it. */
     padX?: number;
-    /** The ring leads the count, as an icon would. */
     ringFirst?: boolean;
   }
 > = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2.5, ringFirst = false, ...input }) => {

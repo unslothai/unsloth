@@ -7778,7 +7778,6 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              {/* Solid glyph at about a third of the circle, like the Stop square. */}
               <QueueResumeIcon className="size-4.5" />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (

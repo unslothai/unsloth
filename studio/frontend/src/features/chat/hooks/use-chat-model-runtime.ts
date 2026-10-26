@@ -253,7 +253,7 @@ type ActiveModelLoadRun = {
 
 /** The selection the user last asked for, so an await can tell it was superseded. */
 let modelSelectionIntentEpoch = 0;
-/** Bumped whenever a load ends without loading (Stop, replacement, a declined confirmation): selectModel resolves quietly then. */
+/** Bumped when a load ends without loading; selectModel itself resolves quietly then. */
 let modelLoadCancelEpoch = 0;
 let pendingExternalReplacement:
   | { intentId: number; config?: PerModelConfig }
