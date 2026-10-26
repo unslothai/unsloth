@@ -3944,23 +3944,30 @@ class TrainingBackend:
         self._persist_member(run_id, flush = True)
         if not member["created"] or account_is_retired():
             return
-        try:
-            from storage.studio_db import finish_run
-            from utils.downsample import downsample
-            finish_run(
-                id = run_id,
-                status = status,
-                ended_at = datetime.now(timezone.utc).isoformat(),
-                final_step = member["step"],
-                final_loss = member["loss"],
-                duration_seconds = member["elapsed"],
-                loss_sparkline = _json.dumps(downsample(member["loss_history"], 50)),
-                output_dir = None if clear_output_dir else member["output_dir"],
-                error_message = error_message,
-                clear_output_dir = clear_output_dir,
-            )
-        except Exception:
-            logger.warning("Failed to finalize batch member %s", run_id, exc_info = True)
+        from storage.studio_db import finish_run
+        from utils.downsample import downsample
+
+        # Retried like a lone run's finalize: a transient SQLite lock must not leave the row running.
+        for attempt in range(_DB_FINALIZE_RETRIES):
+            try:
+                finish_run(
+                    id = run_id,
+                    status = status,
+                    ended_at = datetime.now(timezone.utc).isoformat(),
+                    final_step = member["step"],
+                    final_loss = member["loss"],
+                    duration_seconds = member["elapsed"],
+                    loss_sparkline = _json.dumps(downsample(member["loss_history"], 50)),
+                    output_dir = None if clear_output_dir else member["output_dir"],
+                    error_message = error_message,
+                    clear_output_dir = clear_output_dir,
+                )
+                return
+            except Exception:
+                if attempt + 1 < _DB_FINALIZE_RETRIES:
+                    time.sleep(_DB_FINALIZE_RETRY_S)
+                    continue
+                logger.warning("Failed to finalize batch member %s", run_id, exc_info = True)
 
     def _finalize_batch_members(
         self,

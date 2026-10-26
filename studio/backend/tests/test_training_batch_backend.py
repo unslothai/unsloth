@@ -146,6 +146,26 @@ def test_process_complete_finalizes_only_running_members(db, tmp_path):
     assert "without saving" in db.get_run("job_c")["error_message"]
 
 
+def test_member_finalize_survives_a_transient_db_error(db, tmp_path, monkeypatch):
+    b = _batch_backend(tmp_path)
+    out = _exported(tmp_path, "job_a")
+    b._handle_event({"type": "output_dir", "member_run_id": "job_a", "output_dir": out})
+    b._handle_event(_progress("job_a", 1, 2.0))
+    real, calls = db.finish_run, []
+
+    def flaky(**kwargs):
+        calls.append(kwargs["id"])
+        if len(calls) == 1:
+            raise RuntimeError("database is locked")
+        return real(**kwargs)
+
+    monkeypatch.setattr(db, "finish_run", flaky)
+    monkeypatch.setattr(training_mod, "_DB_FINALIZE_RETRY_S", 0)
+    b._handle_event({"type": "complete", "member_run_id": "job_a", "output_dir": out})
+    assert calls == ["job_a", "job_a"]
+    assert db.get_run("job_a")["status"] == "completed"
+
+
 def test_member_error_before_progress_still_records_its_row(db, tmp_path):
     b = _batch_backend(tmp_path)
     b._handle_event({"type": "error", "member_run_id": "job_c", "error": "empty dataset"})

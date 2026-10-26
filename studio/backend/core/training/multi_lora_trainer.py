@@ -287,7 +287,7 @@ def _tokenize_member(dataset_info, tokenizer, config: dict, model_name: str, max
         first_sample_text,
         resolve_add_special_tokens,
     )
-    from utils.datasets.pretokenized import PRETOKENIZED_FORMAT
+    from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, _collator_masks_user_labels
 
     dataset = dataset_info["dataset"] if isinstance(dataset_info, dict) else dataset_info
     final_format = (
@@ -297,13 +297,16 @@ def _tokenize_member(dataset_info, tokenizer, config: dict, model_name: str, max
     labels = None
     if final_format == PRETOKENIZED_FORMAT:
         input_ids = [list(x)[:max_length] for x in dataset["input_ids"]]
+        masks = dataset["assistant_masks"] if "assistant_masks" in dataset.column_names else None
         if "labels" in dataset.column_names:
             labels = [list(x)[:max_length] for x in dataset["labels"]]
-        elif "assistant_masks" in dataset.column_names:
-            # TRL's collator trains only the assistant tokens of such rows.
+            if not _collator_masks_user_labels():
+                masks = None
+        if masks is not None:
+            # TRL's collator trains only the assistant tokens, on top of user labels before TRL 1.7.
             labels = [
-                [t if m else -100 for t, m in zip(ids, mask)]
-                for ids, mask in zip(input_ids, dataset["assistant_masks"])
+                [t if m else -100 for t, m in zip(row, mask)]
+                for row, mask in zip(labels if labels is not None else input_ids, masks)
             ]
     else:
         add_special_tokens = resolve_add_special_tokens(

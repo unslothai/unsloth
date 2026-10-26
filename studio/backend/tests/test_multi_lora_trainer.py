@@ -356,6 +356,26 @@ def test_pretokenized_assistant_masks_become_labels():
     assert [labels for _, labels in rows] == [[-100, -100, 7, 8], [-100, 10, 11]]
 
 
+@pytest.mark.parametrize("collator_masks_labels", [True, False])
+def test_pretokenized_labels_and_assistant_masks(monkeypatch, collator_masks_labels):
+    import utils.datasets.pretokenized as pretokenized
+
+    monkeypatch.setattr(pretokenized, "_collator_masks_user_labels", lambda: collator_masks_labels)
+    info = {
+        "dataset": Dataset.from_dict(
+            {
+                "input_ids": [[5, 6, 7, 8]],
+                "labels": [[5, 6, 7, 8]],
+                "assistant_masks": [[0, 0, 1, 1]],
+            }
+        ),
+        "final_format": "pretokenized",
+    }
+    _tok, rows = mlt._tokenize_member(info, _tokenizer(), {}, "tiny/qwen3", 64)
+    # The single-job collator masks user labels only before TRL 1.7.
+    assert rows[0][1] == ([-100, -100, 7, 8] if collator_masks_labels else [5, 6, 7, 8])
+
+
 def test_batched_member_trains_as_it_would_alone(batched_run, monkeypatch):
     events, model, pristine = batched_run
     batched = load_file(
