@@ -97,12 +97,23 @@ export function buildActionWorld(
   return { width, height, ground, solidTile, cells, boxes };
 }
 
+const NONE: Box[] = [];
+const near: Box[] = [];
+
+// Returns a shared array (or a cell's own list): read it before the next call, never keep or mutate it.
 function nearBoxes(w: ActionWorld, x: number, y: number, r: number): Box[] {
-  const out = new Set<Box>();
-  for (let cy = Math.floor(y - r); cy <= Math.floor(y + r); cy++)
-    for (let cx = Math.floor(x - r); cx <= Math.floor(x + r); cx++)
-      for (const b of w.cells.get(cy * w.width + cx) ?? []) out.add(b);
-  return [...out];
+  const x0 = Math.floor(x - r);
+  const x1 = Math.floor(x + r);
+  const y0 = Math.floor(y - r);
+  const y1 = Math.floor(y + r);
+  if (x0 === x1 && y0 === y1) return w.cells.get(y0 * w.width + x0) ?? NONE;
+  near.length = 0;
+  for (let cy = y0; cy <= y1; cy++)
+    for (let cx = x0; cx <= x1; cx++) {
+      const list = w.cells.get(cy * w.width + cx);
+      if (list) for (const b of list) if (!near.includes(b)) near.push(b);
+    }
+  return near;
 }
 
 export function circleHitsBox(
@@ -121,16 +132,16 @@ export function circleHitsBox(
   return (lx - px) ** 2 + (ly - py) ** 2 < r * r;
 }
 
-const corners = (x: number, y: number, r: number): [number, number][] => [
-  [x - r, y - r],
-  [x + r, y - r],
-  [x - r, y + r],
-  [x + r, y + r],
-];
-
 function tileBlocked(w: ActionWorld, x: number, y: number, r: number): boolean {
-  return corners(x, y, r).some(([px, py]) =>
-    w.solidTile(Math.floor(px), Math.floor(py)),
+  const x0 = Math.floor(x - r);
+  const x1 = Math.floor(x + r);
+  const y0 = Math.floor(y - r);
+  const y1 = Math.floor(y + r);
+  return (
+    w.solidTile(x0, y0) ||
+    w.solidTile(x1, y0) ||
+    w.solidTile(x0, y1) ||
+    w.solidTile(x1, y1)
   );
 }
 
@@ -215,10 +226,9 @@ function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): number {
     Math.ceil(Math.max(Math.abs(mx), Math.abs(my)) / SUB_MOVE),
   );
   for (let i = 0; i < subs; i++)
-    for (const [ax, ay] of [
-      [mx / subs, 0],
-      [0, my / subs],
-    ] as const) {
+    for (let axis = 0; axis < 2; axis++) {
+      const ax = axis === 0 ? mx / subs : 0;
+      const ay = axis === 0 ? 0 : my / subs;
       if (!ax && !ay) continue;
       const nx = b.x + ax;
       const ny = b.y + ay;
@@ -348,15 +358,22 @@ export function wallDistance(
   max: number,
 ): number {
   const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  const uz = dz / len;
   const step = 0.05;
   for (let t = step; t <= max; t += step) {
-    const x = ox + (dx / len) * t;
-    const y = oy + (dy / len) * t;
-    const z = oz + (dz / len) * t;
-    if (w.solidTile(Math.floor(x), Math.floor(y)) || z < w.ground(x, y))
-      return t;
-    for (const b of nearBoxes(w, x, y, 0))
-      if (z >= b.bottom && z <= b.top && circleHitsBox(b, x, y, 1e-3)) return t;
+    const x = ox + ux * t;
+    const y = oy + uy * t;
+    const z = oz + uz * t;
+    const tx = Math.floor(x);
+    const ty = Math.floor(y);
+    if (w.solidTile(tx, ty) || z < w.ground(x, y)) return t;
+    const cell = w.cells.get(ty * w.width + tx);
+    if (cell)
+      for (const b of cell)
+        if (z >= b.bottom && z <= b.top && circleHitsBox(b, x, y, 1e-3))
+          return t;
   }
   return Number.POSITIVE_INFINITY;
 }

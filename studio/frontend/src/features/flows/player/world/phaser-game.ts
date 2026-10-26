@@ -128,6 +128,8 @@ export function createWorldGame(
           ? "snow"
           : "grass";
   let sceneRef: WorldScene | null = null;
+  const npcSpecs = new Map<string, WorldNpc>();
+  for (const n of spec.npcs) if (!npcSpecs.has(n.id)) npcSpecs.set(n.id, n);
   const pendingMarkers = new Map<string, [Point, string, string]>();
 
   class WorldScene extends Phaser.Scene {
@@ -222,6 +224,14 @@ export function createWorldGame(
           T * 0.12,
         );
         mark.setDepth(cy);
+        // Graphics are re-tessellated every frame; skip the ones the camera cannot see.
+        const drawable = mark.willRender.bind(mark);
+        mark.willRender = (cam) =>
+          drawable(cam) &&
+          cx + T > cam.worldView.x &&
+          cx - T < cam.worldView.right &&
+          cy + T > cam.worldView.y &&
+          cy - T < cam.worldView.bottom;
       }
       this.physics.world.setBounds(0, 0, map.width * T, map.height * T);
 
@@ -552,12 +562,11 @@ export function createWorldGame(
       for (const n of this.npcs) {
         const nb = n.body.body as Phaser.Physics.Arcade.Body;
         const close = this.distTo(n.body.x, n.body.y) < T * 1.8;
-        const spec_ = spec.npcs.find((x) => x.id === n.id);
         if (
           this.talking === n.id ||
           n.busy ||
           close ||
-          spec_?.wander === false
+          npcSpecs.get(n.id)?.wander === false
         ) {
           nb.setVelocity(0, 0);
           n.path = [];
