@@ -57,7 +57,8 @@ def test_a_terminal_metal_retirement_leaves_no_poller(harness):
     assert backend._respawn_if_dead() is True
     poller = backend._stats_logger = _Poller()
     backend._retire_device_lost_server(backend._process, metal_poison = {"draft": False})
-    assert backend._metal_oom_terminal_key is not None
+    # Nothing respawns it, so it is unloaded like any other model (r41).
+    assert backend._process is None and backend._model_identifier is None
     assert poller.stopped and backend._stats_logger is None
 
 

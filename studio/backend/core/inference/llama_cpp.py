@@ -767,6 +767,11 @@ _DRAFT_CONTEXT_FAILURE_MARKERS = (
     "failed to process speculative batch",
 )
 _DEVICE_LOST_LOG_GRACE_S = 2.0
+# Called with the backend after a second Metal out-of-memory strike unloaded it, outside
+# every backend lock. The routes register the CHAT / kept-slot release here
+# (routes/inference.py), which this module cannot import.
+_TERMINAL_RETIREMENT_HOOKS: list = []
+
 # Set while automatic recovery (a respawn, the drafter-free reload) runs load_model: only
 # those replacements carry a Metal OOM strike over; a caller's load starts afresh.
 _AUTO_RECOVERY_LOAD = threading.local()
@@ -9319,6 +9324,8 @@ class LlamaCppBackend:
         # respawning after the second (_after_metal_poisoned_server).
         self._metal_oom_strikes = None
         self._metal_oom_terminal_key = None
+        # Unloaded by the terminal strike: a kept slot still holding it is reaped once idle.
+        self._released_after_oom = False
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # Wakes the health probe on subprocess readiness/exit, so a ready or crashed
@@ -37169,6 +37176,7 @@ class LlamaCppBackend:
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery
                 # re-resolves the file instead of trusting a path this request verified.
                 self._last_load_intent = replace(intent, verified_gguf = None)
+                self._released_after_oom = False
                 if not getattr(_AUTO_RECOVERY_LOAD, "active", False):
                     # A caller's load (same settings or changed, after one strike or the
                     # terminal two) starts a fresh OOM episode; only automatic recovery
@@ -41487,10 +41495,29 @@ class LlamaCppBackend:
             if metal_poison is not None:
                 # Decided under _respawn_lock, or a request could respawn the dead child
                 # with the speculative config the drafter-free reload avoids.
+                terminal = False
                 with self._lock:
                     if self._process is served_by and not self._cancel_event.is_set():
-                        self._after_metal_poisoned_server(bool(metal_poison.get("draft")))
-                return
+                        terminal = self._after_metal_poisoned_server(
+                            bool(metal_poison.get("draft"))
+                        )
+                if not terminal:
+                    return
+                # Nothing will respawn it, so it is unloaded like any other model: the
+                # attempt log, pid record, stats, codec, temp files and plan all go, and
+                # the next load is the user's. Still under _serial_load_lock, so no
+                # explicit load can land between the strike and the teardown.
+                self.unload_model()
+                self._released_after_oom = True
+        if metal_poison is not None:
+            # Outside every backend lock (gpu_arbiter._lock comes before them): the routes
+            # drop its kept slot and the CHAT claim it held, as for a crashed worker.
+            for hook in list(_TERMINAL_RETIREMENT_HOOKS):
+                try:
+                    hook(self)
+                except Exception as exc:  # noqa: BLE001 -- best effort, as a reap
+                    logger.debug("Terminal retirement cleanup failed: %s", exc)
+            return
         try:
             logger.warning(
                 f"llama-server for '{self._model_identifier}' lost its GPU device "
@@ -41579,14 +41606,14 @@ class LlamaCppBackend:
             terminal is not None and intent is not None and self._metal_oom_key(intent) == terminal
         )
 
-    def _after_metal_poisoned_server(self, draft_failed: bool) -> None:
+    def _after_metal_poisoned_server(self, draft_failed: bool) -> bool:
         """Choose the recovery after a Metal-poisoned server was retired.
 
         Bounded: an Auto launch carrying an unsized DSpark / DFlash sidecar reloads once
         without it (llama.cpp's --fit cannot reserve that drafter, so it is the memory the
         budget missed); any other first strike lets the next request respawn as usual; a
         second strike on the same load stops respawning, since a replay would only
-        reproduce the out-of-memory.
+        reproduce the out-of-memory. Returns True for that terminal strike.
         """
         intent = self._last_load_intent
         key = self._metal_oom_key(intent) if intent is not None else None
@@ -41607,7 +41634,7 @@ class LlamaCppBackend:
                     "GPU layers, turn off speculative decoding, or choose a smaller quant, "
                     "then load the model again."
                 )
-                return
+                return True
             requested_mode = getattr(intent, "speculative_type", None)
             recovery_extras = list(getattr(intent, "extra_args", None) or ())
             # A bare --model-draft in the extras survives an Off reload (has_dft()), so
@@ -41626,7 +41653,7 @@ class LlamaCppBackend:
                     f"{self._speculative_type.split('-', 1)[1]} drafter and its Metal backend "
                     "cannot recover; reloading once without speculative decoding."
                 )
-                return
+                return False
             logger.warning(
                 f"llama-server for '{name}' ran out of Metal memory in {where} and its Metal "
                 "backend cannot recover; stopped it so the next request starts a fresh one."
@@ -41634,6 +41661,8 @@ class LlamaCppBackend:
         except Exception:
             # The logger raises once stdout is closed; recovery must not.
             pass
+        # True: stopped for good (the second strike), so the caller unloads it.
+        return strikes >= 2
 
     def _retire_device_lost_server_soon(
         self,

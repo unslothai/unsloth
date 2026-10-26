@@ -321,11 +321,25 @@ def unload_audio_cpp_slots(strict: bool = False) -> int:
     return _drop_where(lambda slot, filling: any(slot is held for held in doomed), strict)
 
 
+def released_after_oom(slot: ExtraSlot) -> bool:
+    """A kept GGUF whose llama-server a second Metal out-of-memory strike unloaded."""
+    return bool(getattr(slot.llama, "_released_after_oom", False)) and not (
+        slot.llama.is_active or slot.llama.is_loaded
+    )
+
+
+def reap_released_after_oom() -> list[ExtraSlot]:
+    """Drop every such slot no request still holds; a held one goes on a later call."""
+    filling = loading[0] if loading else None
+    return evict_these([s for s in list(slots) if s is not filling and released_after_oom(s)])
+
+
 def unload_llama_slots(strict: bool = False) -> int:
     """Drop every slot running or starting a llama-server, a GGUF load still filling one included."""
     return _drop_where(
         lambda slot, filling: slot.llama.is_active
         or slot.llama.is_loaded
+        or released_after_oom(slot)
         or (filling and not getattr(slot.orchestrator, "loading_models", None)),
         strict,
     )

@@ -164,6 +164,7 @@ from core.inference.llama_admission import (
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
 from core.inference import model_slots
 from core.inference.llama_cpp import (
+    _TERMINAL_RETIREMENT_HOOKS,
     _llama_chunk_has_generated_output,
     _local_ssl_context,
     register_serving_backend,
@@ -9367,6 +9368,9 @@ async def _reap_exited_workers() -> None:
     exited = [slot for slot in (None, *model_slots.slots) if _worker_exited(slot)]
     if exited:
         await asyncio.to_thread(_reap_dead_workers, exited)
+    # A kept GGUF the terminal Metal strike unloaded while a request still held its slot.
+    if any(model_slots.released_after_oom(slot) for slot in list(model_slots.slots)):
+        await asyncio.to_thread(_release_after_terminal_retirement)
 
 
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
@@ -12858,6 +12862,20 @@ def reap_dead_managed_engine(backend) -> None:
     from core.inference.gpu_arbiter import CHAT, holds
     if backend.reap_dead_managed_engine() and (release_chat_gpu_claim() or not holds(CHAT)):
         account_access.clear_resident("chat")
+
+
+def _release_after_terminal_retirement(_backend = None) -> None:
+    """A llama-server stopped for good by a second Metal out-of-memory strike unloads itself
+    (llama_cpp._retire_device_lost_server): drop its kept slot once no request holds it and the
+    CHAT claim it left, as a crashed worker's reap does. Outside every backend lock."""
+    from core.inference.gpu_arbiter import CHAT, holds
+
+    model_slots.reap_released_after_oom()
+    if release_chat_after_kept_models() or not holds(CHAT):
+        account_access.clear_resident("chat")
+
+
+_TERMINAL_RETIREMENT_HOOKS.append(_release_after_terminal_retirement)
 
 
 def reap_dead_worker(backend) -> None:

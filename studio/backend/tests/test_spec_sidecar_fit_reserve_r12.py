@@ -237,7 +237,8 @@ def test_a_terminally_retired_server_is_not_active(harness):
     second = backend._process
     backend._retire_device_lost_server(second, metal_poison = {"draft": False})
     assert second.poll() is not None
-    assert backend._metal_oom_terminal_key is not None
+    # Nothing respawns it, so it is unloaded like any other model (r41).
+    assert backend._process is None and backend._model_identifier is None
     assert backend._respawn_if_dead() is False
     assert backend.is_loaded is False
     # routes/models.py refuses a delete with 409 while is_active or is_loaded.
