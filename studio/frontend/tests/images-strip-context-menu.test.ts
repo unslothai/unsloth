@@ -12,7 +12,11 @@ test("a right-click on an Images strip tile opens the tile's actions menu", () =
   const handler = /onContextMenu=\{\(event\) => \{([^}]*)\}\}/.exec(tile)?.[1] ?? "";
   // The desktop webview's own image menu cannot open or copy a blob: thumbnail, so it must not show there.
   // A browser's menu works on them, so browsers keep it.
-  assert.match(handler, /^\s*if \(!isTauri\) return;\s*event\.preventDefault\(\)/);
+  // React bubbles a portalled child's event (the New project dialog) through the tile: only the tile's own DOM counts.
+  assert.match(
+    handler,
+    /^\s*if \(!isTauri \|\| !event\.currentTarget\.contains\(event\.target as Node\)\) return;\s*event\.preventDefault\(\)/,
+  );
   assert.match(handler, /setTileMenuId\(image\.id\)/);
   assert.match(tile, /open=\{tileMenuId === image\.id\}/);
   assert.match(tile, /onOpenChange=\{\(open\) => setTileMenuId\(open \? image\.id : null\)\}/);

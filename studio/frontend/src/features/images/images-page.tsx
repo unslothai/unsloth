@@ -7643,8 +7643,9 @@ export function ImagesPage({
                   data-image-id={image.id}
                   {...stripReorder.tileProps(image.id)}
                   // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
+                  // Portalled children (the New project dialog) bubble here too: leave their menu alone.
                   onContextMenu={(event) => {
-                    if (!isTauri) return;
+                    if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
                     event.preventDefault();
                     setTileMenuId(image.id);
                   }}
