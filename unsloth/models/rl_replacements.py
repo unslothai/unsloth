@@ -1329,7 +1329,7 @@ def sft_trainer_compute_loss(function_name, function):
     ):
         # TRL >= 1.15 computes loss_type="dft" only in the compute_loss this replaces (else it trains as NLL):
         # run it on TRL's fused LM head. Older TRL routes DFT through compute_loss_func.
-        # As TRL, label smoothing applies only to loss_type="nll", so a set label_smoother does not opt dft out.
+        # TRL label smoothing applies only to "nll", so label_smoother must not opt dft out.
         if getattr(self.args, "loss_type", None) == "dft" and self.compute_loss_func is None:
             import trl.trainer.utils as _trl_utils
             if hasattr(_trl_utils, "add_fused_lm_head"):

@@ -148,7 +148,6 @@ def test_nll_keeps_the_unsloth_path():
 
 
 def test_dft_with_label_smoothing_still_trains_dft():
-    # TRL >= 1.15 applies its label smoother only to loss_type="nll"; dft keeps the DFT objective.
     Trainer = _trainer_class()
     trainer = Trainer("dft")
     trainer.label_smoother = lambda *args, **kwargs: pytest.fail("dft was trained as smoothed NLL")
