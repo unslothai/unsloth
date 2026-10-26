@@ -651,6 +651,16 @@ def _batch_key(entry: _Queued) -> Optional[tuple]:
     )
 
 
+async def _diffusion_lm(request: TrainingStartRequest) -> bool:
+    """Text-diffusion models train with their own denoising objective, which the batched trainer lacks."""
+    from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+    return bool(
+        await asyncio.to_thread(
+            diffusion_lm_profile_for_model, request.model_name, request.hf_token
+        )
+    )
+
+
 def _batch_for(head: _Queued) -> list[_Queued]:
     """The queue head plus the compatible jobs waiting behind it, in queue order, up to the cap."""
     cap = _batch_max()
@@ -695,6 +705,8 @@ async def _start_queued(entry: _Queued) -> bool:
         if _training_busy():
             return False
         group = _batch_for(entry)
+        if len(group) > 1 and await _diffusion_lm(entry.request):
+            group = [entry]
         if len(group) > 1:
             outcome = await _start_batch(group)
             if outcome is not None:

@@ -126,6 +126,7 @@ def _run(
     monkeypatch,
     members,
     on_event = None,
+    trainer_attrs = None,
     **extra,
 ):
     base = _base()
@@ -138,6 +139,7 @@ def _run(
         save_on_stop = True,
         load_in_4bit = False,
         is_cpt = False,
+        **(trainer_attrs or {}),
     )
     data = {
         m["run_id"]: {
@@ -371,6 +373,26 @@ def test_gradients_are_clipped_per_member_every_step(monkeypatch, tmp_path):
     ]
     assert a == pytest.approx([float(n[0]) for _, n in seen[:2]])
     assert b == pytest.approx([float(n[1]) for _, n in seen])
+
+
+def test_targets_follow_the_single_job_rules():
+    model = _base()
+    every_linear = mlt._resolve_targets(model, ["all-linear"])
+    assert (
+        "q_proj" in every_linear and "down_proj" in every_linear and "lm_head" not in every_linear
+    )
+    # Explicit names beside "all-linear" win, as UnslothTrainer.prepare_model_for_training does.
+    assert mlt._resolve_targets(model, ["all-linear", "q_proj"]) == ["q_proj"]
+    assert mlt._resolve_targets(model, None) == mlt._DEFAULT_TARGETS
+
+
+def test_a_text_diffusion_model_never_trains_batched(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, _model, _pristine = _run(
+        monkeypatch, MEMBERS[:2], trainer_attrs = {"diffusion_lm_profile": "dream"}
+    )
+    assert [e["type"] for e in events if e.get("member_run_id")] == ["error", "error"]
+    assert "text-diffusion" in events[-1]["error"]
 
 
 def test_pretokenized_assistant_masks_become_labels():

@@ -179,8 +179,10 @@ def _resolve_targets(model, target_modules) -> list[str]:
     if isinstance(target_modules, str):
         target_modules = [target_modules]
     target_modules = list(target_modules or [])
-    if "all-linear" not in target_modules:
-        return target_modules or list(_DEFAULT_TARGETS)
+    # As the single job: explicit names beside "all-linear" win; "all-linear" alone means every linear layer.
+    explicit = [m for m in target_modules if m != "all-linear"]
+    if explicit or not target_modules:
+        return explicit or list(_DEFAULT_TARGETS)
     head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
     names = {
         name.rsplit(".", 1)[-1]
@@ -191,7 +193,6 @@ def _resolve_targets(model, target_modules) -> list[str]:
         and hasattr(module, "weight")
         and not list(module.children())
     }
-    names.update(m for m in target_modules if m != "all-linear")
     return sorted(names)
 
 
@@ -639,6 +640,10 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
     load_in_4bit = _load_base(trainer, config, hf_token, event_queue)
     if stopped_early():
         return
+    if getattr(trainer, "diffusion_lm_profile", None):
+        raise RuntimeError(
+            "Batched training does not support text-diffusion models; train these jobs one at a time."
+        )
     trainer.load_in_4bit = load_in_4bit
     trainer.is_cpt = False
     model, tokenizer = trainer.model, trainer.tokenizer

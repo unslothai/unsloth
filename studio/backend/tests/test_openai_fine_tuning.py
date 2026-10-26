@@ -21,6 +21,8 @@ from routes import openai_fine_tuning, training as training_routes  # noqa: E402
 from storage import studio_db  # noqa: E402
 import core.training.training as _training_core  # noqa: E402
 
+_REAL_DIFFUSION_LM = openai_fine_tuning._diffusion_lm
+
 CHATS = (
     b'{"messages": [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]}\n'
     b'{"messages": [{"role": "user", "content": "Bye"}, {"role": "assistant", "content": "See you"}]}\n'
@@ -1025,6 +1027,11 @@ def batch_queue(queue, monkeypatch):
 
     client, calls, live, gpu = queue
     monkeypatch.setattr(openai_fine_tuning, "_multi_lora_available", lambda: True)
+
+    async def not_diffusion(request):
+        return False
+
+    monkeypatch.setattr(openai_fine_tuning, "_diffusion_lm", not_diffusion)
     monkeypatch.setattr(_training_core, "should_use_mlx_training_backend", lambda: False)
     monkeypatch.delenv("UNSLOTH_STUDIO_FT_BATCH_MAX", raising = False)
     backend = _BatchBackend()
@@ -1104,6 +1111,25 @@ def test_listing_pages_through_a_batch_that_is_still_loading(batch_queue):
 
     jobs, seen = _run(flow())
     assert sorted(seen) == sorted(j.id for j in jobs) and len(seen) == 3
+
+
+def test_text_diffusion_jobs_never_batch(batch_queue, monkeypatch):
+    import utils.models.diffusion_lm as diffusion_lm
+
+    client, calls, _live, gpu, _backend = batch_queue
+    monkeypatch.setattr(openai_fine_tuning, "_diffusion_lm", _REAL_DIFFUSION_LM)
+    monkeypatch.setattr(diffusion_lm, "diffusion_lm_profile_for_model", lambda *a, **k: "dream")
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        for s in "ab":
+            await _create(client, uploaded.id, suffix = s)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+
+    _run(flow())
+    assert calls["batch"] == []
+    assert [r.project_name for r in calls["start"]] == ["a"]
 
 
 def test_mlx_jobs_never_batch(batch_queue, monkeypatch):
