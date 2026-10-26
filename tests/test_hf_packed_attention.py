@@ -1375,6 +1375,14 @@ def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, 
     hpa._ORIG_SDPA[0] = sdpa_attention_forward
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    calls = []
+    flash_varlen = hpa._flash_varlen
+
+    def counted(*args):
+        calls.append(1)
+        return flash_varlen(*args)
+
+    monkeypatch.setattr(hpa, "_flash_varlen", counted)
     H, n_kv, D = 8, 2, 64
     module = types.SimpleNamespace(
         is_causal = True, num_key_value_groups = H // n_kv, training = True, sliding_window = window
@@ -1417,5 +1425,6 @@ def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, 
         for g, r in zip(got, ref):
             torch.testing.assert_close(g.float(), r.float(), atol = 3e-2, rtol = 3e-2)
     assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
+    assert len(calls) == 4  # the in-graph kernel ran for every layout (not the dense fallback)
     # max_seqlen specializes once, then is dynamic: at most two graphs for four layouts.
     assert torch._dynamo.utils.counters["stats"]["unique_graphs"] <= 2
