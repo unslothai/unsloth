@@ -867,9 +867,11 @@ def _small_m_config(M, N, K, device):
 
 def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
     # Eager only: under torch.compile the M bound below would guard on the symbolic M and recompile.
+    # torchao beats the fused kernel for bf16, but writes bf16 only, so torchao_block_matmul hands
+    # fp16 to the Triton GEMM after a separate act_quant: keep fp16 on the one-launch kernel.
     if (
         not _FP8_BLOCK_SMALL_M
-        or fp8_block_matmul is not w8a8_block_fp8_matmul_triton
+        or (fp8_block_matmul is not w8a8_block_fp8_matmul_triton and X.dtype != torch.float16)
         or torch.compiler.is_compiling()
     ):
         return False
@@ -998,7 +1000,7 @@ def _prefer_triton_block_matmul_at(device, M):
 def _select_fp8_block_matmul():
     # torchao_block_matmul hands each call to the Triton function where that is faster; pick Triton
     # outright only when every GPU prefers it at every M (sm_89), which also keeps the fused small-M
-    # kernel there (can_use_fp8_block_small_m), as torchao beats it on sm_90 / sm_100 / sm_120.
+    # kernel there for bf16 (can_use_fp8_block_small_m), as torchao beats it on sm_90 / sm_100 / sm_120.
     if torchao_blockwise_gemm is None:
         return w8a8_block_fp8_matmul_triton
     count = torch.cuda.device_count() if torch.cuda.is_available() else 0
@@ -1591,6 +1593,11 @@ def _with_fp8_block_gemv(block_forward):
 def _fp8_block_small_m_first(X, weight, weight_scale):
     # 100+ SM parts: the fused small-M kernel is faster, so try it first (eager only; compiled uses the GEMV).
     if not (torch.is_grad_enabled() and X.requires_grad):
+        # With torchao selected only fp16 reaches the fused kernel; the GEMV keeps the calls it took before
+        # (it skips act_quant, and beat the fused kernel at K = 14336 on sm_120).
+        gemv_first = fp8_block_matmul is not w8a8_block_fp8_matmul_triton
+        if gemv_first and can_use_fp8_block_gemv(X, weight, weight_scale):
+            return fp8_block_gemv(X, weight, weight_scale)
         if (
             can_use_fp8_block_small_m(
                 X, weight, weight_scale, _fp8_block_size(weight, weight_scale)
@@ -1599,7 +1606,7 @@ def _fp8_block_small_m_first(X, weight, weight_scale):
             and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
         ):
             return fp8_block_small_m_linear(X, weight, weight_scale)
-        if can_use_fp8_block_gemv(X, weight, weight_scale):
+        if not gemv_first and can_use_fp8_block_gemv(X, weight, weight_scale):
             return fp8_block_gemv(X, weight, weight_scale)
     return fp8_torch_block_quant_forward(X, weight, weight_scale)
 
