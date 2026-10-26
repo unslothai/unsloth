@@ -9647,6 +9647,13 @@ _COUNT_MEMO_LOCK = threading.Lock()
 
 
 def _count_memo_key(backend, template_body: dict, prefer_native: bool) -> Optional[tuple]:
+    # A template that reads the clock (Granite's date line) renders the same body differently
+    # over time, so its count is not a function of the body: those are counted afresh.
+    template = getattr(backend, "_chat_template_override", None) or getattr(
+        backend, "_chat_template", None
+    )
+    if isinstance(template, str) and "strftime_now" in template:
+        return None
     process = getattr(backend, "_process", None)
     pid = getattr(process, "pid", None)
     if pid is None:

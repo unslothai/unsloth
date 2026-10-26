@@ -72,6 +72,32 @@ def test_count_memo_reuses_a_render_only_within_one_server_process(monkeypatch):
     assert len(calls) == 5
 
 
+def test_count_memo_is_skipped_for_a_template_that_reads_the_clock(monkeypatch):
+    # Granite's template renders today's date, so the same body counts differently over time.
+    from core.inference import llama_cpp
+
+    class _Backend(llama_cpp.LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:8080"
+        _auth_headers: dict = {}
+
+    calls: list = []
+    monkeypatch.setattr(llama_cpp.httpx, "Client", _counting_client(calls))
+    monkeypatch.setattr(llama_cpp, "_COUNT_MEMO", llama_cpp.collections.OrderedDict())
+    backend = _Backend.__new__(_Backend)
+    backend._process = SimpleNamespace(pid = 4242)
+    backend._chat_template_override = None
+    backend._chat_template = "{{ strftime_now('%B %d, %Y') }}{% for m in messages %}{% endfor %}"
+    msgs = [{"role": "user", "content": "count me"}]
+    backend.count_chat_tokens(msgs, prefer_native = True)
+    backend.count_chat_tokens(msgs, prefer_native = True)
+    assert len(calls) == 2, "a clock-reading template is counted afresh"
+    backend._chat_template = "{% for m in messages %}{{ m.content }}{% endfor %}"
+    backend.count_chat_tokens(msgs, prefer_native = True)
+    backend.count_chat_tokens(msgs, prefer_native = True)
+    assert len(calls) == 3, "a static template still hits the memo"
+
+
 def test_count_memo_tells_apart_schemas_in_a_different_key_order(monkeypatch):
     """llama-server keeps a JSON object's key order and a template that walks a schema renders
     it in that order, so the same entries in another order can tokenize differently. A key with
