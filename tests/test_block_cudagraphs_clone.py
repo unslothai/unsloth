@@ -463,7 +463,11 @@ def test_returned_hidden_states_keep_their_pool_copies(monkeypatch, exposed):
             self.config = types.SimpleNamespace(output_hidden_states = exposed == "config")
             self.layers = torch.nn.ModuleList([A().train() for _ in range(2)])
 
-        def forward(self, x, output_hidden_states = None):
+        def forward(
+            self,
+            x,
+            output_hidden_states = None,
+        ):
             hidden = []
             for layer in self.layers:
                 x = layer(x)
