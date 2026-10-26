@@ -1679,8 +1679,7 @@ def _family_from_content(
 
 
 def _family_from_gguf_arch(path: str) -> Optional[DiffusionFamily]:
-    """A renamed local GGUF whose header arch alone names its family (krea2, moss_image): the
-    listing already offers it on the Images page from that arch, so the loader must resolve it too."""
+    """Family of a renamed local GGUF whose arch alone names it; the Images listing already offers it by arch."""
     if not path.lower().endswith(".gguf"):
         return None
     try:
