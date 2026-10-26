@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,9 @@ def _launch(
     extra_args = None,
 ):
     load_model = LlamaCppBackend.load_model
+    # A simulated CPU launch: a real torch import would run `ldconfig -p` through the one-launch
+    # Popen fake and use up its return codes before parking is reached.
+    monkeypatch.setitem(sys.modules, "torch", None)
 
     def _load(self, intent, *args, **kwargs):
         self.probe_server_capabilities = lambda _binary = None: dict(caps)

@@ -6,6 +6,8 @@
 Anything else (a stock or older server, an unreadable report, a host with no RAM to spare, or
 ``UNSLOTH_LLAMA_ADMISSION_PREEMPT=0``) keeps the fair share admission every install ran before."""
 
+import weakref
+
 import pytest
 
 from core.inference import llama_cpp as llama_mod
@@ -54,6 +56,9 @@ class _Launch:
 
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
+    # Backends an earlier module launched stay registered and their parking budgets are
+    # subtracted from the RAM these tests expect.
+    monkeypatch.setattr(llama_mod, "_parking_backends", weakref.WeakSet())
     monkeypatch.delenv(preemption.PREEMPT_ENV, raising = False)
     monkeypatch.delenv(preemption.PREEMPT_MODE_ENV, raising = False)
     preemption.note_server_parking(False)
