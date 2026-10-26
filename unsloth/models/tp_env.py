@@ -98,7 +98,6 @@ class TPEnvLayout:
         else:
             mesh = init_device_mesh(device, (self.dp, self.tp), mesh_dim_names = ("dp", "tp"))
             from .pp_native import check_mesh_composition
-
             check_mesh_composition(
                 {"dp": mesh["dp"], "tp": mesh["tp"]}, f"UNSLOTH_TP_SIZE={self.tp} (dp x tp)"
             )
@@ -251,7 +250,9 @@ def tensor_parallel_env_load(fn):
         _DEPTH["load"] += 1
         try:
             if _four_bit(values, fn) or not layout.sharded_loading:
-                return fn(*args, **kwargs)  # full load; get_peft_model shards it (Params4bit included)
+                return fn(
+                    *args, **kwargs
+                )  # full load; get_peft_model shards it (Params4bit included)
             from .tp_native import sharded_loading
 
             try:
@@ -284,7 +285,6 @@ def _model_of(out):
 
 def _apply(model, layout):
     from .tp_native import apply_tensor_parallel, is_tensor_parallel
-
     if is_tensor_parallel(model):
         return model
     try:
@@ -350,7 +350,9 @@ def _broadcast_trainable(model, dp_mesh):
         for p in model.parameters():
             if p.requires_grad:
                 local = getattr(p, "_local_tensor", p.data)
-                work = local if local.is_contiguous() else local.contiguous()  # NCCL takes dense tensors
+                work = (
+                    local if local.is_contiguous() else local.contiguous()
+                )  # NCCL takes dense tensors
                 dist.broadcast(work, src = src, group = group)
                 if work is not local:
                     local.copy_(work)
@@ -359,7 +361,12 @@ def _broadcast_trainable(model, dp_mesh):
 def fsdp2_dp_mesh(model):
     """The dp mesh native FSDP2 shards a tensor parallel model over under UNSLOTH_TP_SIZE + UNSLOTH_FSDP2=1."""
     layout = _LAYOUT if _LAYOUT is not _UNSET else None
-    if layout is None or layout.dp == 1 or not layout.fsdp2 or not isinstance(model, torch.nn.Module):
+    if (
+        layout is None
+        or layout.dp == 1
+        or not layout.fsdp2
+        or not isinstance(model, torch.nn.Module)
+    ):
         return None
     from .tp_native import is_tensor_parallel
 

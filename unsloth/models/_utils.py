@@ -6089,7 +6089,9 @@ def patch_gradient_accumulation_fix(Trainer):
                     ]
                 )
             if native_fsdp2 and tp_env is not None and tp_env.dp == 1:
-                native_fsdp2 = False  # UNSLOTH_TP_SIZE = world size: no data parallel dimension to shard
+                native_fsdp2 = (
+                    False  # UNSLOTH_TP_SIZE = world size: no data parallel dimension to shard
+                )
             if tp_env is not None and tp_env.dp > 1 and tp_env.fsdp2 and not native_fsdp2:
                 # The dp dimension would be neither FSDP2-sharded nor gradient-averaged: replicas would drift.
                 raise RuntimeError(

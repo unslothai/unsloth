@@ -2174,7 +2174,9 @@ def _tp_meshes(model):
         (m.__dict__["_unsloth_tp_dp_mesh"] for m in chain if "_unsloth_tp_dp_mesh" in m.__dict__),
         None,
     )
-    if dp is None:  # UNSLOTH_TP_SIZE with DDP-style data parallel (tp_env): gradients averaged over dp
+    if (
+        dp is None
+    ):  # UNSLOTH_TP_SIZE with DDP-style data parallel (tp_env): gradients averaged over dp
         dp = next(
             (m.__dict__[_DDP_MESH] for m in chain if m.__dict__.get(_DDP_MESH) is not None), None
         )
@@ -2547,7 +2549,9 @@ def _tp_resume_payload(self, checkpoint):
     want, got = _tp_layout(self), payload["layout"]
     if want != got:
         diff = {
-            k: (got.get(k), want.get(k)) for k in ("world", "tp", "dp", "dp_kind") if got.get(k) != want.get(k)
+            k: (got.get(k), want.get(k))
+            for k in ("world", "tp", "dp", "dp_kind")
+            if got.get(k) != want.get(k)
         }
         raise RuntimeError(
             f"Unsloth: tensor parallel resume from {checkpoint}: the checkpoint was written on another layout "
@@ -2558,7 +2562,11 @@ def _tp_resume_payload(self, checkpoint):
     return payload
 
 
-def _tp_load_from_checkpoint(self, resume_from_checkpoint, model = None):
+def _tp_load_from_checkpoint(
+    self,
+    resume_from_checkpoint,
+    model = None,
+):
     payload = _tp_resume_payload(self, resume_from_checkpoint)
     target = model if model is not None else self.model
     with torch.no_grad():

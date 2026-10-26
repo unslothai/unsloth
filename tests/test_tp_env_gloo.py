@@ -48,11 +48,15 @@ def _patch_bnb_8bit_everywhere():
     # bitsandbytes keeps 32-bit state below min_8bit_size (4096) elements: every tiny LoRA factor would.
     # transformers builds optim = "adamw_8bit" as bitsandbytes.optim.AdamW(optim_bits = 8).
     import bitsandbytes as bnb
-
     for cls in (bnb.optim.AdamW, bnb.optim.AdamW8bit):
         init = cls.__init__
 
-        def patched(self, *args, __init = init, **kwargs):
+        def patched(
+            self,
+            *args,
+            __init = init,
+            **kwargs,
+        ):
             kwargs["min_8bit_size"] = 0
             __init(self, *args, **kwargs)
 
@@ -97,7 +101,13 @@ def _case_units(rank, world, tmp):
 
     calls = []
 
-    def loader(model_name, load_in_4bit = True, fast_inference = False, full_finetuning = False, **kw):
+    def loader(
+        model_name,
+        load_in_4bit = True,
+        fast_inference = False,
+        full_finetuning = False,
+        **kw,
+    ):
         calls.append(model_name)
         return "loaded"
 
@@ -111,12 +121,18 @@ def _case_units(rank, world, tmp):
     out["no_env_passthrough"] = wrapped("m", fast_inference = True)
     out["four_bit_default"] = tp_env._four_bit({}, loader)
     out["four_bit_16"] = tp_env._four_bit({"load_in_16bit": True}, loader)
-    out["four_bit_qconfig"] = tp_env._four_bit({"load_in_4bit": False, "quantization_config": {}}, loader)
+    out["four_bit_qconfig"] = tp_env._four_bit(
+        {"load_in_4bit": False, "quantization_config": {}}, loader
+    )
     # The hooks sit on the real loaders.
     from unsloth import FastLanguageModel, FastModel, FastVisionModel
 
     out["hooked"] = {}
-    for label, cls in (("lm", FastLanguageModel), ("model", FastModel), ("vision", FastVisionModel)):
+    for label, cls in (
+        ("lm", FastLanguageModel),
+        ("model", FastModel),
+        ("vision", FastVisionModel),
+    ):
         for attr in ("from_pretrained", "get_peft_model"):
             out["hooked"][f"{label}.{attr}"] = getattr(getattr(cls, attr), "_unsloth_tp_env", False)
     return out
@@ -159,7 +175,11 @@ def _case_env(
             seen.append(inputs["input_ids"].sum().item())
             return super().compute_loss(model, inputs, *args, **kwargs)
 
-    def load(model_name, load_in_4bit = True, **kwargs):  # FastLanguageModel.from_pretrained's flags
+    def load(
+        model_name,
+        load_in_4bit = True,
+        **kwargs,
+    ):  # FastLanguageModel.from_pretrained's flags
         return AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype = torch.float32, attn_implementation = "eager"
         )
@@ -223,7 +243,9 @@ def _case_env(
         "optimizer": type(_inner_optimizer(trainer.optimizer)).__module__
         + "."
         + type(_inner_optimizer(trainer.optimizer)).__name__,
-        "optim_bits": getattr(getattr(_inner_optimizer(trainer.optimizer), "args", None), "optim_bits", None),
+        "optim_bits": getattr(
+            getattr(_inner_optimizer(trainer.optimizer), "args", None), "optim_bits", None
+        ),
         "state_dtypes": sorted(
             {
                 str(v.dtype)
@@ -313,7 +335,12 @@ def _case_dp_average(rank, world, tmp):
     one.grad = torch.full((3,), 4.0) if rank == 0 else None
     both.grad = torch.full((3,), float(rank + 1))
     tp_native._dp_average([one, both, none, frozen], mesh["dp"])
-    return {"one": one.grad.tolist(), "both": both.grad.tolist(), "none": none.grad, "frozen": frozen.grad}
+    return {
+        "one": one.grad.tolist(),
+        "both": both.grad.tolist(),
+        "none": none.grad,
+        "frozen": frozen.grad,
+    }
 
 
 def _case_accelerate_fsdp(rank, world, tmp, ckpt):
@@ -330,13 +357,17 @@ def _case_accelerate_fsdp(rank, world, tmp, ckpt):
 
     patch_gradient_accumulation_fix(transformers.Trainer)
     model = tp_env.tensor_parallel_env_load(
-        lambda name, load_in_4bit = True: AutoModelForCausalLM.from_pretrained(name, torch_dtype = torch.float32)
+        lambda name, load_in_4bit = True: AutoModelForCausalLM.from_pretrained(
+            name, torch_dtype = torch.float32
+        )
     )(ckpt, load_in_4bit = False)
     model = get_peft_model(model, LoraConfig(r = 4, target_modules = "all-linear"))
     data = _Rows([torch.arange(9)] * 8)
     return {
         "refused": _raised(
-            lambda: transformers.Trainer(model = model, args = _trainer_args(tmp, 2), train_dataset = data)
+            lambda: transformers.Trainer(
+                model = model, args = _trainer_args(tmp, 2), train_dataset = data
+            )
         )
     }
 
@@ -372,7 +403,12 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
             dist.destroy_process_group()
 
 
-def _spawn(case, world = 1, env = None, **kwargs):
+def _spawn(
+    case,
+    world = 1,
+    env = None,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -392,16 +428,26 @@ def _spawn(case, world = 1, env = None, **kwargs):
                 p.kill()
         assert codes == [0] * world, f"rank exit codes {codes}"
         results = [
-            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
         ]
     if "skip" in results[0]:
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
     return results
 
 
-def _close(got, want, rel = 1e-5, what = ""):
+def _close(
+    got,
+    want,
+    rel = 1e-5,
+    what = "",
+):
     assert got["steps"] == want["steps"], (what, got["steps"], want["steps"])
-    assert got["losses"] == pytest.approx(want["losses"], rel = rel), (what, got["losses"], want["losses"])
+    assert got["losses"] == pytest.approx(want["losses"], rel = rel), (
+        what,
+        got["losses"],
+        want["losses"],
+    )
     assert got["grad_norms"] == pytest.approx(want["grad_norms"], rel = rel), (
         what,
         got["grad_norms"],
@@ -417,7 +463,9 @@ def test_env_layout_parsing_and_refusals():
     assert res["unset"] is None and res["one"] is None
     assert "must be >= 1" in res["zero"] and "must be an integer" in res["text"]
     assert "must divide the number of ranks (WORLD_SIZE=4)" in res["no_divide"]
-    assert "WORLD_SIZE=1" in res["no_torchrun"] and "torchrun --nproc-per-node 2" in res["no_torchrun"]
+    assert (
+        "WORLD_SIZE=1" in res["no_torchrun"] and "torchrun --nproc-per-node 2" in res["no_torchrun"]
+    )
     for key in ("pp", "pp_with_tp"):
         assert "UNSLOTH_PP_SIZE=2" in res[key] and "Python API" in res[key], res[key]
     assert res["pp_one"] == (2, 2, 4, False)
@@ -453,7 +501,9 @@ def test_env_tp2_trainer_matches_one_process(four_bit):
         assert "evaluation during training" in res["eval"] and hint in res["eval"], res["eval"]
         assert "Trainer.evaluate is not supported" in res["evaluate"] and hint in res["evaluate"]
         assert "lion_8bit" in res["lion"], res["lion"]
-        assert "generation is not supported" in res["generate"], res["generate"]  # A3: still refused
+        assert "generation is not supported" in res["generate"], res[
+            "generate"
+        ]  # A3: still refused
     assert results[0]["seen"] == results[1]["seen"]  # both tp ranks read the same batches
 
 
@@ -472,7 +522,9 @@ def test_env_tp2_x_dp2_trainer_matches_one_process(fsdp2):
         env["UNSLOTH_FSDP2"] = "1"
     results = _spawn("env", 4, env, bs = 2)
     for rank, res in enumerate(results):
-        assert res["layout"] == ("dp 2 (native FSDP2) x tp 2" if fsdp2 else "dp 2 (DDP) x tp 2"), res
+        assert res["layout"] == (
+            "dp 2 (native FSDP2) x tp 2" if fsdp2 else "dp 2 (DDP) x tp 2"
+        ), res
         assert res["is_tp"] and res["native_fsdp2"] is fsdp2 and res["ddp_mesh"] is (not fsdp2)
         assert "DistributedDataParallel" not in res["wrapped"]
         _close(res["a"], ref["a"], what = rank)
@@ -490,13 +542,17 @@ def _bnb_cpu():
 
 
 @pytest.mark.skipif(not _bnb_cpu(), reason = "bitsandbytes not installed")
-@pytest.mark.parametrize("world,env", [(2, {}), (4, {"UNSLOTH_FSDP2": "1"})], ids = ["tp2", "tp2_fsdp2_dp2"])
+@pytest.mark.parametrize(
+    "world,env", [(2, {}), (4, {"UNSLOTH_FSDP2": "1"})], ids = ["tp2", "tp2_fsdp2_dp2"]
+)
 def test_env_tp_adamw_8bit_steps_local_shards(world, env):
     ref = _ref(2 * (world // 2), optim = "adamw_8bit", bnb_8bit = True)
     if not ref["optimizer"].startswith("bitsandbytes"):
         pytest.skip(f"bitsandbytes cannot step CPU tensors here ({ref['optimizer']})")
     assert ref["optim_bits"] == 8 and "torch.uint8" in ref["state_dtypes"], ref
-    results = _spawn("env", world, {"UNSLOTH_TP_SIZE": "2", **env}, bs = 2, optim = "adamw_8bit", bnb_8bit = True)
+    results = _spawn(
+        "env", world, {"UNSLOTH_TP_SIZE": "2", **env}, bs = 2, optim = "adamw_8bit", bnb_8bit = True
+    )
     for rank, res in enumerate(results):
         assert res["optim_arg"] == "adamw_8bit" and res["local_shard_bnb"], res["optimizer"]
         assert res["optim_bits"] == 8 and "torch.uint8" in res["state_dtypes"], res["state_dtypes"]
