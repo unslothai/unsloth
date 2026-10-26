@@ -250,8 +250,7 @@ class RawTextDataLoader:
                         lines.append(text)
                 return "\n\n".join(lines)
             elif file_format == "csv_text_column":
-                # csv rejects any cell over 128 KB by default, and a whole document in a text column is bigger.
-                # 2**31 - 1 is the largest limit a C long takes on Windows.
+                # Default 128 KB cell limit rejects whole documents; sys.maxsize overflows a C long on Windows.
                 previous_limit = csv.field_size_limit(2**31 - 1)
                 try:
                     reader = csv.DictReader(f)
