@@ -694,23 +694,27 @@ def _varlen_in_graph_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, w
 def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
     """aten's flash varlen takes this shape on this device: one real forward and backward (a build
     that refuses at run time would otherwise fail inside the compiled graph)."""
-    try:
-        from .flash_impl import flash_impl_allows
+    # The verdict is cached for every grad mode, but the first trace often runs under no_grad (the
+    # forward of a reentrant / Unsloth offloaded checkpoint) or inference_mode, where the backward
+    # below raises and would turn the varlen path off for the whole run.
+    with torch.inference_mode(False), torch.enable_grad():
+        try:
+            from .flash_impl import flash_impl_allows
 
-        device = torch.device("cuda", device_index)
-        query = torch.zeros(1, n_heads, 16, head_dim, device = device, dtype = dtype)
-        key = torch.zeros(1, n_kv_heads, 16, head_dim, device = device, dtype = dtype)
-        torch_varlen = _torch_varlen(device)
-        # Hardware and build only: the sdpa policy can change, block_varlen_kwargs checks it each step.
-        if torch_varlen is None or not flash_impl_allows(head_dim, window, device):
+            device = torch.device("cuda", device_index)
+            torch_varlen = _torch_varlen(device)
+            # Hardware and build only: the sdpa policy can change, block_varlen_kwargs checks it each step.
+            if torch_varlen is None or not flash_impl_allows(head_dim, window, device):
+                return False
+            query = torch.zeros(1, n_heads, 16, head_dim, device = device, dtype = dtype)
+            key = torch.zeros(1, n_kv_heads, 16, head_dim, device = device, dtype = dtype)
+            query.requires_grad_()
+            cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
+            out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
+            out.float().sum().backward()
+            return True
+        except Exception:
             return False
-        query.requires_grad_()
-        cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
-        out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
-        out.float().sum().backward()
-        return True
-    except Exception:
-        return False
 
 
 _varlen_in_graph = torch._dynamo.assume_constant_result(_varlen_in_graph_eager)

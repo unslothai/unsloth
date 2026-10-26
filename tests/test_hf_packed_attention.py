@@ -1522,3 +1522,101 @@ def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, 
     assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
     # max_seqlen specializes once, then is dynamic: at most two graphs for four layouts.
     assert torch._dynamo.utils.counters["stats"]["unique_graphs"] <= 2
+
+
+@pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+def test_varlen_in_graph_probe_runs_its_backward_with_grad_enabled(monkeypatch, mode):
+    """The probe's verdict is cached for every grad mode, and the first trace of a block usually runs
+    in a reentrant checkpoint's no_grad forward: the probe must still run (and check) a backward."""
+    seen = []
+
+    def torch_varlen(device):
+        seen.append((torch.is_grad_enabled(), torch.is_inference_mode_enabled()))
+        return None
+
+    monkeypatch.setattr(hpa, "_torch_varlen", torch_varlen)
+    context = torch.no_grad() if mode == "no_grad" else torch.inference_mode()
+    with context:
+        assert hpa._varlen_in_graph_probe(0, torch.bfloat16, 64, 8, 2, None) is False
+        assert torch.is_grad_enabled() is False  # the caller's mode is restored
+    assert seen == [(True, False)]
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+@pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+def test_varlen_in_graph_verdict_does_not_depend_on_the_first_grad_mode(monkeypatch, mode):
+    """Real probe: first asked under no_grad / inference_mode it gives the grad-enabled answer, and
+    that is what later grad-enabled traces read from the cache."""
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip(
+            reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
+        )
+    key = (0, torch.bfloat16, 64, 8, 2, None)
+    expected = hpa._varlen_in_graph_probe(*key)
+    if not expected:
+        pytest.skip(reason = "this build's flash varlen does not take a 64-wide GQA row")
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    context = torch.no_grad() if mode == "no_grad" else torch.inference_mode()
+    with context:
+        assert hpa._varlen_in_graph_eager(*key) is expected
+    assert hpa._varlen_in_graph_eager(*key) is expected
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+def test_reentrant_checkpoint_first_trace_keeps_the_block_varlen_path(monkeypatch):
+    """A block compiled first inside a reentrant checkpoint (Unsloth's offloaded checkpointing): its
+    no_grad forward and its grad-enabled recompute both run the in-graph varlen kernel."""
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip(
+            reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
+        )
+    from torch.utils.checkpoint import checkpoint
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    def _dense(*args, **kwargs):
+        raise AssertionError("packed row fell back to SDPA over the dense mask")
+
+    hpa._ORIG_SDPA[0] = _dense
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    H, n_kv, D = 8, 2, 64
+    module = types.SimpleNamespace(
+        is_causal = True, num_key_value_groups = H // n_kv, training = True, sliding_window = None
+    )
+    lengths = [37, 100, 2, 5, 230]
+    T = sum(lengths)
+    mask = _block_causal(lengths, "cuda")
+    psl = torch.tensor(lengths, dtype = torch.int32)
+    cu = _cu(lengths, "cuda")
+    fn = torch.compile(
+        lambda q, k, v: hpa._sdpa_packed_varlen(
+            module,
+            q,
+            k,
+            v,
+            mask,
+            scaling = 0.11,
+            packed_seq_lengths = psl,
+            **{hpa.BLOCK_VARLEN_KWARG: (cu, max(lengths))},
+        )[0],
+        fullgraph = True,
+    )
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    q, k, v = (
+        torch.randn(1, h, T, D, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+        for h in (H, n_kv, n_kv)
+    )
+    out = checkpoint(fn, q, k, v, use_reentrant = True)
+    grad = torch.randn_like(out)
+    out.backward(grad)  # reentrant checkpoint refuses autograd.grad
+    got = (q.grad, k.grad, v.grad)
+    # Math reference: the dense-mask backend sdpa picks can change with earlier tests in this file.
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        ref_out, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
+    ref = torch.autograd.grad(ref_out, (q, k, v), grad)
+    torch.testing.assert_close(out.float(), ref_out.float(), atol = 2e-2, rtol = 2e-2)
+    for g, r in zip(got, ref):
+        torch.testing.assert_close(g.float(), r.float(), atol = 3e-2, rtol = 3e-2)
