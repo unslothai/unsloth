@@ -97,7 +97,7 @@ def _tensor_all_finite(frames: Any) -> bool:
         return True
     if frames.ndim == 0:
         return bool(torch.isfinite(frames))
-    dim = 2 if frames.ndim == 5 else 0  # (B, C, F, H, W) decodes slice by frame
+    dim = 2 if frames.ndim == 5 else 0
     count = frames.shape[dim]
     step = max(1, _FINITE_SLICE_ELEMS // max(1, frames.numel() // max(1, count)))
     ok = None
@@ -166,7 +166,7 @@ def finite_video_decode(pipe: Any, attrs: "tuple[str, ...]" = ("vae",)) -> Itera
             try:
                 decode_layers.unwrap(layer)
                 ensure_outermost(layer.owner)
-            except Exception:  # noqa: BLE001 - cleanup is best-effort
+            except Exception:  # noqa: BLE001
                 pass
 
 

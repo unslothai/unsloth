@@ -29,8 +29,6 @@ _ENV = "UNSLOTH_VIDEO_NONFINITE_CHECK"
 
 
 class _VAE(torch.nn.Module):
-    """Returns the planted pixels in the shape each family's VAE uses."""
-
     def __init__(
         self,
         pixels,
@@ -58,14 +56,13 @@ def _pixels(
     where = (0, 0, 1, 2, 3),
 ):
     g = torch.Generator().manual_seed(0)
-    video = torch.rand((1, 3, frames, 16, 24), generator = g) * 2 - 1  # VAE range [-1, 1]
+    video = torch.rand((1, 3, frames, 16, 24), generator = g) * 2 - 1
     if bad is not None:
         video[where] = bad
     return video
 
 
 def _render(pipe, family):
-    """The decode + postprocess each family's diffusers pipeline runs."""
     if family == "wan":  # WanPipeline / HunyuanVideo15Pipeline: output_type="np"
         return pipe.video_processor.postprocess_video(
             pipe.vae.decode(None, return_dict = False)[0], output_type = "np"
@@ -131,7 +128,7 @@ def test_a_late_frame_in_a_sliced_check_is_seen(monkeypatch):
 def test_a_finite_clip_is_bit_identical(family, monkeypatch):
     pixels = _pixels()
     got = _run(_pipe(pixels, family), family)
-    monkeypatch.setenv(_ENV, "0")  # the export as it was: same uint8 fast path, no checks
+    monkeypatch.setenv(_ENV, "0")
     expected = _run(_pipe(pixels.clone(), family), family)
     if family == "wan":
         assert (
@@ -174,7 +171,7 @@ def test_kill_switch_restores_the_previous_behaviour(family, monkeypatch):
     vae = pipe.vae
     with _finite_video_decode(pipe):
         assert "decode" not in vars(vae)
-    _run(pipe, family)  # no refusal
+    _run(pipe, family)
 
 
 def test_the_render_stack_enters_the_decode_check():
