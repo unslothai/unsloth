@@ -996,12 +996,9 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
                         value,
                     )
                 elif key.startswith("trainer:"):
-                    # The Trainer trains a tensor parallel model, but not with checkpoints (default args).
-                    assert value and "does not support Trainer checkpoints" in value, (
-                        applied,
-                        key,
-                        value,
-                    )
+                    # The Trainer takes a tensor parallel model with its default args (save_strategy "steps":
+                    # per-rank checkpoints).
+                    assert value is None, (applied, key, value)
                 elif key.startswith("cached:"):
                     assert value and "cached decoding" in value, (applied, key, value)
 
@@ -1170,9 +1167,10 @@ def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
         for key, value in ref["state"].items():
             torch.testing.assert_close(res["state"][key], value, rtol = 1e-4, atol = 1e-6, msg = key)
         refusals = res["refusals"]
-        assert "does not support Trainer checkpoints" in (refusals["checkpoints"] or ""), refusals
+        # Checkpoints are per rank, bitsandbytes AdamW steps local shards (or switches to torch's AdamW).
+        assert refusals["checkpoints"] is None, refusals
         assert "evaluation during training" in (refusals["eval"] or ""), refusals
-        assert "optim = 'adamw_bnb_8bit'" in (refusals["optim_8bit"] or ""), refusals
+        assert refusals["optim_8bit"] is None, refusals
         assert "Trainer.evaluate is not supported" in (refusals["evaluate"] or ""), refusals
         if dp > 1:
             assert "covers 2 of 4 ranks" in (refusals["no_shard_model"] or ""), refusals

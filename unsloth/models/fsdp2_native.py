@@ -3749,6 +3749,13 @@ def _refuse_save_on_each_node(training_args):
         )
 
 
+def _env_tensor_parallel_dp_mesh(model):
+    if not os.environ.get("UNSLOTH_TP_SIZE"):
+        return None
+    from .tp_env import fsdp2_dp_mesh
+    return fsdp2_dp_mesh(model)
+
+
 def native_fsdp2_trainer_setup(
     trainer = None,
     model = None,
@@ -3774,7 +3781,10 @@ def native_fsdp2_trainer_setup(
         _refuse_projection_optim(training_args)
         _refuse_clef(model)
         _refuse_parallelism_config(training_args)
-        _refuse_tensor_parallel_model(model)
+        # UNSLOTH_TP_SIZE + UNSLOTH_FSDP2=1: the tensor parallel model is sharded over mesh['dp'] below.
+        tp_dp_mesh = _env_tensor_parallel_dp_mesh(model)
+        if tp_dp_mesh is None:
+            _refuse_tensor_parallel_model(model)
         if model_init is not None:
             # Trainer.train / hyperparameter_search call model_init again for a fresh model (and
             # rebuild the accelerator per trial), which would train unsharded.
@@ -3813,6 +3823,8 @@ def native_fsdp2_trainer_setup(
         if _trainer_uses_cpu(training_args):
             config.device = "cpu"  # the Trainer will run on the CPU: no GPU mesh
         _trainer_process_group(training_args, config)
+        if tp_dp_mesh is not None:
+            config.mesh = tp_dp_mesh
         return shard_model(model, config)
     if trainer is not None and is_native_fsdp2(getattr(trainer, "model", None)):
         _scaler_for_native(trainer)

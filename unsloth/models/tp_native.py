@@ -34,9 +34,13 @@ reads the same batch, dp replicas read different ones:
     ... tp_clip_grad_norm_(params, 1.0) (or native_clip_grad_norm_); save_tp_adapter(model, "out")
 
 The HF / TRL Trainer trains a tensor parallel model (tp only, or dp x tp after shard_model above): no DDP over
-the tp ranks, batches sharded over dp only, tp-aware clipping and float16 scaler. save_strategy = "no" (no
-Trainer checkpoints / resume), no evaluation, torch optimizers (no bitsandbytes 8-bit); trainer.save_model()
-writes the 1-GPU adapter.
+the tp ranks, batches sharded over dp only, tp-aware clipping and float16 scaler. Trainer checkpoints are per
+rank (unsloth_tp/rank*.pt: local shards of the trainable weights and optimizer state, resumed on the same
+layout) next to the 1-GPU adapter; bitsandbytes Adam / AdamW step the local shards; no evaluation;
+trainer.save_model() writes the 1-GPU adapter.
+
+Unmodified scripts: UNSLOTH_TP_SIZE=k torchrun ... applies all of the above from the environment
+(models/tp_env.py), with UNSLOTH_FSDP2=1 (native FSDP2) or DDP-style gradient averaging for the dp dimension.
 """
 
 from __future__ import annotations
@@ -1693,8 +1697,13 @@ def save_tp_adapter(model, save_directory, **kwargs):
     mesh = dp_mesh = None
     for level in _tp_chain(model):
         mesh = mesh or level.__dict__.get("_unsloth_tp_mesh")
-        dp_mesh = dp_mesh or level.__dict__.get("_unsloth_tp_dp_mesh")
-    # Under shard_model over the dp mesh every trainable DTensor spans the whole (dp, tp) world.
+        dp_mesh = (
+            dp_mesh
+            or level.__dict__.get("_unsloth_tp_dp_mesh")
+            or level.__dict__.get("_unsloth_tp_ddp_mesh")
+        )
+    # Under shard_model over the dp mesh every trainable DTensor spans the whole (dp, tp) world; DDP-style dp
+    # replicas hold the same adapter, gathered over each tp group.
     ranks = (
         mesh.size() * (dp_mesh.size() if dp_mesh is not None else 1) if mesh is not None else None
     )
@@ -2142,6 +2151,8 @@ def load_tensor_parallel(
 # turns into the token mean over the dp replicas, as for DDP on dp GPUs.
 
 _TP_DATA = "_unsloth_tp_data"
+_DDP_MESH = "_unsloth_tp_ddp_mesh"
+_DP_SYNC = "_unsloth_tp_dp_sync"
 _UNSUPPORTED_OPTIMIZERS = (
     "8bit",
     "bnb",
@@ -2163,7 +2174,23 @@ def _tp_meshes(model):
         (m.__dict__["_unsloth_tp_dp_mesh"] for m in chain if "_unsloth_tp_dp_mesh" in m.__dict__),
         None,
     )
+    if dp is None:  # UNSLOTH_TP_SIZE with DDP-style data parallel (tp_env): gradients averaged over dp
+        dp = next(
+            (m.__dict__[_DDP_MESH] for m in chain if m.__dict__.get(_DDP_MESH) is not None), None
+        )
     return tp, dp
+
+
+def _ddp_mesh(model):
+    return next(
+        (m.__dict__[_DDP_MESH] for m in _tp_chain(model) if m.__dict__.get(_DDP_MESH) is not None),
+        None,
+    )
+
+
+def _env_hint():
+    from .tp_env import env_hint
+    return env_hint()
 
 
 def _strategy(value):
@@ -2171,17 +2198,54 @@ def _strategy(value):
     return str(value or "no").lower()
 
 
-def _refuse_tp_trainer_args(args):
+def _optim_name(args):
+    optim = getattr(args, "optim", "")
+    return str(getattr(optim, "value", optim) or "").strip().lower()
+
+
+def _keeps_bnb(name, cpu_shards):
+    from .fsdp2_native import _BNB_LOCAL_SHARD_OPTIMS, _bnb_local_shards_available
+    return name in _BNB_LOCAL_SHARD_OPTIMS and _bnb_local_shards_available(cpu_shards)
+
+
+def _tp_bnb_optim(args, cpu_shards):
+    """bitsandbytes Adam / AdamW (the notebooks' adamw_8bit) step each DTensor's local shard
+    (fsdp2_bnb_optim, as under native FSDP2); the other bitsandbytes optims with a torch equivalent switch to it."""
+    from .fsdp2_native import _BNB_OPTIMS
+
+    name = _optim_name(args)
+    if _keeps_bnb(name, cpu_shards):
+        return False
+    target = _BNB_OPTIMS.get(name)
+    if target is None:
+        return False
+    if target == "adamw_torch_fused" and (cpu_shards or not torch.cuda.is_available()):
+        target = "adamw_torch"
+    _print_rank0(
+        f"Unsloth: tensor parallel parameters are DTensors, which this bitsandbytes optimizer cannot step "
+        f"(UNSLOTH_FSDP2_BNB_LOCAL=0 or no local-shard support). Switching optim = '{name}' to '{target}'."
+    )
+    try:
+        from transformers.training_args import OptimizerNames
+        args.optim = OptimizerNames(target)
+    except Exception:
+        args.optim = target
+    return True
+
+
+def _print_rank0(message):
+    import torch.distributed as dist
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        print(message)
+
+
+def _refuse_tp_trainer_args(args, cpu_shards = False):
     problems = []
     if getattr(args, "deepspeed", None):
         problems.append("DeepSpeed")
     if getattr(args, "fsdp", None) or getattr(args, "parallelism_config", None) is not None:
         problems.append(
             "accelerate FSDP / ParallelismConfig (use shard_model over mesh['dp'] for data parallel)"
-        )
-    if _strategy(getattr(args, "save_strategy", "no")) != "no":
-        problems.append(
-            "Trainer checkpoints (set save_strategy = 'no'; trainer.save_model() writes the 1-GPU adapter)"
         )
     if (
         _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no")))
@@ -2191,9 +2255,9 @@ def _refuse_tp_trainer_args(args):
     for flag in ("load_best_model_at_end", "push_to_hub"):
         if getattr(args, flag, False):
             problems.append(flag)
-    optim = str(getattr(getattr(args, "optim", ""), "value", getattr(args, "optim", ""))).lower()
-    if any(key in optim for key in _UNSUPPORTED_OPTIMIZERS):
-        problems.append(f"optim = '{optim}' (use 'adamw_torch')")
+    optim = _optim_name(args)
+    if any(key in optim for key in _UNSUPPORTED_OPTIMIZERS) and not _keeps_bnb(optim, cpu_shards):
+        problems.append(f"optim = '{optim}' (use 'adamw_torch' or 'adamw_8bit')")
     config = getattr(args, "accelerator_config", None)
     if getattr(config, "dispatch_batches", None):
         problems.append("accelerator_config.dispatch_batches")
@@ -2202,6 +2266,7 @@ def _refuse_tp_trainer_args(args):
             "Unsloth: the Trainer on a tensor parallel model does not support "
             + "; ".join(problems)
             + "."
+            + _env_hint()
         )
 
 
@@ -2232,8 +2297,11 @@ def tp_trainer_setup(
         _install_tp_accelerate_hooks()
         return True
     model = trainer.model
-    _refuse_tp_trainer_args(trainer.args)
     tp_mesh, dp_mesh = _tp_meshes(model)
+    cpu_shards = tp_mesh.device_type == "cpu"
+    _tp_bnb_optim(trainer.args, cpu_shards)
+    _refuse_tp_trainer_args(trainer.args, cpu_shards)
+    ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
     trainer.__dict__["_unsloth_tensor_parallel"] = (
@@ -2243,6 +2311,21 @@ def tp_trainer_setup(
     trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
     for name in ("evaluate", "predict"):
         trainer.__dict__[name] = _refuse_tp_trainer_call(name)
+    # Trainer checkpoints: per-rank local shards (instance level: before native FSDP2's class hooks, whose
+    # full-state gathers do not restore the packed tp part order).
+    for name, method in (
+        ("_save_optimizer_and_scheduler", _tp_save_optimizer_and_scheduler),
+        ("_load_optimizer_and_scheduler", _tp_load_optimizer_and_scheduler),
+        ("_load_from_checkpoint", _tp_load_from_checkpoint),
+    ):
+        trainer.__dict__[name] = types.MethodType(method, trainer)
+    sync = None
+    if ddp_mesh is not None:
+        # DDP-style dp (UNSLOTH_TP_SIZE without UNSLOTH_FSDP2): torch DDP cannot wrap DTensor parameters, so
+        # the gradients are averaged over the dp mesh before clipping (Accelerator.clip_grad_norm_ below) or,
+        # without clipping, at the optimizer step.
+        sync = {"mesh": ddp_mesh, "synced": False}
+        trainer.accelerator.__dict__[_DP_SYNC] = sync
     create_optimizer = trainer.create_optimizer
 
     def create_optimizer_tp(*args, **kwargs):
@@ -2261,21 +2344,229 @@ def tp_trainer_setup(
                 "`unsloth.models.fsdp2_native.split_param_groups(...)` before the scheduler, or pass only the optimizer."
             )
         _split_mixed_param_groups(inner)
+        _tp_localize_bnb(optimizer)
+        if sync is not None and not getattr(inner, "_unsloth_tp_dp_hooked", False):
+            inner.register_step_pre_hook(functools.partial(_dp_sync_before_step, sync))
+            inner._unsloth_tp_dp_hooked = True
         return optimizer
 
     trainer.__dict__["create_optimizer"] = create_optimizer_tp
-    train = trainer.train
-
-    def train_tp(*args, **kwargs):
-        resume = kwargs.get("resume_from_checkpoint", args[0] if args else None)
-        if resume:
-            raise RuntimeError(
-                "Unsloth: resuming a tensor parallel model from a Trainer checkpoint is not supported."
-            )
-        return train(*args, **kwargs)
-
-    trainer.__dict__["train"] = train_tp
     return True
+
+
+def _tp_localize_bnb(optimizer):
+    """A bitsandbytes Adam / AdamW steps the local shards of the tp DTensors (fsdp2_bnb_optim)."""
+    from .fsdp2_native import _inner_optimizer, _is_bnb_optimizer_class, _localize_bnb_optimizer
+
+    inner = _inner_optimizer(optimizer)
+    if _localize_bnb_optimizer(optimizer) or not _is_bnb_optimizer_class(type(inner)):
+        return
+    raise RuntimeError(
+        f"Unsloth: a tensor parallel model's parameters are DTensors, which this bitsandbytes optimizer "
+        f"({type(inner).__name__}) cannot step; only bitsandbytes Adam / AdamW step local shards. Use optim = "
+        "'adamw_8bit' or 'adamw_torch'." + _env_hint()
+    )
+
+
+def _dp_average(params, mesh):
+    """Average the gradients over the dp mesh (DDP's all-reduce, one per dtype / device bucket)."""
+    import torch.distributed as dist
+    from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
+
+    buckets = {}
+    for p in params:
+        g = p.grad
+        if g is None:
+            continue
+        local = g._local_tensor if _is_dtensor(g) else g
+        buckets.setdefault((local.device, local.dtype), []).append(local)
+    group, n = mesh.get_group(), mesh.size()
+    with torch.no_grad():
+        for tensors in buckets.values():
+            flat = _flatten_dense_tensors(tensors)
+            dist.all_reduce(flat, group = group)
+            flat.div_(n)
+            for t, value in zip(tensors, _unflatten_dense_tensors(flat, tensors)):
+                t.copy_(value)
+
+
+def _dp_sync_before_step(sync, optimizer, args, kwargs):
+    if sync["synced"]:
+        sync["synced"] = False  # clip_grad_norm_ already averaged this step's gradients
+        return None
+    _dp_average([p for group in optimizer.param_groups for p in group["params"]], sync["mesh"])
+    return None
+
+
+# Trainer checkpoints under tensor parallelism: every rank writes its own local shards of the trainable
+# weights and of the optimizer state (DTensor entries as local tensors), the scheduler / scaler / RNG / trainer
+# state stay as the Trainer writes them, and save_model writes the 1-GPU adapter. A resume needs the same layout.
+_CKPT_DIR = "unsloth_tp"
+
+
+def _ckpt_path(directory, rank):
+    import os
+    return os.path.join(directory, _CKPT_DIR, f"rank{rank:05d}.pt")
+
+
+def _tp_layout(trainer):
+    import torch.distributed as dist
+
+    tp_mesh, dp_mesh = _tp_meshes(trainer.model)
+    params = [
+        (name, tuple((p._local_tensor if _is_dtensor(p) else p).shape))
+        for name, p in trainer.model.named_parameters()
+        if p.requires_grad
+    ]
+    return {
+        "world": dist.get_world_size() if dist.is_initialized() else 1,
+        "tp": tp_mesh.size() if tp_mesh is not None else 1,
+        "dp": dp_mesh.size() if dp_mesh is not None else 1,
+        "dp_kind": None
+        if dp_mesh is None
+        else ("ddp" if _ddp_mesh(trainer.model) is not None else "fsdp2"),
+        "params": params,
+    }
+
+
+def _optimizer_local_state(optimizer):
+    from .fsdp2_native import _inner_optimizer
+
+    state_dict = _inner_optimizer(optimizer).state_dict()
+    dtensors, state = [], {}
+    for index, entry in state_dict["state"].items():
+        out = {}
+        for key, value in entry.items():
+            if _is_dtensor(value):
+                out[key] = value.to_local().detach()
+                dtensors.append((index, key))
+            else:
+                out[key] = value.detach() if torch.is_tensor(value) else value
+        state[index] = out
+    return {"state": state, "param_groups": state_dict["param_groups"], "dtensor": dtensors}
+
+
+def _load_optimizer_local_state(optimizer, saved):
+    from .fsdp2_native import _inner_optimizer
+
+    DTensor = _dtensor_api()[0]
+    inner = _inner_optimizer(optimizer)
+    params = [p for group in inner.param_groups for p in group["params"]]
+    saved_ids = [i for group in saved["param_groups"] for i in group["params"]]
+    if len(params) != len(saved_ids):
+        raise RuntimeError(
+            f"Unsloth: tensor parallel resume: the checkpoint's optimizer has {len(saved_ids)} parameters, this "
+            f"one {len(params)}."
+        )
+    param_of = dict(zip(saved_ids, params))
+    wrap = {tuple(x) for x in saved["dtensor"]}
+    state = {}
+    for index, entry in saved["state"].items():
+        p = param_of[index]
+        out = {}
+        for key, value in entry.items():
+            if (index, key) in wrap:
+                local = p._local_tensor
+                value = DTensor.from_local(
+                    value.to(local.device),
+                    p.device_mesh,
+                    p.placements,
+                    run_check = False,
+                    shape = p.shape,
+                    stride = p.stride(),
+                )
+            out[key] = value
+        state[index] = out
+    inner.load_state_dict({"state": state, "param_groups": saved["param_groups"]})
+
+
+def _tp_save_optimizer_and_scheduler(self, output_dir):
+    import os
+
+    import torch.distributed as dist
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    path = _ckpt_path(output_dir, rank)
+    os.makedirs(os.path.dirname(path), exist_ok = True)
+    trainables = {
+        name: (p._local_tensor if _is_dtensor(p) else p).detach()
+        for name, p in self.model.named_parameters()
+        if p.requires_grad
+    }
+    payload = {
+        "layout": _tp_layout(self),
+        "trainables": trainables,
+        "optimizer": _optimizer_local_state(self.optimizer)
+        if getattr(self, "optimizer", None) is not None
+        else None,
+    }
+    torch.save(payload, path)
+    scheduler = getattr(self, "lr_scheduler", None)
+    if self.args.should_save and scheduler is not None:
+        from transformers.trainer import SCHEDULER_NAME
+        torch.save(scheduler.state_dict(), os.path.join(output_dir, SCHEDULER_NAME))
+    if dist.is_initialized():
+        dist.barrier()  # every rank's file is on disk before the Trainer state marks the checkpoint complete
+
+
+def _tp_resume_payload(self, checkpoint):
+    import os
+
+    import torch.distributed as dist
+
+    cached = self.__dict__.get("_unsloth_tp_resume")
+    if cached is not None and cached[0] == checkpoint:
+        return cached[1]
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    path = _ckpt_path(checkpoint, rank)
+    if not os.path.isfile(path):
+        raise RuntimeError(
+            f"Unsloth: tensor parallel resume needs the per-rank state {path}, which this checkpoint does not "
+            "have (it was not written by a tensor parallel Trainer)." + _env_hint()
+        )
+    payload = torch.load(path, map_location = "cpu", weights_only = True)
+    want, got = _tp_layout(self), payload["layout"]
+    if want != got:
+        diff = {
+            k: (got.get(k), want.get(k)) for k in ("world", "tp", "dp", "dp_kind") if got.get(k) != want.get(k)
+        }
+        raise RuntimeError(
+            f"Unsloth: tensor parallel resume from {checkpoint}: the checkpoint was written on another layout "
+            f"({diff or 'trainable parameter names / shard shapes differ'}); resume with the same world size, "
+            "UNSLOTH_TP_SIZE and data parallel mode."
+        )
+    self.__dict__["_unsloth_tp_resume"] = (checkpoint, payload)
+    return payload
+
+
+def _tp_load_from_checkpoint(self, resume_from_checkpoint, model = None):
+    payload = _tp_resume_payload(self, resume_from_checkpoint)
+    target = model if model is not None else self.model
+    with torch.no_grad():
+        for name, p in target.named_parameters():
+            if p.requires_grad:
+                local = p._local_tensor if _is_dtensor(p) else p
+                local.copy_(payload["trainables"][name].to(local.device))
+    _print_rank0(
+        f"Unsloth: tensor parallel resume: every rank restored its local shards from {resume_from_checkpoint}."
+    )
+
+
+def _tp_load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
+    import os
+
+    if checkpoint is None:
+        return None
+    payload = _tp_resume_payload(self, checkpoint)
+    if payload.get("optimizer") is not None:
+        _load_optimizer_local_state(self.optimizer, payload["optimizer"])
+    from transformers.trainer import SCHEDULER_NAME
+
+    path = os.path.join(checkpoint, SCHEDULER_NAME)
+    if getattr(self, "lr_scheduler", None) is not None and os.path.isfile(path):
+        self.lr_scheduler.load_state_dict(torch.load(path, weights_only = True))
+    self.__dict__.pop("_unsloth_tp_resume", None)
+    return None
 
 
 def _refuse_tp_trainer_call(name):
@@ -2283,6 +2574,7 @@ def _refuse_tp_trainer_call(name):
         raise RuntimeError(
             f"Unsloth: Trainer.{name} is not supported on a tensor parallel model (its gather would count every "
             "tp rank); run the forward in your own loop, or save the adapter and evaluate on one GPU."
+            + _env_hint()
         )
 
     return refuse
@@ -2357,7 +2649,7 @@ def _install_tp_accelerate_hooks():
         if isinstance(getattr(data_loader, "dataset", None), torch.utils.data.IterableDataset):
             raise RuntimeError(
                 "Unsloth: the Trainer on a tensor parallel model needs a map-style dataset (accelerate "
-                "dispatches iterable datasets over every rank)."
+                "dispatches iterable datasets over every rank)." + _env_hint()
             )
         dp_size, dp_rank = layout
         # The Trainer seeds workers with partial(seed_worker, rank = process_index): tp peers must draw the
@@ -2396,7 +2688,12 @@ def _install_tp_accelerate_hooks():
                 "Unsloth: tensor parallel gradient clipping supports the 2-norm only."
             )
         self.unscale_gradients()
-        return tp_clip_grad_norm_(list(parameters), max_norm)
+        parameters = list(parameters)
+        sync = self.__dict__.get(_DP_SYNC)
+        if sync is not None:
+            _dp_average(parameters, sync["mesh"])
+            sync["synced"] = True
+        return tp_clip_grad_norm_(parameters, max_norm)
 
     Accelerator.prepare_model = prepare_model
     Accelerator.prepare_data_loader = prepare_data_loader
