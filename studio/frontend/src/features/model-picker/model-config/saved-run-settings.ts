@@ -21,6 +21,8 @@ export const SELECTED_RUN_SETTINGS_STORAGE_KEY =
   "unsloth_model_selected_run_settings";
 export const PINNED_RUN_SETTINGS_STORAGE_KEY =
   "unsloth_model_pinned_run_settings";
+export const LOADED_ONCE_RUN_SETTINGS_STORAGE_KEY =
+  "unsloth_model_loaded_once_run_settings";
 export const SAVED_RUN_SETTINGS_UPDATED_EVENT =
   "unsloth-saved-run-settings-updated";
 export const SAVED_RUN_SETTINGS_NAME_MAX = 80;
@@ -114,7 +116,6 @@ const SELECTED_VARIANTS_STORAGE_KEY =
   "unsloth_model_selected_run_settings_variants";
 const readSelectedVariants = () =>
   readJson<Record<string, string>>(SELECTED_VARIANTS_STORAGE_KEY);
-/** model + quant key -> the set every load uses, whatever was picked since. */
 const readPins = () =>
   readJson<Record<string, string>>(PINNED_RUN_SETTINGS_STORAGE_KEY);
 const writePins = (map: Record<string, string>) =>
@@ -192,7 +193,6 @@ export function saveRunSettings(
   return writeMap(map);
 }
 
-/** True when ``name`` would be a new set and the model already keeps the most it can. */
 export function isRunSettingsLimitReached(
   modelId: string,
   name: string,
@@ -347,10 +347,7 @@ export function setSelectedRunSettings(
   return writeSelections(selections);
 }
 
-/**
- * deletePerModelConfigsForOverrideKeys, with those quants back on Default: a selection left behind
- * shows a set that no longer loads, and the next Save writes the defaults over it.
- */
+/** Back on Default too: a selection left behind would show a set that no longer loads. */
 export function forgetPerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
 ): boolean {
@@ -378,13 +375,9 @@ export function forgetPerModelConfigsForOverrideKeys(
   return deletePerModelConfigsForOverrideKeys(overrideKeys);
 }
 
-/** The set this model + quant always loads with, or null when it loads the last one picked. */
-// The set a one-time load used and the config it sent, for this page session. The runtime reports
-// resolved values (a Transformers max sequence length, say), so matching saved sets alone misses it.
-const loadedOnceByModel = new Map<
-  string,
-  { name: string | null; sent: PerModelConfig }
->();
+// The set a one-time load used and what it sent: the runtime reports resolved values, so sets alone
+// miss it. Stored, as the model stays loaded across a refresh.
+type LoadedOnceMap = Record<string, { name: unknown; sent: unknown }>;
 
 export function noteRunSettingsLoadedOnce(
   modelId: string,
@@ -392,15 +385,32 @@ export function noteRunSettingsLoadedOnce(
   entry: { name: string | null; sent: PerModelConfig } | null,
 ): void {
   const key = selectionKey(modelId, ggufVariant);
-  if (entry) loadedOnceByModel.set(key, entry);
-  else loadedOnceByModel.delete(key);
+  const map = readJson<LoadedOnceMap>(LOADED_ONCE_RUN_SETTINGS_STORAGE_KEY);
+  if (!entry && !(key in map)) return;
+  if (entry) {
+    map[key] = { name: entry.name, sent: toStoredPerModelConfig(entry.sent) };
+  } else {
+    delete map[key];
+  }
+  writeJson(LOADED_ONCE_RUN_SETTINGS_STORAGE_KEY, map);
 }
 
 export function getRunSettingsLoadedOnce(
   modelId: string,
   ggufVariant: string | null | undefined,
 ): { name: string | null; sent: PerModelConfig } | null {
-  return loadedOnceByModel.get(selectionKey(modelId, ggufVariant)) ?? null;
+  const entry = readJson<LoadedOnceMap>(LOADED_ONCE_RUN_SETTINGS_STORAGE_KEY)[
+    selectionKey(modelId, ggufVariant)
+  ];
+  const sent = entry ? fromStoredPerModelConfig(entry.sent) : null;
+  if (
+    !entry ||
+    !sent ||
+    (entry.name !== null && typeof entry.name !== "string")
+  ) {
+    return null;
+  }
+  return { name: entry.name, sent };
 }
 
 export function getPinnedRunSettings(

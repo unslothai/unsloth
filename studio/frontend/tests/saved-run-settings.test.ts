@@ -32,8 +32,13 @@ test.beforeEach(() => store.clear());
 test("a one-time load is remembered per quant until a regular load clears it", () => {
   const sent = { ...config(4096), maxSeqLength: 8192 };
   saved.noteRunSettingsLoadedOnce(MODEL, "Q4_K_M", { name: "Other", sent });
-  assert.deepEqual(saved.getRunSettingsLoadedOnce(MODEL, "q4_k_m"), { name: "Other", sent });
+  const noted = saved.getRunSettingsLoadedOnce(MODEL, "q4_k_m");
+  assert.equal(noted?.name, "Other");
+  assert.equal(noted?.sent.maxSeqLength, 8192);
+  assert.equal(noted?.sent.customContextLength, 4096);
   assert.equal(saved.getRunSettingsLoadedOnce(MODEL, "Q8_0"), null);
+  // Stored, so it survives a refresh while the model stays loaded.
+  assert.ok(store.get(saved.LOADED_ONCE_RUN_SETTINGS_STORAGE_KEY));
   saved.noteRunSettingsLoadedOnce(MODEL, "Q4_K_M", null);
   assert.equal(saved.getRunSettingsLoadedOnce(MODEL, "Q4_K_M"), null);
 });
@@ -43,17 +48,14 @@ test("the editor names a one-time load by what it sent, before matching saved se
     new URL("../src/features/model-picker/components/model-config-page.tsx", import.meta.url),
     "utf8",
   );
-  // Recorded on every load: a one-time load notes its set and the resolved config, a regular one clears it.
   assert.match(
     page,
     /noteRunSettingsLoadedOnce\(\s*configId,\s*target\.ggufVariant,\s*onceOnly \? \{ name: loadSet, sent: effectiveLoadConfig \} : null,\s*\);/,
   );
-  // Matched against what was sent, and only while that set still exists.
   assert.match(
     page,
     /perModelConfigsEqual\(forSetStore\(loaded\), forSetStore\(noted\.sent\)\)[\s\S]{0,200}findSavedRunSettings\(savedSets, noted\.name\)/,
   );
-  // Before the pin-equality shortcut, so a set with the pin's values still names itself.
   assert.match(
     page,
     /atBaseline\s*\? \(loadedOnceNamed\(loadedConfig\) \?\?\s*\(perModelConfigsEqual\(forSetStore\(loadedConfig\), forSetStore\(pinnedEntry\.config\)\)\s*\? undefined/,
@@ -266,7 +268,6 @@ test("the per-model limit is reported only for a new name", () => {
   }
   assert.equal(saved.isRunSettingsLimitReached(MODEL, "One more"), true);
   assert.equal(saved.saveRunSettings(MODEL, "One more", config(4096)), false);
-  // Overwriting an existing set is still allowed.
   assert.equal(saved.isRunSettingsLimitReached(MODEL, "set 3"), false);
   assert.ok(saved.saveRunSettings(MODEL, "Set 3", config(4096)));
 });
@@ -281,7 +282,6 @@ test("forgetting a quant's server settings puts its selection back on Default", 
   assert.ok(saved.forgetPerModelConfigsForOverrideKeys([`${MODEL}:q4_k_m`]));
   assert.equal(resolveInitialConfig(MODEL, "Q4_K_M").remembered, false);
   assert.equal(saved.getSelectedRunSettings(MODEL, "Q4_K_M"), null);
-  // Another quant, and the set itself, are left alone.
   assert.equal(saved.getSelectedRunSettings(MODEL, "Q8_0"), "Fast");
   assert.deepEqual(saved.quantsSelectingRunSettings(MODEL, "Fast"), ["Q8_0"]);
   assert.equal(saved.listSavedRunSettings(MODEL).length, 1);
@@ -332,7 +332,6 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
     /selectedSet === null && !atDefault \? newRunSettingsName\(savedSets, modelName\)/,
   );
   assert.match(page, /\} else \{\s*handleSave\(customName\);/);
-  // Reset goes back at once to what loads every time (the pinned set, else Default), not just the panel values.
   assert.match(
     page,
     /\(pinnedSet !== null\s*\? selectedSet === pinnedSet && !setUnsaved\s*: atDefault && selectedSet === null\) \|\|\s*extraArgsHydrating \|\|\s*budgetSettling\s*\}\s*onClick=\{\(\) => pickSet\(pinnedSet\)\}/,
@@ -408,7 +407,6 @@ test("a set whose record was forgotten is not offered, and deleting one asks fir
     ),
     "utf8",
   );
-  // Only once the server copy is read, and never for a set at defaults, which keeps no record.
   assert.match(
     page,
     /const selectionStale =\s*persistedEntry !== null &&\s*!extraArgsHydrating &&\s*!storedRecord\.remembered &&\s*!savedRemember &&\s*!isDefaultConfig\(forSetStore\(persistedEntry\.config\)\);/,
@@ -418,13 +416,11 @@ test("a set whose record was forgotten is not offered, and deleting one asks fir
     /if \(selectionStale\) \{\s*setSelectedRunSettings\(configId, target\.ggufVariant, null\);/,
   );
   assert.match(page, /selectionStale\s*\? null\s*: \(persistedSet \?\? null\)/);
-  // The trash icon opens a confirmation; only its Delete removes the set.
   assert.match(page, /onDelete=\{setPendingDelete\}/);
   assert.match(
     page,
     /if \(pendingDelete !== null\) \{\s*deleteSet\(pendingDelete\);/,
   );
-  // The limit is named rather than a bare failure.
   assert.match(page, /isRunSettingsLimitReached\(configId, name\)/);
   assert.doesNotMatch(page, /persistenceOnly|rememberChanged/);
 });
@@ -438,8 +434,7 @@ test("rows can be renamed and deleted from the keyboard", () => {
     "utf8",
   );
   assert.match(row, /aria-keyshortcuts="F2 Delete"/);
-  // Escape in the name box must reach only the box: Radix overlays dismiss from a document capture listener
-  // unless the event is already prevented, so the guard sits on window capture.
+  // Radix dismisses from a document capture listener unless prevented, so the guard is on window capture.
   assert.match(row, /window\.addEventListener\("keydown", keepPanel, true\)/);
   assert.match(
     row,
@@ -454,12 +449,10 @@ test("a pinned set follows renames and goes with its set or a forget", () => {
   saved.saveRunSettings(MODEL, "Trial", config(2048));
   assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), null);
   assert.ok(saved.setPinnedRunSettings(MODEL, "q4_k_m", "Mine"));
-  // Keyed like the selection: quant case folds, other quants are separate.
   assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Mine");
   assert.equal(saved.getPinnedRunSettings(MODEL, "Q8_0"), null);
   assert.ok(saved.renameSavedRunSettings(MODEL, "Mine", "Long context"));
   assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Long context");
-  // Deleting another set leaves the pin alone; deleting the pinned one unpins.
   assert.ok(saved.deleteSavedRunSettings(MODEL, "Trial"));
   assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Long context");
   assert.ok(saved.deleteSavedRunSettings(MODEL, "Long context"));
@@ -483,47 +476,38 @@ test("while a set is pinned, picking or loading another uses it once", () => {
     ),
     "utf8",
   );
-  // A pick of another set only fills the panel: no record, override or selection is written.
   assert.match(
     page,
     /const pickSet = \(name: string \| null, pinned = pinnedSet\) => \{[\s\S]{0,400}if \(pinned !== null && entry\?\.name !== pinned\) \{\s*applyToPanel\(next\);\s*setPickedSet\(entry\?\.name \?\? null\);\s*return;/,
   );
-  // Load saves into the set it shows, but leaves the pinned record and override for the next load.
   assert.match(
     page,
     /const onceOnly = pinnedSet !== null && loadSet !== pinnedSet;\s*const \{ saved \} = onceOnly\s*\? \{ saved: true \}\s*: persistConfig\(effectiveRuntimeConfig, loadSet !== null\);/,
   );
-  // Save into another set does the same, and never forgets while pinned.
   assert.match(page, /if \(!keep && pinned !== null\) \{\s*return false;/);
   assert.match(
     page,
     /if \(pinned !== null && target !== pinned\) \{[\s\S]{0,120}setPickedSet\(target\);/,
   );
-  // Ticking the box pins what is shown and makes it what loads, saving its edits first.
   assert.match(
     page,
     /const setAlwaysLoad = [\s\S]*?const name = selectedSet \?\? customName;[\s\S]*?setPinnedRunSettings\(configId, target\.ggufVariant, name\)[\s\S]*?if \(selectedSet === null \|\| setUnsaved\) \{\s*if \(!handleSave\(name, message, name\)\)[\s\S]*?pickSet\(selectedSet, selectedSet\);/,
   );
   assert.match(page, /Always load with these settings/);
-  // The box and the status share the one row under the dropdown.
   assert.match(
     page,
     /<Checkbox\s+id=\{alwaysLoadId\}[\s\S]{0,1600}<\/label>\s*<p\s+id=\{saveStatusId\}[\s\S]{0,500}\{saveStatus\}\s*<\/p>\s*<\/div>/,
   );
-  // The server row is the pinned set, so it must not replace what a resident model loaded once.
   assert.match(
     page,
     /if \(!\(loadedConfig && getPinnedRunSettings\(configId, target\.ggufVariant\) !== null\)\) \{\s*setExtraArgsLoadable\(hydratedIsLoadable\);\s*replaceModelConfigDraft\(/,
   );
-  // The set a resident model loaded once stays selected past the first edit, so Save never writes
-  // into the pinned one; the pick lives in the shared draft, so the other editor agrees.
   assert.match(page, /const pickedSet = draftSnapshot\?\.pickedSet;/);
   assert.match(page, /setModelConfigDraftPickedSet\(draftKey, next\)/);
   assert.match(
     page,
     /useEffect\(\(\) => \{\s*if \(loadedOnce !== undefined\) setPickedSet\(loadedOnce\);\s*\}, \[loadedOnce, setPickedSet\]\);/,
   );
-  // Deleting the pinned set unpins it, and what the panel shows becomes what loads.
   assert.match(
     page,
     /if \(name === pinnedSet\) \{[\s\S]{0,120}pickSet\(wasSelected \? null : selectedSet, null\);/,
