@@ -449,3 +449,79 @@ test("the game ends: domination or the last day", () => {
   assert.ok(t.over && /after 5 days/.test(t.over.reason));
   assert.equal(R.endTurn(short, B, t, {}), t, "nothing moves after the end");
 });
+
+const S = await import("../src/features/flows/player/world/world-sim.ts");
+
+const FOUR: Spec = {
+  ...SPEC,
+  regions: [
+    ...SPEC.regions,
+    { id: "west", name: "West", x: 2, y: 22, w: 8, h: 8, on_enter_text: "" },
+  ],
+  rivals: {
+    ...RIVALS,
+    factions: [
+      ...RIVALS.factions,
+      { id: "elm", name: "Elmstead", region: "west" },
+    ],
+  },
+};
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+test("strategist calls share the background budget and wait while the player talks", async () => {
+  const b = R.boardOf(FOUR, MAP);
+  let now = 0;
+  const queue = new S.BackgroundQueue(2, () => now);
+  const asked: string[] = [];
+  let release = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  let aborted = 0;
+  const turn = R.playTurn(FOUR, b, R.initialRivals(FOUR, MAP, b), (fid, req) =>
+    R.queuedCall(queue, `rivals:1:${fid}`, (signal) => {
+      asked.push(fid);
+      return new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          aborted++;
+          reject(new Error("aborted"));
+        });
+        void gate.then(() => resolve(plan(MILITARY)));
+        void req;
+      });
+    }),
+  );
+  await flush();
+  assert.deepEqual(asked, ["oak"], "one call at a time on the shared queue");
+  queue.setPaused(true);
+  await flush();
+  assert.equal(aborted, 1, "the player talking stops the background call");
+  queue.pump();
+  await flush();
+  assert.deepEqual(asked, ["oak"], "nothing runs while paused");
+  queue.setPaused(false);
+  release();
+  queue.pump();
+  await flush();
+  await flush();
+  assert.deepEqual(asked, ["oak", "ash"], "the next village goes on");
+  queue.pump();
+  await flush();
+  assert.equal(asked.length, 2, "the minute budget of 2 is spent");
+  now = 61_000;
+  queue.pump();
+  for (let i = 0; i < 6 && asked.length < 4; i++) {
+    await flush();
+    if (!queue.busy) queue.pump();
+    now += 61_000;
+  }
+  const out = await turn;
+  assert.deepEqual(
+    asked.slice(2).sort(),
+    ["elm", "oak"],
+    "the stopped call ran again",
+  );
+  assert.equal(aborted, 1);
+  assert.equal(out.calls, 3);
+  assert.deepEqual(out.state.factions.elm.posture, R.normPosture(MILITARY));
+});

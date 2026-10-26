@@ -40,6 +40,7 @@ STRATEGIST_SCHEMA = {
         "say": {"type": "string"},
     },
     "required": [*POSTURE_KEYS, "target", "goals", "say"],
+    "additionalProperties": False,
 }
 
 DIPLOMACY_SCHEMA = {
@@ -53,6 +54,7 @@ DIPLOMACY_SCHEMA = {
         "want_amount": {"type": "integer", "minimum": 0, "maximum": MAX_TRADE},
     },
     "required": ["text", "offer", "give", "give_amount", "want", "want_amount"],
+    "additionalProperties": False,
 }
 
 
@@ -224,18 +226,18 @@ def _intent_text(state: dict, world: dict) -> str:
 
 
 def diplomacy_prompt(state: Any) -> tuple[str, str]:
+    """The system prompt is fixed per village; intent, talk and the digest (last) go in the prompt, so a
+    llama-server prompt cache keeps the shared prefix across messages and turns."""
     world, me, digest = _context(state)
     player = state.get("player")
     against_player = (state.get("intent") or {}).get("target") == player
     system = (
         f'You are the leader of {_clip(me.get("name"), 60)} in the game "{_clip(world.get("title"), 120)}", '
-        f"talking with the player's village. {_leader_line(state, me)}\n{_intent_text(state, world)}\n"
-        "Stay in character and keep to your intent. Reply in under 60 words as `text`. Put any deal in "
-        "`offer`: trade (you give `give_amount` of `give` and want `want_amount` of `want`, at most "
-        f"{MAX_TRADE} each, only goods you have), ally, peace, or none. Never promise anything in `text` that "
-        "is not in `offer`."
-        + (" You are set against the player: do not offer an alliance." if against_player else "")
-        + " Answer in JSON."
+        f"talking with the player's village. {_leader_line(state, me)}\n"
+        "Stay in character and keep to your village's intent. Reply in under 60 words as `text`. Put any deal "
+        "in `offer`: trade (you give `give_amount` of `give` and want `want_amount` of `want`, at most "
+        f"{MAX_TRADE} each, only goods you have), ally, peace, or none; unused fields are \"\" and 0. Never "
+        "promise anything in `text` that is not in `offer`. Answer in JSON."
     )
     history = [
         f"{'Player' if h.get('role') == 'player' else 'You'}: {_clip(h.get('text'), 300)}"
@@ -243,9 +245,12 @@ def diplomacy_prompt(state: Any) -> tuple[str, str]:
         if isinstance(h, dict)
     ]
     prompt = (
-        f"State of the game (JSON):\n{digest_text(digest)}\n"
+        _intent_text(state, world)
+        + (" You are set against the player: do not offer an alliance." if against_player else "")
+        + "\n"
         + ("Conversation so far:\n" + "\n".join(history) + "\n" if history else "")
         + f"Player: {_clip(state.get('player_message'), 500)}\n"
+        + f"State of the game (JSON):\n{digest_text(digest)}\n"
     )
     return system, prompt
 

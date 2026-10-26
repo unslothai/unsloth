@@ -177,7 +177,7 @@ def test_diplomacy_keeps_offers_the_engine_can_honour():
         "want_amount": 3,
     }
     assert reply["text"] == "Two stone for three bread." and "filtered" not in reply
-    assert "Your village leans to economy" in call["system"] and "Player: hi" in call["prompt"]
+    assert "Your village leans to economy" in call["prompt"] and "Player: hi" in call["prompt"]
     reply, _ = _say({**trade, "give": "gold", "give_amount": 9, "text": "I will give you 9 gold!"})
     assert (
         reply["offer"] == {"kind": "none"} and reply["filtered"] and "9 gold" not in reply["text"]
@@ -226,7 +226,7 @@ def test_diplomacy_follows_the_intent_and_drops_empty_promises():
     }
     reply, call = _say(ally, intent = hostile)
     assert reply["offer"] == {"kind": "none"} and reply["text"] != ally["text"]
-    assert "do not offer an alliance" in call["system"] and "set against Us" in call["system"]
+    assert "do not offer an alliance" in call["prompt"] and "set against Us" in call["prompt"]
     reply, _ = _say(ally)
     assert reply["offer"] == {"kind": "ally"}
     promise = {
@@ -255,3 +255,34 @@ def test_unknown_faction_is_an_error():
     with pytest.raises(FlowNodeError):
         run(world_nodes.world_npc_reply(ctx))
     assert ctx.llm_calls == []
+
+
+def test_schemas_are_flat_and_closed():
+    for schema in (rivals.STRATEGIST_SCHEMA, rivals.DIPLOMACY_SCHEMA):
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == set(schema["properties"])
+        for prop in schema["properties"].values():
+            assert prop["type"] != "object"
+            assert prop.get("items", {}).get("type") in (None, "string")
+
+
+def test_system_prompts_stay_byte_identical_and_the_digest_comes_last():
+    later = _digest(goals = ["new"], turn = 9)
+    later["recent"] = ["Oakvale raided Ashford."]
+    hostile = {"posture": {"military": 0.9}, "target": "us", "goals": ["war"]}
+    s1, p1 = rivals.strategist_prompt(_state("rivals_strategist"))
+    s2, p2 = rivals.strategist_prompt(_state("rivals_strategist", digest = later))
+    assert s1 == s2 and p1 != p2
+    assert p2.endswith(rivals.digest_text(later) + "\n")
+    d1, q1 = rivals.diplomacy_prompt(_state("rivals_diplomacy", player_message = "hi"))
+    d2, q2 = rivals.diplomacy_prompt(
+        _state(
+            "rivals_diplomacy",
+            player_message = "and now?",
+            digest = later,
+            intent = hostile,
+            history = [{"role": "player", "text": "hi"}],
+        )
+    )
+    assert d1 == d2, "intent and talk stay out of the system prompt"
+    assert q2.endswith(rivals.digest_text(later) + "\n") and "set against Us" in q2

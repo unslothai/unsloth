@@ -8,6 +8,7 @@ import type { WorldFaction, WorldSpec } from "../../types";
 import { type Good, makesOf } from "./autonomy";
 import { seeded } from "./needs";
 import { type WorldMap, isSolid } from "./procgen";
+import type { BackgroundQueue, SimJob } from "./world-sim";
 
 export const RESOURCES = ["food", "wood", "stone", "gold"] as const;
 export type Res = (typeof RESOURCES)[number];
@@ -1301,6 +1302,40 @@ export function rivalsOf(
           }
         : null,
   };
+}
+
+/** Calls per real minute when the world has no simulation to set the background budget. */
+export const RIVALS_CALLS_PER_MINUTE = 12;
+const MAX_REQUEUES = 20;
+
+/** Run one strategist call as a job on the world's background queue, so it shares the villagers' call budget
+ *  and stops while the player talks (the queue pauses and aborts it; it is queued again and resumes after).
+ *  Resolves with the answer, or null when it fails or `alive()` turns false. */
+export function queuedCall(
+  queue: BackgroundQueue,
+  key: string,
+  call: (signal: AbortSignal) => Promise<unknown>,
+  alive: () => boolean = () => true,
+): Promise<unknown> {
+  return new Promise((resolve) => {
+    const attempt = (n: number) => {
+      const job: SimJob = {
+        key: `${key}#${n}`,
+        kind: "plan",
+        run: async (signal) => {
+          try {
+            resolve(await call(signal));
+          } catch {
+            if (signal.aborted && alive() && n < MAX_REQUEUES) attempt(n + 1);
+            else resolve(null);
+          }
+        },
+      };
+      queue.push(job);
+      queue.pump();
+    };
+    attempt(0);
+  });
 }
 
 /** End the player's day: one strategist call per AI village still in the game (in parallel), then the

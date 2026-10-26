@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import type { WorldSpec } from "../../types";
 import type { PlayerApi } from "../player-api";
 import type { WorldMap } from "./procgen";
+import type { BackgroundQueue } from "./world-sim";
 import {
   BUILDINGS,
   BUILDING_IDS,
@@ -26,6 +27,7 @@ import {
   describe,
   diplomacyRequest,
   initialRivals,
+  queuedCall,
   offerAction,
   playTurn,
   plotKey,
@@ -33,6 +35,15 @@ import {
   relationOf,
   scoreOf,
 } from "./rivals";
+
+function linked(a: AbortSignal, b: AbortSignal): AbortSignal {
+  const ctl = new AbortController();
+  const stop = () => ctl.abort();
+  if (a.aborted || b.aborted) stop();
+  a.addEventListener("abort", stop, { once: true });
+  b.addEventListener("abort", stop, { once: true });
+  return ctl.signal;
+}
 
 const PALETTE = ["#f59e0b", "#38bdf8", "#f472b6", "#a3e635"];
 const POSTURE_COLOR = [
@@ -56,6 +67,8 @@ export interface RivalsPanelProps {
   map: WorldMap;
   state?: RivalsState;
   onChange: (next: RivalsState) => void;
+  /** The world's background queue: strategist calls share its budget and wait while the player talks. */
+  queue: BackgroundQueue;
 }
 
 export function RivalsPanel({
@@ -66,6 +79,7 @@ export function RivalsPanel({
   map,
   state,
   onChange,
+  queue,
 }: RivalsPanelProps) {
   const board = useMemo(() => boardOf(spec, map), [spec, map]);
   const s = useMemo(
@@ -88,7 +102,23 @@ export function RivalsPanel({
     null,
   );
   const run = useRef<AbortController | null>(null);
+  const from = useRef<RivalsState | null>(null);
   useEffect(() => () => run.current?.abort(), []);
+  useEffect(() => {
+    // Worlds without a simulation have no tick to pump the queue once its minute budget frees up.
+    if (!busy) return;
+    const t = window.setInterval(() => queue.pump(), 2000);
+    return () => window.clearInterval(t);
+  }, [busy, queue]);
+  useEffect(() => {
+    // A load replaced the game mid-turn (and cleared the queue): drop the turn.
+    if (from.current && state && state !== from.current) {
+      run.current?.abort();
+      run.current = null;
+      from.current = null;
+      setBusy(false);
+    }
+  }, [state]);
   const pid = board.player;
   const me = pid ? s.factions[pid] : null;
   const color = (id: string) => {
@@ -111,23 +141,34 @@ export function RivalsPanel({
     setNote("");
     const ctl = new AbortController();
     run.current = ctl;
+    from.current = s;
     const ask = entry
-      ? async (_fid: string, request: unknown) => {
-          const res = await api.invoke(
-            flowId,
-            entry,
-            { state: request },
-            { signal: ctl.signal },
-          );
-          return (res.outputs.reply as { plan?: unknown } | undefined)?.plan;
-        }
+      ? (fid: string, request: unknown) =>
+          queuedCall(
+            queue,
+            `rivals:${s.turn}:${fid}`,
+            async (signal) => {
+              const res = await api.invoke(
+                flowId,
+                entry,
+                { state: request },
+                { signal: linked(signal, ctl.signal) },
+              );
+              return (res.outputs.reply as { plan?: unknown } | undefined)
+                ?.plan;
+            },
+            () => !ctl.signal.aborted,
+          )
       : null;
     try {
       const out = await playTurn(spec, board, s, ask);
       if (!ctl.signal.aborted) onChange(out.state);
     } finally {
-      if (run.current === ctl) run.current = null;
-      setBusy(false);
+      if (run.current === ctl) {
+        run.current = null;
+        from.current = null;
+        setBusy(false);
+      }
     }
   };
 

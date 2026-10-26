@@ -64,6 +64,7 @@ import {
   type WorldMap,
   generateMap,
 } from "./procgen";
+import { RIVALS_CALLS_PER_MINUTE } from "./rivals";
 import { RivalsPanel } from "./rivals-panel";
 import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
@@ -337,8 +338,12 @@ export function WorldPlayer({
   const planEntry = sim ? spec.entry_points?.npc_plan : undefined;
   const chatEntry = sim ? spec.entry_points?.npc_chat : undefined;
   const queue = useMemo(
-    () => new BackgroundQueue(sim?.calls_per_minute ?? 0),
-    [sim],
+    () =>
+      new BackgroundQueue(
+        sim?.calls_per_minute ??
+          (baseSpec.rivals ? RIVALS_CALLS_PER_MINUTE : 0),
+      ),
+    [sim, baseSpec.rivals],
   );
   useEffect(() => () => queue.clear(), [queue]);
   const busy = useRef(new Set<string>());
@@ -1662,6 +1667,7 @@ export function WorldPlayer({
           map={map}
           state={ws.rivals}
           onChange={(r) => setWs((st) => ({ ...st, rivals: r }))}
+          queue={queue}
         />
       ) : null}
       {editor && edState ? (

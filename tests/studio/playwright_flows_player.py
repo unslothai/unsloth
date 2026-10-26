@@ -365,12 +365,31 @@ def play_rivals(page: Page) -> None:
     page.evaluate("document.querySelector('[data-testid=rivals-body]').scrollTop = 0")
     page.wait_for_timeout(300)
     shot(page, "rivals_day3")
-    page.goto(f"{BASE}?flow=world&rivals=1&render=3d")
-    page.wait_for_selector("[data-testid=world-start]", timeout = 120_000)
-    arm(page)
-    page.click("[data-testid=world-start]")
-    page.wait_for_selector("[data-testid=rivals-panel]")
-    page.wait_for_timeout(1500)
+
+    def day() -> str:
+        return page.get_by_test_id("rivals-day").inner_text()
+
+    # The game lives in the saved world state: a save, another day, then a load brings day 3 back.
+    page.click("button[aria-label='Save / Load']")
+    page.get_by_role("button", name = "Save", exact = True).first.click()
+    page.wait_for_function("window.__flowsPlayerSmoke.sessions.has('world-1')")
+    page.keyboard.press("Escape")
+    page.click("[data-testid=rivals-end-turn]")
+    page.wait_for_function(
+        "document.querySelector('[data-testid=rivals-day]').innerText.includes('Day 4')"
+    )
+    page.click("button[aria-label='Save / Load']")
+    page.get_by_role("button", name = "Load", exact = True).first.click()
+    page.wait_for_function(
+        "document.querySelector('[data-testid=rivals-day]')?.innerText.includes('Day 3')"
+    )
+    page.keyboard.press("Escape")
+    # And the 3D view shows the same game.
+    page.click("[data-testid=world-view-toggle]")
+    page.wait_for_timeout(2500)
+    assert "Day 3" in day(), day()
+    assert "arm the hold" in page.get_by_test_id("rivals-factions").inner_text()
+    page.evaluate("document.querySelector('[data-testid=rivals-body]').scrollTop = 0")
     shot(page, "rivals_3d")
 
 
