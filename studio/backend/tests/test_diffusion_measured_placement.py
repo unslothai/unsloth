@@ -933,8 +933,6 @@ def test_encode_release_once_kill_switch(monkeypatch):
 
 
 def _token_encoder_pipe(monkeypatch, available_mib):
-    """A text encoder called the way diffusers pipelines call it (``input_ids=`` keyword, a config with the width), on
-    a card whose free memory for the encode reads ``available_mib``."""
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
 
     class TokenEncoder(torch.nn.Module):
@@ -959,7 +957,6 @@ def _token_encoder_pipe(monkeypatch, available_mib):
 
     tok = TokenEncoder()
     pipe.components["text_encoder"] = tok
-    # raising=False: on a tree without the shortfall the test still runs (and shows the whole surplus streaming)
     monkeypatch.setattr(
         dm, "encode_available_mib", lambda device = None: available_mib, raising = False
     )
@@ -968,9 +965,7 @@ def _token_encoder_pipe(monkeypatch, available_mib):
 
 
 def test_encode_keeps_the_denoiser_whole_when_free_memory_holds_the_encoder(monkeypatch):
-    """Qwen-Image-2.1 at 12 GB: free memory already holds the text encoder's stream window, so the encode streams
-    nothing and the next denoise re-loads nothing (main streamed the whole surplus out and back on every new
-    prompt)."""
+    """Qwen-Image-2.1 at 12 GB: main streamed the whole surplus out and back on every new prompt."""
     torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 1 << 20)
     assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 1
     for _ in range(3):
@@ -981,7 +976,6 @@ def test_encode_keeps_the_denoiser_whole_when_free_memory_holds_the_encoder(monk
 
 
 def test_encode_streams_only_the_shortfall(monkeypatch):
-    """Free memory one block short of the encoder's need: one block streams for the encode, not the whole surplus."""
     torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 0)
     need = dm.encode_need_mib(tok, (), {"input_ids": ids})
     assert need is not None and need > 0
@@ -994,8 +988,6 @@ def test_encode_streams_only_the_shortfall(monkeypatch):
 
 
 def test_encode_shortfall_prices_each_encoder_of_a_prompt(monkeypatch):
-    """FLUX.1-shaped encode_prompt (a small encoder, then a large one): the small one fits free memory and streams
-    nothing, the large one still gets its shortfall streamed, and encode_prompt's return pins it back once."""
     torch, net, tok, pipe, x, ref, on_device, ids = _token_encoder_pipe(monkeypatch, 0)
     big = type(tok)()
     big.config = types.SimpleNamespace(
@@ -1046,7 +1038,7 @@ def test_encode_need_prices_the_largest_streamed_groups_and_the_tokens(monkeypat
     mib = 1 << 20
     groups = [
         types.SimpleNamespace(_unsloth_resident = False, n = 100 * mib),
-        types.SimpleNamespace(_unsloth_resident = True, n = 900 * mib),  # resident: already allocated
+        types.SimpleNamespace(_unsloth_resident = True, n = 900 * mib),
         types.SimpleNamespace(_unsloth_resident = False, n = 300 * mib),
         types.SimpleNamespace(_unsloth_resident = False, n = 200 * mib),
     ]

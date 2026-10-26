@@ -5504,15 +5504,12 @@ def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
 
 # "0": pin the denoiser back after every text encoder instead of once per encode_prompt call.
 ENCODE_RELEASE_ONCE_ENV = "UNSLOTH_DIFFUSION_ENCODE_RELEASE_ONCE"
-# "0": the prompt encode always streams the whole surplus (whole-resident denoiser back to the flat room), even when
-# free memory already holds what the encoder needs.
+# "0": the prompt encode always streams the whole surplus, even when free memory holds the encoder's need.
 ENCODE_SHORTFALL_ENV = "UNSLOTH_DIFFUSION_ENCODE_SHORTFALL"
-# Kept free beside the encoder's estimated working set (stream window + activations) x margin.
 _ENCODE_SLACK_MIB = 512
-# Per prompt token, in units of hidden_size x 2 bytes: residual, norms, q / k / v / out, the gated MLP's intermediates
-# (plus one per layer: ``output_hidden_states`` keeps every layer's output).
+# Per token, in hidden_size x 2 bytes (plus one per layer: output_hidden_states keeps every layer).
 _ENCODE_TOKEN_HIDDEN_FACTOR = 32
-# Encoder inputs that carry images or video (a vision tower's activations are not priced here).
+# Vision inputs are not priced.
 _ENCODE_VISUAL_KWARGS = (
     "pixel_values",
     "pixel_values_videos",
@@ -5523,7 +5520,6 @@ _ENCODE_VISUAL_KWARGS = (
 
 
 def _encoder_width(module: Any) -> tuple[Optional[int], int, int]:
-    """``(hidden_size, attention heads, layers)`` of a text encoder's (or its text tower's) config."""
     config = getattr(module, "config", None)
     for cfg in (config, getattr(config, "text_config", None)):
         hidden = getattr(cfg, "hidden_size", None) or getattr(cfg, "d_model", None)
@@ -5539,11 +5535,8 @@ def _encoder_width(module: Any) -> tuple[Optional[int], int, int]:
 
 
 def encode_need_mib(module: Any, args: Any, kwargs: Any) -> Optional[int]:
-    """MiB one text encoder call needs above the allocation at its start, margin included: the streamed groups the
-    prefetcher can hold in flight (the ``depth + 1`` largest, an upper bound whatever the order) plus the prompt's
-    activations (tokens x hidden per working tensor and per kept layer output, and a materialised score matrix per
-    head). None when it cannot be priced (image or
-    video inputs, no token ids, unknown width): the caller then streams the whole surplus as before."""
+    """MiB one encoder call needs: the ``depth + 1`` largest streamed groups plus prompt activations, with margin.
+    None when unpriceable (visual inputs, no token ids, unknown width)."""
     try:
         import torch
 
@@ -5599,8 +5592,7 @@ def encode_need_mib(module: Any, args: Any, kwargs: Any) -> Optional[int]:
 
 
 def encode_available_mib(device: Any = None) -> Optional[int]:
-    """MiB an encoder allocation can get now: driver free less the VRAM Budget reserve, plus the allocator cache
-    outside CUDA graph pools (no flush needed: the allocator reuses it). None when unreadable or not CUDA."""
+    """Driver free less the VRAM Budget reserve, plus allocator cache outside CUDA graph pools, in MiB."""
     try:
         import torch
 
@@ -5632,10 +5624,7 @@ def _encode_device(pipe: Any) -> Any:
 
 
 def encode_release_mib(pipe: Any, module: Any, args: Any, kwargs: Any, surplus: int) -> int:
-    """MiB of the resident denoiser the prompt encode streams: only the shortfall of free memory against what the
-    encoder needs (ComfyUI's ``free_memory(memory_required - free)``), at most ``surplus``. A card whose free memory
-    already holds the encoder's window keeps the denoiser whole, so the next denoise re-loads nothing. Unpriced (an
-    image input, unreadable memory) or the kill switch: the whole surplus, as before."""
+    """Only the shortfall (ComfyUI's ``free_memory(memory_required - free)``), at most ``surplus``; unpriced: all."""
     if _env_off(ENCODE_SHORTFALL_ENV):
         return surplus
     need = encode_need_mib(module, args, kwargs)
@@ -5673,8 +5662,6 @@ def install_encode_release(
         except TypeError:
             pipe_ref = lambda: pipe  # noqa: E731 - not weak-referenceable
         disable = getattr(getattr(torch, "compiler", None), "disable", None)
-        # restores of this prompt's releases (newest last); MiB asked of them (at most the surplus per prompt); encoder
-        # forwards in flight (a nested call is priced by the outer one)
         pending: list = []
         asked = [0]
         active = [0]
@@ -5688,14 +5675,13 @@ def install_encode_release(
             owner = pipe_ref()
             if owner is None or active[0] > 1:
                 return  # nested encoder call: the outer one already released
-            # Each encoder of a prompt prices its own shortfall (a small CLIP first leaves room for the T5 after it);
-            # the prompt never streams more than the surplus, as when the first encoder released all of it.
+            # Each encoder prices its own shortfall; a prompt never streams more than the surplus in total.
             need = min(
                 encode_release_mib(owner, module, args, kwargs, surplus),
                 surplus - asked[0],
             )
             if need <= 0:
-                return  # free memory holds the encoder's window: the denoiser stays whole
+                return
             asked[0] += need
             restore = release_resident_groups(
                 owner, need, logger, denoisers_only = True, reason = "the prompt encode"
@@ -5725,7 +5711,6 @@ def install_encode_release(
             if not str(name).startswith("text_encoder") or not isinstance(module, torch.nn.Module):
                 continue
             handles = (
-                # with_kwargs: the shortfall prices the call's input_ids / visual inputs
                 module.register_forward_pre_hook(before, with_kwargs = True),
                 # always_call: an encode that raises (cancel, OOM) still pins the denoiser back
                 module.register_forward_hook(after, always_call = True),
