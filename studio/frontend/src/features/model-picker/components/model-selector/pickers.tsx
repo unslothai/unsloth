@@ -6137,7 +6137,8 @@ export function HubModelPicker({
             ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
             : selectMeta,
         ];
-    // A path load keeps the menu: it reveals the file, and a cached download pins as its repo.
+    // A path load keeps the menu. A cached download pins and reveals as its repo: the local
+    // reveal endpoint only lists non-cache sources, so it would 404.
     const pinRepoId = !isLocal
       ? checkpoint
       : isHfCacheSnapshotPath(checkpoint)
@@ -6184,9 +6185,11 @@ export function HubModelPicker({
             <ModelRowMenu
               ariaLabel={`More options for ${entry.id}`}
               cachePath={
-                isLocal ? undefined : { repoId: checkpoint, variant: quant ?? undefined }
+                pinRepoId === null ? undefined : { repoId: pinRepoId, variant: quant ?? undefined }
               }
-              onReveal={isLocal ? () => revealLocalModel(checkpoint, entry.id) : undefined}
+              onReveal={
+                pinRepoId === null ? () => revealLocalModel(checkpoint, entry.id) : undefined
+              }
               // Every loaded row ejects while several are loaded, the active one included.
               items={
                 ejectsKept
