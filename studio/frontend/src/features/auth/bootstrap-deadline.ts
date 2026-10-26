@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Split out of auth-form.tsx so the tests can reach it: the runner is
- * `node --experimental-strip-types`, which does not transform JSX, so nothing
- * importable from a .tsx file is unit-testable. */
+/** Split out of auth-form.tsx so node --experimental-strip-types tests can import it. */
 
-/** Absolute expiry in epoch ms, or null when the launch is not time-boxed.
- * Absolute rather than a stored countdown: a backgrounded tab stops firing timers
- * and must still render the right figure when it wakes. */
+/** Absolute, not a countdown: a backgrounded tab stops firing timers. */
 export function deadlineFromStatus(
   seconds: number | null | undefined,
   now: number,

@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# The Pester bootstrap guard runs on windows-latest inside the `pester` job of
-# studio-windows-inference-smoke.yml, which covers edits to that workflow.
-# It does not cover edits to the guard itself: that workflow has no job-level
-# path gating, so listing a .py file there would launch all eight Windows smoke
-# jobs, four of which download GGUF models and run for 30+ minutes.
-#
-# This runs the same guard on the same OS in about a minute, so a Windows-only
-# break in the guard is caught by the PR that introduces it.
+# Runs the Pester bootstrap guard on Windows when the guard itself changes, without
+# launching the full studio-windows-inference-smoke matrix.
 
 name: Pester guard
 

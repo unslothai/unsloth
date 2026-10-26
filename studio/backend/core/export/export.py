@@ -16,8 +16,7 @@ import contextlib
 from pathlib import Path
 from typing import Optional, Tuple, List
 
-# unsloth imports torch, so a --no-torch install raises here; stay importable and return a clean
-# "PyTorch is not installed" error.
+# unsloth imports torch, so --no-torch installs raise here; stay importable and return a clean PyTorch is not installed error
 try:
     from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
     _UNSLOTH_IMPORT_ERROR = None
@@ -139,17 +138,10 @@ _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 @contextlib.contextmanager
 def _llama_cpp_scripts_pin():
-    """Pin convert_hf_to_gguf.py to setup.sh's llama.cpp ref for one conversion.
-
-    Scoped and marked internal because UNSLOTH_LLAMA_CPP_SCRIPTS_DIR is read as the
-    user's own choice: it outranks UNSLOTH_LLAMA_CPP_CONVERTER_TAG, and it exempts the
-    converter from the UNSLOTH_CONVERTER_SCAN_STRICT refusal. A pin the user set is left
-    exactly as it is; that one carries their exemption.
-    """
+    """Pins convert_hf_to_gguf.py to the setup.sh llama.cpp ref; a user-set UNSLOTH_LLAMA_CPP_SCRIPTS_DIR outranks the pin and skips the strict scan"""
     global _LLAMA_CPP_SCRIPTS_WARNING_EMITTED
     if _IS_MLX:
-        # The MLX save path pins for itself, under a plain threading.Lock held across the
-        # conversion: entering it here too nests, and the second entry never returns.
+        # The MLX save path pins itself under a non-reentrant lock; nesting here deadlocks.
         yield
         return
     try:
@@ -183,8 +175,7 @@ def _llama_cpp_scripts_pin():
         # An older unsloth_zoo has no such check, and it only ever skips the pin.
         incomplete = False
     if incomplete:
-        # Pinning an entrypoint with no conversion/ beside it is what stops the staged
-        # resolver from fetching a co-versioned set that runs.
+        # Pinning an entrypoint with no conversion/ beside it stops the staged resolver fetching a co-versioned set that runs
         yield
         return
 
@@ -198,8 +189,7 @@ def _llama_cpp_scripts_pin():
             yield
         return
 
-    # Older unsloth_zoo, no internal pin: scope the variable by hand so it cannot leak.
-    # Strict mode still takes the exemption there; upgrading unsloth_zoo is the fix.
+    # Older unsloth_zoo has no internal pin, so the variable is scoped by hand; strict mode still exempts there, and upgrading unsloth_zoo is the fix
     existing = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR")
     if existing is not None:
         yield
@@ -236,13 +226,7 @@ def _converter_remote_code(approved: bool):
 
 
 def _multi_gpu_device_map_kwargs() -> dict:
-    """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
-
-    unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``, which stacks
-    the whole model on GPU0 and OOMs multi-GPU hosts whose other GPUs sit empty (#7053).
-    Returns a sharding map only on a real multi-GPU CUDA/ROCm host (mirroring the
-    inference loader's ``get_device_map``), else empty so single-GPU, CPU and MLX loads
-    keep the loader default."""
+    """Shards only on multi-GPU hosts, since unsloth's sequential device_map stacks the model on GPU0."""
     if _IS_MLX:
         return {}
     try:
@@ -265,11 +249,7 @@ def _multi_gpu_device_map_kwargs() -> dict:
 
 
 def _is_oom_error(exc: BaseException) -> bool:
-    """True for an accelerator OOM, however it is spelled.
-
-    accelerate and transformers re-raise it as a plain ``RuntimeError`` on several paths
-    and ROCm/XPU use their own classes, so match the message too.
-    """
+    """True for accelerator OOM by exception type or message: accelerate and transformers re-raise plain RuntimeError, ROCm and XPU use own classes"""
     if torch is not None:
         oom_types = tuple(
             t
@@ -301,13 +281,7 @@ def _is_cpu_spill_rejection(exc: BaseException) -> bool:
 
 
 def _is_device_map_infeasible(exc: BaseException) -> bool:
-    """The planner refusing to place the model, matched by class name.
-
-    It raises rather than spilling a bitsandbytes model to CPU, budgeting from free
-    memory read before this process opens a context -- so a training or chat job
-    holding the other cards can make it refuse a model the single-device loader
-    still fits. By name, so the export does not require a version defining it.
-    """
+    """Matched by class name so no version defining it is needed; can fire when other jobs hold the GPUs although the model still fits"""
     return type(exc).__name__ == "DeviceMapInfeasible"
 
 
@@ -316,23 +290,13 @@ class _CpuSpillRetry(Exception):
 
 
 def _cpu_offloaded_modules(model) -> int:
-    """Count the modules a load parked on CPU or disk.
-
-    Only bitsandbytes refuses such a map; a full-precision load accepts it, leaves the
-    parameters on meta and dies much later in safetensors with "Cannot copy out of meta
-    tensor". Nothing raises at load time, so inspect the map directly. PEFT re-dispatches
-    when attaching an adapter, so in practice this catches merged checkpoints.
-    """
+    """Full-precision loads accept a CPU/disk map silently, then die on meta tensors; inspect the map."""
     device_map = getattr(model, "hf_device_map", None) or {}
     return sum(1 for target in device_map.values() if str(target) in ("cpu", "disk"))
 
 
 def _accepts_by_keyword(params, name):
-    """True if `name` is passable as a keyword, not merely named.
-
-    Every call site passes by keyword, so a positional-only parameter is not support: counting
-    it turns a clean refusal into a TypeError.
-    """
+    """Positional-only params do not count: call sites pass by keyword; counting them gives a TypeError."""
     import inspect
 
     parameter = params.get(name)
@@ -374,13 +338,7 @@ def _imatrix_export_supported(save_fn):
 
 
 def _reported_gguf_files(result):
-    """Absolute GGUF paths unsloth reported writing, or None if it reported nothing.
-
-    None means "fall back to the legacy heuristics", which covers every older shape:
-    pre-2025.10 unsloth returned nothing, is_main_process=False returns None, and
-    save_method="lora" returns a str. An empty result is None too, since a stale
-    manifest is indistinguishable from an old build.
-    """
+    """None means use legacy heuristics; an empty result is None too, as it may be a stale manifest."""
     if not isinstance(result, dict):
         return None
     files = result.get("gguf_files")
@@ -399,12 +357,7 @@ def _reported_gguf_files(result):
 
 
 def _materialized_imatrix_path(model_dir, imatrix_file):
-    """Where unsloth copies a `*.gguf_file` imatrix beside the model, else None.
-
-    `_materialize_imatrix` drops that copy in the model directory, so the owned-root scan
-    would otherwise relocate it as if it were a converted model. Callers compare the whole path
-    (see `_is_imatrix`): a basename match would suppress a real output of the same name.
-    """
+    """Imatrix copy the owned-root scan must skip; compare full paths, since basenames can hide outputs."""
     if imatrix_file is True:
         name = "imatrix_unsloth.gguf"
     elif isinstance(imatrix_file, (str, os.PathLike)):
@@ -418,11 +371,7 @@ def _materialized_imatrix_path(model_dir, imatrix_file):
 
 
 def _is_imatrix(path, imatrix_path):
-    """True when `path` is the materialized imatrix, asked of the filesystem rather than `==`.
-
-    The on-disk spelling is the filesystem's to choose (a folding mount changes case, APFS
-    stores NFD), so byte-exact `Path.__eq__` misses and the imatrix is relocated as a model.
-    """
+    """Uses os.path.samefile, not ==: case folding or APFS NFD spelling makes byte-exact comparison miss."""
     if imatrix_path is None:
         return False
     try:
@@ -506,10 +455,7 @@ def _has_nvidia_gpu():
 
 
 def _hf_offline(timeout = 3):
-    """True if export should avoid the Hub: honors the HF offline env vars, else does one
-    cheap TCP reachability probe so a network-down load uses local files / the HF cache
-    instead of hanging on connection timeouts. Proxy-aware (probes the proxy egress when
-    one is configured); disable the probe with UNSLOTH_OFFLINE_PROBE=0."""
+    """Honors HF offline env vars, else a TCP probe avoids hangs; set UNSLOTH_OFFLINE_PROBE=0 to skip it."""
     _offline = {"1", "true", "yes", "on"}
     if (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
@@ -552,11 +498,7 @@ def _is_wsl():
 
 
 def _apply_wsl_sudo_patch():
-    """On WSL, monkey-patch do_we_need_sudo() to return False.
-
-    WSL lacks passwordless sudo and do_we_need_sudo()'s `sudo apt-get update`
-    hangs on a stdin password; setup.sh pre-installs the build deps anyway.
-    """
+    """WSL: do_we_need_sudo()'s apt-get update hangs on a password prompt; setup.sh pre-installs deps."""
     if not _is_wsl():
         return
 
@@ -620,8 +562,7 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 """
 
 
-# export_metadata.json is local bookkeeping whose base model can be a local path; the GGUF push
-# keeps it out of the repo too.
+# Local bookkeeping whose base model can be a local path; keep it out of the Hub upload, including the GGUF push
 _HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
 # REAP's report: uploaded with a pruned export, and deleted from a reused repo by any other merged
 # or base upload (GGUF files carry one each) (upload_folder never removes remote files on its own; one it uploads in the
@@ -641,10 +582,7 @@ def _card_base_model(model) -> str:
 
 
 def _staging_dir(export_parent):
-    """Stage a copy of an export where it fits: merge_and_overwrite_lora refuses a save its
-    destination cannot hold, and neither the temporary directory nor the export's own filesystem is
-    reliably the roomier, or even writable — only the export directory itself has to be.
-    """
+    """Temp dir and export filesystem are not reliably roomy or writable; only the export dir must be."""
     roomiest = []
     for parent in (Path(tempfile.gettempdir()), Path(export_parent)):
         try:
@@ -693,11 +631,7 @@ def _ensure_hub_repo_private(hf_api, repo_id):
 
 
 def _open_hub_repo(hf_api, repo_id, private):
-    """Create or reuse the repo we are about to upload into, private before anything lands.
-
-    Call this immediately before the upload, not earlier: it is what turns a failure after
-    this point into an empty repo.
-    """
+    """Call right before the upload: once the repo exists, a later failure leaves it empty; create it private before anything lands"""
     repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
     repo_id = getattr(repo_url, "repo_id", repo_id)
     if private:
@@ -740,12 +674,7 @@ def _push_mlx_merged(
 
 
 def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
-    """Write the card the delegated push can no longer write for itself.
-
-    Unsloth's `upload_to_huggingface` only writes it when its own `create_repo(exist_ok=False)`
-    finds the repo absent, so opening the repo first silently costs a fresh push its card.
-    Best-effort, and an existing card is kept, exactly as the merged and base paths do.
-    """
+    """Writes the card upload_to_huggingface skips once the repo is opened first; best-effort, and an existing README is kept"""
     try:
         if hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
             return
@@ -863,11 +792,7 @@ class ExportBackend:
     def scan_checkpoints(
         self, outputs_dir: Optional[str] = None
     ) -> List[Tuple[str, List[Tuple[str, str]]]]:
-        """
-        Scan outputs folder for training runs and their checkpoints.
-
-        Returns: [(model_name, [(display_name, checkpoint_path), ...]), ...]
-        """
+        """Returns [(model_name, [(display_name, checkpoint_path), ...]), ...] for the outputs folder."""
         if outputs_dir is None:
             outputs_dir = str(outputs_root())
         from utils.models.checkpoints import scan_checkpoints
@@ -901,8 +826,7 @@ class ExportBackend:
         ``get_token()`` reads the operator's stored login off disk.
         """
         token = normalize_token(hf_token)
-        # Loaders only: the probes' cache guards refuse an anonymous read, which offline
-        # misreads a cached VLM as a text model.
+        # Probe cache guards refuse anonymous reads, misreading a cached VLM offline.
         probe_token = token or None
         pinned_base = base_model
         try:
@@ -955,9 +879,7 @@ class ExportBackend:
                 else _offload_layers_kwargs(offload_layers, _device_map_kw)
             )
 
-            # Run the type-detection probes inside the forced-offline window, else a gated base 404s: it
-            # covers is_vision_model's Hub reads, and local_files_only makes detect_audio_type's requests.get
-            # skip.
+            # Probes run inside the forced-offline window, else a gated base 404s.
             with _offline_window_if(local_files_only):
                 self._audio_type = detect_audio_type(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
@@ -1170,8 +1092,7 @@ class ExportBackend:
             return True, f"Loaded {model_type} model{peft_info} successfully"
 
         except Exception as e:
-            # "balanced" budgets from free memory read BEFORE this process opens a CUDA context, so the shard
-            # can OOM when another job owns the other GPUs; fall back once.
+            # "balanced" budgets from free memory read before our CUDA context; can OOM on shared GPUs.
             if (
                 _device_map_override is None
                 and (
@@ -1182,8 +1103,7 @@ class ExportBackend:
                 )
                 and _multi_gpu_device_map_kwargs()
             ):
-                # Retry outside this block: the live traceback pins the half-built model's frames, so an in-block
-                # retry inherits the exhausted device.
+                # Retry outside this block: the live traceback pins the half-built model frames, so an in-block retry inherits the exhausted device
                 retry_reason = str(e)
                 # Name the map: an omitted one is unsloth's DEFAULT_DEVICE_MAP, which requested_device_map
                 # upgrades back to the planner, re-running the placement that just failed.
@@ -1379,13 +1299,7 @@ class ExportBackend:
         compressed_method: Optional[str] = None,
         install_missing_dependencies: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
-        """Export a merged model (a no-op merge for non-PEFT base models).
-
-        ``format_type`` is "16-bit (FP16)", "4-bit (FP4)", or a compressed-tensors label.
-        ``compressed_method`` is an optional compressed-tensors scheme alias (fp8, fp8_static, w8a8,
-        w4a16, mxfp4, mxfp8, nvfp4); it overrides ``format_type`` and is resolved against
-        unsloth.save COMPRESSED_EXPORT_SCHEMES.
-        """
+        """Export a merged model; compressed_method (fp8, w8a8, nvfp4 and others) overrides format_type, resolved via unsloth.save COMPRESSED_EXPORT_SCHEMES"""
         if self.decision is not None:
             return self._decision_only_gguf()
         if not _export_runtime_available():
@@ -1400,8 +1314,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         save_dir_was_empty = False
-        # Two backends: compressed-tensors (llm-compressor, NVIDIA-only) and portable torchao FP8/INT8.
-        # The alias comes from compressed_method (the "all formats" dropdown) or the format_type label.
+        # compressed-tensors (NVIDIA-only) vs portable torchao FP8/INT8.
         _LABEL_TO_ALIAS = {
             "FP8 (compressed-tensors)": "fp8",
             "NVFP4 (compressed-tensors)": "nvfp4",
@@ -1472,8 +1385,7 @@ class ExportBackend:
                     )
                 import unsloth.save as _us
 
-                # Prefer the llm-compressor-main shadow (transformers 5.x): the shipped 0.10.x cannot quantize newer
-                # models.
+                # Prefer the llm-compressor-main shadow (transformers 5.x), since the shipped 0.10.x cannot quantize newer models
                 _shadow_pp = None
                 _shadow_offered = False
                 try:
@@ -1535,13 +1447,11 @@ class ExportBackend:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
-                # Leftovers in a reused folder would be uploaded too, so only a fresh one is
-                # pushed as is.
+                # Reused folders may hold leftovers, so only a fresh one is pushed as is.
                 save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
 
-                # No push, but the merge resolves the base repo and save.py turns None into
-                # get_token(), so the credential still has to be spelled out.
+                # save.py turns None into get_token(), so the merge needs the token spelled out.
                 merged_token_kw = (
                     {"token": hf_token}
                     if (hf_token or is_anonymous(hf_token))
@@ -1618,13 +1528,11 @@ class ExportBackend:
                 else:
                     uploaded = False
                     if output_path and Path(output_path).is_dir():
-                        # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
-                        # redo the expensive merge and quantization.
+                        # Upload the built artifact; push_to_hub_merged would redo the merge and quantization.
                         with contextlib.ExitStack() as stack:
                             upload_dir = output_path
                             if not (is_compressed or is_torchao or save_dir_was_empty):
-                                # A reused folder can hold leftovers, so upload a clean second save
-                                # instead.
+                                # A reused folder can hold leftovers, so upload from a clean staged second save
                                 upload_dir = stack.enter_context(
                                     _staging_dir(Path(output_path).parent)
                                 )
@@ -1655,8 +1563,7 @@ class ExportBackend:
                                 )
                                 uploaded = True
                     if uploaded:
-                        # Last and best-effort like the GGUF card; an existing card is kept, as
-                        # push_to_hub_merged does.
+                        # Last and best-effort like the GGUF card; an existing card is kept, as push_to_hub_merged does
                         try:
                             if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
                                 base_model = _card_base_model(self.current_model)
@@ -1781,8 +1688,7 @@ class ExportBackend:
                     with contextlib.ExitStack() as stack:
                         upload_dir = save_directory
                         if save_directory and not save_dir_was_empty:
-                            # A reused folder can hold leftovers, so upload a clean second save
-                            # instead.
+                            # A reused folder can hold leftovers, so upload from a clean staged second save
                             upload_dir = stack.enter_context(
                                 _staging_dir(Path(save_directory).parent)
                             )
@@ -1845,13 +1751,7 @@ class ExportBackend:
         private: bool = False,
         npu_q4nx: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
-        """Export the model in GGUF format.
-
-        ``quantization_method`` is a single GGUF quant method ("Q4_K_M") or a list of them; a list
-        produces one GGUF per quant from a single model load, since unsloth save_to_gguf loops
-        internally. ``imatrix_file`` is an importance matrix path or boolean. ``npu_q4nx`` also
-        converts one Q4_0 / Q4_1 / Q4_K_M GGUF to FastFlowLM's Q4NX for the AMD Ryzen AI NPU.
-        """
+        """A list of ``quantization_method`` values yields one GGUF per quant from a single model load."""
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if self.decision is not None:
@@ -2035,8 +1935,7 @@ class ExportBackend:
                     else:
                         shutil.rmtree(model_tmp_root, ignore_errors = True)
 
-                # iterdir, not glob.glob: glob hides dot-leading names, so an empty model stem's ".Q4_K_M.gguf"
-                # read as "(none)". This list is the success gate.
+                # iterdir, not glob.glob: glob hides dot-leading names, so an empty model stem .Q4_K_M.gguf reads as none; this list is the success gate
                 final_ggufs = sorted(
                     str(p)
                     for p in drop_appledouble_metadata(list(Path(abs_save_dir).iterdir()))
@@ -2580,13 +2479,7 @@ class ExportBackend:
         gguf_outtype: str = "q8_0",
         adapter_format: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """Export the LoRA adapter only, not merged.
-
-        ``gguf`` also converts the adapter to a GGUF LoRA file (llama.cpp convert_lora_to_gguf.py),
-        loadable with `llama-cli --lora ...`; ``gguf_outtype`` is its output float type, one of
-        q8_0/f16/bf16/f32. ``adapter_format`` is 'mlx' or 'peft' (MLX servers only offer both);
-        omitted resolves to the platform's native format.
-        """
+        """Adapter only, not merged; adapter_format is mlx or peft (omitted = platform native); gguf writes a LoRA GGUF (q8_0/f16/bf16/f32)"""
         if self.decision is not None:
             return self._decision_only_gguf()
         if not _export_runtime_available():
@@ -2621,8 +2514,7 @@ class ExportBackend:
                     None,
                 )
             resolved_format = "peft"
-            # convert_lora_to_gguf.py reads only the standard lora_A/lora_B delta and ignores DoRA's
-            # lora_magnitude_vector, so a DoRA export silently drops magnitude rescaling.
+            # convert_lora_to_gguf.py ignores DoRA's lora_magnitude_vector, silently dropping it.
             _peft_config = getattr(self.current_model, "peft_config", {}).get("default")
             if getattr(_peft_config, "use_dora", False):
                 return (
@@ -2667,8 +2559,7 @@ class ExportBackend:
                 self.current_tokenizer,
                 save_method = "lora",
                 quantization_method = outtype,
-                # A token fetches a gated base's config; False keeps a denied caller
-                # off get_token().
+                # False keeps a denied caller off get_token().
                 token = normalize_token(hf_token),
             )
 
@@ -2743,8 +2634,7 @@ class ExportBackend:
                     with contextlib.ExitStack() as stack:
                         upload_dir = output_path
                         if not save_dir_was_empty:
-                            # A reused folder can hold leftovers, so upload a clean second save
-                            # instead. The converter names the GGUF's model after its folder.
+                            # A reused folder can hold leftovers, so upload a clean second save; the converter names the GGUF model after its folder
                             upload_dir = os.path.join(
                                 stack.enter_context(_staging_dir(Path(output_path).parent)),
                                 Path(output_path).name,
@@ -2759,8 +2649,7 @@ class ExportBackend:
                         )
                 elif _IS_MLX:
                     with tempfile.TemporaryDirectory() as tmp_dir:
-                        # Serialise first: opening the repo before this would leave an empty
-                        # one behind whenever the adapter or tokenizer fails to write.
+                        # Serialise first so a failed write does not leave an empty repo behind.
                         self._save_mlx_adapter(tmp_dir, resolved_format)
                         repo_id = _open_hub_repo(hf_api, repo_id, private)
                         hf_api.upload_folder(
@@ -2769,9 +2658,7 @@ class ExportBackend:
                             repo_type = "model",
                         )
                 else:
-                    # Opened here rather than left to push_to_hub: a repo that does not exist
-                    # yet is one another client can create public first, and `private` cannot
-                    # change an existing repo's visibility, so the adapter would land in it.
+                    # Create the repo here: another client could create it public first, and private cannot fix that.
                     repo_id = _open_hub_repo(hf_api, repo_id, private)
                     _publish_unsloth_model_card(hf_api, repo_id, self.current_model, hf_token)
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)

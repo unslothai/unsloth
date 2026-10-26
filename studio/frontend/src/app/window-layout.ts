@@ -16,19 +16,12 @@ export type WindowSizeBounds = {
   maximum?: LogicalWindowSize;
 };
 
-/**
- * Resize floor: a companion width, as other chat apps allow, and no narrower
- * than the desktop layout it keeps at every size can fit.
- */
 export const MINIMUM_APP_WINDOW_SIZE: LogicalWindowSize = {
   width: 460,
   height: 480,
 };
 
-/**
- * The size a first launch aims for. Separate from the resize floor: shrinking
- * the floor must not shrink the window we open.
- */
+/** Separate from the resize floor: shrinking the floor must not shrink the opened window. */
 export const NOMINAL_APP_WINDOW_SIZE: LogicalWindowSize = {
   width: 900,
   height: 600,
@@ -44,7 +37,6 @@ export const DEFAULT_APP_WINDOW_SIZE_BOUNDS: WindowSizeBounds = {
   minimum: MINIMUM_APP_WINDOW_SIZE,
 };
 
-// Leave resize room when the nominal minimum does not fit.
 const RELAXED_MINIMUM_RATIO = 0.85;
 const FIRST_WINDOW_WIDTH_RATIO = 0.75;
 const FIRST_WINDOW_HEIGHT_RATIO = 0.85;
@@ -55,14 +47,7 @@ function relaxMinimum(preferred: number, maximum: number): number {
   return Math.max(1, Math.floor(maximum * RELAXED_MINIMUM_RATIO));
 }
 
-/**
- * Bounds a frameless window to the monitor work area.
- *
- * `logicalPerCssPx` keeps the floor a CSS-pixel floor. Windows text scaling
- * zooms the webview above the display scale, so a window sized in logical
- * pixels lays out in fewer CSS pixels: at 150% a 460px floor is a 307px
- * viewport, narrower than the layout can hold.
- */
+/** `logicalPerCssPx` keeps the floor in CSS pixels under Windows text scaling. */
 export function calculateWindowSizeBounds(
   workAreaSize: LogicalWindowSize,
   logicalPerCssPx = 1,
@@ -101,10 +86,7 @@ export function calculateFirstAppWindowSize(
 ): LogicalWindowSize {
   if (!maximum) return NOMINAL_APP_WINDOW_SIZE;
 
-  // A first window floors at the nominal size, not the resize floor: opening
-  // at a width the user may shrink to would be a surprise. Never below the
-  // floor either: a work area too small for the nominal size relaxes it, and
-  // the constraints would then grow the window off the centre it was placed on.
+  // A first window floors at the nominal size, relaxed (never below the floor) on small work areas.
   const nominal = {
     width: Math.max(
       minimum.width,
@@ -120,7 +102,6 @@ export function calculateFirstAppWindowSize(
     Math.round(maximum.width * FIRST_WINDOW_WIDTH_RATIO),
     Math.min(cssSafeLogicalWidth ?? 0, maximum.width),
   );
-  // Preserve requested height when the work area is short.
   const heightCap = Math.max(
     NOMINAL_APP_WINDOW_SIZE.height,
     Math.round(maximum.height * FIRST_WINDOW_HEIGHT_RATIO),
@@ -150,7 +131,6 @@ export function constrainWindowSize(
   );
 }
 
-/** Centers a physical window size inside the work area. */
 export function calculateCenteredPosition(
   workArea: PhysicalWindowRect,
   windowSize: { width: number; height: number },
