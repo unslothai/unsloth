@@ -17,6 +17,7 @@ type Status = Pick<
 // The service's own phase captions; anything else (a warning, a stop request, a resume) is news worth showing.
 const PHASE_MESSAGE =
   /^(?:Loading base model\.\.\.|Training\.\.\.|Preparing \(.*\)\.\.\.)$/;
+const TERMINAL_STATUSES = new Set(["completed", "stopped", "error"]);
 // Older backends only carry the preparation counts in the status text.
 const LEGACY_PREPARING = /Preparing \(([^()]+?) (\d+)\/(\d+)\)/;
 
@@ -27,8 +28,13 @@ function backendNote(message: string | null | undefined): string | null {
 /** Preparation and optimization have different units; each bar reports its own stage. */
 export function diffusionTrainingProgress(status: Status | null) {
   const running = status?.active === true || status?.status === "running";
+  // A stopped / failed run reports its terminal status while the worker is still exiting (active stays true for
+  // a moment); that is not a run starting over.
+  const terminal = TERMINAL_STATUSES.has(status?.status ?? "");
   const preparing =
-    running && (status?.in_model_load === true || (status?.step ?? 0) <= 0);
+    running &&
+    !terminal &&
+    (status?.in_model_load === true || (status?.step ?? 0) <= 0);
   if (preparing) {
     const note = backendNote(status?.message);
     const legacy = status?.message?.match(LEGACY_PREPARING);
@@ -84,7 +90,7 @@ export function diffusionTrainingProgress(status: Status | null) {
     title:
       status?.status === "completed"
         ? "Training complete"
-        : running
+        : running && !terminal
           ? "Training"
           : (status?.status ?? ""),
     detail: status?.message ?? null,

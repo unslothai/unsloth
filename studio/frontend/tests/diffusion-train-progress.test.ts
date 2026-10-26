@@ -130,3 +130,20 @@ test("warnings and stop requests stay visible while preparing", () => {
     /Preparing images and captions/,
   );
 });
+
+test("a run stopped mid-preparation does not read as starting while its worker exits", () => {
+  // Real snapshot shape: the stop lands before the process has exited.
+  const progress = diffusionTrainingProgress({
+    active: true,
+    status: "stopped",
+    step: 0,
+    total_steps: 0,
+    in_model_load: false,
+    message: "Stopped (no adapter saved).",
+    preparation: null,
+  });
+  assert.equal(progress.preparing, false);
+  assert.equal(progress.title, "stopped");
+  assert.equal(progress.percent, 0);
+  assert.equal(progress.detail, "Stopped (no adapter saved).");
+});
