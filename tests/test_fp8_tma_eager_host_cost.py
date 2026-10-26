@@ -198,4 +198,3 @@ def test_empty_input_still_raises_like_from_tensor():
     t = torch.zeros(0, 256, dtype = torch.float8_e4m3fn)
     with pytest.raises(AssertionError):
         F8._fp8_tma_descriptor(t, 0, 256, (128, 128))
-
