@@ -302,10 +302,8 @@ def resolve_speculation(
 
 
 def offload_drafter(speculative_type, spec_draft_model, **where) -> Optional[tuple]:
-    """``(path, builtin)`` of the drafter an explicit mode tries first, for an auto offload plan to make room
-    for; None under auto, whose drafter must cost the target nothing. ``where`` as ``resolve_speculation`` takes it."""
-    if mlx_spec_mode(speculative_type) == "auto":
-        return None
+    """``(path, builtin)`` of the drafter a load tries first, for an auto offload plan to make room for.
+    ``where`` as ``resolve_speculation`` takes it."""
     sources = resolve_speculation(speculative_type, spec_draft_model, **where).sources
     return (sources[0].path, sources[0].builtin) if sources else None
 
