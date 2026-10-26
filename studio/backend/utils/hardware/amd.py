@@ -3,6 +3,7 @@
 
 """AMD GPU monitoring via amd-smi. Mirrors nvidia.py so hardware.py can swap backends based on IS_ROCM; all functions return the same dict shapes as their nvidia.py counterparts."""
 
+import copy
 import glob
 import json
 import math
@@ -13,7 +14,6 @@ import shlex
 import shutil
 import stat
 import subprocess
-import sys
 import threading
 import time
 from pathlib import PurePath
@@ -34,56 +34,12 @@ _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
 
 
-def _path_inside_venv(path: str) -> bool:
-    """True if ``path`` is inside the active venv (sys.prefix). The venv hipInfo.exe (AMD wheel, put on PATH by main.py/worker.py for bitsandbytes) is NOT a HIP SDK (see _hip_sdk_present)."""
-    try:
-        # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
-        root = os.path.normcase(os.path.realpath(sys.prefix))
-        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on it. A venv is never at root, so treat that as outside.
-        if os.path.dirname(root) == root:
-            return False
-        return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
-    except (ValueError, OSError):
-        # Different drive / unresolvable -> treat as outside the venv.
-        return False
-
-
-def _external_hipinfo_on_path() -> bool:
-    """True if a hipinfo OUTSIDE the venv is on PATH. shutil.which returns only the first hit, so the venv hipInfo could shadow a real HIP SDK's; scan every PATH entry and skip the venv copy."""
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        directory = directory.strip('"')  # PATH entries can be quoted on Windows
-        if not directory:
-            continue
-        candidate = os.path.join(directory, "hipinfo.exe")
-        if os.path.isfile(candidate) and not _path_inside_venv(candidate):
-            return True
-    return False
-
-
-def _hip_sdk_present() -> bool:
-    """True if a HIP SDK is detectable (hipinfo on PATH or under HIP_PATH/ROCM_PATH), so amd-smi has a runtime and runs un-elevated. Ignores the venv hipInfo.exe (AMD wheel via the bnb fix): not a HIP SDK, and does not stop amd-smi's DiskPart UAC."""
-    if _external_hipinfo_on_path():
-        return True
-    for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
-        root = os.environ.get(var)
-        if not root:
-            continue
-        candidate = os.path.join(root, "bin", "hipinfo.exe")
-        if os.path.exists(candidate) and not _path_inside_venv(candidate):
-            return True
-    return False
-
-
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi here. On Windows without a working HIP runtime, amd-smi elevates a child at runtime, popping a UAC/DiskPart prompt that RunAsInvoker cannot suppress (its manifest is asInvoker), so only call it on Windows with a HIP SDK present or UNSLOTH_ENABLE_AMD_SMI=1. Linux amd-smi never elevates."""
+    """Windows is opt-in only (UNSLOTH_ENABLE_AMD_SMI=1): amd-smi.exe pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK."""
     if platform.system() != "Windows":
         return True
     flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
-    if flag in ("1", "true", "yes", "on"):
-        return True
-    if flag in ("0", "false", "no", "off"):
-        return False
-    return _hip_sdk_present()
+    return flag in ("1", "true", "yes", "on")
 
 
 def _run_amd_smi(
@@ -96,11 +52,10 @@ def _run_amd_smi(
     if _amd_smi_disabled:
         return None
     if not _amd_smi_allowed():
-        # Permanently skip amd-smi on Windows without a HIP SDK: every call pops a UAC/DiskPart prompt. VRAM polling is then unavailable, which beats the prompt (UNSLOTH_ENABLE_AMD_SMI=1 opts back in).
         if not _amd_smi_disabled:
             logger.info(
-                "amd-smi disabled on Windows (no HIP SDK detected) to avoid a "
-                "UAC/DiskPart elevation prompt; GPU VRAM polling unavailable. "
+                "amd-smi disabled on Windows to avoid a UAC/DiskPart elevation "
+                "prompt; VRAM comes from the adapter perf counters. "
                 "Set UNSLOTH_ENABLE_AMD_SMI=1 to force amd-smi."
             )
             _amd_smi_disabled = True
@@ -158,7 +113,17 @@ def _run_amd_smi(
             _amd_smi_disabled = True
         return None
     if not result.stdout.strip():
-        logger.debug("amd-smi exited 0 but returned no output")
+        if platform.system() == "Windows":
+            # System32 amd-smi.exe exits 0 with no stdout when it can't run, prompting each spawn.
+            logger.info(
+                "amd-smi exited 0 with no output (%s); GPU utilization polling via amd-smi disabled",
+                (result.stderr or "").strip().splitlines()[-1]
+                if (result.stderr or "").strip()
+                else "no stderr",
+            )
+            _amd_smi_disabled = True
+        else:
+            logger.debug("amd-smi exited 0 but returned no output")
         return None
     _amd_smi_consecutive_failures = 0
     try:
@@ -166,6 +131,39 @@ def _run_amd_smi(
     except json.JSONDecodeError:
         logger.warning("Failed to parse amd-smi JSON output")
         return None
+
+
+_display_lock = threading.Lock()
+_display_cache: dict[tuple[str, ...], tuple[float, int, Any]] = {}
+
+
+def _run_amd_smi_for_display(*args: str) -> Optional[Any]:
+    """``_run_amd_smi`` under gpu_query's display rules; the lock coalesces pollers, failures are never cached."""
+    try:
+        from utils import gpu_memory_events
+        from utils.hardware import gpu_query
+
+        use_cache = gpu_query.display_cache_allowed()
+        ttl = gpu_query.ttl_for(gpu_query.DISPLAY)
+    except Exception:
+        use_cache = False
+    if not use_cache:
+        return _run_amd_smi(*args)
+    with _display_lock:
+        cached = _display_cache.get(args)
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < ttl
+            and cached[1] == gpu_memory_events.generation()
+        ):
+            return copy.deepcopy(cached[2])
+        generation = gpu_memory_events.generation()
+        data = _run_amd_smi(*args)
+        if data is None:
+            _display_cache.pop(args, None)
+        else:
+            _display_cache[args] = (time.monotonic(), generation, copy.deepcopy(data))
+        return data
 
 
 def _parse_numeric(value: Any) -> Optional[float]:
@@ -383,19 +381,56 @@ def get_gpu_vram_mib() -> dict[int, tuple[int, int]]:
 
 _HIP_ID_MAP_NONE_TTL_S = 300.0
 _hip_id_map_lock = threading.Lock()
-_hip_id_map_cache: Optional[tuple[float, Optional[dict[int, int]]]] = None
+_hip_id_map_cache: Optional[
+    tuple[float, Optional[dict[int, int]], Optional[int], Optional[tuple]]
+] = None
 
 
 def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
-    """{amd-smi gpu id: HIP device id}, or None when the mapping is not readable. Two index spaces, one number: amd-smi's gpu id is an enumeration index in discovery order over its KFD/sysfs view, while HIP's is what ``HIP_VISIBLE_DEVICES`` names and what torch reports as ``cuda:N``, derived from the KFD node id instead (``hip_id = node_id - smallest_node_id``). They coincide on most hosts and not on all of them, so the number cannot be carried from one space to the other without this call. ``amd-smi list -e`` is the mapping AMD publishes for exactly this ("mapping physical-to-logical GPU IDs"), added in ROCm 6.4.0. None when any device lacks a usable id (an older CLI rejects ``-e`` outright, and ``hip_id`` reads "N/A" when the library cannot reach the device's KFD node) so callers decline rather than assume the identity mapping. Cached for the process; an unreadable answer is retried after five minutes."""
+    """{amd-smi gpu id: HIP device id}, or None when the mapping is not readable. Two index spaces, one number: amd-smi's gpu id is an enumeration index in discovery order over its KFD/sysfs view, while HIP's is what ``HIP_VISIBLE_DEVICES`` names and what torch reports as ``cuda:N``, derived from the KFD node id instead (``hip_id = node_id - smallest_node_id``). They coincide on most hosts and not on all of them, so the number cannot be carried from one space to the other without this call. ``amd-smi list -e`` is the mapping AMD publishes for exactly this ("mapping physical-to-logical GPU IDs"), added in ROCm 6.4.0. None when any device lacks a usable id (an older CLI rejects ``-e`` outright, and ``hip_id`` reads "N/A" when the library cannot reach the device's KFD node) so callers decline rather than assume the identity mapping. Cached until hardware re-detection; an unreadable answer is retried after five minutes."""
     global _hip_id_map_cache
+    static_gen = _static_generation()
+    topology = _amd_pci_topology()
     with _hip_id_map_lock:
         cached = _hip_id_map_cache
-        if cached is None or (
-            cached[1] is None and time.monotonic() - cached[0] >= _HIP_ID_MAP_NONE_TTL_S
+        if (
+            cached is None
+            or cached[2] != static_gen
+            # Cards changed, or the first readable walk (no baseline); an unreadable walk keeps the map.
+            or (topology is not None and cached[3] != topology)
+            or (cached[1] is None and time.monotonic() - cached[0] >= _HIP_ID_MAP_NONE_TTL_S)
         ):
-            cached = _hip_id_map_cache = (time.monotonic(), _read_hip_id_by_gpu_index())
+            cached = _hip_id_map_cache = (
+                time.monotonic(),
+                _read_hip_id_by_gpu_index(),
+                static_gen,
+                topology,
+            )
     return None if cached[1] is None else dict(cached[1])
+
+
+def invalidate_hip_id_map() -> None:
+    """Drop the HIP id map, under its lock so a read in flight cannot land after the clear."""
+    global _hip_id_map_cache
+    with _hip_id_map_lock:
+        _hip_id_map_cache = None
+
+
+def _static_generation() -> Optional[int]:
+    """gpu_query's static generation, bumped by hardware re-detection (a swapped or re-seated card)."""
+    try:
+        from utils.hardware import gpu_query
+        return gpu_query._static_gen
+    except Exception:
+        return None
+
+
+def _amd_pci_topology() -> Optional[tuple]:
+    try:
+        from utils.hardware.hardware import _linux_amd_pci_topology
+        return _linux_amd_pci_topology()
+    except Exception:
+        return None
 
 
 def _read_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
@@ -438,7 +473,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     gpu_idx = _first_visible_amd_gpu_id()
     if gpu_idx is None:
         return {"available": False}
-    data = _run_amd_smi("metric", "-g", gpu_idx)
+    data = _run_amd_smi_for_display("metric", "-g", gpu_idx)
     if data is None:
         return {"available": False}
 
@@ -472,7 +507,7 @@ def get_visible_gpu_utilization(
             "index_kind": "unresolved",
         }
 
-    data = _run_amd_smi("metric")
+    data = _run_amd_smi_for_display("metric")
     if data is None:
         return {
             "available": False,

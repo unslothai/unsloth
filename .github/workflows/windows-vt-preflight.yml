@@ -23,6 +23,9 @@ name: "Windows: virtual terminal preflight"
 on:
   workflow_dispatch:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/scripts/Probe-VirtualTerminal.ps1'
       - '.github/workflows/windows-vt-preflight.yml'
@@ -36,6 +39,7 @@ concurrency:
 
 jobs:
   measure:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: "property vs native call (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -148,7 +152,7 @@ jobs:
 
       - name: Upload the measurements
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # Per leg. upload-artifact v4 and later refuse a duplicate name outright, so one shared
           # name would leave the matrix with a single surviving leg's measurements.
@@ -160,7 +164,7 @@ jobs:
   agree:
     name: did every measured host agree
     needs: measure
-    if: always()
+    if: (always()) && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

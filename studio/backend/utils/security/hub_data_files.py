@@ -7,7 +7,9 @@ datasets joins a card's relative ``data_files`` and ``data_dir`` to the repo (``
 but keeps an absolute path, a ``file://`` / ``local://`` URL or an absolute ``data_dir`` as given, so a Hub
 repo whose README lists ``/home/owner/private.csv`` makes ``load_dataset("org/repo")`` read that host file.
 No real card does that, and it would let anyone who can name a Hub dataset to Studio read host files
-through a preview or a load. A Hub card may name relative paths and hf / http(s) URLs only.
+through a preview or a load. A Hub card may name relative paths and hf / http(s) URLs only, and for a managed
+account hf only: an http(s) URL makes the server dial wherever the card says (a redirect included), which would let
+a managed account read loopback, LAN or cloud metadata services the rest of Studio keeps from it.
 
 ``install()`` patches ``datasets`` once it is imported, without importing it at startup; it is idempotent.
 """
@@ -20,6 +22,7 @@ import re
 import sys
 
 _HUB_URL_PROTOCOLS = frozenset({"hf", "http", "https"})
+_MANAGED_URL_PROTOCOLS = frozenset({"hf"})
 _PATCHES = {
     "datasets.data_files": ("resolve_pattern", "_pattern_guard"),
     "datasets.load": ("create_builder_configs_from_metadata_configs", "_card_guard"),
@@ -66,11 +69,19 @@ def _stays_on_the_hub(value, *, urls: bool) -> bool:
     if protocol is None:
         # Relative, but ".." would climb out of a cached snapshot onto the host.
         return is_relative_path(text) and ".." not in re.split(r"[\\/]", text)
-    return urls and protocol in _HUB_URL_PROTOCOLS
+    return urls and protocol in (_HUB_URL_PROTOCOLS if _is_owner() else _MANAGED_URL_PROTOCOLS)
+
+
+def _is_owner() -> bool:
+    try:
+        from utils.account_context import is_owner_context
+    except ImportError:  # outside Studio's backend there are no managed accounts
+        return True
+    return is_owner_context()
 
 
 def _refuse(value) -> None:
-    raise FileNotFoundError(f"Unable to find '{value}': a Hub dataset cannot point at a local file")
+    raise FileNotFoundError(f"Unable to find '{value}': a Hub dataset card cannot point here")
 
 
 def _patterns(data_files):

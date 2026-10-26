@@ -14,7 +14,7 @@ import functools
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, long_indexing, torch_gpu_device
+from .utils import calculate_settings, long_indexing, norm_num_warps, torch_gpu_device
 from . import triton_launch
 from .triton_launch import launch
 from unsloth_zoo.patching_utils import (
@@ -211,14 +211,46 @@ def _dw_slots(device):
         return 128, 32
 
 
-_cached_settings = functools.lru_cache(maxsize = None)(calculate_settings)
+# num_warps per (compute capability, n_cols), replacing calculate_settings' where a sweep (fp16 + bf16 on
+# sm_80+, fp16 on T4; 2k and 16k rows) found a width faster outside the run's A/A band in some cell and never
+# slower in any, at least 3% on the geometric mean, with max error vs fp64 no worse than the default's; every
+# entry then won again against main on torch 2.14.1 (same GPU tier, interleaved, outside A/A, never slower).
+# _NUM_WARPS: forward + frozen-W backward; _DW_NUM_WARPS: the dW / dB backward.
+_NUM_WARPS = {
+    ((7, 5), 2560): 16,
+    ((7, 5), 4096): 16,
+    ((8, 0), 2560): 2,
+    ((8, 9), 2048): 4,
+    ((9, 0), 2560): 2,
+    ((9, 0), 5120): 4,
+    ((12, 0), 5120): 4,
+}
+_DW_NUM_WARPS = {
+    ((7, 5), 4096): 16,
+    ((8, 0), 5120): 32,
+    ((9, 0), 5120): 32,
+    ((12, 0), 4096): 16,
+}
 
 
-def _settings(n_cols):
-    # Cached per width for eager calls (host bound at small shapes); tracing calls it directly.
-    if torch.compiler.is_compiling():
-        return calculate_settings(n_cols)
-    return _cached_settings(n_cols)
+def _arch_settings(n_cols, device, dw):
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    table = _DW_NUM_WARPS if dw else _NUM_WARPS
+    return BLOCK_SIZE, norm_num_warps(table, n_cols, num_warps, device)
+
+
+_cached_arch_settings = functools.lru_cache(maxsize = None)(_arch_settings)
+
+
+def _settings(
+    n_cols,
+    device = None,
+    dw = False,
+):
+    # Cached per (width, device) for eager calls; tracing and symbolic (unhashable) widths skip it.
+    if torch.compiler.is_compiling() or type(n_cols) is not int:
+        return _arch_settings(n_cols, device, dw)
+    return _cached_arch_settings(n_cols, device, dw)
 
 
 def _launch(kernel, grid, args, n_tensors, constexprs, device, **options):
@@ -241,8 +273,8 @@ class Fast_Layernorm(torch.autograd.Function):
         has_bias = b is not None
         b = b.contiguous() if has_bias else W
         n_rows, n_cols = X.shape
-        BLOCK_SIZE, num_warps = _settings(n_cols)
         device = X.device
+        BLOCK_SIZE, num_warps = _settings(n_cols, device)
         Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = device)
         r = torch.empty(n_rows, dtype = torch.float32, device = device)
         mu = torch.empty(n_rows, dtype = torch.float32, device = device)
@@ -307,19 +339,25 @@ class Fast_Layernorm(torch.autograd.Function):
                 )
             return dX.view(*shape), None, None, None
 
-        programs, rows_per_program = _dw_programs(device, n_rows, ctx.num_warps)
+        dw_warps = _settings(n_cols, device, dw = True)[1]
+        programs, rows_per_program = _dw_programs(device, n_rows, dw_warps)
         # every program stores its partial row, so empty works unless no program launches
         alloc = torch.empty if n_rows > 0 else torch.zeros
         partials = alloc((train_w + train_b, programs, n_cols), dtype = torch.float32, device = device)
         dW = torch.empty(n_cols, dtype = W.dtype, device = device) if train_w else None
         dB = torch.empty(n_cols, dtype = b.dtype, device = device) if train_b else None
         outs = [t for t in (dW, dB) if t is not None]
+        # Unused slot must not alias the used one: torch.compile drops one of two writes to a buffer.
+        spare = partials.new_empty(1) if len(outs) == 1 else None
+        partial_w = partials[0] if train_w else spare
+        partial_b = partials[-1] if train_b else spare
+        out1 = outs[-1] if len(outs) == 2 else outs[0].new_empty(1)
         with torch_gpu_device(device):
             if n_rows > 0:
                 _launch(
                     layernorm_backward_dw,
                     (programs,),
-                    (dY, dX, X, W, r, mu, partials[0], partials[-1], n_rows, rows_per_program),
+                    (dY, dX, X, W, r, mu, partial_w, partial_b, n_rows, rows_per_program),
                     8,
                     dict(
                         dY_row_stride = dY.stride(0),
@@ -332,13 +370,13 @@ class Fast_Layernorm(torch.autograd.Function):
                         TRAIN_B = train_b,
                     ),
                     device,
-                    num_warps = ctx.num_warps,
+                    num_warps = dw_warps,
                     enable_fp_fusion = True,
                 )
             _launch(
                 _layernorm_sum_partials,
                 ((n_cols + 63) // 64, len(outs)),
-                (partials, outs[0], outs[-1], programs, n_cols),
+                (partials, outs[0], out1, programs, n_cols),
                 3,
                 dict(BLOCK_ROWS = 64, BLOCK_COLS = 64),
                 device,

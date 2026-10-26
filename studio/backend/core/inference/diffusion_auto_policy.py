@@ -25,6 +25,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .diffusion_fp16_variant import is_fp16_twin, shadowed_twins
+
 _MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)  # component sizes below are decimal GB
 
 # Steady size of a torchao-quantised transformer relative to bf16: int8/fp8 store one byte per param plus per-row
@@ -68,6 +70,10 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.1": (23.8, 9.8, 0.2),
     "flux.1-kontext": (23.8, 9.8, 0.2),
     "flux.2-klein": (7.8, 8.0, 0.2),
+    # FLUX.3 Image Klein: 5.55B DiT (11.1 GB bf16) + Qwen3-VL-4B (8.9 GB) + the FLUX.2 VAE (stored fp32, 0.17 GB
+    # bf16). From the black-forest-labs/flux-3-image-klein component folders; the base shares the architecture.
+    "flux.3-klein": (11.1, 8.9, 0.2),
+    "flux.3-klein-base": (11.1, 8.9, 0.2),
     "flux.2-dev": (64.5, 48.0, 0.4),
     "qwen-image": (40.9, 16.6, 0.3),
     "qwen-image-edit": (40.9, 16.6, 0.3),
@@ -80,6 +86,8 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "qwen-image-2.1": (14.2, 17.5, 1.4),
     "z-image": (12.3, 8.0, 0.2),
     "krea-2": (26.3, 8.9, 0.5),
+    # MOSS-Image: 5.08B DiT + headless Qwen3.5-9B + fp32 FLUX.2 VAE (MOSS-Image-SFT index metadata).
+    "moss-image": (10.2, 15.9, 0.3),
     # Ships fp32 (10.4 + 10.5 + 0.3 GB of shards); bf16-resident is half.
     "lumina-2": (5.2, 5.2, 0.2),
     # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
@@ -119,9 +127,7 @@ _BASE_RESIDENT_FACTORS: dict = {
     "tongyi-mai/z-image": (1.0, 1.0),
     "alpha-vllm/lumina-image-2.0": (2.0, 2.0),
     "ideogram-ai/ideogram-4-fp8": (0.5, 0.5),
-    # SDXL's default variant is fp32 throughout (headers read 2026-08-25); the loader skips the fp16 twins. At 1:1 its
-    # 12.9 GB prices against a 6.5 GB bf16 load and refuses on any 16 GB pool. Its denoiser is ``unet/``, so it lands in
-    # the companion bucket: both factors halve.
+    # SDXL defaults are fp32 (12.9 GB vs 6.5 GB loaded), unet/ is a companion: both factors halve. fp16 twins price 1:1.
     "stabilityai/stable-diffusion-xl-base-1.0": (2.0, 2.0),
     "stabilityai/sdxl-turbo": (2.0, 2.0),
 }
@@ -147,25 +153,65 @@ def resident_bytes_from_declared(
     )
     denoiser = 0
     companions = 0
-    for path, size in declared_files or ():
+    twins = 0  # already at load width: 1:1
+    declared_files = list(declared_files or ())
+    shadowed = shadowed_twins(path for path, _size in declared_files)
+    for path, size in declared_files:
         size = int(size or 0)
-        if size <= 0:
+        if size <= 0 or str(path) in shadowed:
             continue
-        if str(path).startswith(DENOISER_SUBFOLDERS):
+        if is_fp16_twin(str(path)):
+            twins += size
+        elif str(path).startswith(DENOISER_SUBFOLDERS):
             denoiser += size
         else:
             companions += size
     prequant_bytes = max(0, int(prequant_bytes or 0))
     extra_bf16_bytes = max(0, int(extra_bf16_bytes or 0))
     dtype_scale = max(1.0, float(dtype_scale or 1.0))
-    if denoiser <= 0 and companions <= 0 and prequant_bytes <= 0 and extra_bf16_bytes <= 0:
+    if (
+        denoiser <= 0
+        and companions <= 0
+        and twins <= 0
+        and prequant_bytes <= 0
+        and extra_bf16_bytes <= 0
+    ):
         return None
     dtype_resident = (
         int(denoiser / max(denoiser_factor, 0.01))
         + int(companions / max(companion_factor, 0.01))
+        + twins
         + extra_bf16_bytes
     )
     return int(dtype_resident * dtype_scale) + prequant_bytes
+
+
+def companion_bytes_from_declared(
+    base_repo: Optional[str],
+    declared_files: Any,
+    *,
+    dtype_scale: float = 1.0,
+) -> Optional[int]:
+    """Non-denoiser (text encoder, VAE) share of ``resident_bytes_from_declared``; None when none declared."""
+    _denoiser_factor, companion_factor = _BASE_RESIDENT_FACTORS.get(
+        _base_key(base_repo) if base_repo else "", (1.0, 1.0)
+    )
+    # An SDXL-style UNet is a denoiser too.
+    declared_files = list(declared_files or ())
+    shadowed = shadowed_twins(path for path, _size in declared_files)
+    kept = [
+        (str(path), max(0, int(size or 0)))
+        for path, size in declared_files
+        if not str(path).startswith(DENOISER_SUBFOLDERS + ("unet/",)) and str(path) not in shadowed
+    ]
+    companions = sum(size for path, size in kept if not is_fp16_twin(path))
+    twins = sum(size for path, size in kept if is_fp16_twin(path))
+    if companions + twins <= 0:
+        return None
+    return int(
+        (int(companions / max(companion_factor, 0.01)) + twins)
+        * max(1.0, float(dtype_scale or 1.0))
+    )
 
 
 def _base_key(base_repo: Optional[str]) -> str:
@@ -559,6 +605,8 @@ def format_generation_for_log(
     """One-line log summary of a generate() result."""
     images = result.get("images") or ()
     size = getattr(images[0], "size", None) if images else None
+    if not isinstance(size, tuple):
+        size = None  # a latent tensor (Hires fix base pass) has no pixel size
     fields = {
         "engine": engine,
         "workflow": result.get("workflow"),

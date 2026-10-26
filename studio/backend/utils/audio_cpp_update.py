@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import os
 import platform
+import re
+import shutil
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +26,10 @@ _INSTALL_TIMEOUT_SECONDS = 1800
 # setup.sh / setup.ps1 leave the managed tree alone when any of these is set, so an update would not take effect.
 _SETUP_SKIP_VARS = ("AUDIOCPP_SERVER_PATH", "UNSLOTH_AUDIO_CPP_PATH")
 _EXIT_BUSY = 3
+_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+_VERSION_COMMIT = re.compile(r"^git: ([0-9a-f]{7,40})\b", re.MULTILINE)
+_backfill_started = False
+_backfill_lock = threading.Lock()
 
 
 class _AudioPhaseError(RuntimeError):
@@ -168,6 +175,65 @@ def _update_size_bytes(
     return size
 
 
+def _release_assets(
+    repo: str,
+    latest: str,
+    *,
+    force_refresh: bool = False,
+) -> Optional[dict]:
+    assets = _freshness.latest_release_assets(repo, force_refresh = force_refresh)
+    # The tag can come from the 24h disk cache while the asset list is fetched fresh, so after a newer release the two can disagree: keep only the offered release's assets.
+    prefixes = (f"audio-{latest}-bin-", f"audio-{latest}-cudart-")
+    return {
+        name: size for name, size in (assets or {}).items() if name.startswith(prefixes)
+    } or None
+
+
+def _install_plan(plan: dict, *, force_refresh: bool = False) -> dict:
+    """No runtime at all: offer a first install into the managed tree, but only where setup would have installed one and this host has a bundle for the known release. Otherwise ``plan`` stays not_installed."""
+    from core.inference import audio_cpp_server
+
+    skipped = any(os.environ.get(name) for name in _SETUP_SKIP_VARS)
+    if (
+        skipped
+        or os.environ.get("UNSLOTH_SKIP_AUDIO_CPP_INSTALL") == "1"
+        or update_checks_disabled()
+    ):
+        return plan
+    repo, pin = _target()
+    latest = pin or _freshness.latest_published_release(repo, force_refresh = force_refresh)
+    assets = (
+        None
+        if pin or latest is None
+        else _release_assets(repo, latest, force_refresh = force_refresh)
+    )
+    script = _installer_script()
+    if (
+        latest is None
+        or script is None
+        # The installer's own pick: a macOS release has Metal bundles only.
+        or not _host_has_prebuilt(
+            list(assets) if assets else None, _installer().detect_accelerator()
+        )
+    ):
+        return plan
+    plan.update(
+        status = {"installed_tag": None, "latest_tag": latest, "update_size_bytes": None},
+        update_available = True,
+        skip_reason = None,
+        phase = dict(
+            install_dir = audio_cpp_server.managed_audio_cpp_dir(),
+            script = script,
+            accelerator = None,
+            from_tag = None,
+            to_tag = latest,
+            pin_release_tag = latest,
+            repo = repo,
+        ),
+    )
+    return plan
+
+
 def _plan(*, force_refresh: bool = False) -> dict:
     from core.inference import audio_cpp_server
 
@@ -175,7 +241,7 @@ def _plan(*, force_refresh: bool = False) -> dict:
     binary = audio_cpp_server.find_audio_cpp_server_binary()
     if binary is None:
         plan["skip_reason"] = "not_installed"
-        return plan
+        return _install_plan(plan, force_refresh = force_refresh)
     record = audio_cpp_server.read_install_record(binary)
     status = {"installed_tag": _tag(record), "latest_tag": None, "update_size_bytes": None}
     plan["status"] = status
@@ -211,12 +277,7 @@ def _plan(*, force_refresh: bool = False) -> dict:
         ):
             plan["skip_reason"] = "up_to_date"
             return plan
-        assets = _freshness.latest_release_assets(repo, force_refresh = force_refresh)
-        # The tag can come from the 24h disk cache while the asset list is fetched fresh, so after a newer release the two can disagree: keep only the offered release's assets.
-        prefixes = (f"audio-{latest}-bin-", f"audio-{latest}-cudart-")
-        assets = {
-            name: size for name, size in (assets or {}).items() if name.startswith(prefixes)
-        } or None
+        assets = _release_assets(repo, latest, force_refresh = force_refresh)
         names = list(assets) if assets else None
         status["update_size_bytes"] = _update_size_bytes(assets, record, installed, latest)
     installer = _installer()
@@ -364,7 +425,11 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
     new_repo, new_tag = _installed_identity()
     # Repo and tag together: switching UNSLOTH_AUDIO_CPP_REPO can replace a runtime with another repo's same tag.
     # A runtime that is already the offered release (a setup run got there first) is not a kept old tree.
-    if (new_repo, new_tag) == before and (new_repo, new_tag) != (
+    if before[1] is None and new_tag is None:
+        # A first install that exited 0 without a runtime (the release lookup could not answer).
+        message = "The audio runtime could not be installed right now. Try again later."
+        raise _AudioPhaseError(message, reload_required = unloaded)
+    elif (new_repo, new_tag) == before and (new_repo, new_tag) != (
         phase.get("repo"),
         phase.get("to_tag"),
     ):
@@ -373,6 +438,8 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
             f"audio.cpp could not be updated right now, so the existing {new_tag} "
             f"install was kept. Try again later.{reload_hint}"
         )
+    elif before[1] is None:
+        message = f"Installed the audio runtime {new_tag}.{reload_hint}"
     else:
         message = f"Updated audio.cpp to {new_tag}.{reload_hint}"
     logger.info("audio.cpp update: done", to_tag = new_tag)
@@ -404,4 +471,83 @@ def run_chained_phase(phase: dict, set_progress) -> dict:
                 ) from exc
             return _install(phase, set_progress, unloaded)
     finally:
-        audio_cpp_server.UPDATE_IN_PROGRESS.clear()
+        try:
+            # Resolutions follow the runtime's model_specs/, so none made against the old tree may outlive it.
+            from core.inference import audio_cpp_models
+            audio_cpp_models.forget()
+        finally:
+            audio_cpp_server.UPDATE_IN_PROGRESS.clear()
+
+
+def _spec_commit(installer, record: dict, repo: str, tag: str) -> Optional[str]:
+    """The source commit the install was built from: the record, the release manifest, else the server version string."""
+    commit = record.get("source_commit")
+    if isinstance(commit, str) and _COMMIT.fullmatch(commit):
+        return commit
+    try:
+        commit = (installer._release_index(repo, tag) or {}).get("source_commit")
+    except Exception as exc:  # noqa: BLE001 - offline or rate-limited; try the version string
+        logger.debug("audio.cpp spec backfill: release lookup failed", error = str(exc))
+        commit = None
+    if isinstance(commit, str) and _COMMIT.fullmatch(commit):
+        return commit
+    version = record.get("server_version")
+    match = _VERSION_COMMIT.search(version) if isinstance(version, str) else None
+    return match.group(1) if match else None
+
+
+def _backfill_model_specs() -> bool:
+    """Fetch ``model_specs/`` for a managed install made before the installer fetched it. Returns
+    whether the folder was added; never raises."""
+    from core.inference import audio_cpp_server
+    try:
+        binary = audio_cpp_server.find_audio_cpp_server_binary()
+        if not binary or not _is_managed(binary) or audio_cpp_server.UPDATE_IN_PROGRESS.is_set():
+            return False
+        bin_dir = Path(binary).parent
+        record = audio_cpp_server.read_install_record(binary)
+        tag = _tag(record)
+        repo = record.get("published_repo")
+        if tag is None or not isinstance(repo, str) or (bin_dir / "model_specs").exists():
+            return False
+        installer = _installer()
+        commit = _spec_commit(installer, record, repo, tag)
+        if commit is None:
+            logger.info("audio.cpp spec backfill: no source commit", tag = tag)
+            return False
+        core = installer.core
+        managed_dir = audio_cpp_server.managed_audio_cpp_dir().resolve()
+        with core.install_lock(core.install_lock_path(managed_dir), timeout = 2):
+            # An update may have replaced the tree while the lock was taken.
+            if audio_cpp_server.UPDATE_IN_PROGRESS.is_set() or (bin_dir / "model_specs").exists():
+                return False
+            if audio_cpp_server.read_install_record(binary).get("release_tag") != tag:
+                return False
+            for leftover in bin_dir.glob(".model_specs-*"):
+                # Left by a killed fetch; only the exact name model_specs is ever read.
+                shutil.rmtree(leftover, ignore_errors = True)
+            if not installer._fetch_model_specs(repo, commit, bin_dir):
+                logger.info("audio.cpp spec backfill: fetch failed", tag = tag)
+                return False
+        from core.inference import audio_cpp_models
+
+        audio_cpp_models.forget()
+        logger.info("audio.cpp spec backfill: added model_specs", tag = tag, commit = commit)
+        return True
+    except Exception as exc:  # noqa: BLE001 - families stay unknown, as before
+        logger.debug("audio.cpp spec backfill failed", error = str(exc))
+        return False
+
+
+def start_model_specs_backfill() -> None:
+    """Run the spec backfill once per process on a daemon thread, unless update checks are disabled."""
+    global _backfill_started
+    if update_checks_disabled():
+        return
+    with _backfill_lock:
+        if _backfill_started:
+            return
+        _backfill_started = True
+    threading.Thread(
+        target = _backfill_model_specs, daemon = True, name = "audio-cpp-spec-backfill"
+    ).start()

@@ -201,7 +201,7 @@ const RewindPicker: FC<{
                 <button
                   type="button"
                   onClick={() => onPick(entry.id)}
-                  className="w-full truncate rounded-[12px] px-3 py-2 text-left hover:bg-accent focus-visible:bg-accent outline-none"
+                  className="w-full truncate rounded-md px-3 py-2 text-left hover:bg-accent focus-visible:bg-accent outline-none"
                 >
                   {entry.preview || (
                     <span className="text-muted-foreground">
@@ -328,7 +328,7 @@ const RewindChoices: FC<{
             {t("rewind.confirmTitle")}
           </DialogTitle>
         </DialogHeader>
-        <p className="line-clamp-3 rounded-[14px] bg-muted px-4 py-3 text-sm wrap-break-word">
+        <p className="line-clamp-3 rounded-lg bg-muted px-4 py-3 text-sm wrap-break-word">
           {preview || (
             <span className="text-muted-foreground">
               {t("rewind.attachmentOnly")}

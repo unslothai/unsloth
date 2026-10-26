@@ -2781,12 +2781,21 @@ def test_a_companion_mirror_carries_the_flag_on_the_hub_row(monkeypatch, tmp_pat
     into. A mirror that reaches this scan must carry it.
 
     Given a config.json, because the real mirrors have none: see the test below for what that
-    means today.
+    means today. A synthetic companion id: no image sd-cli asset is a safetensors-only companion repo any more (the
+    encoders are unsloth GGUFs and the VAEs official diffusers files), but the flag still has to reach this row.
     """
+    import core.inference.diffusion_families as families
+
+    real = families.sd_cpp_companion_only_repo_ids
+    monkeypatch.setattr(
+        families,
+        "sd_cpp_companion_only_repo_ids",
+        lambda: real() | {"unsloth/example-vae-companion"},
+    )
     row = _diffusion_scan(
         monkeypatch,
         tmp_path,
-        "unsloth/Z-Image-Turbo-ComfyUI",
+        "unsloth/example-vae-companion",
         [_file("config.json", 12), _file("model.safetensors", 300_000_000)],
         task = None,
     )
@@ -2997,7 +3006,58 @@ def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
 
     result = {"cached": cache_inventory._scan_cached_models()}
 
-    assert [row["repo_id"] for row in result["cached"]] == ["user/model-chat"]
+    can_chat = {row["repo_id"]: row["capabilities"]["can_chat"] for row in result["cached"]}
+    assert sorted(can_chat) == ["org/model", "user/model-chat"]
+    assert can_chat["org/model"] is False
+
+
+def test_cached_scans_keep_settings_picked_embedder_as_non_chat_rows(monkeypatch, tmp_path):
+    # #15110: picking a downloaded embedder in Settings dropped it and its GGUF from the Hub, so it could not be deleted.
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "unsloth/embeddinggemma-2")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "unsloth/embeddinggemma-2-GGUF")
+
+    weights_path = tmp_path / "hub" / "models--unsloth--embeddinggemma-2"
+    weights_path.mkdir(parents = True)
+    weights = _repo(
+        "unsloth/embeddinggemma-2",
+        [_file("config.json", 12), _file("modules.json", 12), _file("model.safetensors", 1_000)],
+        weights_path,
+    )
+    gguf = _repo(
+        "unsloth/embeddinggemma-2-GGUF",
+        [_file("embeddinggemma-2-F16.gguf", 1_000)],
+        tmp_path / "hub" / "models--unsloth--embeddinggemma-2-GGUF",
+    )
+    default_path = tmp_path / "hub" / "models--unsloth--bge-small-en-v1.5"
+    default_path.mkdir(parents = True)
+    default = _repo(
+        "unsloth/bge-small-en-v1.5",
+        [_file("config.json", 12), _file("model.safetensors", 1_000)],
+        default_path,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [weights, gguf, default])],
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_gguf_repo_partial", _not_partial_gguf)
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", _not_partial_snapshot)
+
+    models = cache_inventory._scan_cached_models()
+    ggufs = cache_inventory._scan_cached_gguf()
+
+    assert [(r["repo_id"], r["capabilities"]["can_chat"]) for r in models] == [
+        ("unsloth/embeddinggemma-2", False)
+    ]
+    assert [(r["repo_id"], r["capabilities"]["can_chat"]) for r in ggufs] == [
+        ("unsloth/embeddinggemma-2-GGUF", False)
+    ]
+    from utils.hidden_models import is_hidden_model
+
+    assert is_hidden_model("unsloth/embeddinggemma-2")
+    assert is_hidden_model("unsloth/embeddinggemma-2-GGUF")
 
 
 def test_cached_scans_hide_stale_default_embedder_after_custom_setting(monkeypatch, tmp_path):
@@ -8517,3 +8577,37 @@ def test_every_row_key_the_scanner_emits_survives_the_response_schema():
     }
     assert CachedModelRepo(**row).model_dump()["diffusers"] is True
     assert set(CachedGgufRepo.model_fields), "GGUF schema import is load-bearing above"
+
+
+def test_a_gguf_repo_holding_its_bases_companions_is_not_listed_twice(monkeypatch, tmp_path):
+    """unsloth/Z-Image-GGUF is also Tongyi-MAI/Z-Image's mirror, so a GGUF load caches the official companions inside
+    it. Those companions belong to the GGUF row; a second, companion-only pipeline row with the same id would offer a
+    whole-repo delete that also removes the quants."""
+    repo_id = "unsloth/Z-Image-GGUF"
+    files = [
+        _file("z-image-Q4_K_M.gguf", 5_000_000_000),
+        _file("model_index.json", 900),
+        _file("vae/diffusion_pytorch_model.safetensors", 300_000_000),
+        _file("text_encoder/model-00001-of-00003.safetensors", 3_900_000_000),
+    ]
+    repo_path = tmp_path / f"hub/models--{repo_id.replace('/', '--')}"
+    snapshot = repo_path / "snapshots" / _SNAPSHOT_SHA
+    for f in files:
+        target = snapshot / f.file_name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0" * 64)
+    (repo_path / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_path / "refs" / "main").write_text(_SNAPSHOT_SHA)
+    revision = SimpleNamespace(files = files, snapshot_path = snapshot, commit_hash = _SNAPSHOT_SHA)
+    repo = SimpleNamespace(
+        repo_id = repo_id, repo_type = "model", repo_path = repo_path, revisions = [revision]
+    )
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *_a, **_k: "text-to-image")
+    rows = cache_inventory._scan_cached_models(active_hub_cache = tmp_path / "hub")
+    assert [r for r in rows if (r.get("repo_id") or r.get("id")) == repo_id] == []

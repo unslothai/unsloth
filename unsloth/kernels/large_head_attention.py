@@ -8,7 +8,6 @@
 # non-decreasing down the rows (causal, packed, right padding, sliding window).
 # UNSLOTH_HD512_ATTENTION=0 leaves SDPA untouched.
 
-import functools
 import os
 import sys
 
@@ -431,7 +430,7 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
     B, H, S, D = q.shape
     HKV = k.shape[1]
     G = H // HKV
-    if do.stride(-1) != 1:
+    if do.stride(-1) != 1 or _row_span(do) > _INT32_MAX:
         do = do.contiguous()
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
@@ -707,9 +706,31 @@ def large_head_attention(
     return out.transpose(1, 2)
 
 
-@functools.lru_cache(maxsize = 1)
+# Read once, like a cache, but dynamo reads (and guards on) this list instead of tracing through an
+# lru_cache wrapper, which warns and re-reads the environment, so compiled code agrees with eager.
+_ENABLED = [None]
+
+
 def _enabled():
-    return os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    if _ENABLED[0] is None:
+        _ENABLED[0] = os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    return _ENABLED[0]
+
+
+_enabled.cache_clear = lambda: _ENABLED.__setitem__(0, None)
+
+
+def _row_span(x):
+    """Largest element offset the kernels compute in int32 for a [B, H, S, D] operand.
+
+    Batch and head offsets are int64 in every kernel; the row and column offsets
+    (offs_m * stride_m + offs_d) are int32, so they are what must stay below 2**31. A strided
+    view can have a small numel and still reach far past 2**31 elements along S. An operand
+    whose last stride is not 1 is copied contiguous before launch, so its numel bounds it.
+    """
+    if x.stride(-1) != 1:
+        return x.numel()
+    return (x.shape[-2] - 1) * x.stride(-2) + (x.shape[-1] - 1)
 
 
 def _shapes_qualify(query, key, value):
@@ -729,7 +750,9 @@ def _shapes_qualify(query, key, value):
         return False
     if key.dtype != query.dtype or value.dtype != query.dtype:
         return False
-    return max(query.numel(), key.numel(), value.numel()) <= _INT32_MAX
+    if max(query.numel(), key.numel(), value.numel()) > _INT32_MAX:
+        return False
+    return max(_row_span(query), _row_span(key), _row_span(value)) <= _INT32_MAX
 
 
 _SELF_CHECK = {}
@@ -757,8 +780,11 @@ def _self_check(device, dtype):
         # A local generator: torch.manual_seed would reseed every CUDA device's RNG.
         gen = torch.Generator(device = device)
         gen.manual_seed(0)
-        # Inference tensors cannot record autograd, even under enable_grad.
-        with torch.inference_mode(False), torch.enable_grad():
+        # Inference tensors cannot record autograd, even under enable_grad. A first call inside a
+        # non-reentrant checkpoint (DDP / FSDP2, Gemma-4 E-series) would pack the check's tensors
+        # into the layer's checkpoint and recompute the layer mid-forward (CheckpointError).
+        hooks = torch.autograd.graph.saved_tensors_hooks(lambda t: t.detach(), lambda t: t)
+        with torch.inference_mode(False), torch.enable_grad(), hooks:
             q, k, v, g = [
                 torch.randn(shape, device = device, dtype = dtype, generator = gen)
                 for shape in ((1, 4, 80, 512), (1, 2, 80, 512), (1, 2, 80, 512), (1, 80, 4, 512))
@@ -775,6 +801,8 @@ def _self_check(device, dtype):
                 is_causal = True,
             ).transpose(1, 2)
             ref_grads = torch.autograd.grad(ref, (qf, kf, vf), g.float())
+        # Compared detached: autograd ops on `out` here would also be saved into that checkpoint.
+        out, ref = out.detach(), ref.detach()
         passed = all(
             torch.isfinite(a).all().item()
             and ((a.float() - b).abs().max() <= 0.05 * b.abs().max() + 0.02).item()
@@ -831,6 +859,14 @@ if hasattr(torch.compiler, "assume_constant_result"):
     _math_sdpa_requested = torch.compiler.assume_constant_result(_math_sdpa_requested)
 
 
+def _is_capturing(device):
+    try:
+        with torch.cuda.device(device):
+            return torch.cuda.is_current_stream_capturing()
+    except Exception:
+        return False
+
+
 def _make_router(original):
     def _sdpa_large_head(
         module,
@@ -851,6 +887,10 @@ def _make_router(original):
             and not dropout
             # The kernel only reads the mask's structure, so a trainable mask would get no grad.
             and not (torch.is_tensor(attention_mask) and attention_mask.requires_grad)
+            # transformers 4.x pairs is_causal with a mask (SDPA applies both); intervals carry only the mask.
+            and not (
+                attention_mask is not None and is_causal is not None and is_causal is not False
+            )
             and kwargs.get("position_bias", None) is None
             and kwargs.get("softcap", None) is None
             and not kwargs.get("output_attentions", False)
@@ -862,18 +902,27 @@ def _make_router(original):
             B, S = query.shape[0], query.shape[2]
             intervals = None
             compiling = torch.compiler.is_compiling()
+            # A host sync (mask scan, first self check) is illegal while a CUDA graph is captured,
+            # and a captured graph would replay one mask's verdict for whatever the buffer holds
+            # later. So capture only reads cached self checks and sends masked calls to SDPA.
+            capturing = not compiling and _is_capturing(query.device)
             if attention_mask is None:
                 causal = is_causal if is_causal is not None else getattr(module, "is_causal", True)
                 intervals = _dense_intervals(B, S, bool(causal), query.device)
             elif (
                 not compiling
-                and not (torch.is_tensor(attention_mask) and attention_mask.is_inference())
+                and not capturing
                 and _SELF_CHECK.get((str(query.device), query.dtype), True)
             ):
                 # Reading a mask's structure needs a host sync; compiled graphs keep SDPA. Inference
-                # masks cannot cache the verdict across layers, so they keep SDPA too.
-                intervals = intervals_from_mask(attention_mask, B, S)
-            if compiling:
+                # masks cannot cache the verdict, so they are rescanned per layer: one sync each, only
+                # at prefill (decode never qualifies), cheaper than SDPA's repeated KV heads and mask.
+                try:
+                    intervals = intervals_from_mask(attention_mask, B, S)
+                except torch.cuda.OutOfMemoryError:
+                    # The mask scan allocates row chunks; near capacity, SDPA below decides as before.
+                    LARGE_HEAD_ENGAGED["fallback"] += 1
+            if compiling or capturing:
                 checked = _SELF_CHECK.get((str(query.device), query.dtype), False)
             elif intervals is not None:
                 checked = _self_check(query.device, query.dtype)
@@ -931,13 +980,22 @@ def patch_large_head_attention(model = None):
         head_dims = (getattr(m, "head_dim", 0) for m in model.modules())
         if not any(isinstance(d, int) and d in _SUPPORTED_HEAD_DIMS for d in head_dims):
             return False
+        # Forced float32 (zoo's Gemma-4 patch) runs attention in float32 on raw SDPA, never through
+        # this router: installing would only self check and autotune fp16 at load for nothing.
+        if getattr(model, "_unsloth_forced_float32", False) is True:
+            return False
         # Compiled graphs only read the cached verdict, so check before any tracing.
         try:
-            targets = {
-                (p.device, p.dtype)
-                for p in model.parameters()
-                if p.is_cuda and p.dtype in (torch.float16, torch.bfloat16)
-            }
+            targets = set()
+            for p in model.parameters():
+                if not p.is_cuda:
+                    continue
+                # bnb 4-bit weights are packed into uint8 or a float quant storage dtype that can
+                # differ from the compute dtype, which is on the quant state.
+                quant_state = getattr(p, "quant_state", None)
+                dtype = getattr(quant_state, "dtype", None) if quant_state is not None else p.dtype
+                if dtype in (torch.float16, torch.bfloat16):
+                    targets.add((p.device, dtype))
         except Exception:
             targets = set()
         passed = [_self_check(device, dtype) for device, dtype in targets]

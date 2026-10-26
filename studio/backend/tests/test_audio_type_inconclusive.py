@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unreadable tokenizer_config.json must not read as "not an audio model".
-
-`detect_audio_type` returns None for both "definitely not audio" and "could not tell", and
-the trainer used it to choose a preprocessing path. A TTS run whose repo could not be read
-therefore took the text path and failed much later with "Could not auto-detect format
-mapping", which names a column-mapping problem rather than the read that failed.
-"""
+"""An unreadable tokenizer_config.json must not count as not-audio; None also means could-not-tell."""
 
 from __future__ import annotations
 
@@ -25,16 +19,7 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Register a stub module for a dep the backend pytest job does not install.
-
-    Same helper and reason as test_trainer_stdout_quiet.py: core.training.trainer imports
-    unsloth (and through it unsloth_zoo) and trl at module scope, while the pytest matrix in
-    studio-backend-ci.yml installs studio.txt plus torch and transformers and deliberately
-    stops there, because the repo-cpu-tests job beside it is the one that installs
-    unsloth_zoo, for the REPO-ROOT tests/ tree. Unstubbed, this module fails COLLECTION and
-    takes the whole job down. A real install is left alone. __spec__ = None keeps the
-    trainer's own _ensure_real_packages namespace-shadow guard a no-op on the stub.
-    """
+    """Stub unsloth and trl, absent from the backend job; __spec__ None keeps the shadow guard inert."""
     if name in sys.modules:
         return
     try:
@@ -60,25 +45,13 @@ _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 from core.training.trainer import _AUDIO_SNIFF_ROWS as _SNIFF_ROWS  # noqa: E402
 from core.training.trainer import UnslothTrainer  # noqa: E402
 
-# Drop the stubs now that the trainer holds its own references, because they outlive this module
-# otherwise and the whole suite then runs against them. utils.hardware.hardware._shared_policy
-# branches on `"unsloth" in sys.modules` and reaches for unsloth.dataset_num_proc, which a
-# spec-less non-package stub cannot provide, so it returns None and every shared-policy case in
-# test_dataset_map_num_proc.py skips instead of running. core.training.trainer itself stays in
-# sys.modules: the tests below monkeypatch it by dotted name, which would re-import it, and this
-# is the job where the real unsloth is not installed. A real install stubs nothing, so this is a
-# no-op there.
+# Drop the stubs so they do not outlive this module and skew other tests.
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 
 import transformers  # noqa: E402
 
-# transformers 5 rebuilds sys.modules["transformers"] as a fresh lazy facade the first time an
-# attribute resolves through a submodule import, so an object bound by an earlier `import
-# transformers` is not the one `from transformers import AutoProcessor` reads, and a stub on the
-# stale one is invisible to the trainer, which then makes a real network call. Resolving both
-# names once here settles that before any test patches them. Only visible with unsloth stubbed:
-# a real `import unsloth` resolves them long before collection reaches this module.
+# transformers 5 rebuilds its lazy module; resolve both names before patching.
 transformers.AutoProcessor  # noqa: B018
 transformers.AutoTokenizer  # noqa: B018
 transformers = sys.modules["transformers"]
@@ -147,12 +120,7 @@ def _run(
 
 
 def test_the_stubs_do_not_outlive_this_module():
-    """A leaked stub silently disables coverage in modules collected after this one.
-
-    utils.hardware.hardware._shared_policy takes `"unsloth" in sys.modules` as proof the real
-    package is usable; against a stub it returns None and test_dataset_map_num_proc.py skips its
-    shared-policy cases rather than failing, so nothing else would report this.
-    """
+    """A leaked stub makes utils.hardware skip shared-policy cases silently in later modules."""
     from utils.hardware import hardware as hw
 
     for name in _STUBBED:
@@ -171,21 +139,18 @@ def test_an_inconclusive_probe_on_an_audio_dataset_is_refused(monkeypatch):
 
 
 def test_a_definitive_non_audio_model_still_takes_the_text_path(monkeypatch):
-    # The common case, unaffected.
     trainer = _trainer(audio_type = None, known = True, dataset_audio = True)
     assert _run(trainer, monkeypatch) is not None
     assert not trainer.errors
 
 
 def test_an_inconclusive_probe_without_audio_data_is_left_alone(monkeypatch):
-    # A text run whose repo happens to be gated must not start failing.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = False)
     assert _run(trainer, monkeypatch) is not None
     assert not trainer.errors
 
 
 def test_the_trainer_probes_with_the_checked_variant():
-    # detect_audio_type collapses "not audio" and "unreadable" into None.
     text = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8")
     assert "detect_audio_type_checked(" in text
     for line in text.splitlines():
@@ -195,16 +160,12 @@ def test_the_trainer_probes_with_the_checked_variant():
 
 
 def test_every_probe_site_records_whether_it_was_definitive():
-    # A site that reassigns _audio_type without its flag leaves the flag describing the
-    # previous probe, which is worse than not having it.
     lines = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8").splitlines()
     sites = [
         i for i, l in enumerate(lines) if "detect_audio_type_checked(" in l and "import" not in l
     ]
     assert sites, "no probe sites found"
     for i in sites:
-        # A window, because the retry site unpacks into locals first so a still-inconclusive
-        # answer cannot overwrite a good earlier one.
         window = "\n".join(lines[i : i + 25])
         assert "self._audio_type_known" in window, lines[i].strip()
 
@@ -235,9 +196,7 @@ def _text_features():
 
 
 def test_a_text_dataset_with_a_column_named_audio_is_not_refused(monkeypatch):
-    # is_dataset_audio is true on a column-NAME keyword match alone, never looking at the
-    # value, so a text dataset with an `audio` column arrives here flagged as audio.
-    # Refusing it would take away a text path that works.
+    # is_dataset_audio matches column names only, so text datasets can arrive flagged.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     result = _run(trainer, monkeypatch, dataset = _TypedDataset(_text_features()))
     assert result is not None, "a text dataset was refused for having an audio-named column"
@@ -245,24 +204,19 @@ def test_a_text_dataset_with_a_column_named_audio_is_not_refused(monkeypatch):
 
 
 def test_a_real_audio_column_is_still_refused(monkeypatch):
-    # The case the guard exists for.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     assert _run(trainer, monkeypatch, dataset = _TypedDataset(_audio_features())) is None
     assert trainer.errors and "tokenizer_config.json" in trainer.errors[0]
 
 
 def test_a_dataset_that_cannot_report_a_schema_is_still_refused(monkeypatch):
-    # A DatasetDict or iterable dataset has no usable `features`. Unknown is not "no audio
-    # here", and an unreadable model probe remains the likelier explanation.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     assert _run(trainer, monkeypatch, dataset = _Dataset()) is None
     assert trainer.errors and "tokenizer_config.json" in trainer.errors[0]
 
 
 def test_a_path_backed_audio_column_is_still_refused(monkeypatch):
-    # A JSON/CSV audio dataset carries paths as a Value("string") until the preprocessor
-    # casts it (_preprocess_snac_dataset does exactly that), so the schema alone would call
-    # it textual and hand it to the text path this guard prevents.
+    # JSON/CSV audio holds paths as strings until preprocessing casts them.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     dataset = _TypedDataset(
         _text_features(), rows = [{"audio": "clips/utt_0001.wav", "text": "hello"}]
@@ -272,8 +226,6 @@ def test_a_path_backed_audio_column_is_still_refused(monkeypatch):
 
 
 def test_a_raw_text_run_is_never_refused(monkeypatch):
-    # raw/CPT reads the text column and ignores any audio one by design, so it is not the
-    # unsafe audio-to-text fallback this guard targets.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     _run(
         trainer,
@@ -281,16 +233,12 @@ def test_a_raw_text_run_is_never_refused(monkeypatch):
         dataset = _TypedDataset(_audio_features()),
         format_type = "raw",
     )
-    # The stub cannot drive the whole raw-text branch, so assert only that the guard did not
-    # fire; anything reported past this point is the stub.
     reported = " ".join(trainer.errors)
     assert "tokenizer_config.json" not in reported, f"raw-text run was refused: {reported}"
 
 
 def test_a_transient_probe_failure_is_rechecked_after_the_tokenizer_loads(monkeypatch):
-    # The probe and the tokenizer load are two reads of the same repo, so a timeout or 5xx
-    # can leave the probe inconclusive while the download right after it succeeds. Without a
-    # recheck the run is refused later claiming an unreadable file that has just been read.
+    # A transient error can leave the probe inconclusive while the next load succeeds.
     import core.training.trainer as trainer_mod
 
     answers = [(None, False), ("whisper", True)]
@@ -321,7 +269,6 @@ def test_a_transient_probe_failure_is_rechecked_after_the_tokenizer_loads(monkey
 
 
 def test_a_probe_that_stays_inconclusive_is_not_overwritten(monkeypatch):
-    # A second inconclusive read must leave the flag False so the guard still protects the run.
     import core.training.trainer as trainer_mod
 
     monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", lambda *a, **kw: (None, False))
@@ -341,8 +288,6 @@ def test_a_probe_that_stays_inconclusive_is_not_overwritten(monkeypatch):
 
 
 def test_a_null_first_audio_value_does_not_decide_the_dataset(monkeypatch):
-    # A JSON/CSV audio dataset can carry a null first value and real paths after it, and the
-    # preprocessors skip such a row rather than fail, so row 0 alone would call it textual.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     dataset = _TypedDataset(
         _text_features(),
@@ -357,7 +302,6 @@ def test_a_null_first_audio_value_does_not_decide_the_dataset(monkeypatch):
 
 
 def test_rows_that_offer_no_usable_value_are_unknown_not_textual(monkeypatch):
-    # All-null candidate values answer neither way, and unknown must keep refusing.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     dataset = _TypedDataset(
         _text_features(), rows = [{"audio": None, "text": None}, {"audio": None, "text": None}]
@@ -367,9 +311,7 @@ def test_rows_that_offer_no_usable_value_are_unknown_not_textual(monkeypatch):
 
 
 def test_the_retry_reloads_the_processor_when_it_discovers_whisper(monkeypatch):
-    # The loader is chosen from the audio type, so a retry that flips the answer to whisper
-    # has already stored an AutoTokenizer. _preprocess_whisper_dataset reads
-    # .feature_extractor and .tokenizer off the processor, so every sample would be skipped.
+    # A retry flipping to whisper must reload the processor, not keep an AutoTokenizer.
     import core.training.trainer as trainer_mod
 
     answers = [(None, False), ("whisper", True)]
@@ -410,7 +352,6 @@ def test_the_retry_reloads_the_processor_when_it_discovers_whisper(monkeypatch):
 
 
 def test_the_retry_does_not_reload_when_the_answer_is_unchanged(monkeypatch):
-    # A retry that confirms the same type must not pay for a second load.
     import core.training.trainer as trainer_mod
 
     monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", lambda *a, **kw: (None, True))
@@ -432,9 +373,7 @@ def test_the_retry_does_not_reload_when_the_answer_is_unchanged(monkeypatch):
 
 
 def test_transcripts_are_not_evidence_that_the_audio_column_is_empty(monkeypatch):
-    # A path-backed audio dataset has a populated transcript in every row, so all-null audio
-    # values in the sniff window answer "unknown", not "textual" on the strength of the text:
-    # later rows may hold real paths, and the preprocessors skip the leading bad ones.
+    # All-null audio values in the sniff window mean unknown, not textual.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     rows = [{"audio": None, "text": f"transcript {i}"} for i in range(_SNIFF_ROWS + 4)]
     dataset = _TypedDataset(_text_features(), rows = rows)
@@ -443,8 +382,6 @@ def test_transcripts_are_not_evidence_that_the_audio_column_is_empty(monkeypatch
 
 
 def test_a_populated_audio_named_column_of_prose_still_answers_textual(monkeypatch):
-    # The other half: an audio-NAMED column that really holds prose is the false positive
-    # this veto exists for, and it must keep answering False.
     trainer = _trainer(audio_type = None, known = False, dataset_audio = True)
     rows = [{"audio": f"a sentence {i}", "text": "hello"} for i in range(4)]
     dataset = _TypedDataset(_text_features(), rows = rows)
@@ -455,9 +392,7 @@ def test_a_populated_audio_named_column_of_prose_still_answers_textual(monkeypat
 
 
 def test_the_first_tokenizer_load_failing_still_reaches_the_retry(monkeypatch):
-    # Spark-TTS keeps its tokenizer under LLM/ and the subfolder kwarg is chosen from the
-    # audio type, so an inconclusive first probe reads the root and raises: a retry placed
-    # only after a SUCCESSFUL load can never run for the models whose layout the type decides.
+    # Spark-TTS tokenizer lives under LLM/, so the retry must still run when the first load raises.
     import core.training.trainer as trainer_mod
 
     answers = [(None, False), ("bicodec", True)]
@@ -496,7 +431,6 @@ def test_the_first_tokenizer_load_failing_still_reaches_the_retry(monkeypatch):
 
 
 def test_a_load_failure_with_a_definitive_type_is_not_swallowed(monkeypatch):
-    # The retry must not turn a genuine "this repo has no tokenizer" into a silent pass.
     import core.training.trainer as trainer_mod
 
     monkeypatch.setattr(

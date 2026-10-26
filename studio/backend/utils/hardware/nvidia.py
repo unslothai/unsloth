@@ -240,6 +240,53 @@ def _parse_mig_gpu_indices(stdout: Any) -> frozenset[int]:
     return frozenset(indices)
 
 
+_mig_mode_entry: Optional[tuple[int, float, Optional[frozenset[int]]]] = None
+
+
+def get_mig_mode_gpu_indices_or_none() -> Optional[set[int]]:
+    """Physical indices of cards in MIG mode, with instances or not, or None when the query fails.
+    A MIG-mode card with no instances has no ``-L`` MIG row and no CUDA device either."""
+    global _mig_mode_entry
+    entry = _mig_mode_entry
+    if entry is not None and entry[0] == gpu_query._static_gen:
+        ttl = gpu_query.ttl_for(gpu_query.STATIC)
+        if time.monotonic() - entry[1] < (
+            ttl if entry[2] is not None else min(ttl, _MIG_FAILURE_RETRY_S)
+        ):
+            return None if entry[2] is None else set(entry[2])
+    gen, indices = gpu_query._static_gen, None
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [
+                _nvidia_smi_executable(),
+                "--query-gpu=index,mig.mode.current",
+                "--format=csv,noheader",
+            ],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        stdout = getattr(result, "stdout", None)
+        if getattr(result, "returncode", 1) == 0 and isinstance(stdout, str) and stdout.strip():
+            found: set[int] = set()
+            for line in stdout.splitlines():
+                parts = [part.strip() for part in line.split(",")]
+                if len(parts) != 2 or not parts[0].isdecimal():
+                    found = None
+                    break
+                if parts[1].lower() == "enabled":
+                    found.add(int(parts[0]))
+            indices = None if found is None else frozenset(found)
+    except Exception:
+        indices = None
+    _mig_mode_entry = (gen, time.monotonic(), indices)
+    return None if indices is None else set(indices)
+
+
 def get_mig_gpu_indices() -> set[int]:
     """Physical indices of GPUs with MIG instances (indented ``MIG`` rows under their
     ``GPU N:`` row in ``nvidia-smi -L``). CUDA sees such a card as one slice, so its
@@ -613,10 +660,11 @@ def get_card_identities() -> dict[int, tuple[str, ...]]:
         return {}
     identities: dict[int, tuple[str, ...]] = {}
     for line in result.stdout.strip().splitlines():
-        index, *fields = (part.strip() for part in line.split(","))
-        if not index.isdigit() or len(fields) != 4:
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 5 or not parts[0].isdigit():
             return {}
-        identities[int(index)] = tuple(fields)
+        # nvidia-smi csv does not quote: a name holding commas spans several parts, so rejoin it.
+        identities[int(parts[0])] = (", ".join(parts[1:-3]), *parts[-3:])
     return identities
 
 

@@ -398,6 +398,9 @@ def memory_reserve_mib(engine: str, options: dict | None) -> int:
 RESERVE_SHARE = 0.06
 
 
+MANAGED_ENGINE_BUDGET_FLOOR = 0.80
+
+
 def gpu_memory_fraction(
     gpu_ids: list[int],
     reserve_mib: int = 512,
@@ -416,7 +419,9 @@ def gpu_memory_fraction(
         rows = (measure or _nvidia_memory_rows)(gpu_ids)
         if len(rows) != len(gpu_ids):
             raise ValueError("Could not measure every selected GPU")
-        fraction = get_vram_budget_fraction()
+        # vLLM / SGLang cannot offload to the CPU, so a GGUF-only low budget must not shrink them;
+        # the per-load engine_gpu_memory_utilization still caps lower.
+        fraction = max(get_vram_budget_fraction(), MANAGED_ENGINE_BUDGET_FLOOR)
         for total, free in rows:
             reserve = max(reserve_mib, reserve_share * total)
             if total <= 0 or free <= reserve or free > total:
@@ -433,7 +438,23 @@ def gpu_memory_fraction(
 
 
 def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
+    # R570+ MIG ids are CUDA devices: budget each slice; nvidia-smi --id takes physical ids.
+    try:
+        from utils.hardware import mig
+        slices = mig.rows_for(gpu_ids)
+    except Exception:
+        slices = None
+    if slices is not None:
+        if not all(float(r.get("memory_total_mib") or 0) > 0 for r in slices):
+            raise RuntimeError(
+                "The selected MIG GPU instance has no memory reading right now because the GPU "
+                "probe did not answer. Retry in a few seconds."
+            )
+        return [
+            (float(r["memory_total_mib"]), float(r.get("memory_free_mib") or 0)) for r in slices
+        ]
     from utils.hardware.nvidia import _nvidia_smi_executable
+
     result = subprocess.run(
         [
             _nvidia_smi_executable(),

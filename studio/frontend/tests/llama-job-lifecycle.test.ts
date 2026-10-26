@@ -94,8 +94,7 @@ test("a completed update stays hidden when no update remains", () => {
 });
 
 test("an apply adopts an already-running update but never a switch", () => {
-  // Both share one job. Following a switch here would resolve the update action
-  // as applied while the release it offered is still not installed.
+  // Both share one job, so following a switch would mark an uninstalled release applied.
   assert.equal(
     llamaUpdateAdoptsRunningJob("already_running", {
       state: "running",
@@ -120,8 +119,6 @@ test("an apply adopts an already-running update but never a switch", () => {
 });
 
 test("a backend migration at the installed release reports no version change", () => {
-  // What a fork install at the current release sends: the display tag is normalized and
-  // the latest tag is the full identity, so they differ while naming one release.
   assert.equal(
     llamaReleaseChanged(false, "b9596", "b9596-mix-4b653db"),
     false,
@@ -145,8 +142,6 @@ test("the banner asks the helper rather than comparing the two tags itself", () 
 });
 
 test("a backend migration is reported by what the job did, not by the version fields", () => {
-  // The migration runs at the release already installed, so composing the toast from the
-  // tags announces an update that did not happen.
   assert.equal(
     llamaUpdateToastMessage({
       component: "whisper.cpp",
@@ -183,8 +178,6 @@ test("a backend migration is reported by what the job did, not by the version fi
 });
 
 test("an ordinary update still reports the release it moved to", () => {
-  // Control: always deferring to the job would drop the tag from every real update, and
-  // a migration with nothing to say would print blank.
   assert.equal(
     llamaUpdateToastMessage({
       component: "llama.cpp",
@@ -225,23 +218,18 @@ test("a bundle with nothing from the job names no single release", () => {
 // status when its phase lands and the whisper.cpp phase starts. Reading the live
 // switch there hid a running update for the whole second phase.
 test("the switch a running card started under is held until the job is over", () => {
-  // llama.cpp notifications on, whisper.cpp off, chained update accepted.
   let held = heldUpdateBannerPref(null, true, true);
   assert.equal(held, true);
   // The llama phase lands and only the muted whisper.cpp is left pending.
   held = heldUpdateBannerPref(held, true, false);
   assert.equal(held, true, "the running update was taken off screen");
-  // The whisper phase fails: its retry has to stay reachable.
   held = heldUpdateBannerPref(held, true, false);
   assert.equal(held, true);
-  // Job over: the live switch answers again.
   assert.equal(heldUpdateBannerPref(held, false, false), null);
 });
 
 test("a muted card stays muted for a job it never showed", () => {
-  // Nothing held, whisper.cpp muted, a whisper job running from another surface.
   assert.equal(heldUpdateBannerPref(null, true, false), false);
-  // And an offer with no job in flight always reads the live switch.
   assert.equal(heldUpdateBannerPref(null, false, true), null);
 });
 
@@ -399,8 +387,6 @@ test("one pending job interrupts once per quiet period, not once per component",
   );
 });
 
-// The job reports the llama.cpp build it installed, which is not what a card
-// showing the whisper.cpp offer told the user it was getting.
 test("a finished update reports the release its card advertised", () => {
   assert.equal(
     updateToastTag("whisper.cpp", "b11100", "v1.9.4-unsloth.4"),
@@ -424,4 +410,40 @@ test("chat settings offer the llama.cpp update only for a llama.cpp release", ()
   const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
   assert.match(sheet, /mtpUpdatable && llamaUpdateStatus\?\.llama\.update_available/);
   assert.doesNotMatch(sheet, /llamaUpdateStatus\?\.update_available/);
+});
+
+// whisper.cpp rides along: its own releases never open the card, so it has no notification setting.
+test("whisper.cpp is listed in the update card but never opens it", () => {
+  const banner = readSrc("components/llama-update-banner.tsx");
+  assert.match(banner, /const due: UpdateComponentFlags = \{[^}]*whisper: whisperRetry,/);
+  assert.match(banner, /const muted: UpdateComponentFlags = \{[^}]*whisper: !whisperRetry,/);
+  assert.match(
+    banner,
+    /const whisperRetry =\s*status\?\.job\.state === "error" && status\.job\.whisperFailed;/,
+  );
+  const general = readSrc("features/settings/tabs/general-tab.tsx");
+  assert.doesNotMatch(general, /channel="whisper"/);
+  const listed = ["whisper.cpp"] as const;
+  assert.equal(
+    updateBannerAllowed(
+      listed,
+      { llama: false, whisper: false, audio: false },
+      { llama: false, whisper: true, audio: false },
+      false,
+    ),
+    false,
+  );
+});
+
+// a failed whisper.cpp phase keeps its Retry after a reload, when no earlier open state is held.
+test("a failed whisper.cpp phase reopens the card for its retry", () => {
+  assert.equal(
+    updateBannerAllowed(
+      ["whisper.cpp"],
+      { llama: false, whisper: true, audio: false },
+      { llama: false, whisper: false, audio: false },
+      false,
+    ),
+    true,
+  );
 });

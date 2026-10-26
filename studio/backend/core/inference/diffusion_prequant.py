@@ -346,8 +346,36 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
     from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
 
     if is_safetensors_checkpoint(path):
-        return load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
-    return _torch_load_prequant(path, **kwargs)
+        ckpt = load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
+    else:
+        ckpt = _torch_load_prequant(path, **kwargs)
+    if not _int8_only(ckpt):
+        _install_fp8_unit_scale()
+    return ckpt
+
+
+def _int8_only(ckpt: Any) -> bool:
+    """True if every quantized tensor is int8: the fp8 dispatcher's compile cache tag would miss the runtime entry."""
+    try:
+        state_dict = ckpt.get("state_dict") if isinstance(ckpt, dict) else None
+        if not isinstance(state_dict, dict):
+            return False
+        quantized = [
+            type(v).__name__
+            for v in state_dict.values()
+            if type(v).__name__ not in ("Tensor", "Parameter")
+        ]
+        return bool(quantized) and all(name.startswith("Int8") for name in quantized)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _install_fp8_unit_scale() -> None:
+    try:
+        from .diffusion_fp8_unit_scale import install
+        install()
+    except Exception:  # noqa: BLE001 - never block a load on a speed path
+        pass
 
 
 # 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.
@@ -413,6 +441,13 @@ def _local_prequant_path_allowed(path: str) -> bool:
     symlink cannot point an allowlisted name at a file outside the allowed roots."""
     import os
 
+    # Studio's own pre-quant cache root only.
+    try:
+        from .diffusion_prequant_cache import path_in_cache
+        if path_in_cache(path):
+            return True
+    except Exception:  # noqa: BLE001 - an unanswerable check falls back to the operator allowlist
+        pass
     roots = _allowed_prequant_roots()
     if not roots:
         return False
@@ -765,6 +800,10 @@ def prefer_cached_pickle_twins(
 
 
 _LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
+# The load's Hub token for probes lacking one in their signature (cache freshness of a gated base); outer token wins.
+_LOAD_HF_TOKEN: contextvars.ContextVar = contextvars.ContextVar(
+    "unsloth_prequant_hf_token", default = None
+)
 
 
 def scoped_local_files_only(fn: Any) -> Any:
@@ -776,9 +815,11 @@ def scoped_local_files_only(fn: Any) -> Any:
         token = _LOCAL_FILES_ONLY.set(
             bool(kwargs.get("local_files_only")) or _LOCAL_FILES_ONLY.get()
         )
+        hf_token = _LOAD_HF_TOKEN.set(kwargs.get("hf_token") or _LOAD_HF_TOKEN.get())
         try:
             return fn(*args, **kwargs)
         finally:
+            _LOAD_HF_TOKEN.reset(hf_token)
             _LOCAL_FILES_ONLY.reset(token)
 
     return _wrapper
@@ -960,7 +1001,8 @@ def resolve_prequant_source(
 
     Priority: an explicit local ``path_override``; then the family's hosted repo for ``scheme``
     (variant-specific when ``base_repo`` names a base with its own baked checkpoint); then None,
-    meaning no pre-quant and the caller quantises dense. Pure: no IO, no torch.
+    meaning no pre-quant and the caller quantises dense. No torch; the only IO is the memoised local cache lookup
+    (safetensors headers), reached only when nothing is hosted.
 
     ``task`` names the workflow / denoiser PARTITION the load is bringing up, for the families that
     host more than one under a single repo and scheme (MiniMax-H3's keyframe and reference
@@ -1054,6 +1096,19 @@ def resolve_prequant_source(
             fallback_filenames = tuple(names[1:]),
             declared_filenames = declared,
         )
+    # Nothing hosted: try this machine's cache of an earlier build; task names the component (MoE transformer_2).
+    try:
+        from .diffusion_prequant_cache import lookup
+        cached = lookup(
+            fam,
+            scheme,
+            base_repo = base_repo,
+            component = task if task in ("transformer_2",) else "transformer",
+        )
+    except Exception:  # noqa: BLE001 - a cache problem is a miss, never a failed load
+        cached = None
+    if cached:
+        return PrequantSource(kind = "path", location = cached, filename = None)
     return None
 
 
@@ -2215,6 +2270,62 @@ def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
     return pinned
 
 
+def _reports_rejected_cache_entry(fn: Any) -> Any:
+    """Report an unusable cache entry so the dense fallback build replaces it; a forced fp8 accumulate mismatch is
+    the request's choice, not a fault, and leaves the entry alone."""
+
+    @functools.wraps(fn)
+    def wrapper(transformer_cls: Any, base: str, source: Any, *args: Any, **kwargs: Any) -> Any:
+        out = fn(transformer_cls, base, source, *args, **kwargs)
+        if out is None and getattr(source, "kind", None) == "path":
+            try:
+                if not hosted_fast_accum_conflict(
+                    str(kwargs.get("scheme") or ""), kwargs.get("fast_accum")
+                ):
+                    from .diffusion_prequant_cache import note_rejected
+                    note_rejected(source.location, kwargs.get("logger"))
+            except Exception:  # noqa: BLE001 - bookkeeping never changes the load's outcome
+                pass
+        return out
+
+    return wrapper
+
+
+def _engage_nvfp4_backend(
+    transformer: Any,
+    metadata: Any,
+    device: Any,
+    *,
+    family: Optional[str] = None,
+    base: Optional[str] = None,
+    logger: Any = None,
+) -> int:
+    """Move a loaded NVFP4 transformer onto the backend ``device`` selects; returns the layers moved to flashinfer.
+
+    The flashinfer coverage warning fires here, once layers really run flashinfer's kernels: scheme selection also
+    runs for planning and validation, which load nothing and must not use up the once-only warning."""
+    from .diffusion_nvfp4_linear import convert_nvfp4_backend
+    from .diffusion_nvfp4_ops import select_nvfp4_backend
+
+    converted = convert_nvfp4_backend(
+        transformer, metadata, select_nvfp4_backend(device), logger = logger
+    )
+    if converted:
+        try:
+            from .diffusion_nvfp4_gate import warn_flashinfer_mismatch_once
+            md = metadata if isinstance(metadata, dict) else {}
+            # The checkpoint's own base first: ``base`` can be the ungated mirror the weights were fetched from.
+            for base_repo in dict.fromkeys(b for b in (md.get("base_model_id"), base) if b):
+                if warn_flashinfer_mismatch_once(
+                    family or md.get("family"), base_repo, logger, backend_active = True
+                ):
+                    break
+        except Exception:  # noqa: BLE001 -- a warning, never a load error
+            pass
+    return converted
+
+
+@_reports_rejected_cache_entry
 def load_prequantized_transformer(
     transformer_cls: Any,
     base: str,
@@ -2234,8 +2345,13 @@ def load_prequantized_transformer(
     logger: Any = None,
     placement_device: Optional[str] = None,
     family: Optional[str] = None,
+    into: Optional[Any] = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
+
+    ``into``: an already-built DENSE transformer to load the checkpoint into instead of a fresh ``from_config``
+    skeleton (the pipeline-quant path, whose denoiser came with the pipeline). Its key set must equal the
+    checkpoint's; it stays where its weights already are, and on a refusal before assignment it is left dense.
 
     ``family`` (the Studio family name) is what a ComfyUI-format artifact needs to pick the layers Studio's
     own ``scheme`` quantizes; Studio's own checkpoints record it themselves.
@@ -2297,6 +2413,14 @@ def load_prequantized_transformer(
         )
         if path is None:
             return None
+        if source.kind == "path":
+            # Verify the payload digest: the manifest size check misses same-size corruption.
+            from .diffusion_prequant_cache import path_in_cache, verify_entry
+            if path_in_cache(path) and not verify_entry(path, logger):
+                _LAST_FAILURE.text = (
+                    "ValueError: local pre-quant cache entry failed its payload digest"
+                )
+                return None
 
         # A ComfyUI-format file rebuilds into the same torchao weights as Studio's own checkpoint of this scheme.
         from .diffusion_comfy_quant import load_comfy_prequant, scan_comfy_quant
@@ -2304,6 +2428,10 @@ def load_prequantized_transformer(
         comfy_scan = scan_comfy_quant(path)
         comfy_rotated = False
         if comfy_scan is not None:
+            if into is not None:
+                raise ValueError(
+                    "a ComfyUI-format checkpoint cannot be loaded into an existing transformer"
+                )
             if prepare_model is not None or (component and component != DEFAULT_PREQUANT_COMPONENT):
                 raise ValueError(
                     "a ComfyUI-format checkpoint is only read as a whole denoiser, not as the "
@@ -2324,6 +2452,8 @@ def load_prequantized_transformer(
                 config_subfolder = config_subfolder,
                 logger = logger,
             )
+            # ComfyUI files never pass through _load_prequant_checkpoint, which installs this for Studio's own.
+            _install_fp8_unit_scale()
             from .diffusion_convrot import declares_rotation, is_rotated_linear, warm_rotation_cache
 
             comfy_rotated = any(is_rotated_linear(m) for m in transformer.modules())
@@ -2361,24 +2491,32 @@ def load_prequantized_transformer(
             # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
             # may be gone or read-only, and load_config's raise is swallowed below into a None return, silently dropping a
             # prequant whose checkpoint is cached and already loaded.
-            config = _load_transformer_config(
-                transformer_cls,
-                base,
-                hf_token,
-                cache_dir,
-                path,
-                config_subfolder,
-                local_files_only = local_files_only,
+            config = (
+                None
+                if into is not None
+                else _load_transformer_config(
+                    transformer_cls,
+                    base,
+                    hf_token,
+                    cache_dir,
+                    path,
+                    config_subfolder,
+                    local_files_only = local_files_only,
+                )
             )
             from accelerate import init_empty_weights
 
             metadata = ckpt.get("metadata") or {}
-            with init_empty_weights():
-                transformer = transformer_cls.from_config(config)
-            if prepare_model is not None:
-                prepare_model(transformer, metadata)
-            transformer.load_state_dict(state_dict, strict = True, assign = True)
-            if _has_meta_tensors(transformer):
+            if into is not None:
+                transformer = into
+                _load_into_dense(transformer, state_dict, prepare_model)
+            else:
+                with init_empty_weights():
+                    transformer = transformer_cls.from_config(config)
+                if prepare_model is not None:
+                    prepare_model(transformer, metadata)
+                transformer.load_state_dict(state_dict, strict = True, assign = True)
+            if into is None and _has_meta_tensors(transformer):
                 # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
                 # they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
                 transformer = transformer_cls.from_config(config)
@@ -2407,14 +2545,16 @@ def load_prequantized_transformer(
 
             if scheme == "nvfp4":
                 from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
-                from .diffusion_nvfp4_linear import convert_nvfp4_backend
 
                 # Layers left on torchao quantise activations through NVFP4Tensor.to_nvfp4 at run time.
                 install_nvfp4_act_quant_patch(logger)
-                from .diffusion_nvfp4_ops import select_nvfp4_backend
-
-                convert_nvfp4_backend(
-                    transformer, metadata, select_nvfp4_backend(device), logger = logger
+                _engage_nvfp4_backend(
+                    transformer,
+                    metadata,
+                    device,
+                    family = family,
+                    base = base,
+                    logger = logger,
                 )
             # assign=True shares the tensors: a live reference doubles the peak on unified memory.
             del state_dict
@@ -2478,6 +2618,9 @@ def load_prequantized_transformer(
                 placement_device or device,
             )
         return transformer
+    except PrequantIntoError:
+        # Partly assigned: falling back would mix two builds.
+        raise
     except Exception as exc:  # noqa: BLE001 - fall back to the dense-quantise path
         _warn(logger, f"{scheme}:{source.kind}", exc)
         return None
@@ -2693,12 +2836,14 @@ def _load_transformer_config(
     last: Optional[BaseException] = None
     for root in _config_cache_roots(checkpoint_path, cache_dir):
         try:
+            from .diffusion_families import pinned_revision_kwargs
             return transformer_cls.load_config(
                 base,
                 subfolder = subfolder,
                 token = hf_token,
                 cache_dir = root,
                 local_files_only = local_files_only,
+                **pinned_revision_kwargs(base),
             )
         except Exception as exc:  # noqa: BLE001 - try the other root before giving up
             last = exc
@@ -3341,8 +3486,11 @@ def stream_prequantized_module(
         module.requires_grad_(False)
         install_group_offload_buffer_restore()
         install_group_offload_hooks_eager()
-        use_stream = onload.type == "cuda" and _weights_pinnable(module)
-        if onload.type == "cuda" and not use_stream:
+        from .host_pinning import host_pinning_allowed
+
+        pinning = host_pinning_allowed(onload)
+        use_stream = onload.type == "cuda" and pinning and _weights_pinnable(module)
+        if onload.type == "cuda" and pinning and not use_stream:
             # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
             from .prequant_legacy_int8 import convert_legacy_int8_weights
             converted = convert_legacy_int8_weights(module)
@@ -3406,6 +3554,36 @@ def stream_prequantized_module(
             "overlapped" if use_stream else "synchronous",
         )
     return mode
+
+
+class PrequantIntoError(RuntimeError):
+    """The module is neither dense nor fully loaded."""
+
+
+def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional[Any]) -> None:
+    """ValueError leaves the module untouched; PrequantIntoError means it was partly assigned."""
+    if prepare_model is not None:
+        raise ValueError(
+            "prepare_model reshapes a fresh skeleton; it cannot run on an existing transformer"
+        )
+    own = transformer.state_dict()
+    if set(own) != set(state_dict):
+        missing = sorted(set(own) - set(state_dict))[:3]
+        extra = sorted(set(state_dict) - set(own))[:3]
+        raise ValueError(
+            f"checkpoint keys differ from the transformer (missing {missing}, unexpected {extra})"
+        )
+    for name, tensor in state_dict.items():
+        have = own[name]
+        if tuple(getattr(have, "shape", ())) != tuple(getattr(tensor, "shape", ())):
+            raise ValueError(
+                f"checkpoint shape of {name} {tuple(tensor.shape)} != transformer {tuple(have.shape)}"
+            )
+    del own
+    try:
+        transformer.load_state_dict(state_dict, strict = True, assign = True)
+    except Exception as exc:  # noqa: BLE001
+        raise PrequantIntoError(f"{type(exc).__name__}: {exc}") from exc
 
 
 def _has_meta_tensors(module: Any) -> bool:

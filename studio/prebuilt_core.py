@@ -492,6 +492,25 @@ def sleep_backoff(
 
 
 # ── Atomic writes and hashing ──
+def make_staging_dir(parent: Path, prefix: str) -> Path:
+    """``tempfile.mkdtemp``, except a Windows dir inherits ``parent``'s ACL.
+
+    mkdtemp's 0o700 gives a Windows dir a protected SYSTEM / Administrators / OWNER RIGHTS DACL
+    (CPython gh-118486), and a tree renamed out of it keeps those entries. An elevated run owns it
+    as Administrators, so the same account cannot read it unelevated (#14052, #9928).
+    """
+    if sys.platform != "win32":
+        return Path(tempfile.mkdtemp(prefix = prefix, dir = str(parent)))
+    for _ in range(100):
+        path = Path(parent) / f"{prefix}{os.urandom(6).hex()}"
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        return path
+    raise FileExistsError(f"no free staging name under {parent}")
+
+
 def atomic_write_bytes(destination: Path, data: bytes) -> None:
     destination.parent.mkdir(parents = True, exist_ok = True)
     with tempfile.NamedTemporaryFile(
@@ -2786,7 +2805,7 @@ def install_from_bundle(
 ) -> None:
     staging_root = install_dir.parent / ops.INSTALL_STAGING_ROOT_NAME
     staging_root.mkdir(parents = True, exist_ok = True)
-    staging = Path(tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root))
+    staging = make_staging_dir(staging_root, f"{install_dir.name}.staging-")
     try:
         archive_path = staging / selection.asset
         url = ops.asset_download_url(bundle, selection.asset)

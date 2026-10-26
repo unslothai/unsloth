@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""apply_chat_template_for_generation must coerce assistant tool_call arguments
-from the OpenAI JSON-string form to a dict before rendering. Strict tool
-templates (e.g. mlx-community Qwen3.5 checkpoints) iterate arguments.items() and
-raise "Can only get item pairs from a mapping." on the string form when a prior
-tool call is re-rendered on the next turn (MLX + transformers paths).
-
-It must likewise split parallel tool calls for templates that render only one
-call per message (Llama 3.x).
-"""
+"""tool_call arguments must become dicts before rendering, as strict templates call arguments.items()."""
 
 from __future__ import annotations
 
@@ -105,7 +97,6 @@ def test_non_json_string_left_as_is():
 
 
 def test_render_succeeds_on_strict_template_with_string_arguments():
-    # Regression: strict template + string args used to raise.
     result = apply_chat_template_for_generation(_StrictTemplateTokenizer(), _conv('{"query": "x"}'))
     assert result == "RENDERED"
 
@@ -378,7 +369,6 @@ class _RaiseExceptionTemplateTokenizer:
 
 
 def test_render_succeeds_on_raise_exception_template_with_string_arguments():
-    # Regression: gemma-4.jinja rejects string args via a non-TypeError; retry must still coerce.
     result = apply_chat_template_for_generation(
         _RaiseExceptionTemplateTokenizer(), _conv('{"query": "x"}')
     )
@@ -386,7 +376,6 @@ def test_render_succeeds_on_raise_exception_template_with_string_arguments():
 
 
 def test_unrelated_template_error_still_propagates_with_dict_args():
-    # Failure unrelated to string args (dict args, nothing to coerce) must propagate.
     class _AlwaysRaises:
         def apply_chat_template(self, messages, **kw):
             raise ValueError("template is broken")
@@ -468,7 +457,7 @@ def test_parallel_calls_split_into_sequential_single_call_turns():
 
 def test_split_pairs_results_by_tool_call_id_not_position():
     conv = _parallel_conv()
-    conv[2], conv[3] = conv[3], conv[2]  # results arrive out of order
+    conv[2], conv[3] = conv[3], conv[2]
     out = _split_parallel_tool_calls(conv)
     assert out[1]["tool_calls"][0]["id"] == "c1" and out[2]["tool_call_id"] == "c1"
     assert out[3]["tool_calls"][0]["id"] == "c2" and out[4]["tool_call_id"] == "c2"
@@ -488,7 +477,7 @@ def test_split_keeps_content_on_first_piece_only():
 
 def test_split_keeps_unmatched_results_after_the_split():
     conv = _parallel_conv()
-    del conv[3]  # second call never returned a result
+    del conv[3]
     out = _split_parallel_tool_calls(conv)
     assert [m["role"] for m in out] == ["user", "assistant", "tool", "assistant"]
 
@@ -511,7 +500,6 @@ def test_single_call_and_plain_conversations_pass_through_unchanged():
 
 
 def test_render_succeeds_on_single_call_template_with_parallel_calls():
-    # Regression: two calls in one turn used to break every later render.
     result = apply_chat_template_for_generation(_SingleToolCallTokenizer(), _parallel_conv())
     assert result == "RENDERED"
 
@@ -555,7 +543,7 @@ def test_lenient_template_never_sees_a_split_conversation():
             return "RENDERED"
 
     apply_chat_template_for_generation(_Lenient(), _parallel_conv())
-    assert seen["n"] == 4  # unsplit
+    assert seen["n"] == 4
 
 
 _MINISTRAL_IMAGE_TEMPLATE = """

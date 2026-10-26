@@ -180,8 +180,27 @@ OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
         "--video-ffmpeg-dir",
         # Not a path: llama-server sends the model's tensors to these hosts.
         "--rpc",
+        # Not a path either: llama-server downloads these Hub drafters with the installation's HF token.
+        "-hfd",
+        "-hfrd",
+        "--hf-repo-draft",
+        "--spec-draft-hf",
+        "-hffd",
+        "--hf-file-draft",
     }
 )
+
+# Built-in presets (--*-default, older --fim-qwen-7b-spec) fetch a Hub repo with the HF token; --spec-default stays open.
+_PRESET_FLAG_RE = re.compile(r"^--[a-z0-9.-]+-default$|^--fim-[a-z0-9.-]+-spec$")
+_NON_PRESET_DEFAULT_FLAGS: frozenset[str] = frozenset({"--spec-default"})
+
+
+def _is_preset_flag(flag: Optional[str]) -> bool:
+    return (
+        flag is not None
+        and flag not in _NON_PRESET_DEFAULT_FLAGS
+        and _PRESET_FLAG_RE.match(flag.lower()) is not None
+    )
 
 
 def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]:
@@ -193,6 +212,8 @@ def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]
         if flag in OWNER_ONLY_PATH_FLAGS:
             _, eq, inline = raw.partition("=")
             found.append((flag, inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else "")))
+        elif _is_preset_flag(flag):
+            found.append((flag, ""))
     return found
 
 
@@ -1333,12 +1354,11 @@ def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
     return disabled
 
 
-def extra_args_image_max_tokens(
-    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+def _extra_args_positive_int(
+    args: Optional[Iterable[str]], flag: str, env_name: str, env: Optional[Mapping[str, str]]
 ) -> Optional[int]:
-    """Return the effective positive ``--image-max-tokens`` value."""
     found: Optional[int] = None
-    raw_env = (os.environ if env is None else env).get("LLAMA_ARG_IMAGE_MAX_TOKENS")
+    raw_env = (os.environ if env is None else env).get(env_name)
     if raw_env:
         try:
             parsed_env = int(str(raw_env).strip())
@@ -1348,9 +1368,9 @@ def extra_args_image_max_tokens(
             found = parsed_env
     tokens = [str(a) for a in (args or ())]
     for index, raw in enumerate(tokens):
-        if raw.startswith("--image-max-tokens="):
+        if raw.startswith(flag + "="):
             value = raw.partition("=")[2]
-        elif raw == "--image-max-tokens" and index + 1 < len(tokens):
+        elif raw == flag and index + 1 < len(tokens):
             value = tokens[index + 1]
         else:
             continue
@@ -1361,6 +1381,20 @@ def extra_args_image_max_tokens(
         if parsed > 0:
             found = parsed
     return found
+
+
+def extra_args_image_max_tokens(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the effective positive ``--image-max-tokens`` value."""
+    return _extra_args_positive_int(args, "--image-max-tokens", "LLAMA_ARG_IMAGE_MAX_TOKENS", env)
+
+
+def extra_args_image_min_tokens(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the effective positive ``--image-min-tokens`` value."""
+    return _extra_args_positive_int(args, "--image-min-tokens", "LLAMA_ARG_IMAGE_MIN_TOKENS", env)
 
 
 def extra_args_mmproj_auto(

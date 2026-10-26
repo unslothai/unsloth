@@ -36,6 +36,8 @@ from .llama import (
     apply_logit_transforms,
     resolve_logit_scaling,
     resolve_logit_transforms,
+    fake_quantize_lm_head_inputs,
+    lm_head_needs_forward,
     _cache_as_legacy_tuple,
     _cached_prefill_defaults,
     _run_backbone,
@@ -85,9 +87,9 @@ def MistralAttention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads = self.config.num_attention_heads
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
     n_groups = self.num_key_value_groups
-    n_kv_heads = self.config.num_key_value_heads
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
@@ -153,6 +155,7 @@ def MistralAttention_fast_forward(
         head_dim = head_dim,
         requires_grad = hidden_states.requires_grad,
         seq_info = seq_info,
+        training = self.training,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
         # The window the flash path already gets through window_size. SDPA needs it too, and not only in
@@ -340,7 +343,9 @@ def MistralForCausalLM_fast_forward(
     elif num_logits_to_keep != 0:
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
     else:
-        RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
+        RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1" or (
+            lm_head_needs_forward(self.lm_head)
+        )
         # Below 1024 normal Unsloth uses less VRAM.
         if bsz * q_len <= 1024 and not RETURN_LOGITS:
             # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
@@ -360,6 +365,10 @@ def MistralForCausalLM_fast_forward(
             labels = mask_packed_boundary_labels(
                 labels,
                 kwargs.get("packed_seq_lengths"),
+            )
+
+            hidden_states, lm_head = fake_quantize_lm_head_inputs(
+                self.lm_head, hidden_states, lm_head
             )
 
             loss = unsloth_fused_ce_loss(

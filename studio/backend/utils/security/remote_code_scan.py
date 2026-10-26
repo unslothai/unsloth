@@ -576,6 +576,9 @@ def iter_auto_maps(cfg, _depth: int = 0):
     auto_map = cfg.get("auto_map")
     if isinstance(auto_map, dict) and auto_map:
         yield auto_map
+    elif isinstance(auto_map, (list, tuple)) and auto_map:
+        # Legacy tokenizer form: transformers reads a bare [slow, fast] list as AutoTokenizer.
+        yield {"AutoTokenizer": list(auto_map)}
     for key, value in cfg.items():
         if key == "auto_map":
             continue

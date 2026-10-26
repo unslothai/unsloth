@@ -15,6 +15,8 @@ import functools
 import types
 from typing import Any, Optional
 
+from .diffusion_vae_upcast import fp32_keeping_storage
+
 _SCALE_LOG2 = 8
 
 
@@ -116,13 +118,9 @@ def enable_fp16_vae_decode(
         slot = types.SimpleNamespace(decode = decode)
 
         def _fp32_call(fn: Any, parts: list, x: Any, *args: Any, **kwargs: Any) -> Any:
-            for part in parts:
-                part.to(torch.float32)
-            try:
+            # Leaves the stored fp16 weights in place, so they stay pinned under model offload.
+            with fp32_keeping_storage(vae, parts):
                 return fn(x.to(torch.float32), *args, **kwargs)
-            finally:
-                for part in parts:
-                    part.to(torch.float16)
 
         @functools.wraps(decode)
         def fp16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:

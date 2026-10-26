@@ -24,6 +24,7 @@ import {
   useState,
 } from "react";
 import { FOLDER_CARD_CLASS, FOLDER_ROW_CLASS } from "./linked-folders-manager";
+import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
 import { EXPIRY_GRACE_MS } from "./staged-source";
 import {
   isFolderExpired,
@@ -98,8 +99,8 @@ export function ProjectFolderPicker({
   }
 
   return (
-    <div className="space-y-2.5">
-      <p className="text-ui-15 font-medium text-foreground">Linked folders</p>
+    <div className="min-w-0 space-y-2.5">
+      <p className="text-ui-15 font-medium text-foreground">Source folders</p>
       <div className={FOLDER_CARD_CLASS}>
         {folders.map((folder) => (
           <div key={folder.token} className={FOLDER_ROW_CLASS}>
@@ -108,7 +109,10 @@ export function ProjectFolderPicker({
               strokeWidth={1.75}
               className="size-4 shrink-0 text-muted-foreground"
             />
-            <span className="min-w-0 flex-1 truncate text-sm">
+            <span
+              className="min-w-0 flex-1 truncate text-sm"
+              title={folder.displayName}
+            >
               {folder.displayName}
             </span>
             <Button
@@ -136,7 +140,7 @@ export function ProjectFolderPicker({
           title={
             supported
               ? "Choose a local folder"
-              : "Requires the managed desktop backend"
+              : sourceFolderUnavailableMessage(isTauri)
           }
           className={cn(
             FOLDER_ROW_CLASS,
@@ -157,8 +161,8 @@ export function ProjectFolderPicker({
       </div>
       <p className="px-1 text-ui-11 text-muted-foreground">
         {supported
-          ? "Indexed and kept in sync, for every chat in this project to search."
-          : "Linking a folder needs the managed desktop backend."}
+          ? SOURCE_FOLDER_DESCRIPTION
+          : sourceFolderUnavailableMessage(isTauri)}
       </p>
     </div>
   );

@@ -60,6 +60,9 @@ def _frame_geometry(
             "format=duration",
             "-of",
             "json",
+            # A probed playlist would otherwise open the URLs it names.
+            "-protocol_whitelist",
+            "file",
             str(clip),
         ],
         _PROBE_TIMEOUT_S,
@@ -106,6 +109,8 @@ def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
             "packet=pts_time,duration_time",
             "-of",
             "json",
+            "-protocol_whitelist",
+            "file",
             str(clip),
         ],
         _PROBE_TIMEOUT_S,
@@ -195,13 +200,17 @@ def shrink_video_for_llama(
     ``sampled_fps`` raises the rate ceiling. Keeps only video and the timing of every
     real frame. Missing tools, failures and an over-``max_bytes`` result pass through.
     """
-    ffmpeg = shutil.which("ffmpeg")
-    ffprobe = shutil.which("ffprobe")
-    if not ffmpeg or not ffprobe:
-        return video_b64
+    from utils.media_playlist import refuse_playlist
+
     try:
         raw = base64.b64decode(video_b64)
     except (binascii.Error, ValueError):
+        return video_b64
+    # Before the tool check: without ffmpeg the clip still reaches llama-server's own FFmpeg.
+    refuse_playlist(raw)
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
         return video_b64
     try:
         with tempfile.TemporaryDirectory(prefix = "unsloth-video-") as tmp:
@@ -225,6 +234,8 @@ def shrink_video_for_llama(
                     "-hide_banner",
                     "-loglevel",
                     "error",
+                    "-protocol_whitelist",
+                    "file",
                     "-i",
                     str(source),
                     "-map",

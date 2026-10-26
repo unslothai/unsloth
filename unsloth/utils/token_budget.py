@@ -478,16 +478,24 @@ def _balance_dataloader(trainer, dataloader):
     return True
 
 
-def _same_count_on_every_rank(count, accelerator):
+def _same_count_on_every_rank(
+    count,
+    accelerator,
+    flag = None,
+):
+    """True when every rank has the same count. With flag, returns (same, flag on every rank) from
+    the same collective, so a later collective guarded by flag runs on every rank or on none."""
     if accelerator is None or getattr(accelerator, "num_processes", 1) <= 1:
-        return True
+        return True if flag is None else (True, bool(flag))
     import torch.distributed as dist
 
     if not (dist.is_available() and dist.is_initialized()):
-        return True
-    bounds = torch.tensor([count, -count], dtype = torch.int64, device = accelerator.device)
+        return True if flag is None else (True, bool(flag))
+    values = [count, -count] + ([] if flag is None else [0 if flag else 1])
+    bounds = torch.tensor(values, dtype = torch.int64, device = accelerator.device)
     dist.all_reduce(bounds, op = dist.ReduceOp.MAX)
-    return int(bounds[0]) == -int(bounds[1])
+    same = int(bounds[0]) == -int(bounds[1])
+    return same if flag is None else (same, int(bounds[2]) == 0)
 
 
 def _label_count(chunk):
@@ -559,12 +567,21 @@ def _is_prompt_learning(trainer, model):
     return False
 
 
+def _is_multi_process(accelerator):
+    return accelerator is not None and int(getattr(accelerator, "num_processes", 1) or 1) > 1
+
+
 def _can_merge_metrics(trainer, model, chunks, accelerator):
     """Fold per-chunk entries only when token weighting provably reproduces TRL's unsplit value:
-    one process (TRL's cross-rank reductions differ per version), no prompt-learning PEFT (virtual
-    token logits are counted differently per version), one label source, and known TRL metric code."""
-    if accelerator is not None and int(getattr(accelerator, "num_processes", 1) or 1) > 1:
-        return False
+    with several processes only under an initialized process group and without Liger (whose older
+    TRL paths average per-rank ratios), no prompt-learning PEFT (virtual token logits are counted
+    differently per version), one label source, and known TRL metric code."""
+    if _is_multi_process(accelerator):
+        import torch.distributed as dist
+        if not (dist.is_available() and dist.is_initialized()):
+            return False
+        if getattr(getattr(trainer, "args", None), "use_liger_kernel", False):
+            return False
     if _is_prompt_learning(trainer, model):
         return False
     if any("shift_labels" in chunk and "labels" in chunk for chunk in chunks):
@@ -585,13 +602,44 @@ def _metric_lengths(trainer):
     return metrics, lengths
 
 
-def _merge_chunk_metrics(trainer, metrics, lengths, chunks):
+def _global_chunk_weights(trainer, chunks, accelerator):
+    """Per-key chunk weights. With several processes TRL gathers each chunk's sums across ranks, so the
+    weight is the chunk's token count summed over ranks. Older TRL (attention style) averages per-rank
+    entropy ratios, which cannot be refolded, so entropy is left unfolded there."""
+    weights = {
+        key: [count(trainer, chunk) for chunk in chunks] for key, count in _RATIO_METRICS.items()
+    }
+    if not _is_multi_process(accelerator):
+        return weights
+    import torch.distributed as dist
+
+    # Same shape on every rank (chunk counts already agree), so the collective always matches.
+    local = torch.tensor(list(weights.values()), dtype = torch.int64, device = accelerator.device)
+    dist.all_reduce(local, op = dist.ReduceOp.SUM)
+    weights = {key: [int(w) for w in row] for key, row in zip(weights, local.tolist())}
+    if _metric_style(trainer) != "labels":
+        weights.pop("entropy", None)
+    return weights
+
+
+def _merge_chunk_metrics(
+    trainer,
+    metrics,
+    lengths,
+    chunks,
+    weights = None,
+):
     """Fold the per-chunk ratio entries back into one entry for the micro-batch, weighting each chunk by
     the tokens TRL divided by, so the logged value matches an unsplit step."""
-    keys = [key for key in _RATIO_METRICS if key in metrics and isinstance(metrics[key], list)]
+    if weights is None:
+        weights = {
+            key: [count(trainer, chunk) for chunk in chunks]
+            for key, count in _RATIO_METRICS.items()
+        }
+    keys = [key for key in weights if key in metrics and isinstance(metrics[key], list)]
     keys = [key for key in keys if len(metrics[key]) - lengths.get(key, 0) == len(chunks)]
     for key in keys:
-        row = [_RATIO_METRICS[key](trainer, chunk) for chunk in chunks]
+        row = weights[key]
         start = lengths.get(key, 0)
         values = metrics[key][start:]
         total = sum(row)
@@ -646,7 +694,18 @@ def install_token_budget(trainer):
                 _note_once(trainer, f"Unsloth: UNSLOTH_TOKEN_BUDGET not splitting: {reason}.")
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             chunks = split_batch_by_token_budget(inputs, budget)
-            if not _same_count_on_every_rank(len(chunks), accelerator):
+            # Folding metrics across ranks adds a collective, so every rank must agree to fold.
+            metrics, lengths = (
+                _metric_lengths(trainer)
+                if len(chunks) > 1 and _can_merge_metrics(trainer, model, chunks, accelerator)
+                else (None, None)
+            )
+            same_count, merge = _same_count_on_every_rank(
+                len(chunks), accelerator, flag = metrics is not None
+            )
+            if not merge:
+                metrics, lengths = None, None
+            if not same_count:
                 # Each chunk runs compute_loss (TRL gathers metrics there) and its own backward:
                 # ranks with different counts would issue mismatched collectives and hang.
                 _note_once(
@@ -657,11 +716,6 @@ def install_token_budget(trainer):
             if len(chunks) == 1:
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             trainer._unsloth_token_budget_splits += 1
-            metrics, lengths = (
-                _metric_lengths(trainer)
-                if _can_merge_metrics(trainer, model, chunks, accelerator)
-                else (None, None)
-            )
             total = None
             for i, chunk in enumerate(chunks):
                 context = (
@@ -673,7 +727,8 @@ def install_token_budget(trainer):
                     loss = original_training_step(model, chunk, num_items_in_batch, *args, **kwargs)
                 total = loss if total is None else total + loss
             if metrics is not None:
-                _merge_chunk_metrics(trainer, metrics, lengths, chunks)
+                weights = _global_chunk_weights(trainer, chunks, accelerator)
+                _merge_chunk_metrics(trainer, metrics, lengths, chunks, weights)
             return total
 
         trainer.training_step = training_step

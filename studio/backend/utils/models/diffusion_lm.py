@@ -220,7 +220,7 @@ def require_diffusion_api(name: str):
             obj = None
     if obj is None:
         raise RuntimeError(
-            f"Unsloth: this Studio build trains text-diffusion models but the installed Unsloth has no "
+            f"Unsloth: this Unsloth Studio build trains text-diffusion models but the installed Unsloth has no "
             f"`{name}`. Update with `unsloth studio update` (or `pip install -U unsloth unsloth_zoo`)."
         )
     return obj
