@@ -660,7 +660,6 @@ def mark_world_save(obj):
     save = getattr(obj, "save_pretrained", None)
     if callable(save) and getattr(save, "__name__", "") != "unsloth_tokenizer_save_pretrained":
         from ..save import _TokenizerBoundMethod
-
         if "save_pretrained" in d:
             d["_unsloth_tp_inner_save"] = d["save_pretrained"]
         # A picklable bound wrapper, not a closure: spawn-based DataLoader workers pickle the processor.
@@ -685,8 +684,12 @@ def unsloth_tp_world_save_pretrained(
     what = f"{type(obj).__name__}.save_pretrained"
     result = tp_world_save(what, lambda path: save(path, *args, **kwargs), save_directory)
     if push_to_hub:
-        repo_id = kwargs.pop("repo_id", os.path.basename(os.path.normpath(os.fspath(save_directory))))
-        push = {k: kwargs[k] for k in ("commit_message", "token", "private", "revision") if k in kwargs}
+        repo_id = kwargs.pop(
+            "repo_id", os.path.basename(os.path.normpath(os.fspath(save_directory)))
+        )
+        push = {
+            k: kwargs[k] for k in ("commit_message", "token", "private", "revision") if k in kwargs
+        }
         tp_world_push(f"{type(obj).__name__}.push_to_hub", lambda: obj.push_to_hub(repo_id, **push))
     return result
 
