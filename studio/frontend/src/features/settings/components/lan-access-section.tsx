@@ -96,6 +96,35 @@ function AccessStatus({ status }: { status: LanAccessStatus | null }) {
   );
 }
 
+function KeylessScopeBadge({
+  scope,
+}: {
+  scope?: LanAccessStatus["keylessScope"];
+}) {
+  const on = scope === "inference" || scope === "full";
+  return (
+    <span
+      role="status"
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium",
+        on ? "text-foreground" : "text-muted-foreground",
+      )}
+    >
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          on ? "bg-emerald-500" : "bg-muted-foreground/60",
+        )}
+      />
+      {scope === "inference"
+        ? "Inference"
+        : scope === "full"
+          ? "Local full"
+          : "Off"}
+    </span>
+  );
+}
+
 function LanUrlQrButton({ url }: { url: string }) {
   return (
     <Dialog>
@@ -629,13 +658,7 @@ export function LanAccessSection() {
           label="Keyless API status"
           description={keylessLanAccessDescription(status)}
         >
-          <span className="text-xs font-medium text-muted-foreground">
-            {status?.keylessScope === "inference"
-              ? "Inference"
-              : status?.keylessScope === "full"
-                ? "Local full"
-                : "Off"}
-          </span>
+          <KeylessScopeBadge scope={status?.keylessScope} />
         </SettingsRow>
         <SettingsRow
           label="Start automatically"
