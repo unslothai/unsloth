@@ -1195,7 +1195,6 @@ def _drop_vllm_engine_kwargs(kwargs):
         print(f"Unsloth: Ignoring vLLM-only arguments {dropped} since vLLM is not used.")
 
 
-
 def _agree_fast_inference_across_ranks(requested, fast_inference, kwargs):
     """Under torchrun keep vLLM only if every rank kept it, so one rank never waits alone in vLLM's collectives.
 
@@ -1215,6 +1214,7 @@ def _agree_fast_inference_across_ranks(requested, fast_inference, kwargs):
     )
     _drop_vllm_engine_kwargs(kwargs)
     return False
+
 
 class FastLanguageModel(FastLlamaModel):
     reap_prune = staticmethod(_reap_prune)
@@ -1415,7 +1415,9 @@ class FastLanguageModel(FastLlamaModel):
                         fast_inference = False
                         _drop_vllm_engine_kwargs(kwargs)
                         break
-        fast_inference = _agree_fast_inference_across_ranks(fast_inference_requested, fast_inference, kwargs)
+        fast_inference = _agree_fast_inference_across_ranks(
+            fast_inference_requested, fast_inference, kwargs
+        )
         raise_if_fast_inference_under_fsdp2(fast_inference)
 
         # bitsandbytes unusable (absent, or unstable on some AMD stacks). A capability check, so not gated on use_exact_model_name, which only suppresses repo-name remapping.
@@ -2698,7 +2700,9 @@ class FastModel(FastBaseModel):
             fast_inference = False
             _drop_vllm_engine_kwargs(kwargs)
         # After the last per-card gate: under torchrun every rank takes the same vLLM-or-HF path.
-        fast_inference = _agree_fast_inference_across_ranks(fast_inference_requested, fast_inference, kwargs)
+        fast_inference = _agree_fast_inference_across_ranks(
+            fast_inference_requested, fast_inference, kwargs
+        )
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         # Remote-code checkpoints can report their backbone's type (Nemotron-Labs-Diffusion says "nemotron"), so also match the raw config.

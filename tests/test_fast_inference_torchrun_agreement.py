@@ -37,7 +37,10 @@ def _extract_source():
         node
         for node in tree.body
         if (isinstance(node, ast.FunctionDef) and node.name in _NAMES)
-        or (isinstance(node, ast.Assign) and any(getattr(t, "id", None) in _ASSIGNS for t in node.targets))
+        or (
+            isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) in _ASSIGNS for t in node.targets)
+        )
     ]
     found = {getattr(n, "name", None) for n in wanted}
     missing = [n for n in _NAMES if n not in found]
@@ -49,9 +52,11 @@ def _helpers(monkeypatch, agree):
     zoo_vllm = types.ModuleType("unsloth_zoo.vllm_utils")
     calls = []
     if agree is not None:
+
         def torchrun_ranks_agree(local_ok):
             calls.append(local_ok)
             return agree(local_ok)
+
         zoo_vllm.torchrun_ranks_agree = torchrun_ranks_agree
     monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
     monkeypatch.setitem(sys.modules, "unsloth_zoo.vllm_utils", zoo_vllm)
@@ -83,7 +88,9 @@ def test_every_rank_keeping_vllm_keeps_it(monkeypatch):
 
 
 def test_not_requested_never_communicates(monkeypatch):
-    agree, calls = _helpers(monkeypatch, lambda ok: pytest.fail("no collective without fast_inference"))
+    agree, calls = _helpers(
+        monkeypatch, lambda ok: pytest.fail("no collective without fast_inference")
+    )
     assert agree(False, False, {}) is False
     assert calls == []
 
@@ -107,7 +114,13 @@ def test_agreement_follows_the_last_per_card_gate():
     i_cc = flm.index("torch.cuda.get_device_capability()[0] < 7")
     i_gb10 = flm.index('"NVIDIA GB10"')
     i_call = flm.index(call)
-    assert i_req < i_cc < i_gb10 < i_call < flm.index("raise_if_fast_inference_under_fsdp2(fast_inference)")
+    assert (
+        i_req
+        < i_cc
+        < i_gb10
+        < i_call
+        < flm.index("raise_if_fast_inference_under_fsdp2(fast_inference)")
+    )
     fm = src[src.index("class FastModel(") :]
     i_req = fm.index("fast_inference_requested = fast_inference")
     i_cc = fm.index("torch.cuda.get_device_capability()[0] < 7")
@@ -115,7 +128,10 @@ def test_agreement_follows_the_last_per_card_gate():
     i_call = fm.index(call)
     assert i_req < i_cc < i_old < i_call
     # Nothing turns vLLM off per rank between the gate and the agreement.
-    assert "fast_inference = False" not in fm[fm.index("_drop_vllm_engine_kwargs(kwargs)", i_old) + 1 : i_call]
+    assert (
+        "fast_inference = False"
+        not in fm[fm.index("_drop_vllm_engine_kwargs(kwargs)", i_old) + 1 : i_call]
+    )
 
 
 def _free_port():
@@ -160,8 +176,19 @@ def test_mixed_gpu_torchrun_ranks_take_the_same_path(tmp_path):
         UNSLOTH_IS_PRESENT = "1",
     )
     cmd = [
-        sys.executable, "-m", "torch.distributed.run", "--nnodes", "1", "--nproc-per-node", "2",
-        "--master-addr", "127.0.0.1", "--master-port", str(_free_port()), str(script), str(tmp_path),
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--nnodes",
+        "1",
+        "--nproc-per-node",
+        "2",
+        "--master-addr",
+        "127.0.0.1",
+        "--master-port",
+        str(_free_port()),
+        str(script),
+        str(tmp_path),
     ]
     r = subprocess.run(cmd, env = env, capture_output = True, text = True, timeout = 180, cwd = tmp_path)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
