@@ -47,14 +47,20 @@ test("a file-picked primary reloads through its file grant, and not once the gra
   assert.match(hook, /model\.active && fileGrant\s*\?\s*grantedTarget\(fileGrant\)\s*:\s*servedTarget\(model\)/);
   assert.match(hook, /nativePathToken: resident\.nativePathToken \?\? undefined,/);
   assert.match(hook, /loadId: target\.loadId,\s*nativePathToken: target\.nativePathToken,\s*nativePathExpiresAtMs: target\.nativePathExpiresAtMs,/);
-  assert.match(hook, /model\.active &&\s*fileGrant &&\s*!residentHasRunSettings\(fileGrant\)/);
+  assert.match(hook, /model\.active\s*\?\s*!\(fileGrant && !residentHasRunSettings\(fileGrant\)\)/);
   const residentHook = readSrc("features/api-monitor/use-resident-run-target.ts");
   const grantHook = residentHook.slice(residentHook.indexOf("export function useResidentFileGrant("), residentHook.indexOf("export function useResidentRunTarget("));
   assert.doesNotMatch(grantHook, /residentMatchesMonitor|residentHasRunSettings/);
   assert.match(page, /const fileGrant = useResidentFileGrant\(data\?\.active_model\);/);
   assert.match(page, /disabled=\{reloadBusy \|\| !reload\.canReload\(model\)\}/);
-  assert.match(page, /served\.some\(\(model\) => !reload\.canReload\(model\)\)/);
+  assert.match(page, /served\.length > 0 &&\s*!served\.some\(\(model\) => reload\.canReload\(model\)\)/);
   assert.doesNotMatch(hook, /load\(servedTarget\(model\)\)/);
+});
+
+test("a kept file-picked row has no grant, so it cannot reload and Reload all skips it", () => {
+  // /status lists a lease-backed load by its bare file name only.
+  assert.match(hook, /:\s*!isNativeFileLabel\(model\.checkpoint\)/);
+  assert.match(hook, /for \(const model of models\s*\.filter\(canReload\)/);
 });
 
 test("Reload all stops when a load is cancelled or a newer pick supersedes it", () => {

@@ -1530,7 +1530,8 @@ export function ApiMonitorPage(): ReactElement {
                   disabled={
                     reloadBusy ||
                     (served.length === 0 && reload.lastLoadLabel == null) ||
-                    served.some((model) => !reload.canReload(model))
+                    (served.length > 0 &&
+                      !served.some((model) => reload.canReload(model)))
                   }
                   className="gap-1.5 rounded-full"
                 >

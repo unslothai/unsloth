@@ -7,7 +7,10 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { isPrecisionFolderName } from "@/features/hub/lib/dataset-size";
-import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import {
+  isNativeFileLabel,
+  isStandaloneGgufPath,
+} from "@/features/hub/lib/model-identity";
 import { isNpuModelId } from "@/features/npu";
 import {
   currentRuntimePerModelConfig,
@@ -183,12 +186,14 @@ export function useApiModelReload({
     [fileGrant],
   );
 
-  const canReload = (model: ReloadableModel): boolean =>
-    !(
-      model.active &&
-      fileGrant &&
-      !residentHasRunSettings(fileGrant)
-    );
+  // A kept file-picked GGUF is listed by its bare file name and no grant: nothing here can load it.
+  const canReload = useCallback(
+    (model: ReloadableModel): boolean =>
+      model.active
+        ? !(fileGrant && !residentHasRunSettings(fileGrant))
+        : !isNativeFileLabel(model.checkpoint),
+    [fileGrant],
+  );
 
   const reloadServed = useCallback(
     (model: ReloadableModel) =>
@@ -211,9 +216,9 @@ export function useApiModelReload({
           });
           return;
         }
-        for (const model of [...models].sort(
-          (a, b) => Number(a.active) - Number(b.active),
-        )) {
+        for (const model of models
+          .filter(canReload)
+          .sort((a, b) => Number(a.active) - Number(b.active))) {
           const before = readModelLoadEpochs();
           await load(rowTarget(model));
           // selectModel returns quietly on a Stop, a declined prompt or a newer pick; each load takes one intent.
@@ -226,7 +231,7 @@ export function useApiModelReload({
           }
         }
       }),
-    [run, load, readModelLoadEpochs, rowTarget],
+    [run, load, readModelLoadEpochs, rowTarget, canReload],
   );
 
   const reloadAllTitle = (served: ReloadableModel[]): string => {
