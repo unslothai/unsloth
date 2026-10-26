@@ -346,6 +346,31 @@ def test_inference_mode_metadata_is_not_served_to_a_training_step(dtype):
     )
 
 
+def test_xformers_mask_lru_keeps_inference_masks_out_of_training(monkeypatch):
+    class _Mask:
+        @classmethod
+        def from_seqlens(cls, lengths):
+            return cls()
+
+    monkeypatch.setattr(packing, "_XFormersBlockMask", _Mask)
+    monkeypatch.setattr(packing, "move_xformers_attention_bias", lambda mask, device: mask)
+    packing._XFORMERS_MASK_CACHE.clear()
+    cpu = torch.device("cpu")
+    with torch.inference_mode():
+        evaluated = packing._get_cached_block_mask((3, 5), None, cpu)
+        assert packing._get_cached_block_mask((3, 5), None, cpu) is evaluated
+    trained = packing._get_cached_block_mask((3, 5), None, cpu)
+    assert trained is not evaluated
+    assert packing._get_cached_block_mask((3, 5), None, cpu) is trained
+    # A training-built mask serves inference_mode too: no second entry per lengths tuple.
+    packing._XFORMERS_MASK_CACHE.clear()
+    trained = packing._get_cached_block_mask((2, 2), None, cpu)
+    with torch.inference_mode():
+        assert packing._get_cached_block_mask((2, 2), None, cpu) is trained
+    assert len(packing._XFORMERS_MASK_CACHE) == 1
+    packing._XFORMERS_MASK_CACHE.clear()
+
+
 def test_training_metadata_is_reused_under_inference_mode():
     cpu = torch.device("cpu")
     kwargs = {"packed_seq_lengths": torch.tensor([3, 5], dtype = torch.int32)}

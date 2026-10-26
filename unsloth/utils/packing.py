@@ -131,12 +131,16 @@ def _get_cached_block_mask(
 
     device = torch.device(device)
     window_key = _window_cache_key(sliding_window)
-    # Outlives the batch: a mask built under inference_mode must not reach a training step.
-    cache_key = (device, lengths, window_key, is_causal, _inference_mode())
-    cached = _XFORMERS_MASK_CACHE.get(cache_key)
-    if cached is not None:
-        _XFORMERS_MASK_CACHE.move_to_end(cache_key)
-        return cached
+    # Outlives the batch: a mask built under inference_mode must not reach a training step, but a
+    # normally built one serves inference_mode too.
+    inference = _inference_mode()
+    for cache_key in ((device, lengths, window_key, is_causal, False),) + (
+        ((device, lengths, window_key, is_causal, True),) if inference else ()
+    ):
+        cached = _XFORMERS_MASK_CACHE.get(cache_key)
+        if cached is not None:
+            _XFORMERS_MASK_CACHE.move_to_end(cache_key)
+            return cached
 
     mask = mask_class.from_seqlens(list(lengths))
     if window_key and mask is not None and hasattr(mask, "make_local_attention"):
