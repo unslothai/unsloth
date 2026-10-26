@@ -133,7 +133,6 @@ import {
   Add01Icon,
   ArrowUpDownIcon,
   Cancel01Icon,
-  Copy01Icon,
   DashboardCircleIcon,
   Flag01Icon,
   FlimSlateIcon,
@@ -147,6 +146,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";

@@ -19,10 +19,10 @@ import {
   ArrowExpand01Icon,
   ArrowShrink01Icon,
   MoreHorizontalIcon,
-  PauseIcon,
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { canCopyVideoFrame, copyVideoFrame, registerTabVideo } from "./video-registry";
