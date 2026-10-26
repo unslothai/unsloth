@@ -2795,6 +2795,36 @@ def test_codex_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
     assert user_config.read_text() == '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
 
 
+def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    user_home = tmp_path / "user-home"
+    (user_home / ".codex").mkdir(parents = True)
+    (user_home / ".codex" / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    monkeypatch.delenv("CODEX_HOME", raising = False)
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    with (home / "config.toml").open("a") as f:
+        f.write('\n[mcp_servers.local]\ncommand = "local-server"\n')
+    # The shell that ran the recipe has CODEX_HOME set to the saved home.
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "docs": {"url": "http://d/mcp"},
+        "local": {"command": "local-server"},
+    }
+
+    (user_home / ".codex" / "config.toml").write_text("")
+    monkeypatch.delenv("CODEX_HOME")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"local": {"command": "local-server"}}
+
+
 def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     source_home = tmp_path / "user-codex"

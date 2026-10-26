@@ -3381,16 +3381,35 @@ def _codex_model_catalog(model: dict, visibility: str = "none") -> dict:
 _CODEX_MCP_TABLE = re.compile(r"[ \t]*\[\s*mcp_servers\s*[\].]")
 
 
-def _with_user_codex_mcp_servers(text: str) -> str:
+def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
+    source = _codex_source_home()
+    if source.resolve(strict = False) == home.resolve(strict = False):
+        source = _codex_source_home(ignore_configured = True)
     try:
-        user = (_codex_source_home() / "config.toml").read_text(encoding = "utf-8")
+        user = (source / "config.toml").read_text(encoding = "utf-8")
     except OSError:
         user = ""
+    manifest = home / "unsloth_mcp_servers.json"
+    try:
+        carried = set(json.loads(manifest.read_text(encoding = "utf-8")))
+    except (OSError, ValueError, TypeError):
+        carried = set()
     split = re.compile(r"(?m)^(?=[ \t]*\[)")
-    text = "".join(c for c in split.split(text) if not _CODEX_MCP_TABLE.match(c))
-    tables = "".join(c for c in split.split(user) if _CODEX_MCP_TABLE.match(c))
+
+    def header(chunk: str) -> str:
+        return chunk.split("\n", 1)[0].strip()
+
+    tables = [c for c in split.split(user) if _CODEX_MCP_TABLE.match(c)]
+    # Only replace what came from the user's config; servers added in this home stay.
+    carried |= {header(c) for c in tables}
+    text = "".join(
+        c for c in split.split(text) if not (_CODEX_MCP_TABLE.match(c) and header(c) in carried)
+    )
     if tables:
-        text = text.rstrip("\n") + "\n\n" + tables.rstrip("\n") + "\n"
+        text = text.rstrip("\n") + "\n\n" + "".join(tables).rstrip("\n") + "\n"
+    names = sorted(header(c) for c in tables)
+    if names or manifest.exists():
+        manifest.write_text(json.dumps(names) + "\n", encoding = "utf-8")
     return text
 
 
@@ -3407,7 +3426,7 @@ def write_codex_config(
     existing = config.read_text(encoding = "utf-8") if config.exists() else ""
     merged = _merge_codex_config(existing, base)
     if keep_mcp_servers:
-        merged = _with_user_codex_mcp_servers(merged)
+        merged = _with_user_codex_mcp_servers(merged, home)
     if merged != existing:
         config.write_text(merged, encoding = "utf-8")
         typer.echo(f"Updated {config}")
