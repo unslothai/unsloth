@@ -3545,7 +3545,7 @@ export function SharedComposer({
                         : "Stop dictation"
                     }
                   >
-                    <SquareIcon className="size-3.5 animate-pulse fill-current" />
+                    <SquareIcon className="composer-glyph-snap size-3.5 animate-pulse fill-current" />
                   </TooltipIconButton>
                 )}
               </>
@@ -3577,7 +3577,7 @@ export function SharedComposer({
                 aria-label="Stop generating"
                 onClick={stop}
               >
-                <SquareIcon className="size-3.5 fill-current" />
+                <SquareIcon className="composer-glyph-snap size-3.5 fill-current" />
               </Button>
             ) : (
               <TooltipIconButton

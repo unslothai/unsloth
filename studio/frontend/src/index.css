@@ -6081,6 +6081,19 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	& svg.size-3\.5 { width: calc(0.875rem * var(--ui-font-scale, 1)); height: calc(0.875rem * var(--ui-font-scale, 1)); }
 	& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-4\.5 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	/* Round-button glyphs at even pixel sizes, so (circle - glyph) / 2 is a whole pixel: an svg at a
+	   fractional offset rasterises snapped up and left. Browsers without round() keep the size above. */
+	& svg.composer-glyph-snap.size-3\.5 {
+		width: round(up, calc(0.875rem * var(--ui-font-scale, 1)), 2px);
+		height: round(up, calc(0.875rem * var(--ui-font-scale, 1)), 2px);
+	}
+	/* Queue Resume's solid play: about a third of the circle's height, like the Stop square. */
+	& svg.composer-resume-glyph {
+		width: calc(var(--ui-icon-size) * 1.125);
+		height: calc(var(--ui-icon-size) * 1.125);
+		width: round(up, calc(var(--ui-icon-size) * 1.125), 2px);
+		height: round(up, calc(var(--ui-icon-size) * 1.125), 2px);
+	}
 	& svg.size-5 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-6 { width: calc(1.5rem * var(--ui-font-scale, 1)); height: calc(1.5rem * var(--ui-font-scale, 1)); }
 	& svg:is(.size-\[5px\], [class~='size-[calc(5px*var(--ui-space-scale,1))]']) { width: calc(5px * var(--ui-font-scale, 1)); height: calc(5px * var(--ui-font-scale, 1)); }
@@ -6110,6 +6123,8 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	& svg.unsloth-send-icon {
 		width: calc(var(--ui-icon-size) * 1.3);
 		height: calc(var(--ui-icon-size) * 1.3);
+		width: round(up, calc(var(--ui-icon-size) * 1.3), 2px);
+		height: round(up, calc(var(--ui-icon-size) * 1.3), 2px);
 	}
 	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
 	   curve a 22px glyph would follow), so only its scaling changed. */
@@ -6649,3 +6664,4 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		border-color: color-mix(in oklab, var(--border), var(--foreground) 15%);
 	}
 }
+
