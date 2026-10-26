@@ -102,9 +102,13 @@ def test_fused_mamba_kernel_trains_with_skip_list():
     model = MambaForCausalLM(config)
     state = {n: p.detach().clone() for n, p in model.named_parameters()}
     skip = ["lm_head"] + _architecture_skip_modules(["mamba"])
-    qc = BitsAndBytesConfig(load_in_4bit = True, bnb_4bit_compute_dtype = torch.float32, llm_int8_skip_modules = skip)
+    qc = BitsAndBytesConfig(
+        load_in_4bit = True, bnb_4bit_compute_dtype = torch.float32, llm_int8_skip_modules = skip
+    )
     try:
-        model = tbnb.replace_with_bnb_linear(model, modules_to_not_convert = skip, quantization_config = qc)
+        model = tbnb.replace_with_bnb_linear(
+            model, modules_to_not_convert = skip, quantization_config = qc
+        )
     except TypeError:
         model = tbnb.replace_with_bnb_linear(
             model, modules_to_not_convert = skip, quantization_config = qc, pre_quantized = False
@@ -113,7 +117,9 @@ def test_fused_mamba_kernel_trains_with_skip_list():
         if isinstance(module, torch.nn.Linear) and name + ".weight" in state:
             module.weight = torch.nn.Parameter(state[name + ".weight"])
         if isinstance(module, bnb.nn.Linear4bit):
-            module.weight = bnb.nn.Params4bit(state[name + ".weight"], requires_grad = False, quant_type = "nf4")
+            module.weight = bnb.nn.Params4bit(
+                state[name + ".weight"], requires_grad = False, quant_type = "nf4"
+            )
     model = model.cuda()
     assert isinstance(model.backbone.layers[0].mixer.in_proj, bnb.nn.Linear4bit)
 
