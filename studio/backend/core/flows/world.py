@@ -58,16 +58,19 @@ ACTION_FLAGS = ("movement", "shooter")
 GAMEPLAY_LEVELS = {
     "explore": {},
     "action": {"movement": True},
-    "shooter": {"movement": True, "shooter": True},
+    "shooter": {"movement": True, "shooter": True, "verbs": True},
 }
 
 
 def action_of(raw: Any) -> Optional[dict]:
-    """The world's action flags, or None when none is on (a shooter always moves with physics)."""
+    """The world's action flags, or None when none is on (a shooter always moves with physics).
+    Opt-in extras (``verbs``) appear only when set, so older worlds keep their exact shape."""
     if not isinstance(raw, dict):
         return None
     flags = {k: raw.get(k) is True for k in ACTION_FLAGS}
-    flags["movement"] = flags["movement"] or flags["shooter"]
+    flags["movement"] = flags["movement"] or flags["shooter"] or raw.get("verbs") is True
+    if raw.get("verbs") is True:
+        flags["verbs"] = True
     return flags if any(flags.values()) else None
 
 
@@ -253,7 +256,11 @@ def normalize_world(
     view = _view3d(raw.get("view3d"))
     if view:
         world["view3d"] = view
-    props = props3d(raw.get("props3d"), width, height)
+    raw_props = raw.get("props3d")
+    if isinstance(raw_props, list):
+        # Item links name items as the author wrote them; map them to the normalised ids.
+        raw_props = [_prop_item_refs(p, lambda v: ref(v, item_ids)) for p in raw_props]
+    props = props3d(raw_props, width, height, {i["id"] for i in world["items"]})
     if props:
         world["props3d"] = props
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
@@ -285,15 +292,37 @@ def _view3d(raw: Any) -> dict:
     return out
 
 
-PROP_KINDS = ("house", "tree", "lamp", "fence", "well", "crate", "rock", "bench", "stall", "model")
-OPEN_PROPS = ("lamp", "bench")
+PROP_KINDS = (
+    "house",
+    "tree",
+    "lamp",
+    "fence",
+    "well",
+    "crate",
+    "rock",
+    "bench",
+    "stall",
+    "door",
+    "chest",
+    "lever",
+    "model",
+)
+OPEN_PROPS = ("lamp", "bench", "lever")
+MAX_PROP_LINKS = 8
+_ITEM_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 MAX_PROPS = 400
 _PROP_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 
 
-def props3d(raw: Any, width: int, height: int) -> list[dict]:
+def props3d(
+    raw: Any,
+    width: int,
+    height: int,
+    item_ids: Optional[set] = None,
+) -> list[dict]:
     """Clean the 3D editor's props: unknown kinds, duplicate ids and models without a flow asset are dropped,
-    positions are kept on the map and rotation / scale clamped."""
+    positions are kept on the map and rotation / scale clamped. Doors, chests and levers keep their links
+    (key and contents item ids, when ``item_ids`` is given only known ones; lever targets only real doors)."""
     out: list[dict] = []
     seen: set[str] = set()
     for p in raw if isinstance(raw, list) else []:
@@ -343,9 +372,53 @@ def props3d(raw: Any, width: int, height: int) -> list[dict]:
         prop["solid"] = (
             p["solid"] if isinstance(p.get("solid"), bool) else p["kind"] not in OPEN_PROPS
         )
+        _prop_links(prop, p, item_ids)
         seen.add(pid)
         out.append(prop)
+    doors = {p["id"] for p in out if p["kind"] == "door"}
+    for prop in out:
+        if "targets" in prop:
+            prop["targets"] = [t for t in prop["targets"] if t in doors]
+            if not prop["targets"]:
+                del prop["targets"]
     return out
+
+
+def _prop_item_refs(p: Any, resolve) -> Any:
+    if not isinstance(p, dict):
+        return p
+    out = dict(p)
+    if isinstance(p.get("locked_by"), str):
+        out["locked_by"] = resolve(p["locked_by"]) or p["locked_by"]
+    if isinstance(p.get("contents"), list):
+        out["contents"] = [(resolve(v) or v) if isinstance(v, str) else v for v in p["contents"]]
+    return out
+
+
+def _prop_links(prop: dict, raw: dict, item_ids: Optional[set]) -> None:
+    kind = prop["kind"]
+    if kind not in ("door", "chest", "lever"):
+        return
+
+    def item(v: Any) -> bool:
+        return (
+            isinstance(v, str) and bool(_ITEM_ID.match(v)) and (item_ids is None or v in item_ids)
+        )
+
+    if isinstance(raw.get("open"), bool):
+        prop["open"] = raw["open"]
+    if kind == "door" and item(raw.get("locked_by")):
+        prop["locked_by"] = raw["locked_by"]
+    if kind == "chest" and isinstance(raw.get("contents"), list):
+        contents = list(dict.fromkeys(v for v in raw["contents"] if item(v)))[:MAX_PROP_LINKS]
+        if contents:
+            prop["contents"] = contents
+    if kind == "lever" and isinstance(raw.get("targets"), list):
+        targets = list(
+            dict.fromkeys(v for v in raw["targets"] if isinstance(v, str) and _PROP_ID.match(v))
+        )[:MAX_PROP_LINKS]
+        if targets:
+            prop["targets"] = targets
 
 
 def apply_play_view(
@@ -380,7 +453,12 @@ def apply_play_view(
             else:
                 world.pop("action", None)
         if isinstance(p.get("props3d"), list):
-            world["props3d"] = props3d(p["props3d"], world["width"], world["height"])
+            world["props3d"] = props3d(
+                p["props3d"],
+                world["width"],
+                world["height"],
+                {i["id"] for i in world.get("items") or []},
+            )
         world["player_node"] = n["id"]
         break
     return world

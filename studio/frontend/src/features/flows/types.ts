@@ -482,6 +482,9 @@ export type WorldPropKind =
   | "rock"
   | "bench"
   | "stall"
+  | "door"
+  | "chest"
+  | "lever"
   | "model";
 
 export interface ModelAsset {
@@ -501,6 +504,10 @@ export interface WorldProp3d {
   rot?: number;
   scale?: number;
   solid?: boolean;
+  open?: boolean;
+  locked_by?: string;
+  contents?: string[];
+  targets?: string[];
 }
 
 export interface World3dView {
@@ -516,6 +523,7 @@ export interface World3dView {
 export interface WorldAction {
   movement?: boolean;
   shooter?: boolean;
+  verbs?: boolean;
 }
 
 export interface WorldAutonomy {

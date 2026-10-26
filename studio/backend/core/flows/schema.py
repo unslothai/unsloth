@@ -375,6 +375,7 @@ class WorldAction(_Strict):
 
     movement: bool = False  # gravity, jumping, sprint, crouch and collisions with scenery
     shooter: bool = False  # a hitscan weapon, health and ammo; hostile villagers fight back
+    verbs: Optional[bool] = None  # dash; with the shooter also melee and thrown rocks (3D only)
 
 
 class World3dView(_Strict):
@@ -392,7 +393,19 @@ class WorldProp3d(_Strict):
 
     id: str
     kind: Literal[
-        "house", "tree", "lamp", "fence", "well", "crate", "rock", "bench", "stall", "model"
+        "house",
+        "tree",
+        "lamp",
+        "fence",
+        "well",
+        "crate",
+        "rock",
+        "bench",
+        "stall",
+        "door",
+        "chest",
+        "lever",
+        "model",
     ]
     asset: Optional[dict[str, Any]] = None  # the GLB flow asset of a "model" prop
     name: Optional[str] = None
@@ -401,6 +414,10 @@ class WorldProp3d(_Strict):
     rot: float = 0  # degrees about the vertical axis
     scale: float = 1
     solid: bool = True  # blocks walking on its tile, in 2D and 3D
+    open: Optional[bool] = None  # a door, chest or lever that starts open (or pulled)
+    locked_by: Optional[str] = None  # a door's key: the item id the player must carry
+    contents: Optional[list[str]] = None  # item ids a chest gives, once
+    targets: Optional[list[str]] = None  # door ids a lever opens and closes
 
 
 class WorldSpec(_Strict):

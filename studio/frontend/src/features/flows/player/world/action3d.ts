@@ -39,6 +39,9 @@ const PROP_BOX: Record<WorldPropKind, [number, number, number]> = {
   rock: [0.7, 0.7, 0.54],
   bench: [0.8, 0.3, 0.6],
   stall: [1, 0.75, 1.1],
+  door: [0.96, 0.14, 1.9],
+  chest: [0.7, 0.46, 0.5],
+  lever: [0.2, 0.2, 0.9],
   model: [0.9, 0.9, 1],
 };
 

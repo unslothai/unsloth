@@ -185,6 +185,53 @@ const course = (spec: WorldSpec): WorldProp3d[] => {
       solid: true,
     }));
 };
+// `?verbs=1`: a keep near the spawn, a chest holding the key to a locked door, a lever on a second door
+// and a hostile brute standing still, for use / melee / dash / throw.
+const keep = (spec: WorldSpec): WorldSpec => {
+  const m = generateMap(spec);
+  const s = m.spawn;
+  const free = (dx: number, dy: number) => !isSolid(m, s.x + dx, s.y + dy);
+  const at = (dx: number, dy: number) => ({
+    x: s.x + dx + 0.5,
+    y: s.y + dy + 0.5,
+  });
+  const props: WorldProp3d[] = [];
+  const add = (dx: number, dy: number, p: Omit<WorldProp3d, "x" | "y">) => {
+    if (free(dx, dy)) props.push({ ...p, ...at(dx, dy) });
+  };
+  add(3, 0, { id: "chest-1", kind: "chest", contents: ["key"], solid: true });
+  add(0, -3, { id: "door-1", kind: "door", locked_by: "key", solid: true });
+  add(-3, -3, { id: "door-2", kind: "door", solid: true });
+  add(-3, 0, {
+    id: "lever-1",
+    kind: "lever",
+    targets: ["door-2"],
+    solid: false,
+  });
+  return {
+    ...spec,
+    items: [
+      ...spec.items,
+      { id: "key", name: "Brass key", description: "Opens the keep." },
+    ],
+    npcs: [
+      ...spec.npcs,
+      {
+        id: "brute",
+        name: "Brute",
+        persona: "a camp raider",
+        greeting: "Grr.",
+        role: "hostile",
+        wander: false,
+        x: s.x + 2,
+        y: s.y + 3,
+      },
+    ],
+    props3d: props,
+  };
+};
+const verbs = params.get("verbs") === "1";
+const ACTED: WorldSpec = verbs ? keep(LIVED) : LIVED;
 // `&clutter=N`: N non-solid props spread over open tiles, to load the renderers.
 const clutter = (spec: WorldSpec, n: number): WorldProp3d[] => {
   const m = generateMap(spec);
@@ -219,13 +266,22 @@ const clutter = (spec: WorldSpec, n: number): WorldProp3d[] => {
 const PLAYED_BASE: WorldSpec =
   gameplay === "action" || gameplay === "shooter"
     ? {
-        ...LIVED,
-        action: { movement: true, shooter: gameplay === "shooter" },
+        ...ACTED,
+        action: {
+          movement: true,
+          shooter: gameplay === "shooter",
+          ...(verbs ? { verbs: true } : {}),
+        },
         ...(params.get("course") ? { props3d: course(LIVED) } : {}),
       }
     : params.get("course")
-      ? { ...LIVED, props3d: course(LIVED) }
-      : LIVED;
+      ? { ...ACTED, props3d: course(LIVED) }
+      : ACTED;
+if (verbs)
+  (window as unknown as { __flowsWorldPerf?: unknown }).__flowsWorldPerf = {
+    frame: [],
+    sim: [],
+  };
 const PLAYED: WorldSpec = params.get("clutter")
   ? {
       ...PLAYED_BASE,
@@ -377,6 +433,7 @@ declare global {
       sessions: typeof sessions;
       exited: number;
       map: ReturnType<typeof generateMap>;
+      props: WorldProp3d[];
       world: WorldGameHandle | null;
     };
   }
@@ -386,6 +443,7 @@ window.__flowsPlayerSmoke = {
   sessions,
   exited: 0,
   map: generateMap(PLAYED),
+  props: PLAYED.props3d ?? [],
   world: null,
 };
 
