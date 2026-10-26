@@ -9,7 +9,10 @@ weights) but decay recency by elapsed hours at the paper's 0.995/hour; ``recency
 
 from __future__ import annotations
 
+import functools
+import heapq
 import math
+import operator
 import re
 from typing import Any, Iterable, Optional
 
@@ -86,24 +89,40 @@ def new_record(
     return record
 
 
-def tokens(text: str) -> set[str]:
+@functools.lru_cache(maxsize = 8192)
+def tokens(text: str) -> frozenset[str]:
+    # Cached: a record's text never changes, and every retrieval re-scores the whole stream.
     words = {w for w in _WORD.findall(text.lower()) if w not in _STOP and len(w) > 1}
     for w in [w for w in words if _CJK.search(w)]:
         words.update(w[i : i + 2] for i in range(len(w) - 1))
-    return words
+    return frozenset(words)
 
 
 def keyword_relevance(query: str, text: str) -> float:
     """Word-overlap fallback when no embedding model is available: |q & t| / |q|."""
-    q = tokens(query)
+    return _overlap(tokens(query), text)
+
+
+def _overlap(q: set[str], text: str) -> float:
     return len(q & tokens(text)) / len(q) if q else 0.0
 
 
+_sumprod = getattr(math, "sumprod", None)
+
+
+def _dot(a: list[float], b: list[float]) -> float:
+    # math.sumprod (3.12+) is a C loop but needs equal lengths; zip semantics otherwise, as before.
+    if _sumprod is not None and len(a) == len(b):
+        return _sumprod(a, b)
+    return sum(map(operator.mul, a, b))
+
+
+def _norm(a: list[float]) -> float:
+    return math.sqrt(_dot(a, a)) or 1.0
+
+
 def cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a)) or 1.0
-    nb = math.sqrt(sum(y * y for y in b)) or 1.0
-    return dot / (na * nb)
+    return _dot(a, b) / (_norm(a) * _norm(b))
 
 
 def normalise(values: list[float]) -> list[float]:
@@ -144,9 +163,11 @@ def score(
     rec = normalise(recency(records, now, decay, recency_mode))
     imp = normalise([float(r.get("importance") or 0) for r in records])
     if query_vec is not None and all(isinstance(r.get("embedding"), list) for r in records):
-        raw_rel = [cosine(query_vec, r["embedding"]) for r in records]
+        qn = _norm(query_vec)
+        raw_rel = [_dot(query_vec, r["embedding"]) / (qn * _norm(r["embedding"])) for r in records]
     else:
-        raw_rel = [keyword_relevance(query, str(r.get("text") or "")) for r in records]
+        q = tokens(query)
+        raw_rel = [_overlap(q, str(r.get("text") or "")) for r in records]
     rel = normalise(raw_rel)
     return [
         {
@@ -161,11 +182,11 @@ def score(
 
 def top(records: list[dict], scores: list[dict], k: int) -> list[int]:
     """Indices of the k best records; ties go to the newer record so the order is stable."""
-    order = sorted(
+    return heapq.nsmallest(
+        max(0, k),
         range(len(records)),
         key = lambda i: (-scores[i]["score"], -float(records[i].get("t_created") or 0), i),
     )
-    return order[: max(0, k)]
 
 
 def cap(stream: dict, max_records: int) -> None:
