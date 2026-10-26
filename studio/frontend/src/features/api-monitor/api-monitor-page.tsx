@@ -958,15 +958,16 @@ export function ApiMonitorPage(): ReactElement {
         .join(","),
     [entries],
   );
+  const resident = useResidentRunTarget(data?.active_model);
   const reload = useApiModelReload({
     selectModel: runtime.selectModel,
     loadNpuModel: runtime.loadNpuModel,
     readModelLoadEpochs: runtime.readModelLoadEpochs,
+    resident,
     onSettled: refresh,
     residencyKey,
   });
   const [unloadError, setUnloadError] = useState<string | null>(null);
-  const resident = useResidentRunTarget(data?.active_model);
   const [configRequest, setConfigRequest] =
     useState<ModelConfigHandoffRequest | null>(null);
   const canEditSettings =
@@ -1255,7 +1256,7 @@ export function ApiMonitorPage(): ReactElement {
         size="sm"
         aria-label={`Reload ${model.name}`}
         onClick={() => void reload.reloadServed(model)}
-        disabled={reloadBusy}
+        disabled={reloadBusy || !reload.canReload(model)}
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
@@ -1526,7 +1527,8 @@ export function ApiMonitorPage(): ReactElement {
                   onClick={() => void reload.reloadAll(served)}
                   disabled={
                     reloadBusy ||
-                    (served.length === 0 && reload.lastLoadLabel == null)
+                    (served.length === 0 && reload.lastLoadLabel == null) ||
+                    served.some((model) => !reload.canReload(model))
                   }
                   className="gap-1.5 rounded-full"
                 >

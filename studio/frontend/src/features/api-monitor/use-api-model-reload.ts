@@ -19,6 +19,10 @@ import {
   RELOAD_MISSING_HISTORY_MESSAGE,
   reloadLastModel,
 } from "./reload-last-model";
+import {
+  type ResidentRunTarget,
+  residentHasRunSettings,
+} from "./slots-settings-request";
 import { monitorSelection } from "./use-resident-run-target";
 
 type Runtime = ReturnType<typeof useChatModelRuntime>;
@@ -38,6 +42,24 @@ function errorMessage(err: unknown, fallback: string): string | null {
     return null;
   }
   return err instanceof Error ? err.message : fallback;
+}
+
+type ReloadSelection = LastLoadRecord & {
+  loadId?: string;
+  nativePathToken?: string;
+  nativePathExpiresAtMs?: number | null;
+};
+
+/** A file-picked GGUF is served under a display label; only the resident's file grant can load it. */
+function grantedTarget(resident: ResidentRunTarget): ReloadSelection {
+  return {
+    id: resident.checkpoint,
+    kind: resident.isGguf ? "gguf" : "model",
+    ggufVariant: resident.ggufVariant,
+    loadId: resident.loadId ?? undefined,
+    nativePathToken: resident.nativePathToken ?? undefined,
+    nativePathExpiresAtMs: resident.nativePathExpiresAtMs,
+  };
 }
 
 function servedTarget(model: ReloadableModel): LastLoadRecord {
@@ -64,12 +86,14 @@ export function useApiModelReload({
   selectModel,
   loadNpuModel,
   readModelLoadEpochs,
+  resident,
   onSettled,
   residencyKey,
 }: {
   selectModel: Runtime["selectModel"];
   loadNpuModel: Runtime["loadNpuModel"];
   readModelLoadEpochs: Runtime["readModelLoadEpochs"];
+  resident: ResidentRunTarget | null;
   onSettled: () => void;
   residencyKey: string;
 }) {
@@ -100,7 +124,7 @@ export function useApiModelReload({
   }, [refreshLastLoad, residencyKey]);
 
   const load = useCallback(
-    async (target: LastLoadRecord) => {
+    async (target: ReloadSelection) => {
       const resolved = resolveResidentInitialConfig(
         target.id,
         target.ggufVariant,
@@ -118,6 +142,9 @@ export function useApiModelReload({
         id: target.id,
         isGguf: target.kind === "gguf",
         ggufVariant: target.ggufVariant ?? undefined,
+        loadId: target.loadId,
+        nativePathToken: target.nativePathToken,
+        nativePathExpiresAtMs: target.nativePathExpiresAtMs,
         config: config ?? undefined,
         keepSpeculative: config != null,
         forceReload: true,
@@ -148,10 +175,26 @@ export function useApiModelReload({
     [onSettled, refreshLastLoad],
   );
 
+  const rowTarget = useCallback(
+    (model: ReloadableModel): ReloadSelection =>
+      model.active && resident?.nativePathToken
+        ? grantedTarget(resident)
+        : servedTarget(model),
+    [resident],
+  );
+
+  // An expired grant cannot load the file again; picking it anew issues a fresh one.
+  const canReload = (model: ReloadableModel): boolean =>
+    !(
+      model.active &&
+      resident?.nativePathToken &&
+      !residentHasRunSettings(resident)
+    );
+
   const reloadServed = useCallback(
     (model: ReloadableModel) =>
-      run(model.checkpoint, () => load(servedTarget(model))),
-    [run, load],
+      run(model.checkpoint, () => load(rowTarget(model))),
+    [run, load, rowTarget],
   );
 
   // Kept models first and the primary last, so the primary is still the most recent load.
@@ -173,7 +216,7 @@ export function useApiModelReload({
           (a, b) => Number(a.active) - Number(b.active),
         )) {
           const before = readModelLoadEpochs();
-          await load(servedTarget(model));
+          await load(rowTarget(model));
           // A cancelled or superseded load resolves quietly; stop rather than start the next
           // one over the user's Stop or newer pick. Each load here takes one intent itself.
           const after = readModelLoadEpochs();
@@ -185,7 +228,7 @@ export function useApiModelReload({
           }
         }
       }),
-    [run, load, readModelLoadEpochs],
+    [run, load, readModelLoadEpochs, rowTarget],
   );
 
   const reloadAllTitle = (served: ReloadableModel[]): string => {
@@ -204,6 +247,7 @@ export function useApiModelReload({
     error,
     reloadServed,
     reloadAll,
+    canReload,
     reloadAllTitle,
   };
 }

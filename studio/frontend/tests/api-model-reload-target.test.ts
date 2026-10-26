@@ -44,11 +44,22 @@ test("a row reload asks to stop only the reloaded model's chats, not the selecte
   assert.doesNotMatch(runtime, /touchesOnlySelected \? \(paramsNow\.checkpoint/);
 });
 
+test("a file-picked primary reloads through its file grant, and not once the grant expired", () => {
+  // The served row only carries a display label for a desktop-picked GGUF.
+  assert.match(hook, /model\.active && resident\?\.nativePathToken\s*\?\s*grantedTarget\(resident\)\s*:\s*servedTarget\(model\)/);
+  assert.match(hook, /nativePathToken: resident\.nativePathToken \?\? undefined,/);
+  assert.match(hook, /loadId: target\.loadId,\s*nativePathToken: target\.nativePathToken,\s*nativePathExpiresAtMs: target\.nativePathExpiresAtMs,/);
+  assert.match(hook, /model\.active &&\s*resident\?\.nativePathToken &&\s*!residentHasRunSettings\(resident\)/);
+  assert.match(page, /disabled=\{reloadBusy \|\| !reload\.canReload\(model\)\}/);
+  assert.match(page, /served\.some\(\(model\) => !reload\.canReload\(model\)\)/);
+  assert.doesNotMatch(hook, /load\(servedTarget\(model\)\)/);
+});
+
 test("Reload all stops when a load is cancelled or a newer pick supersedes it", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   // selectModel resolves quietly on abort, so the abort itself is what the batch reads.
   assert.match(runtime, /modelLoadCancelEpoch \+= 1;\s*run\.abortController\.abort\(\);/);
-  assert.match(hook, /const before = readModelLoadEpochs\(\);\s*await load\(servedTarget\(model\)\);/);
+  assert.match(hook, /const before = readModelLoadEpochs\(\);\s*await load\(rowTarget\(model\)\);/);
   assert.match(hook, /after\.cancels !== before\.cancels \|\|\s*after\.intent > before\.intent \+ 1/);
   assert.match(page, /readModelLoadEpochs: runtime\.readModelLoadEpochs,/);
 });
