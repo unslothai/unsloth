@@ -736,8 +736,7 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
         and entry[2] == (hidden_states.device, seq_lengths._version, mask._version)
         # cu_seqlens built under inference_mode cannot be saved for a training step's backward.
         and (not entry[4] or torch.is_inference_mode_enabled())
-        # The sdpa policy (sdpa_kernel, deterministic mode) can change between calls on the same
-        # tensors: a cached verdict is only served while the policy still gives the same answer.
+        # sdpa_kernel / deterministic mode can change between calls on the same tensors.
         and (entry[5] is None or _sdpa_policy_requested(*entry[5]) == entry[6])
     ):
         if entry[3] is not None:
@@ -759,7 +758,6 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
             (hidden_states.device, seq_lengths._version, mask._version),
             result,
             torch.is_inference_mode_enabled(),
-            # (policy arguments, verdict) when the policy was consulted, else (None, None).
             *(policy[0] if policy else (None, None)),
         )
     return result

@@ -1416,8 +1416,7 @@ def test_block_varlen_kwargs_honours_the_sdpa_policy_each_step(monkeypatch):
 
 
 def test_block_varlen_kwargs_rechecks_the_sdpa_policy_on_reused_tensors(monkeypatch):
-    """Same lengths and mask objects (a cache hit), policy changed between calls: a math-only
-    sdpa_kernel / deterministic mode must refuse cached metadata, and lifting it restores the path."""
+    """A cache hit must still refuse cached metadata once the sdpa policy flips."""
     hpa._ORIG_SDPA[0] = _plain_sdpa
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
@@ -1435,7 +1434,7 @@ def test_block_varlen_kwargs_rechecks_the_sdpa_policy_on_reused_tensors(monkeypa
     kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
     layer = _block_layer()
     assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
-    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)  # served from the cache
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
     policy[0] = True
     assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
     assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
