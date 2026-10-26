@@ -7,11 +7,11 @@ import { Button } from "@/components/ui/button";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon, Edit03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { ImageIcon, PencilIcon, VideoIcon } from "lucide-react";
+import { ImageIcon, VideoIcon } from "lucide-react";
 import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
@@ -518,7 +518,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                   className="pointer-events-auto rounded-full bg-black/70 text-white hover:bg-black/85"
                   onClick={handleEditClick}
                 >
-                  <PencilIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
                   Edit
                 </Button>
                 <Button

@@ -6,12 +6,12 @@ import {
   CornerDownRightIcon,
   GripVerticalIcon,
   ListEndIcon,
-  MoreHorizontalIcon,
 } from "lucide-react";
 import {
   Copy01Icon,
   Delete02Icon,
   Edit03Icon,
+  MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
@@ -407,7 +407,7 @@ export function PromptQueueList({
                           aria-label={t("promptQueue.moreLabel", { position })}
                           className="size-8 shrink-0 text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:size-11"
                         >
-                          <MoreHorizontalIcon className="size-4" />
+                          <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
                         </TooltipIconButton>
                       )}
                       align="end"

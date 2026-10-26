@@ -375,6 +375,47 @@ function useStagedFixPrompt(pendingFixPrompt: string | null, active: boolean): v
   }, [pendingFixPrompt, aui, active]);
 }
 
+/** Hosts the browser for this chat. Project landing never mounts SingleContent, so it calls this itself (#15046).
+ *  `overlay`: the browser covers the chat as a modal, so handing work to the composer closes it first. */
+function useBrowserChatHost(active: boolean, overlay = false): void {
+  const isMobile = useIsMobile();
+  const aui = useAui();
+  useEffect(() => {
+    if (!active || isMobile) return;
+    setBrowserPanelAvailable(true);
+    setInAppLinkHandler(openUrlInBrowser);
+    const focusComposer = () => document.querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)?.focus();
+    useBrowserStore.setState({
+      requestEdits: (prompt) => {
+        useChatArtifactsStore.getState().stageFixPrompt(prompt);
+        if (overlay) useBrowserStore.getState().closePanel();
+      },
+      // Marks are sent with a reply the overlay would hide, so it stages a prompt like compare does.
+      sendAnnotations: overlay ? null : (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
+      attachToChat: (file) =>
+        aui
+          .composer()
+          .addAttachment(file)
+          .then(() => {
+            if (overlay) {
+              useBrowserStore.getState().closePanel();
+              // After the closing overlay hands focus back to its opener.
+              window.setTimeout(focusComposer, 0);
+            } else {
+              focusComposer();
+            }
+            return true;
+          })
+          .catch(() => false),
+    });
+    return () => {
+      setBrowserPanelAvailable(false);
+      setInAppLinkHandler(null);
+      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, attachToChat: null });
+    };
+  }, [active, overlay, isMobile, aui]);
+}
+
 // Compare keeps the base view mounted but hidden; the overlay owns the browser then, so it runs once.
 const BrowserOverlaidContext = createContext(false);
 
@@ -581,7 +622,6 @@ const SingleContent = memo(function SingleContent({
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
   const chatActive = useChatActive();
-  const aui = useAui();
   // Compare keeps this view mounted but hidden, so the backgrounded copy leaves the prompt to SharedComposer.
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
@@ -589,29 +629,7 @@ const SingleContent = memo(function SingleContent({
   const browserOpen = useBrowserStore((state) => state.open);
   const browserOpenSequence = useBrowserStore((state) => state.openSequence);
   const closeBrowser = useBrowserStore((state) => state.closePanel);
-  useEffect(() => {
-    if (!chatActive || isMobile) return;
-    setBrowserPanelAvailable(true);
-    setInAppLinkHandler(openUrlInBrowser);
-    useBrowserStore.setState({
-      requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
-      sendAnnotations: (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
-      attachToChat: (file) =>
-        aui
-          .composer()
-          .addAttachment(file)
-          .then(() => {
-            document.querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)?.focus();
-            return true;
-          })
-          .catch(() => false),
-    });
-    return () => {
-      setBrowserPanelAvailable(false);
-      setInAppLinkHandler(null);
-      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, attachToChat: null });
-    };
-  }, [chatActive, isMobile, aui]);
+  useBrowserChatHost(chatActive);
   useStagedFixPrompt(pendingFixPrompt, chatActive);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
@@ -1868,6 +1886,7 @@ function ProjectLanding({
   // Gates body-portaled surfaces so they cannot linger or act while the landing is off-route.
   const active = useChatActive();
   // The browser shows over a project, so its Request edits lands in this composer.
+  useBrowserChatHost(active, true);
   useStagedFixPrompt(
     useChatArtifactsStore((state) => state.pendingFixPrompt),
     active,
@@ -4923,7 +4942,12 @@ export function ChatPage({
             {view.mode === "single" && (
               <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
-            {view.mode === "single" && !isMobile ? <BrowserToggleButton active={active} /> : null}
+            {(view.mode === "single" || view.mode === "project") && !isMobile ? (
+              <BrowserToggleButton
+                active={active}
+                hideWhenOpen={view.mode === "single" || showBrowserOverlay}
+              />
+            ) : null}
             {view.mode === "single" &&
             latestResearchRunId &&
             latestResearchRunStatus ? (

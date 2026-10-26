@@ -125,5 +125,10 @@ def test_generic_save_casts_through_the_helper():
         c.func.id for c in ast.walk(fn) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
     }
     assert "_cast_state_dict_16bit" in calls
-    decorators = [getattr(d, "id", getattr(d, "attr", None)) for d in fn.decorator_list]
-    assert decorators == ["_normalize_tied_weights_keys_for_save", "inference_mode"]
+    decorators = [d.func if isinstance(d, ast.Call) else d for d in fn.decorator_list]
+    decorators = [getattr(d, "id", getattr(d, "attr", None)) for d in decorators]
+    assert decorators == [
+        "_model_parallel_refuses_save",
+        "_normalize_tied_weights_keys_for_save",
+        "inference_mode",
+    ]

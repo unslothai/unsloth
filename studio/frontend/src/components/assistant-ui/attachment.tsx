@@ -59,9 +59,10 @@ import {
   Comment01Icon,
   InternetIcon,
   TextAlignLeft01Icon,
+  PlusSignIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { PlusIcon, XIcon } from "lucide-react";
 import {
   createContext,
   type FC,
@@ -505,7 +506,7 @@ const AttachmentCardRemove: FC = () => {
         aria-label="Remove file"
         className="aui-attachment-card-remove absolute top-1.5 right-1.5 size-5 rounded-full bg-white p-0 opacity-0 shadow-sm ring-1 ring-black/15 transition-opacity hover:bg-white! dark:bg-black dark:ring-white/20 dark:hover:bg-black! focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100 [&_svg]:text-black dark:[&_svg]:text-white"
       >
-        <XIcon className="aui-attachment-remove-icon size-3 stroke-[2.5px]" />
+        <HugeiconsIcon icon={Cancel01Icon} className="aui-attachment-remove-icon size-3 stroke-[2.5px]" />
       </Button>
     </AttachmentPrimitive.Remove>
   );
@@ -833,7 +834,7 @@ export const ComposerAddAttachment: FC = () => {
         className="aui-composer-add-attachment size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
         aria-label="Add Attachment"
       >
-        <PlusIcon className="aui-attachment-add-icon size-5 stroke-[1.5px]" />
+        <HugeiconsIcon icon={PlusSignIcon} className="aui-attachment-add-icon size-5 stroke-[1.5px]" />
       </TooltipIconButton>
     </ComposerPrimitive.AddAttachment>
   );

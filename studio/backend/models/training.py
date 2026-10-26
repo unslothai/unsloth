@@ -555,7 +555,8 @@ class TrainingStartRequest(BaseModel):
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
-    weight_decay: float = Field(0.001, description = "Weight decay")
+    # NaN clears _check_weight_decay's 0..10 range check (every comparison with it is False), so it is refused here.
+    weight_decay: float = Field(0.001, allow_inf_nan = False, description = "Weight decay")
     # Finite as well as non-negative: JSON 1e309 floats to inf, which clears ge=0 but never binds, so
     # the run would train unclipped while reporting a threshold.
     max_grad_norm: Optional[float] = Field(
@@ -596,8 +597,11 @@ class TrainingStartRequest(BaseModel):
             "back to the incoming activation dtype."
         ),
     )
+    # numpy's range (transformers.set_seed): out of it, the run only fails after the model loads.
     random_seed: int = Field(
         3407,
+        ge = 0,
+        le = 2**32 - 1,
         description = (
             "Random seed; matches the Unsloth backend / MLX worker default "
             "and unsloth's historical recommended value."

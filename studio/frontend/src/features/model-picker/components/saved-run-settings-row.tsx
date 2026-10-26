@@ -16,7 +16,6 @@ import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
   Edit03Icon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { MouseEvent, PointerEvent } from "react";
@@ -25,6 +24,7 @@ import {
   type SavedRunSettings,
   normalizeSavedRunSettingsName,
 } from "../model-config/saved-run-settings";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 /** ``target`` is the set being renamed. */
 export type RunSettingsNaming =

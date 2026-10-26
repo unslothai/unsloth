@@ -566,8 +566,9 @@ async function askInPanel(question: Question, context: Run, remember = true): Pr
   const tabId = agentChat(context.session.chat).tabId;
   const store = useBrowserStore.getState();
   if (tabId) store.revealIn(context.session.chat, tabId);
-  else if (chatOnScreen(context) && !store.open) store.openPanel();
-  if (!chatOnScreen(context)) notifyOffScreenQuestion(context.session.chat);
+  // Even when already open: a project's overlay or Research can be hiding it, and only a new open shows it.
+  if (chatOnScreen(context)) store.openPanel();
+  else notifyOffScreenQuestion(context.session.chat);
   const answer = await askUser(context.session.chat, question, context.signal, keep);
   if (answer === "always" && keep) granted.add(key);
   return answer;
