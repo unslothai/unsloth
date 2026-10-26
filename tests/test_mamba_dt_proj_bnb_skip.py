@@ -4,7 +4,17 @@
 """Mamba QLoRA must keep mixer.dt_proj unquantized: transformers 5's Mamba slow path runs
 ``self.dt_proj.weight @ time_step``, which fails on a packed Params4bit."""
 
+import importlib.util
+
 import torch
+
+
+def _mamba_ssm(monkeypatch, present):
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda name, *a, **k: (object() if present else None) if name == "mamba_ssm" else real(name, *a, **k),
+    )
 
 
 def test_mamba_skips_dt_proj():
@@ -12,7 +22,8 @@ def test_mamba_skips_dt_proj():
     assert "dt_proj" in _architecture_skip_modules(["mamba"])
 
 
-def test_mamba_skips_fused_kernel_dense_weights():
+def test_mamba_skips_fused_kernel_dense_weights(monkeypatch):
+    _mamba_ssm(monkeypatch, True)
     # mamba_inner_fn reads x_proj.weight and out_proj.weight as dense matrices during training.
     from unsloth.models.vision import _architecture_skip_modules
 
@@ -21,7 +32,8 @@ def test_mamba_skips_fused_kernel_dense_weights():
     assert "in_proj" not in skip
 
 
-def test_falcon_mamba_and_others_unchanged():
+def test_falcon_mamba_and_others_unchanged(monkeypatch):
+    _mamba_ssm(monkeypatch, False)
     from unsloth.models.vision import _architecture_skip_modules
 
     assert "dt_proj" not in _architecture_skip_modules(["falcon_mamba"])
@@ -29,7 +41,8 @@ def test_falcon_mamba_and_others_unchanged():
     assert _architecture_skip_modules(["llama"]) == []
 
 
-def test_user_bnb_config_gets_mamba_dt_proj():
+def test_user_bnb_config_gets_mamba_dt_proj(monkeypatch):
+    _mamba_ssm(monkeypatch, True)
     from transformers import BitsAndBytesConfig
     from unsloth.models.vision import _with_architecture_skip_modules
 
@@ -39,7 +52,8 @@ def test_user_bnb_config_gets_mamba_dt_proj():
     assert user.llm_int8_skip_modules == ["lm_head"]
 
 
-def test_skip_key_keeps_tiny_mamba_dt_proj_out_of_bnb():
+def test_skip_key_keeps_tiny_mamba_dt_proj_out_of_bnb(monkeypatch):
+    _mamba_ssm(monkeypatch, True)
     import pytest
 
     pytest.importorskip("bitsandbytes")

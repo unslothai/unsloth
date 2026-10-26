@@ -2786,6 +2786,16 @@ def _target_parameters_in_layers(
     return [key for key in keys if _in_layers(key, layers_to_transform, layers_pattern)] or None
 
 
+def _mamba_ssm_importable():
+    """transformers routes Mamba training through mamba_ssm's fused mamba_inner_fn whenever the package imports."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("mamba_ssm") is not None
+    except (ImportError, ValueError):
+        return True  # unknown: keep the dense weights the fused kernel needs
+
+
 def _architecture_skip_modules(model_types):
     """Extra modules kept out of bitsandbytes; shared by the device-map planner and the load."""
     model_types = model_types or []
@@ -2794,10 +2804,13 @@ def _architecture_skip_modules(model_types):
     if any(mt == "nemotron_h" for mt in model_types):
         skip.append("out_proj")
     # Mamba's transformers 5 slow path does dt_proj.weight @ time_step, which fails on Params4bit; dt_proj is tiny.
-    # With mamba_ssm installed, training calls mamba_inner_fn with x_proj.weight and out_proj.weight as dense
-    # matrices (transformers 4.57 and 5.x), which a packed Params4bit cannot be; same as Nemotron-H's out_proj.
     if any(mt == "mamba" for mt in model_types):
-        skip.extend(("dt_proj", "x_proj", "out_proj"))
+        skip.append("dt_proj")
+    # With mamba_ssm importable, training calls mamba_inner_fn with dt_proj / x_proj / out_proj .weight as dense
+    # matrices (Mamba and Falcon-Mamba, transformers 4.57 and 5.x), which a packed Params4bit cannot be. Without it
+    # the slow path calls the modules, which 4-bit serves, so those users keep the smaller weights.
+    if any(mt in ("mamba", "falcon_mamba") for mt in model_types) and _mamba_ssm_importable():
+        skip.extend(m for m in ("dt_proj", "x_proj", "out_proj") if m not in skip)
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
