@@ -278,7 +278,14 @@ from .video_families import (
     video_family_uses_i2v_pipeline,
     video_i2v_call_kwargs,
 )
-from .video_frames import uint8_video_frames
+from .video_frames import (
+    NON_FINITE_FRAMES_MSG,
+    NonFiniteFramesError,
+    finite_video_decode,
+    nonfinite_check_enabled,
+    require_finite_frames,
+    uint8_video_frames,
+)
 from .video_minimax_h3 import (
     H3_ANCHOR_FIRST,
     H3_ANCHOR_LAST,
@@ -1959,6 +1966,26 @@ def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
         return False
     slot.stop(reason)
     return True
+
+
+def _refuse_h3_native_nan_render(path: Any) -> None:
+    """Raise ``NonFiniteFramesError`` for an sd.cpp H3 clip that is a NaN render (``h3_native_clip_is_nan_render``):
+    sd.cpp writes it and exits 0. Off with UNSLOTH_VIDEO_NONFINITE_CHECK=0; a clip the probe cannot read is kept."""
+    if not nonfinite_check_enabled():
+        return
+    from .video_minimax_h3 import h3_native_clip_is_nan_render
+
+    try:
+        broken = h3_native_clip_is_nan_render(Path(path))
+    except Exception as exc:  # noqa: BLE001 - the probe never fails a render on its own
+        logger.debug("video.h3_native_nonfinite_probe_failed: %s", exc)
+        return
+    if broken:
+        logger.warning(
+            "video.h3_native_nonfinite: sd.cpp returned a clip whose every frame is flat black / white and whose "
+            "soundtrack is one full-scale level, the output of a NaN render; refusing to save it"
+        )
+        raise NonFiniteFramesError(NON_FINITE_FRAMES_MSG)
 
 
 def _h3_retry_vram_cap(launched: "Optional[Sequence[str]]", error: str) -> Any:
@@ -4347,6 +4374,8 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
 
         if isinstance(exc, H3NativeMemoryRefusal):
             return f"{VIDEO_GENERATION_FAILED_MSG} {exc}"
+        if isinstance(exc, NonFiniteFramesError):
+            return f"{VIDEO_GENERATION_FAILED_MSG} {NON_FINITE_FRAMES_MSG}"
         native_memory = _native_memory_failure(exc)
         if native_memory:
             return f"{VIDEO_GENERATION_FAILED_MSG} {native_memory}"
@@ -9617,6 +9646,7 @@ class VideoBackend:
                 is_gguf = gguf_transformer,
                 offload_active = speed_offload,
                 audit = load_audit,
+                logger = logger,
                 apply = lambda family, log, view = view: apply_speed_optims(
                     view,
                     target,
@@ -12272,6 +12302,8 @@ class VideoBackend:
                         stack.enter_context(_denoise_phase(pipe, _enter_denoise))
                         # No video family has a denoise-to-decode callback, so the decoder itself reports the decode phase.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
+                        # NaN / inf pixels are refused at the decode, before a clamp or PIL / uint8 cast hides them.
+                        stack.enter_context(finite_video_decode(pipe))
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
                         if stream_session is not None:
@@ -13077,6 +13109,7 @@ class VideoBackend:
                 if cudnn is not None:
                     cudnn.end_render()
                 self._gen.update(phase = "export", eta_seconds = None)
+                _refuse_h3_native_nan_render(generated)
                 actual_width, actual_height, actual_frames, has_audio = inspect_video(generated)
                 mp4_bytes = transcode_video_to_mp4(generated, fps = fps)
                 if cancel.is_set():
@@ -13132,6 +13165,7 @@ class VideoBackend:
             streamed = claim_stream(video_frames, fps, audio, int(audio_sample_rate))
             if streamed is not None:
                 return streamed
+        require_finite_frames(video_frames)
         from diffusers.utils.export_utils import encode_video
 
         tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)

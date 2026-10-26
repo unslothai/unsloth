@@ -4065,6 +4065,7 @@ async def get_kv_cache_estimate(
         null = {
             "kv_bytes": None,
             "weights_bytes": None,
+            "lookup_table_bytes": None,
             "native_context": None,
             "spec_bytes": None,
             "n_ctx": None,
@@ -4633,6 +4634,7 @@ async def get_gguf_variants(
                         download_size_bytes = int(
                             getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                         ),
+                        lookup_table_bytes = int(getattr(v, "lookup_table_bytes", 0) or 0),
                         pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
                         pending_drafter_size_bytes = int(
                             getattr(v, "pending_drafter_size_bytes", 0) or 0

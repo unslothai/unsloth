@@ -266,7 +266,7 @@ export function SafetensorsDownloadCard({
             )}
           </div>
         </div>
-        {(showDownloadAction || showRunAction) && <CardDivider />}
+        {showDownloadAction && !(showRunAction && onRun) && <CardDivider />}
         {showDownloadAction && (
           <DownloadActionButton
             downloading={downloadAction.downloading}

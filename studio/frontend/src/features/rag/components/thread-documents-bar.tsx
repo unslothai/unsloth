@@ -1466,7 +1466,6 @@ export function ThreadDocumentsBar({
                 onClick={pickFiles}
                 className="unsloth-files-panel-action"
               >
-                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
                 Add files
               </button>
             </HeaderTip>

@@ -8913,33 +8913,39 @@ const EditComposer: FC = () => {
   }, [aui, isComposingRef]);
 
   return (
-    <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
+    // Top gap and type match UserMessage, so the text stays near the prompt's line.
+    <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]">
       <ComposerPrimitive.Root
-        className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-3xl bg-muted"
+        className="aui-edit-composer-root flex w-full flex-col rounded-xl bg-muted"
         onSubmit={(event) => {
           event.preventDefault();
           submitEdit();
         }}
       >
-        <ComposerAttachments className="mb-0 px-3 pt-3" />
+        <ComposerAttachments className="mb-0 px-4 pt-4" />
         <ComposerPrimitive.Input
           submitMode={
             effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"
               ? "ctrlEnter"
               : "enter"
           }
-          className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
+          minRows={2}
+          className="aui-edit-composer-input w-full resize-none bg-transparent px-5 py-3.5 text-foreground outline-none"
           autoFocus={true}
           dir="auto"
           {...inputProps}
         />
-        <div className="aui-edit-composer-footer mx-3 mb-3 flex items-center gap-2 self-end">
+        <div className="aui-edit-composer-footer mx-4 mb-4 flex items-center gap-2 self-end">
           <ComposerPrimitive.Cancel asChild={true}>
-            <Button type="button" variant="ghost" size="sm">
+            <Button type="button" variant="outline">
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
-          <Button type="submit" size="sm" disabled={researchActive || editEmpty}>
+          <Button
+            type="submit"
+            variant="dark"
+            disabled={researchActive || editEmpty}
+          >
             Send
           </Button>
         </div>

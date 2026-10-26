@@ -627,6 +627,14 @@
       "reason": "Falls back to the auto class unless the caller passed trust_remote_code; revision pinned to the config commit hash."
     },
     {
+      "file": "unsloth/models/fsdp2_save.py",
+      "rule": "unsafe-deserialize",
+      "sink": "pickle.loads",
+      "digest": "bf2d3c412d57fd50",
+      "count": 1,
+      "reason": "_share_from_writer: unpickles only what the export's writer rank stored under an unsloth_fsdp2_export_* key in the job's own default c10d store; a party able to write that store already controls the job's collectives."
+    },
+    {
       "file": "unsloth/models/loader.py",
       "rule": "dynamic-import",
       "sink": "import_module",
