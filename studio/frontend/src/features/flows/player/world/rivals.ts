@@ -1320,6 +1320,11 @@ export function queuedCall(
         key: `${key}#${n}`,
         kind: "plan",
         run: async (signal) => {
+          // A cancelled turn's job: no call, and the queue refunds its slot.
+          if (!alive()) {
+            resolve(null);
+            return false;
+          }
           try {
             resolve(await call(signal));
           } catch {
