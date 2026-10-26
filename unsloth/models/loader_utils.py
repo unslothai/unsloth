@@ -4178,9 +4178,7 @@ _ESCAPING_WEIGHTS_FILENAME = object()
 
 
 def _explicit_weights_filename(transformers_weights):
-    """The `config.transformers_weights` file transformers loads instead of the standard names, None when
-    it would not (unset, or not a safetensors file / index, which transformers rejects), or
-    _ESCAPING_WEIGHTS_FILENAME for a path outside the model directory (rejected by newer transformers)."""
+    """File transformers loads instead of standard names; None if unused, sentinel if it escapes the model dir."""
     if not isinstance(transformers_weights, str) or not transformers_weights.endswith(
         (".safetensors", ".safetensors.index.json")
     ):
@@ -4208,8 +4206,7 @@ def _checkpoint_tensor_dtypes(
     transformers_weights = None,
 ):
     """{tensor name: dtype} (dtype only for fused experts) without downloading weights; mirrors transformers'
-    file order, `variant`, `use_safetensors` and `config.transformers_weights`. Raises
-    _UnreadableCheckpointNames for an unreadable lone .bin."""
+    file order, `variant`, `use_safetensors` and `transformers_weights`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
     if not isinstance(model_name, str) or not model_name:
         return None
     explicit = _explicit_weights_filename(transformers_weights)
@@ -4226,8 +4223,7 @@ def _checkpoint_tensor_dtypes(
     elif use_safetensors:
         bin_index = bin_single = None
     if explicit is not None:
-        # transformers loads `config.transformers_weights` verbatim (no variant, no use_safetensors)
-        # before any standard filename, and never falls back to them.
+        # Loaded verbatim (no variant / use_safetensors) with no fallback to standard names.
         bin_index = bin_single = None
         if explicit.endswith(".safetensors.index.json"):
             st_index, st_single = explicit, None

@@ -14,8 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""The gpt-oss expert layout probe reads the file transformers will load: `config.transformers_weights`
-wins over the standard filenames, exactly as in transformers' `_get_resolved_checkpoint_files`."""
+"""`config.transformers_weights` wins over standard filenames, as in transformers' `_get_resolved_checkpoint_files`."""
 
 import json
 from types import SimpleNamespace
@@ -66,7 +65,6 @@ def test_explicit_file_decides_the_layout(tmp_path, standard, chosen, expected):
     path = _repo(tmp_path, standard, chosen)
     probe = loader_utils.gpt_oss_checkpoint_has_fused_experts
     assert probe(_cfg("chosen.safetensors"), path) is expected
-    # Without the field the standard file still decides, as before.
     assert probe(_cfg(), path) is (not expected)
 
 
@@ -93,9 +91,7 @@ def test_explicit_file_ignores_variant_and_use_safetensors(tmp_path):
 
 def test_invalid_or_escaping_explicit_names_never_read_other_files(tmp_path):
     path = _repo(tmp_path, SPLIT, FUSED)
-    # Not a safetensors name: transformers rejects it at load, so the standard order is kept.
     assert loader_utils.gpt_oss_checkpoint_has_fused_experts(_cfg("chosen.bin"), path) is False
-    # Outside the model directory: rejected by transformers, so nothing outside is read.
     _save(tmp_path / "outside.safetensors", FUSED)
     dtypes = loader_utils._checkpoint_tensor_dtypes(
         path, transformers_weights = "../outside.safetensors"
