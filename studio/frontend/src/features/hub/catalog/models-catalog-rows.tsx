@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
+import { Edit02Icon } from "@hugeicons/core-free-icons";
+import {
+  editModelAnnotation,
+  useModelAnnotationsStore,
+} from "../stores/model-annotations-store";
 import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
 
 import {
@@ -615,7 +620,23 @@ export const InventoryRow = memo(function InventoryRow({
     vllmPlatform,
   ]);
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
-  const title = row.kind === "cache" ? row.repo : row.title;
+  const originalTitle = row.kind === "cache" ? row.repo : row.title;
+  const title = row.annotation?.display_name || originalTitle;
+  const rowLabel = title === originalTitle ? title : `${title} (${originalTitle})`;
+  const annotationsLoaded = useModelAnnotationsStore((state) => state.loaded);
+  const personalItems = isDataset
+    ? undefined
+    : [{
+        key: "model-details",
+        label: "Edit model details",
+        icon: <HugeiconsIcon icon={Edit02Icon} className="size-4" strokeWidth={1.75} />,
+        disabled: !annotationsLoaded,
+        onSelect: () => editModelAnnotation({
+          id: row.id,
+          title: originalTitle,
+          annotation: row.annotation,
+        }),
+      }];
 
   const subLabel = row.owner;
   const trailing =
@@ -660,7 +681,7 @@ export const InventoryRow = memo(function InventoryRow({
         : row.modelFormat === "safetensors" || row.modelFormat === "checkpoint"
           ? "Safetensors"
           : null;
-  const paramLabel = useMemo(() => paramLabelFromId(title), [title]);
+  const paramLabel = useMemo(() => paramLabelFromId(originalTitle), [originalTitle]);
   const quantLabel = row.formatVariant?.trim() || null;
 
   const metaChips =
@@ -717,9 +738,26 @@ export const InventoryRow = memo(function InventoryRow({
       </span>
     ) : null;
 
+  // Keep labels on the existing secondary line so virtualized row heights stay stable.
+  const personalLabels = row.annotation?.labels.length ? (
+    <>
+      {row.annotation.labels.slice(0, 2).map((label) => (
+        <span key={label} className="hub-chip max-w-24 truncate">
+          {label}
+        </span>
+      ))}
+      {row.annotation.labels.length > 2 && (
+        <span>+{row.annotation.labels.length - 2}</span>
+      )}
+    </>
+  ) : null;
   const ownerLine = (
     <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-11p5 leading-ui-15 text-muted-foreground/80">
       <span className="truncate">{subLabel}</span>
+      {row.annotation?.display_name && (
+        <span className="truncate">· {originalTitle}</span>
+      )}
+      {personalLabels}
       {subLabel.toLowerCase() === "unsloth" && (
         <span
           aria-label="Verified Unsloth"
@@ -739,6 +777,7 @@ export const InventoryRow = memo(function InventoryRow({
     deletableRepoId ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
+        items={personalItems}
         buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         pin={
           isDataset || !deletableRepoId
@@ -802,6 +841,7 @@ export const InventoryRow = memo(function InventoryRow({
     ) : localActionPath && row.kind === "local" ? (
       <ModelRowMenu
         ariaLabel={`More options for ${rowModelId}`}
+        items={personalItems}
         buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         onReveal={() => revealLocalModel(localActionPath, row.loadId)}
         del={
@@ -826,6 +866,11 @@ export const InventoryRow = memo(function InventoryRow({
             : undefined
         }
       />
+    ) : personalItems ? (
+      <ModelRowMenu
+        ariaLabel={`More options for ${rowModelId}`}
+        items={personalItems}
+      />
     ) : null;
 
   if (compact) {
@@ -834,7 +879,7 @@ export const InventoryRow = memo(function InventoryRow({
         variant="flat"
         selected={selected}
         tooltip={tooltip}
-        label={title}
+        label={rowLabel}
         onClick={handleClick}
       >
         <div
@@ -845,7 +890,7 @@ export const InventoryRow = memo(function InventoryRow({
         >
           <OwnerAvatar
             owner={row.owner}
-            repoName={title}
+            repoName={originalTitle}
             className="size-8 shrink-0 rounded-sm text-ui-12"
             remote={false}
           />
@@ -866,6 +911,7 @@ export const InventoryRow = memo(function InventoryRow({
                   />
                 )}
               </span>
+              {personalLabels}
               {formatLabel && (
                 <>
                   <MetaDivider />
@@ -904,7 +950,7 @@ export const InventoryRow = memo(function InventoryRow({
       variant="card"
       selected={selected}
       tooltip={tooltip}
-      label={title}
+      label={rowLabel}
       onClick={handleClick}
     >
       <div
@@ -916,7 +962,7 @@ export const InventoryRow = memo(function InventoryRow({
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <OwnerAvatar
             owner={row.owner}
-            repoName={title}
+            repoName={originalTitle}
             className="size-9 rounded-md"
             remote={false}
           />

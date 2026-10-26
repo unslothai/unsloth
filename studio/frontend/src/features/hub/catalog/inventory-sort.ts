@@ -8,8 +8,10 @@ export type InventoryItem =
   | { variant: "cached"; row: CachedInventoryRow }
   | { variant: "local"; row: LocalInventoryRow };
 
+/** Sort by the displayed personal name, falling back to the original inventory title. */
 export function inventoryItemTitle(item: InventoryItem): string {
-  return item.variant === "cached" ? item.row.repo : item.row.title;
+  return item.row.annotation?.display_name ||
+    (item.variant === "cached" ? item.row.repo : item.row.title);
 }
 
 export function inventoryItemSize(item: InventoryItem): number {
