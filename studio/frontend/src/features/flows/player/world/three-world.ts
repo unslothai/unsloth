@@ -1296,7 +1296,10 @@ export function createWorld3d(
   const onBurst = (p: Projectile) => {
     verbFx?.flash(p.x, p.y, p.z);
     if (!aw) return;
-    for (const hit of splash(aw, combat, p, targets())) {
+    const open = targets().filter(
+      (t) => !bridge.safeAt?.({ x: Math.floor(t.x), y: Math.floor(t.y) }),
+    );
+    for (const hit of splash(aw, combat, p, open)) {
       const n = npcs.find((x) => x.id === hit.id);
       if (n) say(n, hit.downed ? "Ugh..." : "Argh!");
       if (n && hit.downed) bridge.onEvent?.(`${n.name} is knocked out`);

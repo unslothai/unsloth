@@ -11,6 +11,7 @@ import {
   type Target,
   ENEMY_HEALTH,
   KNOCKOUT_S,
+  STAND_H,
   STEP_S,
   advance,
   circleHitsBox,
@@ -158,6 +159,8 @@ export function interactProp(
 
 export const MELEE_RANGE = 1.2;
 export const MELEE_HALF_WIDTH = 0.5;
+/** How far above or below a hostile's body the strike height may be and still connect. */
+export const MELEE_REACH_Z = 0.5;
 export const MELEE_COOLDOWN_S = 0.45;
 export const MELEE_DAMAGE = 50;
 export const KNOCKBACK = 0.9;
@@ -320,6 +323,8 @@ export function melee(
     const along = (t.x - eye.x) * ux + (t.y - eye.y) * uy;
     const side = Math.abs((t.x - eye.x) * uy - (t.y - eye.y) * ux);
     if (along <= 0 || along > MELEE_RANGE || side > MELEE_HALF_WIDTH) continue;
+    if (eye.z < t.z - MELEE_REACH_Z || eye.z > t.z + STAND_H + MELEE_REACH_Z)
+      continue;
     if (along < bestAlong) {
       best = t;
       bestAlong = along;
@@ -331,10 +336,10 @@ export function melee(
     w,
     eye.x,
     eye.y,
-    best.z + BODY_MID,
+    eye.z,
     best.x - eye.x,
     best.y - eye.y,
-    0,
+    best.z + BODY_MID - eye.z,
     d,
   );
   if (wall < d - 0.2) return { hit: null, downed: false, kx: 0, ky: 0 };
