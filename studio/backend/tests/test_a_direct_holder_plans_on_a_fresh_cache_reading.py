@@ -58,15 +58,14 @@ def test_a_route_on_the_loop_reads_the_cache_before_it_plans(backend, count, pay
 
     holder = asyncio.run(route())
     assert holder is not None
-    assert controller.participant("chat").state == ParticipantState.PREEMPTING, (
-        "the plan ran on the stale reading and made no room for the request"
-    )
+    assert (
+        controller.participant("chat").state == ParticipantState.PREEMPTING
+    ), "the plan ran on the stale reading and made no room for the request"
     inference._openai_llama_release_completions_holder(fake, holder)
 
 
 def test_every_loop_route_counts_through_the_reading_variant():
     import inspect
-
     for route in (inference.openai_completions, inference.openai_embeddings):
         source = "".join(inspect.getsource(route).split())
         assert "_openai_llama_count_completions_holder(" not in source
