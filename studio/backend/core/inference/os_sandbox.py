@@ -1045,10 +1045,10 @@ def capability_snapshot(
     )
 
 
-# Last answer per tool, read by the "off" gate; only a reset or a real launch replaces it.
+# Last answer per tool, read by the "off" gate; a reset, a real launch or a new _host_key() replaces it.
 ISOLATED_TOOLS = ("python", "terminal")
 _tool_isolation_lock = threading.Lock()
-_tool_isolation: dict[str, tuple[bool, str, str]] = {}
+_tool_isolation: dict[str, tuple[bool, str, str, str]] = {}
 _tool_isolation_refreshing: set[str] = set()
 # A reset raises the generation floor; answers from older checks are dropped.
 _tool_isolation_generation = 0
@@ -1087,6 +1087,7 @@ def note_tool_isolation(
     global _tool_isolation_generation
     if tool not in ISOLATED_TOOLS:
         return
+    key = _host_key()
     with _tool_isolation_lock:
         if generation is None:
             _tool_isolation_generation += 1
@@ -1094,7 +1095,7 @@ def note_tool_isolation(
         elif generation < _tool_isolation_floor or generation < _tool_isolation_noted.get(tool, 0):
             return
         _tool_isolation_noted[tool] = generation
-        _tool_isolation[tool] = (bool(available), backend, reason)
+        _tool_isolation[tool] = (bool(available), backend, reason, key)
 
 
 def tool_isolation_generation() -> int:
@@ -1153,14 +1154,28 @@ def cached_tool_isolation(tool: str) -> bool | None:
     return None if cached is None else cached[0]
 
 
+def _host_key() -> str:
+    """Stat-only, unlike _runtime_identity (which can run a bwrap preflight): what a venv swap or a bwrap install changes."""
+    key = os.path.realpath(sys.executable)
+    if sys.platform == "linux":
+        from . import sandbox_linux
+        try:
+            key += repr(sandbox_linux._bwrap_file_identity(sandbox_linux._trusted_bwrap_path()))
+        except Exception as exc:  # noqa: BLE001 - no trusted bwrap is a key too
+            key += type(exc).__name__
+    return key
+
+
 def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
-    """Never blocks: last (available, backend, reason) or None; no answer yet starts one background check."""
+    """Never blocks: last (available, backend, reason) or None; no answer, or one noted under another
+    _host_key(), starts one background check."""
+    key = _host_key()
     with _tool_isolation_lock:
         entry = _tool_isolation.get(tool)
         start = (
             tool in ISOLATED_TOOLS
             and not _background_probes_disabled()
-            and entry is None
+            and (entry is None or entry[3] != key)
             and tool not in _tool_isolation_refreshing
         )
         if start:
@@ -1176,7 +1191,7 @@ def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
         except RuntimeError:
             with _tool_isolation_lock:
                 _tool_isolation_refreshing.discard(tool)
-    return entry
+    return None if entry is None else entry[:3]
 
 
 def warm_tool_isolation() -> None:

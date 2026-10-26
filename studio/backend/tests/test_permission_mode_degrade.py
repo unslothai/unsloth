@@ -428,6 +428,31 @@ def test_polling_an_answered_tool_never_probes_again(monkeypatch):
     assert started == [], "polling an answered tool started a re-probe"
 
 
+def test_an_answer_noted_under_another_host_key_is_checked_once(monkeypatch):
+    """Installing bubblewrap moves the key: the gate re-checks without waiting for a tool call."""
+    monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    key = ["no bwrap"]
+    monkeypatch.setattr(os_sandbox, "_host_key", lambda: key[0])
+    started = []
+
+    def refresh(tool, *, force = False):
+        started.append(tool)
+        os_sandbox.note_tool_isolation(tool, True, backend = "bubblewrap")
+        return True
+
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", refresh)
+    os_sandbox.note_tool_isolation("python", False, backend = "none", reason = "no bwrap")
+    for _ in range(5):
+        assert os_sandbox.cached_tool_capability("python")[0] is False
+    assert started == []
+    key[0] = "bwrap installed"
+    os_sandbox.cached_tool_capability("python")
+    assert _wait_for(lambda: os_sandbox.cached_tool_isolation("python") is True)
+    for _ in range(5):
+        os_sandbox.cached_tool_capability("python")
+    assert started == ["python"]
+
+
 @pytest.fixture(autouse = True)
 def _no_host_setup_probe(monkeypatch):
     from core.inference import sandbox_setup_plan
