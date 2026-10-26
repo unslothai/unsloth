@@ -8263,6 +8263,7 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
     backend._plan_vlm_request = lambda request, **_k: SimpleNamespace(
         prompt = "<s>hi",
         images = None,
+        videos = None,
         max_tokens = 4,
         sampling = {},
         processors = None,
@@ -8381,6 +8382,47 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
     timings = session.take_stats("r")["timings"]
     assert timings["prompt_per_second"] == pytest.approx(500.0)
     assert timings["predicted_per_second"] == pytest.approx(10.0)
+
+
+def test_a_fixed_vision_batch_marks_each_row_s_clips_and_shares_their_decode_budget(monkeypatch):
+    import base64
+
+    from core.inference import mlx_inference
+
+    engine, backend = _batch_engine(monkeypatch), _vlm_backend(monkeypatch, markers = None)
+    for name in ("GenerationRequest", "GenerationDefaults"):
+        monkeypatch.setattr(engine, name, SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
+    too_large, refuse = (_ for _ in ()).throw, mlx_inference._ClipsTooLarge
+    fps = lambda p, proc, rows = 1: rows / 4 if rows < 3 else too_large(refuse())
+    monkeypatch.setattr(mlx_inference, "_video_sampling_fps", fps)
+    seen, paths = [], []
+    clips, other = ([base64.b64encode(data).decode()] for data in (b"one", b"two"))
+    backend._render_vlm_prompt = lambda messages, images, videos, **k: (
+        seen.append(([p["type"] for p in messages[-1]["content"]], videos)) or ("p", None, None)
+    )
+    backend._media_generation_limit = lambda p, n, ids, images, videos: seen.append(videos) or n
+    backend._kv_window_generate_kwargs, backend._generation_lock = dict, threading.Lock()
+    backend._release_vlm_snapshots = lambda: seen.append("freed")
+
+    def stream_batch(model, processor, batch, defaults):
+        seen.extend((row.fps, [Path(path).read_bytes() for path in row.videos]) for row in batch)
+        paths.extend(path for row in batch for path in row.videos)
+        return iter(())
+
+    monkeypatch.setattr(engine, "stream_batch", stream_batch, raising = False)
+    request = {"messages": [{"role": "user", "content": "hi"}], "videos": clips}
+    with pytest.raises(RuntimeError, match = "unfinished"):
+        list(backend._generate_vlm_batch([request, request, {**request, "videos": other}]))
+    planned = [(["video", "text"], clips), clips] * 2 + [(["video", "text"], other), other]
+    assert seen[:7] == planned + ["freed"]
+    rates = [(0.5, [b"one"])] * 2 + [(0.25, [b"two"])]
+    assert seen[7:] == rates and paths[0] == paths[1] != paths[2], "a group shares files and budget"
+    seen.clear()
+    with pytest.raises(RuntimeError, match = "unfinished"):
+        list(backend._generate_vlm_batch([request] * 3))
+    assert seen[-3:] == [(0.25, [b"one"])] * 3 and len(set(paths[3:])) == 3, "too large to share"
+    assert not any(map(os.path.exists, paths)), "removed when the batch ends"
 
 
 def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(monkeypatch):
@@ -8598,6 +8640,24 @@ def test_a_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
         engine, "row_quantized_prompt_cache_unavailable_reason", lambda: "old mlx-vlm"
     )
     assert backend.resident_unavailable_reason({}) == "old mlx-vlm"
+
+
+@pytest.mark.parametrize("gap", (None, "speculative", "old zoo", "no decoder", "no vision"))
+def test_a_video_reply_batches_only_as_a_fixed_command_of_a_load_that_reads_it(monkeypatch, gap):
+    from core.inference import mlx_inference
+
+    engine, backend = _batch_engine(monkeypatch), _vlm_backend(monkeypatch, markers = None)
+    backend._speculative_draft = gap == "speculative" or None
+    backend._reads_vision, available = gap != "no vision", lambda request: None
+    backend._vlm_batch_unavailable_reason = backend._vlm_resident_unavailable_reason = available
+    monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: gap != "no decoder")
+    fields = SimpleNamespace(__dataclass_fields__ = ("image", "videos")[: 1 + (gap != "old zoo")])
+    monkeypatch.setattr(engine, "GenerationRequest", fields, raising = False)
+    clip, sent = {"videos": [_CLIP_B64]}, {"videos_base64": [_CLIP_B64]}
+    for row in (clip, sent):
+        assert (backend.batch_unavailable_reason([{}, row]) is None) == (gap is None)
+    assert backend.resident_unavailable_reason(sent) == "a reply carries a video clip"
+    assert backend.resident_unavailable_reason({}) is None
 
 
 def test_a_turboquant_vision_batch_quantizes_rows_as_the_single_path_does(monkeypatch):

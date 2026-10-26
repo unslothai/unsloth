@@ -13,7 +13,7 @@ import shutil
 import sys
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.worker import RowRefused
@@ -1720,6 +1720,10 @@ def _video_sampling_target(processor) -> tuple[float, int, Optional[int]]:
     )
 
 
+class _ClipsTooLarge(RuntimeError):
+    pass
+
+
 def _video_frame_rate(
     clip_path: str,
     processor,
@@ -1750,16 +1754,23 @@ def _video_frame_rate(
     affordable = budget // (2 * 3 * width * height)
     needed = min_frames if nframes is None else nframes
     if affordable < needed:
-        raise RuntimeError(
+        raise _ClipsTooLarge(
             f"The video's {width}x{height} frames are too large to decode: {needed} of them "
             f"exceed the {budget >> 20} MiB frame budget."
         )
     return min(wanted_fps, affordable * native_fps / total_frames)
 
 
-def _video_sampling_fps(clip_paths, processor) -> Optional[float]:
-    """One rate for every clip, since mlx-vlm before 0.7.3 applies a single ``fps`` to all."""
-    rates = [_video_frame_rate(path, processor, len(clip_paths)) for path in clip_paths]
+def _video_sampling_fps(
+    clip_paths,
+    processor,
+    rows = 1,
+) -> Optional[float]:
+    """One rate for every clip, since mlx-vlm before 0.7.3 applies a single ``fps`` to all.
+
+    ``rows`` copies of the clips share the decode budget when a batch decodes them together.
+    """
+    rates = [_video_frame_rate(path, processor, len(clip_paths) * rows) for path in clip_paths]
     return min((rate for rate in rates if rate is not None), default = None)
 
 
@@ -3991,11 +4002,47 @@ def _request_batch_gap(request):
     """What a reply asks for that only the one-at-a-time decode serves, or None."""
     if request.get("images") or request.get("images_base64"):
         return "a reply replays tool images"
-    if request.get("videos") or request.get("videos_base64"):
-        return "a reply carries a video clip"
     if request.get("n_probs"):
         return "a reply reports token probabilities"
     return None
+
+
+def _carries_video(request):
+    return bool(request.get("videos") or request.get("videos_base64"))
+
+
+def _batch_clips(stack, plans, processor):
+    """Each row's clips as files mlx-vlm reads, removed when ``stack`` closes.
+
+    Rows with the same clips share their files, so unsloth-zoo batches them as one group, and that
+    group decodes its clips together, so its rows share one decode budget. Rows whose clips are too
+    large to share it get files of their own, so each decodes alone with the whole budget.
+    """
+    files, shared = [], {}
+    stack.callback(lambda: [_discard_video_clip(path) for path in files])
+
+    def write(clip):
+        files.append(_write_video_clip(clip))
+        return files[-1]
+
+    rows = Counter(tuple(plan.videos or ()) for plan in plans)
+    clips = []
+    for plan in plans:
+        videos = tuple(plan.videos or ())
+        paths = [
+            shared[clip] if clip in shared else shared.setdefault(clip, write(clip))
+            for clip in videos
+        ]
+        if not paths:
+            clips.append({})
+            continue
+        try:
+            rate = _video_sampling_fps(paths, processor, rows[videos])
+        except _ClipsTooLarge:
+            paths = [write(clip) for clip in videos]
+            rate = _video_sampling_fps(paths, processor)
+        clips.append({"videos": paths, "fps": rate})
+    return clips
 
 
 def _batched_vision_engine_gap(engine):
@@ -4369,6 +4416,7 @@ class _VLMRowPlan:
     __slots__ = (
         "prompt",
         "images",
+        "videos",
         "think_prefix",
         "stream",
         "kwargs",
@@ -4392,9 +4440,11 @@ class _VLMRowPlan:
         processors = None,
         streamed = None,
         speculates = True,
+        videos = None,
     ):
         self.prompt = prompt
         self.images = images
+        self.videos = videos
         self.think_prefix = think_prefix
         self.stream = stream
         self.kwargs = kwargs
@@ -6046,9 +6096,15 @@ class MLXInferenceBackend:
         full_messages.extend(messages)
         return full_messages
 
-    def _conversation_to_render(self, messages, system_prompt, image):
+    def _conversation_to_render(
+        self,
+        messages,
+        system_prompt,
+        image,
+        video = 0,
+    ):
         """The turns this request renders, whichever way its reply is decoded."""
-        if (self._is_vlm or self._reads_vision_input()) and image is not None:
+        if (self._is_vlm or self._reads_vision_input()) and (image is not None or video):
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
             )
@@ -6059,6 +6115,8 @@ class MLXInferenceBackend:
                     self._processor is not None
                     and _chat_render_target(self._processor) is self._processor
                 ),
+                image = int(image is not None),
+                video = video,
             )
         else:
             full_messages = self._with_system_prompt(messages, system_prompt)
@@ -6998,6 +7056,25 @@ class MLXInferenceBackend:
             prompt, markers = recovered.prompt, recovered.reasoning_channel_markers
         return prompt, chat_target, markers
 
+    def _media_generation_limit(self, prompt, max_new_tokens, prompt_ids, images, videos):
+        # Counted from a temp file (base64 is unreadable to the processor), discarded here.
+        counted_clips = []
+        try:
+            if getattr(self, "_kv_context_budget", None):
+                for clip in videos or ():
+                    counted_clips.append(_write_video_clip(clip))
+            return self._generation_limit(
+                prompt,
+                max_new_tokens,
+                prompt_ids,
+                images = images,
+                videos = counted_clips or None,
+                cap = UNSET_GENERATION_BUDGET if images or videos else None,
+            )
+        finally:
+            for counted_clip in counted_clips:
+                _discard_video_clip(counted_clip)
+
     def _plan_vlm_request(
         self,
         request,
@@ -7005,11 +7082,14 @@ class MLXInferenceBackend:
         decodes_ids = False,
     ) -> "_VLMRowPlan":
         image = request.get("image")
+        videos = request.get("videos") or None
         messages = request.get("messages") or []
         conversation = (
             []
             if request.get("prompt_ids") is not None
-            else self._conversation_to_render(messages, request.get("system_prompt", ""), image)
+            else self._conversation_to_render(
+                messages, request.get("system_prompt", ""), image, video = len(videos or ())
+            )
         )
         return self._plan_vlm_row(
             conversation,
@@ -7018,6 +7098,7 @@ class MLXInferenceBackend:
             response_format = request.get("response_format"),
             reasoning_is_extracted = request.get("reasoning_is_extracted", False),
             decodes_ids = decodes_ids,
+            videos = videos,
             **_row_kwargs(request),
         )
 
@@ -7048,6 +7129,7 @@ class MLXInferenceBackend:
         response_format = None,
         reasoning_is_extracted = False,
         decodes_ids = False,
+        videos = None,
     ) -> "_VLMRowPlan":
         """``decodes_ids``: the batch reports each row's ids, so the reply is decoded from them as
         ``_generate_vlm`` decodes it; otherwise from the batch's text, which keeps no native controls."""
@@ -7059,6 +7141,7 @@ class MLXInferenceBackend:
             prompt, chat_target, markers = self._render_vlm_prompt(
                 messages,
                 images,
+                videos = videos,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
@@ -7116,12 +7199,8 @@ class MLXInferenceBackend:
             sequences = _mlx_stop_sequences(stop),
             normalizer = normalizer,
         )
-        max_new_tokens = self._generation_limit(
-            prompt,
-            max_new_tokens,
-            prompt_ids,
-            images = images,
-            cap = UNSET_GENERATION_BUDGET if images else None,
+        max_new_tokens = self._media_generation_limit(
+            prompt, max_new_tokens, prompt_ids, images, videos
         )
         vlm_kwargs = dict(
             max_tokens = max_new_tokens,
@@ -7169,6 +7248,7 @@ class MLXInferenceBackend:
         return _VLMRowPlan(
             prompt = prompt,
             images = images,
+            videos = videos,
             think_prefix = think_prefix,
             stream = row,
             kwargs = vlm_kwargs,
@@ -7255,23 +7335,9 @@ class MLXInferenceBackend:
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         stopped = False
-        # Counted from a temp file (base64 is unreadable to the processor), discarded here.
-        counted_clips = []
-        try:
-            if getattr(self, "_kv_context_budget", None):
-                for clip in videos or ():
-                    counted_clips.append(_write_video_clip(clip))
-            max_new_tokens = self._generation_limit(
-                prompt,
-                max_new_tokens,
-                prompt_ids,
-                images = images,
-                videos = counted_clips or None,
-                cap = UNSET_GENERATION_BUDGET if images or videos else None,
-            )
-        finally:
-            for counted_clip in counted_clips:
-                _discard_video_clip(counted_clip)
+        max_new_tokens = self._media_generation_limit(
+            prompt, max_new_tokens, prompt_ids, images, videos
+        )
         logger.info(
             "VLM generating: prompt_len=%d, images=%d, videos=%d",
             len(prompt),
@@ -7640,6 +7706,9 @@ class MLXInferenceBackend:
             reason = _request_batch_gap(request)
             if reason is not None:
                 return reason
+        reason = self._video_batch_gap(requests)
+        if reason is not None:
+            return reason
         reason = self._kv_policy_batch_reason()
         if reason is not None:
             return reason
@@ -7660,6 +7729,9 @@ class MLXInferenceBackend:
         if self._model is None:
             return "no model is loaded"
         reason = _request_batch_gap(request)
+        if reason is None and _carries_video(request):
+            # Whether a clip's row fits the open batch is known only once its frames are decoded.
+            reason = "a reply carries a video clip"
         if reason is not None:
             return reason
         reason = self._kv_policy_batch_reason(resident = True)
@@ -7668,6 +7740,22 @@ class MLXInferenceBackend:
         if self._is_vlm:
             return self._vlm_resident_unavailable_reason(request)
         return self._text_batch_unavailable_reason()
+
+    def _video_batch_gap(self, requests):
+        if not any(map(_carries_video, requests)):
+            return None
+        # The one-at-a-time decode refuses these clips by name.
+        if not self._is_vlm or not self._reads_vision_input() or not _mlx_vlm_decodes_video():
+            return "a reply carries a video clip this load does not read"
+        if self._speculative_draft is not None:
+            return "a video clip decodes without the draft"
+        try:
+            from unsloth_zoo.mlx import generate as engine
+        except ImportError:
+            return "the installed unsloth-zoo has no MLX generation"
+        if "videos" not in _engine_fields(engine, "GenerationRequest"):
+            return "the installed unsloth-zoo cannot batch a video clip"
+        return None
 
     def _text_batch_unavailable_reason(self):
         """Why the installed mlx-lm cannot batch this load's replies, or None."""
@@ -7836,16 +7924,6 @@ class MLXInferenceBackend:
         )
 
         plans = [self._plan_vlm_request(request) for request in requests]
-        batch = [
-            GenerationRequest(
-                **self._vlm_batch_prompt(plan.prompt),
-                image = plan.images[0] if plan.images else None,
-                max_tokens = plan.max_tokens,
-                sampling = SamplingParams(**plan.sampling),
-                logits_processors = plan.processors,
-            )
-            for plan in plans
-        ]
         defaults = GenerationDefaults(
             max_tokens = max(plan.max_tokens for plan in plans),
             prefill_batch_size = len(plans),
@@ -7857,13 +7935,26 @@ class MLXInferenceBackend:
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, _adapter_state),
             self._int8_prefill_scope(),
+            ExitStack() as clips,
         ):
-            if any(plan.images for plan in plans):
+            batch = [
+                GenerationRequest(
+                    **self._vlm_batch_prompt(plan.prompt),
+                    image = plan.images[0] if plan.images else None,
+                    **row_clips,
+                    max_tokens = plan.max_tokens,
+                    sampling = SamplingParams(**plan.sampling),
+                    logits_processors = plan.processors,
+                )
+                for plan, row_clips in zip(plans, _batch_clips(clips, plans, self._processor))
+            ]
+            if any(plan.images or plan.videos for plan in plans):
                 self._release_vlm_snapshots()
             logger.info(
-                "Generating %d vision replies as one batch: images=%d, max_tokens=%s, model=%s",
+                "Generating %d vision replies as one batch: images=%d, videos=%d, max_tokens=%s, model=%s",
                 len(plans),
                 sum(1 for plan in plans if plan.images),
+                sum(len(plan.videos or ()) for plan in plans),
                 [plan.max_tokens for plan in plans],
                 type(self._model).__name__,
             )
