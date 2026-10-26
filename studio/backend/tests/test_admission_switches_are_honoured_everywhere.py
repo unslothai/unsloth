@@ -160,6 +160,12 @@ class TestPricingARequestThatCannotBePaused:
         assert inf._openai_llama_admission_prompt_tokens is inf_prompt_tokens
 
 
+def _passthrough_backend():
+    # The passthrough now builds its body before reserving (#15294), which reads the reasoning
+    # kwargs a loaded backend resolves.
+    return _backend(_request_reasoning_kwargs = lambda *a, **k: None)
+
+
 class _ReserveRecorder:
     """Stops each surface at its reservation and keeps the keywords it asked with."""
 
@@ -186,7 +192,7 @@ class TestEverySurfaceStatesWhetherItCanPause:
                 inf._openai_passthrough_stream(
                     None,
                     threading.Event(),
-                    _backend(),
+                    _passthrough_backend(),
                     _chat(),
                     "test-model",
                     "cmpl-raw-stream",
@@ -200,7 +206,7 @@ class TestEverySurfaceStatesWhetherItCanPause:
         with pytest.raises(HTTPException) as raised:
             asyncio.run(
                 inf._openai_passthrough_non_streaming(
-                    _backend(),
+                    _passthrough_backend(),
                     _chat(),
                     "test-model",
                     request = None,

@@ -148,7 +148,8 @@ class TestARawHolder:
         )
 
         async def reserve(**_kwargs):
-            return reservation, None
+            # The passthrough reserves through the prepared-body count (#15294).
+            return reservation, None, {}
 
         async def granted(*_args, **_kwargs):
             return lease
@@ -162,7 +163,7 @@ class TestARawHolder:
         async def send(*args, **_kwargs):
             upstream.append(args)
 
-        monkeypatch.setattr(inference, "_openai_llama_admission_reserve_async", reserve)
+        monkeypatch.setattr(inference, "_reserve_counted_gguf_passthrough", reserve)
         monkeypatch.setattr(inference, "_wait_for_openai_admission_non_streaming", granted)
         monkeypatch.setattr(inference, "_raise_if_openai_admission_cancelled", not_cancelled)
         monkeypatch.setattr(inference, "_openai_llama_count_raw_holder_async", counted)

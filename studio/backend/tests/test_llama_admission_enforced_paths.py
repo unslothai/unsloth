@@ -1681,7 +1681,13 @@ class TestTheAnthropicSurface:
     def test_the_plain_chat_is_reserved_from_the_finalized_prompt(self, monkeypatch):
         """Reserve from the finalized prompt, including the injected date, just as the wire cap does."""
         seen: dict = {}
-        self._install(monkeypatch, seen)
+        backend = self._install(monkeypatch, seen)
+        # Admission now counts the prepared body exactly (#15294): a counter that sees the
+        # messages, not a constant, so the reservation reflects the finalized prompt.
+        backend._request_reasoning_kwargs = lambda *a, **k: None
+        backend.count_chat_tokens = lambda messages, *a, **k: (
+            _openai_llama_admission_wire_prompt_tokens(messages)
+        )
         monkeypatch.setattr(
             inf_mod, "current_date_prompt_line", lambda *_a, **_k: "Today's date is 2026-09-08."
         )
@@ -1707,7 +1713,11 @@ class TestTheAnthropicSurface:
         prompt = _openai_llama_admission_wire_prompt_tokens(sent)
         allowance = seen["plain"]["admission_output_allowance"]
         assert raw < share <= prompt, (raw, share, prompt)
-        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE, allowance
+        # Counted exactly, so the margin is the counted one, not the estimate's.
+        assert allowance == (
+            _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+            - inf_mod._OPENAI_LLAMA_ADMISSION_COUNTED_RESERVE_TOKENS
+        ), allowance
         assert charged and charged[0] >= prompt + allowance, (charged, prompt, allowance)
 
     def test_the_tool_generator_is_bounded(self, monkeypatch):
