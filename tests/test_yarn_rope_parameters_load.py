@@ -153,6 +153,37 @@ if loader == "unit":
     assert forwarded, "load_vllm_kwargs never receives rope_scaling"
     print("OK", unsloth.__file__)
     sys.exit(0)
+if loader == "gemma3_legacy_type":
+    # The legacy {"type": ...} spelling on a per-layer-type config (Gemma 3 on transformers v5):
+    # Gemma 3's rotary init reads rope_parameters[layer_type]["rope_type"] directly.
+    from transformers import Gemma3ForCausalLM, Gemma3TextConfig
+    from unsloth.models.vision import _apply_user_rope_scaling
+
+    def tiny():
+        return Gemma3TextConfig(
+            vocab_size = 128, hidden_size = 32, intermediate_size = 64, num_hidden_layers = 2,
+            layer_types = ["sliding_attention", "full_attention"],
+            num_attention_heads = 2, num_key_value_heads = 1, head_dim = 16,
+            max_position_embeddings = 256, sliding_window = 16,
+        )
+
+    for override in (
+        {"type": "yarn", "factor": 4.0},
+        {"full_attention": {"type": "yarn", "factor": 4.0}, "sliding_attention": {"type": "default"}},
+    ):
+        cfg = tiny()
+        assert _apply_user_rope_scaling(cfg, dict(override)) is None
+        model = Gemma3ForCausalLM(cfg)  # KeyError('rope_type') when the legacy key is kept alone
+        full = cfg.rope_parameters["full_attention"]
+        assert full["rope_type"] == "yarn" and full["factor"] == 4.0, cfg.rope_parameters
+        assert full["rope_theta"] == 1e6, cfg.rope_parameters
+        assert cfg.rope_parameters["sliding_attention"]["rope_type"] == "default", cfg.rope_parameters
+        rotary = [m for m in model.modules() if "Rotary" in type(m).__name__]
+        assert rotary and rotary[0].rope_type == {
+            "sliding_attention": "default", "full_attention": "yarn",
+        }, rotary[0].rope_type
+    print("OK", unsloth.__file__)
+    sys.exit(0)
 yarn = {"rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 40960}
 if int(__import__("transformers").__version__.split(".")[0]) >= 5:
     yarn["rope_theta"] = 1000000
@@ -200,6 +231,19 @@ _V5 = Version(transformers.__version__) >= Version("5.0.0")
 def test_yarn_reaches_the_model(loader, kwarg):
     result = subprocess.run(
         [sys.executable, "-c", _CHECK, _TESTS, loader, kwarg],
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    assert result.returncode == 0 and "OK" in result.stdout, (
+        result.stdout[-2000:] + result.stderr[-4000:]
+    )
+
+
+@pytest.mark.skipif(not _V5, reason = "Gemma 3 keys rope_parameters by layer type on v5")
+def test_gemma3_legacy_type_key_builds():
+    result = subprocess.run(
+        [sys.executable, "-c", _CHECK, _TESTS, "gemma3_legacy_type", "-"],
         capture_output = True,
         text = True,
         timeout = 900,
