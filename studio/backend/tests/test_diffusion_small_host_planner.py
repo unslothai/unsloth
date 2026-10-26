@@ -7,6 +7,7 @@ the dense measured activation peak scales with that compute dtype. CPU only."""
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 import core.inference.diffusion_memory as dm
@@ -33,14 +34,16 @@ def test_dense_measured_peak_scales_with_fp32_compute(monkeypatch):
     assert fp16 == 5120 and fp32 >= 8480 * 1.15
 
 
-def test_dense_table_skips_bf16_denoisers(monkeypatch):
-    """The dense eager table was measured on fp16 (and fp32-promoted) cards; a bf16 card keeps the flat plan."""
+@pytest.mark.parametrize("bf16_table", [True, False])
+def test_dense_table_places_bf16_only_from_its_own_measurements(monkeypatch, bf16_table):
+    """bf16 is priced only by its own table; with it off a bf16 card keeps the flat plan."""
     import types
 
     for name in (
         dm.MEASURED_ACTIVATION_ENV,
         "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE",
         dm.PARTIAL_RESIDENT_ENV,
+        dm.MEASURED_ACTIVATION_BF16_ENV,
     ):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(
@@ -63,7 +66,14 @@ def test_dense_table_skips_bf16_denoisers(monkeypatch):
         estimates = {"safe_device_budget_mib": 21500, "base_overhead_mib": 2048},
         stream_text_encoders = True,
     )
-    for dtype, kept in ((torch.bfloat16, False), (torch.float16, True)):
-        pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = dtype))
+    if not bf16_table:
+        monkeypatch.setenv(dm.MEASURED_ACTIVATION_BF16_ENV, "0")
+    for dtype, kept in ((torch.bfloat16, bf16_table), (torch.float16, True)):
+        pipe = types.SimpleNamespace(
+            transformer = types.SimpleNamespace(dtype = dtype), _unsloth_dense_tier_seeds = True
+        )
         out = dm.refine_plan_from_loaded_weights(pipe, plan, family = "flux.1", speed_mode = "off")
         assert bool(out.resident_transformer_mib) is kept, dtype
+        assert bool(out.estimates.get("measured_dense_bf16")) is (
+            dtype == torch.bfloat16 and bf16_table
+        )

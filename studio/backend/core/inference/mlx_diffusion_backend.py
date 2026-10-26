@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in MLX (mflux) image engine for Apple Silicon (``UNSLOTH_DIFFUSION_MLX=1``) on Studio's GGUF.
+"""MLX (mflux) image engine for Apple Silicon on Studio's GGUF.
 
 Same duck-typed surface as the other image engines; selected only by ``diffusion_engine_router``.
 """
@@ -56,6 +56,8 @@ BASE_ALLOW_PATTERNS = (
     "tokenizer/*",
     "vae/*.safetensors",
     "vae/*.json",
+    "scheduler/*.json",
+    "model_index.json",
 )
 _LINKED_SUBDIRS = ("text_encoder", "tokenizer", "vae")
 _TE_GROUP_SIZE = 64
@@ -550,6 +552,7 @@ class _MlxState:
     dense_bits: int
     convert_dir: str
     timings: dict = field(default_factory = dict)
+    gguf_path: Optional[str] = None
 
 
 @dataclass
@@ -1120,6 +1123,7 @@ class MlxDiffusionBackend:
                 dense_bits = bits,
                 convert_dir = str(out_dir),
                 timings = timings,
+                gguf_path = str(gguf_path),
             )
             with self._lock:
                 if self._load_token != _load_token:
@@ -1278,8 +1282,8 @@ class MlxDiffusionBackend:
             or (upscale is not None and upscale > 1)
         ):
             raise ValueError(
-                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX for "
-                "img2img / inpaint / edit / reference / upscale."
+                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX (or set it to "
+                "auto) for img2img / inpaint / edit / reference / upscale."
             )
         if prompts is not None or seeds is not None:
             raise ValueError(
@@ -1456,8 +1460,16 @@ class MlxDiffusionBackend:
     # ── Unload / status ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("mlx diffusion unload")
-    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict[str, Any]]:
         with self._lock:
+            # Rechecked under the load worker's lock, so a load that ended since costs nothing.
+            if only_if is not None and not only_if():
+                return None
             if expected_account is not None:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control

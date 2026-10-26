@@ -143,8 +143,7 @@ class AudioCodecManager:
         self._bicodec_code_dir = None
         self._dac_audio_codec = None
         self._outetts_code_dir = None
-        # The loaders reuse a resident codec, so a later request gets the first
-        # placement rather than the one it asked for.
+        # Loaders reuse a resident codec, so later requests keep the first placement, not their own
         self._codec_devices: dict = {}
 
     def load_codec(
@@ -237,12 +236,7 @@ class AudioCodecManager:
         logger.info("Loaded DAC audio codec")
 
     def decode_snac(self, generated_ids: torch.Tensor, device: str) -> Tuple[bytes, int]:
-        """Decode SNAC tokens (Orpheus) into WAV bytes.
-
-        Finds the START_OF_SPEECH (128257) marker, extracts codes after it,
-        strips EOS (128258), redistributes 7-per-frame codes into 3 SNAC layers.
-        Returns (wav_bytes, 24000).
-        """
+        """Decodes the codes after the START_OF_SPEECH marker 128257, drops EOS 128258; 7 codes per frame into 3 SNAC layers; 24000 Hz WAV"""
         token_indices = (generated_ids == 128257).nonzero(as_tuple = True)
         if len(token_indices[1]) > 0:
             cropped = generated_ids[:, token_indices[1][-1] + 1 :]
@@ -287,11 +281,7 @@ class AudioCodecManager:
         return _numpy_to_wav_bytes(waveform, 24000), 24000
 
     def decode_bicodec(self, generated_text: str, device: str) -> Tuple[bytes, int]:
-        """Decode BiCodec tokens (Spark-TTS) from generated text.
-
-        Extracts bicodec_semantic_N and bicodec_global_N tokens via regex.
-        Returns (wav_bytes, sample_rate).
-        """
+        """Reads Spark-TTS bicodec_semantic_N and bicodec_global_N tokens out of the generated text."""
         semantic_matches = re.findall(r"<\|bicodec_semantic_(\d+)\|>", generated_text)
         global_matches = re.findall(r"<\|bicodec_global_(\d+)\|>", generated_text)
 
@@ -328,11 +318,7 @@ class AudioCodecManager:
         return _numpy_to_wav_bytes(wav_np, sr), sr
 
     def decode_dac(self, generated_text: str, device: str) -> Tuple[bytes, int]:
-        """Decode DAC tokens (OuteTTS) from generated text.
-
-        Extracts c1_N and c2_N codec code tokens via regex.
-        Returns (wav_bytes, 24000).
-        """
+        """Reads OuteTTS c1_N and c2_N codec code tokens from the text; always returns 24000 Hz audio."""
         c1 = list(map(int, re.findall(r"<\|c1_(\d+)\|>", generated_text)))
         c2 = list(map(int, re.findall(r"<\|c2_(\d+)\|>", generated_text)))
 
@@ -357,13 +343,7 @@ class AudioCodecManager:
         token_ids: Optional[list] = None,
         text: Optional[str] = None,
     ) -> Tuple[bytes, int]:
-        """Unified decode — dispatches to the right codec decoder.
-
-        ``device`` is what the caller would like. Where the codec is actually
-        resident wins: input tensors built on another device fail outright for SNAC
-        and DAC, and BiCodec would move a CPU-resident codec onto the card, taking
-        the VRAM a CPU RAM load promised not to take.
-        """
+        """device is only a preference; a resident codec decodes where it lives, since cross-device inputs fail for SNAC and DAC and BiCodec would take VRAM"""
         device = self._codec_devices.get(audio_type, device)
         if audio_type == "snac":
             if not token_ids:

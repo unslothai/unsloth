@@ -34,9 +34,7 @@ runs:
   using: composite
   steps:
     - name: Save the pip cache
-      # always(), so a cache earned by a successful install is not thrown away
-      # because a LATER step in the job failed. The install itself is what fills
-      # this directory, and a failed test does not make its downloads wrong.
+      # always(): a later failing step does not invalidate downloads from a successful install.
       if: >-
         always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
         && inputs.cache-hit != 'true'

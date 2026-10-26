@@ -112,9 +112,62 @@ def _zoo_without_gdn_decode_kernel(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_SD_CPP_WINDOWS_ROCM", "1")
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # Windows hosts would map real drive letters; MXC tests opt back in.
     monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
+
+
+@pytest.fixture(autouse = True)
+def _forget_hub_unreachable_verdict():
+    # Per-process Hub verdict must not leak between tests.
+    def _forget():
+        reach = sys.modules.get("core.inference.hub_reachability")
+        if reach is not None:
+            reach._UNREACHABLE.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_mcp_discovery_state():
+    # Discovered tools and failed-probe cool-offs are keyed by server id, and most tests reuse "s1": a cool-off
+    # one test records made a later test on the worker skip discovery for its own "s1". A scoped HTTP session a
+    # test leaves cached is the same: test_mcp_http_sessions asserts the cache is empty after its own calls.
+    def _forget():
+        client = sys.modules.get("core.inference.mcp_client")
+        if client is not None:
+            client._tool_cache.clear()
+            client._probe_cooloff_until.clear()
+            if client._mcp_sessions:
+                try:
+                    client.close_mcp_sessions(all_accounts = True)
+                except AttributeError:
+                    # A test's monkeypatched stand-in sessions (SimpleNamespace) have no close(); its own
+                    # monkeypatch puts the real dict back.
+                    pass
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_load_budget_snapshots():
+    def _forget():
+        for name, module in list(sys.modules.items()):
+            if name.endswith("core.inference.diffusion_memory"):
+                getattr(module, "_LOAD_BUDGET_FRACTIONS", {}).clear()
+
+    _forget()
+    yield
+    _forget()
 
 
 @pytest.fixture(autouse = True)
@@ -197,6 +250,29 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     contain_installer_venv_root(monkeypatch, tmp_path_factory)
 
 
+# apply_hub_settings() writes these straight into os.environ, and importing the app runs it. A test
+# that left ModelScope selected put every later test on its xdist worker on that source, so the
+# auth-check probe in test_hub_token_caller_identity.py built huggingface.co URLs for a mirror.
+_HUB_SETTINGS_ENV = (
+    "UNSLOTH_STUDIO_HUB_SOURCE",
+    "HF_ENDPOINT",
+    "HF_DATASETS_SERVER",
+    "NO_PROXY",
+    "no_proxy",
+)
+
+
+@pytest.fixture(autouse = True)
+def _restore_hub_settings_env():
+    saved = {name: os.environ.get(name) for name in _HUB_SETTINGS_ENV}
+    yield
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
 @pytest.fixture(autouse = True)
 def _reset_gpu_query_cache():
     # Only if already imported: importing utils.hardware would change import-order tests.
@@ -214,6 +290,12 @@ def _reset_gpu_query_cache():
         if amd is not None and hasattr(amd, "_hip_id_map_lock"):
             with amd._hip_id_map_lock:
                 amd._hip_id_map_cache = None
+        # The last NVML inventory is class state the launch pins the child from: a MIG
+        # probe test leaving its slices there pinned later launches to MIG-dddd4444-0.
+        llama = sys.modules.get("core.inference.llama_cpp")
+        backend = getattr(llama, "LlamaCppBackend", None)
+        if backend is not None and "_NVML_ROWS" in vars(backend):
+            backend._NVML_ROWS = []
 
     _reset()
     yield
@@ -733,6 +815,12 @@ def _hub_reachable_without_probing(monkeypatch):
     monkeypatch.setattr(
         utils_utils, "_hf_reachability", (time.monotonic() + 10**6, False), raising = False
     )
+
+
+@pytest.fixture(autouse = True)
+def _no_hub_mirror_probe(monkeypatch):
+    """Saving a mirror endpoint would start a background probe; test_hub_mirror_probe.py turns it back on."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_PROBE", "0")
 
 
 @pytest.fixture(scope = "session")

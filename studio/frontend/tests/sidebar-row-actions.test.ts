@@ -81,7 +81,7 @@ test("every chat row offers the pin without opening a menu", () => {
 test("a chat row reserves one gutter, whatever its state", () => {
   assert.match(
     APP_SIDEBAR,
-    /showWorkSpinner \? "pr-16" : hasUnreadActivity \|\| showForkMark \? "pr-9" : undefined,/,
+    /showWorkSpinner \? "pr-16" : hasUnreadActivity \|\| showForkMark \? "pr-9" : showScheduledMark \? "pr-7" : undefined,/,
   );
   // The fork mark sits in the trailing column in grey, not inline after the title.
   assert.match(

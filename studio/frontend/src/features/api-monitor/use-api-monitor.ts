@@ -20,7 +20,6 @@ import {
 } from "./monitor-snapshot";
 import { type MonitorStats, computeStats } from "./stats";
 
-/** Poll cadence while live. Matches the settings console it replaces. */
 const POLL_INTERVAL_MS = 1500;
 const MAX_CACHED_PROMPT_CHARS = 64 * 1024 * 1024;
 
@@ -68,25 +67,18 @@ interface UseApiMonitorResult {
   entries: ApiMonitorEntry[];
   stats: MonitorStats;
   error: string | null;
-  /** True until the first response lands, so skeletons show once. */
   loading: boolean;
   refreshing: boolean;
   paused: boolean;
   setPaused: (paused: boolean) => void;
   refresh: () => void;
   clear: () => Promise<void>;
-  /** Full prompt/reply for expanded entries, keyed by entry id. */
   details: Record<string, ApiMonitorEntry>;
   loadingDetails: ReadonlySet<string>;
   requestDetail: (id: string) => boolean;
 }
 
-/**
- * Live view of the server's OpenAI-compatible API traffic. Polls rather than streams because the
- * backing monitor is a ring buffer with no change feed. Polling self-reschedules (never
- * overlapping), and pausing stops it so reading a payload is not fighting a reordering list.
- * `intervalMs` trades freshness for cost: the closed overlay slows right down.
- */
+/** Polls (the ring buffer has no change feed), never overlapping; pausing stops it. */
 export function useApiMonitor({
   intervalMs = POLL_INTERVAL_MS,
 }: { intervalMs?: number } = {}): UseApiMonitorResult {
@@ -217,8 +209,7 @@ export function useApiMonitor({
     };
   }, [paused, intervalMs, updateData]);
 
-  // Returns whether a fetch started: recording "fetched revision N" when the guard
-  // refused would skip that revision once updated_at settles.
+  // Returns whether a fetch started; recording a refused revision would skip it for good.
   const requestDetail = useCallback(
     (id: string): boolean => {
       if (inFlightDetails.current.has(id)) {
@@ -261,9 +252,7 @@ export function useApiMonitor({
     [details],
   );
 
-  // The Clear log button discards this promise, so a failed DELETE has to land in the
-  // error banner here: rethrowing leaves an unhandled rejection and a log that silently
-  // did not clear. Sequence lives in a plain module so the node --test suite can drive it.
+  // The button discards this promise, so a failed DELETE must land in the error banner here.
   const clear = useCallback(
     (): Promise<void> =>
       clearMonitor({

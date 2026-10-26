@@ -27,11 +27,12 @@ export const buttonVariants = cva(
           "bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:
           "hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 aria-expanded:bg-muted aria-expanded:text-foreground",
-        // Neutral grey at rest, unlike `secondary`, whose token carries a hue in some
-        // themes. The quiet half of a pair of full-window screen actions.
+        // Neutral grey at rest, unlike `secondary`, whose token carries a hue in some themes.
         muted: "bg-muted text-foreground hover:bg-muted/80",
+        // Rebinds --destructive on the button itself, so callers' own text-/bg-destructive
+        // classes land on the same shade.
         destructive:
-          "bg-destructive/10 hover:bg-destructive/20 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/20 text-destructive focus-visible:border-destructive/40 dark:hover:bg-destructive/30",
+          "[--destructive:var(--destructive-button)] bg-destructive/10 hover:bg-destructive/15 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 text-destructive focus-visible:border-destructive/40",
         link: "text-foreground underline-offset-4 hover:underline",
       },
       size: {
@@ -49,6 +50,24 @@ export const buttonVariants = cva(
         hero: "h-auto rounded-full px-5 py-2.5",
       },
     },
+    // Filled: 12px sides, 8px around the label's line at every size; icons add no height. A trailing
+    // icon (a dropdown chevron) gets 15px on the label side and 14px on its own, as its glyph sits inset.
+    compoundVariants: [
+      {
+        variant: [
+          "default",
+          "dark",
+          "primary",
+          "outline",
+          "secondary",
+          "muted",
+          "destructive",
+        ],
+        size: ["default", "sm", "lg", "hero"],
+        class:
+          "h-auto gap-1.5 px-[calc(11px*var(--ui-space-scale,1))] py-[calc(7px*var(--ui-space-scale,1))] has-data-[icon=inline-end]:pr-[calc(11px*var(--ui-space-scale,1))] has-data-[icon=inline-start]:pl-[calc(11px*var(--ui-space-scale,1))] has-[>svg:last-child]:pl-[calc(14px*var(--ui-space-scale,1))] has-[>svg:last-child]:pr-[calc(13px*var(--ui-space-scale,1))] [&_svg]:-my-2",
+      },
+    ],
     defaultVariants: {
       variant: "default",
       size: "default",

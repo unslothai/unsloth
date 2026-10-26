@@ -163,11 +163,7 @@ def transcode(
     max_seconds: Optional[float] = None,
     cut: bool = False,
 ) -> dict[str, Any]:
-    """Decode ``src`` into a 16-bit WAV at ``dst``: at ``rate`` (default the source's), mono, two
-    channels (``stereo``) or at most two channels. Past ``max_seconds`` it is cut when ``cut``, else refused with 413.
-
-    Streams frame by frame through FFmpeg's resampler (a voice reference must not alias) into a
-    temporary file renamed in at the end."""
+    """Streams through the FFmpeg resampler so a voice reference does not alias; past max_seconds it is cut if cut is set, else refused with 413."""
     import av
 
     max_seconds = MAX_SECONDS if max_seconds is None else max_seconds
@@ -309,10 +305,7 @@ async def save_stream(
     *,
     max_bytes: Optional[int] = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Stream an upload to disk, then decode it; ``(record, created)``.
-
-    The byte cap is checked as each chunk lands, so an oversize body is refused without being read
-    whole. The same audio (sha256) uploaded again within the TTL returns the existing record."""
+    """The byte cap is checked per chunk, so an oversize upload is refused before it is read whole."""
     import asyncio
 
     cap = AUDIO_INPUT_MAX_BYTES if max_bytes is None else max_bytes
@@ -628,11 +621,7 @@ def prepared_path(
     max_seconds: Optional[float] = None,
     stereo: bool = False,
 ) -> Path:
-    """A cached copy of ``source`` at ``rate`` (mono, or stereo for music edits), cut to
-    ``max_seconds``, in this account's inputs.
-
-    An input's copies sit beside it as ``{id}.{rate}.{mono|stereo}[.m{n}].wav`` and go when it
-    goes; a clip's or voice's as ``c-``/``v-`` files the sweep removes after the TTL."""
+    """Input copies go with their input; clip and voice copies (c-/v- files) are swept after the TTL."""
     prefix = {"input": "", "clip": "c-", "voice": "v-"}[source.kind]
     cap = f".m{max_seconds:g}" if max_seconds is not None else ""
     layout = "stereo" if stereo else "mono"

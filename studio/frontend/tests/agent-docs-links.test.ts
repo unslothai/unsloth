@@ -21,8 +21,9 @@ test("the API tab hands owners to the Agents tab and gives other accounts the ag
   const src = readSrc("features/settings/components/usage-examples.tsx");
   assert.match(
     src,
-    /\{isOwner \? \([\s\S]*?setAgentsTabAgent\(agent\);\s*useSettingsDialogStore\.getState\(\)\.setActiveTab\("agents"\);[\s\S]*?\) : \([\s\S]*?href=\{agentDetails\.docsUrl\}/,
+    /\{isOwner \? \([\s\S]*?setAgentsTabAgent\(agent\);[\s\S]{0,300}else useSettingsDialogStore\.getState\(\)\.setActiveTab\("agents"\);[\s\S]*?\) : \([\s\S]*?href=\{agentDetails\.docsUrl\}/,
   );
+  assert.match(src, /if \(agentsOnly\) useSettingsDialogStore\.getState\(\)\.openDialog\("agents"\);/);
   const visibility = readSrc("features/settings/settings-tab-visibility.ts");
   assert.match(visibility, /OWNER_ONLY_SETTINGS_TABS[\s\S]*?"agents"/);
   assert.doesNotMatch(src, /const DOC_LINKS/);
@@ -127,7 +128,7 @@ test("the example code box starts short, drags taller, and its copy button is ic
   // the cap is lifted so a drag can grow it; a height is set, from the drag once there is one
   assert.match(
     src,
-    /"relative \[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:pr-8 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
+    /"relative \[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:pr-8 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? fitContent\s*\? "\[&>section\]:max-h-\[60dvh\]"\s*: tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
   );
   // our own handle: CSS resize draws a native grabber the rounded corner clips into an arc
   assert.doesNotMatch(src, /resize-y|webkit-resizer/);

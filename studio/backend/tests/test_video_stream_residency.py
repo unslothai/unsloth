@@ -98,7 +98,8 @@ def test_video_request_path_fits_the_residency_before_the_vram_check():
     free_reads = [
         n.lineno
         for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "trusted_mem_get_info"
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) in ("trusted_mem_get_info", "_request_available_bytes")
     ]
     assert any(line > fit.lineno for line in free_reads)
 
@@ -287,6 +288,20 @@ def test_measured_peak_widens_the_next_request(monkeypatch):
     assert _placed(net) == ["cuda"] + ["cpu"] * 5
 
 
+def test_vram_budget_caps_the_resident_prefix(monkeypatch):
+    """The user's VRAM Budget keeps its share of the card free when the residency is re-fit per request."""
+    torch, net, pipe, x, ref = _streamed_net()
+    from utils import vram_budget_settings
+
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
+    _fit(pipe, monkeypatch, 1024)
+    assert _placed(net) == ["cuda"] * 6
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.5)
+    _fit(pipe, monkeypatch, 1024)
+    assert _placed(net) == ["cpu"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
 def _graph_handle(declined = None, **state):
     torch = pytest.importorskip("torch")
     import core.inference.diffusion_cuda_graph as cg
@@ -441,3 +456,24 @@ def test_a_per_key_drop_keeps_the_graph_key(reason):
     assert per_key.placement._declined is None  # the placement still records
     pipe = types.SimpleNamespace(_unsloth_cuda_graphs = (per_key,))
     assert vr.live_speed_optims(pipe, ("compile", "cuda_graph")) == ("compile", "cuda_graph")
+
+
+def test_fit_for_request_does_not_count_graph_held_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+    seen = {}
+
+    def room(**kw):
+        seen.update(kw)
+        raise RuntimeError("stop after the reading")
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 24 << 30))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    monkeypatch.setattr(vr, "resident_mib", lambda module: 0)
+    monkeypatch.setattr(vr, "room_mib", room)
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    vr.fit_for_request(pipe, device = "cuda:0", floor_mib = 1, width = 64, height = 64, frames = 1)
+    assert seen["free_mib"] == 1000
+    assert seen["unused_cache_mib"] == 100
