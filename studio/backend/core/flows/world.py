@@ -13,7 +13,9 @@ from typing import Any, Optional
 
 from core.flows import assets as asset_store
 from core.flows.city import normalize_city
+from core.flows.authoring import strict_schema, string_enum
 from core.flows.expr import Prng, seed_from
+from core.flows.rivals import normalize_rivals
 from core.flows.schema import WorldSpec
 from core.flows.story import _unique, input_values, most_downstream, node_value, slug
 
@@ -22,6 +24,7 @@ WORLD_ENTRY_TYPES = {
     "world.npc_reply": "npc_reply",
     "world.npc_plan": "npc_plan",
     "world.npc_chat": "npc_chat",
+    "world.describe_place": "describe_place",
 }
 BIOMES = ("meadow", "forest", "desert", "snow", "town", "dungeon", "beach")
 BIOME_TILES = {
@@ -59,17 +62,59 @@ ACTION_FLAGS = ("movement", "shooter")
 GAMEPLAY_LEVELS = {
     "explore": {},
     "action": {"movement": True},
-    "shooter": {"movement": True, "shooter": True},
+    "shooter": {"movement": True, "shooter": True, "verbs": True},
 }
 
 
 def action_of(raw: Any) -> Optional[dict]:
-    """The world's action flags, or None when none is on (a shooter always moves with physics)."""
+    """The world's action flags, or None when none is on (a shooter always moves with physics).
+    Opt-in extras (``verbs``) appear only when set, so older worlds keep their exact shape."""
     if not isinstance(raw, dict):
         return None
     flags = {k: raw.get(k) is True for k in ACTION_FLAGS}
-    flags["movement"] = flags["movement"] or flags["shooter"]
-    return flags if any(flags.values()) else None
+    flags["movement"] = flags["movement"] or flags["shooter"] or raw.get("verbs") is True
+    if raw.get("verbs") is True:
+        flags["verbs"] = True
+    if not any(flags.values()):
+        return None
+    if raw.get("ai") == "v2":
+        flags["ai"] = "v2"
+        barks = _barks(raw.get("barks"))
+        if barks:
+            flags["barks"] = barks
+    return flags
+
+
+BARK_KINDS = ("see", "hear", "lose", "pain", "flee", "attack")
+RAID_BARK_EVENTS = {
+    "spot": "see",
+    "lost": "lose",
+    "hurt": "pain",
+    "flank": "attack",
+    "retreat": "flee",
+}
+
+
+def _barks(raw: Any) -> dict:
+    """A world's own bark lines for hostile AI v2: known events only, up to 12 short lines each."""
+    if isinstance(raw, list):  # a raid's tagged lines: [{"event": "spot", "text": ...}]
+        by: dict = {}
+        for b in raw:
+            kind = RAID_BARK_EVENTS.get(b.get("event")) if isinstance(b, dict) else None
+            if kind:
+                by.setdefault(kind, []).append(b.get("text"))
+        raw = by
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for kind in BARK_KINDS:
+        lines = raw.get(kind)
+        if not isinstance(lines, list):
+            continue
+        kept = [str(s).strip()[:80] for s in lines if isinstance(s, str) and s.strip()][:12]
+        if kept:
+            out[kind] = kept
+    return out
 
 
 MAX_ADDED_ROLE = 2
@@ -254,12 +299,15 @@ def normalize_world(
     view = _view3d(raw.get("view3d"))
     if view:
         world["view3d"] = view
-    props = props3d(raw.get("props3d"), width, height)
+    props = props3d(raw.get("props3d"), width, height, {i["id"] for i in world["items"]})
     if props:
         world["props3d"] = props
+    rivals = normalize_rivals(raw.get("rivals"), npc_ids, regions, ref, taken)
+    if rivals:
+        world["rivals"] = rivals
     city = normalize_city(raw.get("city"))
     if city:
-        # One side panel at a time: Mayor mode wins over Village Rivals.
+        # One side panel at a time: Mayor mode wins over Village Rivals (normalised above).
         world["city"] = city
         world.pop("rivals", None)
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
@@ -291,15 +339,37 @@ def _view3d(raw: Any) -> dict:
     return out
 
 
-PROP_KINDS = ("house", "tree", "lamp", "fence", "well", "crate", "rock", "bench", "stall", "model")
-OPEN_PROPS = ("lamp", "bench")
+PROP_KINDS = (
+    "house",
+    "tree",
+    "lamp",
+    "fence",
+    "well",
+    "crate",
+    "rock",
+    "bench",
+    "stall",
+    "door",
+    "chest",
+    "lever",
+    "model",
+)
+OPEN_PROPS = ("lamp", "bench", "lever")
+MAX_PROP_LINKS = 8
+_ITEM_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 MAX_PROPS = 400
 _PROP_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 
 
-def props3d(raw: Any, width: int, height: int) -> list[dict]:
+def props3d(
+    raw: Any,
+    width: int,
+    height: int,
+    item_ids: Optional[set] = None,
+) -> list[dict]:
     """Clean the 3D editor's props: unknown kinds, duplicate ids and models without a flow asset are dropped,
-    positions are kept on the map and rotation / scale clamped."""
+    positions are kept on the map and rotation / scale clamped. Doors, chests and levers keep their links
+    (key and contents item ids, when ``item_ids`` is given only known ones; lever targets only real doors)."""
     out: list[dict] = []
     seen: set[str] = set()
     for p in raw if isinstance(raw, list) else []:
@@ -349,9 +419,42 @@ def props3d(raw: Any, width: int, height: int) -> list[dict]:
         prop["solid"] = (
             p["solid"] if isinstance(p.get("solid"), bool) else p["kind"] not in OPEN_PROPS
         )
+        _prop_links(prop, p, item_ids)
         seen.add(pid)
         out.append(prop)
+    doors = {p["id"] for p in out if p["kind"] == "door"}
+    for prop in out:
+        if "targets" in prop:
+            prop["targets"] = [t for t in prop["targets"] if t in doors]
+            if not prop["targets"]:
+                del prop["targets"]
     return out
+
+
+def _prop_links(prop: dict, raw: dict, item_ids: Optional[set]) -> None:
+    kind = prop["kind"]
+    if kind not in ("door", "chest", "lever"):
+        return
+
+    def item(v: Any) -> bool:
+        return (
+            isinstance(v, str) and bool(_ITEM_ID.match(v)) and (item_ids is None or v in item_ids)
+        )
+
+    if isinstance(raw.get("open"), bool):
+        prop["open"] = raw["open"]
+    if kind == "door" and item(raw.get("locked_by")):
+        prop["locked_by"] = raw["locked_by"]
+    if kind == "chest" and isinstance(raw.get("contents"), list):
+        contents = list(dict.fromkeys(v for v in raw["contents"] if item(v)))[:MAX_PROP_LINKS]
+        if contents:
+            prop["contents"] = contents
+    if kind == "lever" and isinstance(raw.get("targets"), list):
+        targets = list(
+            dict.fromkeys(v for v in raw["targets"] if isinstance(v, str) and _PROP_ID.match(v))
+        )[:MAX_PROP_LINKS]
+        if targets:
+            prop["targets"] = targets
 
 
 def apply_play_view(
@@ -380,13 +483,20 @@ def apply_play_view(
         if view:
             world["view3d"] = view
         if p.get("gameplay") in GAMEPLAY_LEVELS:
-            act = action_of(GAMEPLAY_LEVELS[p["gameplay"]])
+            # The world keeps its own hostile AI and barks under the player's gameplay level.
+            own = {k: v for k, v in (world.get("action") or {}).items() if k in ("ai", "barks")}
+            act = action_of({**GAMEPLAY_LEVELS[p["gameplay"]], **own})
             if act:
                 world["action"] = act
             else:
                 world.pop("action", None)
         if isinstance(p.get("props3d"), list):
-            world["props3d"] = props3d(p["props3d"], world["width"], world["height"])
+            world["props3d"] = props3d(
+                p["props3d"],
+                world["width"],
+                world["height"],
+                {i["id"] for i in world.get("items") or []},
+            )
         world["player_node"] = n["id"]
         break
     return world
@@ -460,7 +570,20 @@ def _simulation(raw: Any, width: int, height: int, regions: list[dict]) -> Optio
         "chat_cooldown_min": _clamp_int(raw.get("chat_cooldown_min"), 0, 7 * 24 * 60, 120),
         "calls_per_minute": _clamp_int(raw.get("calls_per_minute"), 0, 30, 4),
         "needs": raw.get("needs", True) is not False,
+        **_life_fields(raw),
     }
+
+
+def _life_fields(raw: dict) -> dict:
+    out: dict[str, Any] = {}
+    for flag in ("options", "relationships"):
+        if raw.get(flag) is True:
+            out[flag] = True
+    for key, lo, hi in (("plan_cache", 1, 256), ("reflect_at", 10, 5000), ("rate_batch", 1, 32)):
+        v = raw.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            out[key] = _clamp_int(v, lo, hi, lo)
+    return out
 
 
 def world_schema(npcs: int, items: int) -> dict:
@@ -572,32 +695,34 @@ SUMMARY_SCHEMA = {
 }
 
 
-DIRECTOR_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "title": {"type": "string"},
-        "description": {"type": "string"},
-        "reward_text": {"type": "string"},
-        "giver": {"type": "string"},
-        "item": {"type": "string"},
-        "new_item_name": {"type": "string"},
-        "new_item_description": {"type": "string"},
-        "new_npc_name": {"type": "string"},
-        "new_npc_persona": {"type": "string"},
-        "new_npc_greeting": {"type": "string"},
-        "new_npc_role": {"type": "string", "enum": ["", *NPC_ROLES]},
-        "region": {"type": "string"},
-    },
-    "required": [
-        "title",
-        "description",
-        "reward_text",
-        "giver",
-        "item",
-        "new_item_name",
-        "new_npc_name",
-    ],
-}
+DIRECTOR_SCHEMA = strict_schema(
+    {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "reward_text": {"type": "string"},
+            "giver": {"type": "string"},
+            "item": {"type": "string"},
+            "new_item_name": {"type": "string"},
+            "new_item_description": {"type": "string"},
+            "new_npc_name": {"type": "string"},
+            "new_npc_persona": {"type": "string"},
+            "new_npc_greeting": {"type": "string"},
+            "new_npc_role": {"type": "string", "enum": ["", *NPC_ROLES]},
+            "region": {"type": "string"},
+        },
+        "required": [
+            "title",
+            "description",
+            "reward_text",
+            "giver",
+            "item",
+            "new_item_name",
+            "new_npc_name",
+        ],
+    }
+)
 
 
 def has_memory(state: dict) -> bool:
@@ -637,8 +762,22 @@ def npc_life(world: dict, npc: dict) -> str:
     return "".join(f"{line}\n" for line in lines)
 
 
-def memory_lines(records: list[dict]) -> str:
-    return "\n".join(f"- {r['text']}" for r in records if r.get("text")) or "- nothing yet"
+def heard_from(record: dict, names: Optional[dict] = None) -> str:
+    chain = [
+        (names or {}).get(s, "the player" if s == "player" else s)
+        for s in record.get("source") or []
+        if isinstance(s, str) and s
+    ][:4]
+    if not chain:
+        return ""
+    return " (heard from " + ", who heard it from ".join(chain) + ")"
+
+
+def memory_lines(records: list[dict], names: Optional[dict] = None) -> str:
+    return (
+        "\n".join(f"- {r['text']}{heard_from(r, names)}" for r in records if r.get("text"))
+        or "- nothing yet"
+    )
 
 
 def npc_context(state: dict) -> tuple[dict, dict]:
@@ -928,6 +1067,69 @@ def validate_director(raw: Any, state: dict) -> dict:
     return patch
 
 
+def director_schema(state: dict) -> dict:
+    """DIRECTOR_SCHEMA with the giver and item fields limited to what the world has, when nothing new may be invented."""
+    world = state.get("world") if isinstance(state.get("world"), dict) else {}
+    props = dict(DIRECTOR_SCHEMA["properties"])
+    if not state.get("allow_npc"):
+        props["giver"] = string_enum(n.get("id") for n in world.get("npcs") or [])
+    if not state.get("allow_item"):
+        used = _used_items(world, state)
+        props["item"] = string_enum(
+            i.get("id") for i in world.get("items") or [] if i.get("id") not in used
+        )
+    regions = [r.get("id") for r in world.get("regions") or []]
+    if regions:
+        props["region"] = string_enum(regions, allow_empty = True)
+    return strict_schema({**DIRECTOR_SCHEMA, "properties": props})
+
+
+def fallback_quest(state: dict) -> dict:
+    """A plain fetch quest from what the world already has, when the model's answers keep being refused."""
+    world = state.get("world") if isinstance(state.get("world"), dict) else {}
+    npcs = world.get("npcs") or []
+    if not npcs:
+        raise WorldError("the world has no villager to give a quest")
+    used = _used_items(world, state)
+    free = [i for i in world.get("items") or [] if i.get("id") not in used]
+    n = len(world.get("quests") or [])
+    giver = npcs[n % len(npcs)]
+    if free:
+        item = free[n % len(free)]
+        raw = {"item": item["id"], "new_item_name": ""}
+        name = item["name"]
+    elif state.get("allow_item"):
+        name = FALLBACK_ITEMS[n % len(FALLBACK_ITEMS)]
+        raw = {
+            "item": "",
+            "new_item_name": name,
+            "new_item_description": f"A {name.lower()} someone lost.",
+        }
+    else:
+        raise WorldError("every item is already used and new ones are off")
+    return validate_director(
+        {
+            **raw,
+            "title": f"Find the {name}",
+            "description": f"{giver['name']} has lost the {name} and would be glad to have it back.",
+            "reward_text": "Thank you, that means a lot!",
+            "giver": giver["id"],
+            "new_npc_name": "",
+        },
+        state,
+    )
+
+
+FALLBACK_ITEMS = (
+    "Brass Key",
+    "Old Map",
+    "Silver Locket",
+    "Lucky Coin",
+    "Lost Letter",
+    "Little Bell",
+)
+
+
 def world_places(world: dict) -> list[dict]:
     seen, out = set(), []
     for p in [
@@ -1053,7 +1255,8 @@ def npc_prompt(
     # Per-turn parts go last so llama-server reuses the cached prefix.
     return system, (
         head
-        + f"It is {clock_text(state.get('clock'))}.\nWhat you remember:\n{memory_lines(memories)}\n"
+        + f"It is {clock_text(state.get('clock'))}.\nWhat you remember:\n"
+        + f"{memory_lines(memories, {n['id']: n['name'] for n in world.get('npcs') or []})}\n"
         + turn
     )
 
@@ -1071,7 +1274,261 @@ def plan_prompt(world: dict, npc: dict, memories: list[dict], day: int) -> tuple
     return system, prompt
 
 
-def chat_schema(a: dict, b: dict) -> dict:
+NEED_NAMES = ("energy", "hunger", "social", "fun")
+OPTION_ACTIONS = ("go_to", "eat", "sleep", "work", "socialise", "wander")
+UNTIL_KINDS = ("time", "need", "item", "place")
+MAX_OPTIONS = 6
+DAY_END = 22 * 60
+
+
+def options_schema(places: list[str], items: list[str]) -> dict:
+    """Flat fields so small models fill them; unused ones stay empty."""
+    return {
+        "type": "object",
+        "properties": {
+            "options": {
+                "type": "array",
+                "maxItems": MAX_OPTIONS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "activity": {"type": "string"},
+                        "place": {"type": "string", "enum": places},
+                        "action": {"type": "string", "enum": list(OPTION_ACTIONS)},
+                        "until": {"type": "string", "enum": list(UNTIL_KINDS)},
+                        "at": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+                        "need": {"type": "string", "enum": list(NEED_NAMES)},
+                        "above": {"type": "integer", "minimum": 0, "maximum": 100},
+                        "item": {"type": "string", "enum": ["", *items]},
+                    },
+                    "required": [
+                        "activity",
+                        "place",
+                        "action",
+                        "until",
+                        "at",
+                        "need",
+                        "above",
+                        "item",
+                    ],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["options"],
+        "additionalProperties": False,
+    }
+
+
+def options_prompt(
+    world: dict, npc: dict, memories: list[dict], clock: Any, needs: Any
+) -> tuple[str, str]:
+    places = [p["name"] for p in (world.get("simulation") or {}).get("places") or []]
+    names = {n["id"]: n["name"] for n in world.get("npcs") or []}
+    feel = ""
+    if isinstance(needs, dict):
+        feel = (
+            "Needs (0 empty, 100 full): "
+            + ", ".join(
+                f"{k} {int(needs[k])}" for k in NEED_NAMES if isinstance(needs.get(k), (int, float))
+            )
+            + "\n"
+        )
+    system = (
+        f"You plan what {npc['name']} does next, a character in the game world \"{world.get('title')}\". "
+        "Answer in JSON."
+    )
+    # Stable persona and rules first so the server reuses the cached prefix; memories, needs and time last.
+    prompt = (
+        f"Persona: {npc.get('persona') or 'a friendly local'}\n{npc_life(world, npc)}"
+        f"List 3 to {MAX_OPTIONS} things {npc['name']} does next, in order, until 22:00. "
+        f"Each has an activity, a place (one of: {', '.join(places)}), an action ({', '.join(OPTION_ACTIONS)}) and "
+        "when it ends: `until` time (at `at`, HH:MM), need (when `need` rises above `above`), item (once they hold "
+        "`item`) or place (once they reach the place); fill unused fields with \"\" or 0. Keep any appointments "
+        "remembered below.\n\n"
+        f"What {npc['name']} remembers:\n{memory_lines(memories, names)}\n{feel}"
+        f"It is {clock_text(clock)}."
+    )
+    return system, prompt
+
+
+def clean_options(raw: Any, world: dict, clock: Any) -> list[dict]:
+    """Options with absolute times and ids; anything unknown is dropped, not guessed."""
+    sim = world.get("simulation") or {}
+    by_name = {p["name"]: p["id"] for p in sim.get("places") or []}
+    items = {i["name"]: i["id"] for i in world.get("items") or []}
+    now = int(clock) if isinstance(clock, (int, float)) and not isinstance(clock, bool) else 0
+    day = max(0, now) // 1440 * 1440
+    out = []
+    for o in (raw.get("options") if isinstance(raw, dict) else None) or []:
+        if len(out) >= MAX_OPTIONS:
+            break
+        if not isinstance(o, dict) or o.get("place") not in by_name:
+            continue
+        activity = re.sub(r"\s+", " ", str(o.get("activity") or "")).strip()[:80]
+        action = o.get("action") if o.get("action") in OPTION_ACTIONS else "go_to"
+        kind = o.get("until")
+        until: Optional[dict] = None
+        if kind == "time":
+            try:
+                hh, mm = (int(x) for x in str(o.get("at") or "").split(":"))
+            except ValueError:
+                continue
+            at = day + hh * 60 + mm
+            if 0 <= hh < 24 and 0 <= mm < 60 and at > now:
+                until = {"type": "time", "at": at}
+        elif kind == "need" and o.get("need") in NEED_NAMES:
+            until = {
+                "type": "need",
+                "need": o["need"],
+                "above": _clamp_int(o.get("above"), 0, 100, 80),
+            }
+        elif kind == "item" and o.get("item") in items:
+            until = {"type": "item", "item": items[o["item"]]}
+        elif kind == "place":
+            until = {"type": "place", "place": by_name[o["place"]]}
+        if until is None or not activity:
+            continue
+        out.append(
+            {"activity": activity, "place": by_name[o["place"]], "kind": action, "until": until}
+        )
+    return out
+
+
+def options_blocks(options: list[dict], clock: Any) -> list[dict]:
+    """Plan blocks for the classic HUD and memory text: a timed option ends at its time, others take an hour."""
+    t = int(clock) if isinstance(clock, (int, float)) and not isinstance(clock, bool) else 0
+    blocks = []
+    for o in options:
+        end = o["until"]["at"] if o["until"]["type"] == "time" else t + 60
+        if end <= t:
+            continue
+        blocks.append(
+            {"start": t, "minutes": end - t, "activity": o["activity"], "place": o["place"]}
+        )
+        t = end
+    return blocks
+
+
+REFLECT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "insights": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "cites": {"type": "array", "items": {"type": "integer"}},
+                    "importance": {"type": "integer", "minimum": 1, "maximum": 10},
+                },
+                "required": ["text", "cites", "importance"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["insights"],
+    "additionalProperties": False,
+}
+
+
+def reflect_prompt(world: dict, npc: dict, records: list[dict]) -> tuple[str, str]:
+    names = {n["id"]: n["name"] for n in world.get("npcs") or []}
+    listing = "\n".join(
+        f"{i + 1}. {r['text']}{heard_from(r, names)}" for i, r in enumerate(records)
+    )
+    system = f"You help {npc['name']} reflect on their memories. Answer in JSON."
+    prompt = (
+        f"Persona: {npc.get('persona') or 'a friendly local'}\n"
+        f"What 1 to 3 high-level insights can {npc['name']} infer from the statements below? For each, list the "
+        "numbers of the statements it rests on and rate its importance from 1 to 10.\n\n"
+        f"Statements:\n{listing}"
+    )
+    return system, prompt
+
+
+def clean_insights(raw: Any, records: list[dict]) -> list[dict]:
+    out = []
+    for ins in (raw.get("insights") if isinstance(raw, dict) else None) or []:
+        if not isinstance(ins, dict):
+            continue
+        text = re.sub(r"\s+", " ", str(ins.get("text") or "")).strip()[:300]
+        if not text:
+            continue
+        cites = [
+            records[n - 1]["id"]
+            for n in (ins.get("cites") if isinstance(ins.get("cites"), list) else [])
+            if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= len(records)
+        ]
+        out.append(
+            {
+                "text": text,
+                "importance": _clamp_int(ins.get("importance"), 1, 10, 6),
+                "cites": cites,
+            }
+        )
+    return out[:3]
+
+
+def rel_line(name: str, other: str, rel: Any) -> str:
+    if not isinstance(rel, dict):
+        return ""
+    aff = _clamp_int(rel.get("affinity"), -10, 10, 0)
+    facts = [str(f)[:80] for f in rel.get("facts") or [] if isinstance(f, str) and f.strip()][:3]
+    mood = "warm" if aff >= 3 else "cool" if aff <= -3 else "neutral"
+    return (
+        f"{name} feels {mood} towards {other} (affinity {aff:+d})"
+        + (f"; knows: {'; '.join(facts)}" if facts else "")
+        + "\n"
+    )
+
+
+SOCIAL_NOTES_SCHEMA = {
+    **NOTES_SCHEMA,
+    "items": {
+        "type": "object",
+        "properties": {
+            **NOTES_SCHEMA["items"]["properties"],
+            "from": {"type": "integer", "minimum": 0, "maximum": 10},
+        },
+        "required": ["text", "importance", "from"],
+        "additionalProperties": False,
+    },
+}
+FEELS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "affinity": {"type": "integer", "minimum": -3, "maximum": 3},
+        "fact": {"type": "string"},
+    },
+    "required": ["affinity", "fact"],
+    "additionalProperties": False,
+}
+
+
+def chat_schema(
+    a: dict,
+    b: dict,
+    social: bool = False,
+) -> dict:
+    if social:
+        base = chat_schema(a, b)
+        lines = base["properties"]["lines"]
+        props = {
+            **base["properties"],
+            "lines": {**lines, "items": {**lines["items"], "additionalProperties": False}},
+            "a_learns": SOCIAL_NOTES_SCHEMA,
+            "b_learns": SOCIAL_NOTES_SCHEMA,
+            "a_feels": FEELS_SCHEMA,
+            "b_feels": FEELS_SCHEMA,
+        }
+        return {
+            **base,
+            "properties": props,
+            "required": [*base["required"], "a_feels", "b_feels"],
+            "additionalProperties": False,
+        }
     return {
         "type": "object",
         "properties": {
@@ -1096,13 +1553,21 @@ def chat_schema(a: dict, b: dict) -> dict:
 
 
 def chat_prompt(
-    world: dict, a: dict, b: dict, mem_a: list[dict], mem_b: list[dict], state: dict
+    world: dict,
+    a: dict,
+    b: dict,
+    mem_a: list[dict],
+    mem_b: list[dict],
+    state: dict,
+    social: bool = False,
 ) -> tuple[str, str]:
     place = str(state.get("place") or "").strip()
     system = (
         f"You write a short chat between two characters in the game world \"{world.get('title')}\". "
         "Each stays in character and only shares what they know. Answer in JSON."
     )
+    if social:
+        return system, _social_chat_prompt(world, a, b, mem_a, mem_b, state, place)
     prompt = (
         f"It is {clock_text(state.get('clock'))}" + (f", at {place}" if place else "") + ".\n"
         f"{a['name']}: {a.get('persona') or 'a friendly local'}\n{npc_life(world, a)}"
@@ -1117,7 +1582,61 @@ def chat_prompt(
     return system, prompt
 
 
-def validate_chat(raw: Any, a: dict, b: dict) -> dict:
+def _numbered(records: list[dict], names: dict) -> str:
+    return (
+        "\n".join(f"{i + 1}. {r['text']}{heard_from(r, names)}" for i, r in enumerate(records))
+        or "- nothing yet"
+    )
+
+
+def _social_chat_prompt(
+    world: dict, a: dict, b: dict, mem_a: list[dict], mem_b: list[dict], state: dict, place: str
+) -> str:
+    names = {n["id"]: n["name"] for n in world.get("npcs") or []}
+    # Personas and rules first (cacheable per pair); feelings, memories, time and place last.
+    return (
+        f"{a['name']}: {a.get('persona') or 'a friendly local'}\n{npc_life(world, a)}"
+        f"{b['name']}: {b.get('persona') or 'a friendly local'}\n{npc_life(world, b)}\n"
+        f"{a['name']} and {b['name']} bump into each other. Write 2 to 6 short lines of their chat "
+        f"(under 25 words each). `a_learns` is what {a['name']} newly learns from {b['name']} and `b_learns` what "
+        f"{b['name']} learns from {a['name']}, written from the listener's point of view with an importance from 1 "
+        "to 10 and `from` = the number of the speaker's memory it repeats (0 if new); pass on news, plans and "
+        "invitations they would share. Empty lists when nothing new comes up. `a_feels` and `b_feels`: how the chat "
+        "changed each one's liking of the other (-3 to 3) and one short fact they now know about the other "
+        "(empty if none).\n\n"
+        f"{rel_line(a['name'], b['name'], state.get('rel_a'))}"
+        f"{a['name']} remembers:\n{_numbered(mem_a, names)}\n\n"
+        f"{rel_line(b['name'], a['name'], state.get('rel_b'))}"
+        f"{b['name']} remembers:\n{_numbered(mem_b, names)}\n\n"
+        f"It is {clock_text(state.get('clock'))}" + (f", at {place}" if place else "") + "."
+    )
+
+
+def _feels(raw: Any) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    fact = re.sub(r"\s+", " ", str(raw.get("fact") or "")).strip()[:80]
+    return {"affinity": _clamp_int(raw.get("affinity"), -3, 3, 0), "fact": fact}
+
+
+def _sourced(raw: Any, notes: list[dict], heard: list[dict]) -> list[dict]:
+    """Attach the speaker's memory id a note repeats, so the listener can say who told them."""
+    kept = [n for n in (raw if isinstance(raw, list) else []) if clean_notes([n])]
+    out = []
+    for note, src in zip(notes, kept):
+        n = src.get("from") if isinstance(src, dict) else None
+        if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= len(heard):
+            note = {**note, "from": heard[n - 1]["id"]}
+        out.append(note)
+    return out
+
+
+def validate_chat(
+    raw: Any,
+    a: dict,
+    b: dict,
+    mem_a: Optional[list[dict]] = None,
+    mem_b: Optional[list[dict]] = None,
+) -> dict:
     if not isinstance(raw, dict):
         raise WorldError("the model did not return a chat")
     by_name = {a["name"].lower(): a["id"], b["name"].lower(): b["id"]}
@@ -1131,13 +1650,20 @@ def validate_chat(raw: Any, a: dict, b: dict) -> dict:
             lines.append({"npc": who, "text": text})
     if not lines:
         raise WorldError("the chat had no lines")
-    return {
+    out = {
         "a": a["id"],
         "b": b["id"],
         "lines": lines[:6],
         "a_learns": clean_notes(raw.get("a_learns")),
         "b_learns": clean_notes(raw.get("b_learns")),
     }
+    if mem_a is None or mem_b is None:
+        return out
+    out["a_learns"] = _sourced(raw.get("a_learns"), out["a_learns"], mem_b)
+    out["b_learns"] = _sourced(raw.get("b_learns"), out["b_learns"], mem_a)
+    out["a_feels"] = _feels(raw.get("a_feels"))
+    out["b_feels"] = _feels(raw.get("b_feels"))
+    return out
 
 
 def resolve_world_report(

@@ -2609,6 +2609,112 @@ def smallville_lite() -> B:
     return b
 
 
+def village_rivals() -> B:
+    b = B(
+        "village-rivals",
+        "Village Rivals",
+        "world",
+        "A turn-based 4X-lite on a village map: you and two rival villages build, claim land, trade, ally and "
+        "raid, one day per turn. Each rival's strategist is one chat model call a turn that sets its posture; "
+        "deterministic managers do the rest.",
+        tags = ["world", "game", "strategy", "npc", "agent"],
+        seed = 377,
+    ).need("chat")
+    towns = [
+        {"id": "willow_ford", "name": "Willow Ford", "x": 3, "y": 3, "w": 10, "h": 8},
+        {"id": "stonebrook", "name": "Stonebrook", "x": 34, "y": 4, "w": 10, "h": 8},
+        {"id": "ember_hill", "name": "Ember Hill", "x": 18, "y": 25, "w": 10, "h": 8},
+    ]
+    world = {
+        "title": "Village Rivals",
+        "seed": 377,
+        "biome": "meadow",
+        "width": 48,
+        "height": 36,
+        "intro_text": "Three villages share one valley and not enough land. Grow Willow Ford, talk to the other "
+        "leaders, and end each day when you are ready.",
+        "player": {"name": "Reeve"},
+        "npcs": [
+            {
+                "name": "Mara Quill",
+                "persona": "Reeve of Willow Ford's council; a careful baker who counts every loaf.",
+                "greeting": "The council trusts you to lead us, Reeve.",
+                "x": 8,
+                "y": 7,
+            },
+            {
+                "name": "Bram Holt",
+                "persona": "Chief of Stonebrook; a proud stone mason who respects strength and keeps his word.",
+                "greeting": "Stonebrook does not bend.",
+                "x": 39,
+                "y": 8,
+            },
+            {
+                "name": "Isolde Fenn",
+                "persona": "Elder of Ember Hill; a shrewd trader who prefers deals to fights.",
+                "greeting": "Everything has a price, friend.",
+                "x": 23,
+                "y": 29,
+            },
+        ],
+        "items": [],
+        "quests": [],
+        "regions": [{**t, "on_enter_text": f"You enter {t['name']}."} for t in towns],
+        "rivals": {
+            "factions": [
+                {
+                    "id": "willow_ford",
+                    "name": "Willow Ford",
+                    "player": True,
+                    "region": "willow_ford",
+                    "leader": "mara_quill",
+                },
+                {
+                    "id": "stonebrook",
+                    "name": "Stonebrook",
+                    "region": "stonebrook",
+                    "leader": "bram_holt",
+                    "persona": "Masons and miners; quick to take offence, slow to forget.",
+                },
+                {
+                    "id": "ember_hill",
+                    "name": "Ember Hill",
+                    "region": "ember_hill",
+                    "leader": "isolde_fenn",
+                    "persona": "Merchants first; they would rather buy land than fight for it.",
+                },
+            ],
+            "max_turns": 30,
+        },
+    }
+    b.n("world", "world.spec", 0, 1, world = world)
+    b.n("play", "world.play", 1, 1)
+    b.e("world.world", "play.world")
+    b.n(
+        "reply",
+        "world.npc_reply",
+        2,
+        1,
+        label = "Leaders and strategists (live)",
+        model = CHAT,
+        max_tokens = 160,
+        rules = "Stay in character. Keep replies under 50 words.",
+    )
+    b.note(
+        "about",
+        "Play: open Village Rivals in the player. Each day you get two actions (build, claim land, train, raid, "
+        "or accept a deal), then End day. Each rival village makes one model call a day for its posture "
+        "(economy, expansion, military, diplomacy), a target and goals; it only switches plans when the new "
+        "posture differs enough. Talk to a leader to trade or ally: a deal shows up as a button only when the "
+        "game can carry it out. Without a chat model the rivals still play on their own.",
+        0,
+        2.2,
+        1.8,
+        1.2,
+    )
+    return b
+
+
 def remembering_assistant() -> B:
     b = B(
         "remembering-assistant",
@@ -4439,6 +4545,7 @@ BUILDERS = (
     embedding_sft,
     model_arena,
     smallville_lite,
+    village_rivals,
     remembering_assistant,
     summarise_pdf,
     ask_documents,
@@ -4487,6 +4594,11 @@ def _examples() -> dict[str, dict]:
 
 def example_ids() -> list[str]:
     return list(_examples())
+
+
+def example_docs() -> list[dict]:
+    """The shared example documents: read only (``example`` returns a copy to edit)."""
+    return list(_examples().values())
 
 
 def example(example_id: str) -> dict | None:

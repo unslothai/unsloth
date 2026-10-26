@@ -20,6 +20,8 @@ import {
   commit,
   freeTileNear,
   makeProp,
+  mergePlaced,
+  placeRequest,
   redo,
   removeProp,
   snapRotation,
@@ -56,6 +58,8 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
   };
   let h: PropHistory = startHistory(ctx.map.props ?? []);
   let selected: string | null = null;
+  // The props a pending place request was laid out against.
+  let placeBasis: WorldProp3d[] | null = null;
   let mode: GizmoMode = "translate";
   const listeners = new Set<() => void>();
   const emit = () => {
@@ -241,6 +245,24 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
       selected = p.id;
       apply([...h.props, p]);
     },
+    placeRequest(text) {
+      placeBasis = h.props;
+      return placeRequest(map, h.props, ctx.openTile, text, {
+        x: Math.floor(orbit.target.x),
+        y: Math.floor(orbit.target.z),
+      });
+    },
+    addPlaced(placed) {
+      if (placeBasis !== h.props) return -1;
+      placeBasis = null;
+      const next = mergePlaced(h.props, placed, map);
+      const added = next.length - h.props.length;
+      if (added > 0) {
+        selected = null;
+        apply(next);
+      }
+      return added;
+    },
     select(id) {
       selected = id && h.props.some((p) => p.id === id) ? id : null;
       attach();
@@ -283,6 +305,7 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
       orbit.update();
     },
     close() {
+      placeBasis = null;
       window.removeEventListener("keydown", onKey, true);
       dom.removeEventListener("pointerdown", onDown);
       dom.removeEventListener("pointerup", onUp);

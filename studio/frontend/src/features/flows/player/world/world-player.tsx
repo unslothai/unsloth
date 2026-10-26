@@ -16,6 +16,7 @@ import {
   XIcon,
 } from "lucide-react";
 import {
+  type RefObject,
   Suspense,
   lazy,
   useCallback,
@@ -23,6 +24,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import { cn } from "@/lib/utils";
@@ -58,6 +60,7 @@ import {
 } from "./live-reply";
 import { cityQueueRate, mayorOn } from "./city-advisor";
 import { MayorHud } from "./mayor-panel";
+import { heldInChests, interactProp } from "./action-verbs";
 import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import {
@@ -66,6 +69,8 @@ import {
   type WorldMap,
   generateMap,
 } from "./procgen";
+import { RIVALS_CALLS_PER_MINUTE } from "./rivals";
+import { RivalsPanel } from "./rivals-panel";
 import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
   placeAreas,
@@ -89,6 +94,7 @@ import {
   inspectGlb,
   saveUntilCurrent,
 } from "./props3d";
+import * as Life from "./life-sim";
 import {
   BackgroundQueue,
   type Note,
@@ -111,6 +117,7 @@ import {
   type WorldState,
   addTurn,
   applyReply,
+  applyUse,
   deserialize,
   foldSummary,
   initialWorldState,
@@ -144,6 +151,8 @@ interface NpcChat {
   b_learns: Note[];
   a_recalled: string[];
   b_recalled: string[];
+  a_feels?: { affinity?: number; fact?: string };
+  b_feels?: { affinity?: number; fact?: string };
 }
 
 async function loadImage(url: string): Promise<HTMLImageElement> {
@@ -251,6 +260,136 @@ function SpriteThumb({
   );
 }
 
+interface LiveStore {
+  get(): LiveReply | null;
+  set(next: LiveReply | null): void;
+  subscribe(fn: () => void): () => void;
+}
+
+function liveStore(): LiveStore {
+  let value: LiveReply | null = null;
+  const subs = new Set<() => void>();
+  return {
+    get: () => value,
+    set(next) {
+      if (next === value) return;
+      value = next;
+      for (const fn of subs) fn();
+    },
+    subscribe(fn) {
+      subs.add(fn);
+      return () => subs.delete(fn);
+    },
+  };
+}
+
+// Streamed tokens re-render only this bubble, not the whole player.
+function ReplyStatus({
+  live: store,
+  talking,
+  thinking,
+  warmed,
+  scroller,
+}: {
+  live: LiveStore;
+  talking: string;
+  thinking: boolean;
+  warmed: boolean;
+  scroller: RefObject<HTMLDivElement | null>;
+}) {
+  const live = useSyncExternalStore(store.subscribe, store.get);
+  const shown = useRef(live?.text);
+  useEffect(() => {
+    if (shown.current === live?.text) return;
+    shown.current = live?.text;
+    scroller.current?.scrollTo({
+      top: scroller.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [live?.text, scroller]);
+  return thinking && live && live.npcId === talking ? (
+    <div
+      className="max-w-[85%] self-start rounded-2xl bg-white/10 px-3.5 py-2 text-sm leading-relaxed"
+      data-testid="world-npc-streaming"
+    >
+      {live.text}
+    </div>
+  ) : thinking && !warmed ? (
+    <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm text-white/70">
+      Waking up the villagers...
+    </div>
+  ) : thinking ? (
+    <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          style={{
+            animation: `flows-dots 1.2s ${i * 0.2}s infinite`,
+          }}
+        >
+          •
+        </span>
+      ))}
+    </div>
+  ) : null;
+}
+
+// Owns the draft so typing re-renders only the form.
+function SayForm({
+  npcName,
+  thinking,
+  draft: kept,
+  onSend,
+  onBye,
+}: {
+  npcName: string;
+  thinking: boolean;
+  draft: RefObject<string>;
+  onSend: (text: string) => boolean;
+  onBye: () => void;
+}) {
+  const [draft, setDraft] = useState(kept.current);
+  const edit = (text: string) => {
+    kept.current = text;
+    setDraft(text);
+  };
+  return (
+    <form
+      className="flex gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (onSend(draft)) edit("");
+      }}
+    >
+      <input
+        // biome-ignore lint/a11y/noAutofocus: the conversation box is the only thing to type into
+        autoFocus={true}
+        value={draft}
+        onChange={(e) => edit(e.target.value)}
+        placeholder={`Say something to ${npcName}...`}
+        className="min-w-0 flex-1 rounded-full bg-white/10 px-4 py-2 text-sm outline-none ring-1 ring-white/10 placeholder:text-white/35 focus:ring-white/30"
+        data-testid="world-say"
+      />
+      <button
+        type="submit"
+        disabled={thinking || !draft.trim()}
+        className="rounded-full bg-white px-4 text-black disabled:opacity-40"
+        aria-label="Send"
+        title="Send"
+      >
+        <SendIcon className="size-4" />
+      </button>
+      <button
+        type="button"
+        onClick={onBye}
+        className="rounded-full bg-white/10 px-3 text-sm hover:bg-white/20"
+      >
+        Bye
+      </button>
+    </form>
+  );
+}
+
 export function WorldPlayer({
   flowId,
   api,
@@ -263,6 +402,7 @@ export function WorldPlayer({
   const map = useMemo(() => generateMap(baseSpec), [baseSpec]);
   const host = useRef<HTMLDivElement>(null);
   const game = useRef<WorldGameHandle | null>(null);
+  const worldRef = useRef<WorldMap | null>(null);
   const [ws, setWs] = useState<WorldState>(() => initialWorldState(baseSpec));
   const wsRef = useRef(ws);
   wsRef.current = ws;
@@ -308,10 +448,12 @@ export function WorldPlayer({
     api,
     view === "3d" ? spec.view3d?.ambient : null,
   );
+  const [envoyTalking, setEnvoyTalking] = useState(false);
   const lockedRef = useRef(true);
   lockedRef.current =
     !started ||
     talking !== null ||
+    envoyTalking ||
     panel === "save" ||
     !!ws.auto?.encounter ||
     editor !== null;
@@ -338,7 +480,15 @@ export function WorldPlayer({
   const planEntry = sim ? spec.entry_points?.npc_plan : undefined;
   const chatEntry = sim ? spec.entry_points?.npc_chat : undefined;
   const queue = useMemo(
-    () => new BackgroundQueue(sim?.calls_per_minute ?? cityQueueRate(baseSpec)),
+    () =>
+      new BackgroundQueue(
+        sim?.calls_per_minute ??
+          (mayorOn(baseSpec)
+            ? cityQueueRate(baseSpec)
+            : baseSpec.rivals
+              ? RIVALS_CALLS_PER_MINUTE
+              : 0),
+      ),
     [sim, baseSpec],
   );
   const cityTile = useRef<(p: Point, drag: boolean) => boolean>(() => false);
@@ -348,6 +498,7 @@ export function WorldPlayer({
   const withNeeds = useMemo(() => needsOn(baseSpec), [baseSpec]);
   const offers = useMemo(() => advertisements(sim?.places ?? []), [sim]);
   const areas = useMemo(() => placeAreas(baseSpec), [baseSpec]);
+  const lifeCfg = useMemo(() => Life.lifeOf(baseSpec), [baseSpec]);
   const [background, setBackground] = useState<string | null>(null);
 
   const witness = useCallback(
@@ -361,18 +512,52 @@ export function WorldPlayer({
           next = withMind(next, id, (m) =>
             remember(
               m,
-              [{ text: `${spec.player.name} ${what}`, importance }],
+              [
+                {
+                  text: `${spec.player.name} ${what}`,
+                  importance,
+                  guess: lifeCfg.reflectAt > 0,
+                },
+              ],
               s.clock,
             ),
           );
       }
       return next;
     },
-    [sim, spec.player.name],
+    [sim, spec.player.name, lifeCfg],
   );
 
   const onInteract = useCallback(
     (t: Interactable) => {
+      if (t.kind === "prop") {
+        const g = game.current;
+        if (!t.prop || !g) return;
+        const s = wsRef.current;
+        const at = (p: { x: number; y: number }) =>
+          `${Math.floor(p.x)},${Math.floor(p.y)}`;
+        const out = interactProp(
+          t.prop,
+          worldRef.current?.props ?? [],
+          s.props ?? {},
+          s.inventory,
+          {
+            name: (id) => itemById.get(id)?.name ?? id,
+            occupied: (p) =>
+              [g.playerTile(), ...Object.values(g.npcTiles())].some(
+                (q) => at(q) === at(p),
+              ),
+          },
+        );
+        if (out.changed.length || out.gained.length) {
+          const next = applyUse(s, out);
+          wsRef.current = next;
+          setWs(next);
+          g.setPropStates?.(out.states, out.changed, out.loud);
+        }
+        toast(out.text);
+        return;
+      }
       if (t.kind === "item") {
         setWs((s) => witness(pickUp(s, t.id), `picked up the ${t.name}`, 3));
         game.current?.removeItem(t.id);
@@ -404,7 +589,7 @@ export function WorldPlayer({
       game.current?.faceNpc(npc.id);
       setTalking(npc.id);
     },
-    [npcById, spec, toast, witness],
+    [itemById, npcById, spec, toast, witness],
   );
   const onInteractRef = useRef(onInteract);
   onInteractRef.current = onInteract;
@@ -456,12 +641,16 @@ export function WorldPlayer({
             ...Object.fromEntries(added.items.map((i) => [i.id, i])),
           },
         };
+        worldRef.current = world;
         handle = create(
           host.current,
           specRef.current,
           world,
           art,
-          wsRef.current.picked,
+          [
+            ...wsRef.current.picked,
+            ...heldInChests(world.props ?? [], wsRef.current.props ?? {}),
+          ],
           startAt,
           {
             onNearby: (t) => setNearby(t),
@@ -476,6 +665,7 @@ export function WorldPlayer({
             },
             locked: () => lockedRef.current,
             action: wsRef.current.action,
+            props: wsRef.current.props,
             onEvent: (text) => toast(text),
             safeAt: (p) => safeRef.current(p),
             onTile: (p, drag) => cityTile.current(p, drag),
@@ -522,6 +712,10 @@ export function WorldPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, baseSpec, map, mount, view]);
 
+  const dashKey =
+    view === "3d" &&
+    baseSpec.action?.movement === true &&
+    baseSpec.action?.verbs === true;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -542,12 +736,12 @@ export function WorldPlayer({
       } else if (editing) {
       } else if (e.key === "i" || e.key === "I")
         setPanel((p) => (p === "inventory" ? null : "inventory"));
-      else if (e.key === "q" || e.key === "Q")
+      else if ((e.key === "q" || e.key === "Q") && !dashKey)
         setPanel((p) => (p === "quests" ? null : "quests"));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editing]);
+  }, [editing, dashKey]);
 
   const edDirty = edState
     ? JSON.stringify(edState.props) !== savedProps
@@ -648,10 +842,11 @@ export function WorldPlayer({
     }
   }, [editor, spec.title]);
 
-  const [draft, setDraft] = useState("");
+  const draft = useRef("");
   const [thinking, setThinking] = useState(false);
-  const [live, setLive] = useState<LiveReply | null>(null);
+  const live = useMemo(() => liveStore(), []);
   const replyEntry = spec.entry_points?.npc_reply;
+  const placeEntry = spec.entry_points?.describe_place;
   const [warmed, setWarmed] = useState(true);
   useEffect(() => {
     if (!replyEntry || !api.warm) return;
@@ -682,7 +877,7 @@ export function WorldPlayer({
       top: scroller.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [turns.length, thinking, live?.text]);
+  }, [turns.length, thinking]);
 
   const loads = useRef(0);
   const messages = useRef(0);
@@ -786,14 +981,33 @@ export function WorldPlayer({
   useEffect(() => {
     queue.setPaused(!ready || lockedRef.current);
     queue.pump();
-  }, [queue, ready, started, talking, panel]);
+  }, [queue, ready, started, talking, panel, envoyTalking]);
 
   const planDay = useCallback(
     async (npcId: string, day: number, signal: AbortSignal) => {
       if (!planEntry || !sim) return;
       const generation = loads.current;
       const s = wsRef.current;
+      const here =
+        placeAt(sim.places, game.current?.npcTile(npcId) ?? { x: -1, y: -1 })
+          ?.id ?? "";
+      const mind = s.npc[npcId] ?? emptyMind();
+      if (mind.planDay === day && !Life.planDue(lifeCfg, mind, s.clock))
+        return false;
+      const hit = Life.cachedPlan(spec, lifeCfg, s, npcId, s.clock, here);
+      if (hit) {
+        setWs(hit);
+        return false;
+      }
       setBackground(`${npcById.get(npcId)?.name ?? npcId} is planning the day`);
+      const key = Life.planCacheKey(
+        lifeCfg,
+        spec,
+        npcId,
+        s.npc[npcId],
+        s.clock,
+        here,
+      );
       try {
         const res = await api.invoke(
           flowId,
@@ -804,6 +1018,7 @@ export function WorldPlayer({
               npc_id: npcId,
               memory: s.npc[npcId]?.memory ?? [],
               clock: s.clock,
+              ...Life.planAsk(lifeCfg, s.npc[npcId]),
             },
           },
           { signal },
@@ -819,33 +1034,49 @@ export function WorldPlayer({
           )
           .join("; ");
         setWs((st) =>
-          withMind(st, npcId, (m) =>
-            remember(
-              { ...m, plan: blocks, planDay: day },
-              text
-                ? [
-                    {
-                      text: `My plan for day ${day + 1}: ${text}`,
-                      importance: 4,
-                    },
-                  ]
-                : [],
-              st.clock,
-              "plan",
+          Life.storePlan(
+            withMind(st, npcId, (m) =>
+              remember(
+                {
+                  ...m,
+                  plan: blocks,
+                  planDay: day,
+                  ...Life.lifePlanned(m, res.outputs.plan, st.clock),
+                },
+                text
+                  ? [
+                      {
+                        text: `My plan for day ${day + 1}: ${text}`,
+                        importance: 4,
+                      },
+                    ]
+                  : [],
+                st.clock,
+                "plan",
+              ),
             ),
+            lifeCfg,
+            key,
+            res.outputs.plan,
+            st.clock,
           ),
         );
       } catch (e) {
         if (!signal.aborted && generation === loads.current)
           setWs((st) =>
-            withMind(st, npcId, (m) => ({ ...m, plan: [], planDay: day })),
+            withMind(st, npcId, (m) => ({
+              ...m,
+              plan: [],
+              planDay: day,
+              ...Life.lifePlanned(m, null, st.clock),
+            })),
           );
         throw e;
       } finally {
         setBackground(null);
       }
     },
-    [api, flowId, npcById, planEntry, sim, spec],
+    [api, flowId, npcById, planEntry, sim, spec, lifeCfg],
   );
 
   const chat = useCallback(
@@ -877,6 +1108,7 @@ export function WorldPlayer({
               place,
               memory_a: s.npc[a]?.memory ?? [],
               memory_b: s.npc[b]?.memory ?? [],
+              ...Life.chatAsk(lifeCfg, s, a, b),
             },
           },
           { signal },
@@ -886,6 +1118,8 @@ export function WorldPlayer({
         if (!c?.lines?.length) return;
         const where = place ? ` at ${place}` : "";
         setWs((st) => {
+          const heard = (from: string, notes: Note[]) =>
+            lifeCfg.relationships ? Life.rumours(st, from, notes) : notes;
           const learn =
             (other: string, notes: Note[], ids: string[]) =>
             (m: ReturnType<typeof emptyMind>) =>
@@ -901,10 +1135,20 @@ export function WorldPlayer({
                 ids,
                 st.clock,
               );
-          return withMind(
-            withMind(st, a, learn(nameB, c.a_learns ?? [], c.a_recalled ?? [])),
+          return Life.afterChat(
+            lifeCfg,
+            withMind(
+              withMind(
+                st,
+                a,
+                learn(nameB, heard(b, c.a_learns ?? []), c.a_recalled ?? []),
+              ),
+              b,
+              learn(nameA, heard(a, c.b_learns ?? []), c.b_recalled ?? []),
+            ),
+            a,
             b,
-            learn(nameA, c.b_learns ?? [], c.b_recalled ?? []),
+            c,
           );
         });
         c.lines.forEach((line, i) =>
@@ -926,17 +1170,31 @@ export function WorldPlayer({
         }, hold);
       }
     },
-    [api, chatEntry, flowId, npcById, sim, spec],
+    [api, chatEntry, flowId, npcById, sim, spec, lifeCfg],
   );
+
+  // One 1 Hz timer for the sim, errand and autonomy ticks, so their updates land in one render.
+  const ticks = useRef<((() => void) | null)[]>([null, null, null]);
+  const tickWs = useCallback((fn: (s: WorldState) => WorldState) => {
+    wsRef.current = fn(wsRef.current);
+    setWs(fn);
+  }, []);
+  useEffect(() => {
+    if (!ready || !started) return;
+    const timer = window.setInterval(() => {
+      for (const tick of ticks.current) tick?.();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [ready, started]);
 
   useEffect(() => {
     if (!sim || !ready || !started) return;
-    const timer = window.setInterval(() => {
+    ticks.current[0] = () => {
       const g = game.current;
       if (!g || lockedRef.current) return;
       const s = wsRef.current;
       const clock = s.clock + sim.minutes_per_second;
-      setWs((st) => ({ ...st, clock: st.clock + sim.minutes_per_second }));
+      tickWs((st) => ({ ...st, clock: st.clock + sim.minutes_per_second }));
       const day = dayOf(clock);
       const places = new Map(sim.places.map((p) => [p.id, p]));
       const lives: Record<
@@ -946,7 +1204,20 @@ export function WorldPlayer({
       const ticked: Record<string, Needs> = {};
       for (const n of specRef.current.npcs) {
         const mind = s.npc[n.id] ?? emptyMind();
-        if (planEntry && mind.planDay !== day)
+        const cached =
+          planEntry && Life.planDue(lifeCfg, mind, clock)
+            ? Life.cachedPlan(
+                specRef.current,
+                lifeCfg,
+                s,
+                n.id,
+                clock,
+                placeAt(sim.places, g.npcTile(n.id) ?? { x: -1, y: -1 })?.id ??
+                  "",
+              )
+            : undefined;
+        if (cached) setWs(cached);
+        else if (cached === null)
           queue.push({
             key: `plan:${n.id}`,
             kind: "plan",
@@ -969,19 +1240,19 @@ export function WorldPlayer({
               clock,
               offers,
               areas,
+              held: s.auto?.held,
             })
           : null;
         if (life) {
           lives[n.id] = life;
           continue;
         }
-        const block =
-          mind.planDay === day ? currentBlock(mind.plan, clock) : null;
+        const block = Life.lifeBlock(mind, clock);
         g.setNpcPlace(n.id, block ? (places.get(block.place) ?? null) : null);
         g.setNpcStatus(n.id, block ? activityEmoji(block.activity) : "");
       }
       if (Object.keys(lives).length || Object.keys(ticked).length)
-        setWs((st) => {
+        tickWs((st) => {
           const npc = { ...st.npc };
           for (const [id, life] of Object.entries(lives))
             if (npc[id]) npc[id] = { ...npc[id], ...life };
@@ -998,20 +1269,50 @@ export function WorldPlayer({
           sim.chat_cooldown_min,
         );
         if (pair) {
-          setWs((st) => ({
+          tickWs((st) => ({
             ...st,
             npc: markChat(st.npc, pair[0], pair[1], st.clock),
           }));
-          queue.push({
-            key: `chat:${pair[0]}:${pair[1]}`,
-            kind: "chat",
-            run: (signal) => chat(pair[0], pair[1], signal),
-          });
+          if (
+            !Life.smallTalk({
+              cfg: lifeCfg,
+              spec: specRef.current,
+              s,
+              a: pair[0],
+              b: pair[1],
+              clock,
+              say: g.say,
+              update: setWs,
+            })
+          )
+            queue.push({
+              key: `chat:${pair[0]}:${pair[1]}`,
+              kind: "chat",
+              run: (signal) => chat(pair[0], pair[1], signal),
+            });
         }
       }
+      if (planEntry) {
+        const gen = loads.current;
+        for (const job of Life.lifeJobs(
+          specRef.current,
+          lifeCfg,
+          s,
+          (state, signal) =>
+            api
+              .invoke(flowId, planEntry, { state }, { signal })
+              .then((r) => r.outputs.plan),
+          (fn) => {
+            if (gen === loads.current) setWs(fn);
+          },
+        ))
+          queue.push(job);
+      }
       queue.pump();
-    }, 1000);
-    return () => window.clearInterval(timer);
+    };
+    return () => {
+      ticks.current[0] = null;
+    };
   }, [
     sim,
     ready,
@@ -1025,11 +1326,15 @@ export function WorldPlayer({
     withNeeds,
     offers,
     areas,
+    lifeCfg,
+    api,
+    flowId,
+    tickWs,
   ]);
 
   useEffect(() => {
     if (!ready || !started) return;
-    const timer = window.setInterval(() => {
+    ticks.current[1] = () => {
       const g = game.current;
       if (!g) return;
       const { steered: now, expired } = steerActions(
@@ -1040,14 +1345,16 @@ export function WorldPlayer({
       );
       steered.current = now;
       if (expired.length)
-        setWs((st) => {
+        tickWs((st) => {
           const errands = { ...(st.errands ?? {}) };
           for (const id of expired) delete errands[id];
           return { ...st, errands };
         });
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [ready, started, areas]);
+    };
+    return () => {
+      ticks.current[1] = null;
+    };
+  }, [ready, started, areas, tickWs]);
 
   const flags = useMemo(() => autonomyOf(baseSpec), [baseSpec]);
   const autoOn = useMemo(() => autonomyOn(baseSpec), [baseSpec]);
@@ -1056,21 +1363,27 @@ export function WorldPlayer({
   const autoSteered = useRef(new Set<string>());
   useEffect(() => {
     if (!autoOn || !ready || !started) return;
-    const timer = window.setInterval(() => {
+    ticks.current[2] = () => {
       const g = game.current;
       if (!g || lockedRef.current) return;
       const played = specRef.current;
       const added = wsRef.current.additions ?? noAdditions();
+      const chestHeld = new Set(
+        heldInChests(map.props ?? [], wsRef.current.props ?? {}),
+      );
       const ground: Ground = {
         spec: played,
         map,
         areas,
-        items: {
-          ...map.items,
-          ...Object.fromEntries(
-            added.items.map((i) => [i.id, { x: i.x, y: i.y }]),
-          ),
-        },
+        // Items still in an unopened chest are not on the ground to race for.
+        items: Object.fromEntries(
+          Object.entries({
+            ...map.items,
+            ...Object.fromEntries(
+              added.items.map((i) => [i.id, { x: i.x, y: i.y }]),
+            ),
+          }).filter(([id]) => !chestHeld.has(id)),
+        ),
         homes: {
           ...map.npcs,
           ...Object.fromEntries(
@@ -1099,7 +1412,7 @@ export function WorldPlayer({
           g.setNpcStatus(id, "");
         }
       autoSteered.current = now;
-      setWs((st) => {
+      tickWs((st) => {
         const npc = { ...st.npc };
         for (const [id, m] of Object.entries(out.state.npc))
           if (m !== base.npc[id] && npc[id])
@@ -1113,9 +1426,11 @@ export function WorldPlayer({
       });
       for (const n of out.notes) toast(n);
       events.current = [...events.current, ...out.notes].slice(-6);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [autoOn, ready, started, map, areas, toast, shooterOn]);
+    };
+    return () => {
+      ticks.current[2] = null;
+    };
+  }, [autoOn, ready, started, map, areas, toast, shooterOn, tickWs]);
 
   const deal = (
     fn: (st: WorldState) => { state: WorldState; note: string } | null,
@@ -1131,11 +1446,13 @@ export function WorldPlayer({
   const [offer, setOffer] = useState<{ npc: string; good: Good } | null>(null);
 
   const replyRun = useRef<AbortController | null>(null);
-  const send = async () => {
-    const text = draft.trim();
-    if (!text || !talking || thinking) return;
-    setDraft("");
-    const npcId = talking;
+  const send = (raw: string): boolean => {
+    const text = raw.trim();
+    if (!text || !talking || thinking) return false;
+    void reply(text, talking);
+    return true;
+  };
+  const reply = async (text: string, npcId: string) => {
     const turn = ++messages.current;
     summaryRun.current?.abort();
     summaryRun.current = null;
@@ -1199,13 +1516,19 @@ export function WorldPlayer({
         {
           signal: run.signal,
           onDelta: (piece) =>
-            setLive((l) =>
-              appendReplyDelta(l, npcId, generation, loads.current, piece),
+            live.set(
+              appendReplyDelta(
+                live.get(),
+                npcId,
+                generation,
+                loads.current,
+                piece,
+              ),
             ),
         },
       );
       if (generation !== loads.current) return;
-      setLive(null);
+      live.set(null);
       const reply = res.outputs.reply as NpcReply | undefined;
       if (!reply?.text) throw new Error("No reply");
       const prior = wsRef.current;
@@ -1264,7 +1587,7 @@ export function WorldPlayer({
       })();
     } catch (e) {
       if (generation !== loads.current) return;
-      setLive(null);
+      live.set(null);
       const message = e instanceof Error ? e.message : String(e);
       if (isNoChatModelError(message)) {
         const npc = npcById.get(npcId);
@@ -1347,7 +1670,7 @@ export function WorldPlayer({
     busy.current.clear();
     setBackground(null);
     setThinking(false);
-    setLive(null);
+    live.set(null);
     setWs(state);
     setTalking(null);
     setPanel(null);
@@ -1574,6 +1897,7 @@ export function WorldPlayer({
             <div
               className="pointer-events-none absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/45 px-3 py-1 text-white/75 text-xs backdrop-blur-md"
               data-testid="world-sim-activity"
+              title={queue.callsLabel()}
             >
               <span className="size-1.5 animate-pulse rounded-full bg-emerald-300" />
               {background}
@@ -1586,7 +1910,9 @@ export function WorldPlayer({
               </kbd>
               {nearby.kind === "npc"
                 ? `Talk to ${nearby.name}`
-                : `Pick up ${nearby.name}`}
+                : nearby.kind === "prop"
+                  ? `Use ${nearby.name}`
+                  : `Pick up ${nearby.name}`}
             </div>
           ) : null}
         </>
@@ -1674,6 +2000,19 @@ export function WorldPlayer({
           </div>
         </Panel>
       ) : null}
+      {ready && started && !editor && spec.rivals && !mayorOn(spec) ? (
+        <RivalsPanel
+          api={api}
+          flowId={flowId}
+          entry={replyEntry}
+          spec={baseSpec}
+          map={map}
+          state={ws.rivals}
+          onChange={(r) => setWs((st) => ({ ...st, rivals: r }))}
+          queue={queue}
+          onTalking={setEnvoyTalking}
+        />
+      ) : null}
       {editor && edState ? (
         <Suspense fallback={null}>
           <WorldEditorPanel
@@ -1688,6 +2027,26 @@ export function WorldPlayer({
             onExport={() => void exportScene()}
             onSave={() => void saveScene()}
             onDone={() => void closeEditor()}
+            onDescribe={
+              placeEntry || replyEntry
+                ? async (req) => {
+                    const res = await api.invoke(
+                      flowId,
+                      (placeEntry || replyEntry)!,
+                      placeEntry
+                        ? { request: req }
+                        : { state: { task: "describe_place", ...req } },
+                    );
+                    const out = (
+                      placeEntry
+                        ? res.outputs.place
+                        : (res.outputs.reply as { place?: unknown } | undefined)
+                            ?.place
+                    ) as { props3d?: unknown } | undefined;
+                    return out?.props3d;
+                  }
+                : undefined
+            }
           />
         </Suspense>
       ) : null}
@@ -1813,31 +2172,13 @@ export function WorldPlayer({
                     {t.text}
                   </div>
                 ))}
-                {thinking && live && live.npcId === talking ? (
-                  <div
-                    className="max-w-[85%] self-start rounded-2xl bg-white/10 px-3.5 py-2 text-sm leading-relaxed"
-                    data-testid="world-npc-streaming"
-                  >
-                    {live.text}
-                  </div>
-                ) : thinking && !warmed ? (
-                  <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm text-white/70">
-                    Waking up the villagers...
-                  </div>
-                ) : thinking ? (
-                  <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm">
-                    {[0, 1, 2].map((i) => (
-                      <span
-                        key={i}
-                        style={{
-                          animation: `flows-dots 1.2s ${i * 0.2}s infinite`,
-                        }}
-                      >
-                        •
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
+                <ReplyStatus
+                  live={live}
+                  talking={talkNpc.id}
+                  thinking={thinking}
+                  warmed={warmed}
+                  scroller={scroller}
+                />
               </div>
               {talkHeld.length || (flags.trade && ws.auto) ? (
                 <div
@@ -1904,42 +2245,16 @@ export function WorldPlayer({
                     : null}
                 </div>
               ) : null}
-              <form
-                className="flex gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void send();
+              <SayForm
+                npcName={talkNpc.name}
+                thinking={thinking}
+                draft={draft}
+                onSend={send}
+                onBye={() => {
+                  setTalking(null);
+                  game.current?.faceNpc(null);
                 }}
-              >
-                <input
-                  // biome-ignore lint/a11y/noAutofocus: the conversation box is the only thing to type into
-                  autoFocus={true}
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder={`Say something to ${talkNpc.name}...`}
-                  className="min-w-0 flex-1 rounded-full bg-white/10 px-4 py-2 text-sm outline-none ring-1 ring-white/10 placeholder:text-white/35 focus:ring-white/30"
-                  data-testid="world-say"
-                />
-                <button
-                  type="submit"
-                  disabled={thinking || !draft.trim()}
-                  className="rounded-full bg-white px-4 text-black disabled:opacity-40"
-                  aria-label="Send"
-                  title="Send"
-                >
-                  <SendIcon className="size-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTalking(null);
-                    game.current?.faceNpc(null);
-                  }}
-                  className="rounded-full bg-white/10 px-3 text-sm hover:bg-white/20"
-                >
-                  Bye
-                </button>
-              </form>
+              />
             </div>
           </div>
         </div>

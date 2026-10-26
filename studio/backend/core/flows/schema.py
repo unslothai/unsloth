@@ -360,6 +360,15 @@ class WorldSimulation(_Strict):
     chat_cooldown_min: int = 120  # game minutes per NPC pair
     calls_per_minute: int = 4  # background LLM calls per real minute, across every NPC
     needs: bool = True  # Sims-style needs pick what villagers do between plan blocks
+    options: Optional[bool] = None  # option-action plans that run until a termination condition
+    plan_cache: Optional[int] = (
+        None  # LRU size of reusable plans keyed by role, needs, time and place
+    )
+    reflect_at: Optional[int] = (
+        None  # reflect when summed importance since the last reflection crosses this
+    )
+    rate_batch: Optional[int] = None  # observations scored per importance call
+    relationships: Optional[bool] = None  # pair affinity and facts, rumour source chains
 
 
 class WorldAutonomy(_Strict):
@@ -375,6 +384,13 @@ class WorldAction(_Strict):
 
     movement: bool = False  # gravity, jumping, sprint, crouch and collisions with scenery
     shooter: bool = False  # a hitscan weapon, health and ammo; hostile villagers fight back
+    verbs: Optional[bool] = None  # dash; with the shooter also melee and thrown rocks (3D only)
+    ai: Optional[Literal["v2"]] = (
+        None  # hostiles see, hear, path, flank and take cover (3D shooter)
+    )
+    barks: Optional[dict[str, list[str]]] = (
+        None  # lines hostiles shout, by event: see, hear, lose, pain, flee, attack
+    )
 
 
 class World3dView(_Strict):
@@ -392,7 +408,19 @@ class WorldProp3d(_Strict):
 
     id: str
     kind: Literal[
-        "house", "tree", "lamp", "fence", "well", "crate", "rock", "bench", "stall", "model"
+        "house",
+        "tree",
+        "lamp",
+        "fence",
+        "well",
+        "crate",
+        "rock",
+        "bench",
+        "stall",
+        "door",
+        "chest",
+        "lever",
+        "model",
     ]
     asset: Optional[dict[str, Any]] = None  # the GLB flow asset of a "model" prop
     name: Optional[str] = None
@@ -401,6 +429,28 @@ class WorldProp3d(_Strict):
     rot: float = 0  # degrees about the vertical axis
     scale: float = 1
     solid: bool = True  # blocks walking on its tile, in 2D and 3D
+    open: Optional[bool] = None  # a door, chest or lever that starts open (or pulled)
+    locked_by: Optional[str] = None  # a door's key: the item id the player must carry
+    contents: Optional[list[str]] = None  # item ids a chest gives, once
+    targets: Optional[list[str]] = None  # door ids a lever opens and closes
+
+
+class WorldFaction(_Strict):
+    id: str
+    name: str
+    player: bool = False  # the faction the player runs; at most one
+    leader: Optional[str] = None  # npc id who speaks for it
+    region: Optional[str] = None  # home town region id
+    persona: str = ""
+    color: Optional[str] = None  # "#rrggbb"
+
+
+class WorldRivals(_Strict):
+    """Village Rivals: a turn-based 4X-lite where LLM-led villages compete on the world map."""
+
+    factions: list[WorldFaction] = Field(min_length = 2, max_length = 4)
+    max_turns: int = Field(default = 30, ge = 5, le = 200)
+    hysteresis: float = Field(default = 0.15, ge = 0, le = 1)  # posture change needed to switch plans
 
 
 class WorldCity(_Strict):
@@ -437,6 +487,7 @@ class WorldSpec(_Strict):
     render: Optional[Literal["2d", "3d"]] = None
     view3d: Optional[World3dView] = None
     props3d: Optional[list[WorldProp3d]] = None
+    rivals: Optional[WorldRivals] = None
     player_node: Optional[str] = None
     city: Optional[WorldCity] = None
 

@@ -438,6 +438,11 @@ export interface WorldSimulation {
   chat_cooldown_min: number;
   calls_per_minute: number;
   needs?: boolean;
+  options?: boolean;
+  plan_cache?: number;
+  reflect_at?: number;
+  rate_batch?: number;
+  relationships?: boolean;
 }
 
 export interface WorldSpec {
@@ -469,6 +474,7 @@ export interface WorldSpec {
   render?: "2d" | "3d";
   view3d?: World3dView;
   props3d?: WorldProp3d[];
+  rivals?: WorldRivals | null;
   player_node?: string;
   city?: WorldCity | null;
 }
@@ -482,6 +488,22 @@ export interface WorldCity {
   events?: boolean;
 }
 
+export interface WorldFaction {
+  id: string;
+  name: string;
+  player?: boolean;
+  leader?: string | null;
+  region?: string | null;
+  persona?: string;
+  color?: string | null;
+}
+
+export interface WorldRivals {
+  factions: WorldFaction[];
+  max_turns?: number;
+  hysteresis?: number;
+}
+
 export type WorldPropKind =
   | "house"
   | "tree"
@@ -492,6 +514,9 @@ export type WorldPropKind =
   | "rock"
   | "bench"
   | "stall"
+  | "door"
+  | "chest"
+  | "lever"
   | "model";
 
 export interface ModelAsset {
@@ -511,6 +536,10 @@ export interface WorldProp3d {
   rot?: number;
   scale?: number;
   solid?: boolean;
+  open?: boolean;
+  locked_by?: string;
+  contents?: string[];
+  targets?: string[];
 }
 
 export interface World3dView {
@@ -526,6 +555,9 @@ export interface World3dView {
 export interface WorldAction {
   movement?: boolean;
   shooter?: boolean;
+  verbs?: boolean;
+  ai?: "v2";
+  barks?: Partial<Record<string, string[]>>;
 }
 
 export interface WorldAutonomy {
