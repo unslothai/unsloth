@@ -192,6 +192,31 @@ async def test_a_reconnect_waits_for_a_batch_already_being_written(monkeypatch):
 
 
 @run_async
+async def test_a_cache_entry_stays_a_hit_while_its_batch_is_being_written(monkeypatch):
+    import threading
+
+    gate = threading.Event()
+    real = flows_db.write_batch
+
+    def slow(*args):
+        gate.wait(2)
+        return real(*args)
+
+    d = doc([node("a", "input.text")], id = "cachewrite")
+    flows_db.save_flow(parse_document(d)[0])
+    eng = _engine(dict(BASE))
+    rs = await _run(eng, d)
+    monkeypatch.setattr(flows_db, "write_batch", slow)
+    rs._unsaved_cache["k1"] = ("text.template", {"text": "v"})
+    writing = asyncio.create_task(eng.persist(rs))
+    await asyncio.sleep(0.05)
+    assert not writing.done() and rs.pending_cache("k1") == ("text.template", {"text": "v"})
+    gate.set()
+    await writing
+    assert rs.pending_cache("k1") is None and flows_db.cache_get("k1") == {"text": "v"}
+
+
+@run_async
 async def test_overlapping_calls_keep_one_spare_key_per_account():
     revoked, minted = [], []
 

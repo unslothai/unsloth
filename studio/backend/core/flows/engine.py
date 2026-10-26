@@ -199,6 +199,8 @@ class RunState:
     _unsaved_events: list[tuple[int, dict]] = field(default_factory = list, repr = False)
     _unsaved_results: dict[str, tuple] = field(default_factory = dict, repr = False)
     _unsaved_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
+    # The batch being written: still a cache hit until it commits.
+    _writing_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
     _unsaved_touch: set[str] = field(default_factory = set, repr = False)
     _persist_lock: asyncio.Lock = field(default_factory = asyncio.Lock, repr = False)
     subscribers: set[asyncio.Queue] = field(default_factory = set)
@@ -275,6 +277,9 @@ class RunState:
             self._unsaved_events.append((self.seq, stored))
         return event
 
+    def pending_cache(self, key: str) -> Optional[tuple[str, dict]]:
+        return self._unsaved_cache.get(key) or self._writing_cache.get(key)
+
     def take_unsaved(self) -> Optional[tuple[list, list, list, tuple]]:
         if not (
             self._unsaved_events
@@ -289,6 +294,7 @@ class RunState:
             [(key, *row) for key, row in self._unsaved_cache.items()],
             tuple(self._unsaved_touch),
         )
+        self._writing_cache = self._unsaved_cache
         self._unsaved_events, self._unsaved_results, self._unsaved_cache = [], {}, {}
         self._unsaved_touch = set()
         return batch
@@ -1291,6 +1297,9 @@ class FlowEngine:
                 raise
             except Exception:
                 logger.warning("flows: could not store events of run %s", rs.id, exc_info = True)
+            finally:
+                if write.done():
+                    rs._writing_cache = {}
 
     async def _fire_cancel_hooks(self, rs: RunState) -> None:
         hooks = [fn for fns in rs.cancel_hooks.values() for fn in fns]
@@ -1746,7 +1755,7 @@ class FlowEngine:
                     seed = seed,
                     flow_params = ctx.flow_params,
                 )
-                pending = rs._unsaved_cache.get(key)
+                pending = rs.pending_cache(key)
                 hit = (
                     pending[1]
                     if pending is not None
