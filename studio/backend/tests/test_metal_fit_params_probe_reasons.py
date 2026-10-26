@@ -43,7 +43,7 @@ def _counting(tmp_path, body):
 
 
 def _ncalls(calls):
-    return len(calls.read_text().splitlines()) if calls.exists() else 0
+    return len(calls.read_text(encoding = "utf-8").splitlines()) if calls.exists() else 0
 
 
 def test_missing_probe_is_named(tmp_path):

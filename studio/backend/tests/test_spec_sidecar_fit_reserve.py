@@ -119,7 +119,7 @@ class TestDiscreteLaunch:
 def test_the_integrity_margin_never_carries_the_reserve():
     """The reserve rides only on the trailing pair the spawn appends, so it can neither make
     an unpriced child look budget-priced nor be mistaken for a user's equal margin."""
-    src = Path(lc.__file__).read_text()
+    src = Path(lc.__file__).read_text(encoding = "utf-8")
     assert "fit_target_reserve_mib = _sidecar_fit_reserve_mib" not in src
     assert "fit_target_reserve_mib = 0," in src
 
