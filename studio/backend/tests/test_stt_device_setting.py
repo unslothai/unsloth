@@ -39,6 +39,7 @@ def test_unset_defaults_to_auto():
     response = settings_routes.get_stt_device_setting(current_subject = "owner")
     assert response.device == "auto"
     assert response.locked is False
+    assert response.saved is False
 
 
 def test_saving_cpu_is_what_a_device_less_cold_load_uses():
@@ -57,3 +58,10 @@ def test_env_locks_settings(monkeypatch):
     assert raised.value.status_code == 409
     assert audio_device.stt_device_default() == "gpu"
     assert audio_device.audio_device_env_locked() is True
+
+
+def test_an_explicit_auto_is_saved_so_another_browser_adopts_it():
+    """Unset and a chosen Auto both read as auto, but only a choice stops a browser migrating its own."""
+    assert _put("auto").saved is True
+    assert settings_routes.get_stt_device_setting(current_subject = "owner").device == "auto"
+    assert _put("cpu").saved is True

@@ -54,8 +54,7 @@ import {
   useShortcutAvailable,
   useVoiceSettingsStore,
 } from "@/features/settings";
-import { syncSttDevicePreference } from "@/features/settings/api/stt-device";
-import { DEFAULT_STT_DEVICE } from "@/features/settings/stores/voice-settings-store";
+import { reconcileSttDevicePreference } from "@/features/settings/api/stt-device";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
@@ -191,15 +190,17 @@ function PersonalizationSyncMount() {
   return null;
 }
 
-// Saved Voice Settings "Load into" for device-less STT API loads (#15280). Here, not on store rehydrate: the store
-// loads at startup, before the desktop backend port is known and before sign-in.
+// Voice Settings "Load into" kept in step with the server copy that device-less STT API loads read (#15280). Here,
+// not on store rehydrate: the store loads at startup, before the desktop backend port is known and before sign-in.
 function SttDeviceSyncMount() {
   useRouterState({ select: (s) => s.location.pathname });
   const settled = hasSettledAuthSession();
   useEffect(() => {
-    const device = useVoiceSettingsStore.getState().sttDevice;
-    // Only a non-default choice: a fresh browser must not reset what another one saved.
-    if (settled && device !== DEFAULT_STT_DEVICE) syncSttDevicePreference(device);
+    if (!settled) return;
+    void reconcileSttDevicePreference(
+      useVoiceSettingsStore.getState().sttDevice,
+      (sttDevice) => useVoiceSettingsStore.setState({ sttDevice }),
+    );
   }, [settled]);
   return null;
 }

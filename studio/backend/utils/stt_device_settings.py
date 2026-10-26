@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Optional
 
 STT_DEVICE_SETTING_KEY = "stt_device"
 STT_DEVICE_CHOICES = ("auto", "cpu", "gpu")
@@ -22,8 +23,8 @@ _device_generation = 0
 _lock = threading.Lock()
 
 
-def get_stored_stt_device() -> str:
-    """Voice Settings placement: ``auto`` when unset, unreadable or unrecognized."""
+def _stored_stt_device() -> Optional[str]:
+    """The saved choice, or None when nothing valid is saved (cached briefly)."""
     now = time.monotonic()
     with _lock:
         if _device_cached and now - _device_cached[0][0] < _CACHE_TTL_S:
@@ -39,11 +40,21 @@ def get_stored_stt_device() -> str:
         value = None
     finally:
         reset_account(token)
-    device = value if value in STT_DEVICE_CHOICES else "auto"
+    device = value if value in STT_DEVICE_CHOICES else None
     with _lock:
         if _device_generation == gen:
             _device_cached[:] = [(now, device)]
     return device
+
+
+def get_stored_stt_device() -> str:
+    """Voice Settings placement: ``auto`` when unset, unreadable or unrecognized."""
+    return _stored_stt_device() or "auto"
+
+
+def stt_device_is_saved() -> bool:
+    """Whether a choice was ever saved, so a browser knows to adopt it rather than migrate its own."""
+    return _stored_stt_device() is not None
 
 
 def forget_cached_stt_device() -> None:
@@ -58,7 +69,7 @@ def set_stt_device(device: str) -> bool:
     if device not in STT_DEVICE_CHOICES:
         raise ValueError("Device must be auto, cpu or gpu.")
     forget_cached_stt_device()
-    if get_stored_stt_device() == device:
+    if _stored_stt_device() == device:
         return False
     from storage.studio_db import upsert_app_settings
     from utils.account_context import OWNER, bind_account, reset_account

@@ -53,11 +53,17 @@ test("Load into is synced to the server for cold API STT loads", () => {
     voiceStore,
     /set\(\{ sttDevice \}\);\s*\/\/[^\n]*\n\s*syncSttDevicePreference\(sttDevice\)/,
   );
-  // Startup sync waits for sign-in (desktop port known); a fresh browser on the default sends nothing.
+  // Startup sync waits for sign-in (desktop port known), then the saved server copy wins over this browser's.
   assert.doesNotMatch(voiceStore, /onRehydrateStorage/);
   assert.match(
     root,
-    /function SttDeviceSyncMount[\s\S]*?hasSettledAuthSession\(\)[\s\S]*?settled && device !== DEFAULT_STT_DEVICE[\s\S]*?syncSttDevicePreference\(device\)/,
+    /function SttDeviceSyncMount[\s\S]*?hasSettledAuthSession\(\)[\s\S]*?if \(!settled\) return;[\s\S]*?reconcileSttDevicePreference\(/,
+  );
+  // Adopting the server copy must not send it back.
+  assert.match(root, /useVoiceSettingsStore\.setState\(\{ sttDevice \}\)/);
+  assert.match(
+    sttDeviceApi,
+    /if \(state\.saved\) \{\s*adopt\([\s\S]*?else if \(local !== "auto"\) \{\s*syncSttDevicePreference\(local\)/,
   );
   assert.match(root, /<SttDeviceSyncMount \/>/);
 });
