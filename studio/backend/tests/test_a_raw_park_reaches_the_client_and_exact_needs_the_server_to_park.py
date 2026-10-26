@@ -306,10 +306,17 @@ class TestTheNamedBudgetIsJudged:
         )
 
     def test_a_budget_below_the_pool_is_a_shortfall(self):
+        # Two slots: one never shares the cache, so it parks nothing and is never short.
         short = llama_mod._exact_parking_shortfall_mib(
-            12 * _GIB, args = ["--preempt-ram", "1024"], env = {}
+            12 * _GIB, args = ["--preempt-ram", "1024"], env = {}, parallel = 2
         )
-        assert short == (1024, 12 * 1024, 12 * 1024 + 64)
+        assert short == (1024, 12 * 1024, 2 * (12 * 1024 + 64))
+        assert (
+            llama_mod._exact_parking_shortfall_mib(
+                12 * _GIB, args = ["--preempt-ram", "1024"], env = {}, parallel = 1
+            )
+            is None
+        )
 
     def test_the_draft_state_and_the_parked_slots_are_budgeted_too(self):
         pool = 1024 * 1024 * 1024
@@ -402,7 +409,7 @@ class TestTheNamedBudgetIsJudged:
     def test_a_budget_that_holds_the_pool_is_fine(self):
         assert (
             llama_mod._exact_parking_shortfall_mib(
-                12 * _GIB, args = ["--preempt-ram", str(12 * 1024 + 64)], env = {}
+                12 * _GIB, args = ["--preempt-ram", str(2 * (12 * 1024 + 64))], env = {}, parallel = 2
             )
             is None
         )
@@ -442,9 +449,14 @@ class TestTheNamedBudgetIsJudged:
             is None
         )
         unsized = ["--preempt-ram", str(llama_mod._PREEMPT_RAM_UNSIZED_MIB)]
-        short = llama_mod._exact_parking_shortfall_mib(12 * _GIB, args = unsized, env = {})
-        assert short == (8192, 12 * 1024, 12 * 1024 + 64)
-        assert llama_mod._exact_parking_shortfall_mib(4 * _GIB, args = unsized, env = {}) is None
+        short = llama_mod._exact_parking_shortfall_mib(
+            12 * _GIB, args = unsized, env = {}, parallel = 2
+        )
+        assert short == (8192, 12 * 1024, 2 * (12 * 1024 + 64))
+        assert (
+            llama_mod._exact_parking_shortfall_mib(3 * _GIB, args = unsized, env = {}, parallel = 2)
+            is None
+        )
         assert (
             llama_mod._exact_parking_shortfall_mib(
                 12 * _GIB, args = ["--preempt-ram", "-1"], env = {}, default_mib = 8192
@@ -472,7 +484,7 @@ class TestTheNamedBudgetIsJudged:
         judged = source.index('getattr(self, "_exact_pool_unknown", False)')
         window = source[judged : source.index("self._exact_state_after_launch(", judged)]
         assert "self._exact_parking_writes = _fitted_writes" in window
-        assert window.index("_exact_parking_need_mib(") < window.index(
+        assert window.index("_exact_parking_writes_mib(") < window.index(
             "_exact_host_shortfall_after_load("
         )
         assert "_fitted_writes = min(_fitted_cap, _fitted_writes)" in window
@@ -488,7 +500,7 @@ class TestTheNamedBudgetIsJudged:
         )
         assert llama_mod._named_preempt_ram_mib(["--preempt-ram", "lots"], {}) is None
         short = llama_mod._exact_parking_shortfall_mib(
-            12 * _GIB, args = [], env = {"LLAMA_ARG_PREEMPT_RAM": "2048"}
+            12 * _GIB, args = [], env = {"LLAMA_ARG_PREEMPT_RAM": "2048"}, parallel = 2
         )
         assert short is not None and short[0] == 2048
 
@@ -1571,13 +1583,15 @@ class TestAnAbandonedExactAttemptLeavesNoUnlimitedParkingBudget:
             args = named,
             env = {},
             default_mib = llama_mod._PREEMPT_RAM_DEFAULT_MIB,
-        ) == (8192, 12 * 1024, 12 * 1024 + 64)
+            parallel = 2,
+        ) == (8192, 12 * 1024, 2 * (12 * 1024 + 64))
         assert (
             llama_mod._exact_parking_shortfall_mib(
-                4 * _GIB,
+                3 * _GIB,
                 args = named,
                 env = {},
                 default_mib = llama_mod._PREEMPT_RAM_DEFAULT_MIB,
+                parallel = 2,
             )
             is None
         )

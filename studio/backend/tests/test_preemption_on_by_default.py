@@ -251,7 +251,7 @@ class TestAnExactFallbackKeepsTheHostBound:
         )
         assert "_rebound_named_parking_budget(" in source[fallback : fallback + 600]
         reprice = source.index(
-            "_writes = _exact_parking_need_mib(_exact_kv_bytes, parallel = n_parallel)"
+            "_writes = _exact_parking_writes_mib(_exact_kv_bytes, parallel = n_parallel)"
         )
         assert reprice < source.index(
             '_exact_host_short = getattr(self, "_exact_host_short", None)'
