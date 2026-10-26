@@ -1387,6 +1387,8 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
         "wan2.1-t2v-14b": {16, 24, 32, 64},
         "hunyuanvideo-1.5": {16, 24, 32},
         "hunyuanvideo-1.5-720p": {16, 24, 32},
+        "cosmos3-nano": {16, 24, 32},
+        "cosmos3-edge": set(),
     }
     assert {f.name for f in _FAMILIES} == set(
         expected_refusals

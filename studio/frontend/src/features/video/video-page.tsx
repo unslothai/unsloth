@@ -274,6 +274,8 @@ const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "minimax-h3", steps: 30, guidance: 1 },
+  { match: "cosmos3-nano", steps: 35, guidance: 6 },
+  { match: "cosmos3-edge", steps: 20, guidance: 6 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   // Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
@@ -329,9 +331,17 @@ function defaultsFor(repoId: string, family?: string): { steps: number; guidance
     }
     return { steps: 8, guidance: 1 };
   }
+  // An HF-cache snapshot path ends in a commit hash, so its name is the models--<owner>--<name> folder.
+  const snapshot = repoId.replace(/\\/g, "/").match(/models--[^/]+?--([^/]+)\/snapshots\/[^/]+\/?$/);
+  const modelName = snapshot ? fold(snapshot[1]) : name;
   return (
     MODEL_DEFAULTS.find((d) =>
-      (d.match.startsWith("wan") || d.match === "fusionx" ? name : id).includes(d.match),
+      (d.match.startsWith("wan") || d.match === "fusionx"
+        ? name
+        : d.match.startsWith("cosmos3")
+          ? modelName
+          : id
+      ).includes(d.match),
     ) ?? DEFAULT_GEN
   );
 }
