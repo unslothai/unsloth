@@ -720,13 +720,7 @@ export function createWorld3d(
   prompt.visible = false;
   scene.add(prompt);
 
-  const spawn = start && !isSolid(map, start.x, start.y) ? start : map.spawn;
-  const me = { x: spawn.x + 0.5, y: spawn.y + 0.5 };
-
-  const action = spec.action?.movement === true;
-  const shooter = action && spec.action?.shooter === true;
-  const verbs = action && spec.action?.verbs === true;
-  const vs = newVerbs();
+  // Door blocking first: a save made standing in an open doorway must keep that spot.
   let propState: PropStates = bridge.props ?? {};
   let usable = (map.props ?? []).filter(isUsable);
   const poses = new Map<string, number>();
@@ -735,6 +729,13 @@ export function createWorld3d(
       map.blocked = blockedCells(map, closedProps(map.props, propState));
   };
   if (usable.length) doorTiles();
+  const spawn = start && !isSolid(map, start.x, start.y) ? start : map.spawn;
+  const me = { x: spawn.x + 0.5, y: spawn.y + 0.5 };
+
+  const action = spec.action?.movement === true;
+  const shooter = action && spec.action?.shooter === true;
+  const verbs = action && spec.action?.verbs === true;
+  const vs = newVerbs();
   const wallTile = (x: number, y: number) =>
     x < 0 ||
     y < 0 ||
