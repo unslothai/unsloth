@@ -357,3 +357,30 @@ def test_raid_falls_back_to_the_same_raid_for_the_same_seed():
         "flank",
         "retreat",
     }
+
+
+def test_a_scene_that_does_not_fit_is_sent_back():
+    many = '{"name": "Wood", "areas": [], "props": [{"id": "trees", "kind": "tree", "count": 8, "area": ""}], "relations": []}'
+    few = many.replace('"count": 8', '"count": 2')
+    tiny = ["######", "#....#", "#....#", "######"]
+    ctx = TextCtx(
+        "world.describe_place",
+        inputs = {"request": {"text": "woods", "rows": tiny, "spawn": {"x": 1, "y": 1}}},
+        llm = _replies(many, few),
+    )
+    place = run(world_nodes.world_describe_place(ctx))["place"]
+    assert "of 8 props fit on the free ground" in ctx.llm_calls[1]["prompt"]
+    assert place["attempts"] == 2 and len(place["props3d"]) == 2 and place["reachable"]
+
+
+def test_a_raid_without_every_bark_event_is_refused():
+    raw = {
+        "theme": "bandit camp",
+        "camp_name": "Gully",
+        "roster": [{"kind": "grunt", "count": 2}],
+        "loot": [],
+        "barks": [{"event": "spot", "text": f"Hey {i}!"} for i in range(14)],
+    }
+    ctx = FakeCtx("world.describe_place", llm = lambda **kw: raw)
+    out = run(generate_raid(ctx, seed = 4))
+    assert out.fallback and "none for lost, hurt, flank, retreat" in ctx.llm_calls[1]["prompt"]
