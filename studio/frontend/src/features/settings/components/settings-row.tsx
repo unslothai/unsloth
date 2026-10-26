@@ -37,7 +37,6 @@ export function SettingsRow({
       className={cn(
         // Controls are fixed-width, so wrap to avoid starving the label.
         "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
-        // With a description the control stays by the title, not the middle of the text block.
         description ? "items-start" : "items-center",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,

@@ -14,7 +14,6 @@ for (const path of [
   test(`${path}: a row with a description keeps its control by the title`, async () => {
     const source = await readSrcAsync(path);
     assert.match(source, ALIGN_BY_DESCRIPTION);
-    // items-center on the control box would beat the title-line rule in index.css.
     assert.match(source, TITLE_LINE_CONTROL);
   });
 }
@@ -31,7 +30,6 @@ test("every control's top edge meets the title's cap top, whatever the control",
   );
   // A per-control-type rule misclassified a dropdown whose trigger replaced Button's data-slot.
   assert.doesNotMatch(css, /\[data-title-line-control\]:has\(/);
-  // Only text with no control in it drops the inset.
   assert.match(
     css,
     /\[data-title-line-control\]:not\(:has\(button, input, select, textarea, \[role\]\)\) \{\s*padding-top: 0;\s*\}/,
