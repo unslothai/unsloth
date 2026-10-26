@@ -12464,7 +12464,9 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
         source
     )  # the artifact the repo actually hosts
     assert resolve_prequant_source(fam, "int8", base_repo = LTX23_PREQUANT_BASE) is None
-    assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
+    # LTX-2 (2.0) resolves its own hosted fp8 file, never the 2.3 one.
+    ltx2 = resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2")
+    assert ltx2 is not None and ltx2.location == "unsloth/LTX-2-FP8"
 
 
 def _ltx23_fp8_card(monkeypatch, *, fp8 = True):
