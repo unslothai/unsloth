@@ -72,7 +72,9 @@ def run_rank(rank, port, queue):
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
         model.train()
         is_available = torch.cuda.is_available
-        torch.cuda.is_available = lambda: True  # patch_block_compile only installs on an accelerator
+        torch.cuda.is_available = (
+            lambda: True
+        )  # patch_block_compile only installs on an accelerator
         try:
             wrapped = block.patch_block_compile(model)
         finally:
@@ -108,6 +110,5 @@ def run_rank(rank, port, queue):
         dist.destroy_process_group()
     except BaseException:
         import traceback
-
         queue.put((rank, {"error": traceback.format_exc()}))
         raise

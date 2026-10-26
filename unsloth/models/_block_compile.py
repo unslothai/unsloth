@@ -90,7 +90,6 @@ def _no_ddp_graph_split():
     region already, so its gradients still reach DDP's buckets block by block."""
     try:
         from torch.nn.parallel import DistributedDataParallel
-
         active = DistributedDataParallel._get_active_ddp_module() is not None
     except Exception:
         return contextlib.nullcontext()
