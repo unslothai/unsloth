@@ -548,12 +548,13 @@ def multi_lora_delta(X, A, B, scales, batch: MultiLoraBatch):
         ids = torch.where(ids >= U, torch.full_like(ids, -1), ids)
     # Select with torch.where, not a 0 / 1 multiply: 0 * inf and 0 * nan are nan, so another adapter's
     # overflowing (fp16) or non-finite weights would leak into every token. Each token has at most one
-    # adapter, so selecting per adapter equals summing the masked deltas.
+    # adapter, so selecting per adapter equals summing the masked deltas. X is selected too, so the
+    # backward's dH @ A_u is masked to the adapter's own rows before it reaches dX.
     scales = scales.to(X.dtype)
     out = X.new_zeros(X.shape[0], B.shape[1])
     for u in range(U):
         own = (ids == u).unsqueeze(1)
-        H = torch.where(own, X @ A[u].to(X.dtype).t(), 0)
+        H = torch.where(own, torch.where(own, X, 0) @ A[u].to(X.dtype).t(), 0)
         out = torch.where(own, (H @ B[u].to(X.dtype).t()) * scales[u], out)
     return out.view(*shape[:-1], out.shape[-1])
 

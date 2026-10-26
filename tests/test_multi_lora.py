@@ -705,5 +705,4 @@ def test_an_absent_adapter_cannot_corrupt_present_tokens_in_the_reference_path(p
     Y.float().pow(2).sum().backward()
     assert torch.isfinite(A.grad[0]).all() and torch.isfinite(B.grad[0]).all()
     assert A.grad[0].abs().max() > 0
-    if poison != "nan_A":  # a NaN weight in an absent adapter's A is still multiplied into dX
-        assert torch.isfinite(X.grad).all()
+    assert torch.isfinite(X.grad).all()
