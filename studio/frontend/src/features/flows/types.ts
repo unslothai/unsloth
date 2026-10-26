@@ -524,6 +524,8 @@ export interface WorldAction {
   movement?: boolean;
   shooter?: boolean;
   verbs?: boolean;
+  ai?: "v2";
+  barks?: Partial<Record<string, string[]>>;
 }
 
 export interface WorldAutonomy {

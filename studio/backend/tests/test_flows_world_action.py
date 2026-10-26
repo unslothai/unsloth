@@ -80,3 +80,26 @@ def test_props_without_item_context_keep_well_formed_ids():
     out = {p["id"]: p for p in props3d(DOORS, 20, 20)}
     assert out["hatch"]["locked_by"] == "ghost"
     assert out["box"]["contents"] == ["key", "ghost"]
+
+
+def test_hostile_ai_v2_is_opt_in_with_clean_barks_and_survives_the_gameplay_setting():
+    old = normalize_world({**RAW, "action": {"shooter": True}}, seed = 1)
+    assert "ai" not in old["action"] and "barks" not in old["action"]
+    assert action_of({"shooter": True, "ai": "v3"}) == {"movement": True, "shooter": True}
+    raw = {
+        "shooter": True,
+        "ai": "v2",
+        "barks": {"see": ["Raider spotted!", 3, "  ", "x" * 200], "bogus": ["no"], "lose": "nope"},
+    }
+    world = normalize_world({**RAW, "action": raw}, seed = 1)
+    assert world["action"] == {
+        "movement": True,
+        "shooter": True,
+        "ai": "v2",
+        "barks": {"see": ["Raider spotted!", "x" * 80]},
+    }
+    WorldSpec.model_validate(world)
+    played = apply_play_view(dict(world), _doc(gameplay = "shooter"))["action"]
+    assert played["ai"] == "v2" and played["barks"] == {"see": ["Raider spotted!", "x" * 80]}
+    assert played["verbs"] is True
+    assert "action" not in apply_play_view(dict(world), _doc(gameplay = "explore"))

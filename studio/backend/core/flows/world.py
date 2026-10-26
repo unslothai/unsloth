@@ -71,7 +71,32 @@ def action_of(raw: Any) -> Optional[dict]:
     flags["movement"] = flags["movement"] or flags["shooter"] or raw.get("verbs") is True
     if raw.get("verbs") is True:
         flags["verbs"] = True
-    return flags if any(flags.values()) else None
+    if not any(flags.values()):
+        return None
+    if raw.get("ai") == "v2":
+        flags["ai"] = "v2"
+        barks = _barks(raw.get("barks"))
+        if barks:
+            flags["barks"] = barks
+    return flags
+
+
+BARK_KINDS = ("see", "hear", "lose", "pain", "flee", "attack")
+
+
+def _barks(raw: Any) -> dict:
+    """A world's own bark lines for hostile AI v2: known events only, up to 12 short lines each."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for kind in BARK_KINDS:
+        lines = raw.get(kind)
+        if not isinstance(lines, list):
+            continue
+        kept = [str(s).strip()[:80] for s in lines if isinstance(s, str) and s.strip()][:12]
+        if kept:
+            out[kind] = kept
+    return out
 
 
 MAX_ADDED_ROLE = 2
@@ -432,7 +457,9 @@ def apply_play_view(
         if view:
             world["view3d"] = view
         if p.get("gameplay") in GAMEPLAY_LEVELS:
-            act = action_of(GAMEPLAY_LEVELS[p["gameplay"]])
+            # The world keeps its own hostile AI and barks under the player's gameplay level.
+            own = {k: v for k, v in (world.get("action") or {}).items() if k in ("ai", "barks")}
+            act = action_of({**GAMEPLAY_LEVELS[p["gameplay"]], **own})
             if act:
                 world["action"] = act
             else:

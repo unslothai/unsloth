@@ -53,7 +53,17 @@ import {
   shoot,
   takePickup,
   tick,
+  wallDistance,
 } from "./action3d";
+import {
+  type Brain,
+  type PlayerSense,
+  addAgent,
+  brainStep,
+  createBrain,
+  gridOf,
+  setGrid,
+} from "./enemy-ai";
 import {
   type Projectile,
   type PropStates,
@@ -94,6 +104,7 @@ const NPC_TILES_PER_S = 1.5;
 const REACH = 1.35;
 const TURN_RAD_PER_S = 2.2;
 const ACTOR_H = 1.15;
+const NO_TARGETS: Target[] = [];
 
 interface Npc {
   id: string;
@@ -771,6 +782,40 @@ export function createWorld3d(
   ]);
   let jumpPressed = false;
   let firePressed = false;
+  const brain: Brain | null =
+    shooter && spec.action?.ai === "v2"
+      ? createBrain(
+          gridOf(map.width, map.height, (x, y) => isSolid(map, x, y)),
+          (ox, oy, oz, dx, dy, dz, max) =>
+            aw ? wallDistance(aw, ox, oy, oz, dx, dy, dz, max) : max,
+          (x, y) => heightAt(terrain, x, y),
+          (x, y) => map.blocked?.[y * map.width + x] === 1,
+          spec.action?.barks,
+        )
+      : null;
+  const regrid = () => {
+    if (brain)
+      setGrid(
+        brain,
+        gridOf(map.width, map.height, (x, y) => isSolid(map, x, y)),
+        (x, y) => map.blocked?.[y * map.width + x] === 1,
+      );
+  };
+  const sense: PlayerSense = {
+    x: 0,
+    y: 0,
+    z: 0,
+    h: STAND_H,
+    fx: 0,
+    fy: 1,
+    crouched: false,
+    hidden: false,
+  };
+  const barked = new Map<string, number>();
+  let footstep = 0;
+  if (brain)
+    for (const n of npcs)
+      if (hostile.has(n.id)) addAgent(brain, n.id, n.pos.x, n.pos.y, !n.wander);
   const pickups: Pickup[] = [];
   const pickupSprites = new Map<string, three.Sprite>();
   if (shooter) {
@@ -839,10 +884,12 @@ export function createWorld3d(
         shot?: unknown;
         melee?: unknown;
         verbs?: unknown;
+        ai?: unknown;
       };
     }
   ).__flowsWorldPerf;
   if (perf && verbs) perf.verbs = vs;
+  if (perf && brain) perf.ai = brain;
   {
     let best: Npc | null = null;
     for (const n of npcs)
@@ -1156,6 +1203,7 @@ export function createWorld3d(
           dir: { x: dir.x, y: dir.z, z: dir.y },
           targets: targets().filter((t) => t.hostile),
         };
+      if (shot.fired && brain) makeNoise(vs, body.x, body.y, NOISE.shot);
       if (shot.fired) {
         cross.style.transform = "scale(2.2)";
         window.setTimeout(() => {
@@ -1169,11 +1217,12 @@ export function createWorld3d(
       }
     }
     if (verbs) strikeAndThrow(dt, safe);
+    if (brain) hostilesThink(dt, safe);
     const fired = enemiesAct(
       aw,
       combat,
       { x: body.x, y: body.y, z: body.z, h: bodyHeight(body) },
-      targets().filter((t) => t.hostile),
+      brain ? NO_TARGETS : targets().filter((t) => t.hostile),
       safe,
     );
     for (const id of fired) {
@@ -1204,6 +1253,25 @@ export function createWorld3d(
     }
   }
 
+  function hostilesThink(dt: number, safe: (x: number, y: number) => boolean) {
+    if (!brain || !body) return;
+    const yaw = camera.rotation.y;
+    sense.x = body.x;
+    sense.y = body.y;
+    sense.z = body.z;
+    sense.h = bodyHeight(body);
+    sense.fx = -Math.sin(yaw);
+    sense.fy = -Math.cos(yaw);
+    sense.crouched = body.crouched;
+    sense.hidden = safe(body.x, body.y);
+    brainStep(brain, dt, sense, combat, vs.noises);
+    for (const a of brain.agents)
+      if (a.barkSeq !== (barked.get(a.id) ?? 0)) {
+        barked.set(a.id, a.barkSeq);
+        const n = npcById(a.id);
+        if (n && n.group.visible) say(n, a.bark);
+      }
+  }
   const rockHits = (x: number, y: number, z: number) => {
     for (const n of npcs) {
       if (!n.group.visible || !hostile.has(n.id)) continue;
@@ -1252,6 +1320,12 @@ export function createWorld3d(
         const n = hit?.hit ? npcs.find((x) => x.id === hit.hit) : null;
         if (hit && n) {
           [n.pos.x, n.pos.y] = slide(map, n.pos.x, n.pos.y, hit.kx, hit.ky);
+          const agent = brain?.byId.get(n.id);
+          if (agent) {
+            agent.x = n.pos.x;
+            agent.y = n.pos.y;
+            agent.pathLen = 0;
+          }
           n.path = [];
           say(n, hit.downed ? "Ugh..." : "Oof!");
           if (hit.downed) bridge.onEvent?.(`${n.name} is knocked out`);
@@ -1357,6 +1431,20 @@ export function createWorld3d(
       );
       jumpPressed = false;
       moving = Boolean(ix || iy) && !locked;
+      footstep -= dt;
+      if (brain && moving && body.grounded && footstep <= 0) {
+        footstep = 0.4;
+        makeNoise(
+          vs,
+          body.x,
+          body.y,
+          body.crouched
+            ? NOISE.crouch
+            : keys.has("ShiftLeft") || keys.has("ShiftRight")
+              ? NOISE.sprint
+              : NOISE.walk,
+        );
+      }
       me.x = body.x;
       me.y = body.y;
     } else if (locked) route = [];
@@ -1412,7 +1500,12 @@ export function createWorld3d(
     for (const n of npcs) {
       const close = Math.hypot(n.pos.x - me.x, n.pos.y - me.y) < 1.8;
       let walking = false;
-      if (talking === n.id || n.busy || close || !n.wander) {
+      const agent = brain?.byId.get(n.id);
+      if (agent) {
+        n.pos.x = agent.x;
+        n.pos.y = agent.y;
+        walking = agent.moving;
+      } else if (talking === n.id || n.busy || close || !n.wander) {
         n.path = [];
       } else if (steer(n.pos, n.path, NPC_TILES_PER_S, dt, false)) {
         walking = true;
@@ -1458,6 +1551,7 @@ export function createWorld3d(
           ? Math.atan2(me.x - n.pos.x, me.y - n.pos.y)
           : null;
       if (look !== null) n.group.rotation.y = look;
+      else if (agent) n.group.rotation.y = Math.atan2(agent.fx, agent.fy);
       if (talking === n.id) {
         const d = Math.hypot(me.x - n.pos.x, me.y - n.pos.y);
         if (d > 1e-3 && d < 1.7) {
@@ -1573,6 +1667,7 @@ export function createWorld3d(
       propState = states;
       if (doors) {
         doorTiles();
+        regrid();
         if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
       }
       if (loud) makeNoise(vs, me.x, me.y, NOISE.door);
@@ -1631,6 +1726,7 @@ export function createWorld3d(
             setMapProps(map, next, standTiles(me.x, me.y));
             usable = next.filter(isUsable);
             poses.clear();
+            regrid();
             if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
           },
         });
@@ -1647,6 +1743,8 @@ export function createWorld3d(
     addNpc(npc: WorldNpc, at: Point) {
       if (npc.role === "hostile") hostile.add(npc.id);
       if (!npcs.some((n) => n.id === npc.id)) spawnNpc(npc, at);
+      if (brain && npc.role === "hostile")
+        addAgent(brain, npc.id, at.x + 0.5, at.y + 0.5, npc.wander === false);
     },
     addItem(item: WorldItem, at: Point) {
       if (!items.has(item.id)) spawnItem(item, at);

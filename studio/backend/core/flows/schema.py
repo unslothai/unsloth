@@ -376,6 +376,12 @@ class WorldAction(_Strict):
     movement: bool = False  # gravity, jumping, sprint, crouch and collisions with scenery
     shooter: bool = False  # a hitscan weapon, health and ammo; hostile villagers fight back
     verbs: Optional[bool] = None  # dash; with the shooter also melee and thrown rocks (3D only)
+    ai: Optional[Literal["v2"]] = (
+        None  # hostiles see, hear, path, flank and take cover (3D shooter)
+    )
+    barks: Optional[dict[str, list[str]]] = (
+        None  # lines hostiles shout, by event: see, hear, lose, pain, flee, attack
+    )
 
 
 class World3dView(_Strict):
