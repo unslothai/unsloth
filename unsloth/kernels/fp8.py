@@ -256,7 +256,10 @@ def _scale_mul(x, s, dtype):
         return _scale_dequant_one_pass(x, s, dtype)
     if dtype != torch.float16:
         return x.to(dtype) * s.to(dtype)
-    if torch.compiler.is_compiling():
+    # out= has no autograd: a trainable weight or scale takes the fp32 expression (same bits).
+    if torch.compiler.is_compiling() or (
+        torch.is_grad_enabled() and (x.requires_grad or s.requires_grad)
+    ):
         return (x.to(torch.float32) * s.to(torch.float32)).to(dtype)
     x16 = x.to(dtype)
     return torch.mul(x16, s.to(torch.float32), out = torch.empty_like(x16))
