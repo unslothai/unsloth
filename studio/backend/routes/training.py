@@ -1552,6 +1552,7 @@ def _prepare_resume_resource_provenance(
         exact_resume_resource_requirements,
         local_model_resume_expectation,
         resource_provenance_is_complete,
+        streamed_dataset_revision,
     )
 
     try:
@@ -1624,6 +1625,12 @@ def _prepare_resume_resource_provenance(
         ) from error
     for field in TrainingStartRequest.model_fields:
         setattr(request, field, getattr(validated_request, field))
+    overrides: dict[str, Any] = {}
+    stream_revision = streamed_dataset_revision(stored)
+    if stream_revision is not None:
+        # The commit the run streamed, replayed even when it never attested (a resume that died
+        # before loading), instead of the moving branch.
+        overrides["dataset_revision"] = stream_revision
     expected_model = local_model_resume_expectation(stored)
     if expected_model is not None:
         # The worker checks the base it loads against this; the dataset pin still applies.
@@ -1633,7 +1640,7 @@ def _prepare_resume_resource_provenance(
             requires_exact_dataset,
             False,
             None,
-            {"resume_expected_model": expected_model},
+            {**overrides, "resume_expected_model": expected_model},
         )
     marker = stored.get(RESOURCE_PROVENANCE_KEY)
     model_load_mode = (
@@ -1647,7 +1654,7 @@ def _prepare_resume_resource_provenance(
         requires_exact_dataset,
         resource_provenance_is_complete(stored),
         model_load_mode,
-        {},
+        overrides,
     )
 
 

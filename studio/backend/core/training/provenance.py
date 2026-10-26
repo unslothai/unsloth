@@ -24,6 +24,7 @@ _MODEL_LOAD_PREQUANTIZED_4BIT = "prequantized_4bit"
 _MODEL_LOAD_RUNTIME_4BIT = "runtime_4bit"
 _PREQUANTIZED_MODE_RE = re.compile(r"prequantized_(?:1[0-6]|[1-9])(?:_(?:1[0-6]|[1-9])){0,7}bit")
 _REASON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 # unsloth/Qwen3.5-* shards are named ``model.safetensors-00001-of-00001.safetensors`` (#15405).
 _MODEL_WEIGHT_RE = re.compile(
     r"(?:"
@@ -652,6 +653,16 @@ def attest_loaded_model(
     return None, None, None, reason
 
 
+def streamed_dataset_revision(config: dict[str, Any]) -> Optional[str]:
+    """The Hub commit a streaming run is pinned to, or None when it streams a moving branch."""
+    if not config.get("dataset_streaming"):
+        return None
+    revision = config.get("dataset_revision")
+    if isinstance(revision, str) and _COMMIT_SHA_RE.fullmatch(revision):
+        return revision
+    return None
+
+
 def _dataset_reason(config: dict[str, Any]) -> str:
     if config.get("dataset_streaming"):
         return "dataset_streaming_unattested"
@@ -681,12 +692,14 @@ def build_worker_provenance_event(
 
     dataset_snapshot = None
     dataset_reason = None
+    # A stream has no cache snapshot; the commit both loaders streamed from attests it.
+    dataset_revision = streamed_dataset_revision(config)
     if dataset_loaded_from_exact_snapshot:
         dataset_snapshot = exact_dataset_snapshot_path(
             config.get("dataset_snapshot_path"),
             config.get("hf_dataset"),
         )
-    if dataset_snapshot is None:
+    if dataset_snapshot is None and dataset_revision is None:
         dataset_reason = _dataset_reason(config)
 
     reasons = [reason for reason in (model_reason, dataset_reason) if reason]
@@ -700,8 +713,9 @@ def build_worker_provenance_event(
             "load_mode": model_load_mode,
         },
         "dataset": {
-            "status": _ATTESTED if dataset_snapshot else _INCOMPLETE,
+            "status": _ATTESTED if dataset_snapshot or dataset_revision else _INCOMPLETE,
             "snapshot_path": dataset_snapshot,
+            "revision": dataset_revision,
         },
         "reasons": reasons,
     }
@@ -779,6 +793,7 @@ def normalize_worker_provenance_event(
             reasons.append("model_event_invalid")
 
     dataset_snapshot = None
+    dataset_attested = False
     if (
         event.get("version") == RESOURCE_PROVENANCE_VERSION
         and dataset_event.get("status") == _ATTESTED
@@ -787,10 +802,15 @@ def normalize_worker_provenance_event(
             dataset_event.get("snapshot_path"),
             config.get("hf_dataset"),
         )
-    if dataset_snapshot is None and "dataset_event_invalid" not in reasons:
+        # A stream attests only the commit this process pinned, never one the worker names.
+        pinned = streamed_dataset_revision(config)
+        dataset_attested = dataset_snapshot is not None or (
+            pinned is not None and dataset_event.get("revision") == pinned
+        )
+    if not dataset_attested and "dataset_event_invalid" not in reasons:
         reasons.append("dataset_event_invalid")
 
-    complete = model_snapshot is not None and dataset_snapshot is not None
+    complete = model_snapshot is not None and dataset_attested
     return {
         "actual_model_repo_id": model_repo_id,
         "model_snapshot_path": model_snapshot,
@@ -800,7 +820,7 @@ def normalize_worker_provenance_event(
             "status": "complete" if complete else "incomplete",
             "model_status": _ATTESTED if model_snapshot else _INCOMPLETE,
             "model_load_mode": model_load_mode,
-            "dataset_status": _ATTESTED if dataset_snapshot else _INCOMPLETE,
+            "dataset_status": _ATTESTED if dataset_attested else _INCOMPLETE,
             "reasons": reasons,
         },
     }
@@ -864,7 +884,14 @@ def validate_exact_model_pin(config: dict[str, Any]) -> str:
     return model_snapshot
 
 
-def validate_exact_dataset_pin(config: dict[str, Any]) -> str:
+def validate_exact_dataset_pin(config: dict[str, Any]) -> Optional[str]:
+    """The dataset snapshot to pin, or None for a stream, which is pinned by its commit instead."""
+    if config.get("dataset_streaming"):
+        if streamed_dataset_revision(config) is None:
+            raise ExactResumeResourcesUnavailable(
+                "The dataset revision used by this run was not attested."
+            )
+        return None
     dataset_snapshot = exact_dataset_snapshot_path(
         config.get("dataset_snapshot_path"),
         config.get("hf_dataset"),
@@ -876,7 +903,7 @@ def validate_exact_dataset_pin(config: dict[str, Any]) -> str:
     return dataset_snapshot
 
 
-def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
+def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, Optional[str]]:
     model_snapshot = validate_exact_model_pin(config)
     dataset_snapshot = validate_exact_dataset_pin(config)
     return model_snapshot, dataset_snapshot

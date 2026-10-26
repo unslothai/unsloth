@@ -1821,3 +1821,188 @@ def test_only_a_local_model_run_gets_a_loaded_base_expectation(tmp_path):
 
     assert local_model_resume_expectation({**source_config, "model_name": "org/base"}) is None
     assert local_model_resume_expectation({**source_config, "actual_model_repo_id": None}) is None
+
+
+_STREAM_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _streaming_config(revision = _STREAM_COMMIT):
+    return {
+        "model_name": "org/model",
+        "hf_dataset": "org/dataset",
+        "dataset_streaming": True,
+        "dataset_revision": revision,
+        "load_in_4bit": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "revision, attested",
+    [(_STREAM_COMMIT, True), (None, False), ("main", False)],
+)
+def test_a_stream_is_attested_by_the_commit_it_was_pinned_to(tmp_path, revision, attested):
+    model = _model_snapshot(tmp_path, "org/model", "model-commit")
+    config = {**_streaming_config(revision), "model_snapshot_path": str(model)}
+
+    event = build_worker_provenance_event(
+        config,
+        object(),
+        model_load_target = str(model),
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = False,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+
+    marker = updates[RESOURCE_PROVENANCE_KEY]
+    assert marker["dataset_status"] == ("attested" if attested else "incomplete")
+    assert marker["status"] == ("complete" if attested else "incomplete")
+    assert ("dataset_streaming_unattested" in marker["reasons"]) is not attested
+
+
+def test_a_stream_attests_only_the_commit_this_process_pinned(tmp_path):
+    model = _model_snapshot(tmp_path, "org/model", "model-commit")
+    config = {**_streaming_config(), "model_snapshot_path": str(model)}
+    event = build_worker_provenance_event(
+        config,
+        object(),
+        model_load_target = str(model),
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = False,
+    )
+    event["dataset"]["revision"] = "f" * 40
+
+    marker = normalize_worker_provenance_event(event, config)[RESOURCE_PROVENANCE_KEY]
+
+    assert marker["dataset_status"] == "incomplete"
+
+
+@pytest.mark.parametrize("revision", [_STREAM_COMMIT, None])
+def test_a_pinned_stream_resumes_at_its_commit(tmp_path, revision):
+    from fastapi import HTTPException
+
+    from core.training import worker
+    from core.training.training import _apply_cache_pins, _build_training_worker_config
+    from models.training import TrainingStartRequest
+
+    route = _load_training_route()
+    model = _model_snapshot(tmp_path, "org/model", "model-commit")
+    source_config = {
+        **_streaming_config(revision),
+        "actual_model_repo_id": "org/model",
+        "model_snapshot_path": str(model),
+        "training_type": "LoRA/QLoRA",
+        "format_type": "alpaca",
+        "max_steps": 10,
+        RESOURCE_PROVENANCE_KEY: {
+            "version": 1,
+            "status": "complete",
+            "model_status": "attested",
+            "model_load_mode": "unquantized",
+            "dataset_status": "attested",
+            "reasons": [],
+        },
+    }
+    request = TrainingStartRequest(
+        model_name = "org/model",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/dataset",
+        dataset_streaming = True,
+        max_steps = 10,
+    )
+    if revision is None:
+        with pytest.raises(HTTPException, match = "exact snapshots are no longer available"):
+            route._prepare_resume_resource_provenance(
+                request, {"model_name": "org/model", "config_json": source_config}
+            )
+        return
+
+    repo, exact_model, exact_dataset, exact_all, mode, overrides = (
+        route._prepare_resume_resource_provenance(
+            request, {"model_name": "org/model", "config_json": source_config}
+        )
+    )
+
+    assert overrides == {"dataset_revision": _STREAM_COMMIT}
+    config = _build_training_worker_config(
+        {
+            "model_name": "org/model",
+            "hf_dataset": "org/dataset",
+            "dataset_streaming": True,
+            "model_snapshot_path": request.model_snapshot_path,
+            "actual_model_repo_id": repo,
+            "resume_model_load_mode": mode,
+            "resume_from_checkpoint": "/outputs/run/checkpoint-5",
+            "require_exact_resume_resources": exact_all,
+            "require_exact_model_resource": exact_model,
+            "require_exact_dataset_resource": exact_dataset,
+            "load_in_4bit": False,
+            **overrides,
+        }
+    )
+    _apply_cache_pins(config)
+    events: list[dict] = []
+    assert worker._verify_config_pins(config, SimpleNamespace(put = events.append)) is True, events
+    assert config["dataset_revision"] == _STREAM_COMMIT
+
+
+@pytest.mark.parametrize("hub_commit", [_STREAM_COMMIT, None])
+def test_a_new_stream_is_pinned_to_the_current_hub_commit(monkeypatch, hub_commit):
+    import huggingface_hub
+    from core.training.training import _apply_cache_pins
+
+    def _info(self, repo_id, **kw):
+        if hub_commit is None:
+            raise ConnectionError("hub unreachable")
+        return SimpleNamespace(sha = hub_commit)
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "dataset_info", _info)
+    config = {"model_name": "org/model", "hf_dataset": "org/dataset", "dataset_streaming": True}
+
+    _apply_cache_pins(config)
+
+    assert config["dataset_revision"] == hub_commit
+    assert config["dataset_snapshot_path"] is None
+    assert any("cannot be resumed" in m for m in config["cache_pin_warnings"]) is (
+        hub_commit is None
+    )
+
+
+def test_a_resume_that_dies_before_attesting_hands_on_its_checks(tmp_path):
+    from core.training.provenance import initialize_resource_provenance
+    from core.training.training import (
+        _apply_cache_pins,
+        _build_training_worker_config,
+        _sanitize_db_config,
+    )
+    from models.training import TrainingStartRequest
+
+    route = _load_training_route()
+    adapter, _base, _dataset, source_config = _continued_adapter_run(tmp_path)
+    source_config = {**source_config, **_streaming_config(), "model_name": str(adapter)}
+    source_config.pop("dataset_snapshot_path")
+    request = TrainingStartRequest(
+        model_name = str(adapter),
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/dataset",
+        dataset_streaming = True,
+        load_in_4bit = False,
+    )
+
+    def resume_from(stored):
+        *_, overrides = route._prepare_resume_resource_provenance(
+            request, {"model_name": str(adapter), "config_json": stored}
+        )
+        return overrides
+
+    first = resume_from(source_config)
+    assert set(first) == {"dataset_revision", "resume_expected_model"}
+    config = _build_training_worker_config(
+        {**request.model_dump(), "resume_from_checkpoint": "/outputs/run/checkpoint-5", **first}
+    )
+    _apply_cache_pins(config)
+    initialize_resource_provenance(config)
+
+    # The row a resume leaves when it is refused or dies before its worker attests.
+    assert resume_from(_sanitize_db_config(config)) == first

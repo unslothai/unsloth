@@ -638,8 +638,8 @@ def _load_hf_train_and_eval_datasets(
         return load_dataset(hf_dataset, **kwargs)
 
     if config.get("dataset_streaming"):
-        # Read lazily from the Hub as on CUDA; the route refuses a cache pin, and a stream has no
-        # snapshot to attest. Evaluation needs a separate split there, capped so each pass ends.
+        # Read lazily from the Hub as on CUDA, at the pinned commit when there is one. Evaluation
+        # needs a separate split there, capped so each pass ends.
         status_callback(f"Streaming dataset: {hf_dataset}")
         dataset = load_remote(train_split, streaming = True)
         eval_dataset = None
