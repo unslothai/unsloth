@@ -333,7 +333,6 @@ def test_router_that_cannot_be_primed_loses_its_hook_with_a_warning(replay):
 
 
 def _use_adapter(model, adapter_name):
-    # TRL's use_adapter: a named adapter goes through set_adapter, not disable_adapter.
     try:
         from trl.trainer.utils import use_adapter
     except Exception:
@@ -355,7 +354,6 @@ def _use_adapter(model, adapter_name):
 
 
 def test_named_reference_adapter_routes_naturally(replay):
-    # TRL re-training an existing adapter scores the reference under use_adapter(model, "ref").
     peft = pytest.importorskip("peft")
     base = _moe()
     ids = [5, 6, 7, 30, 31, 32]
@@ -392,7 +390,7 @@ def test_named_reference_adapter_routes_naturally(replay):
     with torch.no_grad():
         policy = model(input_ids = x).logits
         assert not torch.allclose(policy, natural_logits, atol = 1e-4)
-        model.set_adapter("default")  # selecting the policy again keeps replay on
+        model.set_adapter("default")
         torch.testing.assert_close(model(input_ids = x).logits, policy, rtol = 0, atol = 0)
         with _use_adapter(model, "ref"):
             reference = model(input_ids = x).logits

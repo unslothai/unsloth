@@ -57,8 +57,7 @@ def _new_hooks(model, before):
 
 
 def _detach(hooks):
-    # Hook order is call order, and ids do not give it (register_*_hook(prepend = True) puts a newer
-    # id first): keep each table's own key order so _reattach puts it back exactly.
+    # Keep each table's key order: ids do not give call order (prepend = True).
     orders = {}
     removed = []
     for module, name, extras, hook_id in hooks:
@@ -85,8 +84,7 @@ def _reattach(detached):
 
 
 class _ReplayDetacher:
-    """Keeps the replay hooks off while any reason holds: a disabled adapter context, or a
-    non-policy adapter made active with set_adapter (TRL's use_adapter(model, "ref"))."""
+    """Replay hooks stay off while any reason holds (disabled adapter or non-policy set_adapter)."""
 
     def __init__(self, hooks):
         self.hooks = hooks
@@ -310,8 +308,7 @@ def prepare_routing_replay(model, before):
         disable_adapter_without_replay._unsloth_routing_replay = True
         model.disable_adapter = disable_adapter_without_replay
 
-    # A named reference adapter (TRL use_adapter(model, "ref") calls set_adapter) is
-    # scored like disable_adapter(): with its own routing. The adapters active now are the policy.
+    # TRL use_adapter(model, "ref") calls set_adapter: score it with natural routing like disable_adapter().
     policy = _active_adapters(model)
     set_adapter = getattr(model, "set_adapter", None)
     if (
