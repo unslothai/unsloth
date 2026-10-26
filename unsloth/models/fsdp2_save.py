@@ -557,13 +557,14 @@ def _cgroup_available_bytes():
                 if limit is not None and used is not None:
                     left.append(limit - used)
         elif "memory" in controllers.split(","):
-            base = os.path.join("/sys/fs/cgroup/memory", path.lstrip("/"))
-            for root in (base, "/sys/fs/cgroup/memory"):
-                limit = read(os.path.join(root, "memory.limit_in_bytes"))
-                used = read(os.path.join(root, "memory.usage_in_bytes"))
+            # A limit may sit on any ancestor (/job over /job/worker): every level counts, as in v2.
+            parts = [p for p in path.split("/") if p]
+            for depth in range(len(parts), -1, -1):
+                base = os.path.join("/sys/fs/cgroup/memory", *parts[:depth])
+                limit = read(os.path.join(base, "memory.limit_in_bytes"))
+                used = read(os.path.join(base, "memory.usage_in_bytes"))
                 if limit is not None and used is not None and limit < (1 << 60):
                     left.append(limit - used)
-                    break
     return max(0, min(left)) if left else None
 
 

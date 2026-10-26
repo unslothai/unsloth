@@ -323,12 +323,24 @@ def _run_cases(rank, world_size, base, out):
                 path = root + path[len("/sys/fs/cgroup") :]
             return real_open(path, *args, **kwargs)
 
+        # cgroup v1: the limit on the parent (/job), the process in /job/worker under no limit of its own.
+        v1 = os.path.join(root, "v1")
+        os.makedirs(os.path.join(v1, "memory", "job", "worker"), exist_ok = True)
+        for where, limit, used in (("job", 2 * 1024**3, 512 * 1024**2), ("job/worker", 1 << 62, 0)):
+            for name, value in (("memory.limit_in_bytes", limit), ("memory.usage_in_bytes", used)):
+                with open(os.path.join(v1, "memory", where, name), "w") as f:
+                    f.write(str(value))
+        with open(os.path.join(v1, "self"), "w") as f:
+            f.write("4:memory:/job/worker\n")
+
         builtins.open = fake_open
         try:
             result["cgroup_bytes"] = (
                 fsdp2_save._cgroup_available_bytes(),
                 fsdp2_save._host_available_bytes(),
             )
+            root = v1
+            result["cgroup_v1_bytes"] = fsdp2_save._cgroup_available_bytes()
         finally:
             builtins.open = real_open
 
@@ -552,3 +564,4 @@ def test_host_ram_check_honours_the_cgroup_limit(runs):
     _no_raise(runs, "cgroup")
     limit, available = runs["ranks"][0]["cgroup_bytes"]
     assert limit == 3 * 1024**3 and available <= limit, runs["ranks"][0]["cgroup_bytes"]
+    assert runs["ranks"][0]["cgroup_v1_bytes"] == 1536 * 1024**2, runs["ranks"][0]["cgroup_v1_bytes"]
