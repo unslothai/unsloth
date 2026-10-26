@@ -47486,7 +47486,8 @@ async def anthropic_messages(
     def _anthropic_admission_body(conversation, *, tool_loop = False):
         template_kwargs = _anthropic_count_template_kwargs(llama_backend, _reasoning_args)
         if client_tools or response_format is not None:
-            body = _build_passthrough_payload(
+            # As the passthrough builds it: generation sends no parallel_tool_calls here.
+            return _build_passthrough_payload(
                 conversation,
                 openai_tools,
                 temperature,
@@ -47500,8 +47501,6 @@ async def anthropic_messages(
                 backend_ctx = llama_backend.context_length,
                 markup = getattr(llama_backend, "markup_profile", None),
             )
-            body["parallel_tool_calls"] = not _disable_parallel
-            return body
         return {
             "messages": conversation,
             "tools": openai_tools if tool_loop else None,
