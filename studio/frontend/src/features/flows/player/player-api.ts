@@ -22,6 +22,7 @@ export const PLAYER_ENTRYPOINTS = new Set([
   "world.npc_reply",
   "world.npc_plan",
   "world.npc_chat",
+  "world.describe_place",
   "chat.output",
 ]);
 

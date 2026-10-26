@@ -628,7 +628,13 @@ class NodeContextImpl:
 
 
 SHARED_CHAT_NODES = frozenset(
-    {"story.next_scene", "world.npc_reply", "world.npc_plan", "world.npc_chat"}
+    {
+        "story.next_scene",
+        "world.npc_reply",
+        "world.npc_plan",
+        "world.npc_chat",
+        "world.describe_place",
+    }
 )
 BACKGROUND_NODES = frozenset({"world.npc_plan", "world.npc_chat"})
 BACKGROUND_TASKS = frozenset({"summarise", "director"})

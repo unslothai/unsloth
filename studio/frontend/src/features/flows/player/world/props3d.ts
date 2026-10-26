@@ -162,6 +162,83 @@ export function freeTileNear(
 }
 
 
+export interface PlaceRequest {
+  text: string;
+  rows: string[];
+  spawn: Point;
+  focus: Point;
+  taken: string[];
+}
+
+/** The map as the place solver reads it: `#` blocked, `R` walkable but kept clear, `.` free. */
+export function placeRequest(
+  map: WorldMap,
+  props: readonly WorldProp3d[],
+  isFree: (x: number, y: number) => boolean,
+  text: string,
+  focus: Point,
+): PlaceRequest {
+  const blocked = blockedCells(map, props);
+  const keep = reserved(map);
+  for (const p of props) {
+    const t = propTile(p);
+    keep.add(t.y * map.width + t.x);
+  }
+  const rows: string[] = [];
+  for (let y = 0; y < map.height; y++) {
+    let row = "";
+    for (let x = 0; x < map.width; x++) {
+      const i = y * map.width + x;
+      row += blocked[i] || !isFree(x, y) ? "#" : keep.has(i) ? "R" : ".";
+    }
+    rows.push(row);
+  }
+  return {
+    text: text.trim().slice(0, 600),
+    rows,
+    spawn: map.spawn,
+    focus,
+    taken: props.map((p) => p.id),
+  };
+}
+
+export function mergePlaced(
+  props: readonly WorldProp3d[],
+  placed: unknown,
+  map: Pick<WorldMap, "width" | "height">,
+): WorldProp3d[] {
+  const out = props.slice();
+  const ids = new Set(props.map((p) => p.id));
+  for (const raw of Array.isArray(placed) ? placed : []) {
+    if (out.length >= MAX_PROPS) break;
+    const p = raw as Partial<WorldProp3d> | null;
+    if (
+      !p ||
+      !PROP_KINDS.includes(p.kind as WorldPropKind) ||
+      typeof p.x !== "number" ||
+      typeof p.y !== "number" ||
+      !Number.isFinite(p.x) ||
+      !Number.isFinite(p.y)
+    )
+      continue;
+    const kind = p.kind as Exclude<WorldPropKind, "model">;
+    const at = {
+      x: Math.max(0, Math.min(map.width - 1, Math.floor(p.x))),
+      y: Math.max(0, Math.min(map.height - 1, Math.floor(p.y))),
+    };
+    const prop = makeProp(kind, at, ids, {
+      rot: snapRotation(Number(p.rot) || 0),
+      ...(typeof p.solid === "boolean" ? { solid: p.solid } : {}),
+      ...(typeof p.name === "string" && p.name
+        ? { name: p.name.slice(0, 60) }
+        : {}),
+    });
+    ids.add(prop.id);
+    out.push(prop);
+  }
+  return out;
+}
+
 export interface PropHistory {
   props: WorldProp3d[];
   past: WorldProp3d[][];
@@ -342,6 +419,9 @@ export interface WorldEditor {
   subscribe(cb: () => void): () => void;
   add(kind: Exclude<WorldPropKind, "model">): void;
   addModel(asset: ModelAsset, data: ArrayBuffer, name?: string): Promise<void>;
+  placeRequest(text: string): PlaceRequest;
+  /** Props added, or -1 when the scene changed or the editor closed since `placeRequest`. */
+  addPlaced(placed: unknown): number;
   select(id: string | null): void;
   setMode(mode: GizmoMode): void;
   update(id: string, patch: Partial<WorldProp3d>): void;
