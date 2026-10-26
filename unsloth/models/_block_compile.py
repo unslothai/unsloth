@@ -188,6 +188,32 @@ def _trainable(layer):
 _IN_TRIAL = [False]
 
 
+# output_hidden_states hands block outputs to the caller, who may keep them past the generation.
+_HIDDEN_STATES_EXPOSED = [False]
+
+
+def _note_hidden_states_exposed(module, args, kwargs):
+    want = kwargs.get("output_hidden_states")
+    if want is None:
+        want = getattr(getattr(module, "config", None), "output_hidden_states", False)
+    _HIDDEN_STATES_EXPOSED[0] = bool(want)
+
+
+def _watch_hidden_states(model):
+    """Every forward of the model and of each decoder list's owner records whether it returns
+    hidden states (each entry overwrites the flag, so no reset is needed)."""
+    modules = dict(model.named_modules())
+    lists = {id(layer_list) for layer_list in _layer_lists(model)}
+    owners = [model]
+    for name, module in modules.items():
+        if id(module) in lists and "." in name:
+            owners.append(modules[name.rsplit(".", 1)[0]])
+    for owner in owners:
+        if not owner.__dict__.get("_unsloth_watch_hidden_states", False):
+            owner.__dict__["_unsloth_watch_hidden_states"] = True
+            owner.register_forward_pre_hook(_note_hidden_states_exposed, with_kwargs = True)
+
+
 def _pool_outputs_stay_valid(layer, hidden_states):
     """A grad-mode call outside backward leaves a forward pending, and cudagraph trees start no new
     generation while one is pending (can_start_new_generation, torch/_inductor/cudagraph_trees.py:
@@ -200,6 +226,7 @@ def _pool_outputs_stay_valid(layer, hidden_states):
     records what the recompute replays."""
     return (
         not _IN_TRIAL[0]
+        and not _HIDDEN_STATES_EXPOSED[0]
         and torch.is_grad_enabled()
         and torch._C._current_graph_task_id() == -1
         and (hidden_states.requires_grad or _trainable(layer))
@@ -1420,6 +1447,8 @@ def patch_block_compile(model):
             continue
         _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
         wrapped.append(cls.__name__)
+    if _COMPILE_OPTIONS.get("triton.cudagraphs"):
+        _watch_hidden_states(model)
     if wrapped:
         print(f"Unsloth: compiling each transformer block as one region ({', '.join(wrapped)}).")
     return wrapped

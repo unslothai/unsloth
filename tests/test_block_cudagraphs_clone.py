@@ -12,6 +12,8 @@ import importlib.util
 import os
 import sys
 
+import types
+
 import pytest
 import torch
 
@@ -443,6 +445,39 @@ def test_no_pool_copies_outside_checkpointing(monkeypatch, trainable_input):
     assert seen == {"outputs": 0, "grad": 1 if trainable_input else 0}
     assert all(layer.proj.weight.grad is not None for layer in layers)
     assert (x.grad is not None) is trainable_input
+
+
+@pytest.mark.parametrize("exposed", ["kwarg", "config", None])
+def test_returned_hidden_states_keep_their_pool_copies(monkeypatch, exposed):
+    """output_hidden_states hands every block output to the caller, who may keep it past the
+    generation: those calls copy out of the pool as before; other calls still skip the copies."""
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    monkeypatch.setitem(bc._COMPILE_OPTIONS, "triton.cudagraphs", True)
+    seen = _counting_clones(monkeypatch)
+    A = _linear_layer_class("ExposedDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+
+    class Inner(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = types.SimpleNamespace(output_hidden_states = exposed == "config")
+            self.layers = torch.nn.ModuleList([A().train() for _ in range(2)])
+
+        def forward(self, x, output_hidden_states = None):
+            hidden = []
+            for layer in self.layers:
+                x = layer(x)
+                hidden.append(x)
+            return x, hidden
+
+    inner = Inner()
+    bc._watch_hidden_states(inner)
+    x = torch.randn(2, 4, 8)
+    kwargs = {"output_hidden_states": True} if exposed == "kwarg" else {}
+    y, _ = inner(x, **kwargs)
+    y.sum().backward()
+    assert seen["outputs"] == (0 if exposed is None else 2), seen
+    bc._HIDDEN_STATES_EXPOSED[0] = False
 
 
 @pytest.mark.parametrize("reentrant_kind", ["checkpoint", "no_grad"])
