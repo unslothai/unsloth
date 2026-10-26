@@ -42,7 +42,6 @@ interface DragSession {
   maxTop: number;
   constraintsWidth: number;
   constraintsHeight: number;
-  // Committed left/top the drag transform offsets from.
   baseLeft: number;
   baseTop: number;
 }
@@ -97,7 +96,7 @@ export function useFloatingPanelLayout(
   storageKey?: string,
   restingObstacle?: FrameBox | null,
 ) {
-  // Per-instance frame owner: a panel unmounting mid-exit clears only its own frame.
+  // Per instance: a panel unmounting mid-exit clears only its own frame.
   const publisher = useMemo(() => ({}), []);
   const monitorRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -114,7 +113,6 @@ export function useFloatingPanelLayout(
   const hiddenRef = useRef(hidden);
   const remeasureRef = useRef(0);
   const [layout, setLayout] = useState<MonitorLayout | null>(null);
-  // For transitions that fire no observer (suppressed to undocked).
   const reconcileRef = useRef<(() => void) | null>(null);
   const initialPlacementRef = useRef(initialPlacement);
   const initializedRef = useRef(false);
@@ -166,7 +164,6 @@ export function useFloatingPanelLayout(
       }
 
       const width = Math.min(desiredWidth, constraintsBox.width);
-      // A hand-resized panel keeps its height and scrolls instead of moving up.
       const height = Math.min(
         monitor.style.height ? monitorBox.height : desiredHeight,
         constraintsBox.height,
@@ -305,7 +302,7 @@ export function useFloatingPanelLayout(
     }
   }, [narrowed]);
 
-  // Position-only changes fire no ResizeObserver, so republish per committed layout (not per drag frame).
+  // Position-only changes fire no ResizeObserver, so republish per committed layout.
   useLayoutEffect(() => {
     void layout;
     const monitor = monitorRef.current;
@@ -333,7 +330,7 @@ export function useFloatingPanelLayout(
     const left = monitorBox.left - constraintsBox.left;
     const top = monitorBox.top - constraintsBox.top;
 
-    // Sync inline size to the rendered box where max-width/height clipped a native resize.
+    // Sync inline size where max-width/height clipped a native resize.
     const inlineWidth = Number.parseFloat(monitor.style.width);
     const inlineHeight = Number.parseFloat(monitor.style.height);
     if (

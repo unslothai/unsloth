@@ -504,12 +504,7 @@ _inventory_exit = threading.local()
 
 
 def _query_gpu_inventory(caller: str) -> Any:
-    """``[{index, name, memory_total_gb}]`` for every GPU nvidia-smi enumerates.
-
-    ``None`` when the query could not be answered at all (no nvidia-smi on PATH, a driver that hung past the timeout, a non-zero exit), which callers report as "unknown" and is not the same as the empty list a working driver with no cards returns. Never raises.
-
-    Split out of get_backend_visible_gpu_info so the same rows can be read WITHOUT a ``DeviceType.CUDA`` precondition: get_physical_gpu_inventory below is reached on exactly the host where torch reports no CUDA device, and that host still has its GPUs. Rows a caller cannot make sense of are dropped rather than raised on: a name holding commas is rejoined, and a malformed index or memory column skips the row.
-    """
+    """None when nvidia-smi could not answer at all, not the empty list of a working driver with no cards; never raises, and needs no DeviceType.CUDA precondition."""
     try:
         result = gpu_query.run_nvidia_smi(
             [
@@ -548,6 +543,9 @@ def _query_gpu_inventory(caller: str) -> Any:
             continue
         # Rejoin in case the GPU name contains commas
         name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
+        # RTX Spark's MCDM NPU: listed by nvidia-smi, not a CUDA GPU, no memory metrics.
+        if name.casefold() == "nvidia npu":
+            continue
         # A capacity this build of nvidia-smi will not report ("[N/A]", as _parse_smi_value already recognises) is a missing metric, not a missing card. Dropping the row hid the GPU from the whole inventory, and the Linux procfs fallback does not run either since it answers for a query that FAILED rather than one that came back short: the host lost its mismatch and its repair guidance over an unknown size.
         mem_total_mb = _parse_smi_value(parts[-1])
         rows.append(

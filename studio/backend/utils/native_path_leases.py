@@ -58,13 +58,7 @@ def native_gguf_companion_parent_allowed(
     allowed_subdirs: Collection[str] = (),
     mtp_search_root: str | Path | None = None,
 ) -> bool:
-    """Check whether a GGUF companion is in an allowed directory.
-
-    ``allowed_subdirs`` names the companion directories (``mtp``, ``dspark``)
-    this caller may reach into, beside the weight's own. A collection rather
-    than one flag per kind: each caller admits exactly the kind it is
-    resolving, so an MTP load never accepts a sidecar out of ``dspark/``.
-    """
+    """Accepts a companion beside the weight or in one of allowed_subdirs, so each kind stays separate."""
     companion_parent = Path(companion_path).resolve(strict = True).parent
     gguf_parent = Path(gguf_path).resolve(strict = True).parent
     if companion_parent == gguf_parent:
@@ -121,7 +115,7 @@ def run_without_native_path_secret(
 ) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 
-    # First, before anything else can raise, so a child dying before its entrypoint is explainable (#7843).
+    # Pop first, so a child dying before its entrypoint is explainable.
     _stderr_mirror_path = kwargs.pop(STDERR_MIRROR_KWARG, None)
     if _stderr_mirror_path:
         try:
@@ -130,10 +124,8 @@ def run_without_native_path_secret(
         except Exception:
             pass
 
-    # Runs in the spawned child to bind it to the parent's death, since multiprocessing children get no
-    # preexec_fn. Shared entrypoint for the inference/export/training/data-recipe workers. Two try
-    # blocks, because allow_child_processes is the newer name: on an older process_lifetime.py a
-    # combined import would lose the binding as well.
+    # Bind the child to parent death (no preexec_fn here). Two try blocks: allow_child_processes
+    # is newer, and a combined import would lose the binding on old versions.
     try:
         from utils.process_lifetime import bind_current_process_to_parent_lifetime
         bind_current_process_to_parent_lifetime()
@@ -155,11 +147,7 @@ def run_without_native_path_secret(
         for key, value in environment.items():
             os.environ[key] = value
 
-    # Before the entrypoint module below, not after: a spawned child inherits no sys.modules, and
-    # every worker here imports transformers (fast-path hooks, version activation) long before it
-    # imports unsloth. A sentinel installed after that import leaves transformers saying
-    # sentencepiece is available while importing it fails, which sends tokenizer loads into the
-    # dummy-class path and its unguarded `import sentencepiece as spm`.
+    # Before transformers is imported: a late sentencepiece sentinel breaks tokenizer loads.
     try:
         from utils.sentencepiece_guard import disable_sentencepiece_on_windows
         disable_sentencepiece_on_windows()

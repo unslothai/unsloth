@@ -35,8 +35,7 @@ def _wait_for_device(device):
         except TypeError:  # torch.mps.synchronize takes no device argument
             synchronize()
     except Exception:
-        # An async device fault surfaces here as a RuntimeError. It belongs to generate(), whose caller reports it; a
-        # timing stamp must not pre-empt that or skip the cleanup after it.
+        # An async device fault belongs to generate()'s caller; a timing stamp must not pre-empt it.
         pass
 
 
@@ -83,13 +82,7 @@ class GenerationTimer:
 
 
 def with_prefill_boundary_processor(logits_processor, timer):
-    """Prepend a prefill-boundary stamp to ``logits_processor`` (which may be None).
-
-    The stamp runs first within this custom list, so the presence-penalty processor sharing it
-    cannot be charged to prefill. transformers still runs its own default processors (min length,
-    repetition penalty, temperature, top-k/top-p/min-p) before the whole custom list, since
-    ``_merge_criteria_processor_list`` appends the custom one to the defaults.
-    """
+    """Runs first in the custom list, so the presence-penalty processor is not charged to prefill."""
     from transformers import LogitsProcessor, LogitsProcessorList
 
     class _PrefillBoundaryLogitsProcessor(LogitsProcessor):
@@ -112,12 +105,7 @@ def build_generation_timings(
     predicted_ms,
     cached_n = 0,
 ):
-    """Map a measured prefill/decode split onto the timings shape llama-server emits.
-
-    Returns None when the split was never measured. A rate is omitted rather than
-    reported as zero when its window or token count is empty, so the UI falls back to
-    its client-side metrics instead of showing an invented speed.
-    """
+    """A rate is omitted, not zero, when its window or token count is empty, so no speed is invented."""
     if prompt_ms is None or predicted_ms is None:
         return None
     prompt_n = int(prompt_n or 0)

@@ -40,7 +40,7 @@ from unsloth.models import clef, decision  # noqa: E402
 if args.log_recompiles:
     torch._logging.set_logs(recompiles = True, graph_breaks = True)
 
-TINY = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+TINY = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 TINY_HEAD = dict(hidden_size = 8, width = 32, routing_layers = 2, layers = 2, heads = 4, feedforward = 64)
 
 

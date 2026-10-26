@@ -49,9 +49,7 @@ export function MediaIdleUnloadRow({
 }) {
   const t = useT();
   const disabled = !settings || isSaving;
-  // A saved TTL that cannot run because residency is vetoing it; the number alone
-  // would not say so. "Only unload models loaded by the API" is per-model now, so
-  // it spares individual pipelines rather than holding the whole TTL off.
+  // A saved TTL held off by a residency veto; the number alone would not say so.
   const paused =
     settings !== null &&
     settings.mediaAutoUnloadIdleSeconds > 0 &&
@@ -230,10 +228,7 @@ export function ModelAutoSwitchSection() {
     }
   };
 
-  // Idle-unload is tied to auto-switch (the freed model reloads via the swap). Toggling off
-  // preserves the saved seconds rather than zeroing them — the backend gates unloading on the
-  // enabled flag, so it never unloads while off. Enabling commits the drafted value, falling back
-  // to the last saved one so it can never get stuck.
+  // Toggling off keeps the saved seconds; the backend gates unloading on the enabled flag.
   const handleToggle = (enabled: boolean) => {
     const savedIdleSeconds = settings?.autoUnloadIdleSeconds ?? 0;
     if (!enabled) {
@@ -275,7 +270,6 @@ export function ModelAutoSwitchSection() {
     });
   };
 
-  // Its own setting, so it saves alone: the chat toggle above is left untouched.
   const handleMediaAutoSwitchToggle = (mediaAutoSwitch: boolean) => {
     if (!settings) return;
     void persist({

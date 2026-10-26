@@ -36,8 +36,7 @@ VRAM_FRACTION_DECIMALS = 3
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, Any]] = {}
-# Bumped on every write: a read that began before it must not cache its stale value, or the new
-# budget appears to revert for the rest of the TTL.
+# Bumped on every write so a read that began earlier does not cache a stale value.
 _generation: dict[tuple[str, str], int] = {}
 
 # Retries converge; the bound only stops a write storm spinning here forever.

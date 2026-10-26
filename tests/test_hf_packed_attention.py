@@ -1341,6 +1341,32 @@ def test_block_varlen_kwargs_rechecks_a_mask_edited_in_place(monkeypatch):
     assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) is None
 
 
+def test_block_varlen_kwargs_does_not_serve_inference_metadata_to_training(monkeypatch):
+    """inference_mode forward then a training forward on the same batch: fresh cu_seqlens."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: False)
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), _cu(lengths), 5),
+    )
+    hidden = torch.randn(1, 8, 8)
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
+    with torch.inference_mode():
+        cu, _ = hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)
+        assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)[0] is cu
+    assert torch.is_inference(cu)
+    train, _ = hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)
+    assert not torch.is_inference(train) and train.tolist() == [0, 3, 8]
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)[0] is train
+    with torch.inference_mode():
+        assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)[0] is train
+
+
 def test_block_varlen_kwargs_survives_a_collected_mask_then_none(monkeypatch):
     """Same lengths, the cached mask collected, then a call without a mask: refused, not a crash."""
     hpa._ORIG_SDPA[0] = _plain_sdpa
