@@ -1405,20 +1405,8 @@ def LlamaModel_fast_forward(
 
     if IS_GEMMA and not embedding_applies_scale(self.embed_tokens):
         normalizer = torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
-
-        if train_embed_tokens:
-            # Careful: this must not be an inplace op.
-            inputs_embeds = inputs_embeds * normalizer
-        else:
-            inputs_requires_grad = inputs_embeds.requires_grad
-            if not inputs_embeds.is_leaf:
-                inputs_embeds = inputs_embeds.detach()
-                inputs_requires_grad = True
-            elif inputs_requires_grad:
-                inputs_embeds.requires_grad_(False)
-            inputs_embeds *= normalizer
-            if inputs_requires_grad:
-                inputs_embeds.requires_grad_(True)
+        # Out of place: external inputs_embeds may carry a trainable graph and belong to the caller.
+        inputs_embeds = inputs_embeds * normalizer
 
     # Fix up the attention mask by setting elements to 0, specifically for DPO.
     if (
