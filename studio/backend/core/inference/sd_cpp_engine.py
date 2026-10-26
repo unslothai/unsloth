@@ -70,12 +70,8 @@ def _diagnostic_tail(
     keep: int = 20,
     limit: int = 1500,
 ) -> str:
-    """The most useful part of the captured output, not merely its last lines.
-
-    A native abort prints its REASON first and then a long backtrace, so taking the last N lines
-    reported nothing but stack frames: a Metal host that died on an unimplemented op showed twenty
-    addresses and no cause. Marked lines come first (in order), then the last few lines for
-    context, deduplicated."""
+    """Marked diagnostic lines come first, since a native abort prints its reason before a long
+    backtrace."""
     captured = list(lines)
     marked = [line for line in captured if any(m in line.lower() for m in _DIAGNOSTIC_MARKERS)]
     chosen: list[str] = []
@@ -88,20 +84,15 @@ def _diagnostic_tail(
 # sd-cli (sd-cli.exe on Windows); older builds shipped ``sd`` -- both probed on PATH.
 _BINARY_STEM = "sd-cli"
 _LEGACY_STEM = "sd"
-# The first stable-diffusion.cpp release already exposed all three. Together they distinguish its oldest help text
-# (before it printed the project name) from unrelated tools also called ``sd``.
+# Together these tell old stable-diffusion.cpp help text apart from unrelated tools named ``sd``.
 _LEGACY_HELP_MARKERS = ("--negative-prompt", "--cfg-scale", "--steps")
 # The persistent HTTP server target, shipped next to sd-cli in both prebuilt and cmake builds.
 _SERVER_STEM = "sd-server"
 
-# ownership marker written by install_sd_cpp_prebuilt.install and required by setup.sh / uninstall.sh / uninstall.ps1
-# before they delete a tree
+# Ownership marker; setup.sh / uninstall.sh / uninstall.ps1 require it before deleting a tree.
 OWNER_MARKER = ".unsloth-studio-owned"
 
-# Ceiling for one native run. The native engine exists FOR slow CPU hosts: on GPU-less CI runners a 512x512 4-step
-# Q2_K generation took 900 s on Linux and 1465 s on Windows, so a 30-minute cap killed jobs that were still
-# progressing. It matches the Images page's own SETTLE_MAX_MS (6 h), so it only stops a WEDGED process from holding
-# the lock forever; cancel_event is the user-facing abort.
+# Only stops a WEDGED process: CPU-only runs took up to ~25 min. Matches the Images page SETTLE_MAX_MS.
 NATIVE_GENERATION_TIMEOUT_S = 6 * 60 * 60.0
 
 _PRIVATE_TEXT_OPTIONS = frozenset({"--prompt", "--negative-prompt", "-p", "-n"})
@@ -187,12 +178,10 @@ def _sd_cpp_command_summary(cmd: list[str], *, default_mode: str = "img_gen") ->
     return " ".join(fields)
 
 
-# sd-cli redraws its progress bar IN PLACE. Each redraw is one printf + fflush shaped "\r<bar> <step>/<steps> -
-# <speed>\033[K", with a trailing newline only on the final step of a phase. So the carriage return LEADS the record and
-# the erase-to-end-of-line CLOSES it.
+# sd-cli redraws progress in place: "\r<bar> <step>/<steps> - <speed>\033[K", so \r LEADS a record
+# and the erase-to-EOL CLOSES it.
 _ANSI_ERASE = "\x1b[K"
-# Any CSI escape (the erase above, plus colour runs some builds emit), stripped before a record reaches on_log / the
-# error tail: an escape in the middle of a line corrupts both.
+# Escapes mid-line corrupt on_log and the error tail.
 _ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 # one read1() per redraw in practice; large enough that a burst of finished lines costs one read
 _READ_CHUNK = 4096
@@ -204,17 +193,7 @@ def strip_ansi(text: str) -> str:
 
 
 def split_progress_records(buf: str) -> tuple[list[str], str]:
-    """Split raw sd-cli stdout into complete records plus the still-unterminated remainder.
-
-    A record ends at a carriage return, a newline, OR a trailing erase-to-end-of-line. That last
-    terminator is the point: an in-place redraw carries no newline, and its carriage return is at
-    the FRONT of the *next* redraw, so keying only on CR/LF delivers every sampling step one step
-    late (and the final one only once sampling is over). ``\\033[K`` closes the record sd-cli has
-    already flushed, so the step is delivered when it happens.
-
-    Returns records in order (still containing their escapes; call ``strip_ansi``) and whatever
-    trailing text is not yet terminated, which the caller carries into the next chunk.
-    """
+    """Splits raw sd-cli stdout on CR, LF or a trailing erase-to-EOL, since in-place redraws carry no newline; returns records plus the unterminated remainder."""
     records: list[str] = []
     start = 0
     i = 0
@@ -239,14 +218,7 @@ def split_progress_records(buf: str) -> tuple[list[str], str]:
 
 
 def iter_sd_cpp_records(stream) -> Iterator[str]:
-    """Yield cleaned sd-cli output records from ``stream`` as soon as each is flushed.
-
-    Reads the undecoded pipe via ``buffer.read1`` so a redraw that never sends a newline is not
-    stuck behind a blocking readline, decoding incrementally so a multi-byte character split
-    across two reads survives. Streams without a raw ``.buffer`` (test doubles, non-pipes) fall
-    back to line iteration, which still splits on CR under universal newlines and so still
-    reports progress, just one redraw behind.
-    """
+    """Reads the raw pipe with read1 so a newline-less progress redraw is not stuck behind readline."""
     raw = getattr(stream, "buffer", None)
     if raw is None or not hasattr(raw, "read1"):
         for line in stream:
@@ -327,13 +299,7 @@ def _lib_path_var() -> str:
 
 
 def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
-    """Environment that lets ``binary`` find its bundled shared libraries.
-
-    The prebuilt archives ship the shared libs next to ``sd-cli``, so prepend the binary's own dir
-    to the platform library path (harmless for an already-linked local build). Every sd-cli launch
-    funnels through here, so it's also the chokepoint that strips the native-path lease secret from
-    the child env (an external process must not mint/verify native-path grants).
-    """
+    """Child env with the binary dir on the library path for bundled libs; also strips the native-path lease secret so the child cannot mint grants."""
     env = child_env_without_native_path_secret(os.environ if base_env is None else base_env)
     var = _lib_path_var()
     bindir = str(Path(binary).resolve().parent)
@@ -438,33 +404,16 @@ def _first_file(paths: list[Path]) -> Optional[str]:
     return None
 
 
-# Identity verdicts, keyed by the file itself rather than by the path alone, so replacing a binary in place re-probes
-# it while a rebuild elsewhere on PATH is unaffected. Bounded: an Unsloth session sees a handful of candidates, and a
-# runaway key set would only come from a path being rewritten under us, which is exactly the case that must not be
-# served from here.
+# Keyed by file stat, so an in-place replace re-probes while a rebuild elsewhere on PATH is unaffected.
 _IDENTITY_MEMO: dict[tuple[str, int, int, int], tuple[bool, float]] = {}
 _IDENTITY_MEMO_LOCK = threading.Lock()
 _IDENTITY_MEMO_MAX = 32
-# How long a verdict may answer for. The key catches the replacements it can SEE, but no stat tuple is a content hash:
-# on Windows ``st_ctime`` is the CREATION time, which an in-place overwrite preserves, so a same-sized write that also
-# restores mtime is invisible to it. Hashing the file on every lookup would trade the exec this memo exists to avoid
-# for a read of the whole binary, on a path walked for every load. A short life is the cheaper guarantee and it is not
-# platform-specific: whatever the key misses expires within a minute, which is long enough for the several resolutions
-# inside one load sequence.
+# No stat tuple is a content hash (Windows st_ctime survives overwrite), so verdicts also expire.
 _IDENTITY_MEMO_TTL_S = 60.0
 
 
 def _identity_key(binary: str) -> Optional[tuple[str, int, int, int]]:
-    """A cache key that changes whenever ``binary``'s content is SEEN to change, or None when it
-    cannot be read -- an unreadable candidate is never memoized, so a file that appears later is
-    probed.
-
-    ``st_ctime`` as well as ``st_mtime``: metadata-preserving copies (``cp -p``, ``shutil.copy2``,
-    an archive carrying source timestamps) restore the modification time of the file they replace,
-    so on POSIX a same-sized replacement is otherwise indistinguishable from the binary it
-    overwrote, and the inode change time is not restorable that way. It is NOT a content revision
-    on Windows, where the field is the creation time and survives an in-place overwrite -- hence
-    the TTL above, which is what actually bounds a stale verdict."""
+    """Keyed on st_mtime and st_ctime, since restored mtimes hide same-size replacements on POSIX; None when unreadable, so that candidate is never memoized."""
     try:
         st = os.stat(binary)
     except OSError:
@@ -473,37 +422,15 @@ def _identity_key(binary: str) -> Optional[tuple[str, int, int, int]]:
 
 
 def help_text_identifies_sd_cpp(help_text: str) -> bool:
-    """Whether ``--help`` output belongs to stable-diffusion.cpp.
-
-    Identity, NOT capability: "is this the right program at all", which is a different question
-    from ``sd_cpp_supports_minimax_h3``'s "does this build carry the H3 options". Accepts the
-    project banner (current upstream's ``print_usage`` prints ``stable-diffusion.cpp version ...``
-    first) or the full legacy option signature, which is what the pre-banner builds -- the ones
-    that shipped the binary as ``sd`` -- print instead.
-
-    Pure, so a caller that has already paid for the ``--help`` output can reuse it rather than
-    spawning the binary a second time.
-    """
+    """Identity, not capability; pre-banner builds (shipped as sd) match on their legacy option
+    signature."""
     return "stable-diffusion.cpp" in help_text.lower() or all(
         marker in help_text for marker in _LEGACY_HELP_MARKERS
     )
 
 
 def sd_cpp_binary_identifies(binary: str) -> bool:
-    """``help_text_identifies_sd_cpp`` against a live ``binary``.
-
-    Fails CLOSED: every caller is deciding whether to trust an ambiguously named executable, and a
-    probe that cannot be read is no evidence that it is the one we want. Memoized per file revision,
-    since discovery runs on every load and ``ensure_sd_cpp_binary`` alone resolves twice.
-
-    Only a DECISIVE verdict is memoized, because the key cannot see the difference: a timeout, a
-    failed spawn, or a non-zero exit with nothing identifying in the output are all "could not
-    tell", and none of them touches the file, so caching that "no" would blacklist a genuine build
-    for the life of the process over one slow ``--help`` or a missing shared library the user then
-    installs. Same rule as ``utils.node_runtime``. A clean exit that simply is not
-    stable-diffusion.cpp IS decisive, which is the case that matters: Debian/Ubuntu's ``sd`` answers
-    ``--help`` with rc 0.
-    """
+    """Fails closed; only decisive verdicts are memoized, so a timeout cannot blacklist a real build."""
     key = _identity_key(binary)
     if key is not None:
         now = time.monotonic()
@@ -532,8 +459,7 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         help_text = ""
     identified = help_text_identifies_sd_cpp(help_text)
-    # Identifying output settles it whatever the exit code (old builds print usage and exit 1). Otherwise only a clean
-    # exit is evidence of anything; rc 127 from the dynamic loader is not.
+    # Old builds print usage and exit 1; rc 127 from the dynamic loader is not evidence.
     decisive = identified or returncode == 0
     if key is not None and decisive:
         with _IDENTITY_MEMO_LOCK:
@@ -544,13 +470,7 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
 
 
 def _is_legacy_sd_cpp_binary(binary: str) -> bool:
-    """Whether an ambiguous PATH executable named ``sd`` identifies as stable-diffusion.cpp.
-
-    The PATH fallback is the one hop that picks a candidate purely by filename, and ``sd`` is a
-    name Debian and Ubuntu already ship an unrelated find-and-replace utility under, so accepting
-    it on the name alone pointed native diffusion at the wrong program AND suppressed the managed
-    install (#8507). Rejecting one is read-only: the unrelated command is left exactly as it is.
-    """
+    """Bare sd on PATH is accepted only if --help identifies it; Debian/Ubuntu ship an unrelated sd."""
     identified = sd_cpp_binary_identifies(binary)
     if not identified:
         logger.warning(
@@ -562,25 +482,12 @@ def _is_legacy_sd_cpp_binary(binary: str) -> bool:
 
 
 def managed_install_root() -> Path:
-    """The directory the prebuilt installer owns, so callers can tell an Unsloth-managed binary
-    from a user-supplied one (SD_CLI_PATH / UNSLOTH_SD_CPP_PATH / PATH / an in-tree build).
-
-    Only a copy under this root may be reinstalled over: replacing anything else would delete
-    a build the user chose. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer, so
-    side-by-side Unsloth instances stay isolated.
-
-    ``<studio home>/stable-diffusion.cpp``, which is where every other managed component lives
-    (``default_managed_llama_dir``, ``managed_whisper_dir``, ``managed_node_dir`` all place their
-    tree *under* the Unsloth home). The legacy default home ``~/.unsloth/studio`` keeps mapping to
-    ``~/.unsloth/stable-diffusion.cpp`` so existing installs are still found."""
+    """Installer-owned root: only copies here may be reinstalled over; it follows the studio home, and legacy ~/.unsloth paths stay found for existing installs."""
     return _studio_component_root("stable-diffusion.cpp")
 
 
 def _studio_component_root(name: str) -> Path:
-    """``<studio home>/<name>``, or the legacy ``~/.unsloth/<name>`` when no custom home is set
-    (or the home *is* the legacy ``~/.unsloth/studio``). The home is expanded and made absolute
-    first: a relative ``UNSLOTH_STUDIO_HOME`` must not leave the root relative, because the
-    process' working directory can change and would silently move the managed tree."""
+    """Home is made absolute, so a relative UNSLOTH_STUDIO_HOME cannot move the tree when cwd changes."""
     home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
     legacy = Path.home() / ".unsloth" / name
     if not home:
@@ -597,21 +504,7 @@ def _studio_component_root(name: str) -> Path:
 
 
 def legacy_sibling_install_root() -> Optional[Path]:
-    """The pre-fix managed root, ``<studio home>/../stable-diffusion.cpp``, or None.
-
-    Older builds derived the sd.cpp root from the PARENT of the Unsloth home, which put the tree
-    outside the Unsloth home entirely. Two problems: a relative ``UNSLOTH_STUDIO_HOME`` collapsed
-    that parent to the working directory, so an unrelated ``stable-diffusion.cpp`` checkout sitting
-    there became "the managed install" and the installer refused to run; and it disagreed with every
-    other component, which install under the home.
-
-    Kept only so a tree an older build really did install still resolves, and returned solely when
-    it carries the ownership marker. The LEXICAL parent first, because that is the one the old code
-    took: ``Path(home).parent`` does not resolve symlinks, so for a home under a symlinked directory
-    the tree an older build created sits next to the link, not next to its target, and resolving
-    first looked in the wrong place and re-downloaded the bundle. The resolved parent is still tried
-    after it.
-    """
+    """Pre-fix tree beside the home, only with the ownership marker; lexical parent tried first, since resolving symlinks first looks in the wrong place."""
     home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
     if not home:
         return None
@@ -640,10 +533,7 @@ def _legacy_sibling_bases(home: str) -> list[Path]:
 
 
 def in_tree_install_root() -> Optional[Path]:
-    """``<repo_root>/stable-diffusion.cpp``, the developer build the finder falls back to, or None
-    when the layout above this file is not what we expect. Named rather than inlined so tests can
-    point it somewhere empty: a developer with a real in-tree build must not change what the
-    discovery tests assert."""
+    """Developer in-tree build root; a named function so tests can point it at an empty location."""
     try:
         return Path(__file__).resolve().parents[4] / "stable-diffusion.cpp"
     except (OSError, IndexError):
@@ -651,28 +541,12 @@ def in_tree_install_root() -> Optional[Path]:
 
 
 def is_managed_binary(binary: Optional[str]) -> bool:
-    """True when ``binary`` is a copy the installer may replace: under the installer-owned root
-    (see managed_install_root) AND that root carries the installer's ownership marker.
-
-    The marker is the SAME definition of "ours" the installer and the uninstaller use --
-    ``install_sd_cpp_prebuilt.install`` writes it before any extraction and refuses a pre-existing
-    non-empty target without it, and uninstall.sh/.ps1 keep an unmarked directory. Path alone is not
-    enough, because "stable-diffusion.cpp" is exactly what a ``git clone`` of leejet's repo produces,
-    so a user may keep their own build (or point UNSLOTH_SD_CPP_PATH) at the default path.
-    Deleting out of an unmarked root would take a file we are then refused permission to reinstall:
-    the repair unlinks sd-server, install() rejects the now still-non-empty unmarked directory, and
-    the user is left with no binary at all and no way back."""
+    """Path alone is not enough: a git clone has the same name, so the ownership marker decides."""
     return owning_managed_root(binary) is not None
 
 
 def owning_managed_root(binary: Optional[str]) -> Optional[Path]:
-    """The installer-owned root ``binary`` lives under, or None when it is not ours.
-
-    Both locations are checked, current first, because a tree an older build installed beside the
-    Unsloth home is still discovered by the finder. Callers that read per-install state (the
-    accelerator record) must read it from the root the binary is actually in: reading the current
-    root while the binary came from the legacy one reports "unrecorded", which a GPU target treats
-    as a mismatch and answers by re-downloading a bundle that is already installed."""
+    """Checks both roots, current first; per-install state must be read from the root the binary is in, or an installed bundle gets re-downloaded."""
     if not binary:
         return None
     roots = [managed_install_root()]
@@ -695,12 +569,7 @@ def owning_managed_root(binary: Optional[str]) -> Optional[Path]:
 def _find_binary(
     *, direct_env: str, path_stems: tuple[str, ...], layout_stem: str
 ) -> Optional[str]:
-    """Shared finder for the stable-diffusion.cpp binaries (mirrors the llama.cpp finder).
-
-    Order: (1) ``direct_env`` binary path; (2) ``UNSLOTH_SD_CPP_PATH`` install dir; (3) the default
-    install root (honors ``UNSLOTH_STUDIO_HOME`` / ``STUDIO_HOME``, else ``~/.unsloth/...``);
-    (4) ``./stable-diffusion.cpp`` in-tree build; (5) ``path_stems`` on PATH.
-    """
+    """Lookup order: direct env binary, UNSLOTH_SD_CPP_PATH dir, install root, in-tree build, then PATH."""
     env_bin = os.environ.get(direct_env)
     if env_bin and Path(env_bin).is_file():
         return env_bin
@@ -711,15 +580,13 @@ def _find_binary(
         if hit:
             return hit
 
-    # 3. Default install root: <studio home>/stable-diffusion.cpp (honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the
-    # installer so side-by-side Unsloth instances stay isolated), else ~/.unsloth/....
+    # 3. Default install root (honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer).
     default_root = managed_install_root()
     hit = _first_file(_layout_candidates(default_root, layout_stem))
     if hit:
         return hit
 
-    # 3b. A tree an older build installed beside the Unsloth home. Marker-gated (see legacy_sibling_install_root), so
-    # only a real previous install is picked up here.
+    # 3b. Marker-gated legacy tree beside the Unsloth home.
     legacy_root = legacy_sibling_install_root()
     if legacy_root is not None:
         hit = _first_file(_layout_candidates(legacy_root, layout_stem))
@@ -815,13 +682,7 @@ class SdCppEngine:
         on_log: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Path:
-        """Run one ``sd-cli`` generation; return the written image path.
-
-        ``native_speed`` ("default"/"max") adds sd.cpp's speed flags, de-duplicated against the
-        offload flags. Raises ``RuntimeError`` on a missing binary, nonzero exit, or no output.
-        ``on_log`` receives each progress line; ``cancel_event`` is polled and, when set, kills the
-        process tree and raises ``SdCppCancelled``.
-        """
+        """Speed flags skip any offload flag; a set cancel_event kills the sd-cli process tree."""
         offload = list(offload or [])
         binary = self._require_binary()
         speed = speed_flags_without(
@@ -960,9 +821,7 @@ class SdCppEngine:
             logger.info("sd-cli run started: %s", summary)
 
         t0 = time.time()
-        # A generation admitted before the quit can still reach this Popen after the
-        # shutdown sweep has taken its snapshot, and sd-cli would then keep running with
-        # nothing left to reap it, holding VRAM past the app.
+        # A generation admitted before quit can reach Popen after the shutdown sweep snapshot; sd-cli would then run unreaped, holding VRAM past exit.
         if is_process_shutting_down():
             raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
         proc = subprocess.Popen(
@@ -975,24 +834,17 @@ class SdCppEngine:
             env = run_env,
             # Own session/process group so cancellation/timeout kills the whole tree (POSIX).
             start_new_session = (os.name == "posix"),
-            # Bind the child to the parent's lifetime (PR_SET_PDEATHSIG) so a parent crash cannot orphan sd-cli holding
-            # VRAM/RAM.
+            # Bind sd-cli to the parent's lifetime (PR_SET_PDEATHSIG) so a crash cannot orphan it holding VRAM.
             **child_popen_kwargs(),
         )
-        # the kwargs above are empty on macOS, so record it too, else a crash mid-generation leaves sd-cli holding VRAM
-        # with nothing able to find it
+        # child_popen_kwargs is empty on macOS, so record the pid for the shutdown sweep too.
         adopt_pid(proc.pid)
-        # Recheck once the pid is recorded, for the window between the gate above and this
-        # record. Adoption ran first, so the child killed here was in the sweep record for
-        # as long as it existed.
+        # Recheck after recording: covers the window between the gate above and adopt_pid.
         if is_process_shutting_down():
             logger.info("shutdown began during the spawn; killing the new sd-cli")
             _terminate(proc)
             raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
-        # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for
-        # line in proc.stdout` blocks until EOF). Lines, then a None sentinel, go to a queue the main loop polls against
-        # a wall-clock deadline. iter_sd_cpp_records also splits sd-cli's in-place progress redraws, which carry no
-        # newline of their own, so sampling progress reaches on_log while sampling is still running.
+        # Drains stdout on a thread so the timeout holds even if the child hangs without printing.
         tail: deque[str] = deque(maxlen = 200)
         line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
@@ -1069,11 +921,7 @@ def select_diffusion_engine(
     native_available: bool,
     prefer_native: bool = False,
 ) -> str:
-    """Choose the engine for a resolved device ``backend``.
-
-    ``prefer_native`` + an available binary always wins (force native even on CUDA). CPU / MPS route
-    to sd.cpp when the binary is available, else diffusers. CUDA / ROCm / XPU stay on diffusers.
-    """
+    """CUDA, ROCm and XPU stay on diffusers unless native is preferred and the binary is available."""
     if prefer_native and native_available:
         return ENGINE_SD_CPP
     if backend not in _GPU_BACKENDS and native_available:

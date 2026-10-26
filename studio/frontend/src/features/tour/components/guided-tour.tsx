@@ -18,7 +18,7 @@ import { computeCardPos, padded, pickPlacement } from "../lib/layout";
 import { SpotlightOverlay } from "./spotlight-overlay";
 import type { Placement, Rect, TourStep } from "../types";
 
-type GuidedTourProps = { open: boolean; onOpenChange: (open: boolean) => void; steps: TourStep[]; onSkip: () => void; onComplete: () => void; celebrate?: boolean }; // confetti on complete only
+type GuidedTourProps = { open: boolean; onOpenChange: (open: boolean) => void; steps: TourStep[]; onSkip: () => void; onComplete: () => void; celebrate?: boolean };
 
 export function GuidedTour({
   open,
@@ -43,8 +43,7 @@ export function GuidedTour({
   const rafRef = useRef<number | null>(null);
   const lastRectRef = useRef<Rect | null>(null);
 
-  // Rewound during render: an effect runs after the onEnter effect below, so reopening would fire
-  // the last step's onEnter (Chat's compare step navigates) before rewinding to the first.
+  // Rewound during render, or reopening would fire the last step's onEnter before rewinding.
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
@@ -61,9 +60,7 @@ export function GuidedTour({
     return padded(targetRect, pad, vw, vh);
   }, [step?.target, targetRect, vw, vh]);
 
-  // Cleanup, not a second effect: a step is then also left when the tour unmounts mid-step, as a
-  // page hiding its tour on navigation does. Without it onEnter's side effects leak onto the next
-  // page, and a persisted one (the sidebar pin) is never put back.
+  // Cleanup so a step is also left on unmount, or onEnter side effects (sidebar pin) leak.
   useEffect(() => {
     if (!open || !step) return;
     void step.onEnter?.();

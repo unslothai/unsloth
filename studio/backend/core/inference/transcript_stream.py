@@ -19,9 +19,7 @@ logger = get_logger(__name__)
 
 async def stream_transcript(transcribe, title: str):
     loop = asyncio.get_running_loop()
-    # Text progress is latest-wins: a newer update replaces an unread text one. A phase change is
-    # never replaced, so a model that loads within one tick cannot swallow "loading" before the
-    # client reads it. Only phases accumulate, and a run has a handful of them.
+    # Text progress is latest-wins; phase changes are never replaced, so "loading" is never lost.
     updates = collections.deque()
     ready = asyncio.Event()
     closed = False
@@ -74,9 +72,7 @@ async def stream_transcript(transcribe, title: str):
                 pending = asyncio.create_task(next_update())
             elif not done:
                 yield json.dumps({"type": "heartbeat"}) + "\n"
-        # Updates published before the run finished still go out ahead of its result, in order.
-        # Stop the reader first: left running, it would take the next update off the deque while
-        # this generator is suspended on a yield below, and that update would never be sent.
+        # Stop the reader first, or an update it takes while we are suspended is never sent.
         if not pending.done():
             pending.cancel()
             with contextlib.suppress(asyncio.CancelledError):

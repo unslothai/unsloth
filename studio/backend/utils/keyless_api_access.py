@@ -521,10 +521,7 @@ def keyless_request_allowed(request: Any) -> bool:
 
 
 async def keyless_request_may_load_models(request: Any) -> bool:
-    """Whether keyless access would admit this request's transport on ``POST /api/inference/load``.
-
-    Reads settings like admission (``_settings_async``): the sync read fails closed to ``off`` during a concurrent cache refresh.
-    """
+    """Uses the async settings read like admission; the sync read fails closed during a cache refresh."""
     from starlette.concurrency import run_in_threadpool
 
     scope, _tools, _generation = await _settings_async()

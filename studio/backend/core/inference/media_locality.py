@@ -56,14 +56,7 @@ _TOKENIZER_ASSETS = (
 
 
 def detected_image_family(pick: MediaModelPick) -> Any:
-    """The diffusion family for *pick*, tried against its path and then its id.
-
-    The path comes first because it is the only needle the load route is ever handed, and the
-    only one that can carry a local ``model_index.json``: ``detect_family_for_pick`` reads that
-    index ahead of any guess made from a name, so asking about the id first answers FLUX for a
-    HiDream pipeline in a directory called ``flux.1`` while the loader answers HiDream and
-    fetches its 16 GB encoder. The id is kept as a fallback for a pick whose path says nothing.
-    """
+    """Path first, since only it can carry a local model_index.json; the id is a fallback."""
     from core.inference.diffusion_families import detect_family_for_pick
 
     for needle in (pick.model_path, pick.model_id):
@@ -79,12 +72,7 @@ def detected_image_family(pick: MediaModelPick) -> Any:
 
 
 def normalized_pick(pick: MediaModelPick) -> MediaModelPick:
-    """The pick as the LOAD route will read it, with a bare single-file directory reinterpreted.
-
-    Both load routes turn a kindless directory holding exactly one checkpoint into a
-    ``single_file`` load and then resolve that family's companions. Planning the un-normalized
-    pick describes a local pipeline with nothing to fetch, and misses those companions.
-    """
+    """Pick as the load routes read it, so companions of a bare single-file directory are planned."""
     from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
 
     if pick.model_kind or pick.gguf_filename:
@@ -99,11 +87,7 @@ def normalized_pick(pick: MediaModelPick) -> MediaModelPick:
 
 
 def is_edit_only(pick: MediaModelPick) -> bool:
-    """Whether *pick* is an instruction-editing family, which has no text-to-image mode.
-
-    The local catalog tags these text-to-image, so without this the switch would evict a working
-    model for a multi-GB pipeline that /v1/images/generations then refuses for lacking txt2img.
-    """
+    """Instruction-edit families lack txt2img, though the local catalog tags them text-to-image."""
     from core.inference.diffusion import _family_workflows
 
     fam = detected_image_family(normalized_pick(pick))
@@ -114,7 +98,6 @@ def is_edit_only(pick: MediaModelPick) -> bool:
 
 def _needs_external_encoder(pick: MediaModelPick) -> bool:
     """Whether this pick's pipeline fetches an encoder that its own directory cannot hold."""
-    # an unrecognised family keeps the shortcut, since refusing every on-device model is worse
     fam = detected_image_family(pick)
     return fam is not None and getattr(fam, "name", "") in _EXTERNAL_ENCODER_FAMILIES
 
@@ -130,17 +113,7 @@ def _cached_snapshot_file(repo_id: str, filename: str) -> Optional[str]:
 
 
 def encoder_repo_complete(repo_id: str) -> bool:
-    """Whether every shard of a cached encoder repo is present, not merely one of them.
-
-    ``_upstream_is_cached`` counts any single weight file, while the pipeline calls
-    from_pretrained on the whole repository, so an interrupted sharded pull would otherwise
-    read as local and the load would fetch the rest.
-
-    The config and tokenizer files count as much as the shards. They are kilobytes rather than
-    gigabytes, but the encoder is built with ``AutoTokenizer.from_pretrained`` and
-    ``LlamaForCausalLM.from_pretrained`` on the whole repository, so a cache holding every shard
-    and none of those still reaches the Hub during an accepted switch.
-    """
+    """All shards plus config and tokenizer must be cached, or from_pretrained fetches the rest."""
     import json
 
     from core.inference.diffusion_families import _upstream_is_cached, cache_holds_files
@@ -159,12 +132,7 @@ def encoder_repo_complete(repo_id: str) -> bool:
 
 
 def _missing_external_encoder(pick: MediaModelPick) -> Optional[int]:
-    """0 when this local pipeline needs nothing more, else what its outside dependency costs.
-
-    HiDream-I1 loads unsloth/Meta-Llama-3.1-8B-Instruct unconditionally, around 16 GB, which no
-    amount of the pipeline being on disk accounts for. Checked against the cache directly rather
-    than through the planner, which cannot be handed an absolute pipeline path.
-    """
+    """HiDream loads an external Llama encoder (~16 GB) that the local pipeline does not contain."""
     if not _needs_external_encoder(pick):
         return 0
     from core.inference.diffusion_hidream import HIDREAM_LLAMA_REPO
@@ -179,17 +147,7 @@ def _missing_external_encoder(pick: MediaModelPick) -> Optional[int]:
 
 
 def hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
-    """Whether this local video pick is an LTX-2.3 checkpoint the plan did not treat as one.
-
-    The planner judges 2.3 by name, while the loader reads the checkpoint header and then pulls
-    the 2.3 VAE, audio and connector artifacts. A renamed checkpoint therefore plans as 2.0,
-    reports nothing missing, and downloads those extras during assembly.
-
-    The family is resolved the way the loader resolves it, which falls back to the checkpoint's
-    ``general.architecture`` where neither the repo nor the filename carries a family token.
-    Deciding by name alone left a generically named LTX checkpoint exempt from the very check
-    its header would have triggered.
-    """
+    """A renamed LTX-2.3 checkpoint: the planner judges by name, the loader by its header."""
     if owner != VIDEO or not pick.gguf_filename:
         return False
     try:
@@ -226,14 +184,7 @@ def hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
 
 
 def planners_for(owner: str, pick: MediaModelPick) -> list:
-    """Every engine whose plan this pick could end up loading through.
-
-    Usually one. ``predict_engine`` treats an absent sd.cpp binary as available whenever its
-    installation is allowed, while ``select_and_activate_engine`` falls back to diffusers when
-    that install produces nothing runnable, and the two engines read different companion sets.
-    Both are verified only in that case: with a runnable binary already on disk the load stays
-    native, and demanding the diffusers shards too would refuse a model sd.cpp can serve.
-    """
+    """Every engine the pick may load through: sd.cpp can fall back to diffusers, with other companions."""
     if owner != DIFFUSION:
         return [backend_for(owner)]
     from core.inference.diffusion import resolve_model_kind
@@ -308,18 +259,7 @@ def catalog_gpu_ordinal() -> Optional[int]:
 
 
 def _pipeline_components_present(root: Path) -> bool:
-    """Whether every component a local pipeline's own index names is on disk.
-
-    A directory carrying a pipeline index is treated as complete by definition, because
-    from_pretrained reads it off disk and the planner cannot be asked about an absolute path.
-    That holds only if the components are actually there: a hand-copied or interrupted pipeline
-    passes the index check, and the loader then tears the resident pipeline down before
-    from_pretrained discovers the gap, leaving the API with no model at all.
-
-    Judged on what can be seen without reading weights. A directory carrying neither index is
-    not this function's business. A modular entry whose spec names another repository is checked
-    against the cache instead, since the load pulls that repository itself.
-    """
+    """The components a pipeline index names must exist, or the loader drops the resident model first."""
     import json
 
     for name in ("model_index.json", "modular_model_index.json"):
@@ -352,8 +292,7 @@ def _pipeline_components_present(root: Path) -> bool:
             # [null, null] marks a component this pipeline deliberately ships without.
             if len(entry) not in (2, 3) or not entry[1]:
                 continue
-            # a modular entry is [library, class, spec], and its spec can name another repo, which this directory is
-            # never expected to hold but the load still pulls
+            # A modular spec can name another repo this directory never holds, yet the load still pulls it.
             hosted = _hosted_source(entry[2]) if len(entry) == 3 else None
             if hosted is not None:
                 if not _hosted_component_cached(*hosted):
@@ -417,12 +356,7 @@ def _is_flux3_manifest(index: dict) -> bool:
 
 
 def _hosted_source(spec: Any) -> Optional[tuple[str, str, str, str]]:
-    """What a modular index entry asks the loader for: repo, subfolder, revision and variant.
-
-    ``ComponentSpec.load`` is handed the whole spec, so a component can pin a commit or a named
-    weight variant. Checking the default snapshot for those would approve a switch and then
-    download the pinned files after the resident pipeline is gone.
-    """
+    """A modular spec may pin a commit or variant; checking the default snapshot would miss it."""
     if not isinstance(spec, dict):
         return None
     source = spec.get("pretrained_model_name_or_path") or spec.get("repo")
@@ -437,13 +371,7 @@ def _hosted_source(spec: Any) -> Optional[tuple[str, str, str, str]]:
 
 
 def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
-    """The cached snapshot a load of *repo_id* would read, or None when it is not downloaded.
-
-    The revision the loader asks for: the pinned one where a spec names it, else the one
-    ``refs/main`` resolves to, rather than whichever snapshot sorts first. A superseded revision
-    can hold a complete component while the active one is partial, and approving the old copy is
-    how the load ends up fetching the new one.
-    """
+    """The snapshot of the revision the loader requests, not whichever snapshot sorts first."""
     from core.inference.diffusion import hub_cache_dir
 
     repo_dir = Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}"
@@ -471,12 +399,7 @@ def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
 
 
 def _hosted_component_cached(source: str, subfolder: str, revision: str, variant: str) -> bool:
-    """Whether a modular component the index sources elsewhere is already on disk.
-
-    ``load_components`` pulls each repository the index names, and the video planner omits its
-    base manifest whenever the selected path exists, so a local modular directory with a missing
-    hosted component would otherwise verify clean and download it after the eviction.
-    """
+    """The loader pulls each repo a local modular index names, so those must be cached too."""
     local = Path(source).expanduser()
     try:
         if local.is_dir():
@@ -486,25 +409,12 @@ def _hosted_component_cached(source: str, subfolder: str, revision: str, variant
     snapshot = _cached_snapshot_root(source, revision)
     if snapshot is None:
         return False
-    # the same component rules either way: _upstream_is_cached's no-manifest branch is satisfied by a single weight
-    # file, which an interrupted sharded pull leaves behind
+    # An interrupted sharded pull leaves a single weight file, so use the component rules
     return _component_present(snapshot / subfolder if subfolder else snapshot, variant)
 
 
 def _component_present(component: Path, variant: str = "") -> bool:
-    """Whether one named pipeline component holds what from_pretrained will ask it for.
-
-    ``variant`` is the named weight set a modular spec can pin (``fp16`` and the like), which
-    from_pretrained requires by name rather than falling back to the default files.
-
-    Judged on entries that are real FILES, not merely names in the directory listing. An HF cache
-    snapshot holds symlinks into ``blobs/``, and a deleted blob leaves the link behind: matching
-    on the name alone reads such a component as complete, evicts the resident pipeline, and then
-    fails in from_pretrained with nothing loaded. The same listing on Windows without developer
-    mode holds copies rather than links and cannot express that state at all, so the two hosts
-    disagreed about the very same repository. A directory that merely ends in ``.safetensors``
-    is excluded by the same test.
-    """
+    """Judged on real files, not names: a symlink whose blob was deleted would pass a name-only check."""
     try:
         if not component.is_dir():
             return False
@@ -518,18 +428,14 @@ def _component_present(component: Path, variant: str = "") -> bool:
         return False
     if variant and not any(f".{variant}." in entry.name for entry in files):
         return False
-    # kept on the full listing: a shard index whose blob is gone must still route here, where _shards_declared reads the
-    # unreadable index and refuses, rather than fall through to the weight test below and pass on whichever sibling
-    # shard did survive
+    # Kept on the full listing so an index whose blob is gone refuses, not passes on a sibling
     if any(entry.name.endswith(".index.json") for entry in entries):
         # an index is proof only once it declares something; an empty weight_map declares nothing
         return _shards_declared(component)
-    # a weight-bearing component declares config.json; schedulers, tokenizers and processors carry their own
-    # *_config.json instead and ship no weights at all
+    # Weight-bearing components declare config.json; metadata-only ones use *_config.json instead.
     if (component / "config.json").is_file():
         return any(entry.suffix.lower() in _WEIGHT_SUFFIXES for entry in files)
-    # a tokenizer ships no weights but is still useless without its vocabulary, and which file that is varies by
-    # class, so any one of the known spellings answers for all of them
+    # A tokenizer needs its vocabulary file, which name varies by class, so any known spelling answers.
     if (component / "tokenizer_config.json").is_file():
         return any((component / name).is_file() for name in _TOKENIZER_ASSETS)
     # a metadata-only component is its config: a scheduler or processor directory holding anything else at all (a stray
@@ -571,23 +477,7 @@ def missing_download_bytes(
     pick: MediaModelPick,
     hf_token: Optional[str] = None,
 ) -> Optional[int]:
-    """Bytes this pick would still have to fetch, or 0 when nothing is missing.
-
-    Planned against the engine that will LOAD this pick, the way /images/download-plan does:
-    the resident engine can be native sd.cpp while the target loads through diffusers, and its
-    planner refuses the pick, which the catch below would read as nothing missing.
-
-    A local full IMAGE pipeline is complete by definition, since from_pretrained reads it off
-    disk and the planner would ask the Hub about an absolute path and fail, which reads as
-    unverifiable and would refuse every on-device model. Video is excluded: a local MiniMax-H3
-    modular pipeline still substitutes a hosted quantized conditioner, tens of GB the loader
-    fetches during assembly, so it has to be planned like any other pick.
-
-    Returns None when locality could not be established: the image planner raises, and the
-    video one returns zero bytes with ``plan_failed`` because its own caller falls back to an
-    inline pull. Either way zero is not evidence of a complete cache, and treating it as such
-    would allow exactly the download this exists to prevent, so the switch refuses instead.
-    """
+    """None when locality is unproven, since zero bytes is not evidence of a complete cache."""
     target = normalized_pick(pick)
     family_override = None
     local_pipeline = not target.gguf_filename and Path(target.model_path).is_dir()
@@ -602,8 +492,7 @@ def missing_download_bytes(
         target = replace(target, model_path = repo)
         local_pipeline = False
     if owner == DIFFUSION:
-        # asked of every image pick, not only local pipelines: a single-file HiDream checkpoint plans clean and its
-        # assembly still loads the encoder repo unconditionally
+        # Applies to all image picks; single-file HiDream plans clean but assembly loads the encoder repo.
         external = _missing_external_encoder(target)
         if external is None or external:
             return external
@@ -618,9 +507,7 @@ def missing_download_bytes(
                 model_kind = target.model_kind,
                 gpu_ordinal = ordinal,
                 hf_token = hf_token,
-                # Only the verdict, not the probe: this asks whether the pick is already on disk, so it must count the
-                # SAME files the load will fetch. Clearing the probe drops the pre-cast encoder and the GGUF
-                # dense-transformer widening, which is how a "fully downloaded" answer goes wrong.
+                # Verdict only, not the probe: must count the same files the load will fetch
                 memory_verdict = False,
                 **({"family_override": family_override} if family_override else {}),
             )

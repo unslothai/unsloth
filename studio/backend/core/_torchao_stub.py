@@ -127,7 +127,6 @@ _HIP_LINE_RE = re.compile(r"^hip\s*(?::[^=]*)?=\s*(.+?)\s*$", re.MULTILINE)
 
 def _version_is_rocm_tagged() -> Optional[bool]:
     """Whether the installed wheel's version carries a rocm tag. None if unreadable."""
-    # Neither on-disk signal was readable, so importing is the only way left.
     try:
         from importlib.metadata import version
         return "rocm" in version("torch").lower()
@@ -157,15 +156,7 @@ def _hip_field_is_set() -> Optional[bool]:
 
 
 def _installed_torch_is_rocm() -> Optional[bool]:
-    """ROCm or not, read off disk without importing torch. None when it cannot be told.
-
-    Avoiding the import is the point: run.py calls this at import time, where torch costs seconds,
-    sizes the OpenMP/BLAS pools before configure_cpu_threads() can set them, and on Windows ROCm
-    can fail outright until main.py has registered the HIP DLL directories. Neither signal alone
-    is enough: AMD's Windows build (torch-2.8.0a0+gitfc14c65) carries no rocm tag so only ``hip``
-    answers, while a wheel without dist-info has no version to read. So a NEGATIVE needs BOTH
-    signals legible and both saying no.
-    """
+    """Reads disk, not torch: an early torch import sizes OpenMP/BLAS pools; False needs both signals."""
     tagged = _version_is_rocm_tagged()
     if tagged:
         return True
@@ -209,11 +200,7 @@ def is_stubbed(package: str) -> bool:
 
 
 def install_torchao_windows_rocm_stub() -> None:
-    """Pre-stub torchao on Windows ROCm so transformers/peft imports don't crash.
-
-    No-op elsewhere (incl. Windows CUDA, where torchao is real). Must run before
-    importing transformers / unsloth_zoo. Safe to call once per worker.
-    """
+    """Must run before transformers or unsloth_zoo is imported; a no-op outside Windows ROCm."""
     if _is_windows_rocm():
         _ensure_finder()
         # Seed torchao top-level + key submodules; the finder handles the rest.
@@ -363,8 +350,7 @@ def install_torchao_windows_rocm_real_or_stub() -> bool:
     """load real torchao on Windows ROCm when its no-distributed shim works; return true iff loaded."""
     if not _is_windows_rocm():
         return False
-    # A spawn child re-runs run.py as __mp_main__, which stubs torchao first. Drop that stub
-    # while nothing that could have bound it is loaded yet.
+    # A spawn child re-runs run.py as __mp_main__, which stubs torchao first; drop it while unbound.
     if is_stubbed("torchao") and not any(m in sys.modules for m in _STUB_CONSUMERS):
         for name in [n for n in sys.modules if n == "torchao" or n.startswith("torchao.")]:
             if getattr(sys.modules[name], "_unsloth_stub", None) is _STUB_SENTINEL:
@@ -381,10 +367,7 @@ def install_torchao_windows_rocm_real_or_stub() -> bool:
 
 
 def install_xformers_windows_rocm_stub() -> None:
-    """Pre-stub xformers on Windows ROCm so diffusers can import at all. No-op elsewhere, and must
-    precede diffusers: the Windows xformers pin is CUDA-only, so against a ROCm torch (no
-    distributed backend) ``import xformers.ops`` dies in torch.distributed, and diffusers imports
-    xformers on sight, taking every model import with it."""
+    """Must precede diffusers: on ROCm torch, import xformers.ops dies in torch.distributed."""
     if _is_windows_rocm():
         _ensure_finder()
         for _xf_name in ("xformers", "xformers.ops"):

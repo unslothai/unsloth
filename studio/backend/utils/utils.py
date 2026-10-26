@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 
 
 # ── Offline / HF-cache helpers ──────────────────────────────────
-# An offline load must never touch the network (a DNS-dead session hangs on hub retries); these read the local HF cache.
+# Offline loads must never touch the network (DNS-dead sessions hang on hub retries).
 _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
@@ -57,14 +57,7 @@ def package_installs_offline() -> bool:
 
 
 def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
-    """The one condition under which a Hub-reaching request can only be answered by disk.
-
-    ``token=False`` denies authentication, not the cache: offline, huggingface_hub and datasets
-    both resolve a previously downloaded private repo without ever authorizing. Guarded at the
-    route entry, since each per-call-site fix only moved the boundary to the next reader. Given
-    a repo id the shared cached-read rule applies rather than a blanket refusal: a PUBLIC repo
-    was always readable, and one not on the disk has nothing to leak.
-    """
+    """token=False denies auth, not the cache: offline, a downloaded private repo resolves from disk. With repo_id, the cached-read rule applies, not a refusal."""
     from hub.utils.hf_tokens import cached_read_refused, is_anonymous
 
     if not is_anonymous(hf_token):
@@ -74,8 +67,7 @@ def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
         return False
     if repo_id is None:
         return True
-    # is_cached is True because these routes read whatever the cache holds; only authorization
-    # is left, and offline that resolves against the disk.
+    # is_cached is True because these routes read whatever the cache holds; only authorization is left, which offline resolves against the disk.
     return cached_read_refused(
         hf_token,
         repo_id = repo_id,
@@ -697,10 +689,7 @@ def active_hf_cache_loadable_snapshot(repo_id: str) -> Optional[Path]:
 
 
 def active_hf_cache_repo_spelling(repo_id: str) -> Optional[str]:
-    """The spelling ``repo_id`` is actually cached under in the active cache, or None.
-
-    The Hub is case insensitive, the cache directories it creates are not, and huggingface_hub keys the directory on the id verbatim, so one checkpoint sits under whichever spelling first asked for it (huggingface/huggingface_hub#3838). Returning the spelling rather than a bool is what lets a caller LOAD the copy it found: asking for any other casing downloads it again.
-    """
+    """Hub is case-insensitive but cache dirs are not: return the cached spelling, since another casing re-downloads the checkpoint; None if not cached."""
     if active_hf_cache_loadable_snapshot(repo_id) is not None:
         return repo_id
     try:
@@ -712,8 +701,7 @@ def active_hf_cache_repo_spelling(repo_id: str) -> Optional[str]:
         for repo_dir in _expand_path(active_hf_hub_cache()).iterdir():
             if repo_dir.name.lower() != wanted or repo_dir.name == exact:
                 continue
-            # Repo ids cannot contain '--' (huggingface_hub.utils.validate_repo_id), so
-            # the directory name maps back to exactly one id.
+            # Repo ids cannot contain '--', so the dir name maps back to exactly one id.
             variant = repo_dir.name[prefix:].replace("--", "/")
             snapshot = _snapshot_in_repo_dir(repo_dir)
             if snapshot is not None and snapshot_is_loadable(snapshot, variant):
@@ -785,8 +773,7 @@ def is_metal_queue_dead(error: Union[Exception, str]) -> bool:
 
 # Never return raw exception text to clients; log server-side, return generic.
 def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
-    """Map an exception to a generic, client-safe message (never raw ``str(error)``, which can leak paths). Log the real exception server-side."""
-    # A mid-stream llama-server failure carries a message that was written to be shown; without this the non-streaming paths reduced it to the fallback while streaming clients got the cause. Imported lazily: utils is low level and must not depend on core.inference at import time.
+    """Mid-stream llama-server errors are user-facing, but non-streaming paths would reduce them to the fallback. Lazy import keeps utils free of core at import."""
     try:
         from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
 
@@ -837,10 +824,7 @@ def log_and_http_error(
     log = None,
     headers: Optional[dict] = None,
 ):
-    """Log ``error`` in full server-side and return an ``HTTPException`` whose ``detail`` is only ``public_message``, never the raw exception text.
-
-    Usage:  raise log_and_http_error(e, 500, "Failed to start training")
-    """
+    """Logs the full error server-side; HTTPException detail carries only public_message, never raw text."""
     from fastapi import HTTPException
 
     # A 4xx is a normal outcome the caller handles. One warning line and no traceback: at error with exc_info, one generation buried the log under 54 rejected saves. 5xx keeps the traceback, and exc_info works for structlog too.
@@ -854,14 +838,7 @@ def log_and_http_error(
 
 @contextmanager
 def without_hf_auth():
-    """
-    Temporarily disable HuggingFace authentication.
-
-    Usage:
-        with without_hf_auth():
-            # Code that should run without cached tokens
-            model_info(model_name, token=None)
-    """
+    """Temporarily disable HuggingFace authentication within a with block, so the code runs without cached tokens."""
     saved_env = {}
     env_vars = ["HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_HOME"]
     for var in env_vars:
@@ -946,13 +923,7 @@ def is_hf_authentication_error(error: Exception) -> bool:
 
 
 def format_error_message(error: Exception, model_name: str) -> str:
-    """
-    Format a user-friendly error message for common load issues.
-
-    Args:
-        error: The exception that occurred
-        model_name: Name of the model being loaded
-    """
+    """Format a user-friendly error message for common load issues, such as a missing modelscope package."""
     missing = modelscope_missing(error)
     if missing:
         return missing

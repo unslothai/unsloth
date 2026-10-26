@@ -79,15 +79,13 @@ _TRANSPORT_ERRORS = (
     httpx.WriteError,
 )
 
-# Readiness probe: the port binds only after the model loads, so any 200 means ready. Use trivial /v1/models, not the
-# capabilities endpoint (which can block).
+# Port binds only after the model loads; the capabilities endpoint can block.
 _READY_PATH = "/v1/models"
 _IMG_GEN_PATH = "/sdcpp/v1/img_gen"
 _VID_GEN_PATH = "/sdcpp/v1/vid_gen"
 _JOBS_PATH = "/sdcpp/v1/jobs"
 
-# Stable parameter residency reported once during startup. Compute-buffer lines are deliberately excluded: those
-# allocations can change between generations, while this floor lives until the server process exits.
+# Compute-buffer lines excluded: they vary per generation, params stay until exit.
 _TOTAL_PARAMS_VRAM_RE = re.compile(
     r"total params memory size\s*=\s*[0-9.]+\s*MB\s*\(\s*VRAM\s+([0-9]+(?:\.[0-9]+)?)\s*MB\b",
     re.IGNORECASE,
@@ -113,11 +111,7 @@ def _has_ancestor(
     *,
     max_depth: int = 8,
 ) -> bool:
-    """True if ``ancestor_pid`` is ``pid``'s parent (or grandparent, ...).
-
-    The listening socket can be held by a child of the process we spawned (a wrapper script, or a
-    shell on Windows), so an exact pid match alone would reject our own server. Depth-capped so a
-    pid-reuse cycle cannot loop."""
+    """Walks ancestors, since the listener may be a wrapper or shell child of our spawned process."""
     try:
         import psutil
         proc = psutil.Process(pid)
@@ -177,10 +171,8 @@ class SdCppServer:
 
     @property
     def lora_dir(self) -> Optional[str]:
-        """The server's ``--lora-model-dir`` scratch dir. Adapters staged here are picked
-        up per request (the sdcpp ``img_gen`` route refreshes its LoRA scan each call), so
-        server-mode LoRA works by materializing here and referencing the files via the
-        structured ``lora`` request field (the server ignores ``<lora:>`` prompt tags)."""
+        """Server rescans this dir per request; reference staged files via the lora field, not
+        prompt tags."""
         return self._scratch_dir
 
     def is_alive(self) -> bool:
@@ -204,16 +196,9 @@ class SdCppServer:
         startup_timeout: float = 600.0,
         extra_args: Optional[list[str]] = None,
     ) -> None:
-        """Spawn the server (which loads the model) and block until it is ready.
-
-        Raises ``RuntimeError`` (with the captured log tail) if the process exits during
-        startup or never answers within ``startup_timeout``. Holds the lifecycle lock so
-        a concurrent start/stop can't interleave. ``extra_args`` is appended last (last
-        wins), which is how the CPU-backend restart pins the graph off the GPU.
-        """
+        """Spawns the server and blocks until ready under the lifecycle lock; extra_args go last so they win, which pins the CPU-backend restart off the GPU."""
         with self._lifecycle_lock:
-            # A stop()/unload that raced in before start() took the lock already set _abort and closed the client; honor
-            # it rather than leak a spawned process.
+            # A stop() that raced in before the lock already closed the client; do not leak a process.
             if self._stopped or self._abort.is_set():
                 raise SdCppCancelled("sd-server start was cancelled before launch.")
             self._abort.clear()
@@ -250,13 +235,9 @@ class SdCppServer:
             self._spawn_error: Optional[Exception] = None
             spawned = threading.Event()
 
-            # Spawn INSIDE the long-lived drain thread: child_popen_kwargs() sets PR_SET_PDEATHSIG, bound to the
-            # creating thread on Linux, so the creator must outlive the child.
+            # Spawn in the drain thread: PR_SET_PDEATHSIG is bound to the creating thread on Linux.
             def _own_process() -> None:
-                # One flag at every spawn. No _graceful_shutdown step unloads the
-                # diffusion engine and cancel_pending_loads only knows about chat loads,
-                # so without this a quit during an /images/load can start a multi-GB
-                # sd-server after the step-7 sweep has taken its snapshot.
+                # Nothing in _graceful_shutdown unloads this engine, so gate every spawn on shutdown.
                 if is_process_shutting_down():
                     self._spawn_error = RuntimeError(
                         "Unsloth is shutting down; not starting sd-server"
@@ -282,9 +263,7 @@ class SdCppServer:
                 self._process = proc
                 self.port = port
                 adopt_pid(proc.pid)  # so a global shutdown sweep also reaps it
-                # Recheck once the pid is recorded, for the window between the gate and
-                # this record. Adoption runs first, so a child killed here was in the
-                # sweep record for as long as it existed.
+                # Recheck after recording: covers the window between the gate and adopt_pid.
                 if is_process_shutting_down():
                     logger.info("shutdown began during the spawn; killing the new sd-server")
                     try:
@@ -292,10 +271,7 @@ class SdCppServer:
                         proc.wait(timeout = 5)
                     except Exception:  # noqa: BLE001 - the reap is best-effort
                         pass
-                    # Only drop the record once the child is confirmed gone. If the kill
-                    # or the wait raised, the server is still alive with the sweep
-                    # already past it, and this record is the last thing that could
-                    # reap it; forgetting it here would be the orphan this PR is about.
+                    # Keep the record if kill/wait raised: it is the last thing that could reap the child.
                     if proc.poll() is not None:
                         forget_pid(proc.pid)
                     else:
@@ -338,15 +314,11 @@ class SdCppServer:
         timeout: float,
         interval: float = 0.5,
     ) -> bool:
-        """Poll ``/v1/models`` until 200; bail early if the process exits.
-
-        Upstream binds the port only AFTER the model is loaded, so a 200 here is a true
-        ready signal (no half-loaded race)."""
+        """A 200 is a true ready signal: upstream binds the port only after the model has loaded."""
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}{_READY_PATH}"
         while time.monotonic() < deadline:
-            # a concurrent stop() sets _abort so this wait bails without holding the model load hostage for the full
-            # startup_timeout
+            # stop() sets _abort so the wait bails early instead of holding the load for startup_timeout.
             if self._abort.is_set():
                 logger.info("sd-server startup aborted before ready")
                 return False
@@ -366,18 +338,7 @@ class SdCppServer:
         return False
 
     def _port_is_ours(self) -> bool:
-        """True unless the 200 at ``/v1/models`` demonstrably came from someone else's process.
-
-        ``_find_free_port`` binds an ephemeral port, reads it and closes the socket, and sd-server
-        binds it only AFTER loading the model -- minutes for a multi-gigabyte checkpoint. Another
-        local process can take the port inside that window, and ``/v1/models`` is a stock
-        OpenAI-compatible route that llama.cpp's own server (and a second Unsloth) answers 200 on,
-        so readiness would pass and every generation would be posted to an unrelated listener.
-
-        Verifying the listener really belongs to our child closes that. Best-effort by design:
-        psutil is optional, and reading another process' connections needs privileges on some
-        platforms, so anything short of a definite "that port belongs to a DIFFERENT pid" keeps
-        today's behaviour rather than failing a healthy start."""
+        """Best-effort: fails only when the port listener is definitely another pid, since another local server can answer /v1/models 200; unknown passes."""
         proc = self._process
         if proc is None or proc.pid is None:
             return True
@@ -484,12 +445,7 @@ class SdCppServer:
     def reclaimable_params_vram_gb(
         self, physical_gpu_id: Optional[int]
     ) -> Optional[dict[int, float]]:
-        """Stable resident parameter floor released when this server stops.
-
-        Device attribution is supplied by the backend that resolved the
-        CUDA/ROCm child pin. Missing attribution or a changing/dead process
-        fails closed.
-        """
+        """Fails closed (None) when device attribution is missing or the process has exited."""
         process = self._process
         if physical_gpu_id is None or process is None or process.poll() is not None:
             return None
@@ -503,7 +459,7 @@ class SdCppServer:
     def stop(self) -> None:
         """Terminate the server (SIGTERM -> SIGKILL), join the drain, and release the HTTP
         client + atexit handler. Idempotent."""
-        # signal abort BEFORE contending for the lock so a start() readiness wait bails instead of blocking stop()
+        # Set abort BEFORE taking the lock so a start() readiness wait bails instead of blocking.
         self._abort.set()
         self._stopped = True
         with self._lifecycle_lock:
@@ -561,13 +517,8 @@ class SdCppServer:
         submit_timeout: float = 60.0,
         total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
     ) -> list[bytes]:
-        """Submit one async ``img_gen`` job, poll it to completion, return image bytes.
-
-        ``on_step`` receives each server stdout line (for the step bar). ``cancel_event``,
-        when set, cancels the job via the native endpoint and raises ``SdCppCancelled``.
-        Raises ``RuntimeError`` on submit/poll failures (including the server dying), with
-        the log tail attached.
-        """
+        """A set cancel_event cancels the job natively and raises SdCppCancelled; on_step gets
+        stdout lines."""
         return self._run_job(
             "img_gen",
             _IMG_GEN_PATH,
@@ -617,14 +568,7 @@ class SdCppServer:
         submit_timeout: float = 60.0,
         total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
     ) -> Any:
-        """Submit one async ``kind`` job at ``path``, poll it to completion, return ``decode(job)``.
-
-        ``on_step`` receives each server stdout line (for the step bar). ``cancel_event``,
-        when set, cancels the job via the native endpoint and raises ``SdCppCancelled``.
-        Raises ``RuntimeError`` on submit/poll failures (including the server dying), with
-        the log tail attached.
-        """
-        # Already stopped with the cancel event set: report cancellation (route 409), not a generic "server died" 500.
+        """Submits and polls one async job; a cancel raises SdCppCancelled (route 409), not a 500; submit or poll failures raise RuntimeError with the log tail."""
         if self._stopped or not self.is_alive():
             if cancel_event is not None and cancel_event.is_set():
                 raise SdCppCancelled("sd-server generation was cancelled.")
@@ -672,10 +616,7 @@ class SdCppServer:
                         self.cancel(job_id)
                         cancel_sent_at = time.monotonic()
                     elif time.monotonic() - cancel_sent_at > _CANCEL_GRACE_S:
-                        # Cancel not reflected within the grace window, so the job is still running and sd-server will
-                        # not interrupt it. Stop the process before reporting the cancellation: abandoning the poll
-                        # frees the generate lock while the native job keeps the GPU. Safe, since the backend reloads on
-                        # the next generate.
+                        # sd-server will not interrupt the job; stop it so the GPU is freed with the generate lock.
                         self.stop()
                         raise SdCppCancelled("sd-server generation was cancelled.")
                 if not self.is_alive():
@@ -684,8 +625,7 @@ class SdCppServer:
                         raise SdCppCancelled("sd-server generation was cancelled.")
                     raise RuntimeError(self._died_message(f"{kind} poll", None))
                 if time.monotonic() > deadline:
-                    # sd-server will not interrupt an in-flight job, so cancel + stop to free the slot; the backend
-                    # reloads on the next generate.
+                    # sd-server will not interrupt an in-flight job; the backend reloads on the next generate.
                     self.cancel(job_id)
                     self.stop()
                     raise RuntimeError(f"sd-server generation timed out after {total_timeout}s")
@@ -695,8 +635,7 @@ class SdCppServer:
                     time.sleep(poll_interval)
                     continue
                 except RuntimeError as exc:
-                    # a concurrent stop() closes the shared client, giving a plain RuntimeError rather than a transport
-                    # error
+                    # A concurrent stop() closes the client, giving a plain RuntimeError, not a transport error.
                     if cancel_event is not None and cancel_event.is_set():
                         raise SdCppCancelled("sd-server generation was cancelled.") from exc
                     raise

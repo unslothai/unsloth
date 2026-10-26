@@ -6021,7 +6021,8 @@ def patch_gradient_accumulation_fix(Trainer):
             # Unsloth tensor parallel model (apply_tensor_parallel): no DDP over the tp ranks, dataloader
             # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
             _refuse_pipeline_parallel_for_trainer(model)
-            tensor_parallel = _tensor_parallel_trainer_pre(model)
+            # UNSLOTH_TP_SIZE (unmodified scripts): tensor parallel before native FSDP2 shards the dp dimension.
+            tp_env = _tensor_parallel_env_trainer_pre(model)
             from .. import fsdp2_launch as _fsdp2_launch
 
             # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
@@ -6034,6 +6035,18 @@ def patch_gradient_accumulation_fix(Trainer):
                     native_fsdp2_trainer_init_arguments(_original_trainer_init, args, kwargs)[
                         "args"
                     ]
+                )
+            if native_fsdp2 and tp_env is not None and tp_env.dp == 1:
+                native_fsdp2 = (
+                    False  # UNSLOTH_TP_SIZE = world size: no data parallel dimension to shard
+                )
+            if tp_env is not None and tp_env.dp > 1 and tp_env.fsdp2 and not native_fsdp2:
+                # The dp dimension would be neither FSDP2-sharded nor gradient-averaged: replicas would drift.
+                raise RuntimeError(
+                    f"Unsloth: UNSLOTH_TP_SIZE={tp_env.tp} with UNSLOTH_FSDP2=1 needs Unsloth's native FSDP2 for "
+                    f"the data parallel dimension (dp {tp_env.dp}), but this launch selects accelerate's FSDP "
+                    "(ACCELERATE_USE_FSDP / an accelerate FSDP config, or a non-CUDA install). Launch with "
+                    "torchrun and UNSLOTH_FSDP2_BACKEND unset, or unset UNSLOTH_FSDP2 for DDP-style data parallel."
                 )
             if native_fsdp2:
                 from .fsdp2_native import (
@@ -6053,6 +6066,21 @@ def patch_gradient_accumulation_fix(Trainer):
                     model_init = bound["model_init"],
                     optimizer_cls_and_kwargs = bound["optimizer_cls_and_kwargs"],
                 )
+            # The generated TRL trainers already do this (rl.py); plain Trainer / Seq2SeqTrainer / other
+            # subclasses need it too. Before init: transformers 5 builds the DDP kwargs in __init__.
+            if model is not None:
+                try:
+                    from ._ddp_defaults import unsloth_default_ddp_find_unused_parameters
+                    unsloth_default_ddp_find_unused_parameters(
+                        kwargs["args"]
+                        if "args" in kwargs
+                        else (args[1] if len(args) > 1 else None),
+                        model,
+                    )
+                except Exception:
+                    pass
+            # After native FSDP2's shard over mesh['dp']: the tp Trainer setup checks the (dp, tp) world.
+            tensor_parallel = _tensor_parallel_trainer_pre(model)
             _original_trainer_init(self, *args, **kwargs)
             if native_fsdp2:
                 native_fsdp2_trainer_setup(self, phase = "post")
@@ -6155,6 +6183,13 @@ def _refuse_pipeline_parallel_for_trainer(model):
             "Trainer yet: each rank holds one stage, and a stage cannot run a forward alone. Use a custom "
             "training loop with PipelineParallel.step (unsloth/models/pp_native.py)."
         )
+
+
+def _tensor_parallel_env_trainer_pre(model):
+    if not os.environ.get("UNSLOTH_TP_SIZE") and not os.environ.get("UNSLOTH_PP_SIZE"):
+        return None
+    from .tp_env import tensor_parallel_env_trainer_pre
+    return tensor_parallel_env_trainer_pre(model)
 
 
 def _tensor_parallel_trainer_pre(model):

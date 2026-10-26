@@ -3,7 +3,6 @@
 
 import type { TourStep } from "@/features/tour";
 
-/** Without an Easy form the tabs read Editor and Runs, so neither "three" nor "Advanced" fits. */
 function viewsStep(supportsEasyMode: boolean): TourStep {
   return {
     id: "views",
@@ -30,7 +29,6 @@ const saveStep: TourStep = {
   body: <>Recipes are stored on this device. Save before a long run.</>,
 };
 
-/** Only the graph view mounts the canvas and its controls, and only once the recipe has loaded. */
 export function buildRecipeEditorTourSteps({
   isGraphView,
   supportsEasyMode,
