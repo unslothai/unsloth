@@ -40199,6 +40199,11 @@ class LlamaCppBackend:
             return False
         if self._metal_oom_is_terminal(snapshot):
             return False
+        # Stopped on purpose (Metal out of memory, a lost device): not an MTP crash, so the
+        # next request's _respawn_if_dead replays it as loaded. The sidecar call is the
+        # Metal retirement's own drafter-free reload.
+        if not sidecar_oom and proc is getattr(self, "_retired_process", None):
+            return False
         # Still serving: a transient error, so leave the caller its normal retry.
         if proc.poll() is None and self._server_socket_is_open():
             return False
@@ -40241,6 +40246,10 @@ class LlamaCppBackend:
                         if self._metal_oom_is_terminal(snapshot):
                             # Queued before the second strike was published.
                             logger.info("MTP-crash reload skipped: out of Metal memory twice.")
+                            return
+                        if not sidecar_oom and proc is getattr(self, "_retired_process", None):
+                            # Retired while this waited for the exit: a respawn, not a crash.
+                            logger.info("MTP-crash reload skipped: the server was retired.")
                             return
                         unload_epoch = self._unload_epoch
                         dropped_draft = self._mtp_draft_path or self._mtp_draft_suppressed_path
@@ -41459,14 +41468,15 @@ class LlamaCppBackend:
                 or self._cancel_event.is_set()
             ):
                 return
-            # Else the MTP watchdog reads this kill as an MTP crash.
+            # Else the MTP watchdog, or a request that sees the port close, reads this
+            # kill as an MTP crash: both the watchdog stop and the marker go first.
             self._stop_mtp_crash_watchdog()
+            self._retired_process = served_by
             try:
                 served_by.kill()
                 served_by.wait(timeout = 10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            self._retired_process = served_by
             if metal_poison is not None:
                 # Decided under _respawn_lock, or a request could respawn the dead child
                 # with the speculative config the drafter-free reload avoids.
