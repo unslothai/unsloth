@@ -53,10 +53,11 @@ DIFFUSION_IMAGE_GGUF_ARCHS = frozenset(
         "z_image",
         "zimage",
         "krea2",
+        "moss_image",
     }
 )
 # Archs that alone name the family. Not "flux" / "qwen_image": several DiTs ship under those (#14474).
-FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2"})
+FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2", "moss_image"})
 # Recognised, but no Studio page can run them.
 UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
