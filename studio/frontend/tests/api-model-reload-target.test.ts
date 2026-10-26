@@ -47,7 +47,8 @@ test("a file-picked primary reloads through its file grant, and not once the gra
   assert.match(hook, /model\.active && fileGrant\s*\?\s*grantedTarget\(fileGrant\)\s*:\s*servedTarget\(model\)/);
   assert.match(hook, /nativePathToken: resident\.nativePathToken \?\? undefined,/);
   assert.match(hook, /loadId: target\.loadId,\s*nativePathToken: target\.nativePathToken,\s*nativePathExpiresAtMs: target\.nativePathExpiresAtMs,/);
-  assert.match(hook, /model\.active\s*\?\s*!\(fileGrant && !residentHasRunSettings\(fileGrant\)\)/);
+  // A primary with no grant (a reloaded tab) is judged by its label like a kept row.
+  assert.match(hook, /model\.active && fileGrant\s*\?\s*residentHasRunSettings\(fileGrant\)\s*:\s*!isNativeFileLabel\(model\.checkpoint\)/);
   const residentHook = readSrc("features/api-monitor/use-resident-run-target.ts");
   const grantHook = residentHook.slice(residentHook.indexOf("export function useResidentFileGrant("), residentHook.indexOf("export function useResidentRunTarget("));
   assert.doesNotMatch(grantHook, /residentMatchesMonitor|residentHasRunSettings/);

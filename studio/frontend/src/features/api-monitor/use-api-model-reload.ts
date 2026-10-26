@@ -186,11 +186,11 @@ export function useApiModelReload({
     [fileGrant],
   );
 
-  // A kept file-picked GGUF is listed by its bare file name and no grant: nothing here can load it.
+  // A file-picked GGUF is listed by its bare file name; without a live grant nothing here can load it.
   const canReload = useCallback(
     (model: ReloadableModel): boolean =>
-      model.active
-        ? !(fileGrant && !residentHasRunSettings(fileGrant))
+      model.active && fileGrant
+        ? residentHasRunSettings(fileGrant)
         : !isNativeFileLabel(model.checkpoint),
     [fileGrant],
   );
