@@ -623,9 +623,15 @@ try:
 except Exception as _triton_import_exception:
     triton = None
     TRITON_IMPORT_ERROR = f"{type(_triton_import_exception).__name__}: {_triton_import_exception}"
+    # No Triton package at all (AMD Windows wheels), not an installed but broken one.
+    _TRITON_MISSING = (
+        isinstance(_triton_import_exception, ModuleNotFoundError)
+        and _triton_import_exception.name == "triton"
+    )
     del _triton_import_exception
 else:
     TRITON_IMPORT_ERROR = None
+    _TRITON_MISSING = False
 
 if TRITON_IMPORT_ERROR is not None:
     if DEVICE_TYPE in ("cuda", "hip") and torch.cuda.is_available():
@@ -766,12 +772,66 @@ from .import_fixes import patch_bitsandbytes_optimizer_step_sync
 patch_bitsandbytes_optimizer_step_sync()
 del patch_bitsandbytes_optimizer_step_sync
 
+
+def _define_kernels_against_triton_stub():
+    """Unsloth's kernel modules define @triton.jit kernels at import. With no Triton package, a triton import made
+    by an unsloth.* module resolves to unsloth_zoo's triton stub (calling a kernel raises); every other importer
+    still sees no Triton, so no library mistakes the stub for a real one. Returns the undo callable."""
+    try:
+        from unsloth_zoo.stubs import triton_stub
+    except ImportError:
+        return None
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
+        importer = (globals or {}).get("__name__") or ""
+        if (
+            level
+            or not (name == "triton" or name.startswith("triton."))
+            or importer.split(".")[0] != "unsloth"
+        ):
+            return real_import(name, globals, locals, fromlist, level)
+        meta_path, modules = list(sys.meta_path), set(sys.modules)
+        triton_stub.inject_into_sys_modules()
+        try:
+            return real_import(name, globals, locals, fromlist, level)
+        finally:
+            sys.meta_path[:] = meta_path
+            for key in [
+                k
+                for k in sys.modules
+                if (k == "triton" or k.startswith("triton.")) and k not in modules
+            ]:
+                del sys.modules[key]
+
+    builtins.__import__ = _import
+
+    def remove():
+        if builtins.__import__ is _import:
+            builtins.__import__ = real_import
+
+    return remove
+
+
+_remove_triton_stub = _define_kernels_against_triton_stub() if _TRITON_MISSING else None
 from .models import *
 from .models import __version__
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+
+if _remove_triton_stub is not None:
+    _remove_triton_stub()
+del _define_kernels_against_triton_stub, _remove_triton_stub
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
