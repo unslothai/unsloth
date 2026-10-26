@@ -4416,7 +4416,7 @@ export const en = {
       modelLoaded: "Whichever model is loaded",
       modelOnDevice: "On this device",
       modelNote: "If this model isn't loaded when the task runs, Unsloth asks first.",
-      modelNoteAllowed: "Switches to this model only while you're away from Unsloth, then back to what you had.",
+      modelNoteAllowed: "Loads this model only while you're away from Unsloth, then puts back what you had.",
       modelEmpty: "Download a model in Model hub or add a connection to choose another.",
       modelMissing: "{model} (not on this device)",
       allowLoad: "Switch automatically when I'm away",
@@ -4452,7 +4452,7 @@ export const en = {
     // Asked when a task's model is not loaded: loading it replaces the model in Chat.
     loadPrompt: {
       title: "Load {model}?",
-      description: "“{title}” runs on {model}, which isn't loaded. Running it switches Chat to {model} until it finishes, then back.",
+      description: "“{title}” runs on {model}, which isn't loaded. Running it loads {model} until it finishes, then puts back what you had.",
       always: "Don't ask again. Switch only while I'm away from Unsloth.",
       notNow: "Not now",
       load: "Load and run",
