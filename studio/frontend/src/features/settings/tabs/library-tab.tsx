@@ -168,7 +168,7 @@ function StorageSection() {
   const open = (link: LibrarySearch) => {
     closeDialog();
     setView("list");
-    // Already on that tab, the view would keep its search and filters and show less than counted.
+    // Already on that tab, the view would keep its filters and show less than counted.
     restartLibrary();
     void navigate({ to: "/library", search: link });
   };

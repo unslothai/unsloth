@@ -283,8 +283,7 @@ class GemmaFixedRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-        # The original Llama codebase creates these on the target device in FP32 and multiplies in FP32; the
-        # difference here is explicit division t/x rather than t * (1/x).
+        # Built on the target device in FP32 like the original Llama code; the one change is t/x division instead of t * (1/x).
         self.current_rope_size = seq_len
 
         # The difference is we do division explicitly instead of t * (1/x) ie we do t/x.
@@ -328,8 +327,7 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-        # The original Llama codebase creates these on the target device in FP32 and multiplies in FP32; the
-        # difference here is explicit division t/x rather than t * (1/x).
+        # Built on the target device in FP32 like the original Llama code; the one change is t/x division instead of t * (1/x).
         self.current_rope_size = seq_len
 
         # The difference is we do division explicitly instead of t * (1/x) ie we do t/x.
@@ -372,8 +370,7 @@ class FastGemmaModel(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(GemmaForCausalLM)
 
-        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
-        # huggingface/transformers#27931), so the old rotary embeddings are retained.
+        # Static KV cache (4.38.0) made training slower, so the old rotary embeddings are kept.
         import transformers.models.gemma.modeling_gemma
 
         transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = GemmaFixedRotaryEmbedding
@@ -403,8 +400,7 @@ class FastGemmaModel(FastLlamaModel):
         # Patch RMS Layernorm
         for name, module in model.named_modules():
             if isinstance(module, GemmaRMSNorm):
-                # Must be in float32 (keras-nlp gemma/rms_normalization.py#L36); the +1 is left to the Triton kernel
-                # itself.
+                # Must be float32; the Triton kernel applies the +1 itself.
                 if not hasattr(module, "variance_epsilon"):
                     module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
 

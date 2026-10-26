@@ -62,9 +62,7 @@ def _wrap(schema: dict) -> _RelaxedUnion:
         }
         wrapped = _RelaxedUnion({**fields, "anyOf": [dict(_PERMISSIVE_OBJECT), schema]})
     else:
-        # Chat templates read the node's own type/properties/required; llama.cpp's grammar takes
-        # anyOf before them, so both stay. A type list keeps each other type with its own constraints,
-        # as llama.cpp expands it.
+        # Templates read the node type, properties and required; grammar takes anyOf first, so keep both; a type list keeps the constraints of each type.
         kind = schema.get("type")
         scalar = {
             key: value

@@ -35,8 +35,6 @@ import { OVERLAY_CONTROL } from "../surface";
 
 const ICON = "size-icon";
 
-/** Folders a target can move into, depth-first with their nesting depth. A folder is never offered
- *  itself or anything under it. */
 function moveDestinations(
   folders: LibraryFolder[],
   target: LibraryTarget,

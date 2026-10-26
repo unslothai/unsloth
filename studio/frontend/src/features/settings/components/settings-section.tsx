@@ -22,8 +22,6 @@ export function SettingsSection({
   danger?: boolean;
   description?: ReactNode;
   children: ReactNode;
-  /** For deep links that scroll a section into view. Optional, so every
-      existing caller renders exactly as before. */
   ref?: Ref<HTMLElement>;
 }) {
   return (
@@ -56,13 +54,11 @@ export function SettingsSection({
           ) : null}
         </div>
       )}
-      {/* Related rows share a section without dividers. */}
       <div className="flex flex-col">{children}</div>
     </section>
   );
 }
 
-/** Divider between unrelated clusters of rows inside one section. */
 export function SettingsGroupDivider() {
   return <div className="my-1 border-t border-border/60" />;
 }

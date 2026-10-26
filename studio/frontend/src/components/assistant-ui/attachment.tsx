@@ -192,8 +192,7 @@ type PastedTextAttachment = {
   readonly sentBytes?: number;
 };
 
-// Long pastes arrive as a synthetic .txt and render as a chip, not a tile. The selector only passes
-// references along: the text can be megabytes, so nothing here may copy or scan it.
+// The text can be megabytes, so the selector only passes references and nothing here copies or scans it.
 const usePastedTextAttachment = (): PastedTextAttachment | null => {
   return useAuiState(
     useShallow(({ attachment }): PastedTextAttachment | null => {
@@ -211,7 +210,6 @@ const usePastedTextAttachment = (): PastedTextAttachment | null => {
   );
 };
 
-/** Only the composer inlines, and there the File is always still around. */
 const readPastedText = async ({ file }: PastedTextAttachment): Promise<string> =>
   file ? await file.text() : "";
 
@@ -224,8 +222,6 @@ const readPastedTextPreview = async (
   return pastedTextPreview(await readPastedText(attachment));
 };
 
-/** Annotations made on a document in the browser. Read off the File in the composer and off the
- *  stored text once sent; the text is only parsed when its tag says it is one. */
 const useAnnotationsAttachment = (): DocumentAnnotations | null => {
   const { file, sentText } = useAuiState(
     useShallow(({ attachment }) => {
@@ -238,7 +234,6 @@ const useAnnotationsAttachment = (): DocumentAnnotations | null => {
   return useMemo(() => annotationsOfFile(file) ?? parseAnnotationsContent(sentText), [file, sentText]);
 };
 
-/** "1 annotation", with what was marked and asked on hover, as ChatGPT shows it. */
 const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer: boolean }> = ({
   annotations,
   isComposer,
@@ -265,7 +260,6 @@ const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer
             {label}
           </button>
         </HoverCardTrigger>
-        {/* The menus' surface: their soft shadow and radius, no ring, rather than a hover card's lift. */}
         <HoverCardContent
           side="top"
           align="start"
@@ -309,8 +303,7 @@ const PastedTextPreviewDialog: FC<
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    // Laying out megabytes in one text node locks the page, so show an
-    // opening. The attachment itself still holds everything.
+    // Laying out megabytes in one text node locks the page, so show only an opening.
     readPastedTextPreview(attachment)
       .then((value) => {
         if (!cancelled) setPreview(value);
@@ -362,20 +355,17 @@ const PastedTextAttachmentUI: FC<{
       mountedRef.current = false;
     };
   }, []);
-  // Read off the header, never measured: the paste can be megabytes and this
-  // runs while the thread is trying to paint.
+  // Read off the header, never measured: the paste can be megabytes.
   const bytes = attachment.file?.size ?? attachment.sentBytes;
   // A sent paste reopened for editing has no File to read back, so it previews instead.
   const canInline = isComposer && attachment.file !== undefined;
 
-  // Clicking the chip pours the text back into the composer.
   const showInTextField = useCallback(() => {
     if (inlining) return;
     setInlining(true);
     void readPastedText(attachment)
       .then((text) => {
-        // Reading a big file is slow enough to outlive the send that cleared
-        // the composer, which would leave the text behind as a stray draft.
+        // A slow read can outlive the send that cleared the composer and leave a stray draft.
         if (!mountedRef.current || text.length === 0) return;
         const composer = aui.composer();
         if (
@@ -427,7 +417,6 @@ const PastedTextAttachmentUI: FC<{
           center={
             <span className="flex flex-col items-center gap-1 text-ui-11">
               {textIcon("size-6")}
-              {/* Hover swaps the size for the action. */}
               <span className={canInline ? "group-hover:hidden" : undefined}>
                 {sizeLabel}
               </span>
@@ -499,7 +488,6 @@ const PastedTextAttachmentUI: FC<{
 const AttachmentCardRemove: FC = () => {
   return (
     <AttachmentPrimitive.Remove asChild={true}>
-      {/* No tooltip: the X says what it does, and a label popping over the next card is noise. */}
       <Button
         variant="ghost"
         size="icon"

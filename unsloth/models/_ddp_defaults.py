@@ -91,6 +91,9 @@ def _config_may_skip(config):
         # Optional cross-attention (GPT-2 style) only runs when encoder states are passed.
         if getattr(c, "add_cross_attention", False) and not getattr(c, "is_encoder_decoder", False):
             return True
+        # Mllama text: its cross-attention decoder layers are skipped without image states.
+        if getattr(c, "cross_attention_layers", None):
+            return True
         # layerdrop, encoder_layerdrop, decoder_layerdrop, speech_encoder_layerdrop, ...
         for key, value in getattr(c, "__dict__", {}).items():
             if (

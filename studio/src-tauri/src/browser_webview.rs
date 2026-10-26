@@ -33,9 +33,8 @@ const PARK_GAP: f64 = 64.0;
 #[cfg(target_os = "macos")]
 const PAGE_DATA_STORE: [u8; 16] = *b"unsloth-browser1";
 
-/// Mute tab for WebKit, which has no public mute for a view: media plays muted (in the page or not,
-/// as `new Audio()` makes) and Web Audio contexts made after it are suspended. Run in the page's
-/// world, so a page can undo it for itself; installed once per document, then toggled.
+/// WebKit has no public view mute: mute media and suspend later Web Audio contexts. Runs in the
+/// page's world, so a page can undo it for itself; installed once per document, then toggled.
 #[cfg(target_os = "macos")]
 const MUTE_SCRIPT: &str = r#"((muted) => {
   const key = Symbol.for("unsloth.browser.mute");
@@ -140,7 +139,7 @@ const STATE_SCRIPT: &str = r#"(() => {
 
 pub struct BrowserViews {
     inner: Mutex<ViewsState>,
-    /// Whether the address poll has anything to watch; it sleeps on this rather than a timer.
+    /// The address poll sleeps on this rather than a timer.
     gate: watch::Sender<PollGate>,
 }
 
@@ -153,7 +152,6 @@ impl Default for BrowserViews {
     }
 }
 
-/// A view is shown, and the window it sits in is in use (focused, visible, not minimised).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PollGate {
     shown: bool,
@@ -164,7 +162,6 @@ struct PollGate {
 
 impl Default for PollGate {
     fn default() -> Self {
-        // An unknown window state polls, as it always did.
         Self {
             shown: false,
             window_active: true,
@@ -183,7 +180,7 @@ impl PollGate {
 struct ViewsState {
     shown: Option<String>,
     urls: HashMap<String, String>,
-    /// Download paths by URL, oldest first (macOS doesn't report it back; one URL can download twice).
+    /// Oldest first; macOS does not report the path back and one URL can download twice.
     downloads: HashMap<String, Vec<PathBuf>>,
     /// By URL, finishes that couldn't tell which of several reservations they were (`take_finished`).
     unexplained_finishes: HashMap<String, usize>,
@@ -225,15 +222,14 @@ fn set_shown(views: &BrowserViews, inner: &mut ViewsState, shown: Option<String>
     });
 }
 
-/// Re-read the main window's state after its focus, size or visibility changed.
 pub fn window_changed<R: Runtime>(app: &AppHandle<R>, focused: Option<bool>) {
     let (Some(views), Some(window)) =
         (app.try_state::<BrowserViews>(), app.get_window(MAIN_WINDOW))
     else {
         return;
     };
-    // Windows reports keyboard focus moving into a child webview as the window losing focus, so
-    // there only a minimised or hidden window pauses the poll; macOS and GTK report activation.
+    // Windows reports focus moving into a child webview as the window losing focus, so only
+    // minimised or hidden pauses the poll there.
     let focused = cfg!(windows) || focused == Some(true) || window.is_focused().unwrap_or(true);
     let active =
         focused && window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
@@ -334,7 +330,6 @@ pub struct ViewBounds {
 }
 
 impl ViewBounds {
-    /// `(x, y, width, height, viewport_width)`, in the caller's CSS pixels.
     pub(crate) fn parts(&self) -> (f64, f64, f64, f64, f64) {
         (self.x, self.y, self.width, self.height, self.viewport_width)
     }
@@ -487,7 +482,6 @@ fn ipv6_is_private(ip: Ipv6Addr) -> bool {
         || (first & 0xfff0) == 0x3ff0
 }
 
-/// Cap on page addresses sent to the panel, as the proxied frame caps its messages.
 const MAX_URL_CHARS: usize = 8192;
 
 fn reportable(url: &str) -> bool {
@@ -498,7 +492,7 @@ fn is_external_handoff(url: &Url) -> bool {
     url.scheme() == "mailto"
 }
 
-/// URL prefixes (WebKit content-rule regexes, which have no `|`) a page may not request.
+/// URL prefixes a page may not request (WebKit content-rule regexes, which have no `|`).
 const BLOCKED_HOST_PREFIXES: &[&str] = &[
     r"localhost[:/]",
     r"[^/@]*\.localhost[:/]",
@@ -854,7 +848,7 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
     });
 }
 
-// A page picks its title, so it can't be large enough to stall the UI; the frame path's cap.
+// A page picks its title, so cap it to avoid stalling the UI.
 const MAX_TITLE_CHARS: usize = 1024;
 
 fn bounded_title(title: String) -> String {
@@ -883,15 +877,14 @@ fn download_allowed(in_flight: usize, starts: &mut VecDeque<Instant>, now: Insta
     true
 }
 
-/// A free name in `dir` for a download, from the name the page suggested; `reserved` holds the
-/// destinations of downloads still in flight, which don't exist on disk yet.
+/// `reserved` holds destinations of in-flight downloads, which don't exist on disk yet.
 fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>) -> PathBuf {
     let name = suggested
         .file_name()
         .and_then(|name| name.to_str())
         .map(crate::native_file_dialogs::safe_download_name)
         .unwrap_or_else(|| "download".into());
-    // Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
+    // Windows and macOS file systems ignore case.
     let same = |a: &Path, b: &Path| {
         if cfg!(any(windows, target_os = "macos")) {
             a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
@@ -1061,9 +1054,8 @@ fn with_page_profile<R: Runtime>(
     }
 }
 
-/// WebView2 arguments for pages' own environment. They replace wry's defaults, so repeat those
-/// except SmartScreen, which stays on as in Edge since these are open-web pages; Chromium bypasses
-/// the proxy for loopback otherwise.
+/// These replace wry's defaults, so repeat them except SmartScreen (kept on for open-web pages).
+/// Chromium bypasses the proxy for loopback otherwise.
 #[cfg(any(windows, test))]
 fn page_browser_args(proxy: &str) -> String {
     format!(
@@ -1072,7 +1064,7 @@ fn page_browser_args(proxy: &str) -> String {
     )
 }
 
-/// The page's address. wry's `url()` panics on macOS while WebKit has none (a failed load).
+/// wry's `url()` panics on macOS while WebKit has none (a failed load).
 async fn page_url<R: Runtime>(webview: &Webview<R>) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -1093,8 +1085,7 @@ async fn page_url<R: Runtime>(webview: &Webview<R>) -> Option<String> {
     webview.url().ok().map(|url| url.to_string())
 }
 
-/// Poll the shown tab's address, which pushState changes without a load. Started once; it only
-/// runs while a view is shown in a window in use.
+/// pushState changes the address without a load. Runs only while a view is shown in a window in use.
 fn start_url_poll<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<BrowserViews>();
     {
@@ -1110,8 +1101,7 @@ fn start_url_poll<R: Runtime>(app: &AppHandle<R>) {
     tauri::async_runtime::spawn(run_url_poll(gate, move || poll_url(app.clone())));
 }
 
-/// Read now and every `URL_POLL` while the gate is open; while it is shut, wait on it with no
-/// timer armed. A change while open reads at once (a tab switch or the window coming back).
+/// While the gate is shut, wait on it with no timer armed.
 async fn run_url_poll<F, Fut>(mut gate: watch::Receiver<PollGate>, mut poll: F)
 where
     F: FnMut() -> Fut,
@@ -1653,8 +1643,7 @@ mod page_proxy {
     type CreateHost = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut AnyObject;
     type CreateConnect = unsafe extern "C" fn(*mut AnyObject, *mut AnyObject) -> *mut AnyObject;
 
-    /// Point the data store at the proxy. Network calls (macOS 14+) are looked up at run time;
-    /// linking them would stop older macOS launching the app.
+    /// Network calls (macOS 14+) are looked up at run time; linking them would break older macOS.
     pub fn route(view: &WKWebView, proxy: SocketAddr) -> bool {
         let (Ok(ip), Ok(port)) = (
             CString::new(proxy.ip().to_string()),
@@ -1837,7 +1826,7 @@ pub async fn browser_view_show<R: Runtime>(
         _ => None,
     };
     let shown = tab_id.filter(|_| target.is_some());
-    // A resize only moves the shown view; showing it and hiding the rest is for a switch.
+    // A resize only moves the shown view.
     if state.inner.lock().unwrap().shown == shown {
         return Ok(());
     }
@@ -2531,8 +2520,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
 
 const CLEAR_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Clear a page's profile, resolving once the engine reports it done: wry's own call starts the
-/// clear and returns before it finishes.
+/// wry's own clear returns before it finishes, so wait for the engine's report.
 async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
@@ -2761,7 +2749,6 @@ mod tests {
 
         const TEN_MINUTES: Duration = Duration::from_secs(600);
 
-        /// Runs the poll for `span` from `start`, returning the reads it made.
         async fn reads(
             start: PollGate,
             span: Duration,
@@ -2828,7 +2815,6 @@ mod tests {
             gate_tx.send_modify(|gate| gate.shown = true);
             drop(gate_tx);
             tokio::time::sleep(TEN_MINUTES).await;
-            // The read made as it opened, then nothing: the poll ended with its gate.
             assert_eq!(count.load(Ordering::SeqCst), 6);
         }
 
@@ -2859,7 +2845,6 @@ mod tests {
             set_shown(&views, &mut inner, Some("b".into()));
             tokio::time::sleep(Duration::from_millis(1)).await;
             assert_eq!(count.load(Ordering::SeqCst), 2);
-            // Showing the same tab again is not a switch.
             set_shown(&views, &mut inner, Some("b".into()));
             tokio::time::sleep(Duration::from_millis(1)).await;
             assert_eq!(count.load(Ordering::SeqCst), 2);

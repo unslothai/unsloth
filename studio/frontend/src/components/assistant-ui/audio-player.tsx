@@ -33,8 +33,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
       setIsPlaying(false);
       return;
     }
-    // An uploaded file can carry a codec the webview cannot decode, so the
-    // button only flips once playback has actually started.
+    // The file may carry a codec the webview cannot decode, so flip only once playback starts.
     audio.play().then(
       () => setIsPlaying(true),
       () => setIsPlaying(false),

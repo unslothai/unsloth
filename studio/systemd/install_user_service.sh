@@ -109,7 +109,7 @@ _exec_start="$(_unit_quote "$_UNSLOTH_EXE") studio -H $(_unit_quote "$_HOST") -p
 _env_line=""
 [ -n "$_STUDIO_HOME" ] && _env_line="Environment=$(_unit_quote "UNSLOTH_STUDIO_HOME=$_STUDIO_HOME")"
 
-# Enabling: the unit goes where the user manager looks, which follows its own HOME, not ours.
+# The unit goes where the user manager looks, which follows its own HOME, not ours.
 _cfg_home="$HOME"
 _cfg_xdg="${XDG_CONFIG_HOME:-}"
 if [ "$_DO_ENABLE" = true ]; then
@@ -123,7 +123,6 @@ case "$_cfg_xdg" in
 esac
 mkdir -p "$_unit_dir"
 _unit_path="$_unit_dir/$UNIT_NAME"
-# Never replace a unit the user wrote themselves.
 if [ -e "$_unit_path" ] && [ "$(head -n 1 "$_unit_path" 2>/dev/null)" != "# unsloth-studio-managed-systemd" ]; then
     echo "ERROR: $_unit_path exists and was not written by Unsloth; leaving it alone." >&2
     exit 1
