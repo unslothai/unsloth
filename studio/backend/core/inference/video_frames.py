@@ -51,6 +51,30 @@ def device_uint8(frames: Any) -> Optional[Any]:
     return host if bool(in_range) else None
 
 
+class NonFiniteFramesError(RuntimeError):
+    """The decoded clip holds NaN / inf: every encoder would refuse it (PyAV: "Expected numpy array with dtype uint8")."""
+
+
+NON_FINITE_FRAMES_MSG = "The decoded video holds NaN or infinite values, so it was not saved. See the server log in Settings > Logs."
+
+
+def require_finite_frames(frames: Any) -> None:
+    """Raise ``NonFiniteFramesError`` when float ``frames`` (np array or tensor) hold NaN / inf; uint8 / PIL pass."""
+    import numpy as np
+
+    if isinstance(frames, np.ndarray):
+        if np.issubdtype(frames.dtype, np.floating) and not bool(np.isfinite(frames).all()):
+            raise NonFiniteFramesError(NON_FINITE_FRAMES_MSG)
+        return
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return
+    if isinstance(frames, torch.Tensor) and frames.is_floating_point():
+        if not bool(torch.isfinite(frames).all()):
+            raise NonFiniteFramesError(NON_FINITE_FRAMES_MSG)
+
+
 @contextlib.contextmanager
 def uint8_video_frames(pipe: Any) -> Iterator[None]:
     """While active, ``pipe.video_processor``'s np / pil ``postprocess_video`` returns CPU uint8 (B, F, H, W, C)."""
