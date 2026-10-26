@@ -3160,8 +3160,7 @@ def _read_cast_cache(
     base: Optional[str],
     cancel_check: Any = None,
 ) -> list:
-    """Inject every component a cached float16 cast serves into ``pipe_kwargs``; returns the candidates it did not
-    serve (the load's background write caches them). Never raises."""
+    """Inject cached float16 casts into ``pipe_kwargs``; returns the unserved candidates. Never raises."""
     try:
         from .diffusion_cast_cache import candidates, read_all
 
@@ -9199,7 +9198,6 @@ class VideoBackend:
             pipe_kwargs.update({name: None for name in LTX25_NONE_COMPONENTS})
         cast_writes = None
         if kind == "pipeline":
-            # fp32 shards loaded at float16: a cached cast of an earlier load reads half the bytes, bit for bit.
             cast_missed = _read_cast_cache(
                 pipe_kwargs,
                 source = _base_local_dir or fetch_base,

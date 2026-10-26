@@ -1,15 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Local cache of components cast down at load (fp32 checkpoint shards read at float16), one entry per component.
+"""Local float16 cache of components loaded from fp32 shards (e.g. Wan), written from the live tensors after publish.
 
-Repos such as Wan-AI's Diffusers trees ship fp32 shards only (the 1.3B's UMT5 text encoder is 22.7 GB), so every fp16
-load reads twice the bytes it keeps. The first load casts as before; once it is published, a background thread writes
-each cast component's live tensors (exactly what ``from_pretrained`` made, ``_keep_in_fp32_modules`` included) beside
-the prequant entries. Later loads hand ``from_pretrained`` that half-size file at the same dtype, a no-op cast, so the
-module is bit-identical by construction; a sampled source comparison before the write refuses a module changed in place.
-
-Shares ``diffusion_prequant_cache``'s root, locks, manifest, digest and LRU eviction. float16 targets only for now.
+Later loads read the half-size file at the same dtype (a no-op cast, bit-identical); a sampled source comparison
+refuses a module changed in place. Shares ``diffusion_prequant_cache``'s root, locks, manifest and LRU.
 Kill switch: ``UNSLOTH_DIFFUSION_CAST_CACHE=0`` (``UNSLOTH_DIFFUSION_PREQUANT_CACHE=0`` disables it too).
 """
 
@@ -36,13 +31,10 @@ _LIBRARIES = ("diffusers", "transformers")
 _STEMS = {"diffusers": "diffusion_pytorch_model", "transformers": "model"}
 _WIDE_TAGS = ("F32", "F64")
 _FLOAT_TAGS = ("F64", "F32", "F16", "BF16", "F8_E4M3", "F8_E5M2", "F8_E8M0")
-# Tensors compared against the source before a write, per shard: the largest cast one up to this size (a bigger read
-# would grow the host's page cache) and the smallest one kept wide.
+# Per-shard source sample cap; a bigger read would grow the page cache.
 _SAMPLE_MAX_BYTES = 64 << 20
-# Written pages are flushed and dropped every this many bytes, so the write does not grow the page cache.
 _DROP_EVERY_BYTES = 256 << 20
-# A group-offloaded tensor is on the GPU only while its module runs: wait up to this long in total per component for
-# tensors to come back to the host, then copy the rest from the device (a resident module never returns).
+# Per-component wait for group-offloaded tensors to return to host before reading the device copy.
 _ONLOAD_WAIT_SECONDS = 10.0
 
 
@@ -164,8 +156,7 @@ def candidates(
     base_repo: Optional[str] = None,
     logger: Any = None,
 ) -> list:
-    """Components of the pipeline at ``source`` that load fp32 shards at float16, each with its cache key. Local reads
-    only; never raises."""
+    """Components at ``source`` that load fp32 shards at float16, with cache keys. Local reads only; never raises."""
     if not enabled() or not source:
         return []
     out: list = []
@@ -363,7 +354,7 @@ def read_all(
     logger: Any = None,
     cancel_check: Optional[Any] = None,
 ) -> dict:
-    """``{component: module}`` of every cached candidate (each independently). Never raises."""
+    """``{component: module}`` of every cached candidate. Never raises."""
     out: dict = {}
     for cand in cands or ():
         if cancel_check is not None:
@@ -374,7 +365,6 @@ def read_all(
     return out
 
 
-# ------------------------------------------------------------------------------------------------- writer
 def _tied_keys(module: Any) -> set:
     keys: set = set()
     for attr in ("_tied_weights_keys", "all_tied_weights_keys"):
@@ -446,10 +436,8 @@ def _hooked(module: Any) -> bool:
 
 
 class _Reader:
-    """Host copies of one component's live tensors. A tensor onloaded by an offload hook is waited for from a budget
-    shared by the component's tensors (it returns to the host after its module runs); past it, or for a resident
-    module, the device copy is read on a side stream after one device synchronise (an upload may still be queued on
-    another stream), so the copies never queue behind the render on the default stream."""
+    """Host copies of one component's live tensors; device copies are read on a side stream after one device
+    synchronise (an upload may be queued on another stream), never behind the render on the default stream."""
 
     def __init__(self, module: Any, check: Any) -> None:
         self.module = module
@@ -718,8 +706,7 @@ def save(
 
 
 class CastWrites:
-    """Background writes of one load's cast components, started once the load is published. Registered with the
-    prequant cache's background set, so its unload / exit waits cover it."""
+    """Background writes of one load's cast components; registered with the prequant cache's background set."""
 
     def __init__(
         self,
