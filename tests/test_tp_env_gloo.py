@@ -356,7 +356,7 @@ def _case_dp_average(rank, world, tmp):
 
 
 def _case_dp_average_dtypes(rank, world, tmp):
-    """fp16 grads whose sum overflows but mean does not, plus bf16 / fp32, vs own-dtype all-reduce."""
+    """fp16 grads whose sum overflows but mean does not; bf16 / fp32 match own-dtype all-reduce."""
     error = _import_checkout_unsloth()
     if error is not None:
         return {"skip": error}

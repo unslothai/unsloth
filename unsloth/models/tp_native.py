@@ -2531,7 +2531,7 @@ def _dp_average(params, mesh):
         for tensors in buckets.values():
             flat = _flatten_dense_tensors(tensors)
             if flat.dtype == torch.float16:
-                # fp16 sum can overflow past 65504 though the mean is finite; bf16 / fp32 match DDP.
+                # fp16 sum can overflow past 65504 though the mean is finite.
                 flat = flat.float()
             dist.all_reduce(flat, group = group)
             flat.div_(n)
