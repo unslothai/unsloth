@@ -25,7 +25,7 @@ def _load_block_compile():
     return module
 
 
-def run_rank(rank, port, queue):
+def run_rank(rank, port, queue, recompute_miss = False):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -71,6 +71,18 @@ def run_rank(rank, port, queue):
         # What Unsloth arms for VLMs under DDP (vision.py): non-reentrant checkpointing.
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
         model.train()
+        phase = [0]
+        if recompute_miss:
+            # A guard that differs between the forward and the checkpoint recompute (same branch, so
+            # numerics are unchanged): the recompute misses the forward's cache entry and compiles
+            # the block again, outside DDP.forward. This is the DeepSeek-OCR condition.
+            def hook(module, args):
+                if phase[0] >= 0:
+                    return None
+                return (args[0] * 2,)
+
+            for layer in model.model.layers:
+                layer.mlp.register_forward_pre_hook(hook)
         is_available = torch.cuda.is_available
         torch.cuda.is_available = (
             lambda: True
@@ -87,7 +99,9 @@ def run_rank(rank, port, queue):
             ids = torch.randint(
                 1, 128, (2, 16), generator = torch.Generator().manual_seed(10 * rank + step)
             )
+            phase[0] = 0
             out = ddp(input_ids = ids, labels = ids)
+            phase[0] = 1
             out.loss.backward()
             losses.append(float(out.loss))
         grad_sum = float(sum(p.grad.double().abs().sum() for p in model.parameters()))

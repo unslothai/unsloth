@@ -22,7 +22,14 @@ import _block_compile_ddp_worker as worker  # noqa: E402
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("transformers")
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "two gloo ranks over TCP localhost")
+pytestmark = [
+    pytest.mark.skipif(sys.platform == "win32", reason = "two gloo ranks over TCP localhost"),
+    # Block compile installs only on torch 2.7+ (_torch_supported).
+    pytest.mark.skipif(
+        tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (2, 7),
+        reason = "block compile needs torch 2.7+",
+    ),
+]
 
 
 def _free_port():
@@ -31,13 +38,13 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def _run():
+def _run(recompute_miss = False):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
     port = _free_port()
-    procs = [ctx.Process(target = worker.run_rank, args = (r, port, queue)) for r in range(2)]
+    procs = [ctx.Process(target = worker.run_rank, args = (r, port, queue, recompute_miss)) for r in range(2)]
     for p in procs:
         p.start()
     results = {}
@@ -70,4 +77,13 @@ def test_compiled_block_is_not_split_by_ddp_optimizer():
         assert out["optimize_ddp"] is True
         assert len(out["losses"]) == 2 and out["grad_sum"] > 0
     # DDP averaged the gradients: both ranks hold the same ones.
+    assert results[0]["grad_sum"] == pytest.approx(results[1]["grad_sum"], rel = 1e-6)
+
+
+def test_checkpoint_recompute_that_recompiles_matches_the_forward():
+    # On main: CheckpointError "A different number of tensors was saved" (27 vs 25 here).
+    results = _run(recompute_miss = True)
+    for out in results.values():
+        assert out["splits"] == [], out
+        assert len(out["losses"]) == 2 and out["grad_sum"] > 0
     assert results[0]["grad_sum"] == pytest.approx(results[1]["grad_sum"], rel = 1e-6)
