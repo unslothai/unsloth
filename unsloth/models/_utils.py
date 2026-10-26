@@ -6220,13 +6220,22 @@ def _refuse_model_parallel_export(model, method):
         )
 
 
-def _refuse_tensor_parallel_for_inference(model):
+def _tensor_parallel_for_inference(model):
+    """for_inference on a tensor parallel model gathers a whole replica on every rank (tp_replica.py)."""
     if _is_unsloth_tensor_parallel(model):
-        raise RuntimeError(
-            "Unsloth: for_inference is not supported on a tensor parallel model in v1 (the fast decode "
-            "paths run outside the tensor parallel regions); use model.eval() for forward evaluation, or "
-            "save the adapter (save_tp_adapter) and generate on one GPU."
-        )
+        from .tp_replica import tp_for_inference
+        return tp_for_inference(model)
+    _refuse_tensor_parallel_for_inference(model)
+
+
+def _tensor_parallel_for_training(model):
+    """for_training puts the sharded parameters back after a for_inference replica."""
+    if _is_unsloth_tensor_parallel(model):
+        from .tp_replica import tp_for_training
+        tp_for_training(model)
+
+
+def _refuse_tensor_parallel_for_inference(model):
     if _is_unsloth_pipeline_parallel(model):
         raise RuntimeError(
             "Unsloth: for_inference is not supported on a pipeline parallel model in v1 (each rank holds "

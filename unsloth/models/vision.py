@@ -268,7 +268,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
-from ._utils import _refuse_tensor_parallel_for_inference
+from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
@@ -5599,7 +5599,7 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
-        _refuse_tensor_parallel_for_inference(model)
+        _tensor_parallel_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5645,6 +5645,7 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        _tensor_parallel_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(

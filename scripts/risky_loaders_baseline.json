@@ -699,6 +699,14 @@
       "reason": "Reached only after the trust_remote_code gate in _resolve_module_class raises for an untrusted non sentence_transformers class."
     },
     {
+      "file": "unsloth/models/tp_replica.py",
+      "rule": "unsafe-deserialize",
+      "sink": "pickle.loads",
+      "digest": "bf2d3c412d57fd50",
+      "count": 1,
+      "reason": "Reads the result rank 0 published to this job's own torch.distributed c10d store (the same trust boundary as broadcast_object_list); no file or network payload from outside the process group."
+    },
+    {
       "file": "unsloth/save.py",
       "rule": "trust-remote-code",
       "sink": "setdefault",
