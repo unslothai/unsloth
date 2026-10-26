@@ -3525,6 +3525,14 @@ def _make_mlx_logit_bias_processor(logit_bias: dict):
     return _processor
 
 
+_DIFFUSION_RESPONSE_FORMAT = (
+    "response_format is not supported on this model: it generates by "
+    "diffusion rather than one token at a time, so no grammar can "
+    "constrain the next token. Load an autoregressive model to use "
+    "guided decoding."
+)
+
+
 def _vlm_generation_is_diffusion(model) -> bool:
     try:
         from mlx_vlm.generate.diffusion import is_diffusion_model
@@ -4043,9 +4051,22 @@ def _failing_alone(row, processors):
                     row.failure = exc
             return logits
 
+        # A drafted batch drafts only for rows whose processors all read just the history.
+        _processor.history_only = getattr(processor, "history_only", False)
         return _processor
 
     return [guarded(processor) for processor in processors]
+
+
+def _streamed_tail(row):
+    """What a row decoded from ids still holds when it ends, released as the single path's finish."""
+    stream = row.plan.stream
+    if row.plan.streamed is None or stream.stopped:
+        return []
+    tail = stream.flush(row.plan.streamed.finish(stream.sampled))
+    if stream.stopped:
+        row.reason = "stop"
+    return tail
 
 
 def _row_kwargs(request):
@@ -4278,11 +4299,7 @@ class _TextBatchSession:
         self._rows.pop(row.handle, None)
         self._by_uid.pop(row.uid, None)
         stream = row.plan.stream
-        if row.plan.streamed is not None and not stream.stopped:
-            tail = stream.flush(row.plan.streamed.finish(stream.sampled))
-            yield from ((row.handle, snap) for snap in tail)
-            if stream.stopped:
-                row.reason = "stop"
+        yield from ((row.handle, snap) for snap in _streamed_tail(row))
         yield from ((row.handle, snap) for snap in stream.settle())
         yield from ((row.handle, snap) for snap in stream.drain(cancelled = cancelled))
         ready_at = row.ready_at or time.perf_counter()
@@ -4322,6 +4339,7 @@ class _VLMRowPlan:
         "sampling",
         "max_tokens",
         "processors",
+        "streamed",
     )
 
     def __init__(
@@ -4335,6 +4353,7 @@ class _VLMRowPlan:
         sampling,
         max_tokens,
         processors = None,
+        streamed = None,
     ):
         self.prompt = prompt
         self.images = images
@@ -4344,6 +4363,7 @@ class _VLMRowPlan:
         self.sampling = sampling
         self.max_tokens = max_tokens
         self.processors = processors
+        self.streamed = streamed
 
 
 class _VisionBatchRow:
@@ -4359,9 +4379,16 @@ class _VisionBatchRow:
         "ready_at",
         "cancelled",
         "drafts",
+        "failure",
     )
 
-    def __init__(self, *, handle, plan, row):
+    def __init__(
+        self,
+        *,
+        handle,
+        plan,
+        row = None,
+    ):
         self.handle = handle
         self.plan = plan
         self.row = row
@@ -4373,6 +4400,12 @@ class _VisionBatchRow:
         self.ready_at = None
         self.cancelled = False
         self.drafts = None
+        self.failure = None
+
+
+def _vision_batch_reports_ids(engine, speculative):
+    """Whether vision rows can be decoded from their sampled ids, as the one-at-a-time decode does."""
+    return speculative is None and "token_ids" in _engine_fields(engine, "GenerationEvent")
 
 
 def _row_prompt_cache_gap():
@@ -4400,6 +4433,7 @@ class _VisionBatchSession:
         adapter_state = None,
         owns_model = False,
     ):
+        from unsloth_zoo.mlx import generate as engine
         from unsloth_zoo.mlx.generate import BatchStream, GenerationDefaults
 
         self.backend = backend
@@ -4417,6 +4451,7 @@ class _VisionBatchSession:
                 )
             self._held.enter_context(backend._int8_prefill_scope())
             self._speculative = getattr(backend, "_speculative_draft", None)
+            self._decodes_ids = _vision_batch_reports_ids(engine, self._speculative)
             self.stream = BatchStream(
                 backend._model,
                 backend._processor,
@@ -4456,7 +4491,8 @@ class _VisionBatchSession:
         )
 
         backend = self.backend
-        plan = backend._plan_vlm_request(request)
+        plan = backend._plan_vlm_request(request, decodes_ids = self._decodes_ids)
+        row = _VisionBatchRow(handle = handle, plan = plan)
         state = (
             backend._vlm_batch_row_cache(self._adapter_state, plan.images)
             if self._resumes_rows
@@ -4476,16 +4512,15 @@ class _VisionBatchSession:
                     image = plan.images[0] if plan.images else None,
                     max_tokens = plan.max_tokens,
                     sampling = SamplingParams(**plan.sampling),
-                    logits_processors = plan.processors,
+                    logits_processors = plan.processors and _failing_alone(row, plan.processors),
                     **resume,
                 )
             )
         except BatchRowRefused as refusal:
             raise RowRefused(str(refusal)) from refusal
-        row = _VisionBatchRow(handle = handle, plan = plan, row = row_number)
-        if self._speculative is not None:
-            # A speculative batch prefills the row inside add(), so its clock starts before it.
-            row.admitted_at = admitted_at
+        row.row = row_number
+        # A speculative batch prefills the row inside add(), so its clock starts before it.
+        row.admitted_at = admitted_at if self._speculative is not None else time.perf_counter()
         self._rows[handle] = row
         self._by_row[row_number] = row
         logger.info(
@@ -4501,22 +4536,36 @@ class _VisionBatchSession:
         now, stopped = None, {}
         # Only a speculative step spans many tokens, reported as they are decoded; only its unsloth-zoo has the call.
         # The batch cannot change mid-step, so a row that stopped itself ends the step and leaves after it.
-        for event in (
-            self.stream.iter_step(lambda: bool(stopped) or (waiting is not None and waiting()))
+        failing = {}
+        events = (
+            self.stream.iter_step(
+                lambda: bool(stopped or failing) or (waiting is not None and waiting())
+            )
             if self._speculative is not None
             else self.stream.step()
-        ):
+        )
+        # As in _TextBatchSession.step: reported before the step's tokens, which it never yields.
+        yield from self._fail([row for row in self._rows.values() if row.failure is not None])
+        for event in events:
             row = self._by_row.get(event.index)
             if row is None:
+                continue
+            if row.failure is not None:
+                # Only a drafted step decodes as it is read, so a row can fail mid-step and leave after it.
+                failing[row.handle] = row
                 continue
             if now is None:
                 now = time.perf_counter()
             if row.ready_at is None:
                 row.ready_at = now
-            if event.delta and not row.cancelled:
-                yield from (
-                    (row.handle, snapshot) for snapshot in row.plan.stream.feed(text = event.delta)
-                )
+            streamed = row.plan.streamed
+            text = (
+                event.delta
+                if streamed is None
+                else "".join(streamed.feed_token(int(token)) for token in event.token_ids)
+            )
+            if text and not row.cancelled:
+                yield from ((row.handle, snapshot) for snapshot in row.plan.stream.feed(text = text))
                 if row.plan.stream.stopped:
                     row.cancelled = True
                     row.reason = "stop"
@@ -4528,9 +4577,17 @@ class _VisionBatchSession:
                 yield from self._retire(row, cancelled = row.cancelled)
             elif row.cancelled:
                 stopped[row.handle] = row
+        yield from self._fail(list(failing.values()))
         for row in stopped.values():
             if row.handle in self._rows:
                 yield from self._retake(row)
+
+    def _fail(self, rows):
+        for row in rows:
+            self.stream.withdraw(row.row)
+            self._rows.pop(row.handle, None)
+            self._by_row.pop(row.row, None)
+            yield row.handle, row.failure
 
     def withdraw(self, handles):
         for handle in list(handles):
@@ -4557,6 +4614,7 @@ class _VisionBatchSession:
         self._rows.pop(row.handle, None)
         self._by_row.pop(row.row, None)
         stream = row.plan.stream
+        yield from ((row.handle, snap) for snap in _streamed_tail(row))
         yield from ((row.handle, snap) for snap in stream.settle())
         yield from ((row.handle, snap) for snap in stream.drain(cancelled = cancelled))
         ready_at = row.ready_at or time.perf_counter()
@@ -6896,7 +6954,12 @@ class MLXInferenceBackend:
             prompt, markers = recovered.prompt, recovered.reasoning_channel_markers
         return prompt, chat_target, markers
 
-    def _plan_vlm_request(self, request) -> "_VLMRowPlan":
+    def _plan_vlm_request(
+        self,
+        request,
+        *,
+        decodes_ids = False,
+    ) -> "_VLMRowPlan":
         image = request.get("image")
         messages = request.get("messages") or []
         conversation = (
@@ -6904,7 +6967,15 @@ class MLXInferenceBackend:
             if request.get("prompt_ids") is not None
             else self._conversation_to_render(messages, request.get("system_prompt", ""), image)
         )
-        return self._plan_vlm_row(conversation, image, **_row_kwargs(request))
+        return self._plan_vlm_row(
+            conversation,
+            image,
+            tool_protocol_active = request.get("tool_protocol_active"),
+            response_format = request.get("response_format"),
+            reasoning_is_extracted = request.get("reasoning_is_extracted", False),
+            decodes_ids = decodes_ids,
+            **_row_kwargs(request),
+        )
 
     def _plan_vlm_row(
         self,
@@ -6929,8 +7000,15 @@ class MLXInferenceBackend:
         stop = None,
         prompt_ids = None,
         penalty_window = None,
+        tool_protocol_active = None,
+        response_format = None,
+        reasoning_is_extracted = False,
+        decodes_ids = False,
     ) -> "_VLMRowPlan":
+        """``decodes_ids``: the batch reports each row's ids, so the reply is decoded from them as
+        ``_generate_vlm`` decodes it; otherwise from the batch's text, which keeps no native controls."""
         images = [image] if image is not None else None
+        constraint = token_decoder = None
         if prompt_ids is not None:
             prompt, markers, think_prefix = list(prompt_ids), None, ""
         else:
@@ -6944,12 +7022,38 @@ class MLXInferenceBackend:
                 continue_final_message = continue_final_message,
             )
 
+            native = decodes_ids and bool(tools or tool_protocol_active or markers is not None)
             think_prefix = _think_prefix(
                 prompt,
                 getattr(chat_target, "all_special_tokens", None),
                 messages,
                 continue_final_message,
+                preserves_think_close = native
+                and decoder_preserves_token(self._tokenizer, "</think>"),
             )
+            if decodes_ids:
+                constraint = _build_grammar_constraint(
+                    response_format,
+                    chat_target,
+                    prompt,
+                    reasoning_markers = markers,
+                    tools = tools,
+                    reasoning_is_extracted = reasoning_is_extracted,
+                    reply_keeps_special_tokens = True,
+                )
+            if constraint is not None and not constraint.allows_reasoning:
+                think_prefix = ""
+            elif constraint is not None:
+                from core.inference.chat_template_helpers import detect_think_prefill
+                think_prefix = detect_think_prefill(prompt, preserves_think_close = True)
+            if constraint is not None and _vlm_generation_is_diffusion(self._model):
+                from core.inference.grammar_constraint import ResponseFormatError
+                raise ResponseFormatError(_DIFFUSION_RESPONSE_FORMAT)
+            if native and self._tokenizer:
+                token_decoder = NativeToolTokenDecoder(
+                    self._tokenizer,
+                    preserved_tokens = reasoning_control_tokens(markers),
+                )
         normalizer = (
             make_reasoning_normalizer(
                 markers,
@@ -6959,7 +7063,8 @@ class MLXInferenceBackend:
                     bool(continue_final_message and trailing_assistant_text(messages)),
                 ),
             )
-            if markers is not None
+            # The normalizer would rewrite marker text inside the document.
+            if markers is not None and (constraint is None or constraint.allows_reasoning)
             else None
         )
         row = _RowStream(
@@ -6995,12 +7100,27 @@ class MLXInferenceBackend:
             presence_penalty = presence_penalty,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
         )
         if processors:
             # Not the repetition_penalty shortcut: mlx-vlm would build it outside our narrowing
             vlm_kwargs["logits_processors"] = _row_logits_processors(processors)
+        streamed = None
+        if constraint is not None:
+            # mlx-vlm stops on the config's ids, which some repos set apart from the tokenizer's.
+            constraint.stops_on(_mlx_stop_token_ids(self._tokenizer, self._model))
+            if token_decoder is not None:
+                constraint.decoded_dropping(token_decoder.dropped_ids())
+        if token_decoder is not None:
+            streamed = _MlxStreamedText(
+                _mlx_stream_detokenizer(self._processor)
+                or _mlx_stream_detokenizer(self._tokenizer),
+                token_decoder,
+                self._tokenizer,
+                _mlx_stop_token_ids(self._tokenizer, self._model),
+            )
 
         return _VLMRowPlan(
             prompt = prompt,
@@ -7017,6 +7137,7 @@ class MLXInferenceBackend:
             },
             max_tokens = vlm_kwargs["max_tokens"],
             processors = processors,
+            streamed = streamed,
         )
 
     def _generate_vlm(
@@ -7155,12 +7276,7 @@ class MLXInferenceBackend:
             prefill = detect_think_prefill(prompt, preserves_think_close = True)
         if constraint is not None and _vlm_generation_is_diffusion(self._model):
             from core.inference.grammar_constraint import ResponseFormatError
-            raise ResponseFormatError(
-                "response_format is not supported on this model: it generates by "
-                "diffusion rather than one token at a time, so no grammar can "
-                "constrain the next token. Load an autoregressive model to use "
-                "guided decoding."
-            )
+            raise ResponseFormatError(_DIFFUSION_RESPONSE_FORMAT)
         recorded = token_logprobs = None
         if n_probs:
             if _vlm_generation_is_diffusion(self._model):
@@ -7516,7 +7632,7 @@ class MLXInferenceBackend:
         return stream_unavailable_reason(self._model, self._tokenizer)
 
     def _vlm_resident_unavailable_reason(self, request):
-        reason = self._vlm_batch_unavailable_reason([request])
+        reason = self._vlm_batch_unavailable_reason([request], resident = True)
         if reason is not None:
             return reason
         try:
@@ -7551,7 +7667,12 @@ class MLXInferenceBackend:
             or self.resident_unavailable_reason({}) is None
         )
 
-    def _vlm_batch_unavailable_reason(self, requests):
+    def _vlm_batch_unavailable_reason(
+        self,
+        requests,
+        *,
+        resident = False,
+    ):
         try:
             from unsloth_zoo.mlx import generate as engine
         except ImportError:
@@ -7562,10 +7683,13 @@ class MLXInferenceBackend:
         gap = _row_processor_gap(engine, requests)
         if gap is not None:
             return gap
-        if any(request.get("tools") or request.get("tool_protocol_active") for request in requests):
-            # The batch reports text, not ids, so native tool controls cannot be decoded as alone.
+        # Only the resident session decodes rows from their ids, as the one-at-a-time decode does.
+        decodes_ids = resident and _vision_batch_reports_ids(engine, self._speculative_draft)
+        if not decodes_ids and any(
+            request.get("tools") or request.get("tool_protocol_active") for request in requests
+        ):
             return "a reply runs the tool protocol"
-        if any(_constrained(request) for request in requests):
+        if not decodes_ids and any(_constrained(request) for request in requests):
             return "a reply is constrained to a response format"
         if any(request.get("prompt_ids") is not None for request in requests):
             # The batch detokenizer keeps control tokens and trims the first leading space.

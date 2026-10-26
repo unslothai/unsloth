@@ -3528,6 +3528,10 @@ def test_a_row_whose_own_processor_fails_leaves_and_its_neighbour_decodes_on(mon
     assert events == [("good", "x")]
     assert list(session.step()) == [("good", "xx")]
     session.close()
+    # A drafted batch drafts only for rows whose processors all read just the history.
+    penalty = mlx_inference._mlx_sampling_processors(presence_penalty = 1.5)
+    guarded = mlx_inference._failing_alone(None, [*penalty, lambda _tokens, logits: logits])
+    assert [p.history_only for p in guarded] == [True, False]
     # The fixed multi-reply command fails as a single reply would.
     plans = iter([failing, None])
     backend.last_batch_generation_stats = [None, None]
@@ -7191,7 +7195,7 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
         assert "draft_n" not in backend.last_generation_stats["timings"]
     # Only the drafted reply entered the verify scope: open from preparing the draft through decoding.
     assert len(prepared) == 1 and scopes == [["open"]] * 2 and verify_scope == ["open", "closed"]
-    opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r: None
+    opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r, **_k: None
     backend._vlm_resident_unavailable_reason = lambda r, gaps = iter(["no stream"]): next(gaps, None)
     assert backend.batch_unavailable_reason([{}, {}]) == "no stream"
     monkeypatch.setattr(
@@ -8171,7 +8175,7 @@ def _open_vision_session(rows):
     session = mlx_inference._VisionBatchSession.__new__(mlx_inference._VisionBatchSession)
     session._rows = {row.handle: row for row in rows}
     session._by_row, session._settled = {row.row: row for row in rows}, {}
-    session._speculative = None
+    session._speculative, session._decodes_ids = None, False
     return session
 
 
@@ -8187,7 +8191,7 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
         [
             mlx_inference._VisionBatchRow(
                 handle = handle,
-                plan = SimpleNamespace(stream = _vlm_row(backend, stop = ["HALT"])),
+                plan = SimpleNamespace(stream = _vlm_row(backend, stop = ["HALT"]), streamed = None),
                 row = number,
             )
             for number, handle in enumerate(handles)
@@ -8220,6 +8224,32 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
     ), "a row the engine has already retired is not handed back again"
 
 
+def test_a_resident_vision_tool_row_decodes_its_ids_and_keeps_the_stop_that_closes_its_call(
+    monkeypatch,
+):
+    from core.inference import mlx_inference
+
+    pieces = ("<|tool_call>", "call:terminal{command:id}", "<tool_call|>")
+    turn = _SpmTurn(
+        pieces, specials = pieces[::2], eos = "<tool_call|>", chat_template = "x", ends = "stop"
+    )
+    backend = _vlm_backend(monkeypatch, markers = None)
+    backend._tokenizer = backend._processor.tokenizer = turn
+    plan = backend._plan_vlm_row(
+        [{"role": "user", "content": "hi"}],
+        None,
+        **dict(temperature = 0, top_p = 1, top_k = 0, min_p = 0, max_new_tokens = 9),
+        repetition_penalty = 1.0,
+        tools = _TOOL,
+        decodes_ids = True,
+    )
+    session = _open_vision_session([mlx_inference._VisionBatchRow(handle = "r", plan = plan, row = 0)])
+    ended = SimpleNamespace(finish_reason = "stop", prompt_token_count = 3, token_ids = turn.ids[:2])
+    event = SimpleNamespace(index = 0, delta = "", token_ids = tuple(turn.ids), result = ended)
+    session.stream = SimpleNamespace(step = lambda: [event])
+    assert list(session.step())[-2:] == [("r", "".join(pieces)), ("r", None)]
+
+
 def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypatch):
     engine = _batch_engine(monkeypatch)
     monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
@@ -8228,7 +8258,7 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
     monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: True, raising = False)
     backend = _vlm_backend(monkeypatch, markers = None)
     backend._tokenizer.bos_token = "<s>"
-    backend._plan_vlm_request = lambda request: SimpleNamespace(
+    backend._plan_vlm_request = lambda request, **_k: SimpleNamespace(
         prompt = "<s>hi",
         images = None,
         max_tokens = 4,
@@ -8236,6 +8266,7 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
         processors = None,
         think_prefix = "",
         stream = None,
+        streamed = None,
     )
     session = _open_vision_session([])
     session.backend, session._adapter_state, session._resumes_rows = backend, None, False
@@ -8298,8 +8329,9 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
         processors = None,
         think_prefix = "",
         stream = _vlm_row(backend),
+        streamed = None,
     )
-    backend._plan_vlm_request = lambda request: plan
+    backend._plan_vlm_request = lambda request, **_k: plan
     backend._reads_vision = False
     session = _open_vision_session([])
     session.backend, session._adapter_state, session._resumes_rows = backend, None, False
@@ -8366,7 +8398,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     backend._vlm_is_diffusion_model = lambda model: False
     backend._vlm_snapshot_scope = lambda state, images: (None, "m|img" if images else "m", list)
 
-    backend._plan_vlm_request = lambda request: SimpleNamespace(
+    backend._plan_vlm_request = lambda request, **_k: SimpleNamespace(
         prompt = "p",
         images = request.get("images"),
         max_tokens = 4,
@@ -8374,6 +8406,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
         processors = None,
         think_prefix = "",
         stream = _vlm_row(backend),
+        streamed = None,
     )
     session = _open_vision_session([])
     session.backend, session._adapter_state = backend, None
@@ -8485,9 +8518,11 @@ def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
         ({"grammar": 'root ::= "a"'}, "a reply is constrained to a response format"),
     ),
 )
-def test_a_tool_or_constrained_reply_joins_a_text_batch_but_not_a_vision_one(
+def test_a_tool_or_constrained_reply_joins_a_batch_that_decodes_it_from_its_ids(
     monkeypatch, extra, refusal
 ):
+    from dataclasses import make_dataclass
+
     from core.inference import mlx_inference
 
     engine = _batch_engine(monkeypatch)
@@ -8499,8 +8534,24 @@ def test_a_tool_or_constrained_reply_joins_a_text_batch_but_not_a_vision_one(
     backend._model, backend._is_vlm = SimpleNamespace(_is_vlm_model = True), True
     backend._processor, backend._speculative_draft = object(), None
     backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, None
+    backend._turboquant = False
     assert backend.resident_unavailable_reason({}) is None
-    assert backend.resident_unavailable_reason(extra) == refusal
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "BatchStream", lambda *_a, **_k: None, raising = False)
+    # Only a resident vision row reported by id, with no draft, decodes as the reply alone does.
+    for fields, draft, joins in (
+        (("token_ids",), None, True),
+        ((), None, False),
+        (("token_ids",), 1, False),
+    ):
+        monkeypatch.setattr(
+            engine, "GenerationEvent", make_dataclass("Event", fields), raising = False
+        )
+        backend._speculative_draft = draft
+        assert backend.resident_unavailable_reason(extra) == (None if joins else refusal)
+        assert mlx_inference._VisionBatchSession(backend, width = 2)._decodes_ids == joins
+    backend._speculative_draft = None  # The fixed multi-reply command decodes the batch's text.
+    assert backend.batch_unavailable_reason([{}, extra]) == refusal
     assert backend.resident_unavailable_reason({"response_format": {"type": "text"}}) is None
 
 
@@ -8529,7 +8580,7 @@ def test_a_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
     backend._model, backend._processor, backend._is_vlm = object(), object(), True
     backend._kv_quant, backend._kv_context_budget = {"kv_bits": 4}, 4096
     backend._turboquant = False
-    backend._vlm_batch_unavailable_reason = lambda requests: None
+    backend._vlm_batch_unavailable_reason = lambda requests, **_k: None
     monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: None)
     capable = lambda: None
     monkeypatch.setattr(
