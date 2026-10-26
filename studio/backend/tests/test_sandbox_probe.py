@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import os
 import pathlib
@@ -13,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -255,6 +257,66 @@ def test_a_wedged_backend_times_out_instead_of_hanging(monkeypatch):
     available, reason = sandbox_probe.probe(_Backend("wedged", sleeper))
     assert available is False
     assert "timed out" in reason
+
+
+def _gone(pid: int, within: float = 10.0) -> bool:
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_a_timed_out_probe_also_ends_what_the_payload_spawned(monkeypatch, tmp_path):
+    """The macOS leak: a killed payload left its stuck child spinning, re-probed every minute."""
+    monkeypatch.setattr(sandbox_probe, "PROBE_TIMEOUT_SECONDS", 1.0)
+    pid_file = tmp_path / "grandchild.pid"
+    payload = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+
+    def wedged_with_a_child(plan):
+        return PreparedSandboxLaunch(
+            argv = (sys.executable, "-I", "-S", "-c", payload),
+            workdir = plan.workdir,
+            env = plan.env,
+            preexec_fn = plan.preexec_fn,
+            backend = "wedged",
+        )
+
+    available, reason = sandbox_probe.probe(_Backend("wedged", wedged_with_a_child))
+    assert available is False and "timed out" in reason
+    grandchild = int(pid_file.read_text())
+    assert _gone(grandchild), f"the payload's child {grandchild} outlived the probe"
+
+
+def test_the_payload_runs_under_the_tool_launch_fd_and_cpu_caps(tmp_path):
+    limits_file = tmp_path / "limits.txt"
+    payload = (
+        "import resource\n"
+        f"open({str(limits_file)!r}, 'w').write(repr(("
+        "resource.getrlimit(resource.RLIMIT_NOFILE), resource.getrlimit(resource.RLIMIT_CPU))))\n"
+    )
+
+    def report_limits(plan):
+        return PreparedSandboxLaunch(
+            argv = (sys.executable, "-I", "-S", "-c", payload),
+            workdir = plan.workdir,
+            env = plan.env,
+            preexec_fn = plan.preexec_fn,
+            backend = "limits",
+        )
+
+    sandbox_probe.probe(_Backend("limits", report_limits))
+    (nofile_soft, _), (cpu_soft, cpu_hard) = ast.literal_eval(limits_file.read_text())
+    assert nofile_soft <= sandbox_probe._PROBE_NOFILE
+    assert cpu_soft == cpu_hard == sandbox_probe._PROBE_CPU_SECONDS
 
 
 def test_a_backend_that_only_prints_the_token_is_not_believed():

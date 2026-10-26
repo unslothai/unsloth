@@ -9,6 +9,7 @@ import errno
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -26,6 +27,15 @@ try:
     _libc = ctypes.CDLL(None, use_errno = True) if sys.platform == "linux" else None
 except OSError:  # pragma: no cover - a libc that will not load
     _libc = None
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - Windows never probes
+    _resource = None
+
+# The tool launch's own fd cap (tools._sandbox_preexec), so the probe qualifies what tools get.
+_PROBE_NOFILE = 16384
+# Kernel-enforced, so a payload process nobody is left to kill still ends; a healthy probe uses well under a second.
+_PROBE_CPU_SECONDS = 60
 
 # ALONE on stdout: a payload that printed it early and died would satisfy "in".
 PROBE_TOKEN = "UNSLOTH_SANDBOX_PROBE_OK"
@@ -296,6 +306,34 @@ def _no_new_privs() -> None:
         logger.warning("The sandbox probe could not set PR_SET_NO_NEW_PRIVS")
 
 
+def _probe_preexec() -> None:
+    """In the forked child, before the backend's wrapper: the payload's limits, then no_new_privs."""
+    if _resource is not None:
+        try:
+            _soft, hard = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+            nofile = _PROBE_NOFILE if hard == _resource.RLIM_INFINITY else min(_PROBE_NOFILE, hard)
+            _resource.setrlimit(_resource.RLIMIT_NOFILE, (nofile, nofile))
+        except (ValueError, OSError):
+            pass
+        try:
+            _resource.setrlimit(_resource.RLIMIT_CPU, (_PROBE_CPU_SECONDS, _PROBE_CPU_SECONDS))
+        except (ValueError, OSError):
+            pass
+    _no_new_privs()
+
+
+def _end_probe_group(proc: subprocess.Popen) -> None:
+    """killpg, not kill: the payload's own children outlive a killed payload, and on macOS one spun forever."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
+    proc.wait()
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            pipe.close()
+
+
 def _abstract_control() -> "tuple[bytes | None, Any]":
     """Nothing without a scope to test, or when the host cannot reach its own socket."""
     if sys.platform != "linux":
@@ -473,12 +511,12 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             workdir = workdir,
             env = env,
             # A setuid bwrap dies under no_new_privs, so without this the probe qualifies a launch that fails after Popen.
-            preexec_fn = _no_new_privs,
+            preexec_fn = _probe_preexec,
             requested_mode = "required",
             execution_kind = "python",
         )
         prepared = backend.prepare(plan)
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             prepared.argv,
             cwd = prepared.workdir,
             env = prepared.env,
@@ -487,8 +525,14 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             stderr = subprocess.PIPE,
             preexec_fn = prepared.preexec_fn,
             pass_fds = tuple(prepared.pass_fds),
-            timeout = PROBE_TIMEOUT_SECONDS,
+            # Its own group, so the teardown reaches whatever the payload spawned.
+            start_new_session = True,
         )
+        try:
+            stdout, stderr = proc.communicate(timeout = PROBE_TIMEOUT_SECONDS)
+        finally:
+            _end_probe_group(proc)
+        completed = subprocess.CompletedProcess(prepared.argv, proc.returncode, stdout, stderr)
         if completed.returncode != 0 or completed.stdout.strip() != PROBE_TOKEN.encode():
             detail = (completed.stderr or b"").decode("utf-8", "replace").strip()[-300:]
             if not detail:
