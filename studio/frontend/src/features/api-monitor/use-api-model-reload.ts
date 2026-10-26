@@ -86,14 +86,14 @@ export function useApiModelReload({
   selectModel,
   loadNpuModel,
   readModelLoadEpochs,
-  resident,
+  fileGrant,
   onSettled,
   residencyKey,
 }: {
   selectModel: Runtime["selectModel"];
   loadNpuModel: Runtime["loadNpuModel"];
   readModelLoadEpochs: Runtime["readModelLoadEpochs"];
-  resident: ResidentRunTarget | null;
+  fileGrant: ResidentRunTarget | null;
   onSettled: () => void;
   residencyKey: string;
 }) {
@@ -177,18 +177,18 @@ export function useApiModelReload({
 
   const rowTarget = useCallback(
     (model: ReloadableModel): ReloadSelection =>
-      model.active && resident?.nativePathToken
-        ? grantedTarget(resident)
+      model.active && fileGrant
+        ? grantedTarget(fileGrant)
         : servedTarget(model),
-    [resident],
+    [fileGrant],
   );
 
   // An expired grant cannot load the file again; picking it anew issues a fresh one.
   const canReload = (model: ReloadableModel): boolean =>
     !(
       model.active &&
-      resident?.nativePathToken &&
-      !residentHasRunSettings(resident)
+      fileGrant &&
+      !residentHasRunSettings(fileGrant)
     );
 
   const reloadServed = useCallback(

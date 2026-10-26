@@ -46,10 +46,15 @@ test("a row reload asks to stop only the reloaded model's chats, not the selecte
 
 test("a file-picked primary reloads through its file grant, and not once the grant expired", () => {
   // The served row only carries a display label for a desktop-picked GGUF.
-  assert.match(hook, /model\.active && resident\?\.nativePathToken\s*\?\s*grantedTarget\(resident\)\s*:\s*servedTarget\(model\)/);
+  assert.match(hook, /model\.active && fileGrant\s*\?\s*grantedTarget\(fileGrant\)\s*:\s*servedTarget\(model\)/);
   assert.match(hook, /nativePathToken: resident\.nativePathToken \?\? undefined,/);
   assert.match(hook, /loadId: target\.loadId,\s*nativePathToken: target\.nativePathToken,\s*nativePathExpiresAtMs: target\.nativePathExpiresAtMs,/);
-  assert.match(hook, /model\.active &&\s*resident\?\.nativePathToken &&\s*!residentHasRunSettings\(resident\)/);
+  assert.match(hook, /model\.active &&\s*fileGrant &&\s*!residentHasRunSettings\(fileGrant\)/);
+  // Read apart from run-settings eligibility, which drops an expired grant and would re-enable Reload.
+  const residentHook = readSrc("features/api-monitor/use-resident-run-target.ts");
+  const grantHook = residentHook.slice(residentHook.indexOf("export function useResidentFileGrant("), residentHook.indexOf("export function useResidentRunTarget("));
+  assert.doesNotMatch(grantHook, /residentMatchesMonitor|residentHasRunSettings/);
+  assert.match(page, /const fileGrant = useResidentFileGrant\(data\?\.active_model\);/);
   assert.match(page, /disabled=\{reloadBusy \|\| !reload\.canReload\(model\)\}/);
   assert.match(page, /served\.some\(\(model\) => !reload\.canReload\(model\)\)/);
   assert.doesNotMatch(hook, /load\(servedTarget\(model\)\)/);
@@ -57,9 +62,18 @@ test("a file-picked primary reloads through its file grant, and not once the gra
 
 test("Reload all stops when a load is cancelled or a newer pick supersedes it", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  // A declined stop-and-reload confirmation counts as a cancel in both preflight paths.
+  assert.equal(runtime.match(/if \(!stopDecision\.proceed\) \{\s*modelLoadCancelEpoch \+= 1;/g)?.length, 2);
   // selectModel resolves quietly on abort, so the abort itself is what the batch reads.
   assert.match(runtime, /modelLoadCancelEpoch \+= 1;\s*run\.abortController\.abort\(\);/);
   assert.match(hook, /const before = readModelLoadEpochs\(\);\s*await load\(rowTarget\(model\)\);/);
   assert.match(hook, /after\.cancels !== before\.cancels \|\|\s*after\.intent > before\.intent \+ 1/);
   assert.match(page, /readModelLoadEpochs: runtime\.readModelLoadEpochs,/);
+});
+
+test("row statistics match the served id, so an MLX folder row still finds its requests", () => {
+  assert.match(page, /id: monitorSelection\(model\.id\)\.id,/);
+  assert.match(page, /name: activeModel,\s*id: activeId,/);
+  assert.match(page, /const \{ id \} = model;/);
+  assert.doesNotMatch(page, /const id = monitorSelection\(model\.name\)\.id;/);
 });

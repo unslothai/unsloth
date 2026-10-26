@@ -98,6 +98,7 @@ import {
 } from "./slots-settings-request";
 import {
   monitorSelection,
+  useResidentFileGrant,
   useResidentRunTarget,
 } from "./use-resident-run-target";
 import {
@@ -248,6 +249,8 @@ function statusTextClass(status: ApiMonitorEntry["status"]): string {
 
 type ServedModel = {
   name: string;
+  /** The id the monitor logs requests and loads under: an MLX folder's name is not stripped from the label. */
+  id: string;
   checkpoint: string;
   active: boolean;
   quant: string | null;
@@ -278,6 +281,7 @@ function servedModels(
       model.quant && !model.id.includes(":")
         ? `${model.id}:${model.quant}`
         : model.id,
+    id: monitorSelection(model.id).id,
     checkpoint: model.checkpoint ?? model.id,
     active: index === activeIndex,
     quant: model.quant ?? null,
@@ -286,6 +290,7 @@ function servedModels(
   if (activeModel && !rows.some((row) => row.active)) {
     rows.unshift({
       name: activeModel,
+      id: activeId,
       checkpoint: activeModel,
       active: true,
       quant: monitorSelection(activeModel).ggufVariant,
@@ -959,11 +964,12 @@ export function ApiMonitorPage(): ReactElement {
     [entries],
   );
   const resident = useResidentRunTarget(data?.active_model);
+  const fileGrant = useResidentFileGrant(data?.active_model);
   const reload = useApiModelReload({
     selectModel: runtime.selectModel,
     loadNpuModel: runtime.loadNpuModel,
     readModelLoadEpochs: runtime.readModelLoadEpochs,
-    resident,
+    fileGrant,
     onSettled: refresh,
     residencyKey,
   });
@@ -1313,7 +1319,7 @@ export function ApiMonitorPage(): ReactElement {
         ? `Eject ${served[0].name} and free its memory`
         : "No model is loaded";
   const rowFacts = (model: ServedModel): ReactElement => {
-    const id = monitorSelection(model.name).id;
+    const { id } = model;
     // Only requests since this model's latest load: an earlier load may have had another window.
     // A failed or still-running load leaves the resident model serving, so it is no cutoff.
     let loadedAt = 0;

@@ -253,7 +253,7 @@ type ActiveModelLoadRun = {
 
 /** The selection the user last asked for, so an await can tell it was superseded. */
 let modelSelectionIntentEpoch = 0;
-/** Bumped whenever a load run is aborted, Stop and replacement alike: selectModel resolves quietly then. */
+/** Bumped whenever a load ends without loading (Stop, replacement, a declined confirmation): selectModel resolves quietly then. */
 let modelLoadCancelEpoch = 0;
 let pendingExternalReplacement:
   | { intentId: number; config?: PerModelConfig }
@@ -1934,6 +1934,7 @@ export function useChatModelRuntime() {
         throw error;
       }
       if (!stopDecision.proceed) {
+        modelLoadCancelEpoch += 1;
         releasePreflightLifecycleLease();
         // The inherited target, not this pick's own previousConfig: when this pick superseded a
         // load that had already pre-applied its settings, that field holds the superseded target's
@@ -2600,6 +2601,7 @@ export function useChatModelRuntime() {
                 );
                 if (abortCtrl.signal.aborted) throw new Error("Cancelled");
                 if (!stopDecision.proceed) {
+                  modelLoadCancelEpoch += 1;
                   // Declined before anything was unloaded: exit as a cancellation, not a failed load.
                   if (
                     modelSelectionIntentEpoch === loadIntentId &&
