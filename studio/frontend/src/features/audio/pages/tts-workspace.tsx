@@ -29,8 +29,8 @@ import {
   DiceFaces03Icon,
   FloppyDiskIcon,
   SparklesIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { addAudioClipToProject, type AudioGalleryClip } from "../api";

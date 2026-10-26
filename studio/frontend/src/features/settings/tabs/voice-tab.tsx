@@ -63,8 +63,8 @@ import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import {
   Search01Icon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";

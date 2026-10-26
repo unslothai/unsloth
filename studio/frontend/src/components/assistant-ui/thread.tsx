@@ -439,9 +439,9 @@ import {
   SlidersHorizontalIcon,
   MoreHorizontalIcon,
   PlusSignIcon,
-  StopIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";

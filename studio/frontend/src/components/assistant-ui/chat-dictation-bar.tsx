@@ -10,7 +10,7 @@ import { useAui, useAuiState } from "@assistant-ui/react";
 import { ArrowUpIcon } from "lucide-react";
 import { type FC, useEffect, useRef, useState } from "react";
 import { TooltipIconButton } from "./tooltip-icon-button";
-import { StopIcon } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 // Dense row of dots that rise into centered recording bars.
