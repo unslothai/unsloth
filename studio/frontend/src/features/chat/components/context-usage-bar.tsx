@@ -6,7 +6,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { CSSProperties, FC } from "react";
+import { type CSSProperties, type FC, useEffect, useRef, useState } from "react";
 import {
   type ContextUsageBarInput,
   deriveContextUsageBar,
@@ -100,9 +100,54 @@ const Face: FC<{ face: string }> = ({ face }) => {
   );
 };
 
+// A mouse click pins it open (the shared Tooltip pins only on touch) until an outside press or Escape.
+function useClickPin(enabled: boolean) {
+  const [hovered, setHovered] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!pinned) return;
+    const release = (event: Event) => {
+      const target = event.target as Element | null;
+      if (triggerRef.current?.contains(target) || target?.closest?.('[data-slot="tooltip-content"]')) {
+        return;
+      }
+      setPinned(false);
+    };
+    const releaseOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPinned(false);
+    };
+    document.addEventListener("pointerdown", release, true);
+    document.addEventListener("keydown", releaseOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("keydown", releaseOnEscape, true);
+    };
+  }, [pinned]);
+  if (!enabled) return null;
+  return {
+    root: { open: hovered || pinned, onOpenChange: setHovered },
+    trigger: {
+      ref: triggerRef,
+      onClick: () => setPinned((was) => !was),
+      "aria-expanded": pinned,
+    },
+  };
+}
+
 export const ContextUsageBar: FC<
-  ContextUsageBarInput & { className?: string; compactUnknownAsIcon?: boolean }
-> = ({ className, compactUnknownAsIcon = false, ...input }) => {
+  ContextUsageBarInput & {
+    className?: string;
+    compactUnknownAsIcon?: boolean;
+    pinOnClick?: boolean;
+    /** Replaces the hover surface's shape and colour (the API page's pill). */
+    hoverClassName?: string;
+    /** Side padding of the face, in --spacing units; the widths below count it. */
+    padX?: number;
+    ringFirst?: boolean;
+  }
+> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2.5, ringFirst = false, ...input }) => {
+  const pin = useClickPin(pinOnClick);
   const state = deriveContextUsageBar(input);
   if (!state) return null;
 
@@ -118,14 +163,15 @@ export const ContextUsageBar: FC<
   const showRing = state.compactFace === null;
   // Mono text, so widths are exact in ch. Full: padding, face, and the gap and ring. Compact: an icon button.
   const fullWidth = showRing
-    ? `calc(${faceWidthCh(face)}ch + var(--icon-size) + 7 * var(--spacing))`
-    : `calc(${faceWidthCh(face)}ch + 5 * var(--spacing))`;
+    ? `calc(${faceWidthCh(face)}ch + var(--icon-size) + ${2 * padX + 2} * var(--spacing))`
+    : `calc(${faceWidthCh(face)}ch + ${2 * padX} * var(--spacing))`;
   const compactWidth =
-    compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${faceWidthCh(compactFace)}ch + 5 * var(--spacing))`;
-  const hover = "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
+    compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${faceWidthCh(compactFace)}ch + ${2 * padX} * var(--spacing))`;
+  const padStyle = { paddingInline: `calc(${padX} * var(--spacing))` };
+  const hover = hoverClassName ?? "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
 
   return (
-    <Tooltip>
+    <Tooltip {...pin?.root}>
       {/* The header squeezes this wrapper; the button inside takes only the face it shows. */}
       <div
         style={
@@ -141,6 +187,7 @@ export const ContextUsageBar: FC<
         <TooltipTrigger asChild>
           <button
             type="button"
+            {...pin?.trigger}
             aria-label={state.label}
             // The full face where it fits, else the compact one, right-aligned against the icons.
             style={{
@@ -163,16 +210,17 @@ export const ContextUsageBar: FC<
                   <UsageRing percent={percent} stroke={severity.stroke} />
                 </span>
               ) : (
-                <span className={cn("flex h-full shrink-0 items-center px-2.5", hover)}><Face face={compactFace} /></span>
+                <span className={cn("flex h-full shrink-0 items-center", hover)} style={padStyle}><Face face={compactFace} /></span>
               )}
             </span>
             <span
               className="col-start-1 row-start-1 h-full overflow-hidden"
               style={{ width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
             >
-              <span className={cn("flex h-full w-(--full) items-center gap-2 px-2.5", hover)}>
+              <span className={cn("flex h-full w-(--full) items-center gap-2", hover)} style={padStyle}>
+                {showRing && ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
                 <Face face={face} />
-                {showRing ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
+                {showRing && !ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
               </span>
             </span>
           </button>
@@ -181,10 +229,10 @@ export const ContextUsageBar: FC<
       <TooltipContent
         side="bottom"
         sideOffset={8}
-        variant="rich"
-        className="[&_span>svg]:hidden!"
+        variant="none"
+        className="dropdown-surface rounded-lg bg-popover px-4 py-3 font-sans text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] [&_span>svg]:hidden!"
       >
-        <div className="grid min-w-44 gap-1.5 text-xs">
+        <div className="grid min-w-48 gap-2 text-sm">
           {percent !== null ? (
             <div className="flex items-center justify-between gap-4">
               <span className="text-muted-foreground">

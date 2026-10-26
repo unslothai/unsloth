@@ -20,7 +20,6 @@ import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
   Download01Icon,
-  SentIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -60,6 +59,7 @@ import {
   GenerateActions,
   type GenerateBlocker,
 } from "./tts-workspace";
+import { ArrowUpIcon } from "lucide-react";
 
 // Radix Select cannot hold an empty value, so "detect" travels as this.
 const AUTO = "__auto__";
@@ -348,7 +348,7 @@ export function TranscribeOutput({
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
                       <Button variant="secondary" size="sm">
-                        <HugeiconsIcon icon={SentIcon} className="mr-2 size-3.5" />
+                        <ArrowUpIcon className="mr-2 size-3.5" />
                         Send to
                       </Button>
                     </DropdownMenuTrigger>

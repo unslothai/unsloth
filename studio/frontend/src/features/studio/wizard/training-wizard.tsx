@@ -36,7 +36,7 @@ import {
   AiBrain01Icon,
   Database02Icon,
   FloppyDiskIcon,
-  Settings05Icon,
+  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import type { CSSProperties, ReactNode } from "react";
@@ -441,7 +441,7 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.paramsTitle")}
         description={t("studio.wizard.paramsDescription")}
-        icon={Settings05Icon}
+        icon={Settings02Icon}
         chipTint="var(--chart-1)"
         dataTour="studio-params"
         titleAction={

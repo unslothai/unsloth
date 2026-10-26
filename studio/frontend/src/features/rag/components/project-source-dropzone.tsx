@@ -9,9 +9,8 @@ import {
 } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { FileEmpty02Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon, PlusSignIcon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   announceProjectSourcesUpdated,
@@ -430,7 +429,7 @@ export function ProjectSourceDropzone({
                     }
                     className="shrink-0 rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
                   >
-                    <XIcon className="size-3.5" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
                   </button>
                 </li>
               ))}

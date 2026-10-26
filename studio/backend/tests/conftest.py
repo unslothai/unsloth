@@ -131,6 +131,21 @@ def _forget_hub_unreachable_verdict():
 
 
 @pytest.fixture(autouse = True)
+def _forget_mcp_discovery_state():
+    # Discovered tools and failed-probe cool-offs are keyed by server id, and most tests reuse "s1": a cool-off
+    # one test records made a later test on the worker skip discovery for its own "s1".
+    def _forget():
+        client = sys.modules.get("core.inference.mcp_client")
+        if client is not None:
+            client._tool_cache.clear()
+            client._probe_cooloff_until.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_load_budget_snapshots():
     def _forget():
         for name, module in list(sys.modules.items()):
