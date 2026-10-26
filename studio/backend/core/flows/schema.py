@@ -360,6 +360,15 @@ class WorldSimulation(_Strict):
     chat_cooldown_min: int = 120  # game minutes per NPC pair
     calls_per_minute: int = 4  # background LLM calls per real minute, across every NPC
     needs: bool = True  # Sims-style needs pick what villagers do between plan blocks
+    options: Optional[bool] = None  # option-action plans that run until a termination condition
+    plan_cache: Optional[int] = (
+        None  # LRU size of reusable plans keyed by role, needs, time and place
+    )
+    reflect_at: Optional[int] = (
+        None  # reflect when summed importance since the last reflection crosses this
+    )
+    rate_batch: Optional[int] = None  # observations scored per importance call
+    relationships: Optional[bool] = None  # pair affinity and facts, rumour source chains
 
 
 class WorldAutonomy(_Strict):
