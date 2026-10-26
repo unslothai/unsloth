@@ -14,8 +14,15 @@ import {
   seeded,
   tickNeeds,
 } from "./needs";
+import {
+  activeOption,
+  advanceOptions,
+  critical,
+  lifeBlock,
+  optionDoing,
+} from "./life-sim";
 import type { Area, WorldGameHandle } from "./phaser-game";
-import { type NpcMind, activityEmoji, currentBlock, dayOf } from "./world-sim";
+import { type NpcMind, activityEmoji } from "./world-sim";
 import type { WorldState } from "./world-state";
 
 export type Steerable = Pick<
@@ -74,22 +81,35 @@ export function villagerStep(opts: {
   clock: number;
   offers: Offer[];
   areas: Map<string, Area>;
-}): { needs: Needs; doing: Doing } | null {
-  const { g, spec, sim, npcId, mind, clock, offers, areas } = opts;
-  if (!mind.needs) return null;
-  let doing = mind.doing ?? null;
+  held?: Record<string, string>;
+}): (Partial<NpcMind> & { needs: Needs; doing: Doing }) | null {
+  const { g, spec, sim, npcId, clock, offers, areas } = opts;
+  if (!opts.mind.needs) return null;
+  let doing = opts.mind.doing ?? null;
   const at = g.npcTile(npcId);
   const needs = tickNeeds(
-    mind.needs,
+    opts.mind.needs,
     sim.minutes_per_second,
     doing?.kind ?? null,
     inside(doing ? areas.get(doing.place) : undefined, at),
   );
-  if (!doing || clock >= doing.until || satisfied(doing, needs)) {
-    const block =
-      mind.planDay === dayOf(clock) ? currentBlock(mind.plan, clock) : null;
+  const moved = advanceOptions(opts.mind, {
+    npcId,
+    clock,
+    needs,
+    held: opts.held,
+    at,
+    areas,
+  });
+  const mind = moved ? { ...opts.mind, ...moved } : opts.mind;
+  const option = activeOption(mind);
+  if (!doing || clock >= doing.until || satisfied(doing, needs) || moved) {
+    const block = lifeBlock(mind, clock);
     const rnd = seeded(spec.seed, npcId, Math.floor(clock));
-    const next = chooseAction({ needs, offers, clock, block, rnd });
+    const next =
+      option && !critical(needs)
+        ? optionDoing(option, clock)
+        : chooseAction({ needs, offers, clock, block, rnd });
     const lines = ACTIONS[next.kind].says;
     if (next.kind !== doing?.kind && lines.length && rnd() < 0.5)
       g.say(npcId, lines[Math.floor(rnd() * lines.length)], 3000);
@@ -102,7 +122,7 @@ export function villagerStep(opts: {
       ? activityEmoji(doing.label ?? "")
       : ACTIONS[doing.kind].icon,
   );
-  return { needs, doing };
+  return { ...moved, needs, doing };
 }
 
 export function steeredNeeds(mind: NpcMind, minutes: number): Needs | null {

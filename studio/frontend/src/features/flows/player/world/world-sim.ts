@@ -3,7 +3,13 @@
 
 
 import type { WorldPlace, WorldSimulation, WorldSpec } from "../../types";
-import { type Doing, type Needs, initialNeeds } from "./needs";
+import {
+  type ActionKind,
+  type Doing,
+  type Need,
+  type Needs,
+  initialNeeds,
+} from "./needs";
 
 export const MAX_MEMORIES = 120;
 export const MEET_TILES = 2;
@@ -15,6 +21,10 @@ export interface MemoryRecord {
   t_created: number;
   t_access: number;
   importance: number;
+  /** Who passed this on, nearest first ("player" for the player). */
+  source?: string[];
+  /** Importance is a code guess still waiting for a batched rating. */
+  guess?: boolean;
 }
 
 export interface PlanBlock {
@@ -32,12 +42,42 @@ export interface NpcMind {
   lastChat: Record<string, number>;
   needs?: Needs;
   doing?: Doing | null;
+  options?: PlanOption[];
+  optionAt?: number;
+  optionSince?: number;
+  planAt?: number;
+  replan?: boolean;
+  since?: number;
+  rel?: Record<string, PairMemory>;
+}
+
+export type Until =
+  | { type: "time"; at: number }
+  | { type: "need"; need: Need; above: number }
+  | { type: "item"; item: string }
+  | { type: "place"; place: string };
+
+export interface PlanOption {
+  activity: string;
+  place: string;
+  kind: ActionKind;
+  until: Until;
+}
+
+export interface PairMemory {
+  affinity: number;
+  facts: string[];
+  talked?: number;
 }
 
 export interface Note {
   text: string;
   importance: number;
+  source?: string[];
+  guess?: boolean;
 }
+
+export const NOTABLE = 8;
 
 export function simOf(spec: WorldSpec): WorldSimulation | null {
   const sim = spec.simulation;
@@ -80,7 +120,19 @@ export function remember(
     t_created: clock / 60,
     t_access: clock / 60,
     importance: Math.max(1, Math.min(10, Math.round(n.importance || 4))),
+    ...(n.source?.length ? { source: n.source.slice(0, 4) } : {}),
+    ...(n.guess ? { guess: true } : {}),
   }));
+  const life: Partial<NpcMind> = {};
+  if (mind.since !== undefined)
+    life.since =
+      mind.since + added.reduce((a, r) => a + (r.guess ? 0 : r.importance), 0);
+  if (
+    mind.options &&
+    kind === "observation" &&
+    added.some((r) => r.importance >= NOTABLE)
+  )
+    life.replan = true;
   let memory = [...mind.memory, ...added];
   if (memory.length > MAX_MEMORIES) {
     const drop = new Set(
@@ -91,7 +143,7 @@ export function remember(
     );
     memory = memory.filter((r) => !drop.has(r.id));
   }
-  return { ...mind, memory, nextId };
+  return { ...mind, ...life, memory, nextId };
 }
 
 export function touch(mind: NpcMind, ids: string[], clock: number): NpcMind {
@@ -206,8 +258,9 @@ export function findEncounter(
 
 export interface SimJob {
   key: string;
-  kind: "plan" | "chat";
-  run: (signal: AbortSignal) => Promise<void>;
+  kind: "plan" | "chat" | "rate" | "reflect";
+  /** Resolves false when it answered without a model call (a plan cache hit): its slot is refunded. */
+  run: (signal: AbortSignal) => Promise<void | boolean>;
 }
 
 export class BackgroundQueue {
@@ -215,6 +268,7 @@ export class BackgroundQueue {
   private starts: number[] = [];
   private current: { job: SimJob; ctrl: AbortController } | null = null;
   private paused = false;
+  readonly calls: Record<string, number> = {};
 
   readonly perMinute: number;
   private now: () => number;
@@ -262,15 +316,29 @@ export class BackgroundQueue {
     return this.starts.length < this.perMinute;
   }
 
+  callsLabel(): string {
+    const kinds = Object.entries(this.calls);
+    const total = kinds.reduce((a, [, n]) => a + n, 0);
+    return `${total} background calls${kinds.length ? ` (${kinds.map(([k, n]) => `${k} ${n}`).join(", ")})` : ""}`;
+  }
+
   pump(): void {
     if (this.paused || this.current || !this.jobs.length || !this.allows())
       return;
     const job = this.jobs.shift() as SimJob;
     const ctrl = new AbortController();
     this.current = { job, ctrl };
-    this.starts.push(this.now());
+    const started = this.now();
+    this.starts.push(started);
+    this.calls[job.kind] = (this.calls[job.kind] ?? 0) + 1;
     void job
       .run(ctrl.signal)
+      .then((called) => {
+        if (called !== false) return;
+        this.calls[job.kind]--;
+        const i = this.starts.indexOf(started);
+        if (i >= 0) this.starts.splice(i, 1);
+      })
       .catch(() => {
       })
       .finally(() => {

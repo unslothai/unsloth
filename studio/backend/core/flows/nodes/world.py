@@ -7,15 +7,25 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 from collections import OrderedDict
 from typing import Any, Optional
 
 from core.flows import memory as mem
+from core.flows.authoring import AuthoringError, constrained_call
 from core.flows.expr import seed_from
 from core.flows.nodes._common import JsonFieldStream
-from core.flows.nodes.memory import _plan_schema, _retrieve, clean_plan, embed
+from core.flows.nodes.memory import _plan_schema, _retrieve, clean_plan, embed, rate_importance
 from core.flows.registry import FlowNodeError, NodeContext, handler
 from core.flows.rivals import RIVAL_TASKS
+from core.flows.scene_solver import (
+    SCENE_SCHEMA,
+    SCENE_SYSTEM,
+    Grid,
+    fallback_scene,
+    solve,
+    validate_scene,
+)
 from core.flows.story import slug
 from core.flows.world import (
     BIOME_TILES,
@@ -25,15 +35,24 @@ from core.flows.world import (
     SUMMARY_SCHEMA,
     TILE_PROMPTS,
     WorldError,
+    REFLECT_SCHEMA,
     chat_prompt,
     chat_schema,
+    clean_insights,
+    clean_options,
     clean_summary,
     compact_prompt,
     director_prompt,
+    director_schema,
+    fallback_quest,
     has_memory,
     normalize_world,
     npc_prompt,
+    options_blocks,
+    options_prompt,
+    options_schema,
     plan_prompt,
+    reflect_prompt,
     validate_chat,
     validate_director,
     validate_npc_reply,
@@ -268,7 +287,10 @@ async def _recall(
                 else:
                     _VECTORS.pop(r["text"], None)
     picked = _retrieve(stream, query, query_vec, now, ctx.params, k, touch = False)
-    return [{"id": r["id"], "text": r["text"]} for r in picked]
+    return [
+        {"id": r["id"], "text": r["text"], **({"source": r["source"]} if r.get("source") else {})}
+        for r in picked
+    ]
 
 
 def _hours(state: dict) -> float:
@@ -291,6 +313,8 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         return await _direct(ctx, state)
     if state.get("task") in RIVAL_TASKS:
         return await RIVAL_TASKS[state["task"]](ctx, state)
+    if state.get("task") == "describe_place":
+        return {"reply": {"place": await describe_place(ctx, state)}}
     memories: Optional[list[dict]] = None
     if has_memory(state):
         npc = next(
@@ -355,27 +379,76 @@ async def _direct(ctx: NodeContext, state: dict) -> dict:
         system, prompt = director_prompt(state)
     except WorldError as exc:
         raise FlowNodeError(str(exc)) from exc
-    world = state.get("world") or {}
-    refused = ""
-    for attempt in range(2):
-        raw = await ctx.llm_json(
-            model = ctx.params.get("model"),
-            system = system,
-            prompt = prompt
-            + (
-                f"Your last answer was refused: {refused}. Answer again and fix that.\n"
-                if refused
-                else ""
-            ),
-            schema = DIRECTOR_SCHEMA,
-            temperature = 0.9,
-            max_tokens = 500,
-        )
-        try:
-            return {"reply": {"patch": validate_director(raw, state)}}
-        except WorldError as exc:
-            refused = str(exc)
-    raise FlowNodeError(refused, retryable = True)
+    out = await constrained_call(
+        ctx,
+        director_schema(state),
+        prompt,
+        lambda raw: validate_director(raw, state),
+        repair_max = 1,
+        fallback = lambda: fallback_quest(state),
+        system = system,
+        temperature = 0.9,
+        max_tokens = 500,
+        defaults = {k: "" for k in DIRECTOR_SCHEMA["properties"]},
+    )
+    return {"reply": {"patch": out.value}}
+
+
+async def describe_place(ctx: NodeContext, req: dict) -> dict:
+    """Lay out the described place on the request's map (rows of ``#`` / ``.`` / ``R``, or an open field)."""
+    text = re.sub(r"\s+", " ", str(req.get("text") or ctx.params.get("description") or "")).strip()[
+        :600
+    ]
+    if not text:
+        raise FlowNodeError("Describe the place first.")
+    try:
+        Grid.from_request(req)
+    except (AuthoringError, TypeError, ValueError, KeyError) as exc:
+        raise FlowNodeError(f"Unreadable map: {exc}") from exc
+    f = req.get("focus") if isinstance(req.get("focus"), dict) else {}
+    focus = (
+        (int(f["x"]), int(f["y"]))
+        if all(isinstance(f.get(k), (int, float)) for k in ("x", "y"))
+        else None
+    )
+    taken = {str(i) for i in req.get("taken") or [] if isinstance(i, str)}
+    seed = int(req["seed"]) if isinstance(req.get("seed"), int) else int(ctx.seed or 0)
+
+    def place(spec: dict) -> dict:
+        return solve(spec, Grid.from_request(req), focus = focus, seed = seed, taken_ids = taken)
+
+    def check(raw: Any) -> dict:
+        spec = validate_scene(raw)
+        result = place(spec)
+        want = sum(p["count"] for p in spec["props"])
+        if len(result["props3d"]) * 2 < want:
+            raise AuthoringError(
+                f"only {len(result['props3d'])} of {want} props fit on the free ground; ask for fewer"
+            )
+        return {**result, "spec": spec}
+
+    out = await constrained_call(
+        ctx,
+        SCENE_SCHEMA,
+        f"Describe this place as a scene: {text}\n",
+        check,
+        fallback = lambda: {**place(spec := fallback_scene(text)), "spec": spec},
+        system = SCENE_SYSTEM,
+        temperature = 0.7,
+        max_tokens = 900,
+    )
+    return {**out.value, "fallback": out.fallback, "attempts": out.attempts}
+
+
+@handler("world.describe_place")
+async def world_describe_place(ctx: NodeContext) -> dict:
+    req = ctx.inputs.get("request")
+    req = dict(req) if isinstance(req, dict) else {}
+    w = ctx.inputs.get("world")
+    if not req.get("rows") and isinstance(w, dict):
+        req.setdefault("width", w.get("width"))
+        req.setdefault("height", w.get("height"))
+    return {"place": await describe_place(ctx, req)}
 
 
 def _sim_world(state: Any, who: str) -> dict:
@@ -394,17 +467,71 @@ def _npc(world: dict, npc_id: Any) -> dict:
     return npc
 
 
+RATE_MAX = 32
+
+
+async def _rate(ctx: NodeContext, state: dict) -> dict:
+    texts = [str(t)[:300] for t in state.get("texts") or [] if isinstance(t, str) and t.strip()]
+    return {"plan": {"ratings": await rate_importance(ctx, texts[:RATE_MAX]) if texts else []}}
+
+
+async def _reflect(ctx: NodeContext, world: dict, npc: dict, state: dict) -> dict:
+    """One call instead of the paper's question-then-insight rounds."""
+    records = [
+        r
+        for r in state.get("memory") or []
+        if isinstance(r, dict) and isinstance(r.get("text"), str) and isinstance(r.get("id"), str)
+    ][-30:]
+    if not records:
+        return {"plan": {"insights": []}}
+    system, prompt = reflect_prompt(world, npc, records)
+    raw = await ctx.llm_json(
+        model = ctx.params.get("model"),
+        system = system,
+        prompt = prompt,
+        schema = REFLECT_SCHEMA,
+        temperature = 0.7,
+        max_tokens = 400,
+    )
+    return {"plan": {"npc": npc["id"], "insights": clean_insights(raw, records)}}
+
+
 @handler("world.npc_plan")
 async def world_npc_plan(ctx: NodeContext) -> dict:
     state = ctx.inputs.get("state")
     world = _sim_world(state, "NPC Plan")
+    if state.get("task") == "rate":
+        return await _rate(ctx, state)
     npc = _npc(world, state.get("npc_id"))
+    if state.get("task") == "reflect":
+        return await _reflect(ctx, world, npc, state)
     places = world["simulation"]["places"]
     names = [p["name"] for p in places]
     day = max(0, int(_hours(state) // 24))
     memories = await _recall(
         ctx, state.get("memory"), f"{npc['name']}'s plans for today", _hours(state)
     )
+    if world["simulation"].get("options") and state.get("options"):
+        system, prompt = options_prompt(
+            world, npc, memories, state.get("clock"), state.get("needs")
+        )
+        raw = await ctx.llm_json(
+            model = ctx.params.get("model"),
+            system = system,
+            prompt = prompt,
+            schema = options_schema(names, [i["name"] for i in world.get("items") or []]),
+            temperature = 0.7,
+            max_tokens = 700,
+        )
+        options = clean_options(raw, world, state.get("clock"))
+        return {
+            "plan": {
+                "npc": npc["id"],
+                "day": day,
+                "plan": options_blocks(options, state.get("clock")),
+                "options": options,
+            }
+        }
     system, prompt = plan_prompt(world, npc, memories, day)
     raw = await ctx.llm_json(
         model = ctx.params.get("model"),
@@ -439,17 +566,18 @@ async def world_npc_chat(ctx: NodeContext) -> dict:
     now = _hours(state)
     mem_a = await _recall(ctx, state.get("memory_a"), b["name"], now, 5)
     mem_b = await _recall(ctx, state.get("memory_b"), a["name"], now, 5)
-    system, prompt = chat_prompt(world, a, b, mem_a, mem_b, state)
+    social = bool(world["simulation"].get("relationships"))
+    system, prompt = chat_prompt(world, a, b, mem_a, mem_b, state, social)
     raw = await ctx.llm_json(
         model = ctx.params.get("model"),
         system = system,
         prompt = prompt,
-        schema = chat_schema(a, b),
+        schema = chat_schema(a, b, social),
         temperature = 0.8,
         max_tokens = 700,
     )
     try:
-        chat = validate_chat(raw, a, b)
+        chat = validate_chat(raw, a, b, mem_a, mem_b) if social else validate_chat(raw, a, b)
     except WorldError as exc:
         raise FlowNodeError(str(exc), retryable = True) from exc
     chat["a_recalled"] = [r["id"] for r in mem_a]

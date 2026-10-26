@@ -247,6 +247,11 @@ def test_import_export_assets_round_trip(client, monkeypatch):
 def test_examples_list_and_copy(client, monkeypatch):
     hello = {**_simple("hello"), "kind": "pipeline"}
     monkeypatch.setattr(flows_routes.examples, "example_ids", lambda: ["hello"])
+    monkeypatch.setattr(flows_routes.examples, "example_docs", lambda: [hello])
+    flows_routes._example_summaries.cache_clear()
+    monkeypatch.setattr(
+        flows_routes, "_example_summaries", flows_routes._example_summaries.__wrapped__
+    )
     monkeypatch.setattr(
         flows_routes.examples,
         "example",

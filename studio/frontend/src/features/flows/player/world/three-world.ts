@@ -5,7 +5,7 @@
 import * as three from "three";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 
-import type { WorldItem, WorldNpc, WorldSpec } from "../../types";
+import type { WorldItem, WorldNpc, WorldProp3d, WorldSpec } from "../../types";
 import type {
   Area,
   Interactable,
@@ -22,8 +22,14 @@ import {
   isSolid,
   kindAt,
 } from "./procgen";
-import { createPropLayer } from "./props-scene3d";
-import { type WorldEditor, setMapProps } from "./props3d";
+import { createPropLayer, setOpenPose } from "./props-scene3d";
+import { createVerbFx } from "./verbs-scene3d";
+import {
+  PROP_LABELS,
+  type WorldEditor,
+  blockedCells,
+  setMapProps,
+} from "./props3d";
 import { canvas, fitImage, paintItem } from "./sprites";
 import {
   type ActionWorld,
@@ -47,7 +53,38 @@ import {
   shoot,
   takePickup,
   tick,
+  wallDistance,
 } from "./action3d";
+import {
+  type Brain,
+  type PlayerSense,
+  addAgent,
+  brainStep,
+  createBrain,
+  follow,
+  gridOf,
+  setGrid,
+} from "./enemy-ai";
+import {
+  type Projectile,
+  type PropStates,
+  NOISE,
+  THROW_AMMO,
+  closedProps,
+  dashAdvance,
+  dashing,
+  isOpen,
+  isUsable,
+  makeNoise,
+  melee,
+  newVerbs,
+  splash,
+  startDash,
+  stepNoise,
+  stepProjectiles,
+  throwRock,
+  verbsTick,
+} from "./action-verbs";
 import { hostilesOf } from "./roles";
 import type { WorldEditorRuntime } from "./world-editor3d";
 import {
@@ -69,6 +106,7 @@ const NPC_TILES_PER_S = 1.5;
 const REACH = 1.35;
 const TURN_RAD_PER_S = 2.2;
 const ACTOR_H = 1.15;
+const NO_TARGETS: Target[] = [];
 
 interface Npc {
   id: string;
@@ -102,6 +140,8 @@ function hash2(x: number, y: number, seed: number): number {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
+let measure: CanvasRenderingContext2D | null = null;
+
 function textCanvas(
   text: string,
   opts: { bubble?: boolean; px?: number; maxW?: number } = {},
@@ -109,7 +149,8 @@ function textCanvas(
   const px = opts.px ?? 44;
   const maxW = opts.maxW ?? 900;
   const font = `600 ${px}px Inter, system-ui, sans-serif`;
-  const [, probe] = canvas(4, 4);
+  if (!measure) [, measure] = canvas(4, 4);
+  const probe = measure;
   probe.font = font;
   const words = text.split(/\s+/);
   const lines: string[] = [];
@@ -190,16 +231,15 @@ export function createWorld3d(
   const view = resolveView3d(spec);
   const light = TIMES[view.time_of_day];
   const terrain: Terrain = buildTerrain(map, spec.seed, view.terrain);
-  const disposables: { dispose(): void }[] = [];
+  const disposables = new Set<{ dispose(): void }>();
   const keep = <T extends { dispose(): void }>(x: T): T => {
-    disposables.push(x);
+    disposables.add(x);
     return x;
   };
   const drop = (x: { dispose(): void } | null | undefined) => {
     if (!x) return;
     x.dispose();
-    const i = disposables.indexOf(x);
-    if (i >= 0) disposables.splice(i, 1);
+    disposables.delete(x);
   };
   const dropSprite = (sprite: three.Sprite) => {
     sprite.removeFromParent();
@@ -446,6 +486,7 @@ export function createWorld3d(
     const roofMat = keep(
       new three.MeshLambertMaterial({ color: "#a2533c", flatShading: true }),
     );
+    let roofGeo: three.ConeGeometry | null = null;
     for (const s of decor.wall) {
       if (seen.has(`${s.x},${s.y}`)) continue;
       let x0 = s.x;
@@ -484,10 +525,8 @@ export function createWorld3d(
       const bw = x1 - x0 + 1;
       const bd = y1 - y0 + 1;
       if (bw > 10 || bd > 10) continue;
-      const roof = new three.Mesh(
-        keep(new three.ConeGeometry(Math.SQRT1_2, 1, 4)),
-        roofMat,
-      );
+      roofGeo ??= keep(new three.ConeGeometry(Math.SQRT1_2, 1, 4));
+      const roof = new three.Mesh(roofGeo, roofMat);
       const cx = x0 + bw / 2;
       const cz = y0 + bd / 2;
       roof.rotation.y = Math.PI / 4;
@@ -585,6 +624,12 @@ export function createWorld3d(
   };
 
   const npcs: Npc[] = [];
+  const bodyMats = new Map<number, three.MeshLambertMaterial>();
+  let fallback: {
+    body: three.CapsuleGeometry;
+    head: three.SphereGeometry;
+    skin: three.MeshLambertMaterial;
+  } | null = null;
   const spawnNpc = (n: WorldNpc, at: Point) => {
     const g = new three.Group();
     const img = art.sprites[n.id];
@@ -608,20 +653,23 @@ export function createWorld3d(
         n.id.charCodeAt(0),
         n.id.charCodeAt(n.id.length - 1),
       );
-      const m = keep(
-        new three.MeshLambertMaterial({
-          color: new three.Color().setHSL(hue, 0.55, 0.55),
-        }),
-      );
-      const cap = new three.Mesh(
-        keep(new three.CapsuleGeometry(0.2, 0.5, 4, 10)),
-        m,
-      );
+      let m = bodyMats.get(hue);
+      if (!m) {
+        m = keep(
+          new three.MeshLambertMaterial({
+            color: new three.Color().setHSL(hue, 0.55, 0.55),
+          }),
+        );
+        bodyMats.set(hue, m);
+      }
+      fallback ??= {
+        body: keep(new three.CapsuleGeometry(0.2, 0.5, 4, 10)),
+        head: keep(new three.SphereGeometry(0.15, 12, 10)),
+        skin: keep(new three.MeshLambertMaterial({ color: "#f1c9a5" })),
+      };
+      const cap = new three.Mesh(fallback.body, m);
       cap.position.y = 0.45;
-      const head = new three.Mesh(
-        keep(new three.SphereGeometry(0.15, 12, 10)),
-        keep(new three.MeshLambertMaterial({ color: "#f1c9a5" })),
-      );
+      const head = new three.Mesh(fallback.head, fallback.skin);
       head.position.y = 0.98;
       g.add(cap, head);
     }
@@ -691,6 +739,16 @@ export function createWorld3d(
 
   const action = spec.action?.movement === true;
   const shooter = action && spec.action?.shooter === true;
+  const verbs = action && spec.action?.verbs === true;
+  const vs = newVerbs();
+  let propState: PropStates = bridge.props ?? {};
+  let usable = (map.props ?? []).filter(isUsable);
+  const poses = new Map<string, number>();
+  const doorTiles = () => {
+    if (map.props?.length)
+      map.blocked = blockedCells(map, closedProps(map.props, propState));
+  };
+  if (usable.length) doorTiles();
   const wallTile = (x: number, y: number) =>
     x < 0 ||
     y < 0 ||
@@ -699,7 +757,7 @@ export function createWorld3d(
     SOLID.has(kindAt(map, x, y));
   const collide = (z: number): ActionWorld => {
     const ground = (x: number, y: number) => heightAt(terrain, x, y);
-    const all = map.props ?? [];
+    const all = closedProps(map.props ?? [], propState);
     const over = new Set(
       all
         .map((p) => propBox(p, ground))
@@ -729,6 +787,12 @@ export function createWorld3d(
   let aw: ActionWorld | null = action ? collide(feet) : null;
   let body: Body | null = aw ? newBody(aw, me.x, me.y) : null;
   if (body) body.z = Math.max(body.z, feet);
+  // Door state lives in the saved world state; both blockers (map tiles, capsule boxes) follow it from here.
+  const syncDoors = () => {
+    doorTiles();
+    regrid();
+    if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
+  };
   const combat: Combat = shooter ? combatOf(saved.combat) : newCombat();
   const hostile = new Set([
     ...hostilesOf(spec),
@@ -736,6 +800,40 @@ export function createWorld3d(
   ]);
   let jumpPressed = false;
   let firePressed = false;
+  const brain: Brain | null =
+    shooter && spec.action?.ai === "v2"
+      ? createBrain(
+          gridOf(map.width, map.height, (x, y) => isSolid(map, x, y)),
+          (ox, oy, oz, dx, dy, dz, max) =>
+            aw ? wallDistance(aw, ox, oy, oz, dx, dy, dz, max) : max,
+          (x, y) => heightAt(terrain, x, y),
+          (x, y) => map.blocked?.[y * map.width + x] === 1,
+          spec.action?.barks,
+        )
+      : null;
+  const regrid = () => {
+    if (brain)
+      setGrid(
+        brain,
+        gridOf(map.width, map.height, (x, y) => isSolid(map, x, y)),
+        (x, y) => map.blocked?.[y * map.width + x] === 1,
+      );
+  };
+  const sense: PlayerSense = {
+    x: 0,
+    y: 0,
+    z: 0,
+    h: STAND_H,
+    fx: 0,
+    fy: 1,
+    crouched: false,
+    hidden: false,
+  };
+  const barked = new Map<string, number>();
+  let footstep = 0;
+  if (brain)
+    for (const n of npcs)
+      if (hostile.has(n.id)) addAgent(brain, n.id, n.pos.x, n.pos.y, true);
   const pickups: Pickup[] = [];
   const pickupSprites = new Map<string, three.Sprite>();
   if (shooter) {
@@ -759,6 +857,25 @@ export function createWorld3d(
       pickupSprites.set(p.id, s);
     }
   }
+  const verbFx = verbs && shooter ? createVerbFx(scene, vs.shots.length) : null;
+  let verbPressed: string | null = null;
+  const dashStep = (w: ActionWorld, b: Body, _input: unknown, dt: number) =>
+    dashAdvance(w, b, vs, dt);
+  const propTip = new three.Vector3();
+  const propTargets = new Map<string, Interactable>();
+  const propTarget = (p: WorldProp3d): Interactable => {
+    const label = p.name ?? PROP_LABELS[p.kind];
+    const name =
+      p.kind === "door" && p.locked_by && !propState[p.id]?.unlocked
+        ? `${label} (locked)`
+        : label;
+    let t = propTargets.get(p.id);
+    if (!t || t.name !== name || t.prop !== p) {
+      t = { kind: "prop", id: p.id, name, prop: p };
+      propTargets.set(p.id, t);
+    }
+    return t;
+  };
   const hud = document.createElement("div");
   hud.dataset.testid = "world3d-hud";
   Object.assign(hud.style, {
@@ -783,9 +900,14 @@ export function createWorld3d(
         pose?: unknown;
         combat?: unknown;
         shot?: unknown;
+        melee?: unknown;
+        verbs?: unknown;
+        ai?: unknown;
       };
     }
   ).__flowsWorldPerf;
+  if (perf && verbs) perf.verbs = vs;
+  if (perf && brain) perf.ai = brain;
   {
     let best: Npc | null = null;
     for (const n of npcs)
@@ -807,10 +929,14 @@ export function createWorld3d(
   overlay.type = "button";
   overlay.dataset.testid = "world3d-lock";
   overlay.textContent = shooter
-    ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · Click or F to shoot · E to talk"
-    : action
-      ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · E to talk"
-      : "Click to look around · WASD to walk · E to talk · Esc for the mouse";
+    ? verbs
+      ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · Click or F to shoot · V or right-click to strike · G to throw · Q to dash · E to talk and use"
+      : "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · Click or F to shoot · E to talk"
+    : verbs
+      ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · Q to dash · E to talk and use"
+      : action
+        ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · E to talk"
+        : "Click to look around · WASD to walk · E to talk · Esc for the mouse";
   Object.assign(overlay.style, {
     position: "absolute",
     left: "50%",
@@ -906,6 +1032,15 @@ export function createWorld3d(
       if (!e.repeat) firePressed = true;
       return;
     }
+    if (
+      verbs &&
+      (e.code === "KeyQ" ||
+        (shooter && (e.code === "KeyV" || e.code === "KeyG")))
+    ) {
+      if (!e.repeat) verbPressed = e.code;
+      e.preventDefault();
+      return;
+    }
     if (e.code === "KeyE" || e.code === "Space") {
       if (nearby) {
         e.preventDefault();
@@ -932,6 +1067,16 @@ export function createWorld3d(
   const onPointerDown = (e: PointerEvent) => {
     if (shooter && controls.isLocked && !bridge.locked() && e.button === 0) {
       firePressed = true;
+      return;
+    }
+    if (
+      verbs &&
+      shooter &&
+      controls.isLocked &&
+      !bridge.locked() &&
+      e.button === 2
+    ) {
+      verbPressed = "KeyV";
       return;
     }
     if (controls.isLocked || bridge.locked()) return;
@@ -1024,16 +1169,19 @@ export function createWorld3d(
         Math.hypot(n.pos.x - me.x, n.pos.y - me.y) >= 0.42,
     );
 
-  const targets = (): Target[] =>
-    npcs
-      .filter((n) => n.group.visible)
-      .map((n) => ({
-        id: n.id,
-        x: n.pos.x,
-        y: n.pos.y,
-        z: heightAt(terrain, n.pos.x, n.pos.y),
-        hostile: hostile.has(n.id),
-      }));
+  const targets = (hostileOnly = false): Target[] => {
+    const out: Target[] = [];
+    for (const n of npcs)
+      if (n.group.visible && (!hostileOnly || hostile.has(n.id)))
+        out.push({
+          id: n.id,
+          x: n.pos.x,
+          y: n.pos.y,
+          z: heightAt(terrain, n.pos.x, n.pos.y),
+          hostile: hostile.has(n.id),
+        });
+    return out;
+  };
   const say = (n: Npc, text: string) => handle.say(n.id, text, 1600);
   function fight(dt: number) {
     if (!aw || !body) return;
@@ -1076,6 +1224,7 @@ export function createWorld3d(
           dir: { x: dir.x, y: dir.z, z: dir.y },
           targets: targets().filter((t) => t.hostile),
         };
+      if (shot.fired && brain) makeNoise(vs, body.x, body.y, NOISE.shot);
       if (shot.fired) {
         cross.style.transform = "scale(2.2)";
         window.setTimeout(() => {
@@ -1088,11 +1237,13 @@ export function createWorld3d(
         if (shot.downed) bridge.onEvent?.(`${n.name} is knocked out`);
       }
     }
+    if (verbs) strikeAndThrow(dt, safe);
+    if (brain) hostilesThink(dt, safe);
     const fired = enemiesAct(
       aw,
       combat,
       { x: body.x, y: body.y, z: body.z, h: bodyHeight(body) },
-      targets().filter((t) => t.hostile),
+      brain ? NO_TARGETS : targets(true),
       safe,
     );
     for (const id of fired) {
@@ -1121,6 +1272,104 @@ export function createWorld3d(
       hudText = text;
       hud.textContent = text;
     }
+  }
+
+  function hostilesThink(dt: number, safe: (x: number, y: number) => boolean) {
+    if (!brain || !body) return;
+    const yaw = camera.rotation.y;
+    sense.x = body.x;
+    sense.y = body.y;
+    sense.z = body.z;
+    sense.h = bodyHeight(body);
+    sense.fx = -Math.sin(yaw);
+    sense.fy = -Math.cos(yaw);
+    sense.crouched = body.crouched;
+    sense.hidden = safe(body.x, body.y);
+    brain.safe = safe;
+    brainStep(brain, dt, sense, combat, vs.noises);
+    for (const a of brain.agents)
+      if (a.barkSeq !== (barked.get(a.id) ?? 0)) {
+        barked.set(a.id, a.barkSeq);
+        const n = npcById(a.id);
+        if (n && n.group.visible) say(n, a.bark);
+      }
+  }
+  const rockHits = (x: number, y: number, z: number) => {
+    for (const n of npcs) {
+      if (!n.group.visible || !hostile.has(n.id)) continue;
+      const g = heightAt(terrain, n.pos.x, n.pos.y);
+      if (
+        Math.hypot(n.pos.x - x, n.pos.y - y) < 0.35 &&
+        z > g &&
+        z < g + ACTOR_H
+      )
+        return true;
+    }
+    return false;
+  };
+  const onBurst = (p: Projectile) => {
+    verbFx?.flash(p.x, p.y, p.z);
+    if (!aw) return;
+    const open = targets().filter(
+      (t) => !bridge.safeAt?.({ x: Math.floor(t.x), y: Math.floor(t.y) }),
+    );
+    for (const hit of splash(aw, combat, p, open)) {
+      const n = npcs.find((x) => x.id === hit.id);
+      if (n) say(n, hit.downed ? "Ugh..." : "Argh!");
+      if (n && hit.downed) bridge.onEvent?.(`${n.name} is knocked out`);
+    }
+  };
+  function strikeAndThrow(dt: number, safe: (x: number, y: number) => boolean) {
+    if (!aw || !body) return;
+    const verb = verbPressed;
+    if (verb === "KeyV" || verb === "KeyG") {
+      verbPressed = null;
+      if (safe(body.x, body.y)) bridge.onEvent?.("No fighting in a safe place");
+      else if (verb === "KeyV") {
+        const yaw = camera.rotation.y;
+        const hit = melee(
+          aw,
+          combat,
+          vs,
+          { x: body.x, y: body.y, z: body.z + 1 },
+          -Math.sin(yaw),
+          -Math.cos(yaw),
+          targets().filter((t) => !safe(t.x, t.y)),
+        );
+        if (hit) {
+          cross.style.transform = "scale(1.6) rotate(45deg)";
+          window.setTimeout(() => {
+            cross.style.transform = "";
+          }, 120);
+        }
+        const n = hit?.hit ? npcs.find((x) => x.id === hit.hit) : null;
+        if (hit && n) {
+          [n.pos.x, n.pos.y] = slide(map, n.pos.x, n.pos.y, hit.kx, hit.ky);
+          const agent = brain?.byId.get(n.id);
+          if (agent) {
+            agent.x = n.pos.x;
+            agent.y = n.pos.y;
+            agent.pathLen = 0;
+          }
+          n.path = [];
+          say(n, hit.downed ? "Ugh..." : "Oof!");
+          if (hit.downed) bridge.onEvent?.(`${n.name} is knocked out`);
+        }
+        if (perf) perf.melee = hit;
+      } else {
+        const dir = camera.getWorldDirection(propTip);
+        const thrown = throwRock(
+          combat,
+          vs,
+          { x: camera.position.x, y: camera.position.z, z: camera.position.y },
+          { x: dir.x, y: dir.z, z: dir.y },
+        );
+        if (!thrown && combat.ammo < THROW_AMMO)
+          bridge.onEvent?.("Not enough ammo to throw");
+      }
+    }
+    if (vs.live) stepProjectiles(aw, vs, dt, rockHits, onBurst);
+    verbFx?.sync(vs, dt);
   }
 
   let last = performance.now();
@@ -1183,7 +1432,15 @@ export function createWorld3d(
           limit = Math.hypot(ix, iy);
         }
       }
-      advance(
+      if (verbs) {
+        verbsTick(vs, dt);
+        if (verbPressed === "KeyQ") {
+          verbPressed = null;
+          const steer = Boolean(ix || iy);
+          if (!locked) startDash(vs, body, steer ? ix : fx, steer ? iy : fz);
+        }
+      }
+      (verbs && dashing(vs) ? dashStep : advance)(
         aw,
         body,
         {
@@ -1199,6 +1456,16 @@ export function createWorld3d(
       );
       jumpPressed = false;
       moving = Boolean(ix || iy) && !locked;
+      footstep -= dt;
+      if (brain && moving && body.grounded && footstep <= 0) {
+        footstep = 0.4;
+        makeNoise(
+          vs,
+          body.x,
+          body.y,
+          stepNoise(body, keys.has("ShiftLeft") || keys.has("ShiftRight")),
+        );
+      }
       me.x = body.x;
       me.y = body.y;
     } else if (locked) route = [];
@@ -1254,7 +1521,12 @@ export function createWorld3d(
     for (const n of npcs) {
       const close = Math.hypot(n.pos.x - me.x, n.pos.y - me.y) < 1.8;
       let walking = false;
-      if (talking === n.id || n.busy || close || !n.wander) {
+      const agent = brain?.byId.get(n.id);
+      if (agent && follow(agent, n.pos.x, n.pos.y)) {
+        n.pos.x = agent.x;
+        n.pos.y = agent.y;
+        walking = agent.moving;
+      } else if (talking === n.id || n.busy || close || !n.wander) {
         n.path = [];
       } else if (steer(n.pos, n.path, NPC_TILES_PER_S, dt, false)) {
         walking = true;
@@ -1300,6 +1572,7 @@ export function createWorld3d(
           ? Math.atan2(me.x - n.pos.x, me.y - n.pos.y)
           : null;
       if (look !== null) n.group.rotation.y = look;
+      else if (agent) n.group.rotation.y = Math.atan2(agent.fx, agent.fy);
       if (talking === n.id) {
         const d = Math.hypot(me.x - n.pos.x, me.y - n.pos.y);
         if (d > 1e-3 && d < 1.7) {
@@ -1339,16 +1612,15 @@ export function createWorld3d(
         it.sprite.position.y = it.base + Math.sin(now / 450 + it.at.x) * 0.06;
     }
 
-    let best: Interactable | null = null;
+    let bestNpc: Npc | null = null;
+    let bestItem: Item | null = null;
     let bestD = REACH;
-    let bp: three.Vector3 | null = null;
     for (const n of npcs) {
       if (!n.group.visible) continue;
       const d = Math.hypot(n.pos.x - me.x, n.pos.y - me.y);
       if (d < bestD) {
         bestD = d;
-        best = { kind: "npc", id: n.id, name: n.name };
-        bp = n.group.position.clone().setY(n.group.position.y + ACTOR_H + 0.12);
+        bestNpc = n;
       }
     }
     for (const it of items.values()) {
@@ -1356,16 +1628,60 @@ export function createWorld3d(
       const d = Math.hypot(it.at.x + 0.5 - me.x, it.at.y + 0.5 - me.y);
       if (d < bestD) {
         bestD = d;
-        best = { kind: "item", id: it.id, name: it.name };
-        bp = it.sprite.position.clone().setY(it.base + 0.7);
+        bestItem = it;
       }
     }
-    if ((best?.id ?? null) !== (nearby?.id ?? null)) {
-      nearby = best;
-      bridge.onNearby(best);
+    let bestProp: WorldProp3d | null = null;
+    for (const p of usable) {
+      const d = Math.hypot(p.x - me.x, p.y - me.y);
+      if (d < bestD) {
+        bestD = d;
+        bestProp = p;
+      }
+      const goal = isOpen(p, propState) ? 1 : 0;
+      const pose = poses.get(p.id);
+      if (pose !== goal) {
+        const next =
+          pose === undefined
+            ? goal
+            : pose +
+              Math.sign(goal - pose) * Math.min(Math.abs(goal - pose), dt * 3);
+        poses.set(p.id, next);
+        const obj = props.objectOf(p.id);
+        if (obj) setOpenPose(obj, next);
+      }
     }
-    prompt.visible = Boolean(best && bp && !locked);
-    if (bp) prompt.position.copy(bp);
+    // The props loop runs last, so a prop found there is the closest; then an item, then a villager.
+    if (bestProp) {
+      bestItem = null;
+      bestNpc = null;
+      prompt.position.set(
+        bestProp.x,
+        heightAt(terrain, bestProp.x, bestProp.y) + 1.3,
+        bestProp.y,
+      );
+    } else if (bestItem)
+      prompt.position.copy(bestItem.sprite.position).setY(bestItem.base + 0.7);
+    else if (bestNpc)
+      prompt.position
+        .copy(bestNpc.group.position)
+        .setY(bestNpc.group.position.y + ACTOR_H + 0.12);
+    const best = bestProp ?? bestItem ?? bestNpc;
+    const propNow = bestProp ? propTarget(bestProp) : null;
+    if (
+      (best?.id ?? null) !== (nearby?.id ?? null) ||
+      (propNow !== null && propNow.name !== nearby?.name)
+    ) {
+      nearby =
+        propNow ??
+        (bestItem
+          ? { kind: "item", id: bestItem.id, name: bestItem.name }
+          : bestNpc
+            ? { kind: "npc", id: bestNpc.id, name: bestNpc.name }
+            : null);
+      bridge.onNearby(nearby);
+    }
+    prompt.visible = Boolean(best && !locked);
 
     regionTimer -= dt * 1000;
     if (regionTimer <= 0) {
@@ -1385,6 +1701,14 @@ export function createWorld3d(
 
   const npcById = (id: string) => npcs.find((n) => n.id === id);
   const handle: WorldGameHandle = {
+    setPropStates(states, changed, loud) {
+      const doors = changed.some((id) =>
+        usable.some((p) => p.id === id && p.kind === "door"),
+      );
+      propState = states;
+      if (doors) syncDoors();
+      if (loud) makeNoise(vs, me.x, me.y, NOISE.door);
+    },
     actionState() {
       return action
         ? {
@@ -1398,6 +1722,7 @@ export function createWorld3d(
       editor?.close();
       editor = null;
       props.dispose();
+      verbFx?.dispose();
       cancelAnimationFrame(raf);
       ro.disconnect();
       window.removeEventListener("keydown", onKeyDown);
@@ -1436,6 +1761,9 @@ export function createWorld3d(
           openTile: (x, y) => !SOLID.has(kindAt(map, x, y)),
           onProps: (next) => {
             setMapProps(map, next, standTiles(me.x, me.y));
+            usable = next.filter(isUsable);
+            poses.clear();
+            regrid();
             if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
           },
         });
@@ -1452,6 +1780,8 @@ export function createWorld3d(
     addNpc(npc: WorldNpc, at: Point) {
       if (npc.role === "hostile") hostile.add(npc.id);
       if (!npcs.some((n) => n.id === npc.id)) spawnNpc(npc, at);
+      if (brain && npc.role === "hostile")
+        addAgent(brain, npc.id, at.x + 0.5, at.y + 0.5, true);
     },
     addItem(item: WorldItem, at: Point) {
       if (!items.has(item.id)) spawnItem(item, at);

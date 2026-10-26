@@ -25,6 +25,25 @@ export function disposeTree(root: three.Object3D): void {
   });
 }
 
+type Moving = "door" | "chest" | "lever";
+const SWING: Record<Moving, [number, number]> = {
+  door: [0, -1.7],
+  chest: [0, -1.1],
+  lever: [0.6, -0.6],
+};
+
+/** Poses the moving part of a door, chest or lever: 0 is closed (or off), 1 open (or on). */
+export function setOpenPose(obj: three.Object3D, t: number): void {
+  const shape = obj.userData.moving ? obj : obj.children[0];
+  const pivot = shape?.userData.pivot as three.Object3D | undefined;
+  const kind = shape?.userData.moving as Moving | undefined;
+  if (!pivot || !kind) return;
+  const [a, b] = SWING[kind];
+  const angle = a + (b - a) * t;
+  if (kind === "door") pivot.rotation.y = angle;
+  else pivot.rotation.x = angle;
+}
+
 export interface PropLayer {
   root: three.Group;
   sync(props: readonly WorldProp3d[]): void;
@@ -92,6 +111,13 @@ export function createPropLayer(
     geo(`k:${r}:${h}:${seg}`, () => new three.ConeGeometry(r, h, seg));
 
   const parts: Record<Exclude<WorldPropKind, "model">, () => Part[]> = {
+    door: () => [
+      [box(0.08, 1.95, 0.18), "#5a4030", [-0.49, 0.975, 0]],
+      [box(0.08, 1.95, 0.18), "#5a4030", [0.49, 0.975, 0]],
+      [box(1.06, 0.1, 0.18), "#5a4030", [0, 1.95, 0]],
+    ],
+    chest: () => [[box(0.66, 0.3, 0.42), "#9a6b42", [0, 0.15, 0]]],
+    lever: () => [[box(0.2, 0.16, 0.2), "#4a4f58", [0, 0.08, 0]]],
     house: () => [
       [box(0.9, 0.75, 0.9), "#f0e2c4", [0, 0.375, 0]],
       [cone(0.78, 0.6, 4), "#b5583f", [0, 1.05, 0], Math.PI / 4],
@@ -152,9 +178,34 @@ export function createPropLayer(
     ],
   };
 
-  const build = (kind: Exclude<WorldPropKind, "model">) => {
-    const g = new three.Group();
-    for (const [gg, color, [x, y, z], ry] of parts[kind]()) {
+  const moving: Record<
+    Moving,
+    { at: [number, number, number]; parts: () => Part[] }
+  > = {
+    door: {
+      at: [-0.45, 0, 0],
+      parts: () => [
+        [box(0.9, 1.85, 0.1), "#8a5f33", [0.45, 0.925, 0]],
+        [box(0.08, 0.08, 0.14), "#f2c84b", [0.8, 0.95, 0]],
+      ],
+    },
+    chest: {
+      at: [0, 0.3, -0.21],
+      parts: () => [
+        [box(0.68, 0.16, 0.44), "#b5834a", [0, 0.08, 0.22]],
+        [box(0.1, 0.1, 0.04), "#f2c84b", [0, 0.02, 0.45]],
+      ],
+    },
+    lever: {
+      at: [0, 0.14, 0],
+      parts: () => [
+        [box(0.05, 0.55, 0.05), "#3b3b44", [0, 0.27, 0]],
+        [box(0.1, 0.1, 0.1), "#d9534f", [0, 0.56, 0]],
+      ],
+    },
+  };
+  const addParts = (g: three.Object3D, kind: string, list: Part[]) => {
+    for (const [gg, color, [x, y, z], ry] of list) {
       const m = new three.Mesh(
         gg,
         mat(
@@ -165,6 +216,19 @@ export function createPropLayer(
       m.position.set(x, y, z);
       if (ry) m.rotation.y = ry;
       g.add(m);
+    }
+  };
+  const build = (kind: Exclude<WorldPropKind, "model">) => {
+    const g = new three.Group();
+    addParts(g, kind, parts[kind]());
+    if (kind === "door" || kind === "chest" || kind === "lever") {
+      const pivot = new three.Group();
+      pivot.position.set(...moving[kind].at);
+      addParts(pivot, kind, moving[kind].parts());
+      g.add(pivot);
+      g.userData.pivot = pivot;
+      g.userData.moving = kind;
+      setOpenPose(g, 0);
     }
     return g;
   };

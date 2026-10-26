@@ -4,6 +4,7 @@
 
 import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
+import { type PropStates, type UseOutcome, propStatesOf } from "./action-verbs";
 import { type AutoState, autoOf, initialAuto } from "./autonomy";
 import {
   REPLY_ACTIONS,
@@ -13,6 +14,14 @@ import {
 } from "./needs";
 import { type Point, generateMap } from "./procgen";
 import { type RivalsState, rivalsOf, rivalsOn } from "./rivals";
+import {
+  type LifeState,
+  freshLife,
+  lifeMindOf,
+  lifeOf,
+  lifeStateOf,
+  recordGift,
+} from "./life-sim";
 import { autonomyOn } from "./roles";
 import {
   type WorldAdditions,
@@ -67,6 +76,8 @@ export interface WorldState {
   npcAt?: Record<string, Point>;
   action?: { combat?: unknown; pose?: { z: number } };
   rivals?: RivalsState;
+  life?: LifeState;
+  props?: PropStates;
 }
 
 export interface Errand {
@@ -119,6 +130,10 @@ export function applyAction(
 
 export function initialWorldState(spec: WorldSpec): WorldState {
   const clock = simOf(spec)?.start_minute ?? 0;
+  const life = lifeOf(spec);
+  const npc = simOf(spec) ? initialMinds(spec, clock) : {};
+  for (const id of Object.keys(npc))
+    npc[id] = { ...npc[id], ...freshLife(life) };
   return {
     v: WORLD_SAVE_VERSION,
     player: null,
@@ -130,11 +145,12 @@ export function initialWorldState(spec: WorldSpec): WorldState {
     talks: {},
     summaries: {},
     clock,
-    npc: simOf(spec) ? initialMinds(spec, clock) : {},
+    npc,
     following: [],
     errands: {},
     additions: noAdditions(),
     ...(autonomyOn(spec) ? { auto: initialAuto(spec) } : {}),
+    ...(life.cache ? { life: { cache: [] } } : {}),
   };
 }
 
@@ -144,6 +160,16 @@ export function pickUp(s: WorldState, itemId: string): WorldState {
     ...s,
     picked: [...s.picked, itemId],
     inventory: [...s.inventory, itemId],
+  };
+}
+
+export function applyUse(s: WorldState, out: UseOutcome): WorldState {
+  const gained = out.gained.filter((id) => !s.inventory.includes(id));
+  return {
+    ...s,
+    props: out.states,
+    inventory: [...s.inventory, ...gained],
+    picked: [...s.picked, ...gained.filter((id) => !s.picked.includes(id))],
   };
 }
 
@@ -263,6 +289,13 @@ export function applyReply(
       inventory: st.inventory.filter((i) => i !== reply.take_item),
     };
     notes.push(`Gave away ${itemName(reply.take_item)}`);
+    st = recordGift(
+      lifeOf(spec),
+      st,
+      npcId,
+      "player",
+      itemName(reply.take_item),
+    );
   }
   const holder = reply.give_item ? st.auto?.held[reply.give_item] : undefined;
   if (holder && st.auto) {
@@ -352,6 +385,7 @@ function mindOf(raw: unknown, fresh: NpcMind): NpcMind {
     ...(fresh.needs && parseDoing(r.doing)
       ? { doing: parseDoing(r.doing) }
       : {}),
+    ...lifeMindOf(r, fresh),
   };
 }
 
@@ -419,6 +453,12 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
       : {}),
     ...(rivalsOn(spec) && r.rivals
       ? { rivals: rivalsOf(r.rivals, spec, generateMap(spec)) }
+      : {}),
+    ...(lifeOf(played).cache
+      ? { life: lifeStateOf(r.life, lifeOf(played)) }
+      : {}),
+    ...(r.props && Object.keys(propStatesOf(r.props, spec.props3d ?? [])).length
+      ? { props: propStatesOf(r.props, spec.props3d ?? []) }
       : {}),
   };
 }
