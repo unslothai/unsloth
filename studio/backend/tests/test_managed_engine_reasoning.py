@@ -416,7 +416,9 @@ def test_tool_loop_honors_the_server_default_overflow(monkeypatch):
 
 
 @pytest.mark.parametrize("engine,parser", [("vllm", "deepseek_v3"), ("sglang", "deepseek-v3")])
-def test_a_renamed_deepseek_v31_directory_keeps_its_thinking_toggle(tmp_path_factory, engine, parser):
+def test_a_renamed_deepseek_v31_directory_keeps_its_thinking_toggle(
+    tmp_path_factory, engine, parser
+):
     template = (
         "{% for m in messages %}<｜User｜>{{ m.content }}{% endfor %}<｜Assistant｜>"
         "{% if thinking is defined and thinking %}<think>{% else %}</think>{% endif %}"
