@@ -2794,8 +2794,10 @@ def _architecture_skip_modules(model_types):
     if any(mt == "nemotron_h" for mt in model_types):
         skip.append("out_proj")
     # Mamba's transformers 5 slow path does dt_proj.weight @ time_step, which fails on Params4bit; dt_proj is tiny.
+    # With mamba_ssm installed, training calls mamba_inner_fn with x_proj.weight and out_proj.weight as dense
+    # matrices (transformers 4.57 and 5.x), which a packed Params4bit cannot be; same as Nemotron-H's out_proj.
     if any(mt == "mamba" for mt in model_types):
-        skip.append("dt_proj")
+        skip.extend(("dt_proj", "x_proj", "out_proj"))
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
