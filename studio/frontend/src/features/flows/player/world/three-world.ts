@@ -764,6 +764,11 @@ export function createWorld3d(
   let aw: ActionWorld | null = action ? collide(feet) : null;
   let body: Body | null = aw ? newBody(aw, me.x, me.y) : null;
   if (body) body.z = Math.max(body.z, feet);
+  // Door state lives in the saved world state; both blockers (map tiles, capsule boxes) follow it from here.
+  const syncDoors = () => {
+    doorTiles();
+    if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
+  };
   const combat: Combat = shooter ? combatOf(saved.combat) : newCombat();
   const hostile = new Set([
     ...hostilesOf(spec),
@@ -1571,10 +1576,7 @@ export function createWorld3d(
         usable.some((p) => p.id === id && p.kind === "door"),
       );
       propState = states;
-      if (doors) {
-        doorTiles();
-        if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
-      }
+      if (doors) syncDoors();
       if (loud) makeNoise(vs, me.x, me.y, NOISE.door);
     },
     actionState() {

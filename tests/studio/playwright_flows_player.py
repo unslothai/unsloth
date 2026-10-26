@@ -438,6 +438,16 @@ def play_verbs_3d(page: Page) -> None:
     page.keyboard.press("e")
     toast_seen(page, "The lever clicks and a door moves")
     shot(page, "verbs_map_lever")
+    # Back in 3D the doors, chest and lever keep the state from both views: the key-opened door is no longer
+    # locked and the chest stays empty.
+    page.click("[data-testid=world-view-toggle]")
+    page.wait_for_selector("[data-testid=world3d-canvas]")
+    page.wait_for_timeout(900)
+    walk_near(page, door["x"], door["y"], "Use Door")
+    assert not page.locator("text=Use Door (locked)").count(), "the door locked itself again"
+    walk_near(page, chest["x"], chest["y"], "Use Chest")
+    page.keyboard.press("e")
+    toast_seen(page, "The chest is empty")
 
 
 STAMP: dict[str, float] = {}
