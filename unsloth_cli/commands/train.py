@@ -352,8 +352,7 @@ def train(
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
-        # model_dump carries the config file's tokens verbatim, and this goes to stdout: CI logs,
-        # notebook output, scrollback. Mask only what is set, so an unset token still reads as null.
+        # This goes to stdout (CI logs, notebooks): mask set tokens, keep unset ones null.
         for name in ("hf_token", "wandb_token"):
             if data["logging"].get(name) is not None:
                 data["logging"][name] = "[redacted]"

@@ -133,6 +133,12 @@ def _video_family_buildable(family) -> bool:
         return True
 
 
+def _pipeline_only_video_family(family) -> bool:
+    """A family (Cosmos3) whose name alone lists nothing: only its pipeline loads, so the artifact must be one."""
+    from core.inference.video_families import PIPELINE_ONLY_VIDEO_FAMILIES
+    return getattr(family, "name", None) in PIPELINE_ONLY_VIDEO_FAMILIES
+
+
 def _hint_leaf(hint: str) -> str:
     """The last path segment of *hint*, leaving a bare name or repo id untouched."""
     return str(hint).strip().rstrip("/\\").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
@@ -152,7 +158,8 @@ def _name_hint_media_task(
 
     for hint in name_hints:
         family = detect_video_family(hint) if hint else None
-        if family is not None:
+        # A GGUF is never a Cosmos3 generator (pipeline only): Cosmos3-Nano-Q4_K_M.gguf is its reasoner.
+        if family is not None and not _pipeline_only_video_family(family):
             if moe_pick_pairs(family, *name_hints) and _video_family_buildable(family):
                 return _VIDEO_GEN_TASK
             return _UNSUPPORTED_DIFFUSION_TASK
@@ -516,7 +523,8 @@ def _hf_cache_snapshot_repo_id(path: Optional[str]) -> Optional[str]:
     return None
 
 
-def _local_family_needles(model) -> tuple[str, ...]:
+def _local_name_needles(model) -> list[Optional[str]]:
+    """The names a local row goes by: model id, display name, folder name, and an HF-cache snapshot's repo id."""
     needles = [model.model_id, model.display_name, Path(model.id).name]
     try:
         needles.append(
@@ -524,11 +532,21 @@ def _local_family_needles(model) -> tuple[str, ...]:
         )
     except Exception:
         pass
+    return needles
+
+
+def _local_family_needles(model) -> tuple[str, ...]:
+    needles = _local_name_needles(model)
     try:
         from core.inference.diffusion import resolve_local_single_file
         single = resolve_local_single_file(model.path)
         if single:
             needles.append(single)
+    except Exception:
+        pass
+    try:
+        from core.inference.video_families import local_cosmos3_pipeline_family
+        needles.append(local_cosmos3_pipeline_family(model.path))
     except Exception:
         pass
     try:
@@ -563,10 +581,21 @@ def _local_model_task(model) -> Optional[str]:
         return None
     try:
         from core.inference.video import _is_trusted_video_repo
-        from core.inference.video_families import detect_video_family
-        for needle in _local_family_needles(model):
-            family = detect_video_family(needle)
-            if family is not None and _is_trusted_video_repo(path):
+        from core.inference.video_families import (
+            detect_video_family,
+            unsupported_video_checkpoint_reason,
+        )
+
+        # Names are judged before the family, as the loader does.
+        if not unsupported_video_checkpoint_reason(*_local_name_needles(model), path):
+            for needle in _local_family_needles(model):
+                family = detect_video_family(needle)
+                if family is None or not _is_trusted_video_repo(path):
+                    continue
+                if _pipeline_only_video_family(family) and not _is_diffusers_pipeline_dir(
+                    Path(path)
+                ):
+                    continue
                 return _VIDEO_GEN_TASK if _video_family_buildable(family) else None
     except Exception:
         pass
@@ -661,8 +690,9 @@ def _local_is_diffusers(model) -> bool:
         pass
     try:
         from core.inference.video_families import detect_video_family
+        families = (detect_video_family(needle) for needle in _local_family_needles(model))
         return any(
-            detect_video_family(needle) is not None for needle in _local_family_needles(model)
+            family is not None and not _pipeline_only_video_family(family) for family in families
         )
     except Exception:
         return False
@@ -690,7 +720,8 @@ def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
     # can_chat set: the video weights reach the text loader.
     try:
         from core.inference.video_families import detect_video_family
-        return detect_video_family(repo_id) is not None
+        family = detect_video_family(repo_id)
+        return family is not None and not _pipeline_only_video_family(family)
     except Exception:
         return False
 
@@ -727,9 +758,15 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
 
         family = detect_video_family(repo_id)
         if family is not None:
-            trusted = _is_trusted_video_repo(repo_id) or _untrusted_repo_single_files_loadable(
-                repo_info, selected
-            )
+            if _pipeline_only_video_family(family):
+                # Generator-first: nvidia/Cosmos3-Edge also has a reasoner root config.json but lists as video.
+                trusted = _is_trusted_video_repo(repo_id) and _repo_has_pipeline_index(
+                    repo_info, selected
+                )
+            else:
+                trusted = _is_trusted_video_repo(repo_id) or _untrusted_repo_single_files_loadable(
+                    repo_info, selected
+                )
             if not trusted or not _video_family_buildable(family):
                 return None
             return _VIDEO_GEN_TASK

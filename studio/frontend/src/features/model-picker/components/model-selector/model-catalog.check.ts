@@ -360,6 +360,24 @@ for (const id of [
 ]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
+for (const id of ["nvidia/Cosmos3-Edge"]) {
+  const group = groupForRepoId(id, VIDEO_CATALOG);
+  assert.ok(group, id);
+  assert.equal(groupForRepoId(id.toLowerCase(), VIDEO_CATALOG), group, id);
+  assert.equal(loadSpecFor(id, VIDEO_CATALOG)?.kind, "pipeline", id);
+  assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
+}
+for (const id of [
+  "nvidia/Cosmos3-Nano",
+  "nvidia/Cosmos3-Nano-Reasoner",
+  "nvidia/Cosmos3-Edge-Reasoner",
+  "nvidia/Cosmos3-Edge-Policy-DROID",
+  "nvidia/Cosmos3-Nano-Sim-Transfer",
+  "nvidia/Cosmos3-Nano-FP8",
+]) {
+  assert.equal(artifactForRepoId(id, VIDEO_CATALOG), null, id);
+  assert.equal(loadSpecFor(id, VIDEO_CATALOG), null, id);
+}
 
 // H3 publishes both denoiser partitions officially. One artifact lets the lister's
 // partition-aware labels expose both without a community mirror.
