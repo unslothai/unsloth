@@ -845,38 +845,13 @@ export function UsageExamples({
 
   return (
     <section className="flex min-w-0 max-w-full flex-col gap-4">
-      <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-        <HugeiconsIcon icon={SourceCodeIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-        {t("settings.apiKeys.usageExamples")}
-      </h2>
       {/* The other APIs this tab covers, further down; their sections consume the scroll target. */}
       <nav
         aria-label={t("settings.apiKeys.usageExamples")}
-        className="-mt-1 flex min-w-0 flex-wrap gap-2"
+        className="flex min-w-0 flex-wrap gap-2"
       >
         {(
           [
-            {
-              key: "agents",
-              icon: BotIcon,
-              label: t("settings.tabs.agents"),
-              go: () => {
-                if (agentsRef.current) scrollIntoPane(agentsRef.current);
-              },
-            },
-            // MCP access rides in agentsExtra, which only the owner gets.
-            ...(agentsExtra
-              ? [
-                  {
-                    key: "mcp",
-                    icon: McpServerIcon,
-                    label: "MCP",
-                    go: () => {
-                      if (mcpRef.current) scrollIntoPane(mcpRef.current);
-                    },
-                  },
-                ]
-              : []),
             {
               key: "media",
               icon: Image01Icon,
@@ -909,6 +884,27 @@ export function UsageExamples({
                   },
                 ]
               : []),
+            {
+              key: "agents",
+              icon: BotIcon,
+              label: t("settings.tabs.agents"),
+              go: () => {
+                if (agentsRef.current) scrollIntoPane(agentsRef.current);
+              },
+            },
+            // MCP access rides in agentsExtra, which only the owner gets.
+            ...(agentsExtra
+              ? [
+                  {
+                    key: "mcp",
+                    icon: McpServerIcon,
+                    label: "MCP",
+                    go: () => {
+                      if (mcpRef.current) scrollIntoPane(mcpRef.current);
+                    },
+                  },
+                ]
+              : []),
           ] as const
         ).map((link) => (
           <button
@@ -922,6 +918,10 @@ export function UsageExamples({
           </button>
         ))}
       </nav>
+      <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+        <HugeiconsIcon icon={SourceCodeIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+        {t("settings.apiKeys.usageExamples")}
+      </h2>
       {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
       {cloudflareUrl ? (
         <div className="flex min-w-0 items-center justify-between gap-2 rounded-full border border-border px-4 py-2">
@@ -981,6 +981,16 @@ export function UsageExamples({
           </button>
         </div>
       ) : null}
+      <ExampleToggle
+        label={t("settings.apiKeys.exampleRequest")}
+        variant="toggle"
+        value={variant}
+        options={VARIANTS.map((option) => ({
+          id: option.id,
+          label: t(option.labelKey),
+        }))}
+        onChange={(next) => pickExample(exampleType(language, next))}
+      />
       {model ? null : (
         <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.usageNoModel")}
@@ -991,17 +1001,6 @@ export function UsageExamples({
         language={shikiLang}
         label={t("settings.apiKeys.usageExamples")}
         redactFromReload={Boolean(apiKey)}
-        topRow={
-          <ExampleToggle
-            label={t("settings.apiKeys.exampleRequest")}
-            value={variant}
-            options={VARIANTS.map((option) => ({
-              id: option.id,
-              label: t(option.labelKey),
-            }))}
-            onChange={(next) => pickExample(exampleType(language, next))}
-          />
-        }
         pills={
           <ExampleToggle
             label={t("settings.apiKeys.exampleLanguage")}
