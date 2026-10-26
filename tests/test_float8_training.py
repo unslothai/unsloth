@@ -422,8 +422,6 @@ def _counting_align_hook():
 
 
 def test_accelerate_dispatch_hooks_survive_conversion():
-    # A device_map split model routes activations through each layer's Accelerate _hf_hook; the swap to
-    # Float8Linear must keep it (dropping it gives "Expected all tensors to be on the same device").
     pytest.importorskip("accelerate")
     from accelerate.hooks import add_hook_to_module
 
@@ -446,8 +444,8 @@ def test_accelerate_dispatch_hooks_survive_conversion():
     for name in converted:
         assert isinstance(modules[name], _float8_linear())
         assert modules[name]._hf_hook is hooks[name]
-        assert modules[name].weight is weights[name]  # re-attaching must not re-create parameters
-        assert "init_hook" not in vars(hooks[name])  # the temporary override is removed
+        assert modules[name].weight is weights[name]
+        assert "init_hook" not in vars(hooks[name])
 
     hook_cls.calls.clear()
     ids = torch.randint(0, 256, (2, 32), generator = torch.Generator().manual_seed(1))
