@@ -86,7 +86,11 @@ def _make_base(directory):
     tokenizer.save_pretrained(directory)
 
 
-def _load(base, lora = True, qat = None):
+def _load(
+    base,
+    lora = True,
+    qat = None,
+):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from unsloth.save import patch_saving_functions
 
@@ -97,7 +101,6 @@ def _load(base, lora = True, qat = None):
         _prepare_model_for_qat(model, qat)
     if lora:
         from peft import LoraConfig, get_peft_model
-
         torch.manual_seed(1)
         model = get_peft_model(
             model,
@@ -132,7 +135,11 @@ class _StubGGUF:
     """Stands in for unsloth.save.save_to_gguf: records the call and writes a fake GGUF that lists
     the 16-bit checkpoint it was handed."""
 
-    def __init__(self, rank, fail = False):
+    def __init__(
+        self,
+        rank,
+        fail = False,
+    ):
         self.rank, self.fail, self.calls = rank, fail, []
 
     def __call__(self, **kwargs):
@@ -277,7 +284,6 @@ def _worker(rank, world_size, port, base, out, queue):
             return
         if world_size:
             import torch.distributed as dist
-
             os.environ.update(
                 MASTER_ADDR = "127.0.0.1",
                 MASTER_PORT = str(port),

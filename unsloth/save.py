@@ -4481,7 +4481,11 @@ def _assert_export_target_is_not_base_with_lora_layers(self):
         )
 
 
-def _fsdp2_export_on_rank0(method, adapter_only = None, gather_options = None):
+def _fsdp2_export_on_rank0(
+    method,
+    adapter_only = None,
+    gather_options = None,
+):
     """Exports that rebuild or quantize the whole model in this process (GGUF, torchao, OpenVINO)
     on a model FSDP2 shards: every rank makes the call, the shards are gathered to rank 0's CPU,
     rank 0 alone runs the ordinary single-process export, the other ranks wait for it, and every
@@ -4545,6 +4549,7 @@ def _torchao_gather_options(model, arguments):
     if getattr(model, "_torchao_config", None) is None:
         return None
     from .models.fsdp2_save import gather_on_accelerator_if_it_fits
+
     return gather_on_accelerator_if_it_fits(model)
 
 

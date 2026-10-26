@@ -73,13 +73,21 @@ def test_push_to_hub_gathers(fake_fsdp2):
 @pytest.mark.parametrize(
     "method, call, adapter_only",
     [
-        ("save_pretrained_gguf", lambda m: unsloth_save.unsloth_save_pretrained_gguf(m, "out"), False),
+        (
+            "save_pretrained_gguf",
+            lambda m: unsloth_save.unsloth_save_pretrained_gguf(m, "out"),
+            False,
+        ),
         (
             "save_pretrained_gguf",
             lambda m: unsloth_save.unsloth_save_pretrained_gguf(m, "out", save_method = "lora"),
             True,
         ),
-        ("push_to_hub_gguf", lambda m: unsloth_save.unsloth_push_to_hub_gguf(m, "user/repo"), False),
+        (
+            "push_to_hub_gguf",
+            lambda m: unsloth_save.unsloth_push_to_hub_gguf(m, "user/repo"),
+            False,
+        ),
         (
             "save_pretrained_torchao",
             lambda m: unsloth_save.unsloth_save_pretrained_torchao(m, "out"),
@@ -102,7 +110,9 @@ def test_push_to_hub_gathers(fake_fsdp2):
         ),
         (
             "push_to_hub_ggml",
-            lambda m: unsloth_save.unsloth_convert_lora_to_ggml_and_push_to_hub(m, None, "user/repo"),
+            lambda m: unsloth_save.unsloth_convert_lora_to_ggml_and_push_to_hub(
+                m, None, "user/repo"
+            ),
             True,
         ),
     ],
@@ -115,7 +125,13 @@ def test_whole_model_exports_run_on_rank0_under_fsdp2(monkeypatch, method, call,
 
     seen = []
 
-    def export(model, run, name, trainable_only = False, **options):
+    def export(
+        model,
+        run,
+        name,
+        trainable_only = False,
+        **options,
+    ):
         seen.append((name, trainable_only, sorted(options)))
         return "rank 0's result"
 
@@ -136,7 +152,13 @@ def test_qat_torchao_export_converts_where_one_gpu_would(monkeypatch):
     reload of a 16-bit save, so the weights go to the CPU as for every other export."""
     seen = []
 
-    def export(model, run, name, trainable_only = False, **options):
+    def export(
+        model,
+        run,
+        name,
+        trainable_only = False,
+        **options,
+    ):
         seen.append(options)
 
     monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
@@ -154,9 +176,7 @@ def test_qat_torchao_export_converts_where_one_gpu_would(monkeypatch):
 
 def test_rank0_export_passes_through_without_fsdp2(monkeypatch):
     monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [])
-    export = unsloth_save._fsdp2_export_on_rank0("save_pretrained_gguf")(
-        lambda self, x: ("ran", x)
-    )
+    export = unsloth_save._fsdp2_export_on_rank0("save_pretrained_gguf")(lambda self, x: ("ran", x))
     assert export(object(), 1) == ("ran", 1)
 
 
@@ -164,9 +184,7 @@ def test_rank0_export_passes_through_inside_a_gather(monkeypatch):
     # push_to_hub_gguf -> save_pretrained_gguf: the outer call already gathered.
     monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
     monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: True)
-    export = unsloth_save._fsdp2_export_on_rank0("save_pretrained_gguf")(
-        lambda self, x: ("ran", x)
-    )
+    export = unsloth_save._fsdp2_export_on_rank0("save_pretrained_gguf")(lambda self, x: ("ran", x))
     assert export(object(), 1) == ("ran", 1)
 
 

@@ -706,7 +706,9 @@ def fsdp2_export_on_writer(
     except BaseException as e:
         if writer and outcome is None and dist is not None:
             # The gather itself failed on the writer: do not leave the others waiting for a result.
-            _share_from_writer(dist, True, writer_rank, "result", ("error", f"{type(e).__name__}: {e}"))
+            _share_from_writer(
+                dist, True, writer_rank, "result", ("error", f"{type(e).__name__}: {e}")
+            )
         raise
     if error is not None:
         raise error
