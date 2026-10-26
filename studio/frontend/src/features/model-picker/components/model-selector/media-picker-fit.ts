@@ -23,7 +23,8 @@ export function curatedPickerFit(
   if (!fit) return undefined;
   const group = artifactForRepoId(repoId, catalog)?.group;
   const media = group?.scope === "image" || group?.scope === "video";
-  if (!media || fit.sizeGb == null) {
+  // No GPU: the load runs from RAM, there is nothing to offload from.
+  if (!media || fit.sizeGb == null || budget.gpuGb <= 0) {
     return { ...fit, status: fit.fits ? null : ("exceeds" as const) };
   }
   const ramGb = budget.hostPooledMemory ? 0 : Math.max(0, budget.systemRamGb);

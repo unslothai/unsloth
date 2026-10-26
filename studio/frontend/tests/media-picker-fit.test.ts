@@ -37,6 +37,14 @@ test("resident models need no offload warning", () => {
   assert.equal(curatedPickerFit(id, IMAGE_CATALOG, { gpuGb: 48, systemRamGb: 32 })?.status, null);
 });
 
+test("a host with no GPU keeps the RAM verdict, not an offload warning", () => {
+  const fit = curatedPickerFit(id, IMAGE_CATALOG, { gpuGb: 0, systemRamGb: 64 });
+  assert.equal(fit?.fits, true);
+  assert.equal(fit?.status, null);
+  assert.equal(fit?.device, "RAM");
+  assert.equal(curatedPickerFit(id, IMAGE_CATALOG, { gpuGb: 0, systemRamGb: 16 })?.status, "exceeds");
+});
+
 test("video uses the same combined-memory rule", () => {
   assert.equal(curatedPickerFit("Wan-AI/Wan2.1-T2V-14B-Diffusers", VIDEO_CATALOG, { gpuGb: 24, systemRamGb: 64 })?.status, "offload");
 });
