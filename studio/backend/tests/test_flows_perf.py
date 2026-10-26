@@ -112,3 +112,54 @@ async def test_an_invoke_key_is_still_revoked_after_the_answer():
     assert out["scene"] == {"ok": True}
     await eng.release_spare_keys()
     assert revoked.count(7) >= 1
+
+
+@run_async
+async def test_a_reconnect_waits_for_a_batch_already_being_written(monkeypatch):
+    import threading
+
+    gate = threading.Event()
+    real = flows_db.write_batch
+
+    def slow(*args):
+        gate.wait(2)
+        return real(*args)
+
+    monkeypatch.setattr(flows_db, "write_batch", slow)
+    d = doc([node("a", "input.text")], id = "slowwrite")
+    flows_db.save_flow(parse_document(d)[0])
+    eng = _engine(dict(BASE))
+    rs = await _run(eng, d)
+    rs.emit("node.log", "a", {"message": "late"})
+    first = asyncio.create_task(eng.persist(rs))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(eng.persist(rs))
+    await asyncio.sleep(0.05)
+    assert not second.done()
+    gate.set()
+    await asyncio.gather(first, second)
+    assert flows_db.events_after(rs.id, 0)[-1]["data"] == {"message": "late"}
+
+
+@run_async
+async def test_overlapping_calls_keep_one_spare_key_per_account():
+    revoked, minted = [], []
+
+    async def next_scene(ctx):
+        return {"scene": {}}
+
+    eng = _engine({**BASE, "story.next_scene": next_scene})
+
+    def mint(account):
+        minted.append(len(minted) + 1)
+        return (f"k{minted[-1]}", minted[-1])
+
+    eng.mint_key = mint
+    eng.revoke_key = lambda key_id: revoked.append(key_id)
+    parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
+    await asyncio.gather(
+        *(eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n") for _ in range(4))
+    )
+    assert len(eng._spare_keys) == 1
+    await eng.release_spare_keys()
+    assert sorted(revoked) == sorted(minted)

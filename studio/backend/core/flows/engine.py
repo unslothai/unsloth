@@ -200,6 +200,7 @@ class RunState:
     _unsaved_results: dict[str, tuple] = field(default_factory = dict, repr = False)
     _unsaved_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
     _unsaved_touch: set[str] = field(default_factory = set, repr = False)
+    _persist_lock: asyncio.Lock = field(default_factory = asyncio.Lock, repr = False)
     subscribers: set[asyncio.Queue] = field(default_factory = set)
     cancel_event: asyncio.Event = field(default_factory = asyncio.Event)
     nodes: dict[str, NodeState] = field(default_factory = dict)
@@ -819,7 +820,8 @@ class FlowEngine:
                 found = spare.result()
         if found is None:
             found = await asyncio.to_thread(self.mint_key, account)
-        self._spare_keys[slot] = asyncio.create_task(self._mint_spare(account))
+        if slot not in self._spare_keys:
+            self._spare_keys[slot] = asyncio.create_task(self._mint_spare(account))
         return found
 
     async def _mint_spare(self, account: AccountContext) -> tuple[str, Optional[int]]:
@@ -1270,13 +1272,15 @@ class FlowEngine:
             await self.persist(rs)
 
     async def persist(self, rs: RunState) -> None:
-        batch = rs.take_unsaved()
-        if batch is None:
-            return
-        try:
-            await asyncio.to_thread(flows_db.write_batch, rs.id, *batch)
-        except Exception:
-            logger.warning("flows: could not store events of run %s", rs.id, exc_info = True)
+        # One batch at a time: a caller returns only after every earlier batch is written too.
+        async with rs._persist_lock:
+            batch = rs.take_unsaved()
+            if batch is None:
+                return
+            try:
+                await asyncio.to_thread(flows_db.write_batch, rs.id, *batch)
+            except Exception:
+                logger.warning("flows: could not store events of run %s", rs.id, exc_info = True)
 
     async def _fire_cancel_hooks(self, rs: RunState) -> None:
         hooks = [fn for fns in rs.cancel_hooks.values() for fn in fns]
