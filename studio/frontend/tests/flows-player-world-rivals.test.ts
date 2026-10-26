@@ -525,3 +525,18 @@ test("strategist calls share the background budget and wait while the player tal
   assert.equal(out.calls, 3);
   assert.deepEqual(out.state.factions.elm.posture, R.normPosture(MILITARY));
 });
+
+test("with background calls turned off the day still ends, on the current plans", async () => {
+  const b = R.boardOf(FOUR, MAP);
+  const queue = new S.BackgroundQueue(0);
+  let asked = 0;
+  const s = R.initialRivals(FOUR, MAP, b);
+  const out = await R.playTurn(FOUR, b, s, (fid) =>
+    R.queuedCall(queue, `rivals:1:${fid}`, async () => {
+      asked++;
+      return plan(MILITARY);
+    }),
+  );
+  assert.equal(asked, 0);
+  assert.equal(out.state.turn, s.turn + 1);
+});

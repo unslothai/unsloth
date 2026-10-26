@@ -329,14 +329,20 @@ def validate_diplomacy(raw: Any, state: Any) -> dict:
 async def strategist(ctx: NodeContext, state: dict) -> dict:
     """Exactly one model call: a bad answer is repaired, never asked again, so a turn costs one call per faction."""
     system, prompt = strategist_prompt(state)
-    raw = await ctx.llm_json(
-        model = ctx.params.get("model"),
-        system = system,
-        prompt = prompt,
-        schema = STRATEGIST_SCHEMA,
-        temperature = 0.7,
-        max_tokens = 300,
-    )
+    try:
+        raw = await ctx.llm_json(
+            model = ctx.params.get("model"),
+            system = system,
+            prompt = prompt,
+            schema = STRATEGIST_SCHEMA,
+            temperature = 0.7,
+            max_tokens = 300,
+            retry_bad_json = False,
+        )
+    except FlowNodeError as exc:
+        if exc.status is not None:
+            raise
+        raw = None
     return {"reply": {"plan": validate_strategist(raw, state)}}
 
 

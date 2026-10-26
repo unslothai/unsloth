@@ -216,7 +216,7 @@ export class BackgroundQueue {
   private current: { job: SimJob; ctrl: AbortController } | null = null;
   private paused = false;
 
-  private perMinute: number;
+  readonly perMinute: number;
   private now: () => number;
 
   constructor(perMinute: number, now: () => number = () => Date.now()) {

@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from core.flows import rivals
+from core.flows.registry import FlowNodeError
 from core.flows.examples.build_examples import example
 from core.flows.nodes import world as world_nodes
 from core.flows.schema import WorldSpec
@@ -136,6 +137,17 @@ def test_strategist_is_one_call_and_repairs_the_answer():
     assert len(ctx.llm_calls) == 1, "a bad answer is not asked again"
     assert plan["posture"] == {k: 0.25 for k in rivals.POSTURE_KEYS} and plan["target"] is None
     assert plan["goals"] == ["grow the village"]
+    seen = []
+
+    def unparsable(**kw):
+        seen.append(kw.get("retry_bad_json"))
+        raise FlowNodeError("The model did not return JSON")
+
+    ctx = FakeCtx("world.npc_reply", inputs = {"state": _state("rivals_strategist")}, llm = unparsable)
+    plan = run(world_nodes.world_npc_reply(ctx))["reply"]["plan"]
+    assert seen == [False] and plan["goals"] == [
+        "grow the village"
+    ], "unparsable JSON is repaired, not retried"
     self_target = rivals.validate_strategist({"target": "oak"}, _state("rivals_strategist"))
     assert self_target["target"] is None
 

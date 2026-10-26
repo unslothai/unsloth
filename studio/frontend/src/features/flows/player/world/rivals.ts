@@ -1312,6 +1312,8 @@ export function queuedCall(
   call: (signal: AbortSignal) => Promise<unknown>,
   alive: () => boolean = () => true,
 ): Promise<unknown> {
+  // A world with background calls turned off plays the turn on the current plans.
+  if (queue.perMinute <= 0) return Promise.resolve(null);
   return new Promise((resolve) => {
     const attempt = (n: number) => {
       const job: SimJob = {

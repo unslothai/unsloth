@@ -712,8 +712,11 @@ async def llm_json(
     seed: Optional[int] = None,
     images: Optional[list[dict]] = None,
     on_text: Optional[Callable[[str], None]] = None,
+    retry_bad_json: bool = True,
 ) -> Any:
-    """``on_text`` streams the answer: it is called with the raw JSON written so far after every chunk."""
+    """``on_text`` streams the answer: it is called with the raw JSON written so far after every chunk.
+    ``retry_bad_json = False`` raises on an unparsable answer instead of asking again (servers without
+    structured output are still asked once more for plain JSON)."""
     from state.tool_policy import tools_force_disabled
 
     kind = "vision" if images else "chat"
@@ -741,6 +744,8 @@ async def llm_json(
         return first_json(_message_text(payload))
     except FlowNodeError as exc:
         if exc.status not in (400, 422, None) and "JSON" not in str(exc):
+            raise
+        if not retry_bad_json and exc.status is None:
             raise
         ctx.log(f"Structured output unavailable ({exc}); asking for plain JSON instead", "warning")
     body.pop("response_format", None)
