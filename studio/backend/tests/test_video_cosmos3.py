@@ -172,45 +172,35 @@ class _Log:
 
 
 @pytest.mark.parametrize(
-    "identifier, expected",
+    "identifier, override, expected",
     [
-        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "wan2.2-ti2v-5b"),
-        ("MiniMaxAI/MiniMax-H3", "minimax-h3"),
-        (NANO, "cosmos3-nano"),
-        ("NVIDIA/COSMOS3-EDGE", "cosmos3-edge"),
-        (_snapshot_path(NANO), "cosmos3-nano"),
-        (_snapshot_path(EDGE, "C:\\Users\\me\\hub").replace("/", "\\"), "cosmos3-edge"),
-        ("reasoner-lab/Cosmos3-Edge", "cosmos3-edge"),
-        ("/srv/cosmos3-edge-fp8/exports/Cosmos3-Edge", "cosmos3-edge"),
-        ("/data/Cosmos3-Nano-simple", "cosmos3-nano"),
-        (SUPER, None),
-        ("nvidia/Cosmos-Reason1-7B", None),
-        ("/data/models/Cosmos3", None),
-        ("nvidia/Cosmos3-Nano-Reasoner", None),
-        (EDGE_POLICY, None),
-        ("/models/cosmos3_edge_fp8/", None),
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", None, "wan2.2-ti2v-5b"),
+        ("MiniMaxAI/MiniMax-H3", None, "minimax-h3"),
+        (NANO, None, "cosmos3-nano"),
+        ("NVIDIA/COSMOS3-EDGE", None, "cosmos3-edge"),
+        (_snapshot_path(NANO), None, "cosmos3-nano"),
+        (_snapshot_path(EDGE, "C:\\Users\\me\\hub").replace("/", "\\"), None, "cosmos3-edge"),
+        ("reasoner-lab/Cosmos3-Edge", None, "cosmos3-edge"),
+        ("/srv/cosmos3-edge-fp8/exports/Cosmos3-Edge", None, "cosmos3-edge"),
+        ("/data/Cosmos3-Nano-simple", None, "cosmos3-nano"),
+        (SUPER, None, None),
+        ("nvidia/Cosmos-Reason1-7B", None, None),
+        ("/data/models/Cosmos3", None, None),
+        ("nvidia/Cosmos3-Nano-Reasoner", None, None),
+        (EDGE_POLICY, None, None),
+        ("/models/cosmos3_edge_fp8/", None, None),
+        ("x", " COSMOS3.EDGE ", "cosmos3-edge"),
+        # A bare token would claim Super, the Reasoners and Cosmos-Predict2's "cosmos" GGUF arch alike.
+        ("x", "cosmos", None),
+        ("x", "cosmos3", None),
+        ("x", "cosmos3_omni", None),
     ],
 )
-def test_detection(identifier, expected):
-    fam = vf.detect_video_family(identifier)
+def test_detection(identifier, override, expected):
+    fam = vf.detect_video_family(identifier, override = override)
     assert (fam.name if fam else None) == expected
-    if fam is not None:
+    if fam is not None and override is None:
         assert vf.video_checkpoint_refusal(fam, identifier) is None
-
-
-@pytest.mark.parametrize(
-    "override, expected",
-    [
-        (" COSMOS3.EDGE ", "cosmos3-edge"),
-        ("cosmos", None),
-        ("cosmos3", None),
-        ("cosmos3_omni", None),
-    ],
-)
-def test_family_override(override, expected):
-    # A bare token would claim Super, the Reasoners and Cosmos-Predict2's "cosmos" GGUF arch alike.
-    fam = vf.detect_video_family("x", override = override)
-    assert (fam.name if fam else None) == expected
 
 
 @pytest.mark.parametrize(
@@ -242,21 +232,31 @@ def test_non_generator_builds_are_refused_by_name(repo, kwargs, reason):
 
 
 @pytest.mark.parametrize(
-    "repo, expected",
-    [(NANO, "cosmos3-nano"), (EDGE, "cosmos3-edge"), (SUPER, None), (EDGE_POLICY, None)],
+    "folder, repo, expected",
+    [
+        ("my-render-model", NANO, "cosmos3-nano"),
+        ("my-render-model", EDGE, "cosmos3-edge"),
+        ("my-render-model", SUPER, None),
+        ("my-render-model", EDGE_POLICY, None),
+        # The shipped configs outrank a path naming the other size.
+        ("Cosmos3-Nano-exports/checkpoint", EDGE, "cosmos3-edge"),
+        ("cosmos3-edge-runs/checkpoint", NANO, "cosmos3-nano"),
+    ],
 )
-def test_a_renamed_local_folder_is_named_by_its_shipped_configs(tmp_path, repo, expected):
+def test_a_local_folder_is_named_by_its_shipped_configs(tmp_path, folder, repo, expected):
     from core.inference.video import _detect_load_family
     from core.training.diffusion_train_common import resolve_trainable_family
 
-    folder = _write_configs(tmp_path / "my-render-model", repo)
-    assert vf.detect_video_family(str(folder)) is None
-    assert vf.local_cosmos3_pipeline_family(str(folder)) == expected
-    fam = _detect_load_family(str(folder), None, None)
+    path = str(_write_configs(tmp_path / folder, repo))
+    by_name = vf.detect_video_family(path)
+    assert by_name is None if folder == "my-render-model" else by_name.name != expected
+    assert vf.local_cosmos3_pipeline_family(path) == expected
+    fam = _detect_load_family(path, None, None)
     assert (fam.name if fam else None) == expected
     if expected:
-        with pytest.raises(ValueError, match = f"{expected}.*ltx-2"):
-            resolve_trainable_family(str(folder))
+        named = folder == "my-render-model"
+        with pytest.raises(ValueError, match = f"{expected}.*ltx-2" if named else "can't train yet"):
+            resolve_trainable_family(path)
 
 
 @pytest.mark.parametrize("hidden", [4096, 2048, 5120])
@@ -289,20 +289,6 @@ def test_an_unreadable_or_foreign_folder_is_not_claimed(tmp_path, broken, text):
         (folder / broken).write_text(text, encoding = "utf-8")
     for path in (str(folder), None, "", str(folder / "config.json"), EDGE):
         assert vf.local_cosmos3_pipeline_family(path) is None, path
-
-
-@pytest.mark.parametrize(
-    "parent, repo, family",
-    [("Cosmos3-Nano-exports", EDGE, "cosmos3-edge"), ("cosmos3-edge-runs", NANO, "cosmos3-nano")],
-)
-def test_a_local_folders_configs_outrank_a_path_naming_the_other_size(
-    tmp_path, parent, repo, family
-):
-    from core.inference.video import _resolve_load_family_with_source
-
-    folder = _write_configs(tmp_path / parent / "checkpoint", repo)
-    assert vf.detect_video_family(str(folder)).name != family
-    assert _resolve_load_family_with_source(str(folder), None, None)[0].name == family
 
 
 @pytest.mark.parametrize("scheme", ["fp8", "int8"])
@@ -814,13 +800,55 @@ def _first_frame(size):
 
 
 @pytest.mark.parametrize(
-    "repo, first_frame", [(NANO, None), (NANO, (1920, 1080)), (EDGE, (1920, 1080))]
+    "repo, first_frame, steps, frames, size, stride",
+    [
+        (NANO, None, 35, 189, (1280, 720), 12),
+        (NANO, (1920, 1080), 35, 189, (1280, 720), 12),
+        (EDGE, None, 20, 121, (832, 480), 11),
+        (EDGE, (1080, 1920), 20, 121, (480, 832), 11),
+    ],
 )
-def test_generate_passes_only_keywords_the_pipeline_takes(cosmos3_runtime, repo, first_frame):
+def test_generate(cosmos3_runtime, monkeypatch, repo, first_frame, steps, frames, size, stride):
+    from core.inference import diffusion as diffusion_mod
+    from core.inference import video_i2v
+
+    decoded, decode = [], diffusion_mod.decode_b64_image
+    monkeypatch.setattr(
+        diffusion_mod,
+        "decode_b64_image",
+        lambda *a, **k: decoded.append(decode(*a, **k)) or decoded[-1],
+    )
+    offloaded, offload = [], video_i2v.offload_vae_after_encode
+    monkeypatch.setattr(
+        video_i2v, "offload_vae_after_encode", lambda p: offloaded.append(p) or offload(p)
+    )
     backend, _status = _loaded(repo)
+    pipe, seen = backend._state.pipe, []
+    pipe.on_step = lambda i: seen.append(backend.generate_progress())
+    result = backend.generate(prompt = "a robot arm", **_first_frame(first_frame))
+    passed = pipe.passed
+    assert (passed["num_inference_steps"], passed["guidance_scale"], passed["fps"]) == (
+        steps,
+        6.0,
+        24.0,
+    )
+    assert (passed["width"], passed["height"], passed["num_frames"]) == (*size, frames)
+    assert (result["width"], result["height"], result["num_frames"]) == (*size, frames)
+    assert result["conditioning"] == ("i2va" if first_frame else "t2va")
+    if first_frame:
+        (image,) = decoded
+        assert passed["image"] is image and image.size == first_frame
+    assert [(g["phase"], g["total_steps"]) for g in seen] == [("denoise", steps)] * steps
+    (export,) = cosmos3_runtime
+    assert export["frames"] is pipe.outputs[-1].video and export["audio"] is None
+    assert offloaded == [pipe] and pipe.vae.calls == ["encode untiled", "decode tiled"]
+    assert pipe.vae.strides == [(stride * 16, stride * 16)]
+    assert (pipe.vae.tile_sample_stride_height, pipe.vae.tile_sample_stride_width) == (192, 192)
+
+    pipe.on_step = None
     request = {"negative_prompt": "blurry", "steps": 2, "fps": 16, "guidance_2": 3.5}
     result = backend.generate(prompt = "a robot arm", **request, **_first_frame(first_frame))
-    passed = backend._state.pipe.passed
+    passed = pipe.passed
     expected = {"prompt", "negative_prompt", "num_inference_steps", "guidance_scale", "width"}
     expected |= {"height", "num_frames", "fps", "generator", "callback_on_step_end"}
     expected |= {"image"} if first_frame else set()
@@ -829,6 +857,8 @@ def test_generate_passes_only_keywords_the_pipeline_takes(cosmos3_runtime, repo,
     assert passed["fps"] == 16.0 and type(passed["fps"]) is float
     assert passed["negative_prompt"] == "blurry"
     assert result["fps"] == 16 and cosmos3_runtime[-1]["fps"] == 16
+    backend.generate(prompt = "p", steps = 1)
+    assert "image" not in pipe.passed
 
 
 @pytest.mark.parametrize("first_frame, recorded", [(None, True), ((1920, 1080), False)])
@@ -851,68 +881,6 @@ def test_a_pending_background_compile_records_only_text_to_video(
     backend._state = dataclasses.replace(backend._state, bg_compile = bg)
     backend.generate(prompt = "a robot arm", steps = 1, **_first_frame(first_frame))
     assert (not skipped) is recorded
-
-
-@pytest.mark.parametrize("first_frame", [None, (1920, 1080)])
-def test_generate_returns_the_offloaded_vae_after_the_conditioning_encode(
-    cosmos3_runtime, monkeypatch, first_frame
-):
-    from core.inference import video_i2v
-
-    entered = []
-
-    @contextlib.contextmanager
-    def record(pipe):
-        entered.append(pipe)
-        yield
-
-    monkeypatch.setattr(video_i2v, "offload_vae_after_encode", record)
-    backend, _status = _loaded(EDGE)
-    backend.generate(prompt = "a robot arm", steps = 1, **_first_frame(first_frame))
-    assert entered == [backend._state.pipe]
-
-
-@pytest.mark.parametrize(
-    "repo, first_frame, steps, frames, size",
-    [
-        (NANO, None, 35, 189, (1280, 720)),
-        (NANO, (1920, 1080), 35, 189, (1280, 720)),
-        (EDGE, (1080, 1920), 20, 121, (480, 832)),
-    ],
-)
-def test_generate_fills_the_card_defaults_and_exports_output_video(
-    cosmos3_runtime, monkeypatch, repo, first_frame, steps, frames, size
-):
-    from core.inference import diffusion as diffusion_mod
-
-    decoded, decode = [], diffusion_mod.decode_b64_image
-    monkeypatch.setattr(
-        diffusion_mod,
-        "decode_b64_image",
-        lambda *a, **k: decoded.append(decode(*a, **k)) or decoded[-1],
-    )
-    backend, _status = _loaded(repo)
-    pipe, seen = backend._state.pipe, []
-    pipe.on_step = lambda i: seen.append(backend.generate_progress())
-    result = backend.generate(prompt = "a robot arm", **_first_frame(first_frame))
-    passed = pipe.passed
-    assert (passed["num_inference_steps"], passed["guidance_scale"], passed["fps"]) == (
-        steps,
-        6.0,
-        24.0,
-    )
-    assert (passed["width"], passed["height"], passed["num_frames"]) == (*size, frames)
-    assert (result["width"], result["height"], result["num_frames"]) == (*size, frames)
-    assert result["conditioning"] == ("i2va" if first_frame else "t2va")
-    if first_frame:
-        (image,) = decoded
-        assert passed["image"] is image and image.size == first_frame
-    assert [(g["phase"], g["total_steps"]) for g in seen] == [("denoise", steps)] * steps
-    (export,) = cosmos3_runtime
-    assert export["frames"] is pipe.outputs[-1].video and export["audio"] is None
-    assert pipe.vae.calls == ["encode untiled", "decode tiled"]
-    backend.generate(prompt = "p", steps = 1)
-    assert "image" not in pipe.passed
 
 
 @pytest.mark.parametrize(
@@ -1114,16 +1082,6 @@ def test_cosmos3_decodes_untiled_when_it_fits_even_at_speed_off(policy, speed):
         assert gate(family, policy, "cuda", speed) is placed
         assert gate(family, policy, "cpu", speed) is False
     assert gate("wan2.2-ti2v-5b", policy, "cuda", speed) is (placed and speed != "off")
-
-
-def test_generate_decodes_in_seam_safe_strides_and_restores_them(cosmos3_runtime):
-    backend, _status = _loaded(EDGE)
-    vae = backend._state.pipe.vae
-    backend.generate(
-        prompt = "p", steps = 1
-    )  # Edge's 832 x 480: 52 x 30 latents, stock 12-latent strides
-    assert vae.strides == [(11 * 16, 11 * 16)]
-    assert (vae.tile_sample_stride_height, vae.tile_sample_stride_width) == (192, 192)
 
 
 @pytest.mark.parametrize("family", sorted(vf.COSMOS3_FAMILIES))
