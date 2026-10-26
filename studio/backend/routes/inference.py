@@ -32240,9 +32240,7 @@ async def produce_openai_chat_completions(
                 400,
                 "This engine integration does not support adapters or reasoning controls.",
             )
-        if _continue_final_message(payload, thought = True) and not _continue_final_message(
-            payload
-        ):
+        if _continue_final_message(payload, thought = True) and not _continue_final_message(payload):
             raise _reject(
                 400, "This engine cannot resume a response that stopped mid-thought. Use Retry."
             )

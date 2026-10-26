@@ -1224,7 +1224,6 @@ class ManagedEngine:
                 rejected = re.search(r"grammar|schema", str(error.get("message")), re.IGNORECASE)
                 if constrained and rejected and str(error.get("code")).startswith("4"):
                     from .grammar_constraint import ResponseFormatError
-
                     raise ResponseFormatError(error.get("message") or "Invalid response_format.")
                 raise RuntimeError("Engine generation failed.")
             for choice in event.get("choices", []):
