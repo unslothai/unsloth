@@ -2787,9 +2787,7 @@ def _tp_trainer_save_model(
     output_dir = output_dir if output_dir is not None else self.args.output_dir
     save_tp_adapter(self.model, output_dir)
     processing = getattr(self, "processing_class", None) or getattr(self, "tokenizer", None)
-    # A tokenizer of a tensor parallel run writes once per world (rank 0, the others wait): every rank calls.
-    world_save = getattr(processing, "__dict__", {}).get("_unsloth_tp_world_save")
-    if processing is not None and (self.args.should_save or world_save):
+    if processing is not None and self.args.should_save:
         processing.save_pretrained(output_dir)
 
 

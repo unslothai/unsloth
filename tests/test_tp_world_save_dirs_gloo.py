@@ -53,7 +53,17 @@ def _case(rank, world, tmp):
 
     tok.original_save_pretrained = recording
     out = {"marked": bool(tok.__dict__.get("_unsloth_tp_world_save"))}
-    # 1. one shared directory: written once, by rank 0, before any rank returns
+
+    def config(directory):
+        import json
+
+        with open(os.path.join(directory, "tokenizer_config.json")) as f:
+            return json.load(f).get("model_max_length")
+
+    def leftovers():
+        return sorted(n for n in os.listdir(tmp) if ".unsloth_tp_rank" in n)
+
+    # 1. one shared directory, every rank at once: complete files on every rank when it returns
     shared = os.path.join(tmp, "shared")
     out["shared_err"] = _raised(lambda: tok.save_pretrained(shared))
     out["shared_on_return"] = os.path.isfile(os.path.join(shared, "tokenizer_config.json"))
@@ -64,14 +74,19 @@ def _case(rank, world, tmp):
     out["own_err"] = _raised(lambda: tok.save_pretrained(own))
     out["own_on_return"] = os.path.isfile(os.path.join(own, "tokenizer_config.json"))
     dist.barrier()
-    # 3. a save rank 0 makes alone, then one on every rank: files there when each rank returns
+    # 3. rank 0 saves alone, then every rank saves new state to the SAME directory: no rank returns the
+    # earlier save's result, and each sees the new state in complete files when it returns.
+    same = os.path.join(tmp, "same")
+    tok.model_max_length = 111
     if rank == 0:
-        out["alone_err"] = _raised(lambda: tok.save_pretrained(os.path.join(tmp, "alone")))
+        out["alone_err"] = _raised(lambda: tok.save_pretrained(same))
     dist.barrier()
-    after = os.path.join(tmp, "after")
-    out["after_err"] = _raised(lambda: tok.save_pretrained(after))
-    out["after_on_return"] = os.path.isfile(os.path.join(after, "tokenizer_config.json"))
+    tok.model_max_length = 222
+    out["after_return"] = tok.save_pretrained(same)
+    out["after_on_return"] = config(same)
     dist.barrier()
+    out["after_final"] = config(same)
+    out["leftovers"] = leftovers()
     return out
 
 
@@ -121,9 +136,12 @@ def test_tp2_kept_tokenizer_saves_complete_files_on_every_rank():
     for rank, res in enumerate(_spawn(2)):
         assert res["marked"], rank
         for key in ("shared_err", "own_err", "after_err"):
-            assert res[key] is None, (rank, key, res[key])
+            assert res.get(key) is None, (rank, key, res.get(key))
+        # Not the save rank 0 made alone: the new state, complete, on every rank as soon as it returns.
+        assert res["after_on_return"] == 222 and res["after_final"] == 222, (rank, res)
         assert res["shared_on_return"], (rank, res)
         assert res["own_on_return"], (rank, res)  # its own directory, written
-        assert res["after_on_return"], (rank, res)  # not an earlier save rank 0 made alone
-        if rank:
-            assert res["shared_writers"] == [], res  # shared directory: rank 0 wrote it once
+        assert res["shared_writers"] == [rank], res  # its own private copy, moved in with os.replace
+        paths = [p for p in res["after_return"] if str(p).endswith("tokenizer_config.json")]
+        assert paths and os.path.basename(os.path.dirname(paths[0])) == "same", res["after_return"]
+        assert res["leftovers"] == [], res["leftovers"]  # private directories removed

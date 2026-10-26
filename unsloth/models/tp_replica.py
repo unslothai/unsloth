@@ -39,6 +39,7 @@ __all__ = [
     "tp_collective",
     "tp_world_save",
     "mark_world_save",
+    "tp_world_push",
 ]
 
 _REPLICA = "_unsloth_tp_replica"
@@ -587,34 +588,24 @@ def _restore_tree(kept):
             module.merged_adapters[:] = merged
 
 
-def _on_rank0(
-    key,
-    what,
-    call,
-    model = None,
-    where = None,
-):
-    """Rank 0 runs `call`; the others wait for it on the store and return its result or raise its error.
-    `where` (host, directory) of a world save: a rank whose rank 0 wrote somewhere else (its own directory,
-    another node, or a save rank 0 made alone) writes its own copy, as without tensor parallel."""
+def _on_rank0(key, what, call, model = None):
+    """Rank 0 runs `call`; the others wait for it on the store and return its result or raise its error."""
     if _rank() == 0:
         _ACTIVE.append(what)
-        payload = ("error", "rank 0 did not finish", where)
+        payload = ("error", "rank 0 did not finish")
         kept = _keep_tree(model)
         try:
             result = call()
-            payload = ("ok", result, where)
+            payload = ("ok", result)
             return result
         except BaseException as exc:
-            payload = ("error", f"{type(exc).__name__}: {exc}", where)
+            payload = ("error", f"{type(exc).__name__}: {exc}")
             raise
         finally:
             _restore_tree(kept)
             _ACTIVE.pop()
             _publish(key, payload)
-    status, value, *rest = _wait(key)
-    if where is not None and (not rest or rest[0] != where):
-        return call()
+    status, value = _wait(key)[:2]
     if status != "ok":
         raise RuntimeError(f"Unsloth: tensor parallel `{what}` failed on rank 0: {value}")
     return value
@@ -653,9 +644,10 @@ def tp_collective(
 
 
 def mark_world_save(obj):
-    """Mark a tokenizer / processor of a tensor parallel run: its save_pretrained writes once per world (rank 0
-    writes, the others wait). A processor's (or any unwrapped) save_pretrained is wrapped here; a nested
-    tokenizer is marked too, for a direct processor.tokenizer.save_pretrained call."""
+    """Mark a tokenizer / processor of a tensor parallel run: every rank's save_pretrained writes into a private
+    directory next to the target and moves each file in with os.replace, so ranks saving to one directory (or
+    rank 0 saving alone) never see a half-written file; a Hub upload runs on global rank 0 only. A processor's
+    (or any unwrapped) save_pretrained is wrapped here; a nested tokenizer is marked too."""
     d = getattr(obj, "__dict__", None)
     if not isinstance(d, dict) or d.get("_unsloth_tp_world_save"):
         return obj
@@ -663,12 +655,14 @@ def mark_world_save(obj):
     save = getattr(obj, "save_pretrained", None)
     if callable(save) and getattr(save, "__name__", "") != "unsloth_tokenizer_save_pretrained":
 
-        def save_pretrained(*args, **kwargs):
-            return tp_world_save(
-                f"{type(obj).__name__}.save_pretrained",
-                lambda: save(*args, **kwargs),
-                args[0] if args else kwargs.get("save_directory"),
-            )
+        def save_pretrained(save_directory, *args, push_to_hub = False, **kwargs):
+            what = f"{type(obj).__name__}.save_pretrained"
+            result = tp_world_save(what, lambda path: save(path, *args, **kwargs), save_directory)
+            if push_to_hub:
+                repo_id = kwargs.pop("repo_id", os.path.basename(os.path.normpath(os.fspath(save_directory))))
+                push = {k: kwargs[k] for k in ("commit_message", "token", "private", "revision") if k in kwargs}
+                tp_world_push(f"{type(obj).__name__}.push_to_hub", lambda: obj.push_to_hub(repo_id, **push))
+            return result
 
         save_pretrained.__name__ = "unsloth_tp_world_save_pretrained"
         d["save_pretrained"] = save_pretrained
@@ -678,25 +672,62 @@ def mark_world_save(obj):
     return obj
 
 
-def _where(directory):
-    """(host, absolute directory) of a save, or a placeholder when the directory is not a path."""
-    import socket
+def _relocated(value, private, target):
+    """The save's return value with paths under `private` pointing into `target` instead."""
+    if isinstance(value, (tuple, list)):
+        return type(value)(_relocated(v, private, target) for v in value)
+    if isinstance(value, (str, os.PathLike)):
+        path = os.fspath(value)
+        if os.path.abspath(path).startswith(private):
+            moved = os.path.join(target, os.path.relpath(os.path.abspath(path), private))
+            return type(value)(moved) if not isinstance(value, str) else moved
+    return value
 
+
+def tp_world_save(what, write, directory):
+    """A save of something every rank holds whole (a tokenizer / processor): each rank runs `write` into its
+    own directory next to `directory`, then moves every file in with os.replace (atomic per file, the same
+    bytes from every rank). No rank waits for another, so a save rank 0 makes alone, or ranks saving to
+    different directories, cannot desync anything; every rank returns once its own files are in place."""
+    dist = _dist()
     try:
-        directory = os.path.abspath(os.fspath(directory))
+        target = os.fspath(directory)
     except TypeError:
-        directory = None
-    return (socket.gethostname(), directory)
+        target = None
+    if _ACTIVE or dist is None or dist.get_world_size() == 1 or not target:
+        return write(directory)
+    import shutil
+    import tempfile
+
+    absolute = os.path.abspath(target)
+    parent = os.path.dirname(absolute)
+    os.makedirs(absolute, exist_ok = True)
+    private = tempfile.mkdtemp(
+        prefix = f".{os.path.basename(absolute)}.unsloth_tp_rank{_rank()}_", dir = parent
+    )
+    try:
+        result = write(private)
+        for root, _, files in os.walk(private):
+            rel = os.path.relpath(root, private)
+            destination = absolute if rel == "." else os.path.join(absolute, rel)
+            os.makedirs(destination, exist_ok = True)
+            for name in files:
+                os.replace(os.path.join(root, name), os.path.join(destination, name))
+    finally:
+        shutil.rmtree(private, ignore_errors = True)
+    return _relocated(result, private, target)
 
 
-def tp_world_save(
-    what,
-    call,
-    directory = None,
-):
-    """A save of something every rank holds whole (a tokenizer): rank 0 writes, the others wait for it. A rank
-    saving to another directory or host than rank 0 did writes its own copy."""
+def tp_world_push(what, call):
+    """A Hub upload of a tokenizer / processor: global rank 0 uploads, the other ranks return None (no
+    rendezvous, so an upload rank 0 makes alone desyncs nothing)."""
     dist = _dist()
     if _ACTIVE or dist is None or dist.get_world_size() == 1:
         return call()
-    return _on_rank0(_key("world"), what, call, where = _where(directory))
+    if _rank() != 0:
+        return None
+    _ACTIVE.append(what)
+    try:
+        return call()
+    finally:
+        _ACTIVE.pop()

@@ -676,11 +676,11 @@ def test_tp2_destructive_merges_are_refused_and_rank0_tree_is_kept():
         assert res["logits_err"] == 0.0 and res["still_sharded"], res
 
 
-def test_tp2_processor_saves_once_per_world():
+def test_tp2_processor_saves_atomically_on_every_rank():
     for rank, res in enumerate(_spawn("processor", 2)):
         for label in ("env", "kept"):
-            # Only rank 0 writes; every rank returns rank 0's result once the file exists.
-            assert res[f"{label}_writers"] == ([0] if rank == 0 else []), (rank, label, res)
+            # Every rank writes its own private copy (moved in with os.replace), no rank waits for another.
+            assert res[f"{label}_writers"] == [rank], (rank, label, res)
             assert res[f"{label}_written_on_return"], (rank, label)
             assert res[f"{label}_return"] and res[f"{label}_return"][0].endswith(
                 "processor_config.json"

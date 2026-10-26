@@ -6722,12 +6722,10 @@ def _tp_collective_save(method):
                     select = "adapters" if adapter else "all"
                     return tp_collective(self, method, lambda: fn(self, *args, **kwargs), select)
             elif getattr(self, "__dict__", {}).get("_unsloth_tp_world_save"):
-                from .models.tp_replica import tp_world_save
-                return tp_world_save(
-                    method,
-                    lambda: fn(self, *args, **kwargs),
-                    args[0] if args else kwargs.get("save_directory", kwargs.get("repo_id")),
-                )
+                from .models.tp_replica import tp_world_push
+
+                # A tokenizer / processor of a tensor parallel run: global rank 0 uploads.
+                return tp_world_push(method, lambda: fn(self, *args, **kwargs))
             return fn(self, *args, **kwargs)
 
         return wrapper
@@ -8601,15 +8599,22 @@ def unsloth_tokenizer_save_pretrained(
     **kwargs,
 ):
     if self.__dict__.get("_unsloth_tp_world_save"):
-        # Tensor parallel run: rank 0 writes, the others wait (a reload cell then reads complete files).
+        # Tensor parallel run: every rank writes a private copy and moves the files in atomically (a reload
+        # cell never reads a half-written file); the Hub upload runs on global rank 0 only.
         from .models.tp_replica import tp_world_save
-        return tp_world_save(
+
+        push_kwargs = dict(kwargs)
+        repo_id = push_kwargs.pop("repo_id", save_directory)
+        result = tp_world_save(
             "tokenizer.save_pretrained",
-            lambda: _unsloth_tokenizer_save_pretrained(
-                self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
+            lambda path: _unsloth_tokenizer_save_pretrained(
+                self, path, legacy_format, filename_prefix, False, **kwargs
             ),
             save_directory,
         )
+        if push_to_hub:
+            self.push_to_hub(repo_id, **push_kwargs)
+        return result
     return _unsloth_tokenizer_save_pretrained(
         self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
     )
