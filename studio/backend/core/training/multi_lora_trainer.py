@@ -299,6 +299,12 @@ def _tokenize_member(dataset_info, tokenizer, config: dict, model_name: str, max
         input_ids = [list(x)[:max_length] for x in dataset["input_ids"]]
         if "labels" in dataset.column_names:
             labels = [list(x)[:max_length] for x in dataset["labels"]]
+        elif "assistant_masks" in dataset.column_names:
+            # TRL's collator trains only the assistant tokens of such rows.
+            labels = [
+                [t if m else -100 for t, m in zip(ids, mask)]
+                for ids, mask in zip(input_ids, dataset["assistant_masks"])
+            ]
     else:
         add_special_tokens = resolve_add_special_tokens(
             member_tok, first_sample_text(dataset, "text")

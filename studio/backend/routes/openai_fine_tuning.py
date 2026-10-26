@@ -609,8 +609,11 @@ def _multi_lora_available() -> bool:
 def _batchable(request: TrainingStartRequest) -> bool:
     """Text LoRA/QLoRA on local files with nothing the batched trainer does not run; the rest trains alone."""
     from core.training.eval_dataset import evaluation_enabled
+    from core.training.training import should_use_mlx_training_backend
+
     return (
-        request.training_type == "LoRA/QLoRA"
+        not should_use_mlx_training_backend()
+        and request.training_type == "LoRA/QLoRA"
         and request.use_lora
         and bool(request.local_datasets)
         and not (request.hf_dataset or request.dataset_streaming or request.s3_config is not None)

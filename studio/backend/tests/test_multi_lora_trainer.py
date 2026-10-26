@@ -300,6 +300,18 @@ def test_completion_masking_masks_the_prompt():
     assert labels[response:] == ids[response:]
 
 
+def test_pretokenized_assistant_masks_become_labels():
+    ids = [[5, 6, 7, 8], [9, 10, 11]]
+    info = {
+        "dataset": Dataset.from_dict(
+            {"input_ids": ids, "assistant_masks": [[0, 0, 1, 1], [0, 1, 1]]}
+        ),
+        "final_format": "pretokenized",
+    }
+    _tok, rows = mlt._tokenize_member(info, _tokenizer(), {}, "tiny/qwen3", 64)
+    assert [labels for _, labels in rows] == [[-100, -100, 7, 8], [-100, 10, 11]]
+
+
 def test_batched_member_trains_as_it_would_alone(batched_run, monkeypatch):
     events, model, pristine = batched_run
     batched = load_file(

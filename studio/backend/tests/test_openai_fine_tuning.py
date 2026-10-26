@@ -19,6 +19,7 @@ from auth.authentication import authenticated_via_api_key, get_current_subject  
 from models.training import TrainingJobResponse  # noqa: E402
 from routes import openai_fine_tuning, training as training_routes  # noqa: E402
 from storage import studio_db  # noqa: E402
+import core.training.training as _training_core  # noqa: E402
 
 CHATS = (
     b'{"messages": [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]}\n'
@@ -869,6 +870,7 @@ def _entry(
 def batching(monkeypatch):
     monkeypatch.setattr(openai_fine_tuning, "_QUEUE", [])
     monkeypatch.setattr(openai_fine_tuning, "_multi_lora_available", lambda: True)
+    monkeypatch.setattr(_training_core, "should_use_mlx_training_backend", lambda: False)
     monkeypatch.delenv("UNSLOTH_STUDIO_FT_BATCH_MAX", raising = False)
     return openai_fine_tuning._QUEUE
 
@@ -1021,6 +1023,7 @@ def batch_queue(queue, monkeypatch):
 
     client, calls, live, gpu = queue
     monkeypatch.setattr(openai_fine_tuning, "_multi_lora_available", lambda: True)
+    monkeypatch.setattr(_training_core, "should_use_mlx_training_backend", lambda: False)
     monkeypatch.delenv("UNSLOTH_STUDIO_FT_BATCH_MAX", raising = False)
     backend = _BatchBackend()
     monkeypatch.setattr(core.training, "get_training_backend", lambda: backend)
@@ -1076,6 +1079,22 @@ def test_compatible_queued_jobs_start_as_one_batch(batch_queue):
     listed_ids = [j.id for j in listed.data]
     assert sorted(listed_ids) == sorted(j.id for j in jobs)
     assert live["status"].job_id not in {openai_fine_tuning._run_id(i) for i in listed_ids}
+
+
+def test_mlx_jobs_never_batch(batch_queue, monkeypatch):
+    client, calls, _live, gpu, _backend = batch_queue
+    monkeypatch.setattr(_training_core, "should_use_mlx_training_backend", lambda: True)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        for s in "ab":
+            await _create(client, uploaded.id, suffix = s)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+
+    _run(flow())
+    assert calls["batch"] == []
+    assert [r.project_name for r in calls["start"]] == ["a"]
 
 
 def test_batch_members_stay_validating_until_their_first_step(batch_queue):
