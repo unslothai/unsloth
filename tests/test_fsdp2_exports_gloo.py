@@ -344,7 +344,11 @@ def _run_cases(rank, world_size, base, out):
         finally:
             builtins.open = real_open
 
-    cases = [merged, gguf, push_gguf]
+    def placement():
+        # 10 GiB gathered converts on a 16 GiB card only with the quantized copy counted too.
+        result["placement_need"] = fsdp2_save._accelerator_convert_bytes(10 * 1024**3)
+
+    cases = [merged, gguf, push_gguf, placement]
     if sharded:
         cases += [fail, ram, estimate, cgroup]
     if HAS_TORCHAO:
@@ -567,3 +571,8 @@ def test_host_ram_check_honours_the_cgroup_limit(runs):
     assert runs["ranks"][0]["cgroup_v1_bytes"] == 1536 * 1024**2, runs["ranks"][0][
         "cgroup_v1_bytes"
     ]
+
+
+def test_gpu_placement_counts_the_converted_copy(runs):
+    _no_raise(runs, "placement")
+    assert runs["single"]["placement_need"] == 15 * 1024**3

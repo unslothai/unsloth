@@ -591,6 +591,12 @@ def _host_available_bytes():
     return available
 
 
+def _accelerator_convert_bytes(gathered):
+    # The gathered weights stay alive while the convert allocates their quantized copies (int8 of
+    # 16-bit weights is half their size, int4 a quarter), so both must fit at once.
+    return gathered + gathered // 2
+
+
 def gather_on_accelerator_if_it_fits(model):
     """`fsdp2_gathered` options for an export that quantizes the weights in place, where they sit
     (torchao's QAT convert). On one GPU they sit on the GPU, so the writer keeps the gathered weights
@@ -621,11 +627,13 @@ def gather_on_accelerator_if_it_fits(model):
         free, total = getattr(torch, device.type).mem_get_info(device)
     except Exception:
         return on_cpu
-    need = _gathered_host_bytes(model, offload_to_cpu = True, offload_4bit = True)
+    need = _accelerator_convert_bytes(
+        _gathered_host_bytes(model, offload_to_cpu = True, offload_4bit = True)
+    )
     if need + max(_GIB, total // 10) > free:
         if mesh_writer_rank(model) == (_dist().get_rank() if _dist() is not None else 0):
             print(
-                f"Unsloth: FSDP2 export: the gathered model ({need / _GIB:.1f} GiB) does not fit the "
+                f"Unsloth: FSDP2 export: the gathered model and its converted copy ({need / _GIB:.1f} GiB) do not fit the "
                 f"{free / _GIB:.1f} GiB free on {device}, so it is gathered to the CPU and converted "
                 f"one module at a time on {device}."
             )
