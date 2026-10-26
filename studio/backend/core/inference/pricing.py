@@ -37,8 +37,7 @@ ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
 }
 
 OPENAI_PRICING: dict[str, dict[str, float]] = {
-    # Verified against developers.openai.com/api/docs/pricing. `long_context_*` keys apply past the threshold
-    # (gpt-5.6/5.5/5.4: 272k); families without them ship a single rate.
+    # Per developers.openai.com pricing; long_context_* applies past the threshold (272k).
     "gpt-5.6-sol": {
         "input_per_mtok": 5.0,
         "output_per_mtok": 30.0,
@@ -89,9 +88,7 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
 ANTHROPIC_CACHE_5M_WRITE_MULT = 1.25
 ANTHROPIC_CACHE_1H_WRITE_MULT = 2.0
 ANTHROPIC_CACHE_READ_MULT = 0.1
-# Anthropic fast-mode is Opus 5 / Opus 4.8 only, both at $10/$50 per MTok against a $5/$25 base, i.e. 2x on input +
-# output. Opus 4.6 accepts `speed` but reports `usage.speed: "standard"` and bills standard rates, so it never reaches
-# this multiplier. https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing
+# Fast mode: Opus 5 / 4.8 only, 2x input + output. Opus 4.6 bills standard.
 ANTHROPIC_FAST_MODE_MULT = 2.0
 ANTHROPIC_FAST_MODE_MULT_BY_MODEL = {
     "claude-opus-5": 2.0,
@@ -110,10 +107,7 @@ OPENAI_WEB_SEARCH_USD_PER_1K = 10.0
 OPENAI_CONTAINER_USD_PER_HOUR = 0.09  # 1g default tier
 
 
-# Claude Sonnet 5 launched on introductory pricing of $2/$10 per MTok, in force through 2026-08-31; ANTHROPIC_PRICING
-# carries the standard $3/$15 that takes over on 2026-09-01. Billing the standard rate early overstates every Sonnet 5
-# turn by 50%, so overlay the launch rate while it lasts. The entry expires on its own and can be deleted after the
-# cutover. https://platform.claude.com/docs/en/about-claude/pricing
+# Sonnet 5 launch rate $2/$10 through 2026-08-31; standard $3/$15 would bill 50 percent high early. Delete the entry after the cutover.
 _LAUNCH_PRICING: dict[str, tuple[_dt.date, dict[str, float]]] = {
     "claude-sonnet-5": (
         _dt.date(2026, 9, 1),
@@ -151,8 +145,7 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
         return None
     if model in table:
         return table[model]
-    # Longest-prefix match on a dash boundary: dated snapshots inherit canonical prices, but "claude-opus-4-15" won't
-    # match "claude-opus-4-1".
+    # Dash-boundary prefix match: "claude-opus-4-15" must not match "claude-opus-4-1".
     for key in sorted(table, key = len, reverse = True):
         if model.startswith(key) and (len(model) == len(key) or model[len(key)] == "-"):
             return table[key]
@@ -160,10 +153,7 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
 
 
 def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str, float]:
-    """Return a per-turn USD cost breakdown (per-bucket + total).
-
-    Unknown model -> ``priced`` False and USD fields 0.0 (token counts still report).
-    """
+    """Unknown model gives ``priced`` False and zero USD, while token counts are still reported."""
     prices = _lookup(provider, model)
     if prices:
         prices = _launch_prices(provider, model, prices)
@@ -180,17 +170,14 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         "priced": bool(prices),
     }
 
-    # Accept raw (input_tokens/output_tokens) and Unsloth chat-style (prompt_tokens/completion_tokens) envelopes. Cache
-    # buckets differ: raw Anthropic: input_tokens EXCLUDES cache buckets raw OpenAI: input_tokens INCLUDES cache_read
-    # Unsloth Anthropic: prompt_tokens INCLUDES cache_creation + cache_read Unsloth OpenAI: prompt_tokens == raw
-    # input_tokens Clamp >=0 so corrupted payloads can't produce a negative bill.
+    # Raw Anthropic input_tokens EXCLUDES cache buckets; raw OpenAI input_tokens and chat-style
+    # prompt_tokens INCLUDE them. Clamp >= 0 so corrupted payloads can't bill negative.
     cache_creation = max(0, int(usage.get("cache_creation_input_tokens") or 0))
     cache_read_native_present = (
         "cache_read_input_tokens" in usage and usage.get("cache_read_input_tokens") is not None
     )
     cache_read = max(0, int(usage.get("cache_read_input_tokens") or 0))
-    # Fall back to mirrored prompt_tokens_details only when native cache_read_input_tokens is absent; an explicit
-    # native 0 is authoritative, so a stale proxy mirror can't inflate cache_read.
+    # An explicit native 0 is authoritative, so a stale proxy mirror can't inflate cache_read.
     if not cache_read_native_present:
         details = usage.get("prompt_tokens_details") or {}
         if isinstance(details, dict):
@@ -226,10 +213,7 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
     if not prices:
         return out
 
-    # Long-context tier: whole-turn flip (not per-token blend) once billable_input_tokens crosses the threshold.
-    # Strictly above: OpenAI bills "prompts with >272K input tokens" at the higher rate, so a prompt of exactly 272,000
-    # stays on the standard rate -- which is also what the "(long-context >{lc_thresh})" label emitted below already
-    # claims.
+    # Whole-turn flip strictly above the threshold (OpenAI: ">272K input tokens").
     lc_thresh = prices.get("long_context_threshold")
     in_long_context_tier = (
         lc_thresh is not None
@@ -245,8 +229,7 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         base = prices["input_per_mtok"]
         out_per = prices["output_per_mtok"]
 
-    # Anthropic fast-mode multiplier on input + output. Cache multipliers stack on top, so applying once to (base,
-    # out_per) flows into the cache_*_usd buckets below.
+    # Anthropic fast-mode multiplier on input and output; cache multipliers stack on top of it.
     if provider == "anthropic" and usage.get("speed") == "fast":
         fast_mult = next(
             (m for k, m in ANTHROPIC_FAST_MODE_MULT_BY_MODEL.items() if model.startswith(k)),
@@ -261,8 +244,7 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
     out["output_usd"] = (output_tokens / 1_000_000.0) * out_per
 
     if provider == "anthropic":
-        # Split cache_creation into 5m / 1h buckets when surfaced. Tolerate non-dict (some proxies fold to an int
-        # total).
+        # Some proxies fold cache_creation into an int total.
         cc_raw = usage.get("cache_creation")
         cc_breakdown = cc_raw if isinstance(cc_raw, dict) else {}
         cc_5m = max(0, int(cc_breakdown.get("ephemeral_5m_input_tokens") or 0))
@@ -283,8 +265,7 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
                 + code_exec_hours * ANTHROPIC_CODE_EXEC_USD_PER_HOUR
             )
     else:
-        # OpenAI: cache writes pay base input, only reads get 0.1x. Subtract cached from already-counted input_usd to
-        # avoid double-billing (OpenAI folds cache into input_tokens).
+        # OpenAI folds cache into input_tokens; subtract to avoid double-billing.
         if cache_read > 0:
             non_cached_input = max(0, input_tokens - cache_read)
             out["input_usd"] = (non_cached_input / 1_000_000.0) * base

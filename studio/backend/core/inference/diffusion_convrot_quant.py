@@ -59,8 +59,7 @@ _ROTQ_CONFIG = {
 }
 _ROTQ_FALLBACK = (128, 32, 8, 3)
 _ROTQ_GROUPS = (256,)
-# Per-K tiles: (major, minor) -> ((K_lo, K_hi, tile), ...), first match wins, bounds inclusive; a tile whose BLOCK_M
-# cannot hold one whole row at that K is skipped. K 10240 stays on the default (a 64-row tile wastes 38% of it there).
+# Per-K tiles: first match wins, bounds inclusive; tiles whose BLOCK_M can't hold a row skipped.
 _ROTQ_NARROW = (64, 32, 4, 3)
 _ROTQ_K_TILES: dict = {
     cap: ((256, 8192, _ROTQ_NARROW), (11264, 16384, _ROTQ_NARROW))
@@ -220,8 +219,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             a_ptrs += BLOCK_K
             h_ptrs += BLOCK_K * G
         z = _rbf16(acc)
-        # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s)))); FP32_SCALE (torchao >= 0.18
-        # Int8Tensor) keeps the reciprocal and the product in fp32.
+        # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s))))
+        # FP32_SCALE (torchao >= 0.18 Int8Tensor) keeps the reciprocal and the product in fp32.
         j = tl.arange(0, ROWS_P2)
         sel = lr[:, None] == j[None, :]
         amax = tl.max(tl.where(sel, tl.max(tl.abs(z), axis = 1)[:, None], 0.0), axis = 0)

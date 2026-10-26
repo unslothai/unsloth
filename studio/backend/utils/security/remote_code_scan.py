@@ -62,7 +62,7 @@ class RemoteCodeUnscannable(Exception):
     """The repo's executable code could not be fully fetched/listed to scan. Raised (not returned empty) so the gate distinguishes "code PRESENT but unreadable" (offline/gated/transient/404/listing failure), which fails CLOSED, from "repo has NO .py" (empty result), where trust_remote_code is a no-op and the load is allowed. Conflating them would block a code-free repo or fail open on code we could not see."""
 
 
-# Fallback patterns (used only if scripts/scan_packages.py is absent): (regex, check, severity). A flat subset of the canonical scanner so a stripped install still scans; the canonical scanner (imported below) supersedes it whenever the repo is present.
+# Fallback used only if scripts/scan_packages.py is absent (stripped install).
 _FALLBACK_PATTERNS: tuple[tuple[re.Pattern, str, str], ...] = (
     (
         re.compile(
@@ -555,22 +555,7 @@ _MAX_CONFIG_DEPTH = 12
 
 
 def iter_auto_maps(cfg, _depth: int = 0):
-    """Yield every ``auto_map`` dict in a config, at the top level and in any sub-config.
-
-    transformers reads ``auto_map`` off whichever config object builds the thing being
-    built, and for a composite model that is a SUB-config, not the top level. Reading
-    only ``cfg["auto_map"]`` therefore scans less than the load executes:
-    ``unsloth/models/_utils.py`` resolves ``text_config.auto_map["AutoModelForCausalLM"]``
-    through ``get_class_from_dynamic_module``, and ``unsloth/models/loader.py`` already
-    walks every level for the compiler because nesting goes beyond text/vision/audio
-    (Qwen-Omni ``thinker_config``, nested ``llm_config``). A repo whose only ``auto_map``
-    sits on a sub-config used to read as "ships no remote code", so the gate allowed it
-    with no scan, no findings and no fingerprint.
-
-    Depth-bounded rather than unbounded: a config is attacker-supplied JSON, and the
-    bound is what keeps a deeply nested one from costing anything. Twelve is far past
-    the deepest real composite (three).
-    """
+    """Walks sub-configs too, where composite models keep auto_map; depth-bounded because the config is attacker-supplied JSON."""
     if _depth > _MAX_CONFIG_DEPTH or not isinstance(cfg, dict):
         return
     auto_map = cfg.get("auto_map")

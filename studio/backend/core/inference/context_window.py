@@ -16,8 +16,7 @@ _UNPRICED_MEDIA_TYPES = frozenset(
     ("image_url", "input_audio", "audio", "input_image", "input_video", "video_url")
 )
 
-# Trim BELOW the budget: trimming to exactly it puts the next turn over again, so the boundary creeps every turn and
-# the prefix cache dies.
+# Trim BELOW the budget, else the boundary creeps every turn and the prefix cache dies.
 _COMPACTION_HEADROOM_RATIO = max(
     0.0, min(0.9, float(os.environ.get("ROLLING_COMPACTION_HEADROOM_RATIO", "0.25")))
 )
@@ -174,8 +173,7 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
     return total
 
 
-# Unbroken ASCII runs are blobs, not prose: base64/hex/minified JSON run 1.1-2.8 chars/token against 3.3 for English.
-# 64 not 80, since base64 wraps at 76.
+# Base64/hex/minified JSON run 1.1-2.8 chars/token vs 3.3 for English; 64 since base64 wraps at 76.
 _DENSE_RUN_CHARS = 64
 # Two characters per token, not one: stays below the measured cost of every sample, so no turn is over-priced.
 _DENSE_RUN_CHARS_PER_TOKEN = 2
@@ -313,8 +311,7 @@ def truncate_oldest_messages(
     for index, group in enumerate(groups):
         if index not in dropped_groups:
             if kept and kept[-1].get("role") == "user" and group and group[0].get("role") == "user":
-                # Strict chat templates reject adjacent user turns, which a re-prompt after an evicted exchange would
-                # produce.
+                # Strict chat templates reject adjacent user turns.
                 kept.append({"role": "assistant", "content": _OMITTED_TOOL_EXCHANGE})
             kept.extend(group)
     return kept, dropped
@@ -363,9 +360,7 @@ def retrieval_budget(
 # Headroom for the tokenizer disagreeing with the character-based estimate that sized a result.
 _TOOL_RESULT_BUDGET_BUFFER = 0.99
 
-# What a truncated result costs besides its body (notice, spill path, resume command): 60-85 tokens. Charged by
-# `tools._truncate` only when the result really is cut, never up front, or a result that would have fitted whole is
-# cut for nothing.
+# Charged only when the result is really cut, never up front.
 _RESULT_NOTICE_RESERVE = 128
 
 
@@ -444,8 +439,7 @@ def _compacted_arguments(
     """Receipt standing in for a completed call's arguments, or None to leave them. Structured and
     naming the path, since a bare [omitted] reads as failure and draws a retry of the same
     oversized write."""
-    # Resolved here, not as a default: the constant is defined below, and a literal default kept the old wording on
-    # this path.
+    # Not a default: the constant is defined below.
     phrase = phrase or _completed_phrase_for(name, reply)
     if not isinstance(arguments, str):
         return None
@@ -471,8 +465,7 @@ def _compacted_arguments(
     path = parsed.get("path") or parsed.get("file_path") or parsed.get("filePath")
     elided = 0
 
-    # Chosen from the TOTAL: fifty 800-character edits clear no per-leaf floor and compacted nothing, and keying on
-    # the largest leaf compacted only the first of a mixed batch.
+    # Chosen from the TOTAL so many medium edits still compact.
     _leaf_floor = (
         # A refused call takes what it can get, floored only where a leaf is shorter than its receipt.
         _REFUSED_LEAF_FLOOR
@@ -524,8 +517,7 @@ _REFUSED_LEAF_FLOOR = 110
 _REFUSED_PHRASE = (
     "of arguments you sent, elided; this call was refused before it ran and nothing was written"
 )
-# Must not read as the tool's OUTPUT: an earlier wording was quoted back as the output was omitted and the model
-# concluded its file was mangled. No invitation to re-read either, which every other notice discourages.
+# Must not read as tool OUTPUT: the model concluded its file was mangled.
 _COMPLETED_PHRASE = "of arguments you sent, already written{where}; elided to save room. Not tool output; the file on disk holds it."
 # Same receipt for tools that write no file (`python`, `terminal`, search, MCP): the file wording told the model a
 # `code` argument was on disk.
@@ -571,8 +563,7 @@ def compaction_receipt_field(
 # a write that never landed.
 _FAILED_REPLY_MARKERS = ("error", "failed", "not found", "no such file", "traceback")
 
-# A reply the WINDOW replaced, not one the tool wrote: `_fit_result_to_room` swaps even an `Error: ...` for a stub
-# with none of the markers above.
+# `_fit_result_to_room` swaps even an `Error: ...` for a stub without the markers above.
 _INCONCLUSIVE_REPLY_MARKERS = ("no context room left", "chars for the model;")
 
 
@@ -595,11 +586,7 @@ def _completed_phrase_for(name: str, reply: object = None) -> str:
 
 
 def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[dict]:
-    """Compact ONE just-run call's arguments even if otherwise protected: only the NEXT prompt needs
-    them. This lets an oversized call run rather than be refused, where each retry reclaimed less
-    (50%, 34%, 15%)."""
-    # None, not the constant: the receipt is per tool, so a completed `python` call is not told its arguments are on
-    # disk.
+    """Compacts arguments of one just-run call even if protected; None, not the receipt: it is per tool."""
     return _compact_one_call(messages, call_id, None)
 
 
@@ -711,8 +698,7 @@ def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]
         sites = pending.get(str(call_id))
         if not sites:
             continue
-        # NEWEST pending announcement: an interrupted call leaves a stale site under the same id, and pairing there
-        # leaves the real call uncompactable.
+        # Newest pending: a stale older site under the same id would leave the real call uncompactable.
         site = sites.pop()
         if _reply_shows_execution(message.get("content")):
             executed[(site, str(call_id))] = message.get("content")
@@ -860,17 +846,7 @@ def turn_diagnosis(
     irreducible_tokens: int,
     fitted: Optional[list[dict]] = None,
 ) -> dict[str, Any]:
-    """Which part of a refused prompt is which.
-
-    `shared_prompt_tokens` is the floor both other counts carry; zero when the turn was estimated,
-    since that estimate has no catalogue.
-
-    `latest_turn_exact` False means the two do not share units and must not be compared: 16,400
-    characters of newlines estimate 8,207 tokens against 557 rendered.
-
-    `fitted` is the list `irreducible_tokens` was counted over, so an unrenderable turn is priced by
-    difference.
-    """
+    """latest_turn_exact False means the two counts use different units and must not be compared."""
     if not messages:
         return {
             "latest_turn_tokens": 0,
@@ -881,9 +857,7 @@ def turn_diagnosis(
     latest, exact = _latest_turn_count(messages, count_tokens)
     shared = _shared_prompt_tokens(count_tokens) if exact else 0
     if exact and latest <= shared:
-        # Counted, yet no bigger than the empty prompt: the template rendered the turn as nothing (Gemma-4 skips a
-        # lone `role: tool` message). Price by DIFFERENCE, reported floor-inclusive so the consumer's subtraction
-        # still leaves the marginal.
+        # Gemma-4 renders a lone tool turn as nothing, so price it by difference, reported floor-inclusive.
         marginal = _marginal_turn_count(
             fitted if fitted is not None else messages, count_tokens, irreducible_tokens
         )
@@ -934,14 +908,7 @@ def fit_rolling_context(
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
     replay_only: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
-    """Fit a chat into its context by dropping oldest complete turns; the current turn is never
-    clipped.
-
-    ``reserve_tokens`` leaves room for what the caller adds back and deliberately does not affect
-    whether to trim at all. ``sticky_dropped`` re-applies the boundary this thread last compacted
-    to, without which the stateless fit slides it every reply. Acceptance uses the untightened
-    ``prompt_target``.
-    """
+    """Drops oldest turns; reserve_tokens never affects trimming; sticky_dropped replays the boundary."""
     if context_length <= 1:
         return messages, None
 
@@ -1006,8 +973,7 @@ def fit_rolling_context(
         current_tokens = count_tokens(fitted)
 
     if current_tokens > prompt_target:
-        # Strictly under on both sides (llama-server refuses at `n_ctx` exactly), but not under by one token, which
-        # loses the history AND the answer.
+        # Stay strictly under n_ctx (llama-server refuses at it); one token over loses history and answer.
         reply_floor = min(
             max(1, context_length // _RESCUE_REPLY_FLOOR_DIVISOR),
             context_length - prompt_target,
@@ -1022,8 +988,7 @@ def fit_rolling_context(
             "dropped_messages": dropped_total if rescued else 0,
             "prompt_tokens_before": initial_tokens,
             "prompt_tokens_after": current_tokens if rescued else initial_tokens,
-            # Floor for the conversation and the share of it just sent: together they say whether the chat or the
-            # message is the problem.
+            # FluxTransformerBlock / FluxSingleTransformerBlock: modulation goes via AdaLayerNormZero; this fuses the inline norm2 modulation and gated residual adds
             "irreducible_tokens": current_tokens,
             # `fitted` is what `current_tokens` prices, so the turn can be counted by difference rather than estimated
             **turn_diagnosis(

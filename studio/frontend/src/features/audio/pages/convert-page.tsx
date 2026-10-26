@@ -344,7 +344,6 @@ function useSourceSide(clip: AudioGalleryClip | null): {
   src?: string;
   unavailable?: string;
 } {
-  // The saved copy outlives the upload it was made from.
   const savedUrl = clip?.source_saved
     ? `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/source/file`
     : null;
@@ -410,7 +409,6 @@ export function ConvertOutput({
   return (
     <TtsOutput
       {...props}
-      // The selected clip's line already names the model.
       clipBadge={(clip, place) =>
         place === "history" ? audioModelLabel(clip.model) : null
       }

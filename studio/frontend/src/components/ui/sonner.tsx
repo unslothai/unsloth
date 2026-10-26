@@ -13,14 +13,10 @@ import { createLoadingToastIcon } from "@/lib/toast";
 import { cornerInsetScope } from "@/lib/toast-offset";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
-// Make toast text selectable. Sonner's onPointerDown calls setPointerCapture(), which steals the
-// drag and blocks text selection. dismissible:false would stop it but also kills the close button.
-// So we swallow pointerdown on toast text (never on its buttons) before sonner sees it.
+// Sonner's setPointerCapture blocks text selection; swallow pointerdown on toast text only.
 const handleToastPointerDownCapture = (
   event: React.PointerEvent<HTMLDivElement>,
 ) => {
-  // closest() lives on Element, so this also covers SVG icon targets; guard
-  // against non-Element targets defensively.
   const target = event.target as Element | null;
   if (typeof target?.closest !== "function") return;
   if (!target.closest("[data-sonner-toast]")) return;
@@ -33,8 +29,7 @@ const handleToastPointerDownCapture = (
 };
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  // Use the resolved mode so sonner's data-sonner-theme always matches the
-  // class the theme store puts on <html>.
+  // Use the resolved mode so data-sonner-theme matches the class on <html>.
   const { resolved } = useTheme();
 
   return (
@@ -78,14 +73,12 @@ const Toaster = ({ ...props }: ToasterProps) => {
               className="size-4"
             />
           ),
-          // App-wide arc spinner so loading toasts match the "Downloading model" toast.
           loading: createLoadingToastIcon(),
         }}
         style={
           {
             "--normal-bg": "var(--popover)",
             "--normal-text": "var(--popover-foreground)",
-            // No border line; elevation comes from the shadow in index.css.
             "--normal-border": "transparent",
             // Just above the compact-box tier; at --radius-xl a two-line toast reads as a capsule.
             "--border-radius": "calc(var(--radius-lg) + 2px)",
@@ -97,7 +90,6 @@ const Toaster = ({ ...props }: ToasterProps) => {
             "--toast-close-button-transform": "none",
           } as React.CSSProperties
         }
-        // No swipe gestures; text selection handled by the wrapper above.
         swipeDirections={[]}
         toastOptions={{
           classNames: {

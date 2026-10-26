@@ -11,7 +11,6 @@ type ModelLoadDescriptionProps = {
   message?: string | null;
   progressPercent?: number | null;
   progressLabel?: string | null;
-  // Extra classes for the root row (e.g. a titleless caller dropping min-h-12).
   className?: string;
 };
 
@@ -19,9 +18,7 @@ function clampProgress(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-/** Split a composed progress label into a primary chunk, next to the percent, and a secondary chunk
- *  on its own row, so neither line wraps raggedly once rate and ETA appear mid-download. Labels
- *  without the separator return primary-only, so the secondary row does not render. */
+/** Split a progress label into a primary chunk and a secondary row (rate, ETA). */
 function splitProgressLabel(
   label: string | null | undefined,
 ): { primary: string; secondary: string } {
@@ -42,7 +39,6 @@ export function ModelLoadDescription({
   className,
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
-  // Split once at the top so the JSX below stays flat (no IIFE).
   const { primary: labelPrimary, secondary: labelSecondary } =
     splitProgressLabel(progressLabel);
 
