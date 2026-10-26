@@ -1444,17 +1444,14 @@ def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, 
         )
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
 
-    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    # Engagement without a Python side effect (Dynamo would guard on a counter): the dense fallback
+    # fails the test, so every layout below ran the in-graph kernel.
+    def _dense(*args, **kwargs):
+        raise AssertionError("packed row fell back to SDPA over the dense mask")
+
+    hpa._ORIG_SDPA[0] = _dense
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
-    calls = []
-    flash_varlen = hpa._flash_varlen
-
-    def counted(*args):
-        calls.append(1)
-        return flash_varlen(*args)
-
-    monkeypatch.setattr(hpa, "_flash_varlen", counted)
     H, n_kv, D = 8, 2, 64
     module = types.SimpleNamespace(
         is_causal = True, num_key_value_groups = H // n_kv, training = True, sliding_window = window
@@ -1497,7 +1494,5 @@ def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, 
         for g, r in zip(got, ref):
             torch.testing.assert_close(g.float(), r.float(), atol = 3e-2, rtol = 3e-2)
     assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
-    # The in-graph kernel ran for every layout (not the dense fallback), plus the shape probe's one call.
-    assert len(calls) == 4 + 1
     # max_seqlen specializes once, then is dynamic: at most two graphs for four layouts.
     assert torch._dynamo.utils.counters["stats"]["unique_graphs"] <= 2
