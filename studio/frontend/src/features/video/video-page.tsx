@@ -8,7 +8,6 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Refresh01Icon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
@@ -16,6 +15,7 @@ import {
   ImageCropIcon,
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -101,6 +101,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -274,6 +275,8 @@ const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "minimax-h3", steps: 30, guidance: 1 },
+  { match: "cosmos3-nano", steps: 35, guidance: 6 },
+  { match: "cosmos3-edge", steps: 20, guidance: 6 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   // Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
@@ -329,9 +332,17 @@ function defaultsFor(repoId: string, family?: string): { steps: number; guidance
     }
     return { steps: 8, guidance: 1 };
   }
+  // An HF-cache snapshot path ends in a commit hash, so its name is the models--<owner>--<name> folder.
+  const snapshot = repoId.replace(/\\/g, "/").match(/models--[^/]+?--([^/]+)\/snapshots\/[^/]+\/?$/);
+  const modelName = snapshot ? fold(snapshot[1]) : name;
   return (
     MODEL_DEFAULTS.find((d) =>
-      (d.match.startsWith("wan") || d.match === "fusionx" ? name : id).includes(d.match),
+      (d.match.startsWith("wan") || d.match === "fusionx"
+        ? name
+        : d.match.startsWith("cosmos3")
+          ? modelName
+          : id
+      ).includes(d.match),
     ) ?? DEFAULT_GEN
   );
 }
@@ -4076,7 +4087,7 @@ function VideoGenerator({
           </div>
 
           <Field label="Prompt" hint={status?.prompt_hint || undefined}>
-            <Textarea
+            <DeferredTextarea
               data-type-to-activate="prompt"
               rows={4}
               className={cn(PROMPT_BOX_CLASS, "min-h-32")}
@@ -4087,7 +4098,7 @@ function VideoGenerator({
                 dismissExample("video");
                 setExampleDismissed(true);
               }}
-              onChange={(e) => setPrompt(e.target.value)}
+              onValueChange={setPrompt}
             />
           </Field>
           {status?.supports_cfg !== false && (
@@ -4635,7 +4646,7 @@ function VideoGenerator({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={Refresh01Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={ReloadIcon} className="mr-2 size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>
@@ -4720,7 +4731,7 @@ function VideoGenerator({
                 alt="Live preview of the first frame being generated"
                 data-testid="video-live-preview"
                 style={livePreviewBox}
-                className="size-full object-contain shadow-sm"
+                className="media-stage-shadow size-full object-contain shadow-sm"
               />
             ) : selected && selectedSrc ? (
               <>
@@ -4746,7 +4757,7 @@ function VideoGenerator({
                     }
                   }}
                   onError={() => remintSrc(selected)}
-                  className="max-h-full max-w-full object-contain shadow-sm"
+                  className="media-stage-shadow max-h-full max-w-full object-contain shadow-sm"
                 />
                 {selected.has_audio && (
                   <div className="absolute left-4 top-4 flex items-center gap-1 rounded-full bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">

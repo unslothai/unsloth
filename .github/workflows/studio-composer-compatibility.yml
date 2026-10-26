@@ -188,6 +188,8 @@ jobs:
             # before being wired in, so this adds coverage and not a new red.
             run_driver "temp/queue-validation/compatibility/$browser-queue-localization.log" \
               python tests/studio/playwright_queue_localization.py || status=1
+            run_driver "temp/queue-validation/compatibility/$browser-deferred-prompt.log" \
+              python tests/studio/playwright_composer_deferred_prompt.py || status=1
           done
           exit "$status"
       - name: Native Safari simulations

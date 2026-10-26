@@ -43,7 +43,6 @@ import {
 } from "@/lib/spellcheck";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   type HelperPrecacheSettings,
@@ -95,6 +94,9 @@ import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-sto
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 
 // whisper.cpp rides along with llama.cpp's card, so it has no line of its own.
 const UPDATE_REMINDER_CHANNELS: {
@@ -573,7 +575,7 @@ export function GeneralTab() {
                 }}
                 onBlur={commitToken}
                 className={cn(
-                  "h-8 w-full font-mono text-xs",
+                  "h-control w-full font-mono text-xs",
                   tokenValidated ? "pr-14" : "pr-8",
                 )}
               />
@@ -584,7 +586,7 @@ export function GeneralTab() {
                   role="img"
                   aria-label={t("settings.general.tokenValidated")}
                 >
-                  <Check className="size-4" strokeWidth={2.5} />
+                  <HugeiconsIcon icon={Tick02Icon} className="size-4" strokeWidth={2.5} />
                 </span>
               ) : null}
               <button
@@ -599,9 +601,9 @@ export function GeneralTab() {
                 tabIndex={-1}
               >
                 {showToken ? (
-                  <EyeOff className="size-3.5" />
+                  <HugeiconsIcon icon={ViewOffSlashIcon} className="size-3.5" />
                 ) : (
-                  <Eye className="size-3.5" />
+                  <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
                 )}
               </button>
             </div>
@@ -761,7 +763,7 @@ export function GeneralTab() {
                 value={draftUploadLimit}
                 aria-label={t("settings.general.uploads.maxUploadSize")}
                 onChange={(event) => setDraftUploadLimit(event.target.value)}
-                className="h-8 w-24"
+                className="h-control w-24"
               />
               <span className="text-xs font-medium text-muted-foreground">
                 MB
@@ -882,10 +884,10 @@ export function GeneralTab() {
       ) : null}
 
       <SettingsSection
+        danger={true}
         title={t("settings.general.resetPreferences.sectionTitle")}
       >
         <SettingsRow
-          destructive={true}
           label={t("settings.general.resetPreferences.label")}
           description={t("settings.general.resetPreferences.description")}
         >

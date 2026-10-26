@@ -45,6 +45,7 @@ import collections
 import dataclasses
 import inspect
 import math
+import re
 import sys
 import textwrap
 import types
@@ -301,6 +302,8 @@ def _find_parts(model) -> _Parts:
         )
     text = _text_config(model)
     n = getattr(text, "num_hidden_layers", None)
+    # A decoder-only use of an encoder-decoder config (BartForCausalLM): num_hidden_layers is the encoder's.
+    counts = {n, getattr(text, "decoder_layers", None)} - {None}
     pp_plan = getattr(text, "base_model_pp_plan", None) or getattr(
         getattr(inner, "config", None), "base_model_pp_plan", None
     )
@@ -313,7 +316,11 @@ def _find_parts(model) -> _Parts:
             layers_name, source = lists[0], "transformers"
     if layers_name is None:
         for name, child in named.items():
-            if isinstance(child, nn.ModuleList) and len(child) and (n is None or len(child) == n):
+            if (
+                isinstance(child, nn.ModuleList)
+                and len(child)
+                and (n is None or len(child) in counts)
+            ):
                 layers_name = name
                 break
     if layers_name is None:
@@ -344,11 +351,25 @@ def _find_parts(model) -> _Parts:
             continue
         norms.append((name, child))
     hidden = getattr(text, "hidden_size", None)
+    vocab = getattr(text, "vocab_size", None)
+    order = list(decoder._modules)
     others = []
     for name, child in norms:
         base = getattr(child, "original_module", child)  # PEFT modules_to_save wraps it
         norm_like = "norm" in name.lower() or "Norm" in type(base).__name__
         too_big = bool(hidden) and sum(p.numel() for p in base.parameters()) > 4 * hidden
+        # A learned position / token-type table before the layers (GPT-2 wpe, OPT / BART / Whisper
+        # embed_positions): indexed by positions, not tokens, so later stages (whose pre-layer result is
+        # replaced by the received hidden states anyway) need nothing from it. A token-indexed table could
+        # feed the layers a side input and stays refused.
+        positional = (
+            isinstance(base, nn.Embedding)
+            and isinstance(vocab, int)
+            and base.num_embeddings != vocab
+            and order.index(name) < order.index(layers_name)
+        )
+        if positional:
+            continue
         if not norm_like or too_big:
             others.append(name)
     if others:
@@ -361,6 +382,12 @@ def _find_parts(model) -> _Parts:
             continue
         if _owner(child, lm_head)[0] is not None:
             continue
+        if _owner(child, decoder)[0] is not None:
+            # A wrapper around the decoder (OPTModel.decoder, BartDecoderWrapper.decoder): fine when it holds
+            # nothing else.
+            inside = {id(p) for p in decoder.parameters()}
+            if all(id(p) in inside for p in child.parameters()):
+                continue
         raise ValueError(
             f"Unsloth: pipeline parallelism v1 found an extra module {name} ({type(child).__name__}) "
             f"next to the decoder of {type(inner).__name__} (multimodal towers / extra heads are v2)."
@@ -369,6 +396,44 @@ def _find_parts(model) -> _Parts:
     h_w = getattr(lm_head, "weight", None)
     tied = e_w is not None and e_w is h_w
     return _Parts(inner, decoder, layers, layers_name, embed, lm_head, norms, source, tied)
+
+
+def _refuse_shared_across_stages(parts, bounds):
+    """A trainable parameter used by layers of two stages (a block shared by several layers, Zamba2 /
+    ALBERT style) would be trained as two independent copies."""
+    stage_of = {i: k for k, (start, end) in enumerate(bounds) for i in range(start, end)}
+    owners = {}
+    for i, layer in enumerate(parts.layers):
+        for name, p in layer.named_parameters():
+            stages, first, param = owners.setdefault(
+                id(p), (set(), f"{parts.layers_name}.{i}.{name}", p)
+            )
+            stages.add(stage_of[i])
+    shared = [first for stages, first, p in owners.values() if len(stages) > 1 and p.requires_grad]
+    if shared:
+        raise ValueError(
+            f"Unsloth: pipeline parallelism v1 cannot split layers that share trainable parameters across "
+            f"stages ({shared[:3]}: a block reused by several layers). Keep the sharing layers on one stage "
+            "(layers_per_stage, when they are adjacent), or use native FSDP2 (UNSLOTH_FSDP2=1)."
+        )
+
+
+def _check_loss_normalization(inner):
+    """PipelineParallel sums the micro-batch losses, each normalised by the token count of the whole batch
+    (num_items_in_batch). A causal LM forward that drops num_items_in_batch takes a per-micro-batch mean, so the
+    sum would be n_microbatches times the one-process loss (BART / Whisper / TrOCR decoders)."""
+    try:
+        source = inspect.getsource(_forward_function(inner))
+    except (OSError, TypeError):
+        source = ""
+    passes_kwargs = re.search(r"loss_function\([^()]*(?:\([^()]*\)[^()]*)*\*\*\s*\w+", source)
+    if "num_items_in_batch" in source or passes_kwargs:
+        return
+    raise ValueError(
+        f"Unsloth: pipeline parallelism v1 needs the {type(inner).__name__} loss to take num_items_in_batch "
+        "(self.loss_function(..., **kwargs)); this forward computes a per-micro-batch mean, so micro-batches "
+        "cannot be summed like gradient accumulation."
+    )
 
 
 def _refuse_unsupported(model, parts):
@@ -446,6 +511,7 @@ def _refuse_unsupported(model, parts):
             "Unsloth: pipeline parallelism v1 cannot train tied input / output embeddings (the first and "
             "last stage would each update their own copy). Freeze them, or untie them before splitting."
         )
+    _check_loss_normalization(inner)
 
 
 # ---------------------------------------------------------------------------------- layer call format
@@ -1373,6 +1439,7 @@ def apply_pipeline_parallel(
     _check_schedule(model, schedule)
     tuple_format = _layer_call_format(parts.decoder, parts.layers_name) == "tuple"
     bounds = derive_pp_split(model, pp, config)
+    _refuse_shared_across_stages(parts, bounds)
     dtype = config.activation_dtype or parts.embed.weight.dtype
     rank = pp_mesh.get_local_rank()
     if config.sync_trainable and pp > 1:

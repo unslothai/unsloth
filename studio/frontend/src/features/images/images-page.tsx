@@ -35,6 +35,7 @@ import {
   Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -75,6 +76,7 @@ import { Slider } from "@/components/ui/slider";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -1820,7 +1822,7 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
-  const [localizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
+  const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
   const [localizedColors, setLocalizedColors] = useState<string[]>([]);
@@ -1999,6 +2001,11 @@ export function ImagesPage({
   const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
   const unifiedEdit = Boolean(conditioning?.unified_edit);
+  // Localized modes and the transparent-background prompt are Qwen-Image-2.1's; FLUX.3 shares the Edit form without them.
+  const localizedEdit = Boolean(conditioning?.localized_edit_modes?.length);
+  // A mode picked on a model that has it would be refused by one that does not.
+  const localizedMode =
+    pickedLocalizedMode && conditioning?.localized_edit_modes?.includes(pickedLocalizedMode) ? pickedLocalizedMode : null;
   // Edit-only model whose Edit takes more images after the source (Qwen-Image-Edit-Plus).
   const multiImageEdit = !unifiedEdit && Boolean(conditioning?.multi_image_edit);
   const referenceResolutions = conditioning?.reference_resolutions ?? [];
@@ -2495,6 +2502,10 @@ export function ImagesPage({
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
   if (viewerId && (!active || !viewerImage)) setViewerId(null);
+  // The strip tile whose actions menu a right-click opened. A tile's <img> would otherwise get the
+  // webview's own image menu, whose Open in New Window and Copy Image cannot act on a blob: URL.
+  const [tileMenuId, setTileMenuId] = useState<string | null>(null);
+  if (tileMenuId && (!active || !images.some((image) => image.id === tileMenuId))) setTileMenuId(null);
   // Pruning below must not revoke the image on screen.
   const viewerIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -4046,7 +4057,7 @@ export function ImagesPage({
   }, []);
   const applyEditSource = useCallback(
     (dataUrl: string) => {
-      // FLUX.2 klein and FLUX.3 edit through Reference; without this fallback the source lands hidden on Create.
+      // FLUX.2 klein edits through Reference; without this fallback the source lands hidden on Create.
       const target: WorkflowId | null = isWorkflowEnabled("edit", supported)
         ? "edit"
         : isWorkflowEnabled("transform", supported)
@@ -6876,7 +6887,7 @@ export function ImagesPage({
                 {editSizing === "custom" && sizeControls}
                 {referenceDetailControl}
                 {engineNotes}
-                {unifiedEdit && (
+                {localizedEdit && (
                   <Button
                     type="button"
                     variant="secondary"
@@ -6894,7 +6905,7 @@ export function ImagesPage({
               label={workflow === "edit" ? "Instruction" : "Prompt"}
               hint={external ? undefined : status?.prompt_hint || undefined}
             >
-              <Textarea
+              <DeferredTextarea
                 data-type-to-activate="prompt"
                 rows={4}
                 className={cn(PROMPT_BOX_CLASS, "min-h-32")}
@@ -6907,7 +6918,7 @@ export function ImagesPage({
                   dismissExample(`images:${workflow}`);
                   setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
                 }}
-                onChange={(e) => setPrompt(e.target.value)}
+                onValueChange={setPrompt}
                 onPaste={(e) => {
                   // A whole AUTOMATIC1111 / Forge / Civitai block fills the form instead of the prompt.
                   const text = e.clipboardData.getData("text/plain");
@@ -7362,7 +7373,7 @@ export function ImagesPage({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={Refresh01Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={ReloadIcon} className="mr-2 size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>
@@ -7439,7 +7450,7 @@ export function ImagesPage({
                 alt="Live preview of the image being generated"
                 data-testid="images-live-preview"
                 style={{ maxWidth: width, maxHeight: height }}
-                className="size-full object-contain shadow-sm"
+                className="media-stage-shadow size-full object-contain shadow-sm"
               />
             ) : selected && selectedSrc ? (
               <>
@@ -7457,7 +7468,7 @@ export function ImagesPage({
                       openViewer();
                     }
                   }}
-                  className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
+                  className="media-stage-shadow max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
@@ -7638,6 +7649,13 @@ export function ImagesPage({
                   key={image.id}
                   data-image-id={image.id}
                   {...stripReorder.tileProps(image.id)}
+                  // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
+                  // Portalled children (the New project dialog) bubble here too: leave their menu alone.
+                  onContextMenu={(event) => {
+                    if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
+                    event.preventDefault();
+                    setTileMenuId(image.id);
+                  }}
                   className={cn(
                     "group relative size-16 shrink-0",
                     // Fade the tile being dragged.
@@ -7682,6 +7700,8 @@ export function ImagesPage({
                       variant="overlay"
                       noun="image"
                       active={active}
+                      open={tileMenuId === image.id}
+                      onOpenChange={(open) => setTileMenuId(open ? image.id : null)}
                       pinned={Boolean(image.pinned)}
                       archived={Boolean(image.archived)}
                       favorite={isFavorite(`image:${image.id}`)}

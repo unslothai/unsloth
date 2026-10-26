@@ -1007,6 +1007,75 @@ def _fully_shard(fully_shard, module, **kwargs):
         fully_shard_module.FSDPModule = original
 
 
+def _block_cudagraphs_requested():
+    block_compile = sys.modules.get(f"{__package__}._block_compile") if __package__ else None
+    options = getattr(block_compile, "_COMPILE_OPTIONS", None)
+    if isinstance(options, dict):
+        return bool(options.get("triton.cudagraphs"))
+    return os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1"
+
+
+def _skip_free_unsharded_param():
+    return None
+
+
+def _compiled_block_modules(model):
+    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)."""
+    inside = set()
+    for module in model.modules():
+        if id(module) in inside or not getattr(
+            type(module).forward, "_unsloth_block_compiled", False
+        ):
+            continue
+        if module.__dict__.get("_unsloth_block_mode", 1) == 0:
+            continue
+        inside.update(id(m) for m in module.modules())
+    return inside
+
+
+def _keep_unsharded_for_block_cudagraphs(model):
+    """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
+    step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
+    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph."""
+    if not _block_cudagraphs_requested():
+        return 0
+    blocks = _compiled_block_modules(model)
+    if not blocks:
+        return 0
+    FSDPModule = _fsdp_module_class()
+    kept, nbytes = 0, 0
+    for module in model.modules():
+        if not isinstance(module, FSDPModule):
+            continue
+        try:
+            group = getattr(module._get_fsdp_state(), "_fsdp_param_group", None)
+        except Exception:
+            group = None
+        for fsdp_param in getattr(group, "fsdp_params", None) or ():
+            if getattr(fsdp_param, "_unsloth_keep_unsharded", False):
+                continue
+            info = getattr(fsdp_param, "_module_info", None)
+            if id(getattr(info, "module", None)) not in blocks:
+                continue
+            if not callable(getattr(type(fsdp_param), "free_unsharded_param", None)):
+                return kept  # a torch without this FSDP2 internal: graphs re-record as before
+            fsdp_param.free_unsharded_param = _skip_free_unsharded_param
+            fsdp_param._unsloth_keep_unsharded = True
+            kept += 1
+            try:
+                dtype = getattr(fsdp_param, "param_dtype", None) or fsdp_param.orig_dtype
+                nbytes += fsdp_param._orig_size.numel() * dtype.itemsize
+            except Exception:
+                pass
+    if kept:
+        _print_rank0(
+            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
+            f"{kept} parameters allocated ({nbytes / 2**30:.2f} GiB per rank) so the block CUDA graphs "
+            "replay instead of re-recording every step."
+        )
+    return kept
+
+
 def _post_shard(
     model,
     units,
@@ -1037,6 +1106,7 @@ def _post_shard(
         _print_rank0(
             f"Unsloth: native FSDP2 post-shard step skipped ({type(exc).__name__}: {exc})."
         )
+    _keep_unsharded_for_block_cudagraphs(model)
     try:
         from .fsdp2_save import reduce_unsharded_trainable_grads
         replicated = reduce_unsharded_trainable_grads(model)
@@ -1477,6 +1547,10 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         torch.cuda.set_device(device)
     _warn_nccl2_memory(dist, device)
     mesh = config.mesh if config.mesh is not None else _default_mesh(device, dist)
+    from .fsdp2_load import begin_shard, finish_shard, gather_replicated
+
+    # fsdp2_sharded_loading chunks -> full-shape meta placeholders until fully_shard (empty otherwise).
+    pending, config = begin_shard(model, mesh, config)
     _sync_trainable_from_first_rank(model, dist, device, config.mesh)
     param_dtype = _resolve_param_dtype(model, config)
     mp_policy = MixedPrecisionPolicy(param_dtype = param_dtype, reduce_dtype = config.reduce_dtype)
@@ -1585,6 +1659,10 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         if layout.replicate_frozen:
             replicated.update(p for p in model.parameters() if not p.requires_grad)
         _refuse_units_sharing_params(model, units + list(extra_units), replicated)
+        # The caller's ignored_params set follows a gathered chunk to its whole parameter, as the full
+        # load's set names the live one.
+        user_ignored = config.ignored_params if isinstance(config.ignored_params, set) else set()
+        gather_replicated(model, pending, replicated, mesh, also = (ignored, user_ignored))
         if replicated:
             if not _supports_ignored_params(fully_shard):
                 raise RuntimeError(
@@ -1612,6 +1690,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 else None
             ),
         )
+        finish_shard(model, pending)
         model._unsloth_reshard_after_forward = False
     setattr(model, _NATIVE_FLAG, True)
     for param in model.parameters():
@@ -1838,6 +1917,60 @@ def _reshard_after_forward_restore(unit, saved):
         state._auto_reshard_after_forward = auto
 
 
+def _unit_param_groups(unit):
+    state = unit._get_fsdp_state()
+    groups = getattr(state, "_fsdp_param_groups", None)
+    if groups is None:  # torch < 2.13: at most one param group
+        group = getattr(state, "_fsdp_param_group", None)
+        groups = [] if group is None else [group]
+    return groups
+
+
+def _rebind_swapped_modules(model, units):
+    """Point FSDP2 at modules swapped in after sharding. torchao's QATConfig(step = "convert")
+    replaces each FakeQuantizedLinear with a new nn.Linear holding the same Parameter
+    (`new.weight = old.weight`), but FSDPParam keeps the dropped module, so unshard() writes the
+    gathered weight there and the live module keeps the sharded DTensor ("mixed torch.Tensor and
+    DTensor"). Rebind each FSDPParam to the modules that hold its parameter now. A no-op unless a
+    module was swapped."""
+    owners = {}
+    for module in model.modules():
+        for name, param in module._parameters.items():
+            if param is not None:
+                owners.setdefault(id(param), []).append((module, name))
+    for unit in units:
+        try:
+            groups = _unit_param_groups(unit)
+        except Exception:
+            continue
+        for group in groups:
+            for fsdp_param in getattr(group, "fsdp_params", None) or ():
+                info = getattr(fsdp_param, "_module_info", None)
+                if info is None:
+                    continue
+                current = []
+                for attr in ("sharded_param", "_unsharded_param"):
+                    param = getattr(fsdp_param, attr, None)
+                    for pair in owners.get(id(param), ()) if param is not None else ():
+                        if not any(pair[0] is m and pair[1] == n for m, n in current):
+                            current.append(pair)
+                if not current:
+                    continue
+                known = [(info.module, info.param_name)]
+                known += list(zip(info.shared_modules, info.shared_param_names))
+                if all(any(m is km and n == kn for km, kn in known) for m, n in current):
+                    continue
+                # Keep the original primary module when it is still in the model.
+                current.sort(key = lambda pair: pair[0] is not info.module)
+                fsdp_param._module_info = dataclasses.replace(
+                    info,
+                    module = current[0][0],
+                    param_name = current[0][1],
+                    shared_modules = [m for m, _ in current[1:]],
+                    shared_param_names = [n for _, n in current[1:]],
+                )
+
+
 @contextlib.contextmanager
 def native_fsdp2_unsharded(model):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
@@ -1861,6 +1994,7 @@ def native_fsdp2_unsharded(model):
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
     saved = {}
     try:
+        _rebind_swapped_modules(root, units)
         for unit in units:
             saved[id(unit)] = _reshard_after_forward_off(unit)
         for unit in units:
@@ -2955,6 +3089,14 @@ def _install_trainer_hooks():
             with fsdp2_gathered(root, trainable_only = True, include = include) as writer:
                 if writer is not False and _trainer_save_writer(self, root)[0]:
                     _save_unwrapped(self, root, output_dir)
+        elif getattr(getattr(type(root), "save", None), "_unsloth_fsdp2_collective", False):
+            # A SentenceTransformer (FastSentenceTransformer): its trainer's _save ignores a state_dict
+            # and calls model.save_pretrained, so gather here; the collective save then just writes.
+            from .fsdp2_save import fsdp2_gathered
+            from .sentence_transformer import fsdp2_st_usage_snippet
+            with fsdp2_st_usage_snippet(root), fsdp2_gathered(root) as writer:
+                if writer is not False and _trainer_save_writer(self, root)[0]:
+                    _save_unwrapped(self, root, output_dir)
         else:
             from .fsdp2_save import _dist, _wait_for_writer, writes_off_rank0
 
@@ -3217,13 +3359,45 @@ def _scaler_for_native(trainer):
     if handler is not None and hasattr(handler, "to_kwargs"):
         kwargs = handler.to_kwargs()
     kwargs.setdefault("device", getattr(scaler, "_device", "cuda"))
-    # The Trainer scales each rank's loss by world size, so float16 activation grads are world times
-    # one GPU's and overflow at its scale. Divide init_scale by the DP size unless the user set it.
-    world = _data_parallel_size(getattr(trainer, "model", None))
+    # The Trainer scales each rank's loss by the number of processes, so float16 activation grads are
+    # that many times one GPU's and overflow at its scale. Divide init_scale by it unless the user set it.
+    world = _loss_scale_ranks(trainer)
     if world > 1 and "init_scale" not in kwargs:
         kwargs["init_scale"] = 2.0**16 / world
     accelerator.scaler = _ShardedGradScaler(**kwargs)
     return True
+
+
+def _loss_scale_ranks(trainer):
+    """How many times one GPU's per-token loss gradient a rank's backward carries: the Trainer multiplies
+    each rank's loss by accelerator.num_processes (its token mean over the world), divided by the tensor
+    parallel size (tp peers share a batch whose tokens the gathered count repeats). That is the world, not
+    the FSDP2 mesh: on two disjoint 2-rank sub-meshes of 4 ranks it is 4. Context parallel peers share a
+    batch but CP divides the gathered count by cp, so CP = 2, DP = 1 is the world (2) too."""
+    accelerator = getattr(trainer, "accelerator", None)
+    model = getattr(trainer, "model", None)
+    ranks = getattr(accelerator, "num_processes", None)
+    if not isinstance(ranks, int) or ranks < 1:
+        ranks = None
+        try:
+            import torch.distributed as dist
+            if dist.is_available() and dist.is_initialized():
+                ranks = int(dist.get_world_size())
+        except Exception:
+            pass
+        if ranks is None:
+            return _data_parallel_size(model)
+    pc = getattr(accelerator, "parallelism_config", None)
+    tp = int(getattr(pc, "tp_size", 1) or 1) if pc is not None else 1
+    tp_native = sys.modules.get(f"{__package__}.tp_native") if __package__ else None
+    if tp == 1 and tp_native is not None and model is not None:
+        try:
+            if tp_native.is_tensor_parallel(model):
+                tp_mesh = tp_native._tp_meshes(model)[0]
+                tp = int(tp_mesh.size()) if tp_mesh is not None else 1
+        except Exception:
+            tp = 1
+    return max(1, ranks // max(1, tp))
 
 
 def _data_parallel_size(model):

@@ -6181,7 +6181,7 @@ def test_the_anthropic_paths_promote_a_replayed_mcp_envelope():
         "the count endpoint prices the base64 the completion never sends, and must "
         "not do the Pillow work inline on the event loop"
     )
-    assert "messages_override = openai_messages" in generate, (
+    assert "_anthropic_admission_body(openai_messages" in generate, (
         "admission has to reserve against the translated list, or an Anthropic "
         "tool_result block prices its envelope as dense text"
     )

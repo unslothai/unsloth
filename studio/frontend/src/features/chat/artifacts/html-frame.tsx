@@ -23,10 +23,10 @@ import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   Cancel01Icon,
-  MultiplicationSignCircleIcon,
+  CancelCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { BanIcon, XIcon } from "lucide-react";
+import { BanIcon } from "lucide-react";
 import {
   type RefObject,
   useCallback,
@@ -483,7 +483,7 @@ export function ArtifactHtmlFrame({
             aria-label={errorTitle}
             className={NOTICE}
           >
-            <HugeiconsIcon icon={MultiplicationSignCircleIcon} strokeWidth={2} className="size-4" />
+            <HugeiconsIcon icon={CancelCircleIcon} strokeWidth={2} className="size-4" />
             <AlertAction className="top-2 end-2">
               <Button
                 size="icon-xs"
@@ -581,7 +581,7 @@ export function ArtifactHtmlFrame({
                   aria-label={t("settings.chat.artifacts.consoleClose")}
                   onClick={() => onConsoleOpenChange?.(false)}
                 >
-                  <XIcon />
+                  <HugeiconsIcon icon={Cancel01Icon} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="tooltip-compact">
