@@ -2995,6 +2995,21 @@ def _exact_parking_need_mib(
     return (pool_mib + _PARKING_MARGIN_MIB) * slots
 
 
+def _exact_parking_writes_mib(
+    kv_bytes: int,
+    *,
+    draft_bytes: int = 0,
+    parallel: int = 1,
+) -> int:
+    """The host RAM exact concurrency's parks can write, in MiB: ``_exact_parking_need_mib``, but
+    none for one slot. One slot never shares the cache, so nothing is parked, and the exact state
+    already needs no parking below two slots; booking a whole pool for it turned Auto off on a
+    host short of that RAM and charged a running single-slot load to its neighbours."""
+    if max(int(parallel or 1), 1) <= 1:
+        return 0
+    return _exact_parking_need_mib(kv_bytes, draft_bytes = draft_bytes, parallel = parallel)
+
+
 def _available_host_memory_mib() -> Optional[int]:
     """Host RAM this process can still charge, in MiB, or None where it cannot be read. Capped by
     an enforcing cgroup: inside a container the host-wide reading approves parks the limit kills."""
@@ -3224,7 +3239,7 @@ def _exact_parking_shortfall_mib(
     if named is None or named <= 0:
         return None
     saved = -(-(int(kv_bytes) + max(int(draft_bytes), 0)) // (1024 * 1024))
-    need = _exact_parking_need_mib(kv_bytes, draft_bytes = draft_bytes, parallel = parallel)
+    need = _exact_parking_writes_mib(kv_bytes, draft_bytes = draft_bytes, parallel = parallel)
     return (named, saved, need) if named < need else None
 
 
@@ -34598,7 +34613,7 @@ class LlamaCppBackend:
                                 )
                             if _exact_cap is None:
                                 _exact_cap = _PREEMPT_RAM_DEFAULT_MIB
-                            _exact_writes = _exact_parking_need_mib(
+                            _exact_writes = _exact_parking_writes_mib(
                                 _exact_kv_bytes,
                                 draft_bytes = _exact_draft_bytes,
                                 parallel = n_parallel,
@@ -37935,7 +37950,7 @@ class LlamaCppBackend:
                         _exact_kv_bytes = int(_kv_bytes(effective_ctx) or 0) or _exact_kv_bytes
                     except Exception:
                         pass
-                    _writes = _exact_parking_need_mib(_exact_kv_bytes, parallel = n_parallel)
+                    _writes = _exact_parking_writes_mib(_exact_kv_bytes, parallel = n_parallel)
                     _cap = _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
                     if _cap is not None and _cap >= 0:
                         _writes = min(_cap, _writes)
@@ -38002,7 +38017,7 @@ class LlamaCppBackend:
                         _fitted_cap = _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
                         if _fitted_cap is None:
                             _fitted_cap = _PREEMPT_RAM_DEFAULT_MIB
-                        _fitted_writes = _exact_parking_need_mib(
+                        _fitted_writes = _exact_parking_writes_mib(
                             _fitted_bytes, draft_bytes = _fitted_draft, parallel = n_parallel
                         )
                         if _fitted_cap >= 0:
