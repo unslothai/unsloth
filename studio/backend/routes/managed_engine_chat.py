@@ -111,11 +111,11 @@ def _message_fitter(
     tools,
     studio_loop = False,
 ):
-    """Auto-compact to the vLLM engine's window; the exact count refuses tools, so this estimates."""
+    """Auto-compact to the managed engine's window; the exact count refuses tools, so this estimates."""
     from routes import inference as api
 
     if (
-        getattr(engine, "engine", None) != "vllm"
+        getattr(engine, "engine", None) not in ("vllm", "sglang")
         or api._rolling_context_policy(payload) is None
         or not engine.context
     ):
@@ -134,6 +134,9 @@ def _message_fitter(
     # on a controller re-prompt that recall must not query for.
     branch: list = []
     tool_loop = studio_loop and not api._tool_calls_are_disabled(payload)
+    # An uncapped reply is sized by the engine; a cap from the estimate can push the prompt over.
+    limit = api._effective_max_tokens(payload)
+    capped = bool(limit) and limit < engine.context
 
     async def fit(messages):
         if not branch:
@@ -151,7 +154,7 @@ def _message_fitter(
             line = api._context_truncated_sse_chunk(
                 "chatcmpl-" + uuid.uuid4().hex[:12], public, truncation
             ).rstrip("\n")
-        return fitted, max_tokens, line
+        return fitted, max_tokens if capped else None, line
 
     return fit
 

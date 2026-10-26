@@ -233,6 +233,34 @@ def test_managed_engine_chat_is_fitted_to_the_engine_window():
     assert unchanged["messages"] == messages
 
 
+def test_sglang_chat_is_fitted_by_estimate_within_the_engine_window():
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"engine": "sglang", "context_length": 2048}}
+    orchestrator._managed_engine = SimpleNamespace(adapter = ADAPTERS["sglang"])
+
+    def count(*args, **kwargs):
+        raise RuntimeError("Exact prompt token counting is unavailable for this engine.")
+
+    orchestrator.count_chat_tokens = count
+    turn = "word " * 400
+    messages = []
+    for index in range(10):
+        messages += [
+            {"role": "user", "content": f"q{index} {turn}"},
+            {"role": "assistant", "content": f"a{index} {turn}"},
+        ]
+    messages.append({"role": "user", "content": "latest"})
+    fitted = orchestrator.compact_chat_context(
+        messages, context_overflow = "truncate_oldest", max_tokens = 256
+    )
+    assert fitted["messages"][-1]["content"] == "latest"
+    truncation = next(e for e in fitted["events"] if e.get("type") == "context_truncated")
+    assert truncation["fits"] and truncation["prompt_tokens_after"] <= 2048 * 3 // 4 - 256
+
+
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
     from routes.managed_engine_chat import _with_reasoning_content
 
@@ -342,10 +370,26 @@ def test_tool_loop_turns_are_fitted_to_the_engine_window():
     assert _message_fitter(_tool_payload(), _Engine(), "m", tools = None) is None
     sglang = _Engine()
     sglang.engine = "sglang"
-    assert (
-        _message_fitter(_tool_payload(context_overflow = "truncate_oldest"), sglang, "m", None)
-        is None
-    )
+    fit = _message_fitter(_tool_payload(context_overflow = "truncate_oldest"), sglang, "m", None)
+    fitted, _, line = asyncio.run(fit(messages))
+    assert fitted[-1]["content"] == "latest" and len(fitted) < len(messages)
+    assert line and "context_truncated" in line
+
+
+def test_a_window_sized_reply_cap_is_left_to_the_engine():
+    import asyncio
+
+    from routes.managed_engine_chat import _message_fitter
+
+    prompt = [{"role": "user", "content": "word " * 1200}]
+    for engine in ("vllm", "sglang"):
+        managed = _Engine()
+        managed.engine = engine
+        for cap, sent in ((None, None), (4096, None), (256, 256)):
+            payload = _tool_payload(context_overflow = "truncate_oldest")
+            payload.max_tokens = cap
+            fit = _message_fitter(payload, managed, "m", None)
+            assert asyncio.run(fit(prompt))[1] == sent
 
 
 def test_a_managed_refit_recalls_with_the_first_branch_it_saw(monkeypatch):
