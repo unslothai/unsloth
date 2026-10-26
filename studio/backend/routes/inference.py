@@ -44403,17 +44403,21 @@ async def _anthropic_passthrough_stream(
         items_iter = None
         cancel_watcher = None
         disconnect_watcher = None
-        _truncate_policy = _overflow_truncation_policy(payload) if 'payload' in locals() else os.environ.get('UNSLOTH_CONTEXT_OVERFLOW', '').strip().lower()
-        if _truncate_policy not in ('truncate_middle', 'truncate_oldest'):
-            _truncate_policy = 'truncate_oldest'
+        _truncate_policy = (
+            _overflow_truncation_policy(payload)
+            if "payload" in locals()
+            else os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower()
+        )
+        if _truncate_policy not in ("truncate_middle", "truncate_oldest"):
+            _truncate_policy = "truncate_oldest"
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
-        _uncut_messages = list(body.get('messages') or [])
+        _uncut_messages = list(body.get("messages") or [])
         _cut_scope = _passthrough_cut_scope(llama_backend, body)
         _truncated_messages = await asyncio.to_thread(
             _replay_passthrough_cut,
             body,
             _truncate_policy,
-            getattr(llama_backend, 'context_length', None),
+            getattr(llama_backend, "context_length", None),
             _cut_scope,
         )
 
@@ -44468,6 +44472,7 @@ async def _anthropic_passthrough_stream(
                     continue
 
                 from core.inference.llama_keepwarm import mark_response_failed
+
                 mark_response_failed(getattr(request, "scope", None))
                 _over = bool(_classify_llama_generation_error(Exception(_err_text)))
                 yield build_anthropic_sse_event(
