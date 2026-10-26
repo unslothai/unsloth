@@ -74,7 +74,6 @@ export const BARKS: Record<BarkKind, readonly string[]> = {
   attack: ["Take this!", "Got you now!", "Stand still!"],
 };
 
-/** The world's bark lines over the built-in ones, per kind; bad entries are ignored. */
 /** A raid's bark list ({event, text}, events spot / lost / hurt / flank / retreat) mapped onto our kinds. */
 const RAID_EVENTS: Record<string, BarkKind> = {
   spot: "see",
@@ -252,7 +251,6 @@ export class Pathfinder {
   }
 }
 
-/** Tiles on the straight line between two tiles are all open (Bresenham). */
 export function clearLine(
   grid: Grid,
   x0: number,
@@ -492,7 +490,6 @@ function enter(b: Brain, a: Agent, s: AiState): void {
 const tileOf = (b: Brain, x: number, y: number) =>
   Math.floor(y) * b.grid.width + Math.floor(x);
 
-/** Path to a tile; keeps the current path while it still leads there. */
 function go(b: Brain, a: Agent, tile: number): boolean {
   if (tile < 0) return false;
   if (a.goal === tile && a.pathAt < a.pathLen) return true;
@@ -599,7 +596,6 @@ export function pickFlank(b: Brain, a: Agent, p: PlayerSense): number {
   return best;
 }
 
-/** The nearest cover point (an open tile beside a solid prop) the player cannot see. */
 export function pickCover(b: Brain, a: Agent, p: PlayerSense): number {
   const w = b.grid.width;
   const px = Math.floor(p.x);
@@ -847,7 +843,6 @@ function move(b: Brain, a: Agent, p: PlayerSense, dt: number): void {
   }
 }
 
-/** True while combat owns the hostile (alerted, fighting, hurt, fleeing or walking back). */
 export const engaged = (a: Agent) => a.state !== "idle" && a.state !== "patrol";
 
 /**

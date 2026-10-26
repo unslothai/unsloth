@@ -301,7 +301,6 @@ function escape(sneak: boolean) {
   const p = player(13.5, 14.5);
   run(brain, c, p, 0.5, v.noises);
   const spotted = a.state;
-  // Crouch round the end of the wall and away along its far side.
   const route: [number, number][] = [
     [16.5, 14.5],
     [16.5, 10.5],
