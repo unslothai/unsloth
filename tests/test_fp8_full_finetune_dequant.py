@@ -13,7 +13,8 @@ import pytest
 import torch
 from real_accelerator import has_real_cuda
 
-from test_fp8_16bit_text_loader_dequant import _write_tiny_block_fp8_llama
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_fp8_16bit_text_loader_dequant import _write_tiny_block_fp8_llama  # noqa: E402
 
 try:
     from transformers import FineGrainedFP8Config
@@ -107,6 +108,9 @@ def test_full_finetuning_refused_without_dequantize_flag(tmp_path):
     assert kind == "refused" and "full finetuning an FP8 checkpoint" in got, got
 
 
+# On a real pre-dequantize transformers (4.57.x) the spoofed sm80 device trips the fp8 capability check, which
+# only the dequantizing releases skip; the simulated old config is what this test exercises.
+@pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 def test_lora_load_not_refused_without_dequantize_flag(tmp_path):
     kind, got = _run(tmp_path, dict(load_in_4bit = False), old_transformers = True)
     assert kind == "load", got
