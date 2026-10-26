@@ -845,6 +845,7 @@ export const he = {
       hub: "מאגר המודלים",
       train: "אימון",
       recipes: "מתכונים",
+      flows: "תהליכים",
       images: "תמונות",
       video: "וידאו",
       audio: "אודיו",

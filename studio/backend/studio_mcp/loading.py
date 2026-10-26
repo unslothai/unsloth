@@ -9,6 +9,7 @@ import asyncio
 import dataclasses
 import hashlib
 import itertools
+import json
 import os
 import time
 import uuid
@@ -388,6 +389,7 @@ async def load_llm(
     kv_cache_type: Optional[str] = None,
     gpu_layers: Optional[int] = None,
     is_lora: bool = False,
+    extra_body: Optional[dict[str, Any]] = None,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -420,6 +422,8 @@ async def load_llm(
                 gpu_layers = gpu_layers,
             )
         )
+        if extra_body:
+            body.update(extra_body)
         payload = await with_progress(
             None,
             route_json("POST", "/api/inference/load", caller = caller, json_body = body),
@@ -462,12 +466,14 @@ async def load_llm(
             alongside,
             kv_cache_type,
             gpu_layers,
+            json.dumps(extra_body, sort_keys = True, default = str) if extra_body else None,
         ),
         hub_token = token,
         # A load asked with its own settings is never the one already running; following it would
         # skip them (and the CPU check).
         attach = not max_seq_length
         and load_in_4bit
+        and not extra_body
         and all(v is None for v in (device, alongside, kv_cache_type, gpu_layers)),
     )
 

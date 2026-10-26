@@ -109,6 +109,7 @@ import {
   Cancel01Icon,
   BadgeInfoIcon,
   ChefHatIcon,
+  FlowConnectionIcon,
   CloudIcon,
   CpuIcon,
   CursorInfo02Icon,
@@ -3605,6 +3606,19 @@ export function AppSidebar() {
             module.preloadRecipes(),
           ),
         );
+      },
+    },
+    flows: {
+      icon: FlowConnectionIcon,
+      label: t("shell.navigation.flows"),
+      badge: t("shell.navigation.newBadge"),
+      active: pathname === "/flows" || pathname.startsWith("/flows/"),
+      onClick: () => {
+        navigateFromRow({ to: "/flows" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/flows" }));
       },
     },
     export: {

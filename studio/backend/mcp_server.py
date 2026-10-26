@@ -13,6 +13,7 @@ from studio_mcp.tools import (
     cancel,
     data,
     export,
+    flows,
     images,
     jobs,
     library,
@@ -38,6 +39,7 @@ INSTRUCTIONS = " ".join(
         "Errors start with a tag such as [gpu_busy retry_after=12] or [not_loaded kind=image]; the hint after the message says what to do.",
         "File paths in inputs work only when you run on the Unsloth Studio computer; otherwise send data or an Unsloth Studio id.",
         "Generated images, audio and videos are saved to the Unsloth Studio galleries and returned with their id and URL.",
+        'Flows chain these steps as a node graph: list_flows, then run_flow and follow it with get_job(kind="flow").',
     )
 )
 
@@ -58,6 +60,7 @@ def create_studio_mcp() -> FastMCP:
         training,
         export,
         library,
+        flows,
         cancel,
     ):
         for tool, annotations, *schema in module.TOOLS:

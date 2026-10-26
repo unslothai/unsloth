@@ -765,6 +765,7 @@ export const de = {
       library: "Bibliothek",
       train: "Trainieren",
       recipes: "Rezepte",
+      flows: "Flows",
       images: "Bilder",
       video: "Video",
       audio: "Audio",

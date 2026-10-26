@@ -344,6 +344,120 @@ def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _ensure_flows_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flows (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            doc_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_tombstones (
+            id TEXT NOT NULL PRIMARY KEY,
+            deleted_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            flow_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN
+                ('queued', 'running', 'cancelling', 'cancelled', 'completed', 'failed', 'interrupted')),
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            options_json TEXT NOT NULL DEFAULT '{}',
+            outputs_json TEXT,
+            error TEXT,
+            last_event_seq INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            finished_at INTEGER
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id, created_at)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_run_events (
+            run_id TEXT NOT NULL REFERENCES flow_runs(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            event_json TEXT NOT NULL,
+            PRIMARY KEY (run_id, seq)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_node_results (
+            run_id TEXT NOT NULL REFERENCES flow_runs(id) ON DELETE CASCADE,
+            node_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            outputs_json TEXT,
+            error TEXT,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (run_id, node_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_cache (
+            key TEXT NOT NULL PRIMARY KEY,
+            node_type TEXT NOT NULL,
+            outputs_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            last_used_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_sessions (
+            flow_id TEXT NOT NULL,
+            slot TEXT NOT NULL,
+            label TEXT,
+            state_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (flow_id, slot)
+        ) WITHOUT ROWID
+        """
+    )
+    # What the owner approved a flow to do; kept out of the document, which any editor or import can write.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_capabilities (
+            flow_id TEXT PRIMARY KEY,
+            approved_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    # Schedule and webhook triggers of saved flows; the webhook secret lives here, never in the exportable document.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_triggers (
+            flow_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            token TEXT,
+            token_hash TEXT,
+            last_fired_at INTEGER,
+            PRIMARY KEY (flow_id, node_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_flow_triggers_token ON flow_triggers(token_hash)")
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -858,6 +972,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_data_recipe_executions_recipe"
         " ON data_recipe_executions(recipe_id, created_at)"
     )
+    _ensure_flows_schema(conn)
     # next_run_at NULL = nothing left to run; notify = all|failures|none; named=0 = title follows the instructions.
     conn.execute(
         """

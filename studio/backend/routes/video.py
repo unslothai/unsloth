@@ -997,6 +997,12 @@ async def unload_video_model(
     from core.inference.gpu_arbiter import VIDEO, release_if
     from core.inference.video import get_video_backend
 
+    from core.inference import gpu_arbiter
+
+    leased = gpu_arbiter.lease_refusal()
+    if leased is not None:
+        raise leased.as_http_exception()
+
     expected_load_id = request.expected_load_id if request is not None else None
     if not expected_load_id:
         account_access.require_resident_control("video")
