@@ -416,14 +416,15 @@ def test_tool_loop_honors_the_server_default_overflow(monkeypatch):
 
 
 @pytest.mark.parametrize("engine,parser", [("vllm", "deepseek_v3"), ("sglang", "deepseek-v3")])
-def test_a_renamed_deepseek_v31_directory_keeps_its_thinking_toggle(tmp_path, engine, parser):
+def test_a_renamed_deepseek_v31_directory_keeps_its_thinking_toggle(tmp_path_factory, engine, parser):
     template = (
         "{% for m in messages %}<｜User｜>{{ m.content }}{% endfor %}<｜Assistant｜>"
         "{% if thinking is defined and thinking %}<think>{% else %}</think>{% endif %}"
     )
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": "deepseek_v3"}))
-    (tmp_path / "chat_template.jinja").write_text(template)
-    config = SimpleNamespace(is_local = True, path = str(tmp_path), identifier = str(tmp_path))
+    model = tmp_path_factory.mktemp("my-model")
+    (model / "config.json").write_text(json.dumps({"model_type": "deepseek_v3"}))
+    (model / "chat_template.jinja").write_text(template)
+    config = SimpleNamespace(is_local = True, path = str(model), identifier = str(model))
     options = validate_model(config, engine = engine)
     assert options["reasoning_parser"] == parser
     assert options["reasoning_flags"]["supports_reasoning"] is True
