@@ -7087,6 +7087,17 @@ def _draft_n_ubatch(
     return int(str(found).strip()) if _is_positive_int(found) else None
 
 
+def _capped_draft_n_ubatch(args, env, ctx, *batch_defaults) -> Optional[int]:
+    """--spec-draft-n-ubatch capped as llama_context caps it: at --batch-size, then a positive
+    context. ``batch_defaults`` are _named_batch_sizes' fallbacks."""
+    ub = _draft_n_ubatch(args, env)
+    if ub:
+        ub = min(ub, _named_batch_sizes(args, env, *batch_defaults)[0] & 0xFFFFFFFF)
+        if ctx and ctx > 0:
+            ub = min(ub, int(ctx))
+    return ub
+
+
 _SIDECAR_ADAPTER_FLAGS = (
     "--lora",
     "--lora-scaled",
@@ -28549,20 +28560,16 @@ class LlamaCppBackend:
                             ) -> int:
                                 # Applied here, not in a wrapper, so every gate taking this callback
                                 # prices the draft micro-batch.
-                                _draft_ub = _draft_n_ubatch(extra_args, os.environ)
-                                if _draft_ub:
-                                    _n_ubatch = min(
-                                        _draft_ub,
-                                        _named_batch_sizes(
-                                            extra_args,
-                                            os.environ,
-                                            _emitted_n_batch(n_batch, _np),
-                                            n_ubatch,
-                                        )[0]
-                                        & 0xFFFFFFFF,
+                                _n_ubatch = (
+                                    _capped_draft_n_ubatch(
+                                        extra_args,
+                                        os.environ,
+                                        ctx,
+                                        _emitted_n_batch(n_batch, _np),
+                                        n_ubatch,
                                     )
-                                    if ctx > 0:
-                                        _n_ubatch = min(_n_ubatch, ctx)
+                                    or _n_ubatch
+                                )
                                 v = self._estimate_mtp_overhead_bytes(
                                     ctx,
                                     spec_draft_n_max = _n,
@@ -30207,18 +30214,13 @@ class LlamaCppBackend:
                                 + _kv_bytes(_sc_ctx, _fit_ctx_checkpoints)
                                 + _cc_bytes(_sc_ctx)
                             ) / (1024 * 1024)
-                            _sc_draft_ub = _draft_n_ubatch(extra_args, os.environ)
-                            if _sc_draft_ub is not None:
-                                _sc_batch = (
-                                    _named_batch_sizes(
-                                        extra_args,
-                                        os.environ,
-                                        _emitted_n_batch(n_batch, n_parallel),
-                                        n_ubatch,
-                                    )[0]
-                                    & 0xFFFFFFFF
-                                )
-                                _sc_draft_ub = min(_sc_draft_ub, _sc_batch, int(_sc_ctx))
+                            _sc_draft_ub = _capped_draft_n_ubatch(
+                                extra_args,
+                                os.environ,
+                                _sc_ctx,
+                                _emitted_n_batch(n_batch, n_parallel),
+                                n_ubatch,
+                            )
                             _sc_with_draft_mib = _sc_target_mib + self._sidecar_fit_reserve_mib(
                                 _mtp_bytes(
                                     _sc_ctx,
@@ -31256,24 +31258,14 @@ class LlamaCppBackend:
                                 pass  # a malformed -c is the launch's error to report, not this
                             # llama_context caps the micro-batch at the batch, and a causal batch at
                             # the context.
-                            _draft_ub = _draft_n_ubatch(run_args, child_env)
-                            if _draft_ub:
-                                _ub = min(
-                                    _draft_ub,
-                                    _named_batch_sizes(run_args, child_env)[0] & 0xFFFFFFFF,
-                                )
+                            _ub = _capped_draft_n_ubatch(run_args, child_env, _ctx) or _ub
                             if _ub and _ctx and _ctx > 0:
                                 _ub = min(_ub, int(_ctx))
-                            _v = self._estimate_mtp_overhead_bytes(
-                                _ctx,
-                                spec_draft_n_max = _n,
+                            _kv_kw = dict(
+                                drafter_path = _dp,
                                 draft_cache_type_k = _ck,
                                 draft_cache_type_v = _cv,
-                                drafter_path = _dp,
-                                draft_weights_bytes = _w,
                                 n_parallel = _np,
-                                mtp_keeps_target_ctx = _mtp,
-                                target_rollback = False,
                                 swa_full = _swa_full,
                                 kv_unified = _kv_unified,
                                 n_ubatch = _ub,
@@ -31281,25 +31273,21 @@ class LlamaCppBackend:
                                     run_args, default = planned_flash_attn, env = child_env
                                 ),
                             )
+                            _v = self._estimate_mtp_overhead_bytes(
+                                _ctx,
+                                spec_draft_n_max = _n,
+                                draft_weights_bytes = _w,
+                                mtp_keeps_target_ctx = _mtp,
+                                target_rollback = False,
+                                **_kv_kw,
+                            )
                             # The draft context copies -nkvo, so its KV stays in host buffers.
                             if (
                                 _v
                                 and not _kv_offload_from_args(run_args, child_env)
                                 and _sidecar_child_on_discrete_gpus(run_args, child_env)
                             ):
-                                _host_kv = self._mtp_draft_kv_bytes(
-                                    _ctx,
-                                    drafter_path = _dp,
-                                    draft_cache_type_k = _ck,
-                                    draft_cache_type_v = _cv,
-                                    n_parallel = _np,
-                                    swa_full = _swa_full,
-                                    kv_unified = _kv_unified,
-                                    n_ubatch = _ub,
-                                    flash_attn = _flash_attn_enabled_from_args(
-                                        run_args, default = planned_flash_attn, env = child_env
-                                    ),
-                                )
+                                _host_kv = self._mtp_draft_kv_bytes(_ctx, **_kv_kw)
                                 if _host_kv:
                                     _v = max(0, _v - _host_kv)
                             try:
