@@ -9051,22 +9051,44 @@ def _nvfp4_qat_linear_op():
 
     @torch.library.custom_op(name + "_backward", mutates_args = (), schema = backward_schema)
     def backward_op(
-        grad, x_qdata, x_scale, x_per_tensor_scale, weight, x_dtype, act_per_tensor, w_per_tensor,
-        w_swizzled, mm_dtype,
+        grad,
+        x_qdata,
+        x_scale,
+        x_per_tensor_scale,
+        weight,
+        x_dtype,
+        act_per_tensor,
+        w_per_tensor,
+        w_swizzled,
+        mm_dtype,
     ):
         x_q = NVFP4Tensor(
-            x_qdata, x_scale, 16, x_dtype, per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
+            x_qdata,
+            x_scale,
+            16,
+            x_dtype,
+            per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
         )
         x_dq = x_q.dequantize(x_dtype)
         w_dq = quantize_weight(weight, w_per_tensor, w_swizzled, False).dequantize(weight.dtype)
-        if mm_dtype is not None:  # torchao's backward runs under the forward's autocast (custom_bwd)
+        if (
+            mm_dtype is not None
+        ):  # torchao's backward runs under the forward's autocast (custom_bwd)
             grad, x_dq, w_dq = grad.to(mm_dtype), x_dq.to(mm_dtype), w_dq.to(mm_dtype)
         return torch.mm(grad, w_dq), torch.mm(grad.t(), x_dq)
 
     @backward_op.register_fake
     def _(
-        grad, x_qdata, x_scale, x_per_tensor_scale, weight, x_dtype, act_per_tensor, w_per_tensor,
-        w_swizzled, mm_dtype,
+        grad,
+        x_qdata,
+        x_scale,
+        x_per_tensor_scale,
+        weight,
+        x_dtype,
+        act_per_tensor,
+        w_per_tensor,
+        w_swizzled,
+        mm_dtype,
     ):
         dtype = grad.dtype if mm_dtype is None else mm_dtype
         return (
@@ -9083,9 +9105,7 @@ def _nvfp4_qat_linear_op():
 
     def backward(ctx, grad, *_):
         x_qdata, x_scale, x_per_tensor_scale, weight = ctx.saved_tensors
-        grad_x, grad_w = backward_op(
-            grad, x_qdata, x_scale, x_per_tensor_scale, weight, *ctx.args
-        )
+        grad_x, grad_w = backward_op(grad, x_qdata, x_scale, x_per_tensor_scale, weight, *ctx.args)
         grad_bias = grad.sum(0) if ctx.needs_input_grad[2] else None
         return grad_x, grad_w, grad_bias, None, None, None, None, None
 

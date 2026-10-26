@@ -446,7 +446,11 @@ def _grads(model, forward, x):
     return out.detach().float(), grads
 
 
-def _assert_same(got, want, tol = 0.0):
+def _assert_same(
+    got,
+    want,
+    tol = 0.0,
+):
     (out, grads), (ref_out, ref_grads) = got, want
     assert float((out - ref_out).norm() / ref_out.norm()) <= tol
     for name, ref in ref_grads.items():
@@ -528,6 +532,7 @@ def test_nvfp4_qat_autocast_grads_match_torchao(exact_inductor, weight_dtype):
         def run(t):
             with torch.autocast("cuda", dtype = torch.bfloat16):
                 return module(t)
+
         return run
 
     want = _grads(ref, under_autocast(ref), x)
