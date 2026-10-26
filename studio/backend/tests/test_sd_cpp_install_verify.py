@@ -305,3 +305,27 @@ def test_an_unstartable_rocm_bundle_falls_to_the_vulkan_build(tmp_path, monkeypa
     assert backend.preferred_accelerator("rocm") == "vulkan"
     cli = backend.ensure_sd_cpp_binary(accelerator = backend.preferred_accelerator("rocm"))
     assert cli is not None and Path(cli) == root / "vk" / _CLI
+
+
+def test_the_refusal_record_survives_a_fallback_from_another_release(
+    tmp_path, monkeypatch, backend
+):
+    """The Vulkan build that replaces a refused ROCm bundle comes from a release other than the pin
+    (an upstream / latest fallback): the record still applies, so the next load starts at Vulkan."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    root = sdmod.default_install_dir()
+    _stub_release(
+        monkeypatch,
+        {"rocm": _bundle(_refused_binary()), "vulkan": _bundle(_starting_binary(), "vk/")},
+    )
+    monkeypatch.setattr(sdmod, "_pinned_tag", lambda: "master-982-0518b34-ud331c66")
+    monkeypatch.setattr(backend, "_managed_tree_in_use", lambda: False)
+    monkeypatch.setattr(backend, "is_managed_binary", lambda _b: True)
+
+    server = backend.ensure_sd_server_binary(accelerator = "rocm")
+
+    assert server is not None
+    assert sdmod.read_install_record(root).get("tag") != "master-982-0518b34-ud331c66"
+    assert backend.accelerator_runtime_failed("rocm") is True
+    assert backend.preferred_accelerator("rocm") == "vulkan"

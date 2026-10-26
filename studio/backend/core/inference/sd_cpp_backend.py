@@ -2574,32 +2574,47 @@ def _install_down_the_ladder(_install: Callable[..., Any], accelerator: str) -> 
     next rung (rocm -> vulkan -> cpu). Returns ``(path, accelerator installed)``; raises the last error."""
     current = accelerator
     tried: set[str] = set()
+    refused: list[str] = []
+
+    def _note_refused(fingerprint: dict) -> None:
+        for klass in refused:
+            note_accelerator_runtime_failure(klass, proven = True, fingerprint = fingerprint)
+
     while True:
         try:
-            return _install(**_install_kwargs(current)), current
+            path = _install(**_install_kwargs(current))
         except Exception as exc:  # noqa: BLE001
             if not _unrunnable_build(exc):
+                if refused:
+                    _note_refused(_pin_fingerprint())
                 raise
             klass = _accelerator_class_of(current)
             tried.add(klass)
+            refused.append(klass)
             nxt = fallback_accelerator_for(klass)
-            try:
-                want = _installer_module()._pinned_tag()
-            except Exception:  # noqa: BLE001
-                want = None
-            # Keyed on the PIN, which the replacement build carries too: the rejected bundle's own tag (an
-            # upstream one) would never match the mirror build that replaces it, retiring the record at once.
-            note_accelerator_runtime_failure(
-                klass, proven = True, fingerprint = {"bundle": want, **_host_fingerprint()}
-            )
             logger.warning(
                 "sd_cpp.unrunnable_build: %s; %s",
                 exc,
                 f"installing the {nxt} build instead" if nxt else "no fallback build to try",
             )
             if not nxt or _accelerator_class_of(nxt) in tried:
+                _note_refused(_pin_fingerprint())
                 raise
             current = nxt
+            continue
+        # Keyed on the build that replaced the refused one, as _accelerator_fingerprint reads it back: an
+        # upstream or latest-release fallback carries a tag other than the pin.
+        if refused:
+            _note_refused(_accelerator_fingerprint(path) if path else _pin_fingerprint())
+        return path, current
+
+
+def _pin_fingerprint() -> dict:
+    try:
+        want = _installer_module()._pinned_tag()
+    except Exception:  # noqa: BLE001
+        want = None
+    return {"bundle": want, **_host_fingerprint()}
 
 
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
