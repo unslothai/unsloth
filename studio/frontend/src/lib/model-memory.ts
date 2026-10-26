@@ -80,6 +80,25 @@ const EMPTY: ModelMemorySegments = {
   pressure: "normal",
 };
 
+/** VRAM weights segment: only a host-resident lookup table comes off (a streamed one is already out). */
+export function memoryBarWeightsBytes(
+  estimate:
+    | {
+        weightsBytes?: number | null;
+        lookupTableBytes?: number | null;
+        lookupTableOnDisk?: boolean | null;
+      }
+    | undefined,
+  source: { sizeBytes?: number | null; lookupTableBytes?: number | null } | undefined,
+): number | null | undefined {
+  if (estimate?.weightsBytes != null) {
+    const resident = estimate.lookupTableOnDisk ? 0 : (estimate.lookupTableBytes ?? 0);
+    return Math.max(0, estimate.weightsBytes - resident);
+  }
+  const size = source?.sizeBytes;
+  return size == null ? size : Math.max(0, size - (source?.lookupTableBytes ?? 0));
+}
+
 function toGb(bytes?: number | null): number {
   return bytes && bytes > 0 ? bytes / BYTES_PER_GB : 0;
 }
