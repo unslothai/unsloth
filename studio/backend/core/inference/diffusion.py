@@ -5895,6 +5895,7 @@ class DiffusionBackend:
                 kind = kind,
                 declared_files = resident_sizes,
                 prequant_bytes = _prequant_plan_bytes(te_prequant_files)
+                + _prequant_plan_bytes(vae_hosted_files)
                 + (int(dit_prequant[2]) if skip_transformer_weights else 0),
                 extra_bf16_bytes = _predownload_encoder_bf16_bytes(
                     fam, te_prequant_files, pipeline_declared = bool(resident_sizes)
@@ -7253,6 +7254,8 @@ class DiffusionBackend:
             )
         te_prequant_bytes = _prequant_plan_bytes(te_files)
         required_total += te_prequant_bytes + _prequant_plan_bytes(vae_hosted_files)
+        # The hosted VAE replaces the dropped vae/ shards in the resident footprint too.
+        te_prequant_bytes += _prequant_plan_bytes(vae_hosted_files)
         # The prequant replacing the dropped transformer/ shards is footprint nothing else reports.
         dit_prequant_bytes = int(dit_prequant[2]) if dit_prequant is not None else 0
         required_total += dit_prequant_bytes
