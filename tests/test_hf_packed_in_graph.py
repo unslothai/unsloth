@@ -501,7 +501,11 @@ def test_kernel_verdict_is_cached_per_sdpa_policy(monkeypatch):
     monkeypatch.setattr(hpa, "_IN_GRAPH", {})
     monkeypatch.setattr(hpa, "_in_graph_kernel_probe", lambda *key: asked.append(key) or True)
     args = ("cuda", 0, torch.bfloat16, 64, 8, 2, None)
-    for policy in ((True, True, True, (1, 2)), (True, True, True, (1, 2)), (True, True, True, (0, 1))):
+    for policy in (
+        (True, True, True, (1, 2)),
+        (True, True, True, (1, 2)),
+        (True, True, True, (0, 1)),
+    ):
         hpa._in_graph_kernel_eager(*args, policy)
     assert len(asked) == 2 and all(key == args for key in asked)
 

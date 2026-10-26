@@ -802,7 +802,14 @@ _IN_GRAPH = {}
 
 
 def _in_graph_kernel_eager(
-    device_type, device_index, dtype, head_dim, n_heads, n_kv_heads, window, policy = None
+    device_type,
+    device_index,
+    dtype,
+    head_dim,
+    n_heads,
+    n_kv_heads,
+    window,
+    policy = None,
 ):
     """True when torch's varlen_attn (a custom op with a fake and a backward, so it traces) runs this
     shape the way the eager wrapper would: CUDA sm80+, flash's head dims, a window it takes, an
