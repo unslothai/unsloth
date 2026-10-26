@@ -12,8 +12,11 @@ import torch
 def _mamba_ssm(monkeypatch, present):
     real = importlib.util.find_spec
     monkeypatch.setattr(
-        importlib.util, "find_spec",
-        lambda name, *a, **k: (object() if present else None) if name == "mamba_ssm" else real(name, *a, **k),
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: (object() if present else None)
+        if name == "mamba_ssm"
+        else real(name, *a, **k),
     )
 
 

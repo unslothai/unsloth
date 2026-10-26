@@ -2789,7 +2789,6 @@ def _target_parameters_in_layers(
 def _mamba_ssm_importable():
     """transformers routes Mamba training through mamba_ssm's fused mamba_inner_fn whenever the package imports."""
     import importlib.util
-
     try:
         return importlib.util.find_spec("mamba_ssm") is not None
     except (ImportError, ValueError):
