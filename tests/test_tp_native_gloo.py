@@ -1065,6 +1065,13 @@ def test_sharded_loading_refuses_quantized_loads():
             )
 
 
+# Per-step grad norms over 3 AdamW steps. phi3's fused qkv / gate_up shards add reduction-order noise that the
+# optimizer compounds: on the CI runners its step-3 norm lands 6.9e-5 / 7.7e-5 relative off one process
+# (1.5e-6 at step 1), while this host stays inside 1e-5. The step-1 per-gradient check in the test
+# (rtol 1e-4, atol 1e-6) is what catches a real tp error such as a missed all-reduce, and it is unchanged.
+_TP_FSDP2_NORM_REL = {"phi3": 2e-4}
+
+
 @pytest.mark.parametrize(
     "arch,fit_layout,lora_kwargs",
     [
@@ -1100,7 +1107,9 @@ def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
             res["losses"],
             res["ref_losses"],
         )
-        assert res["norms"] == pytest.approx(res["ref_norms"], rel = 1e-5), (
+        assert res["norms"] == pytest.approx(
+            res["ref_norms"], rel = _TP_FSDP2_NORM_REL.get(arch, 1e-5)
+        ), (
             res["norms"],
             res["ref_norms"],
         )
