@@ -344,6 +344,35 @@ def test_batch_trains_through_sft_trainer_and_saves_checkpoints(monkeypatch, tmp
     }
 
 
+def test_gradients_are_clipped_per_member_every_step(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    seen = []
+    real = ml.clip_grad_norm_per_adapter_
+
+    def spy(model, max_norm):
+        norms = real(model, max_norm)
+        seen.append((max_norm, norms.clone()))
+        return norms
+
+    monkeypatch.setattr(ml, "clip_grad_norm_per_adapter_", spy)
+    events, _model, _pristine = _run(monkeypatch, MEMBERS[:2], max_grad_norm = 0.01)
+    assert len(seen) == EXPECTED_STEPS["job_b"]
+    assert all(max_norm == 0.01 for max_norm, _ in seen)
+    # Each member reports its own pre-clip norm, not one shared global norm.
+    a = [
+        e["grad_norm"]
+        for e in _member_events(events, "job_a")
+        if e["type"] == "progress" and e["step"]
+    ]
+    b = [
+        e["grad_norm"]
+        for e in _member_events(events, "job_b")
+        if e["type"] == "progress" and e["step"]
+    ]
+    assert a == pytest.approx([float(n[0]) for _, n in seen[:2]])
+    assert b == pytest.approx([float(n[1]) for _, n in seen])
+
+
 def test_pretokenized_assistant_masks_become_labels():
     ids = [[5, 6, 7, 8], [9, 10, 11]]
     info = {

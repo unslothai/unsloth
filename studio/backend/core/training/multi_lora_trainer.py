@@ -849,6 +849,8 @@ def _build_sft_trainer(
                     model._hf_peft_config_loaded = loaded
             # compute_loss already normalizes each adapter by its own window's tokens.
             self.model_accepts_loss_kwargs = True
+            # Every Trainer clips through this one call (4.x inline, 5.x via _clip_grad_norm): clip per member.
+            self.accelerator.clip_grad_norm_ = self._clip_members
             self.stopped = False
             self.round = []
             self.round_losses = torch.zeros(U)
@@ -952,14 +954,18 @@ def _build_sft_trainer(
             self.round_losses += per.detach().float().cpu()
             return loss
 
-        def _clip_grad_norm(self, model):
+        def _clip_members(
+            self,
+            parameters,
+            max_norm,
+            norm_type = 2,
+            **kwargs,
+        ):
             # The rate this step uses, as a lone job reports it (read before the scheduler moves).
             self.step_lrs = [group["lr"] for group in self.optimizer.param_groups]
             drop_absent_adapter_grads_(self.model)
             self.accelerator.unscale_gradients()
-            self.member_norms = (
-                clip_grad_norm_per_adapter_(self.model, self.args.max_grad_norm).float().cpu()
-            )
+            self.member_norms = clip_grad_norm_per_adapter_(self.model, max_norm).float().cpu()
             return self.member_norms.norm()
 
         def _save_checkpoint(self, model, trial):
