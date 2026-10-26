@@ -1962,12 +1962,16 @@ def test_local_model_sections_respect_the_task_filter():
 
 
 def test_chat_picker_routes_diffusion_picks_to_their_page():
-    """Chat cannot load a diffusion or audio model. Rather than hiding an on-device one or
-    letting it 400, the unfiltered picker routes the pick to the page that loads it."""
+    """Chat cannot load a diffusion or audio model. The unfiltered picker hides on-device diffusion
+    rows (Images / Video list them; #15336), and a pick that still reaches it routes to its page."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     gate = re.search(r"function passesTaskGate\(.*?\n\}", src, re.S)
     assert gate, "passesTaskGate not found"
-    assert "UNSUPPORTED_DIFFUSION_TASK" in gate.group(0)
+    assert "!isDiffusionTask(repoTask)" in gate.group(0)
+    caps = _read("features/model-picker/components/model-selector/model-capabilities.ts")
+    assert (
+        'task === "image-diffusion-unsupported"' in caps
+    ), "the never-loadable tag must stay hidden"
     wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
     assert wrapper, "the routing wrapper around onSelect is missing"
     body = wrapper.group(0)
