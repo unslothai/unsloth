@@ -115,8 +115,6 @@ def collective_applies(model):
     return _marked(model, tpn._TP_FLAG) and _refusal(tp_root(model), "save") is None
 
 
-
-
 def _items(root, select):
     """(module, name, param) of the sharded parameters a replica replaces, in the same order on every rank."""
     owners, order, seen = {}, [], set()
@@ -445,8 +443,6 @@ def release_replica(model):
     return True
 
 
-
-
 def tp_for_inference(model):
     if _marked(model, tpn._TP_FLAG):
         replica = gather_replica(model, "all", keep = True, what = "for_inference")
@@ -504,8 +500,6 @@ def tp_generate(level, prior, args, kwargs):
         replica = tp_root(level).__dict__.get(_REPLICA)
         if transient and replica is not None and not replica.persistent:
             release_replica(level)
-
-
 
 
 def _timeout():
