@@ -439,15 +439,16 @@ export const BUDGET = {
   // Settings and the row menu on the loaded model in Recommended (#15249) add 82 B raw / 176 B transfer to the eager
   // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
   // build, Node 26, 105 chunks). Raised by that growth.
+  // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
   // Settings > Agents > Desktop apps (the Claude Desktop and Codex Desktop cards, their model pickers, the shared
   // context window / MTP / keep-loaded run settings, API clients and strings) add +8,089 B raw / +2,495 B transfer
   // to the eager settings and locale chunks (6,935,466 -> 6,943,555 B raw, 2,085,390 -> 2,087,885 B transfer against
   // 8f8eaee609, one machine and build, Node 26.8.2, unchanged at 99 chunks). Lazy-loading the cards cost more
   // (+2.4 KB transfer, 7 extra startup chunks), so they are imported statically and the budget raised by that growth.
-  // Merged onto upstream main 6c3dcdd4b0: main's budget plus the Desktop apps growth above (+2,495 B transfer,
+  // Merged onto upstream main 20bbee4c90: main's budget plus the Desktop apps growth above (+2,495 B transfer,
   // +8,089 B raw).
-  transferBytes: 2_102_992,
-  rawBytes: 6_979_661,
+  transferBytes: 2_103_210,
+  rawBytes: 6_980_127,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

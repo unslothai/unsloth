@@ -74,6 +74,7 @@ _TP_FLAG = "_unsloth_tp"
 COLWISE = "colwise"
 ROWWISE = "rowwise"
 HEAD_NORM = "replicated_with_grad_allreduce"
+ELEMENTWISE = "elementwise_replicated"  # scalar-parameter activations inside an MLP
 
 # transformers TP styles (4.5x and 5.x names) -> what this module does with them.
 _STYLES = {
@@ -115,15 +116,36 @@ _MLP_NAMES = ("mlp", "feed_forward", "ffn")
 _Q, _K, _V = ("q_proj", "query"), ("k_proj", "key"), ("v_proj", "value")
 _FUSED_QKV = ("qkv_proj",)  # [q, k, v] along the output dim (Phi3)
 _ATTN_ROW = ("o_proj", "out_proj", "dense")
-_MLP_COL = ("gate_proj", "up_proj", "w1", "w3", "fc1", "c_fc")
+_MLP_COL = ("gate_proj", "up_proj", "w1", "w3", "fc1", "c_fc", "fc_in", "dense_h_to_4h")
 _MLP_PACKED = ("gate_up_proj",)  # [gate, up] along the output dim
-_MLP_ROW = ("down_proj", "w2", "fc2")
-_HEAD_NORMS = ("q_norm", "k_norm", "query_norm", "key_norm")
+_MLP_ROW = ("down_proj", "w2", "fc2", "fc_out", "dense_4h_to_h", "c_proj")
+_HEAD_NORMS = (
+    "q_norm",
+    "k_norm",
+    "query_norm",
+    "key_norm",
+    "q_layernorm",
+    "k_layernorm",
+    "query_layernorm",
+    "key_layernorm",
+)
 _MLA_NAMES = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
 _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 # An attention forward reading these sizes off the config would reshape to the global head count.
 _GLOBAL_HEAD_READS = re.compile(r"config\.(num_attention_heads|num_key_value_heads)\b")
-_GLOBAL_WIDTH_READS = re.compile(r"(config|self)\.hidden_size\b")
+_GLOBAL_WIDTH_READS = re.compile(
+    r"(config|self)\.(hidden_size|embed_dim|all_head_size|n_embd|d_model|split_size)\b"
+)
+# An MLP forward reducing over its features (activation sparsity statistics, a norm, a softmax) would see
+# only this rank's 1 / tp of the intermediate dimension; one reading the intermediate size splits wrongly.
+_FEATURE_REDUCTIONS = re.compile(
+    r"(?:\btorch\.|\bF\.|\bfunctional\.|\.)(mean|std|var|var_mean|std_mean|sum|nansum|prod|amax|amin|"
+    r"argmax|argmin|topk|kthvalue|sort|argsort|softmax|log_softmax|logsumexp|cumsum|cumprod|norm|normalize|"
+    r"layer_norm|rms_norm|group_norm)\s*\("
+)
+_GLOBAL_INTERMEDIATE_READS = re.compile(r"(config|self)\.(intermediate_size|ffn_dim|n_inner)\b")
+# A fused qkv_proj is [q, k, v] blocks only when the forward slices it by the (local) head counts (Phi3).
+_LOCAL_QKV_SLICE = re.compile(r"(num_key_value_heads|num_kv_heads)\s*\*\s*self\.head_dim")
 
 
 @dataclasses.dataclass
@@ -226,13 +248,19 @@ def _decoder_layers(model):
             decoder = inner
     text = _text_config(model)
     n = getattr(text, "num_hidden_layers", None)
+    # A decoder-only use of an encoder-decoder config (BartForCausalLM): num_hidden_layers is the encoder's.
+    counts = {n, getattr(text, "decoder_layers", None)} - {None}
     prefix = ""
     for name, module in inner.named_modules():
         if module is decoder:
             prefix = name
             break
     for name, module in decoder.named_modules():
-        if isinstance(module, nn.ModuleList) and len(module) and (n is None or len(module) == n):
+        if (
+            isinstance(module, nn.ModuleList)
+            and len(module)
+            and (n is None or len(module) in counts)
+        ):
             path = ".".join(x for x in (prefix, name) if x)
             return path, module
     raise ValueError(
@@ -336,7 +364,23 @@ def _classify(region_path, name, child, kind, compiled):
             return COLWISE, "packed"
         if name in _MLP_ROW:
             return ROWWISE, None
+        if _elementwise_scalars(child):
+            return ELEMENTWISE, None
     return None, None
+
+
+def _elementwise_scalars(module):
+    """A parameterised activation with scalar parameters only (Apertus xIELU): elementwise on any shard of
+    the intermediate dimension, so it stays replicated (gradients summed over tp)."""
+    if isinstance(module, nn.Linear) or "lora_A" in module._modules or list(module.children()):
+        return False
+    if any(p.numel() != 1 for p in module.parameters()):
+        return False
+    try:
+        source = inspect.getsource(type(module))
+    except (OSError, TypeError):
+        return False
+    return not _FEATURE_REDUCTIONS.search(_drop_init(source))
 
 
 def _attention_sizes(module, projs, text):
@@ -393,7 +437,7 @@ def derive_tp_plan(
         if style not in _STYLES and style not in _REPLICATED_STYLES:
             raise ValueError(f"Unsloth: unknown tensor parallel style '{style}' for '{key}'.")
     text = _text_config(model)
-    regions, replicated = [], 0
+    regions, replicated, seen = [], 0, {}
     for index, layer in enumerate(layers):
         found = 0
         for child_name, child in layer.named_children():
@@ -405,8 +449,11 @@ def derive_tp_plan(
             if kind is None or not _has_params(child):
                 continue
             path = f"{layers_path}.{index}.{child_name}"
-            regions.append(_region(path, child, kind, compiled, text, tp_size))
             found += 1
+            if id(child) in seen:
+                continue  # a block shared by several layers (Zamba2, ALBERT style): sharded once
+            seen[id(child)] = path
+            regions.append(_region(path, child, kind, compiled, text, tp_size))
         # A pipeline parallel pass-through (a layer another stage owns) is not a replicated layer.
         replicated += found == 0 and "_pp_index" not in layer.__dict__
     if not regions:
@@ -439,7 +486,7 @@ def _region(path, module, kind, compiled, text, tp):
                 "every module with parameters inside a sharded attention / MLP must be in the plan. Pass "
                 "plan = {...} to apply_tensor_parallel."
             )
-        if style == HEAD_NORM:
+        if style in (HEAD_NORM, ELEMENTWISE):
             norms.append((name, child))
             continue
         weight, _ = _weight(child)
@@ -468,15 +515,20 @@ def _region(path, module, kind, compiled, text, tp):
             )
         _check_divisible("num_key_value_heads", kv_heads, tp, path)
         for name, norm in norms:
-            numel = sum(p.numel() for p in norm.parameters())
+            weight = norm._parameters.get("weight")
+            numel = (
+                weight.numel() if weight is not None else sum(p.numel() for p in norm.parameters())
+            )
             if numel != head_dim:
                 raise ValueError(
                     f"Unsloth: '{path}.{name}' normalizes {numel} features, not one head ({head_dim}): a norm "
                     "across all heads needs the full projection, which tensor parallelism v1 does not gather."
                 )
         _check_attention_source(module, path)
-    elif norms:
-        raise ValueError(f"Unsloth: unexpected per-head norm in MLP '{path}'.")
+    else:
+        if any(not _elementwise_scalars(norm) for _, norm in norms):
+            raise ValueError(f"Unsloth: unexpected per-head norm in MLP '{path}'.")
+        _check_mlp_source(module, path)
     for proj in projs:
         weight, base = _weight(proj.module)
         out_features, in_features = _logical_shape(weight, base)
@@ -485,6 +537,7 @@ def _region(path, module, kind, compiled, text, tp):
             proj.parts = (out_features,)
             continue
         if proj.parts == "qkv":
+            _check_fused_qkv_source(module, path, proj.name)
             q, kv = region.heads * region.head_dim, region.kv_heads * region.head_dim
             if q + 2 * kv != out_features:
                 raise ValueError(
@@ -527,19 +580,101 @@ def _forward_source(module):
     return inspect.getsource(forward)
 
 
-def _check_attention_source(module, path):
+def _drop_init(source):
+    """A class source without its __init__ (sizes read there are construction, not forward math)."""
+    return re.sub(r"\n(\s+)def __init__\(.*?(?=\n\1def |\Z)", "\n", source, flags = re.S)
+
+
+def _region_source(module, path, what):
+    """The forward of a region module plus the methods of its own class that forward calls (self._helper)."""
     try:
         source = _forward_source(module)
     except (OSError, TypeError):
         raise ValueError(
             f"Unsloth: tensor parallelism cannot read the forward of '{path}' ({type(module).__name__}) to "
-            "check it uses this rank's head count."
+            f"check {what}."
         )
-    if _GLOBAL_WIDTH_READS.search(source) and "_unsloth_tp_heads" not in source:
+    seen = set()
+    for name in re.findall(r"\bself\.(\w+)\s*\(", source):
+        if name in seen or name in module._modules or name == "forward":
+            continue
+        seen.add(name)
+        method = getattr(type(module), name, None)
+        if not inspect.isfunction(method):
+            continue
+        try:
+            source += "\n" + inspect.getsource(inspect.unwrap(method))
+        except (OSError, TypeError):
+            pass
+    return source
+
+
+def _input_width_names(source, module):
+    """Variables a forward reads the full input width into (`bsz, len, dim = hidden_states.size()`)."""
+    names = set()
+    for x in {_input_name(module), "hidden_states"}:
+        x = re.escape(x)
+        for m in re.finditer(
+            r"\b\w+\s*,\s*\w+\s*,\s*(\w+)\s*=\s*" + x + r"\.(?:size\(\)|shape\b)", source
+        ):
+            names.add(m.group(1))
+        for m in re.finditer(
+            r"\b(\w+)\s*=\s*" + x + r"\.(?:shape\[(?:-1|2)\]|size\((?:-1|2)\))", source
+        ):
+            names.add(m.group(1))
+    names.discard("_")
+    return sorted(n for n in names if len(re.findall(r"\b" + re.escape(n) + r"\b", source)) > 1)
+
+
+def _check_attention_source(module, path):
+    source = _region_source(module, path, "it uses this rank's head count")
+    if "_unsloth_tp_heads" in source:
+        return  # an Unsloth forward written for tensor parallelism
+    read = _GLOBAL_WIDTH_READS.search(source)
+    if read:
         raise ValueError(
-            f"Unsloth: the attention forward of '{path}' ({type(module).__name__}) reshapes with hidden_size, "
-            "the global width; tensor parallelism v1 needs it to follow the local heads."
+            f"Unsloth: the attention forward of '{path}' ({type(module).__name__}) reshapes with "
+            f"{read.group(0)}, the global width; tensor parallelism v1 needs it to follow the local heads."
         )
+    width = _input_width_names(source, module)
+    if width:
+        raise ValueError(
+            f"Unsloth: the attention forward of '{path}' ({type(module).__name__}) keeps the input width "
+            f"({', '.join(width)}) for its output shape; tensor parallelism v1 needs it to follow the local heads."
+        )
+
+
+def _check_mlp_source(module, path):
+    source = _region_source(module, path, "it is elementwise over the intermediate features")
+    if "_unsloth_tp" in source:
+        return
+    reduction = _FEATURE_REDUCTIONS.search(source)
+    if reduction:
+        raise ValueError(
+            f"Unsloth: the MLP forward of '{path}' ({type(module).__name__}) reduces over its features "
+            f"({reduction.group(0).strip()}...); with tensor parallelism each rank holds 1 / tp of them, so v1 "
+            "cannot shard it."
+        )
+    read = _GLOBAL_INTERMEDIATE_READS.search(source)
+    if read:
+        raise ValueError(
+            f"Unsloth: the MLP forward of '{path}' ({type(module).__name__}) reads {read.group(0)}, the global "
+            "size; tensor parallelism v1 needs it to follow the local shard."
+        )
+
+
+def _check_fused_qkv_source(module, path, name):
+    try:
+        source = _forward_source(module)
+    except (OSError, TypeError):
+        source = ""
+    if "_unsloth_tp_heads" in source or _LOCAL_QKV_SLICE.search(source):
+        return
+    raise ValueError(
+        f"Unsloth: the attention forward of '{path}' ({type(module).__name__}) does not slice the fused "
+        f"'{name}' by the key / value head count ([q, k, v] blocks); its layout is unknown to tensor "
+        "parallelism v1."
+    )
 
 
 def shard_slice(tensor, dim, parts, rank, tp):
@@ -1144,6 +1279,11 @@ def apply_tensor_parallel(
             _refuse_base(path, proj.module, weight, base)
             _refuse_adapter(path, proj.module)
             _check_preloaded(path, proj, weight, base, tp_mesh)
+            if id(weight) in covered:
+                raise ValueError(
+                    f"Unsloth: '{path}' shares its weight with another sharded projection; tensor "
+                    "parallelism v1 shards every projection once."
+                )
             covered.update((id(weight), id(base.bias)))
             if _is_params4bit(weight):
                 _check_params4bit(path, weight, proj.style, tp)
@@ -1413,11 +1553,24 @@ def tp_clip_grad_norm_(
         dist.all_reduce(shard_sq, group = group)
         total = total + shard_sq
     total = total.sqrt()
-    coef = float(max_norm) / (float(total) + eps)
-    if coef < 1:
-        for p in params:
-            p.grad.mul_(coef)
+    _scale_grads_(params, total, max_norm, eps)
     return total
+
+
+def _scale_grads_(params, total, max_norm, eps):
+    """torch's clip: a tensor coefficient clamped at 1 and applied unconditionally (no host sync, no
+    data-dependent branch). DTensor grads are scaled through their local shard."""
+    with torch.no_grad():
+        coef = torch.clamp(max_norm / (total + eps), max = 1.0)
+        for p in params:
+            g = p.grad
+            local = g.to_local() if _is_dtensor(g) else g
+            c = coef.to(device = local.device, dtype = torch.float32)
+            if local.dtype in (torch.float16, torch.bfloat16):
+                # A small coefficient rounds to 0 in fp16 (a device tensor is cast to the grad dtype).
+                local.copy_(local.float().mul_(c))
+            else:
+                local.mul_(c.to(local.dtype))
 
 
 def _clip_over_world(params, max_norm, eps):
@@ -1451,10 +1604,7 @@ def _clip_over_world(params, max_norm, eps):
         total = sq if total is None else total + sq
     dist.all_reduce(total)
     total = total.sqrt()
-    coef = float(max_norm) / (float(total) + eps)
-    if coef < 1:
-        for p in params:
-            p.grad.mul_(coef)
+    _scale_grads_(params, total, max_norm, eps)
     return total
 
 
@@ -1567,6 +1717,7 @@ def save_tp_adapter(model, save_directory, **kwargs):
 # load-time peak is the replicated parts plus 1 / tp of the attention / MLP weights, never the whole model.
 
 _PRELOADED = "_unsloth_tp_preloaded"
+_TP_QUANTIZED_HINT = "Load 4-bit / 8-bit / quantized models in full and call apply_tensor_parallel, or pass load_in_4bit = False."
 _UNSUPPORTED_LOAD_KWARGS = (
     "load_in_4bit",
     "load_in_8bit",
@@ -1750,6 +1901,12 @@ class _SliceReader:
         self.slice_bytes += t.numel() * t.element_size()
         return t
 
+    def rows(self, key, start, stop):
+        """Rows [start, stop) of dim 0 (an FSDP2 chunk); only those bytes are read."""
+        t = self._open(key).get_slice(key)[start:stop]
+        self.slice_bytes += t.numel() * t.element_size()
+        return t
+
 
 def _checkpoint_key(names, model, index):
     prefix = getattr(_unwrap(model), "base_model_prefix", "") or ""
@@ -1763,6 +1920,59 @@ def _checkpoint_key(names, model, index):
             if key in index:
                 return key
     return None
+
+
+def _checkpoint_aliases(
+    model,
+    index,
+    key_mapping = None,
+):
+    """{model key: checkpoint key} for a checkpoint saved under another naming: transformers 5's conversion
+    mapping renames (VLMs save `model.layers.*` for `model.language_model.layers.*`) and 4.x
+    `_checkpoint_conversion_mapping`. A model key a WeightConverter builds (merged experts, fused or permuted
+    weights) maps to None: it is not one checkpoint tensor, so it cannot be read sliced. `key_mapping` is the
+    load's own (from_pretrained(key_mapping = ...), e.g. Unsloth's text-only VLM loads)."""
+    legacy = getattr(model, "_checkpoint_conversion_mapping", None) or {}
+    renamings = converters = None
+    try:
+        from transformers.conversion_mapping import get_model_conversion_mapping
+        from transformers.core_model_loading import (
+            WeightConverter,
+            WeightRenaming,
+            rename_source_key,
+        )
+
+        try:
+            transforms = get_model_conversion_mapping(model, key_mapping = key_mapping)
+        except TypeError:
+            transforms = get_model_conversion_mapping(model)
+        renamings = [t for t in transforms if isinstance(t, WeightRenaming)]
+        converters = [t for t in transforms if isinstance(t, WeightConverter)]
+    except Exception:
+        # transformers 4.x: from_pretrained's key_mapping replaces _checkpoint_conversion_mapping.
+        legacy = key_mapping or legacy
+    if not legacy and not renamings and not converters:
+        return {}
+    meta = dict.fromkeys(model.state_dict().keys(), True)
+    prefix = getattr(model, "base_model_prefix", None) or None
+    out = {}
+    for key in index:
+        new = key
+        for pattern, replacement in legacy.items():
+            new, n = re.subn(pattern, replacement, new)
+            if n:
+                break
+        converted = None
+        if renamings is not None:
+            try:
+                new, converted = rename_source_key(new, renamings, converters, prefix, meta)
+            except Exception:
+                converted = None
+        if converted is not None:
+            out[new] = None
+        elif new != key:
+            out.setdefault(new, key)
+    return out
 
 
 def _buffer_skeleton(model):
@@ -1779,6 +1989,95 @@ def _buffer_skeleton(model):
             torch.set_default_dtype(previous)
 
 
+def _parameter_slots(model):
+    """{id(parameter): (parameter, [(module, name)], [qualified names])}: tied parameters are one slot."""
+    slots = {}
+    for module_name, module in model.named_modules(remove_duplicate = False):
+        for pname, p in module._parameters.items():
+            if p is not None:
+                entry = slots.setdefault(id(p), (p, [], []))
+                entry[1].append((module, pname))
+                entry[2].append(f"{module_name}.{pname}" if module_name else pname)
+    return slots
+
+
+def _fill_from_checkpoint(
+    model,
+    name,
+    kwargs,
+    device,
+    read_local,
+    label = "tensor parallel",
+    fallback = "full load, then apply_tensor_parallel",
+):
+    """Fill a meta model from its safetensors checkpoint. `read_local(old, reader, key)` returns this rank's
+    Parameter for a sharded tensor (reading only its bytes) or None, and then the tensor is read whole.
+    Meta buffers come from the checkpoint or a meta-parameter skeleton of the same class (RoPE tables).
+    Returns (reader, sharded numel, whole numel)."""
+    index = _checkpoint_index(name, kwargs)
+    reader = _SliceReader(index)
+    aliases = None
+    sharded_numel = full_numel = 0
+
+    def find(names):
+        nonlocal aliases
+        key = _checkpoint_key(names, model, index)
+        if key is not None:
+            return key
+        if aliases is None:
+            aliases = _checkpoint_aliases(model, index, (kwargs or {}).get("key_mapping"))
+        for n in names:
+            if n in aliases:
+                if aliases[n] is None:
+                    raise ValueError(
+                        f"Unsloth: {label} sharded loading cannot read '{n}': transformers builds it from several "
+                        f"checkpoint tensors (a weight conversion); load this model without sharded loading "
+                        f"({fallback})."
+                    )
+                return aliases[n]
+        return None
+
+    for old, where, names in _parameter_slots(model).values():
+        key = find(names)
+        if key is None:
+            raise ValueError(
+                f"Unsloth: {label} sharded loading found no checkpoint tensor for '{names[0]}'; load "
+                f"this model without sharded loading ({fallback})."
+            )
+        if reader.shape(key) != tuple(old.shape):
+            raise ValueError(
+                f"Unsloth: checkpoint tensor '{key}' has shape {reader.shape(key)}, the model expects "
+                f"{tuple(old.shape)}."
+            )
+        new = read_local(old, reader, key)
+        if new is None:
+            value = reader.full(key).to(device = device, dtype = old.dtype)
+            new = nn.Parameter(value, requires_grad = old.requires_grad)
+            full_numel += old.numel()
+        else:
+            sharded_numel += old.numel()
+        for module, pname in where:
+            module._parameters[pname] = new
+    skeleton = None
+    for module_name, module in model.named_modules():
+        for bname, buf in list(module._buffers.items()):
+            if buf is None or not buf.is_meta:
+                continue
+            key = f"{module_name}.{bname}" if module_name else bname
+            source = find([key]) if bname not in module._non_persistent_buffers_set else None
+            if source is not None:
+                value = reader.full(source)
+            else:
+                skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
+                value = skeleton.get_buffer(key)
+                if value.is_meta:
+                    raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
+            module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
+    if isinstance(getattr(model, "hf_device_map", None), dict):
+        model.hf_device_map = {"": device.index if device.type == "cuda" else device.type}
+    return reader, sharded_numel, full_numel
+
+
 def _materialize_sharded(model, name, kwargs, mesh, plan, device):
     """Fill a meta model from the checkpoint: replicated tensors whole, sharded projections as local slices."""
     tp, rank = mesh.size(), mesh.get_local_rank()
@@ -1791,70 +2090,33 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
             shards[id(weight)] = (proj, 0 if col else 1, proj.parts if col else (weight.shape[1],))
             if base.bias is not None and col:
                 shards[id(base.bias)] = (proj, 0, proj.parts)
-    index = _checkpoint_index(name, kwargs)
-    reader = _SliceReader(index)
-    slots = {}
-    for module_name, module in model.named_modules(remove_duplicate = False):
-        for pname, p in module._parameters.items():
-            if p is not None:
-                entry = slots.setdefault(id(p), (p, [], []))
-                entry[1].append((module, pname))
-                entry[2].append(f"{module_name}.{pname}" if module_name else pname)
-    sharded_numel = full_numel = 0
-    for pid, (old, where, names) in slots.items():
-        key = _checkpoint_key(names, model, index)
-        if key is None:
-            raise ValueError(
-                f"Unsloth: tensor parallel sharded loading found no checkpoint tensor for '{names[0]}'; load "
-                "this model without sharded loading (full load, then apply_tensor_parallel)."
-            )
-        if reader.shape(key) != tuple(old.shape):
-            raise ValueError(
-                f"Unsloth: checkpoint tensor '{key}' has shape {reader.shape(key)}, the model expects "
-                f"{tuple(old.shape)}."
-            )
-        shard = shards.get(pid)
+
+    def read_local(old, reader, key):
+        shard = shards.get(id(old))
         if shard is None:
-            value = reader.full(key).to(device = device, dtype = old.dtype)
-            new = nn.Parameter(value, requires_grad = old.requires_grad)
-            full_numel += old.numel()
-        else:
-            proj, dim, parts = shard
-            local = reader.slice(key, dim, parts, rank, tp).to(device = device, dtype = old.dtype)
-            # A plain local tensor tagged with its full shape: nn.Linear keeps the full in / out features, so
-            # get_peft_model builds full-size LoRA factors with the 1-GPU init (a DTensor would make PEFT size
-            # them from the shard). apply_tensor_parallel wraps it into the DTensor.
-            new = nn.Parameter(local.contiguous(), requires_grad = old.requires_grad)
-            if len(parts) > 1:
-                new._unsloth_tp_parts = (dim, tuple(parts))
-            new._unsloth_tp_full_shape = tuple(old.shape)
-            new._unsloth_tp_preload_ranks = mesh.mesh.tolist()
-            setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
-            sharded_numel += old.numel()
-        for module, pname in where:
-            module._parameters[pname] = new
-    skeleton = None
-    for module_name, module in model.named_modules():
-        for bname, buf in list(module._buffers.items()):
-            if buf is None or not buf.is_meta:
-                continue
-            key = f"{module_name}.{bname}" if module_name else bname
-            if bname not in module._non_persistent_buffers_set and key in index:
-                value = reader.full(key)
-            else:
-                skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
-                value = skeleton.get_buffer(key)
-                if value.is_meta:
-                    raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
-            module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
+            return None
+        proj, dim, parts = shard
+        local = reader.slice(key, dim, parts, rank, tp).to(device = device, dtype = old.dtype)
+        # A plain local tensor tagged with its full shape: nn.Linear keeps the full in / out features, so
+        # get_peft_model builds full-size LoRA factors with the 1-GPU init (a DTensor would make PEFT size
+        # them from the shard). apply_tensor_parallel wraps it into the DTensor.
+        new = nn.Parameter(local.contiguous(), requires_grad = old.requires_grad)
+        if len(parts) > 1:
+            new._unsloth_tp_parts = (dim, tuple(parts))
+        new._unsloth_tp_full_shape = tuple(old.shape)
+        new._unsloth_tp_preload_ranks = mesh.mesh.tolist()
+        setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
+        return new
+
+    reader, sharded_numel, full_numel = _fill_from_checkpoint(
+        model, name, kwargs, device, read_local
+    )
     for region in tp_plan.regions:
         for proj in region.projs:
             base = _weight(proj.module)[1]
             base.__dict__["_unsloth_tp_load_guard"] = base.register_forward_pre_hook(
                 _refuse_unapplied_forward
             )
-    if isinstance(getattr(model, "hf_device_map", None), dict):
-        model.hf_device_map = {"": device.index if device.type == "cuda" else device.type}
     stats = {
         "tp": tp,
         "rank": rank,
@@ -1887,16 +2149,20 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     if state["active"]:
         return original(cls, name, *args, **kwargs)  # a nested load inside from_pretrained
     config = kwargs.get("config")
+    label = state.get("label", "tensor parallel")
     for key in _UNSUPPORTED_LOAD_KWARGS:
         if kwargs.get(key) or (key == "quantization_config" and getattr(config, key, None)):
             raise ValueError(
-                f"Unsloth: tensor parallel sharded loading supports 16-bit safetensors checkpoints only "
-                f"(got {key}). Load 4-bit / 8-bit / quantized models in full and call apply_tensor_parallel, "
-                "or pass load_in_4bit = False."
+                f"Unsloth: {label} sharded loading supports 16-bit safetensors checkpoints only "
+                f"(got {key}). {state.get('quantized_hint', _TP_QUANTIZED_HINT)}"
             )
     mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
     if mesh.ndim != 1:
-        raise ValueError("Unsloth: sharded_loading takes a 1-D tp mesh (pass mesh['tp']).")
+        raise ValueError(
+            state.get(
+                "mesh_hint", "Unsloth: sharded_loading takes a 1-D tp mesh (pass mesh['tp'])."
+            )
+        )
     device = _load_device(kwargs.get("device_map"), mesh)
     kwargs = dict(kwargs, device_map = "meta")
     state["active"] = True
@@ -1910,10 +2176,11 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
         model.config, "quantization_config", None
     ):
         raise ValueError(
-            "Unsloth: tensor parallel sharded loading supports 16-bit checkpoints only; this checkpoint is "
-            "pre-quantized. Load it in full and call apply_tensor_parallel."
+            f"Unsloth: {label} sharded loading supports 16-bit checkpoints only; this checkpoint is "
+            f"pre-quantized. {state.get('prequantized_hint', 'Load it in full and call apply_tensor_parallel.')}"
         )
-    _materialize_sharded(model, name, kwargs, mesh, state["plan"], device)
+    materialize = state.get("materialize", _materialize_sharded)
+    materialize(model, name, kwargs, mesh, state["plan"], device)
     state["models"].append(model)
     return model
 
@@ -1924,7 +2191,7 @@ def _world_mesh():
 
     if not dist.is_initialized():
         raise RuntimeError(
-            "Unsloth: tensor parallel sharded loading needs an initialized process group (torchrun) or a tp_mesh."
+            "Unsloth: sharded loading needs an initialized process group (torchrun) or a mesh."
         )
     device_type = "cuda" if torch.cuda.is_available() else "cpu"
     return init_device_mesh(device_type, (dist.get_world_size(),), mesh_dim_names = ("tp",))
@@ -1942,11 +2209,20 @@ def sharded_loading(tp_mesh = None, plan = None):
         model = FastLanguageModel.get_peft_model(model, ...)
         apply_tensor_parallel(model, mesh["tp"])  # required before the first forward
     """
+    with _sharded_from_pretrained({"mesh": tp_mesh, "plan": plan}) as state:
+        yield state
+
+
+@contextlib.contextmanager
+def _sharded_from_pretrained(state):
+    """Swap transformers' PreTrainedModel.from_pretrained for the meta build + checkpoint fill of `state`
+    (mesh, plan, materialize(model, name, kwargs, mesh, plan, device), message parts). Shared by tensor
+    parallel and native FSDP2 sharded loading."""
     from transformers import PreTrainedModel
 
     descriptor = PreTrainedModel.__dict__["from_pretrained"]
     original = descriptor.__func__
-    state = {"mesh": tp_mesh, "plan": plan, "models": [], "active": False}
+    state = dict(state, models = [], active = False)
 
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
         return _from_pretrained_sharded(

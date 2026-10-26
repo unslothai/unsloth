@@ -60,7 +60,8 @@ from .diffusion_attention import (
     report_attention_run,
     select_attention_backend,
 )
-from .diffusion_flow_shift import apply_comfy_flow_shift
+from .diffusion_flow_shift import apply_comfy_flow_shift, apply_scheduler_overrides
+from .diffusion_component_sizes import video_family_has_no_text_encoder
 from . import hub_reachability
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
@@ -245,11 +246,13 @@ from .video_families import (
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
+    COSMOS3_FAMILIES,
     LTX_FAMILIES,
     assert_local_pipeline_family,
     assert_ltx_pick_supported,
     assert_supported_ltx_version,
     ltx_family_by_name,
+    local_cosmos3_pipeline_family,
     local_ltx_pipeline_family,
     pipeline_available_video_families,
     VideoFamily,
@@ -634,6 +637,19 @@ def _ltx23_prequant_pick(
     return ltx23_prequant_eligible(checkpoint_filename, checkpoint_repo)
 
 
+def _decodes_untiled_when_fits(family: str, offload_policy: str, device: str, speed: str) -> bool:
+    """Untiled when it fits (free memory read at decode time); not under sequential offload, nor on SPEED_OFF
+    (bit-identical) except Cosmos3, whose reference pipeline decodes untiled (stock tiles seam at 480 / 832 px)."""
+    if device != "cuda" or offload_policy not in (
+        OFFLOAD_NONE,
+        OFFLOAD_MODEL,
+        OFFLOAD_GROUP,
+        OFFLOAD_STREAMING,
+    ):
+        return False
+    return speed != SPEED_OFF or family in COSMOS3_FAMILIES
+
+
 def _memory_mode_resolved(memory_mode: Any, plan: Any, offload_policy: str) -> tuple:
     """A ``fast`` that had to offload is a fallback valued at the engaged policy ("FAST -> GROUP", not "FAST -> FAST")."""
     if plan.requested_mode == MEMORY_MODE_FAST and offload_policy != OFFLOAD_NONE:
@@ -857,7 +873,11 @@ def _assert_video_precision_for_target(
         return
     # MPS runs a family's hosted int8 ConvRot encoder without fp8 (the loader's own rule), so an explicit int8 must not
     # be rewritten to fp8 below and then refused for the fp8 support MPS lacks.
-    from .diffusion_te_prequant import family_te_int8_convrot, int8_convrot_te_runs_on
+    from .diffusion_te_prequant import (
+        explicit_int8_unavailable_reason,
+        family_te_int8_convrot,
+        int8_convrot_te_runs_on,
+    )
 
     if (
         te_mode == "int8"
@@ -865,6 +885,19 @@ def _assert_video_precision_for_target(
         and family_te_int8_convrot(fam, "text_encoder") is not None
         and int8_convrot_te_runs_on(target)
     ):
+        # An unpublished file otherwise failed inside the load, after the eviction.
+        missing = explicit_int8_unavailable_reason(fam, getattr(fam, "base_repo", None), target)
+        if missing:
+            raise RuntimeError(
+                precision_refusal_message(
+                    "text_encoder_quant",
+                    te_mode,
+                    f"{missing}, and this host runs int8 text encoders only from that file "
+                    f"({te_quant_unsupported_reason('fp8')})",
+                    off_label = "leave it unset to keep the dense bf16 encoder",
+                    auto_available = False,
+                )
+            )
         return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
     te_reason = None
@@ -1402,12 +1435,20 @@ def _resolve_load_family_with_source(
         or (gguf_filename and detect_video_family(f"{repo_id}/{gguf_filename}"))
         or None
     )
+    if fam is None and not gguf_filename:
+        local_cosmos3 = local_cosmos3_pipeline_family(repo_id)
+        if local_cosmos3:
+            fam = detect_video_family("", override = local_cosmos3)
     if fam is None and gguf_filename:
         # A renamed GGUF carries no family token, so resolve via general.architecture. No-backend archs still yield None
         # (a 400)
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
+    if fam is not None and fam.name in COSMOS3_FAMILIES and not gguf_filename:
+        by_configs = local_cosmos3_pipeline_family(repo_id)
+        if by_configs and by_configs != fam.name:
+            fam = detect_video_family("", override = by_configs) or fam
     if fam is not None and fam.name in LTX_FAMILIES:
         # Both LTX families share the "ltx" tokens, so the release decides: a local diffusers folder by its
         # model_index.json, else the picked file's own version token, else the display / repo id.
@@ -3160,7 +3201,7 @@ def _read_cast_cache(
     base: Optional[str],
     cancel_check: Any = None,
 ) -> list:
-    """Inject cached float16 casts into ``pipe_kwargs``; returns the unserved candidates. Never raises."""
+    """Inject cached float16 / bfloat16 casts into ``pipe_kwargs``; returns the unserved candidates. Never raises."""
     try:
         from .diffusion_cast_cache import candidates, read_all
 
@@ -3181,7 +3222,7 @@ def _read_cast_cache(
         pipe_kwargs.update(hits)
         if hits:
             logger.info(
-                "video.cast_cache: read %s from the local float16 cast cache",
+                "video.cast_cache: read %s from the local cast cache",
                 ", ".join(sorted(hits)),
             )
         return [c for c in cands if c.component not in hits]
@@ -3288,6 +3329,126 @@ def _save_native_quant_to_cache(
             )
     except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
         logger.warning("diffusion.prequant_cache: native skipped (%s)", exc)
+
+
+# "0": the offloaded native build is written to the local prequant cache inside the load, as before.
+VIDEO_NATIVE_CACHE_BACKGROUND_ENV = "UNSLOTH_VIDEO_NATIVE_CACHE_BACKGROUND"
+_NATIVE_WRITES_ATTR = "_unsloth_native_writes"
+
+
+def _native_cache_background() -> bool:
+    raw = (os.environ.get(VIDEO_NATIVE_CACHE_BACKGROUND_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return False
+    try:
+        from .diffusion_prequant_cache import async_enabled
+        return bool(async_enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+class _NativeCacheWrites:
+    """Offloaded native build's cache writes, run after the load is published.
+
+    Waits for the background pins so the writer reads the pinned copies, not pageable tensors it would keep alive."""
+
+    def __init__(
+        self,
+        pipe: Any,
+        fam: Any,
+        views: Any,
+        spec: dict,
+        *,
+        base: Optional[str],
+        source: Optional[str],
+    ):
+        import threading
+
+        self._pipe = pipe
+        self._args = (fam, list(views or ()), spec, base, source)
+        self._lock = threading.Lock()
+        self._closed = False
+        self._writes: list = []
+        self._thread: Optional[Any] = None
+
+    def start(self) -> None:
+        import threading
+        self._thread = threading.Thread(
+            target = self._run, name = "video-native-cache-write", daemon = True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            finish_background_pins(self._pipe)
+            fam, views, spec, base, source = self._args
+            from .diffusion_native_cache import save_deferred
+            from .video_denoiser_prequant import denoiser_components
+
+            components = denoiser_components(fam)
+            if len(components) != len(views):
+                logger.info(
+                    "diffusion.prequant_cache: native skipped (denoiser views != components)"
+                )
+                return
+            logger.info(
+                "diffusion.prequant_cache: writing the native %s build of %s in the background, after the load",
+                spec.get("scheme"),
+                ", ".join(components),
+            )
+            for component, view in zip(components, views):
+                with self._lock:
+                    if self._closed:
+                        return
+                    write = save_deferred(
+                        getattr(view, "transformer", None),
+                        fam,
+                        base_repo = base,
+                        source_base = source,
+                        component = component,
+                        logger = logger,
+                    )
+                    if write is None or not hasattr(write, "start"):
+                        continue
+                    self._writes.append(write)
+                    write.start()
+                write.wait()
+        except Exception as exc:  # noqa: BLE001 - a cache write never surfaces
+            logger.warning("diffusion.prequant_cache: native background write skipped (%s)", exc)
+        finally:
+            self._args = None
+            self._pipe = None
+
+    def finish(self, timeout: Optional[float] = None) -> None:
+        """Teardown: let a running write finish (bounded), then cancel; a write not yet begun never begins."""
+        try:
+            from .diffusion_prequant_cache import FINISH_TIMEOUT_SECONDS
+            timeout = FINISH_TIMEOUT_SECONDS if timeout is None else timeout
+        except Exception:  # noqa: BLE001
+            timeout = 600.0 if timeout is None else timeout
+        with self._lock:
+            self._closed = True
+            writes = list(self._writes)
+        for write in writes:
+            try:
+                if not write.wait(timeout):
+                    write.cancel()
+                    write.wait(30.0)
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
+        if self._thread is not None:
+            self._thread.join(30.0)
+
+
+def _finish_native_writes(pipe: Any) -> None:
+    writes = getattr(pipe, _NATIVE_WRITES_ATTR, None)
+    if writes is None:
+        return
+    try:
+        writes.finish()
+        setattr(pipe, _NATIVE_WRITES_ATTR, None)
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
 
 
 def _read_native_quant_from_cache(
@@ -4607,6 +4768,11 @@ class VideoBackend:
         refusal = video_checkpoint_refusal(fam, repo_id, display_repo_id, gguf_filename)
         if refusal:
             raise ValueError(refusal)
+        if fam.name in COSMOS3_FAMILIES:
+            from .video_cosmos3 import load_request_refusal as cosmos3_load_request_refusal
+            refusal = cosmos3_load_request_refusal(fam.name, kind, text_encoder_quant)
+            if refusal:
+                raise ValueError(refusal)
         # ── modular-workflow refusals, before anything heavier. Deliberately the FIRST thing after the family resolves:
         # everything below reaches into diffusers (assert_pipeline_class_available, the transformer_class probe), so a
         # refusal placed after them would be unreachable on any install whose diffusers cannot even be imported -- and
@@ -4738,6 +4904,12 @@ class VideoBackend:
                 f"checkpoint; full pipelines and other weight formats load only from unsloth/* "
                 f"repos, the official family base repos, and local paths."
             )
+        # After the trust gate, so an untrusted repo is refused as untrusted.
+        if fam.name in COSMOS3_FAMILIES and kind == "pipeline":
+            from .video_cosmos3 import guardrail_refusal
+            refusal = guardrail_refusal(repo_id)
+            if refusal:
+                raise ValueError(refusal)
         # Companions load with from_pretrained, so a base repo is held to the non-GGUF bar: a GGUF pick must not smuggle
         # in a remote base.
         if base_repo and (base_repo or "").strip() and not _is_trusted_video_repo(base_repo):
@@ -7172,9 +7344,16 @@ class VideoBackend:
 
         siblings = list(info.siblings or [])
         ltx25_pack = is_ltx25_pack(s.rfilename for s in siblings)
-        # The LTX-2.5 pack ships a modular_model_index.json beside its model_index.json; it is not H3's layout.
-        is_h3_modular = not ltx25_pack and any(
-            s.rfilename == "modular_model_index.json" for s in siblings
+        # LTX-2.5 and Cosmos3 also ship a modular_model_index.json; neither is H3's layout.
+        from .video_cosmos3 import NONE_COMPONENTS as COSMOS3_NONE_COMPONENTS, is_cosmos3_listing
+
+        cosmos3 = is_cosmos3_listing(s.rfilename for s in siblings)
+        # Only None-passed components: diffusers' hub-id load demands every other listed weight.
+        cosmos3_unused = tuple(f"{c}/" for c in COSMOS3_NONE_COMPONENTS) if cosmos3 else ()
+        is_h3_modular = (
+            not ltx25_pack
+            and not cosmos3
+            and any(s.rfilename == "modular_model_index.json" for s in siblings)
         )
         h3_is_references = is_h3_modular and (h3_task or "").strip().lower() == H3_TASK_REFERENCES
         h3_denoiser_prefix = "transformer_ref/" if h3_is_references else "transformer/"
@@ -7226,6 +7405,8 @@ class VideoBackend:
             if skip_components and is_prequant_covered_weight(name, skip_components):
                 continue
             if name.startswith("text_encoder/diffusion_pytorch_model"):
+                continue
+            if cosmos3_unused and name.startswith(cosmos3_unused):
                 continue
             if ltx23 and "/" in name and not name.startswith(VideoBackend._LTX23_BASE_PREFIXES):
                 continue
@@ -9196,7 +9377,11 @@ class VideoBackend:
 
             # The encoder runs in the worker; the enhancer, processor and duration head are never used.
             pipe_kwargs.update({name: None for name in LTX25_NONE_COMPONENTS})
+        if kind == "pipeline" and fam.name in COSMOS3_FAMILIES:
+            from .video_cosmos3 import pipeline_kwargs as cosmos3_pipeline_kwargs
+            pipe_kwargs.update(cosmos3_pipeline_kwargs(str(repo_id)))
         cast_writes = None
+        native_writes = None
         if kind == "pipeline":
             cast_missed = _read_cast_cache(
                 pipe_kwargs,
@@ -9765,14 +9950,24 @@ class VideoBackend:
                     == _native_spec_for(native_scheme, fam, native_kwargs.get("act_int8"))
                 ):
                     # The native build is read back under auto too: the cache replays the pick, never makes it.
-                    _save_native_quant_to_cache(
-                        fam,
-                        views,
-                        native_cache_spec,
-                        base = base,
-                        source = _base_local_dir or fetch_base,
-                        cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
-                    )
+                    if _native_cache_background():
+                        native_writes = _NativeCacheWrites(
+                            pipe,
+                            fam,
+                            views,
+                            native_cache_spec,
+                            base = base,
+                            source = _base_local_dir or fetch_base,
+                        )
+                    else:
+                        _save_native_quant_to_cache(
+                            fam,
+                            views,
+                            native_cache_spec,
+                            base = base,
+                            source = _base_local_dir or fetch_base,
+                            cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+                        )
                     self._raise_if_video_load_superseded(_load_token)
                 # Only explicit schemes read the cache back, so an auto save would be a write nothing opens.
                 elif transformer_quant_pinned is not None:
@@ -10175,12 +10370,10 @@ class VideoBackend:
                         speed_optims += ("vae_wide_tiles",)
                 except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
                     logger.warning("video.vae_wide_tiles: not installed: %s", exc)
-            # Untiled when it fits (free memory read at decode time); not on SPEED_OFF (bit-identical) or sequential offload.
-            if (
-                offload_policy in (OFFLOAD_NONE, OFFLOAD_MODEL, OFFLOAD_GROUP, OFFLOAD_STREAMING)
-                and target.device == "cuda"
-                and effective_speed != SPEED_OFF
-            ):
+            if vae_tiling and fam.name in COSMOS3_FAMILIES:
+                from .video_cosmos3 import install_untiled_encode
+                install_untiled_encode(pipe, logger = logger)
+            if _decodes_untiled_when_fits(fam.name, offload_policy, target.device, effective_speed):
                 from .video_vae_untiled import install_untiled_decode
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
@@ -10314,6 +10507,8 @@ class VideoBackend:
                         or (
                             "dense text encoder quantised in place"
                             if text_encoder_quant_engaged is not None
+                            else "not applicable (no separate text encoder)"
+                            if video_family_has_no_text_encoder(fam)
                             else "not engaged (dense bf16 text encoder loaded)"
                         ),
                         text_encoder_outcome.status,
@@ -10332,6 +10527,7 @@ class VideoBackend:
             autoopt.finalize(load_audit, speed_optims, resolved)
 
             apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
+            apply_scheduler_overrides(pipe, getattr(fam, "scheduler_overrides", ()), logger)
             if ltx25_client is not None:
                 # The worker loaded the Gemma 4 encoder while the DiT loaded; a failure there fails this load.
                 ltx25_client.wait_ready(self._cancel_event if _load_token is not None else None)
@@ -10458,6 +10654,9 @@ class VideoBackend:
         if cast_writes is not None:
             pipe._unsloth_cast_writes = cast_writes
             cast_writes.start()
+        if native_writes is not None:
+            setattr(pipe, _NATIVE_WRITES_ATTR, native_writes)
+            native_writes.start()
         return self.status()
 
     @staticmethod
@@ -12678,6 +12877,13 @@ class VideoBackend:
                     if bg_eager:
                         # LTX-2 i2v passes a per-token timestep (t2v: per sample), so it must not seed the compile.
                         i2v_swap.enter_context(bg_compile.no_record())
+                if fam.name in COSMOS3_FAMILIES:
+                    from .video_cosmos3 import seam_safe_tile_strides
+                    from .video_i2v import offload_vae_after_encode
+
+                    # Every Cosmos3 call (t2v too) encodes a clip first; nothing else offloads the VAE after it.
+                    i2v_swap.enter_context(offload_vae_after_encode(pipe))
+                    i2v_swap.enter_context(seam_safe_tile_strides(pipe, height, width))
                 call_params = inspect.signature(pipe.__call__).parameters
                 kwargs: dict[str, Any] = {
                     "prompt": prompt,
@@ -12728,6 +12934,11 @@ class VideoBackend:
                 # LTX-2 takes frame_rate (shapes audio length); others fix their rate, fps only at export
                 if "frame_rate" in call_params:
                     kwargs["frame_rate"] = float(out_fps)
+                if fam.name in COSMOS3_FAMILIES and "fps" in call_params:
+                    kwargs["fps"] = float(out_fps)
+                for key, value in getattr(fam, "call_kwargs", ()) or ():
+                    if key in call_params:
+                        kwargs[key] = value
                 # Dual-DiT MoE: pass the low-noise expert guidance only when the family declares it AND the signature
                 # accepts it (WanPipeline raises with boundary_ratio=None)
                 if fam.cfg2_kwarg and fam.cfg2_kwarg in call_params and guidance_2 is not None:
@@ -13093,6 +13304,12 @@ class VideoBackend:
                     audio = output.get("audio")
                     audio_track = audio[0] if audio is not None else None
                     audio_sample_rate = output.get("sampling_rate")
+                elif fam.name in COSMOS3_FAMILIES:
+                    video_frames = (
+                        output.video
+                    )  # Cosmos3OmniPipelineOutput: one clip, already unbatched
+                    audio_track = None
+                    audio_sample_rate = None
                 else:
                     video_frames = output.frames[0]
                     audio = getattr(output, "audio", None)
@@ -13249,11 +13466,10 @@ class VideoBackend:
                 width or default_w,
                 height or default_h,
             )
-        # Fit once so both engines condition on identical pixels.
-        if first is not None and i2v_pipeline:
-            first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_LAST)
-        elif first is not None:
-            first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_FIRST)
+        # Fit once so both engines condition on identical pixels, unless the pipeline fits the frame itself.
+        if first is not None and fam.i2v_fits_first_frame:
+            anchor = H3_ANCHOR_LAST if i2v_pipeline else H3_ANCHOR_FIRST
+            first = fit_h3_keyframe(first, width, height, anchor = anchor)
         if last is not None:
             last = fit_h3_keyframe(last, width, height, anchor = H3_ANCHOR_LAST)
         conditioning = h3_conditioning_mode(has_first = first is not None, has_last = last is not None)
@@ -14009,6 +14225,7 @@ class VideoBackend:
             stop_background_pins(getattr(state, "pipe", None))
             # A cast cache write still reads the components the teardown frees.
             _finish_cast_writes(getattr(state, "pipe", None))
+            _finish_native_writes(getattr(state, "pipe", None))
             uninstall_cfg_parallel(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(
