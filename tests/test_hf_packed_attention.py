@@ -1301,6 +1301,8 @@ def test_block_varlen_kwargs_prepares_metadata_and_checks_the_mask(monkeypatch):
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: False)
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
     lengths = [3, 5]
     cu = torch.tensor([0, 3, 8], dtype = torch.int32)
     monkeypatch.setattr(
@@ -1315,6 +1317,56 @@ def test_block_varlen_kwargs_prepares_metadata_and_checks_the_mask(monkeypatch):
     # A mask that is not this block-causal one (one causal span over both documents) is refused.
     kwargs["attention_mask"] = _block_causal([8])
     assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) is None
+
+
+def test_block_varlen_kwargs_rechecks_a_mask_edited_in_place(monkeypatch):
+    """The per-forward cache keys on tensor versions: a mask edited in place is checked again."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: False)
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    cu = torch.tensor([0, 3, 8], dtype = torch.int32)
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), cu, 5),
+    )
+    hidden = torch.randn(1, 8, 8)
+    mask = _block_causal(lengths)
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": mask}
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) == (cu, 5)
+    mask[..., 4, 0] = True  # the second document now sees the first
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) is None
+
+
+def test_block_varlen_kwargs_honours_the_sdpa_policy_each_step(monkeypatch):
+    """Deterministic mode / a math-only sdpa_kernel is read per step, not cached with the hardware
+    verdict: while it asks for SDPA the block keeps the dense path, and the fast path returns after."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    cu = torch.tensor([0, 3, 8], dtype = torch.int32)
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), cu, 5),
+    )
+    policy = [True]
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: policy[0])
+    hidden = torch.randn(1, 8, 8)
+    for wants_sdpa in (True, False):
+        policy[0] = wants_sdpa
+        # A new step: new lengths and mask objects.
+        kwargs = {
+            "packed_seq_lengths": torch.tensor(lengths),
+            "attention_mask": _block_causal(lengths),
+        }
+        got = hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)
+        assert got is None if wants_sdpa else got == (cu, 5)
 
 
 @pytest.mark.parametrize("in_graph", [True, False])
