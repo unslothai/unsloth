@@ -26643,36 +26643,31 @@ _VIDEO_INPUT_REFUSAL = (
 )
 
 
-def _local_video_clip(payload, model_info) -> str:
-    """Serves a video_url part the same as the legacy field; refuses a model with no video input."""
+def _local_video_clips(payload, model_info) -> list[str]:
+    """Serves video_url parts the same as the legacy field, in request order; refuses a model with
+    no video input."""
     if not model_info.get("has_video_input"):
         raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
     clips = _request_video_clips(payload)
     if not clips:
         raise HTTPException(status_code = 400, detail = "Could not read the provided video file.")
-    # Generation takes one video kwarg; extra clips would be silently dropped.
-    if len(clips) > 1:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Only one video is supported per request on this model.",
-        )
     # MLX would move an older-turn clip onto the newest turn.
     if _video_is_on_an_older_turn(payload):
         raise HTTPException(
             status_code = 400,
             detail = "A video must be attached to the latest message on this model.",
         )
-    # Refused everywhere, so the message must not send the caller to GGUF for it.
-    if _is_remote_video(clips[0]):
-        raise HTTPException(status_code = _REMOTE_VIDEO_REFUSAL[0], detail = _REMOTE_VIDEO_REFUSAL[1])
-    # _request_video_rejection may not have run; reject unsupported schemes here too.
-    scheme_rejection = _video_scheme_rejection(clips[0])
-    if scheme_rejection is not None:
-        raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
-    video_b64, rejection = _video_b64_rejection(clips[0])
+    # The pre-switch validation may not have run; count, scheme and size are refused here too.
+    rejection = _request_video_rejection(payload)
     if rejection is not None:
         raise HTTPException(status_code = rejection[0], detail = rejection[1])
-    return video_b64
+    served = []
+    for clip in clips:
+        video_b64, rejection = _video_b64_rejection(clip)
+        if rejection is not None:
+            raise HTTPException(status_code = rejection[0], detail = rejection[1])
+        served.append(video_b64)
+    return served
 
 
 def _video_payload_chars(clip: str) -> int:
@@ -30621,9 +30616,9 @@ async def produce_openai_chat_completions(
         model_name = _orchestrator_public_model_id(backend) or payload.model
         model_info = backend.models.get(backend.active_model_name, {})
         # Before the speech and audio-input dispatches, which return before the clip is attached.
-        _video_clip = None
+        _video_clips: list[str] = []
         if _request_has_video(payload):
-            _video_clip = _local_video_clip(payload, model_info)
+            _video_clips = _local_video_clips(payload, model_info)
             # Settled here: a model without audio input never enters the audio-input path.
             if payload.audio_base64:
                 raise HTTPException(status_code = 400, detail = _AUDIO_VIDEO_INPUT_DETAIL)
@@ -33271,7 +33266,7 @@ async def produce_openai_chat_completions(
     _sf_image_tpl = (
         (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
         # A clip renders through the processor as an image does.
-        if _sf_has_any_image or _video_clip is not None
+        if _sf_has_any_image or _video_clips
         else None
     )
     # Differs from processor_template: a template-less processor still places the image.
@@ -33338,7 +33333,7 @@ async def produce_openai_chat_completions(
         and (not _sf_has_any_image or (bool(_sf_model_info.get("is_vision")) and not payload.tools))
         # A caller's several images and a video clip stay out of the loop, as on main.
         and not images
-        and _video_clip is None
+        and not _video_clips
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
@@ -33423,7 +33418,7 @@ async def produce_openai_chat_completions(
             request,
             include_api_key = True,
             template_default = False,
-            image = _sf_has_any_image or _video_clip is not None,
+            image = _sf_has_any_image or bool(_video_clips),
             tools = True,
             controls = _date_controls,
         )
@@ -33942,8 +33937,8 @@ async def produce_openai_chat_completions(
         stop = normalized_stop,
         response_format = _extract_response_format(payload),
     )
-    if _video_clip is not None:
-        gen_kwargs["video"] = _video_clip
+    if _video_clips:
+        gen_kwargs["videos"] = _video_clips
     # The worker/template wrapper peels off kwargs the template doesn't accept.
     if payload.enable_thinking is not None:
         gen_kwargs["enable_thinking"] = payload.enable_thinking
@@ -33977,7 +33972,7 @@ async def produce_openai_chat_completions(
     # Gate on _sf_use_tools, not mcp_enabled: an empty MCP registry must not drop client tools.
     _sf_client_tools = (
         # Read the resolved value: recomputing would undo the launcher-default withdrawal above.
-        (not _sf_tools_on or ((_sf_has_any_image or _video_clip is not None) and not _sf_use_tools))
+        (not _sf_tools_on or ((_sf_has_any_image or bool(_video_clips)) and not _sf_use_tools))
         and not _sf_use_tools
         and not _sf_is_gptoss
         and _sf_supports_tools
@@ -34055,7 +34050,7 @@ async def produce_openai_chat_completions(
         _sf_client_system_prompt = _apply_current_date_prompt(
             _user_system_prompt,
             request,
-            image = _sf_has_any_image or _video_clip is not None,
+            image = _sf_has_any_image or bool(_video_clips),
             tools = bool(_sf_client_catalog),
             controls = _date_controls,
         )
@@ -34188,7 +34183,7 @@ async def produce_openai_chat_completions(
         fitted_kwargs, events = gen_kwargs, ()
         # The count cannot price pictures or video, so those prompts are left alone.
         if _sf_fit_overflow and all(
-            gen_kwargs.get(key) is None for key in ("image", "images", "video")
+            gen_kwargs.get(key) is None for key in ("image", "images", "videos")
         ):
             fitted = backend.compact_chat_context(
                 gen_kwargs.get("messages") or [],
@@ -34635,14 +34630,14 @@ async def produce_openai_chat_completions(
                                 # or the reverse scan attaches the picture to it (#10092).
                                 # The fitted prompt: the retry extends it and is not refitted.
                                 _nudge_base = _sf_fit_request()[0]["messages"]
-                                if _sf_renders_image or _video_clip is not None:
+                                if _sf_renders_image or _video_clips:
                                     from core.inference.chat_template_helpers import (
                                         messages_with_attached_image as _nudge_attach,
                                     )
                                     _nudge_base = _nudge_attach(
                                         _nudge_base,
                                         image = _sf_renders_image,
-                                        video = _video_clip is not None,
+                                        video = len(_video_clips),
                                     )
                                 retry_messages = [
                                     *_nudge_base,

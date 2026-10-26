@@ -1696,9 +1696,13 @@ def _video_sampling_target(processor) -> tuple[float, int, Optional[int]]:
     )
 
 
-def _video_frame_rate(clip_path: str, processor) -> Optional[float]:
-    """The sampling ``fps`` keeping the decoded stack within the budget; None when the clip has no
-    readable frame geometry or count, which mlx-vlm then refuses itself."""
+def _video_frame_rate(
+    clip_path: str,
+    processor,
+    clips: int = 1,
+) -> Optional[float]:
+    """The sampling ``fps`` keeping the decoded stack within this clip's share of the budget; None
+    when the clip has no readable frame geometry or count, which mlx-vlm then refuses itself."""
     import cv2
 
     capture = cv2.VideoCapture(clip_path)
@@ -1717,14 +1721,22 @@ def _video_frame_rate(clip_path: str, processor) -> Optional[float]:
         # The one measurement mlx-vlm substitutes rather than refusing; match its substitution.
         native_fps = 1.0
     wanted_fps, min_frames, nframes = _video_sampling_target(processor)
-    affordable = _VIDEO_DECODE_BUDGET_BYTES // (2 * 3 * width * height)
+    # mlx-vlm holds every decoded clip until the processor runs, so the clips share one budget.
+    budget = _VIDEO_DECODE_BUDGET_BYTES // clips
+    affordable = budget // (2 * 3 * width * height)
     needed = min_frames if nframes is None else nframes
     if affordable < needed:
         raise RuntimeError(
             f"The video's {width}x{height} frames are too large to decode: {needed} of them "
-            f"exceed the {_VIDEO_DECODE_BUDGET_BYTES >> 20} MiB frame budget."
+            f"exceed the {budget >> 20} MiB frame budget."
         )
     return min(wanted_fps, affordable * native_fps / total_frames)
+
+
+def _video_sampling_fps(clip_paths, processor) -> Optional[float]:
+    """One rate for every clip, since mlx-vlm before 0.7.3 applies a single ``fps`` to all."""
+    rates = [_video_frame_rate(path, processor, len(clip_paths)) for path in clip_paths]
+    return min((rate for rate in rates if rate is not None), default = None)
 
 
 def _discard_video_clip(path: str) -> None:
@@ -3917,7 +3929,7 @@ def _request_batch_gap(request):
     """What a reply asks for that only the one-at-a-time decode serves, or None."""
     if request.get("images") or request.get("images_base64"):
         return "a reply replays tool images"
-    if request.get("video") is not None or request.get("video_base64"):
+    if request.get("videos") or request.get("videos_base64"):
         return "a reply carries a video clip"
     if request.get("tools") or request.get("tool_protocol_active"):
         return "a reply runs the tool protocol"
@@ -5106,7 +5118,7 @@ class MLXInferenceBackend:
             if videos:
                 # Same fps as generation, not the processor's default rate.
                 kwargs["videos"] = videos
-                fps = _video_frame_rate(videos[0], self._processor)
+                fps = _video_sampling_fps(videos, self._processor)
                 if fps is not None:
                     kwargs["fps"] = fps
             inputs = prepare_inputs(
@@ -5982,11 +5994,11 @@ class MLXInferenceBackend:
         _adapter_state = None,
         # Unrestricted mode uses an EMPTY tools list, so bool(tools) cannot detect the protocol
         tool_protocol_active = None,
-        video = None,
+        videos = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
-        if video is not None:
+        if videos:
             if not _mlx_vlm_decodes_video():
                 raise RuntimeError("The installed mlx-vlm does not read video.")
             if not self._reads_vision_input():
@@ -6000,7 +6012,7 @@ class MLXInferenceBackend:
         # History first, the attachment last: MLX binds pixels to markers in order.
         attached = list(images or []) + ([image] if image is not None else [])
         # Shared with the transformers vision path so both render the same turns (#10092).
-        if self._reads_vision_input() and (attached or video is not None):
+        if self._reads_vision_input() and (attached or videos):
             # Processor templates want part lists, the tokenizer fallback wants strings.
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
@@ -6015,7 +6027,7 @@ class MLXInferenceBackend:
                 system_prompt = system_prompt,
                 structured_content = _renders_via_processor,
                 image = len(attached),
-                video = video is not None,
+                video = len(videos or ()),
             )
             # That helper skips convos with markers, but replayed MCP picture markers belong to other pictures, so the render would be one short
             _prior_markers = image_marker_parts(full_messages)
@@ -6066,7 +6078,7 @@ class MLXInferenceBackend:
                 tool_protocol_active = tool_protocol_active,
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
-                video = video,
+                videos = videos,
             )
         else:
             stream = self._generate_text(
@@ -6949,7 +6961,7 @@ class MLXInferenceBackend:
         _adapter_state = None,
         tool_protocol_active = None,
         stop = None,
-        video = None,
+        videos = None,
         response_format = None,
         reasoning_is_extracted = False,
         prompt_ids = None,
@@ -6968,7 +6980,7 @@ class MLXInferenceBackend:
             prompt, chat_target, vlm_reasoning_markers = self._render_vlm_prompt(
                 messages,
                 images,
-                videos = [video] if video is not None else None,
+                videos = videos or None,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
@@ -6995,28 +7007,27 @@ class MLXInferenceBackend:
         sequences = _mlx_stop_sequences(stop)
         stopped = False
         # Counted from a temp file (base64 is unreadable to the processor), discarded here.
-        counted_clip = (
-            _write_video_clip(video)
-            if video is not None and getattr(self, "_kv_context_budget", None)
-            else None
-        )
+        counted_clips = []
         try:
+            if getattr(self, "_kv_context_budget", None):
+                for clip in videos or ():
+                    counted_clips.append(_write_video_clip(clip))
             max_new_tokens = self._generation_limit(
                 prompt,
                 max_new_tokens,
                 prompt_ids,
                 images = images,
-                videos = [counted_clip] if counted_clip is not None else None,
-                cap = UNSET_GENERATION_BUDGET if images or video is not None else None,
+                videos = counted_clips or None,
+                cap = UNSET_GENERATION_BUDGET if images or videos else None,
             )
         finally:
-            if counted_clip is not None:
+            for counted_clip in counted_clips:
                 _discard_video_clip(counted_clip)
         logger.info(
-            "VLM generating: prompt_len=%d, images=%d, has_video=%s",
+            "VLM generating: prompt_len=%d, images=%d, videos=%d",
             len(prompt),
             len(images or ()),
-            video is not None,
+            len(videos or ()),
         )
         # generate_step expects temperature=; temp= is silently ignored (stuck at greedy)
         vlm_kwargs = dict(
@@ -7148,7 +7159,7 @@ class MLXInferenceBackend:
             import mlx.core as mx
             vlm_kwargs["input_ids"] = mx.array([self._encode_prompt(prompt)])
         session = self._vlm_prompt_cache_session(
-            _adapter_state, images, prompt, has_video = video is not None
+            _adapter_state, images, prompt, has_video = bool(videos)
         )
         vlm_kwargs.update(self._kv_runtime_quant_kwargs())
         if session is not None:
@@ -7169,7 +7180,7 @@ class MLXInferenceBackend:
             draft is None
             or tools
             or tool_protocol_active
-            or video is not None
+            or videos
             or not all(getattr(processor, "history_only", False) for processor in processors)
             or _vlm_generation_is_diffusion(self._model)
         ):
@@ -7193,14 +7204,14 @@ class MLXInferenceBackend:
                 ExitStack() as generation_scope,
                 session_scope,
             ):
-                if session is None and (images or video is not None):
+                if session is None and (images or videos):
                     # Free headroom for the vision pass under the lock; a video turn resumes no snapshot, so retained ones are pure occupancy
                     self._release_vlm_snapshots()
                 generation_scope.enter_context(
                     self._generation_scopes("vision", *(() if draft is None else ("speculative",)))
                 )
                 final_response = None
-                clip_path = None
+                clip_paths = []
                 if draft is not None:
                     from unsloth_zoo.mlx.generate import SamplingParams
 
@@ -7218,10 +7229,11 @@ class MLXInferenceBackend:
                     )
                     vlm_kwargs.update(draft_model = draft, draft_kind = draft.draft_kind)
                 try:
-                    if video is not None:
-                        clip_path = _write_video_clip(video)
-                        vlm_kwargs["video"] = [clip_path]
-                        frame_rate = _video_frame_rate(clip_path, self._processor)
+                    if videos:
+                        for clip in videos:
+                            clip_paths.append(_write_video_clip(clip))
+                        vlm_kwargs["video"] = clip_paths
+                        frame_rate = _video_sampling_fps(clip_paths, self._processor)
                         if frame_rate is not None:
                             vlm_kwargs["fps"] = frame_rate
                     # Emit prefilled <think> first; inside the adapter so unsupported requests raise before any output.
@@ -7309,7 +7321,7 @@ class MLXInferenceBackend:
                     if sequences and not stopped and released < len(sampled):
                         yield prefill + sampled
                 finally:
-                    if clip_path is not None:
+                    for clip_path in clip_paths:
                         _discard_video_clip(clip_path)
                     cached_n = produced_n = 0
                     produced_s = 0.0

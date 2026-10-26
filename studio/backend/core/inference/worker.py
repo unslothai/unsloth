@@ -1151,10 +1151,10 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
     ):
         if gated in cmd and _backend_declares(backend, gated):
             gen_kwargs[gated] = cmd[gated]
-    if cmd.get("video_base64"):
-        if not _backend_declares(backend, "video"):
+    if cmd.get("videos_base64"):
+        if not _backend_declares(backend, "videos"):
             raise RuntimeError("The loaded backend does not read video.")
-        gen_kwargs["video"] = cmd["video_base64"]
+        gen_kwargs["videos"] = cmd["videos_base64"]
     # Only a raw completion carries these; its batch rows are planned from them.
     for raw in ("prompt_ids", "penalty_window", "grammar", "n_probs"):
         if raw in cmd:
