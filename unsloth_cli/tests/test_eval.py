@@ -340,7 +340,7 @@ def test_unsloth_backend_writes_results(env, tmp_path):
 
 def test_default_output_keeps_every_run(env, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(evalmod, "time", SimpleNamespace(time = lambda: 1761480000))
+    monkeypatch.setattr(evalmod, "time", SimpleNamespace(time = lambda: 1761480000), raising = False)
     for model in ("org/base", "org/tuned", "org/tuned"):
         result = _run(model, "--tasks", "gsm8k")
         assert result.exit_code == 0, result.output
