@@ -3,7 +3,9 @@
 """Packed rows on the transformers modeling path run a varlen flash kernel (torch's, else xformers /
 flash-attn) instead of SDPA over a dense block-causal mask; heads past flash's 256 (Gemma-4 global
 layers, 512) and shapes an FA4 / FA3 impl refuses run SDPA's memory-efficient kernel over the same
-cu_seqlens. Anything else reaches the wrapped "sdpa"."""
+cu_seqlens. Anything else reaches the wrapped "sdpa". Inside Unsloth's compiled decoder blocks, where the
+dense-mask SDPA would rebuild cuDNN plans per length, torch's varlen runs inside the graph
+(_in_graph_varlen), else the row leaves the graph (_leaves_block)."""
 
 import inspect
 import logging
@@ -19,6 +21,13 @@ _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
 # True inside _block_compile's own compiled blocks (not a user's outer compile); see _leaves_block.
 IN_COMPILED_BLOCK = [False]
+# (cu_seqlens, longest-segment size carrier, one document) of the packed row a compiled block runs, built by
+# block_packed_plan before the block's compiled call; None otherwise. See _in_graph_varlen.
+PACKED_PLAN = [None]
+_IN_GRAPH_ENV = "UNSLOTH_HF_PACKED_IN_GRAPH"
+# Windows (window keys) a mask was verified block causal for, set on the mask tensor itself.
+_MASK_TAG = "_unsloth_packed_varlen"
+_MASK_STATE = "_unsloth_packed_varlen_state"
 # efficient: the subset of fast calls that ran SDPA's memory-efficient kernel over cu_seqlens.
 HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0, "mask_checks": 0, "efficient": 0}
 # Layers of one window share a mask object: window -> [weakref, (cu_seqlens, versions), verdict].
@@ -346,6 +355,14 @@ def _sdpa_packed_varlen(
             _window_key(module, kwargs),
         )
     ):
+        # Where the dense mask would rebuild cuDNN plans per length: torch's varlen inside the
+        # graph when it traces for this call, else the row leaves the graph (#14808).
+        if PACKED_PLAN[0] is not None:
+            out = _in_graph_varlen(
+                module, query, key, value, attention_mask, dropout, scaling, is_causal, kwargs
+            )
+            if out is not None:
+                return out, None
         return _sdpa_packed_varlen_eager(
             module,
             query,
@@ -609,6 +626,272 @@ def _leaves_block_probe(device_type, device_index, dtype, head_dim, window):
 
 # Baked into the graph at trace time. Not an lru_cache: Dynamo traces those via __wrapped__ (fake tensors).
 _leaves_block = torch._dynamo.assume_constant_result(_leaves_block_eager)
+
+
+def _in_graph_disabled() -> bool:
+    return os.environ.get(_IN_GRAPH_ENV, "1").lower() in ("0", "false", "no", "off")
+
+
+def _layer_windows(layer):
+    """Window keys the layer's attention can ask for: None plus every sliding_window on its modules
+    or their configs (Mistral passes config.sliding_window). A call with another window keeps the
+    old path."""
+    windows = layer.__dict__.get("_unsloth_packed_windows")
+    if windows is None:
+        found = {None}
+        for sub in layer.modules():
+            attrs = getattr(sub, "__dict__", {})
+            if "sliding_window" in attrs:
+                found.add(_window_key(sub, {}))
+            config = attrs.get("config")
+            if config is not None and getattr(config, "sliding_window", None) is not None:
+                found.add(_window_key(config, {}))
+        windows = tuple(sorted(found, key = lambda w: -2 if w is None else w))
+        layer.__dict__["_unsloth_packed_windows"] = windows
+    return windows
+
+
+def _tag_mask(mask, cu_seqlens, total, windows):
+    """Tag a dense packed mask with the windows it is exactly block causal for (checked once per mask,
+    lengths and window). The compiled block reads the tag: Dynamo guards on it like a constant."""
+    if (
+        not isinstance(mask, torch.Tensor)
+        or mask.dtype != torch.bool
+        or mask.dim() != 4
+        or mask.requires_grad
+        or torch.is_inference(mask)
+        or torch.is_inference(cu_seqlens)
+    ):
+        return
+    key = (mask._version, cu_seqlens._version, total)
+    state = getattr(mask, _MASK_STATE, None)
+    if state is None or state[0]() is not cu_seqlens or state[1] != key:
+        state = (weakref.ref(cu_seqlens), key, {})
+        setattr(mask, _MASK_STATE, state)
+    verdicts = state[2]
+    if all(window in verdicts for window in windows):
+        return
+    for window in windows:
+        if window not in verdicts:
+            verdicts[window] = window != -1 and _mask_is_block_causal(
+                mask, cu_seqlens, total, window
+            )
+    tag = tuple(w for w in sorted(verdicts, key = lambda w: -2 if w is None else w) if verdicts[w])
+    if getattr(mask, _MASK_TAG, None) != tag:
+        setattr(mask, _MASK_TAG, tag)
+
+
+def _in_graph_device(device) -> bool:
+    """Cheap per-device pre-check (T4, ROCm, CPU and torch without varlen build no plan at all)."""
+    return device.type == "cuda" and _torch_varlen(device) is not None
+
+
+def _layer_leaves(layer, hidden_states) -> bool:
+    """Whether #14808's gate sends this layer's packed rows out of the graph (cuDNN over the dense
+    mask on torch < 2.13). Elsewhere the dense-mask SDPA stays in the graph as before (measured
+    faster than in-graph varlen for short packed rows on RTX PRO 6000 and T4) and no plan is built."""
+    head_dim = layer.__dict__.get("_unsloth_packed_head_dim")
+    if head_dim is None:
+        head_dim = 0
+        for sub in layer.modules():
+            value = getattr(sub, "__dict__", {}).get("head_dim")
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                head_dim = value
+                break
+        layer.__dict__["_unsloth_packed_head_dim"] = head_dim
+    if not head_dim:
+        return False
+    device = hidden_states.device
+    return any(
+        _leaves_block_eager(device.type, device.index, hidden_states.dtype, head_dim, window)
+        for window in _layer_windows(layer)
+    )
+
+
+try:
+    _mark_unbacked = torch._dynamo.decorators.mark_unbacked
+except AttributeError:
+    _mark_unbacked = None
+# device -> (packed_seq_lengths, total, plan): one plan per step, shared by every layer call.
+_PLAN_CACHE = {}
+
+
+def _max_carrier(max_seqlen, device):
+    """The longest segment as the size of an empty tensor: inside the graph it is a SymInt the
+    varlen op takes as max_q / max_k (its fake impl never reads it), so new lengths neither
+    recompile nor sync. Unbacked: no 0 / 1 specialisation and no duck-sizing against the row length."""
+    carrier = torch.empty((max_seqlen, 0), device = device)
+    if _mark_unbacked is not None:
+        _mark_unbacked(carrier, 0)
+    else:
+        torch._dynamo.maybe_mark_dynamic(carrier, 0)
+    return carrier
+
+
+def block_packed_plan(layer, hidden_states, args, kwargs):
+    """Eager, once per compiled block call (_block_compile.run): the packed row's device cu_seqlens
+    and longest segment for _in_graph_varlen, and its dense masks tagged with the windows they are
+    block causal for. None keeps #14808's path."""
+    lengths = kwargs.get("packed_seq_lengths")
+    if lengths is None or _disabled() or _in_graph_disabled():
+        return None
+    if (
+        not isinstance(hidden_states, torch.Tensor)
+        or hidden_states.dim() != 3
+        or hidden_states.shape[0] != 1
+        or hidden_states.shape[1] < 1
+        or not _in_graph_device(hidden_states.device)
+        or not _layer_leaves(layer, hidden_states)
+    ):
+        return None
+    device, total = hidden_states.device, hidden_states.shape[1]
+    entry = _PLAN_CACHE.get(device)
+    if entry is None or entry[0] is not lengths or entry[1] != total:
+        from .packing import get_packed_info_from_kwargs
+
+        seq_info = get_packed_info_from_kwargs(kwargs, device)
+        if seq_info is None:
+            return None
+        _, cu_seqlens, max_seqlen = seq_info
+        # The segment count changes every step: one dynamic graph, not one per count.
+        torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+        if isinstance(lengths, torch.Tensor) and lengths.dim() == 1:
+            torch._dynamo.maybe_mark_dynamic(lengths, 0)
+        # One document: transformers may pass no mask (plain causal), which varlen computes exactly.
+        one_document = cu_seqlens.shape[0] == 2 and max_seqlen == total
+        entry = (lengths, total, (cu_seqlens, _max_carrier(max_seqlen, device), one_document))
+        _PLAN_CACHE[device] = entry
+    plan = entry[2]
+    windows = _layer_windows(layer)
+    for obj in (*args, *kwargs.values()):
+        if isinstance(obj, torch.Tensor) and obj.dim() == 4 and obj.shape[-2:] == (total, total):
+            _tag_mask(obj, plan[0], total, windows)
+    return plan
+
+
+_IN_GRAPH = {}
+
+
+def _in_graph_kernel_eager(device_type, device_index, dtype, head_dim, n_heads, n_kv_heads, window):
+    """True when torch's varlen_attn (a custom op with a fake and a backward, so it traces) runs this
+    shape the way the eager wrapper would: CUDA sm80+, flash's head dims, a window it takes, an
+    active flash impl that has the shape, and no SDPA policy (flash disabled, math first)."""
+    key = (device_type, device_index, dtype, head_dim, n_heads, n_kv_heads, window)
+    if key not in _IN_GRAPH:
+        _IN_GRAPH[key] = _in_graph_kernel_probe(*key)
+    return _IN_GRAPH[key]
+
+
+def _in_graph_kernel_probe(device_type, device_index, dtype, head_dim, n_heads, n_kv_heads, window):
+    if (
+        device_type != "cuda"
+        or window == -1
+        or head_dim % 8
+        or head_dim > 256
+        or dtype not in (torch.float16, torch.bfloat16)
+        or n_kv_heads <= 0
+        or n_heads % n_kv_heads
+    ):
+        return False
+    try:
+        from .flash_impl import flash_impl_allows
+        from .attention_dispatch import _sdpa_backend_state
+        from torch.nn.attention import SDPBackend
+
+        device = torch.device("cuda", device_index)
+        if _torch_varlen(device) is None or not flash_impl_allows(head_dim, window, device):
+            return False
+        flash, choice = _sdpa_backend_state(
+            str(device), dtype, head_dim, n_heads, n_kv_heads, True, n_heads != n_kv_heads
+        )
+        return bool(flash) and choice != int(SDPBackend.MATH)
+    except Exception:
+        return False
+
+
+_in_graph_kernel = torch._dynamo.assume_constant_result(_in_graph_kernel_eager)
+
+
+def _in_graph_varlen(module, query, key, value, attention_mask, dropout, scaling, is_causal, kwargs):
+    """Packed row inside a compiled block: torch varlen_attn traced into the block's graph (no graph
+    break) with the plan's cu_seqlens and longest segment (a SymInt). None when the eager wrapper
+    would not have used torch's varlen for this call."""
+    cu_seqlens, carrier, one_document = PACKED_PLAN[0]
+    max_seqlen = carrier.shape[0]
+    window = _sliding_window(module, kwargs)
+    if window is _NO_WINDOW:
+        return None
+    if attention_mask is None:
+        if not one_document or window is not None:
+            return None
+    elif not isinstance(attention_mask, torch.Tensor) or window not in getattr(
+        attention_mask, _MASK_TAG, ()
+    ):
+        return None
+    bsz, n_heads, q_len, head_dim = query.shape
+    n_kv_heads = key.shape[1]
+    if not (
+        bsz == 1
+        and query.device == key.device == value.device == cu_seqlens.device
+        and key.shape[0] == value.shape[0] == 1
+        and key.shape[1] == value.shape[1]
+        and key.shape[2] == value.shape[2] == q_len
+        and (attention_mask is None or attention_mask.shape[-1] == q_len)
+        and key.shape[-1] == value.shape[-1] == head_dim
+        and query.dtype == key.dtype == value.dtype
+        and not _autocast_dtype_differs(query)
+        and not dropout
+        and is_causal is not False
+        and getattr(module, "is_causal", True)
+        and kwargs.get("position_bias") is None
+        and kwargs.get("cache") is None
+        and kwargs.get("past_key_values") is None
+        and not _softcapped(module, kwargs)
+        # Its backward is nondeterministic; Dynamo guards on this flag.
+        and not torch.are_deterministic_algorithms_enabled()
+        and _in_graph_kernel(
+            query.device.type,
+            query.device.index,
+            query.dtype,
+            int(head_dim),
+            int(n_heads),
+            int(n_kv_heads),
+            -1 if window is _NO_WINDOW else window,
+        )
+    ):
+        return None
+    from .attention_dispatch import (
+        _VARLEN_INT32_GUARD_DISABLED,
+        _varlen_backward_overflows_int32,
+    )
+
+    if (
+        not _VARLEN_INT32_GUARD_DISABLED
+        and (getattr(module, "training", False) or torch.is_grad_enabled())
+        and _varlen_backward_overflows_int32(cu_seqlens.shape[0] - 1, q_len, n_heads, head_dim)
+    ):
+        return None
+    gqa, k_in, v_in = {}, key, value
+    if n_kv_heads != n_heads:
+        if _TORCH_VARLEN_GQA and _TORCH_VARLEN_GQA[0]:
+            gqa = {"enable_gqa": True}
+        else:
+            # torch 2.11: no enable_gqa, so repeat the K/V heads as the eager wrapper does.
+            k_in = key.repeat_interleave(n_heads // n_kv_heads, dim = 1)
+            v_in = value.repeat_interleave(n_heads // n_kv_heads, dim = 1)
+    out = _TORCH_VARLEN[0](
+        query[0].transpose(0, 1),
+        k_in[0].transpose(0, 1),
+        v_in[0].transpose(0, 1),
+        cu_seqlens,
+        cu_seqlens,
+        max_seqlen,
+        max_seqlen,
+        scale = head_dim**-0.5 if scaling is None else scaling,
+        window_size = (-1, 0) if window is None else (window - 1, 0),
+        **gqa,
+    )
+    return out.unsqueeze(0)
 
 
 def enable_hf_packed_attention() -> bool:

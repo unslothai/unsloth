@@ -663,6 +663,7 @@ def _precheck_band(layer, seq_len, args, kwargs):
 _IN_BLOCK = [0]
 _PACKED_MODULE = "unsloth.utils.hf_packed_attention"
 _NO_PACKED = [False]
+_NO_PLAN = [None]
 _OFF, _FULL, _SPLIT = 0, 1, 2
 _DEMOTION = (_FULL, _SPLIT, _OFF)
 _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
@@ -830,10 +831,21 @@ def _wrap(
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
-        # Packed rows run hf_packed_attention's varlen kernel outside the graph (see there).
-        packed = getattr(sys.modules.get(_PACKED_MODULE), "IN_COMPILED_BLOCK", _NO_PACKED)
+        # Packed rows run hf_packed_attention's varlen kernel inside the graph from a plan built
+        # here, eagerly (cu_seqlens, bucketed max length), else outside the graph (see there).
+        packed_module = sys.modules.get(_PACKED_MODULE)
+        packed = getattr(packed_module, "IN_COMPILED_BLOCK", _NO_PACKED)
         packed_previous = packed[0]
+        plan = getattr(packed_module, "PACKED_PLAN", _NO_PLAN)
+        plan_previous = plan[0]
         packed[0] = True
+        plan[0] = None
+        if kwargs.get("packed_seq_lengths") is not None and plan is not _NO_PLAN:
+            try:
+                plan[0] = packed_module.block_packed_plan(self, hidden_states, args, kwargs)
+            except Exception:
+                # No plan: the row takes the out-of-graph or masked path, as before.
+                plan[0] = None
         try:
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
             with capture_scratch():
@@ -854,6 +866,7 @@ def _wrap(
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
             packed[0] = packed_previous
+            plan[0] = plan_previous
 
     def _inline(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
