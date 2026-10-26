@@ -1286,6 +1286,14 @@ class Gemma2AttentionMaskConverter(AttentionMaskConverter):
         )
 
 
+def _scale_inputs_embeds(inputs_embeds, factor, from_caller):
+    # A caller's or non-leaf tensor may carry a trainable graph: keep it, never write into it.
+    if from_caller or not inputs_embeds.is_leaf:
+        return inputs_embeds * factor
+    # Our own leaf has nothing upstream; detaching lets backward free it instead of holding it.
+    return (inputs_embeds.detach() * factor).requires_grad_(inputs_embeds.requires_grad)
+
+
 # Ported from transformers models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -1388,6 +1396,7 @@ def LlamaModel_fast_forward(
         if position_ids.shape[0] != batch_size:
             position_ids = position_ids.repeat((batch_size, 1))
 
+    embeds_from_caller = inputs_embeds is not None
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
@@ -1405,8 +1414,7 @@ def LlamaModel_fast_forward(
 
     if IS_GEMMA and not embedding_applies_scale(self.embed_tokens):
         normalizer = torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
-        # Out of place: external inputs_embeds may carry a trainable graph and belong to the caller.
-        inputs_embeds = inputs_embeds * normalizer
+        inputs_embeds = _scale_inputs_embeds(inputs_embeds, normalizer, embeds_from_caller)
 
     # Fix up the attention mask by setting elements to 0, specifically for DPO.
     if (
@@ -1419,8 +1427,9 @@ def LlamaModel_fast_forward(
     ):
         # Careful: for inference the attention_mask is size (1, kv_seq_len) while input_embeds is (1, 1, 4096).
         attention_mask = attention_mask[:, : self.max_seq_length]  # Must resize!
-        # Preserve the graph for external inputs_embeds without promoting their dtype.
-        inputs_embeds = inputs_embeds * attention_mask.unsqueeze(-1).to(inputs_embeds.dtype)
+        # Cast so a float mask cannot promote bf16 embeddings to fp32.
+        embeds_mask = attention_mask.unsqueeze(-1).to(inputs_embeds.dtype)
+        inputs_embeds = _scale_inputs_embeds(inputs_embeds, embeds_mask, embeds_from_caller)
 
     if attention_mask is None:
         padding_mask = None

@@ -107,3 +107,44 @@ def test_float_mask_keeps_embedding_dtype():
     hidden = _forward(model, inputs_embeds, attention_mask)
     assert hidden.dtype == torch.bfloat16
     assert torch.equal(hidden[0, 0], torch.zeros(16, dtype = torch.bfloat16))
+
+
+@pytest.mark.parametrize("model_type", ["llama", "gemma"])
+def test_caller_leaf_inputs_embeds_get_gradient(model_type):
+    model = _model(model_type)
+    inputs_embeds = torch.randn(2, 5, 16, requires_grad = True)
+    original = inputs_embeds.detach().clone()
+    attention_mask = torch.ones(2, 5, dtype = torch.long)
+    attention_mask[0, :2] = 0
+    _forward(model, inputs_embeds, attention_mask).sum().backward()
+    expected = _scale(model) * attention_mask.unsqueeze(-1).expand(2, 5, 16).float()
+    assert torch.allclose(inputs_embeds.grad, expected)
+    assert torch.equal(inputs_embeds.detach(), original)
+
+
+@pytest.mark.parametrize("model_type", ["llama", "gemma"])
+def test_own_embedding_output_is_not_kept_for_backward(model_type):
+    import weakref
+
+    model = _model(model_type)
+    produced = []
+
+    def require_grad(module, args, output):
+        # What enable_input_require_grads does for frozen embeddings under LoRA.
+        output.requires_grad_(True)
+        produced.append(weakref.ref(output))
+
+    model.embed_tokens.register_forward_hook(require_grad)
+    store = {}
+    model.rotary_emb = _CaptureHidden(store)
+    with pytest.raises(_Captured):
+        llama_module.LlamaModel_fast_forward(
+            model,
+            input_ids = torch.randint(1, 64, (2, 5)),
+            attention_mask = torch.ones(2, 5, dtype = torch.long),
+            use_cache = False,
+        )
+    hidden = store["hidden"]
+    assert hidden.is_leaf and hidden.requires_grad
+    # Nothing beyond hidden itself may stay alive (base scaled it in place, so both are one tensor).
+    assert produced[0]() is None or produced[0]() is hidden
