@@ -12,9 +12,7 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""TRL 0.27-0.28 ask transformers' _is_package_available on every is_X_available() call, and
-transformers >= 5.3 returns (exists, None) there, so `from trl import GRPOTrainer` imports an
-absent weave. The fixture modules copy the shapes of trl/import_utils.py in 0.26.2 and 0.27.0."""
+"""Fixtures copy trl/import_utils.py (0.26.2, 0.27.0) and transformers' helper (5.2.0, 5.3.0)."""
 
 import types
 
@@ -26,7 +24,6 @@ INSTALLED = {"torch": "2.9.0"}
 
 
 def _transformers_5_3_helper(pkg_name, return_version = False):
-    # transformers/utils/import_utils.py (5.3.0 - 5.17.0): a tuple whether or not a version was asked for
     exists = pkg_name in INSTALLED
     return (exists, INSTALLED.get(pkg_name, "N/A")) if return_version else (exists, None)
 
@@ -50,7 +47,7 @@ def _trl_0_27(helper):
 
 def test_function_style_checks_return_bools():
     tiu = _trl_0_27(_transformers_5_3_helper)
-    assert tiu.is_weave_available() == (False, None)  # the defect: truthy for an absent package
+    assert tiu.is_weave_available() == (False, None)
     is_weave_available = (
         tiu.is_weave_available
     )  # bound before the fix, like `from trl.import_utils import ...`
@@ -81,7 +78,6 @@ def test_bool_helpers_are_left_alone(helper):
 
 
 def test_cached_flags_still_coerced():
-    # trl 0.26.2 caches the result at import: _weave_available = _is_package_available("weave")
     tiu = types.ModuleType("trl.import_utils")
     tiu._weave_available = (False, None)
     tiu._torch_available = (True, None)

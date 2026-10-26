@@ -4343,9 +4343,7 @@ def _coerce_trl_available_checks(tiu):
         cached = getattr(tiu, attr)
         if isinstance(cached, tuple):
             setattr(tiu, attr, bool(cached and cached[0]))
-    # TRL 0.27-0.28 call transformers' helper on every is_X_available() instead of caching it, and
-    # transformers >= 5.3 returns (exists, None) there too, so an absent weave is imported by
-    # `from trl import GRPOTrainer`. The global is looked up per call, so rebinding it covers them all.
+    # TRL 0.27-0.28 call this helper per check; transformers >= 5.3 returns (exists, None) there.
     helper = getattr(tiu, "_is_package_available", None)
     if helper is None or getattr(helper, "_unsloth_bool", False):
         return
