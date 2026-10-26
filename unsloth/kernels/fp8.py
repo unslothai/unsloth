@@ -867,8 +867,7 @@ def _small_m_config(M, N, K, device):
 
 def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
     # Eager only: under torch.compile the M bound below would guard on the symbolic M and recompile.
-    # torchao beats the fused kernel for bf16, but writes bf16 only, so torchao_block_matmul hands
-    # fp16 to the Triton GEMM after a separate act_quant: keep fp16 on the one-launch kernel.
+    # torchao writes bf16 only (fp16 falls to act_quant + Triton GEMM), so fp16 keeps the fused kernel.
     if (
         not _FP8_BLOCK_SMALL_M
         or (fp8_block_matmul is not w8a8_block_fp8_matmul_triton and X.dtype != torch.float16)
@@ -1593,8 +1592,7 @@ def _with_fp8_block_gemv(block_forward):
 def _fp8_block_small_m_first(X, weight, weight_scale):
     # 100+ SM parts: the fused small-M kernel is faster, so try it first (eager only; compiled uses the GEMV).
     if not (torch.is_grad_enabled() and X.requires_grad):
-        # With torchao selected only fp16 reaches the fused kernel; the GEMV keeps the calls it took before
-        # (it skips act_quant, and beat the fused kernel at K = 14336 on sm_120).
+        # torchao selected: GEMV first (skips act_quant, beat the fused kernel at K = 14336 on sm_120).
         gemv_first = fp8_block_matmul is not w8a8_block_fp8_matmul_triton
         if gemv_first and can_use_fp8_block_gemv(X, weight, weight_scale):
             return fp8_block_gemv(X, weight, weight_scale)

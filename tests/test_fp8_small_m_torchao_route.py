@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Fused small-M block FP8 decode with torchao selected: fp16 keeps the one-launch kernel, bf16 still
-goes to torchao (no GPU needed: the kernels are replaced by recorders)."""
+"""With torchao selected, fp16 small-M decode keeps the fused kernel; bf16 goes to torchao (CPU recorders)."""
 
 import types
 
@@ -13,7 +12,6 @@ from unsloth.kernels import fp8 as F8
 
 
 class _CudaLike(torch.Tensor):
-    # Only the routing gate reads is_cuda; every kernel below is a recorder.
     @property
     def is_cuda(self):
         return True
@@ -134,7 +132,6 @@ def test_fp16_large_m_and_kill_switch_keep_two_launches(monkeypatch, calls, back
 
 
 def test_fp16_decode_stays_fused_in_small_m_first_route(monkeypatch, calls):
-    # The 100+ SM eager route tries the fused kernel before the GEMV.
     _select(monkeypatch, "torchao")
     monkeypatch.setattr(F8, "can_use_fp8_block_gemv", lambda *a: False)
     monkeypatch.setattr(F8, "fp8_torch_block_quant_forward", lambda *a: calls.append("autograd"))
@@ -151,7 +148,6 @@ def test_fp16_decode_stays_fused_in_small_m_first_route(monkeypatch, calls):
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_gemv_keeps_its_calls_when_torchao_is_selected(monkeypatch, calls, dtype):
-    # torchao selected: a call the GEMV accepts stays on the GEMV, as before this change.
     _select(monkeypatch, "torchao")
     monkeypatch.setattr(F8, "can_use_fp8_block_gemv", lambda *a: True)
     monkeypatch.setattr(F8, "fp8_block_gemv", lambda *a: calls.append("gemv"))
