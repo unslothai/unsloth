@@ -108,7 +108,8 @@ def _body(source, start, end):
 
 def test_agreement_follows_the_last_per_card_gate():
     src = LOADER.read_text(encoding = "utf-8")
-    call = "fast_inference = _agree_fast_inference_across_ranks(fast_inference_requested, fast_inference, kwargs)"
+    # Prefix only: the formatter wraps the call's arguments onto their own lines.
+    call = "fast_inference = _agree_fast_inference_across_ranks("
     flm = _body(src, "class FastLanguageModel(", "class FastModel(")
     i_req = flm.index("fast_inference_requested = fast_inference")
     i_cc = flm.index("torch.cuda.get_device_capability()[0] < 7")
