@@ -20,7 +20,7 @@ import {
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { Z_LAYER } from "@/lib/z-layers";
-import { MinusIcon, PlusIcon } from "lucide-react";
+import { MinusIcon } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -37,6 +37,8 @@ import {
   zoomDirectionForKey,
 } from "../lib/zoom-chords.ts";
 import { createWheelZoomAccumulator, isZoomWheel } from "../lib/zoom-wheel.ts";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 /** Hide delay after the last zoom, paused while hovered or focused. */
 export const ZOOM_POPUP_HIDE_MS = 2500;
@@ -135,7 +137,7 @@ function ZoomPopup() {
           aria-label={t("shell.zoom.zoomIn")}
           title={withChord(t("shell.zoom.zoomIn"), 1)}
         >
-          <PlusIcon
+          <HugeiconsIcon icon={PlusSignIcon}
             strokeWidth={1.75}
             className="size-[calc(16px*var(--ui-space-scale,1))]"
           />

@@ -2040,11 +2040,12 @@ def _openai_llama_admission_media_tokens(
     message_image_parts: int = 0,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     message_video_clips: Optional[list[str]] = None,
+    legacy_image_in_messages: bool = False,
 ) -> int:
     """Charge the legacy top-level image only when the messages do not already carry it: no double count."""
     extra = 0
     extra += max(0, message_image_parts) * image_tokens
-    if _legacy_image_is_distinct(payload):
+    if not legacy_image_in_messages and _legacy_image_is_distinct(payload):
         extra += image_tokens
     for audio in _request_audio_clips(payload):
         if isinstance(audio, str) and audio:
@@ -2247,6 +2248,8 @@ def _count_gguf_admission_prompt(
     messages,
     tools = None,
     cancel_event = None,
+    *,
+    prepared_body = None,
 ) -> int:
     """Exact prompt count plus media allowance; the whole pool if counting fails
     (the character estimate undercounts numeric text, #10671)."""
@@ -2257,18 +2260,27 @@ def _count_gguf_admission_prompt(
         text_messages, images = _openai_llama_admission_messages_for_estimate(
             messages, vision = bool(getattr(llama_backend, "is_vision", False))
         )
+        if prepared_body is None:
+            template_kwargs = llama_backend._request_reasoning_kwargs(
+                payload.enable_thinking,
+                payload.reasoning_effort,
+                _replay_preserve_thinking(llama_backend, payload, messages),
+            )
+            continue_final = (
+                _continue_final_message(payload, thought = True)
+                and trailing_assistant_resume_kind(messages) is not None
+            )
+        else:
+            template_kwargs = prepared_body.get("chat_template_kwargs")
+            continue_final = bool(prepared_body.get("continue_final_message"))
         count = llama_backend.count_chat_tokens(
             messages_without_unpriced_media(text_messages),
             tools = tools,
             strict = True,
             prefer_native = images == 0,
-            chat_template_kwargs = llama_backend._request_reasoning_kwargs(
-                payload.enable_thinking,
-                payload.reasoning_effort,
-                _replay_preserve_thinking(llama_backend, payload, messages),
-            ),
-            continue_final_message = _continue_final_message(payload, thought = True)
-            and trailing_assistant_resume_kind(messages) is not None,
+            chat_template_kwargs = template_kwargs,
+            continue_final_message = continue_final,
+            **({"template_options": prepared_body} if prepared_body is not None else {}),
             **({"should_abort": cancel_event.is_set} if cancel_event is not None else {}),
         )
         if type(count) is not int or count <= 0:
@@ -2278,6 +2290,7 @@ def _count_gguf_admission_prompt(
             message_image_parts = images,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             message_video_clips = _conversation_video_clips(messages),
+            legacy_image_in_messages = prepared_body is not None,
         )
     except Exception:
         logger.debug("Prompt count unavailable; reserving the context pool", exc_info = True)
@@ -2292,6 +2305,7 @@ async def _reserve_counted_gguf_chat(
     messages,
     injected_tools = None,
     tool_loop: bool = False,
+    prepared_body = None,
 ):
     config = llama_admission_config_from_env()
     if not (config.enabled and config.kv_budget):
@@ -2307,7 +2321,12 @@ async def _reserve_counted_gguf_chat(
         _openai_llama_admission_budget(llama_backend),
     )
     counted = await asyncio.to_thread(
-        _count_gguf_admission_prompt, llama_backend, payload, messages, injected_tools
+        _count_gguf_admission_prompt,
+        llama_backend,
+        payload,
+        messages,
+        injected_tools,
+        **({"prepared_body": prepared_body} if prepared_body is not None else {}),
     )
     if identity != (
         getattr(llama_backend, "base_url", None),
@@ -2322,6 +2341,30 @@ async def _reserve_counted_gguf_chat(
         injected_tools = injected_tools,
         counted_prompt_tokens = counted,
     )
+
+
+async def _reserve_counted_gguf_passthrough(
+    *,
+    request,
+    llama_backend,
+    payload,
+    body = None,
+):
+    # Price the same prepared messages, tool schemas and template options that
+    # generation sends. A character estimate misses numeric text and tool wrappers.
+    if body is None:
+        body = await _build_openai_passthrough_body_async(
+            payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+        )
+    reservation, config = await _reserve_counted_gguf_chat(
+        request = request,
+        llama_backend = llama_backend,
+        payload = payload,
+        messages = body["messages"],
+        injected_tools = body.get("tools"),
+        prepared_body = body,
+    )
+    return reservation, config, body
 
 
 async def _openai_llama_admission_reserve_async(
@@ -2373,6 +2416,7 @@ def _openai_llama_admission_recost(
     cancel_event = None,
     injected_tools = None,
     count_prepared_prompt: bool = False,
+    prepared_body = None,
     cache_is_empty: bool = False,
 ) -> None:
     """Re-cost each round; growth that does not fit waits; yield gated on _openai_llama_admission_can_yield."""
@@ -2391,7 +2435,12 @@ def _openai_llama_admission_recost(
         capacity = _openai_llama_admission_capacity(request, llama_backend)
         if count_prepared_prompt:
             prompt_tokens = _count_gguf_admission_prompt(
-                llama_backend, payload, conversation, injected_tools, cancel_event = cancel_event
+                llama_backend,
+                payload,
+                conversation,
+                injected_tools,
+                cancel_event = cancel_event,
+                **({"prepared_body": prepared_body} if prepared_body is not None else {}),
             )
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -9181,6 +9230,43 @@ def disable_openai_auto_switch_for_request(scope) -> None:
         scope[_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY] = True
 
 
+_ALLOW_MODEL_SWITCH_SCOPE_KEY = "unsloth.allow_model_switch"
+
+
+def allow_model_switch_for_request(scope) -> None:
+    """Let one in-process request load its named model with auto-switch off; a scope key, so no HTTP client can set it."""
+    if isinstance(scope, dict):
+        scope[_ALLOW_MODEL_SWITCH_SCOPE_KEY] = True
+
+
+def _model_switch_allowed_for_request(fastapi_request) -> bool:
+    scope = getattr(fastapi_request, "scope", None)
+    return isinstance(scope, dict) and bool(scope.get(_ALLOW_MODEL_SWITCH_SCOPE_KEY))
+
+
+_LOAD_ALONGSIDE_SCOPE_KEY = "unsloth.load_alongside"
+
+
+def load_alongside_for_request(scope) -> None:
+    """Under Keep multiple models loaded, let this in-process request's switch load beside the loaded model, as Chat's picker does."""
+    if isinstance(scope, dict):
+        scope[_LOAD_ALONGSIDE_SCOPE_KEY] = True
+
+
+def _load_alongside_for_request(fastapi_request) -> bool:
+    scope = getattr(fastapi_request, "scope", None)
+    return isinstance(scope, dict) and bool(scope.get(_LOAD_ALONGSIDE_SCOPE_KEY))
+
+
+_NO_AUTO_DOWNLOAD_SCOPE_KEY = "unsloth.no_auto_download"
+
+
+def disable_auto_download_for_request(scope) -> None:
+    """Stop an in-process scheduled run from auto-downloading; a model gone from disk fails the run."""
+    if isinstance(scope, dict):
+        scope[_NO_AUTO_DOWNLOAD_SCOPE_KEY] = True
+
+
 async def _keyless_caller_held_back(fastapi_request) -> bool:
     """Keyless caller that may not POST /api/inference/load itself, so it may not switch models."""
     from auth.authentication import request_admitted_without_credential
@@ -9407,6 +9493,9 @@ async def _maybe_auto_download_model(
     )
 
     if not requested_model or not get_openai_auto_download_enabled():
+        return
+    scope = getattr(fastapi_request, "scope", None)
+    if isinstance(scope, dict) and scope.get(_NO_AUTO_DOWNLOAD_SCOPE_KEY):
         return
     if not is_downloadable_ref(requested_model):
         return
@@ -10441,7 +10530,9 @@ async def _maybe_auto_switch_model(
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
         return
-    auto_switch_on = get_openai_auto_switch_enabled()
+    auto_switch_on = get_openai_auto_switch_enabled() or _model_switch_allowed_for_request(
+        fastapi_request
+    )
 
     def _refuse_non_gguf_endpoint() -> None:
         """Refuse a switch target this endpoint cannot serve.
@@ -10891,6 +10982,8 @@ async def _maybe_auto_switch_model(
                 try:
                     # Hold the keep-warm gate across the swap so no new inference can
                     # start on the model while it is being torn down and replaced.
+                    from utils.multi_model_settings import get_multi_model_enabled
+
                     # Beside: load_model_gated takes the load gate itself; the primary keeps serving.
                     beside = await asyncio.to_thread(
                         _switch_loads_beside,
@@ -10901,6 +10994,10 @@ async def _maybe_auto_switch_model(
                             and _target_speech_audio_type(target_id, target_is_gguf, variant)
                             is not None
                         ),
+                    ) or (
+                        # The load itself still replaces the loaded model when it does not fit beside it.
+                        _load_alongside_for_request(fastapi_request)
+                        and await asyncio.to_thread(get_multi_model_enabled)
                     )
                     async with AsyncExitStack() as swap_gates:
                         if not beside:
@@ -38947,13 +39044,14 @@ async def _responses_stream(
         cancel_event = threading.Event()
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
         try:
-            reservation, admission_config = await _openai_llama_admission_reserve_async(
+            reservation, admission_config, body = await _reserve_counted_gguf_passthrough(
                 request = request,
                 llama_backend = llama_backend,
                 # chat_req, not payload: a ResponsesRequest carries `input` and
                 # `max_output_tokens`, so the estimator found no `messages` and fell back to
                 # one equal cache share no matter how large the request really was.
                 payload = chat_req,
+                body = body,
             )
         except LlamaAdmissionQueueFull as exc:
             _llama_admission_log(
@@ -41259,9 +41357,16 @@ async def _anthropic_messages_via_connection(
     fields["enable_thinking"] = reasoning["enable_thinking"]
     fields["reasoning_effort"] = reasoning["reasoning_effort"]
     fields["preserve_thinking"] = reasoning.get("preserve_thinking")
-    chat_payload = ChatCompletionRequest(
-        **{name: value for name, value in fields.items() if value is not None}
-    )
+    from fastapi.exceptions import RequestValidationError
+    from pydantic import ValidationError
+
+    # Messages bounds sampling looser than chat: a value chat rejects is a 400, not a 500.
+    try:
+        chat_payload = ChatCompletionRequest(
+            **{name: value for name, value in fields.items() if value is not None}
+        )
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from None
     response = await produce_openai_chat_completions(
         chat_payload, request, current_subject, cancel_on_disconnect = True
     )
@@ -42411,30 +42516,56 @@ async def anthropic_messages(
     # Like _gguf_admission_hold: the tool loop re-costs its reservation from this each round.
     _anthropic_admission_hold: dict = {"reservation": None}
 
+    def _anthropic_admission_body(conversation, *, tool_loop = False):
+        template_kwargs = _anthropic_count_template_kwargs(llama_backend, _reasoning_args)
+        if client_tools or response_format is not None:
+            # As the passthrough builds it: generation sends no parallel_tool_calls here.
+            return _build_passthrough_payload(
+                conversation,
+                openai_tools,
+                temperature,
+                top_p,
+                top_k,
+                payload.max_tokens,
+                payload.stream,
+                tool_choice = openai_tool_choice,
+                response_format = response_format,
+                chat_template_kwargs = template_kwargs,
+                backend_ctx = llama_backend.context_length,
+                markup = getattr(llama_backend, "markup_profile", None),
+            )
+        return {
+            "messages": conversation,
+            "tools": openai_tools if tool_loop else None,
+            "chat_template_kwargs": template_kwargs,
+        }
+
     def _anthropic_recost(conversation) -> None:
+        body = _anthropic_admission_body(conversation, tool_loop = True)
         _openai_llama_admission_recost(
             _anthropic_admission_hold["reservation"],
-            conversation,
+            body["messages"],
             request = request,
             llama_backend = llama_backend,
-            # `system` and `tools` live outside `messages` here, so the re-cost needs the payload.
             payload = payload,
             output_tokens = payload.max_tokens,
-            injected_tools = openai_tools,
+            injected_tools = body.get("tools"),
             cancel_event = cancel_event,
+            count_prepared_prompt = True,
+            prepared_body = body,
         )
 
     async def _admitted_anthropic(coro, *, tool_loop: bool = False):
         try:
-            reservation, admission_config = await _openai_llama_admission_reserve_async(
+            body = _anthropic_admission_body(openai_messages, tool_loop = tool_loop)
+            reservation, admission_config = await _reserve_counted_gguf_chat(
                 request = request,
                 llama_backend = llama_backend,
                 payload = payload,
                 tool_loop = tool_loop,
-                # Only the tool branch resolves a catalogue; the plain branch sends none.
-                injected_tools = openai_tools if tool_loop else None,
-                # Already translated and promoted, so a replayed screenshot is charged as an image.
-                messages_override = openai_messages,
+                injected_tools = body.get("tools"),
+                messages = body["messages"],
+                prepared_body = body,
             )
             if tool_loop:
                 _anthropic_admission_hold["reservation"] = reservation
@@ -44785,7 +44916,7 @@ async def _openai_passthrough_stream(
     _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
     _tracker.__enter__()
     try:
-        reservation, admission_config = await _openai_llama_admission_reserve_async(
+        reservation, admission_config, prepared_body = await _reserve_counted_gguf_passthrough(
             request = request,
             llama_backend = llama_backend,
             payload = payload,
@@ -44802,6 +44933,9 @@ async def _openai_passthrough_stream(
         )
         api_monitor.fail(monitor_id, str(exc))
         raise _openai_admission_http_exception(exc, status_code = 429)
+    except BaseException:
+        _tracker.__exit__(None, None, None)
+        raise
 
     lease = reservation.lease_nowait()
     if lease is not None:
@@ -44834,6 +44968,7 @@ async def _openai_passthrough_stream(
             monitor_id = monitor_id,
             admission_lease = lease,
             tracker = _tracker,
+            prepared_body = prepared_body,
         )
 
     admission_wait_started_at = time.monotonic()
@@ -44885,6 +45020,7 @@ async def _openai_passthrough_stream(
                     monitor_id = monitor_id,
                     admission_lease = wait_item,
                     tracker = _tracker,
+                    prepared_body = prepared_body,
                 )
                 admitted_started = True
                 iterator = admitted_response.body_iterator
@@ -44969,6 +45105,7 @@ async def _openai_passthrough_stream_admitted(
     *,
     admission_lease: LlamaAdmissionLease,
     tracker,
+    prepared_body = None,
 ):
     """Reasoning and tool-call splitting stay with llama-server, so delta.content is not re-parsed."""
     _tracker = tracker
@@ -45003,9 +45140,11 @@ async def _openai_passthrough_stream_admitted(
 
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
-        body = await _build_openai_passthrough_body_async(
-            payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
-        )
+        body = prepared_body
+        if body is None:
+            body = await _build_openai_passthrough_body_async(
+                payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+            )
         # The body builder is allowlisted, so the caller's opt-in lives in the extra fields.
         client_wants_progress = bool((payload.model_extra or {}).get("return_progress"))
         body["return_progress"] = True
@@ -45785,7 +45924,7 @@ async def _openai_passthrough_non_streaming(
 ):
     """Non-streaming pass-through guarded by local llama-server admission."""
     try:
-        reservation, admission_config = await _openai_llama_admission_reserve_async(
+        reservation, admission_config, prepared_body = await _reserve_counted_gguf_passthrough(
             request = request,
             llama_backend = llama_backend,
             payload = payload,
@@ -45840,6 +45979,7 @@ async def _openai_passthrough_non_streaming(
             monitor_id = monitor_id,
             request = request,
             cancel_event = cancel_event,
+            prepared_body = prepared_body,
         )
     except LlamaAdmissionTimeout as exc:
         _llama_admission_log(
@@ -45886,13 +46026,16 @@ async def _openai_passthrough_non_streaming_upstream(
     *,
     request: Optional[Request] = None,
     cancel_event = None,
+    prepared_body = None,
 ):
     """Returns llama-server's JSON verbatim, so the native id, finish_reason and usage reach the client."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
-    body = await _build_openai_passthrough_body_async(
-        payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
-    )
+    body = prepared_body
+    if body is None:
+        body = await _build_openai_passthrough_body_async(
+            payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+        )
     body["stream"] = False
     body.pop("stream_options", None)
 

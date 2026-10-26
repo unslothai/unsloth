@@ -5,7 +5,7 @@ import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
 import { autoscrollDelta, clipSpan } from "./autoscroll";
 import { flipShifts, insertionIndex, ownsDrag } from "./reorder";
-import { GripVerticalIcon, XIcon } from "lucide-react";
+import { GripVerticalIcon } from "lucide-react";
 import {
   type ReactElement,
   useCallback,
@@ -14,6 +14,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 // Textarea that grows with its content, capped at maxHeight.
 export function AutoTextarea({
@@ -387,7 +389,7 @@ export function SortablePromptItems({
                 className="mt-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Remove"
               >
-                <XIcon className="size-3.5" />
+                <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
               </button>
             )}
           </div>

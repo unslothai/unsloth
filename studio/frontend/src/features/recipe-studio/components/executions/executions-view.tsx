@@ -7,7 +7,7 @@ import {
   CheckmarkCircle02Icon,
   Download01Icon,
   Flag02Icon,
-  Share08Icon,
+  Share01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { publishRecipeJob } from "../../api";
@@ -522,7 +522,7 @@ export function ExecutionsView({
                       variant="outline"
                       onClick={() => setPublishDialogOpen(true)}
                     >
-                      <HugeiconsIcon icon={Share08Icon} className="mr-2 size-4" />
+                      <HugeiconsIcon icon={Share01Icon} className="mr-2 size-4" />
                       Publish to Hugging Face
                     </Button>
                   )}

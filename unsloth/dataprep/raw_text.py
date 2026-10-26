@@ -13,6 +13,7 @@ import os
 import re
 import json
 import csv
+import threading
 import unicodedata
 from typing import List, Dict, Any, Union, Optional
 from datasets import Dataset
@@ -22,6 +23,9 @@ __all__ = [
     "RawTextDataLoader",
     "TextPreprocessor",
 ]
+
+# csv.field_size_limit is process-global: overlapping reads must not restore it under each other.
+_CSV_FIELD_LIMIT_LOCK = threading.Lock()
 
 SUPPORTED_FORMATS = {
     ".txt": "plain_text",
@@ -250,12 +254,18 @@ class RawTextDataLoader:
                         lines.append(text)
                 return "\n\n".join(lines)
             elif file_format == "csv_text_column":
-                reader = csv.DictReader(f)
-                texts = []
-                for row in reader:
-                    text = self._extract_text_from_csv_row(row)
-                    if text:
-                        texts.append(text)
+                # Default 128 KB cell limit rejects whole documents; sys.maxsize overflows a C long on Windows.
+                with _CSV_FIELD_LIMIT_LOCK:
+                    previous_limit = csv.field_size_limit(2**31 - 1)
+                    try:
+                        reader = csv.DictReader(f)
+                        texts = []
+                        for row in reader:
+                            text = self._extract_text_from_csv_row(row)
+                            if text:
+                                texts.append(text)
+                    finally:
+                        csv.field_size_limit(previous_limit)
                 return "\n\n".join(texts)
         return ""
 

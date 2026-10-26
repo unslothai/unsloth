@@ -2,12 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import {
-  XIcon,
-} from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
+import { FileDatabaseIcon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { FileGlyph } from "@/lib/file-icon";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -147,7 +144,7 @@ export function KnowledgeBaseComposerButton({
                 strokeWidth={2}
                 className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
-              <XIcon className="composer-pill-x" />
+              <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
             </span>
             <span>Files</span>
             <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
