@@ -15,8 +15,7 @@ const A = await import("../src/features/flows/player/world/world-actions.ts");
 const { budgetSpec, runBudget } = await import("./helpers/life-budget.ts");
 type Spec = import("../src/features/flows/types.ts").WorldSpec;
 type Mind = import("../src/features/flows/player/world/world-sim.ts").NpcMind;
-type Option =
-  import("../src/features/flows/player/world/world-sim.ts").PlanOption;
+type Option = import("../src/features/flows/player/world/world-sim.ts").PlanOption;
 
 const LIFE = {
   options: true,
@@ -384,6 +383,27 @@ test("reflection waits for summed importance to cross the threshold, then resets
   assert.equal(s.npc.v0.since, 0);
   assert.equal(s.npc.v0.memory.at(-1)?.kind, "reflection");
   assert.equal(s.npc.v0.memory.at(-1)?.text, "I am busy");
+  const late = L.lifeJobs(
+    sp,
+    cfg,
+    W.withMind(s, "v0", (m) => ({ ...m, since: 25 })),
+    async () => {
+      s = W.withMind(s, "v0", (m) =>
+        S.remember(m, [{ text: "d", importance: 10 }], 600),
+      );
+      return { insights: [] };
+    },
+    (fn) => {
+      s = fn(s);
+    },
+  );
+  s = W.withMind(s, "v0", (m) => ({ ...m, since: 25 }));
+  await late[0].run(new AbortController().signal);
+  assert.equal(
+    s.npc.v0.since,
+    10,
+    "notes added during the call wait for the next reflection",
+  );
 });
 
 test("importance is rated in one batched call across villagers", async () => {
