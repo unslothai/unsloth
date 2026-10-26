@@ -456,12 +456,20 @@ def _case_workspace(rank, world, tmp):
         return _raised(lambda: save.unsloth_save_model(model, None, directory, save_method = "lora"))
 
     if rank == 1:  # the non-writer: room for less than one tensor's gather
-        tp_replica._free_bytes = lambda device: (tp_replica._margin(workspace) + workspace // 2, "free on its GPU")
+        tp_replica._free_bytes = lambda device: (
+            tp_replica._margin(workspace) + workspace // 2,
+            "free on its GPU",
+        )
     out["short"] = export(os.path.join(tmp, "short"))
     out["short_wrote"] = os.path.isdir(os.path.join(tmp, "short"))
     out["untouched"] = all(p is sharded[n] for n, p in model.named_parameters())
-    if rank == 1:  # room for the workspace, not for a whole replica (the writer keeps it, not this rank)
-        tp_replica._free_bytes = lambda device: (tp_replica._margin(workspace) + workspace, "free on its GPU")
+    if (
+        rank == 1
+    ):  # room for the workspace, not for a whole replica (the writer keeps it, not this rank)
+        tp_replica._free_bytes = lambda device: (
+            tp_replica._margin(workspace) + workspace,
+            "free on its GPU",
+        )
     out["enough"] = export(os.path.join(tmp, "enough"))
     tp_replica._free_bytes = real
     out["enough_wrote"] = os.path.isfile(os.path.join(tmp, "enough", "adapter_config.json"))
@@ -643,7 +651,9 @@ def test_tp2_replica_that_does_not_fit_is_refused_on_every_rank():
                 res[key],
             )
             assert (
-                "rank 1 needs" in res[key] and "MiB on its device" in res[key] and "has 0.0 MiB" in res[key]
+                "rank 1 needs" in res[key]
+                and "MiB on its device" in res[key]
+                and "has 0.0 MiB" in res[key]
             ), res[key]
         assert res["untouched"] and not res["replica"], res
         assert res["pp_for_inference"] and "pipeline parallel" in res["pp_for_inference"], res
@@ -680,8 +690,12 @@ def test_tp2_processor_saves_once_per_world():
 def test_tp2_non_writer_without_gather_workspace_refuses_with_every_rank():
     results = _spawn("workspace", 2)
     for rank, res in enumerate(results):
-        assert res["replica"] > res["workspace"] // 3, res  # the room given below is less than a replica
-        assert res["short"] and "rank 1 needs" in res["short"] and "gather workspace" in res["short"], (
+        assert (
+            res["replica"] > res["workspace"] // 3
+        ), res  # the room given below is less than a replica
+        assert (
+            res["short"] and "rank 1 needs" in res["short"] and "gather workspace" in res["short"]
+        ), (
             rank,
             res["short"],
         )
