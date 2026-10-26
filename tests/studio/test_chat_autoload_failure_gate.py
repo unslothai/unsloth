@@ -48,6 +48,23 @@ def _wait_gate_source() -> str:
     return gate
 
 
+# Inlined, not copied: it builds the llama-server half of the /load payload these scenarios assert on.
+LOAD_REQUEST = _source_path("studio/frontend/src/features/chat/lib/load-request.ts")
+
+
+def _load_request_source() -> str:
+    """The load-request module with its imports dropped; PREAMBLE supplies serverTuningLoadPayload."""
+    source = "\n".join(
+        line
+        for line in LOAD_REQUEST.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith(
+            ("import ", "  type ServerTuningValues,", "  serverTuningLoadPayload,", "} from ")
+        )
+    )
+    assert "export function llamaServerLoadFields(" in source
+    return source
+
+
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
 # tests/studio/test_chat_mount_cli_load_adoption.py.
 PONYFILLS = """
@@ -878,7 +895,7 @@ def _build_harness(run_dir: Path):
     # Any mention, not just a call; comments are stripped first.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
-    preamble = PREAMBLE + PONYFILLS + _wait_gate_source()
+    preamble = PREAMBLE + PONYFILLS + _wait_gate_source() + _load_request_source()
     missing = sorted(
         name
         for name in imported

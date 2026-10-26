@@ -323,6 +323,15 @@ export function MemoryEstimateRow({
             value={formatMemoryGb(estimate.projectorRuntimeBytes)}
           />
         )}
+        {/* Streamed: outside Weights and Total, only the rows in use page in. Resident:
+            already inside Weights, so the note says so rather than adding it twice. */}
+        {(estimate.lookupTableBytes ?? 0) > 0 && (
+          <MemoryBreakdownLine
+            label="Lookup tables"
+            value={formatMemoryGb(estimate.lookupTableBytes ?? 0)}
+            note={estimate.lookupTableOnDisk ? "on disk" : "in RAM, part of Weights"}
+          />
+        )}
         {estimate.drafterRuntimeBytes > 0 && (
           <MemoryBreakdownLine
             label="Draft cache"

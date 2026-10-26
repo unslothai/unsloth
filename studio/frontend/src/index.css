@@ -416,6 +416,8 @@
 	--ui-icon-size-sm: calc(0.875rem * var(--ui-font-scale, 1));
 	/* Info "i" beside a settings label, a notch under the label text. */
 	--ui-icon-size-hint: calc(0.75rem * var(--ui-font-scale, 1));
+	/* Gap from a text-sm title's line top to its cap top (Inter at leading 1.43: 0.35em). */
+	--ui-title-cap-inset: calc(0.875rem * 0.35 * var(--ui-font-scale, 1));
 	/* Model picker header controls. Padding and gaps follow --ui-space-scale,
 	   icons and label follow --ui-font-scale, so reserve each separately. The
 	   trigger is 2.25rem of padding and gaps, two icons, then the label, plus
@@ -2714,6 +2716,17 @@ html[data-chat-font] .aui-root {
 		color: color-mix(in oklab, var(--muted-foreground), var(--background) 7%);
 	}
 
+	/* The control beside a title + description: its top edge meets the top of the title's letters. */
+	[data-title-line-control] {
+		display: flex;
+		align-items: flex-start;
+		padding-top: var(--ui-title-cap-inset);
+	}
+	/* Plain text (a status like "Off") lines up letter to letter instead, from the line top. */
+	[data-title-line-control]:not(:has(button, input, select, textarea, [role])) {
+		padding-top: 0;
+	}
+
 	/* Disabled ones (native, aria-disabled, Radix data-disabled) keep the default cursor. */
 	button:not(:disabled):not([aria-disabled="true"]),
 	summary,
@@ -2837,7 +2850,8 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Whole-pixel label, inside it, not a margin: the next row's 2px margin collapses with one. */
-	[data-slot="dropdown-menu-label"]::after {
+	/* Not in flex or grid labels, where it would be an item and pull a justify-between chip inward. */
+	[data-slot="dropdown-menu-label"]:not(.flex, .inline-flex, .grid, .inline-grid)::after {
 		content: "";
 		display: block;
 		height: calc(round(up, 1lh, 1px) - 1lh);
@@ -5873,8 +5887,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 
 .unsloth-files-panel {
-	/* pt-3.5: the 28px Add files pill sits in the 32px header row, so this keeps it 16px from the top edge. */
-	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-2xl px-4 pt-3.5 pb-6;
+	/* pt-2: the 28px Add files pill sits in the 32px header row, so this keeps it 10px from the top edge. */
+	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-2xl px-4 pt-2 pb-4;
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;
@@ -5930,6 +5944,9 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-panel[data-collapsed="true"] {
 	/* pt-2.5 + the 32px header row's 2px around the Add files pill = the pills' 12px below. */
 	@apply gap-2.5 pt-2.5 pb-3;
+}
+.unsloth-files-panel[data-collapsed="true"]:not(:has(.unsloth-files-panel-strip > *)) {
+	@apply rounded-full;
 }
 /* Dropdown-surface look. Hover washes over the solid fill, never replaces it (it would turn see-through). */
 .unsloth-files-panel-show-all {

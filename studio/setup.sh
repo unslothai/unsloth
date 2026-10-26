@@ -5194,6 +5194,11 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             run_quiet_no_exit "build llama-quantize" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Best-effort on macOS: the Metal memory probe the prebuilt bundles ship too.
+            # Without it the Metal fit keeps a big model's input embeddings charged.
+            if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+                run_quiet_no_exit "build llama-fit-params" cmake --build "$_BUILD_TMP/build" --config Release --target llama-fit-params -j"$NCPU" || true
+            fi
             # Best-effort: the target exists only on llama.cpp trees carrying the diffusion example.
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
         fi

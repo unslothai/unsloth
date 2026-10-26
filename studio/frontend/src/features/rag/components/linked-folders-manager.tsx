@@ -366,7 +366,7 @@ export function LinkedFoldersManager({
             type="button"
             size="sm"
             variant="outline"
-            className="shrink-0"
+            className="mt-[var(--ui-title-cap-inset)] shrink-0"
             disabled={!manager.desktopSupported || manager.mutating}
             onClick={() => void manager.link()}
             title={

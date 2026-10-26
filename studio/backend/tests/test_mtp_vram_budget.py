@@ -972,15 +972,19 @@ class TestExtraArgsMtpDetection:
 
     def test_load_model_clears_inherited_split_mode_on_layer(self):
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert 'env.get("LLAMA_ARG_SPLIT_MODE")' in compact
-        assert '_inherited_sm!="layer"' in compact
-        assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
-        assert 'env.pop("LLAMA_ARG_TENSOR_SPLIT",None)' in compact
+        assert "self._reconcile_split_mode_env(env,tensor_parallel=tensor_parallel)" in compact
+        for sm in ("none", "row", "tensor", " Row "):
+            env = {"LLAMA_ARG_SPLIT_MODE": sm, "LLAMA_ARG_TENSOR_SPLIT": "1,1", "X": "1"}
+            LlamaCppBackend._reconcile_split_mode_env(env, tensor_parallel = False)
+            assert env == {"X": "1"}, sm
+        env = {"LLAMA_ARG_SPLIT_MODE": "layer", "LLAMA_ARG_TENSOR_SPLIT": "1,1"}
+        LlamaCppBackend._reconcile_split_mode_env(env, tensor_parallel = False)
+        assert env == {"LLAMA_ARG_SPLIT_MODE": "layer", "LLAMA_ARG_TENSOR_SPLIT": "1,1"}
 
     def test_load_model_clears_tensor_split_env_in_tensor_mode(self):
-        src = inspect.getsource(LlamaCppBackend.load_model)
-        compact = "".join(src.split())
-        assert compact.count('env.pop("LLAMA_ARG_TENSOR_SPLIT",None)') >= 2
+        env = {"LLAMA_ARG_SPLIT_MODE": "tensor", "LLAMA_ARG_TENSOR_SPLIT": "1,1"}
+        LlamaCppBackend._reconcile_split_mode_env(env, tensor_parallel = True)
+        assert env == {"LLAMA_ARG_SPLIT_MODE": "tensor"}
 
     def test_load_model_layer_compute_buffer_fallback(self):
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
