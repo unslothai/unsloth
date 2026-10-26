@@ -46193,8 +46193,7 @@ async def _anthropic_messages_via_connection(
     from fastapi.exceptions import RequestValidationError
     from pydantic import ValidationError
 
-    # Messages bounds some sampling fields less tightly than chat does (top_k, temperature, max_tokens),
-    # so a value chat rejects is a 400 here, not an unhandled ValidationError.
+    # Messages bounds sampling looser than chat: a value chat rejects is a 400, not a 500.
     try:
         chat_payload = ChatCompletionRequest(
             **{name: value for name, value in fields.items() if value is not None}
