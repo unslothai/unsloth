@@ -716,7 +716,6 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
-          destructive={true}
           label={t("settings.general.previewSharing.revokeLabel")}
           description={t("settings.general.previewSharing.revokeDescription")}
         >
