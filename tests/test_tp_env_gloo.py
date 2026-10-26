@@ -384,7 +384,14 @@ def _case_accelerate_fsdp(rank, world, tmp, ckpt):
     }
 
 
-def _case_model_init(rank, world, tmp, ckpt, hooked, with_model = False):
+def _case_model_init(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    hooked,
+    with_model = False,
+):
     """Trainer(model_init = ...) under UNSLOTH_TP_SIZE: the model is built inside Trainer.__init__ (and again by
     train / hyperparameter_search), after the tensor parallel Trainer setup ran on model = None."""
     error = _import_checkout_unsloth()
@@ -417,7 +424,9 @@ def _case_model_init(rank, world, tmp, ckpt, hooked, with_model = False):
 
     data = _Rows([torch.arange(9)] * 8)
     trainer = []
-    if with_model:  # transformers 4.x accepts both (FutureWarning) and train() rebuilds from model_init
+    if (
+        with_model
+    ):  # transformers 4.x accepts both (FutureWarning) and train() rebuilds from model_init
         model = peft(load(ckpt, load_in_4bit = False))
 
         def run():
