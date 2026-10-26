@@ -7,7 +7,7 @@ import type { SttDevice } from "../stores/voice-settings-store";
 
 type SttDeviceState = { device: SttDevice | "gpu"; saved?: boolean };
 
-// Soft-fails: localStorage stays the UI's source of truth (#15280). Chained so the last choice lands last.
+// Soft-fails (#15280). Chained so the last choice lands last.
 let pending: Promise<unknown> = Promise.resolve();
 // Bumped per save, so a read that started before one is not applied after it.
 let revision = 0;
