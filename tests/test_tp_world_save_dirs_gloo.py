@@ -56,7 +56,6 @@ def _case(rank, world, tmp):
 
     def config(directory):
         import json
-
         with open(os.path.join(directory, "tokenizer_config.json")) as f:
             return json.load(f).get("model_max_length")
 
@@ -141,7 +140,9 @@ def test_tp2_kept_tokenizer_saves_complete_files_on_every_rank():
         assert res["after_on_return"] == 222 and res["after_final"] == 222, (rank, res)
         assert res["shared_on_return"], (rank, res)
         assert res["own_on_return"], (rank, res)  # its own directory, written
-        assert res["shared_writers"] == [rank], res  # its own private copy, moved in with os.replace
+        assert res["shared_writers"] == [
+            rank
+        ], res  # its own private copy, moved in with os.replace
         paths = [p for p in res["after_return"] if str(p).endswith("tokenizer_config.json")]
         assert paths and os.path.basename(os.path.dirname(paths[0])) == "same", res["after_return"]
         assert res["leftovers"] == [], res["leftovers"]  # private directories removed

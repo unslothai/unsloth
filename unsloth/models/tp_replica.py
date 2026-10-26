@@ -588,7 +588,12 @@ def _restore_tree(kept):
             module.merged_adapters[:] = merged
 
 
-def _on_rank0(key, what, call, model = None):
+def _on_rank0(
+    key,
+    what,
+    call,
+    model = None,
+):
     """Rank 0 runs `call`; the others wait for it on the store and return its result or raise its error."""
     if _rank() == 0:
         _ACTIVE.append(what)
@@ -655,13 +660,26 @@ def mark_world_save(obj):
     save = getattr(obj, "save_pretrained", None)
     if callable(save) and getattr(save, "__name__", "") != "unsloth_tokenizer_save_pretrained":
 
-        def save_pretrained(save_directory, *args, push_to_hub = False, **kwargs):
+        def save_pretrained(
+            save_directory,
+            *args,
+            push_to_hub = False,
+            **kwargs,
+        ):
             what = f"{type(obj).__name__}.save_pretrained"
             result = tp_world_save(what, lambda path: save(path, *args, **kwargs), save_directory)
             if push_to_hub:
-                repo_id = kwargs.pop("repo_id", os.path.basename(os.path.normpath(os.fspath(save_directory))))
-                push = {k: kwargs[k] for k in ("commit_message", "token", "private", "revision") if k in kwargs}
-                tp_world_push(f"{type(obj).__name__}.push_to_hub", lambda: obj.push_to_hub(repo_id, **push))
+                repo_id = kwargs.pop(
+                    "repo_id", os.path.basename(os.path.normpath(os.fspath(save_directory)))
+                )
+                push = {
+                    k: kwargs[k]
+                    for k in ("commit_message", "token", "private", "revision")
+                    if k in kwargs
+                }
+                tp_world_push(
+                    f"{type(obj).__name__}.push_to_hub", lambda: obj.push_to_hub(repo_id, **push)
+                )
             return result
 
         save_pretrained.__name__ = "unsloth_tp_world_save_pretrained"
