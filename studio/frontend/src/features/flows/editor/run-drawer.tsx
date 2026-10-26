@@ -4,9 +4,14 @@
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useReactFlow } from "@xyflow/react";
 import { memo, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
-import { type NodeRuntime, useRuntimeStore } from "../stores/runtime-store";
+import {
+  type NodeRuntime,
+  type RunLogLine,
+  useRuntimeStore,
+} from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import type { MediaValue } from "../types";
 import { ArrowDown01Icon } from "./icon-data";
@@ -23,9 +28,9 @@ const RUN_STATUS_STYLE: Record<string, string> = {
   interrupted: "bg-amber-700 text-white",
 };
 
-function duration(rt: NodeRuntime): string {
+function duration(rt: NodeRuntime, now: number): string {
   if (!rt.startedAt) return "";
-  const end = rt.finishedAt ?? Date.now() / 1000;
+  const end = rt.finishedAt ?? now / 1000;
   const s = Math.max(0, end - rt.startedAt);
   return s < 60
     ? `${s.toFixed(1)}s`
@@ -55,65 +60,89 @@ function Timeline() {
         Run the flow to see each step here.
       </p>
     );
+  const now = Date.now();
   return (
     <ul className="divide-y divide-white/5">
       {rows.map(({ id, node, rt }) => (
-        <li key={id}>
-          <button
-            type="button"
-            onClick={() => {
-              useUiStore.getState().setSelection([id], []);
-              useUiStore.getState().openInspector(id);
-              void fitView({ nodes: [{ id }], duration: 300, maxZoom: 1.2 });
-            }}
-            className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-[12.5px] hover:bg-white/5"
-          >
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${
-                rt.status === "failed"
-                  ? "bg-red-500"
-                  : rt.status === "running" || rt.status === "loading_model"
-                    ? "animate-pulse bg-sky-400"
-                    : rt.status === "done" || rt.status === "cached"
-                      ? "bg-emerald-400"
-                      : "bg-zinc-500"
-              }`}
-            />
-            <span className="w-48 truncate text-zinc-200">
-              {node.label || specs[node.type]?.title || node.type}
-            </span>
-            <span className="w-24 text-zinc-500">
-              {rt.cached ? "cached" : rt.status.replace("_", " ")}
-            </span>
-            {rt.status === "failed" ? (
-              <span className="min-w-0 flex-1 text-red-300">
-                {rt.error || "It stopped with an error"}{" "}
-                <span className="whitespace-nowrap text-zinc-400 underline underline-offset-2">
-                  Open block
-                </span>
-              </span>
-            ) : (
-              <span className="min-w-0 flex-1 truncate text-zinc-500">
-                {rt.error ?? rt.phase ?? ""}
-              </span>
-            )}
-            {rt.progress !== null && rt.status === "running" && (
-              <span className="h-1 w-24 overflow-hidden rounded bg-white/10">
-                <span
-                  className="block h-full bg-sky-400"
-                  style={{ width: `${Math.round(rt.progress * 100)}%` }}
-                />
-              </span>
-            )}
-            <span className="w-14 text-right font-mono text-[11px] text-zinc-500">
-              {duration(rt)}
-            </span>
-          </button>
-        </li>
+        <TimelineRow
+          key={id}
+          id={id}
+          title={node.label || specs[node.type]?.title || node.type}
+          rt={rt}
+          now={rt.startedAt && rt.finishedAt == null ? now : 0}
+          fitView={fitView}
+        />
       ))}
     </ul>
   );
 }
+
+const TimelineRow = memo(function TimelineRow({
+  id,
+  title,
+  rt,
+  now,
+  fitView,
+}: {
+  id: string;
+  title: string;
+  rt: NodeRuntime;
+  now: number;
+  fitView: ReturnType<typeof useReactFlow>["fitView"];
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => {
+          useUiStore.getState().setSelection([id], []);
+          useUiStore.getState().openInspector(id);
+          void fitView({ nodes: [{ id }], duration: 300, maxZoom: 1.2 });
+        }}
+        className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-[12.5px] hover:bg-white/5"
+      >
+        <span
+          className={`h-2 w-2 shrink-0 rounded-full ${
+            rt.status === "failed"
+              ? "bg-red-500"
+              : rt.status === "running" || rt.status === "loading_model"
+                ? "animate-pulse bg-sky-400"
+                : rt.status === "done" || rt.status === "cached"
+                  ? "bg-emerald-400"
+                  : "bg-zinc-500"
+          }`}
+        />
+        <span className="w-48 truncate text-zinc-200">{title}</span>
+        <span className="w-24 text-zinc-500">
+          {rt.cached ? "cached" : rt.status.replace("_", " ")}
+        </span>
+        {rt.status === "failed" ? (
+          <span className="min-w-0 flex-1 text-red-300">
+            {rt.error || "It stopped with an error"}{" "}
+            <span className="whitespace-nowrap text-zinc-400 underline underline-offset-2">
+              Open block
+            </span>
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-zinc-500">
+            {rt.error ?? rt.phase ?? ""}
+          </span>
+        )}
+        {rt.progress !== null && rt.status === "running" && (
+          <span className="h-1 w-24 overflow-hidden rounded bg-white/10">
+            <span
+              className="block h-full bg-sky-400"
+              style={{ width: `${Math.round(rt.progress * 100)}%` }}
+            />
+          </span>
+        )}
+        <span className="w-14 text-right font-mono text-[11px] text-zinc-500">
+          {duration(rt, now)}
+        </span>
+      </button>
+    </li>
+  );
+});
 
 function Logs() {
   const logs = useRuntimeStore((s) => s.logs);
@@ -126,35 +155,53 @@ function Logs() {
   return (
     <pre className="px-4 py-2 font-mono text-[11px] leading-relaxed text-zinc-400">
       {logs.map((line) => (
-        <div
-          key={line.seq}
-          className={
-            line.level === "error"
-              ? "text-red-300"
-              : line.level === "warning"
-                ? "text-amber-300"
-                : ""
-          }
-        >
-          <span className="text-zinc-600">
-            {new Date(line.ts * 1000).toLocaleTimeString()}{" "}
-          </span>
-          {line.nodeId ? (
-            <span className="text-zinc-500">[{line.nodeId}] </span>
-          ) : null}
-          {line.message}
-        </div>
+        <LogLine key={line.seq} line={line} />
       ))}
     </pre>
   );
 }
 
+const LogLine = memo(function LogLine({ line }: { line: RunLogLine }) {
+  return (
+    <div
+      className={
+        line.level === "error"
+          ? "text-red-300"
+          : line.level === "warning"
+            ? "text-amber-300"
+            : ""
+      }
+    >
+      <span className="text-zinc-600">
+        {new Date(line.ts * 1000).toLocaleTimeString()}{" "}
+      </span>
+      {line.nodeId ? (
+        <span className="text-zinc-500">[{line.nodeId}] </span>
+      ) : null}
+      {line.message}
+    </div>
+  );
+});
+
 function Outputs() {
-  const runtimeNodes = useRuntimeStore((s) => s.nodes);
+  const flat = useRuntimeStore(
+    useShallow((s) =>
+      Object.entries(s.nodes).flatMap(([id, rt]) => [id, rt.outputs]),
+    ),
+  );
+  const runtimeOutputs = useMemo(() => {
+    const pairs: [string, Record<string, unknown> | null][] = [];
+    for (let i = 0; i < flat.length; i += 2)
+      pairs.push([
+        flat[i] as string,
+        flat[i + 1] as Record<string, unknown> | null,
+      ]);
+    return pairs;
+  }, [flat]);
   const media = useMemo(() => {
     const items: { key: string; media: MediaValue }[] = [];
-    for (const [id, rt] of Object.entries(runtimeNodes)) {
-      for (const [port, value] of Object.entries(rt.outputs ?? {})) {
+    for (const [id, outputs] of runtimeOutputs) {
+      for (const [port, value] of Object.entries(outputs ?? {})) {
         const list = Array.isArray(value) ? value : [value];
         list.forEach((item, i) => {
           if (isMediaValue(item))
@@ -170,17 +217,17 @@ function Outputs() {
         return true;
       })
       .slice(0, 120);
-  }, [runtimeNodes]);
+  }, [runtimeOutputs]);
   const structured = useMemo(() => {
     const items: { key: string; label: string; value: unknown }[] = [];
-    for (const [id, rt] of Object.entries(runtimeNodes)) {
-      for (const [port, value] of Object.entries(rt.outputs ?? {})) {
+    for (const [id, outputs] of runtimeOutputs) {
+      for (const [port, value] of Object.entries(outputs ?? {})) {
         if (isStructuredValue(value))
           items.push({ key: `${id}:${port}`, label: `${id} / ${port}`, value });
       }
     }
     return items.slice(0, 12);
-  }, [runtimeNodes]);
+  }, [runtimeOutputs]);
   if (!media.length && !structured.length)
     return (
       <p className="px-4 py-6 text-center text-[12px] text-zinc-500">
