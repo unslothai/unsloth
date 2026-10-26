@@ -584,19 +584,52 @@ def _fp8_tma_gemm_ok(A, B, C, BLOCK_SIZE_M, block_n, block_k, long_idx):
     index = A.device.index if A.device.index is not None else torch.cuda.current_device()
     if not _fp8_tma_gemm_arch_at(index):
         return False
+    capturing = torch.cuda.is_current_stream_capturing()
     checked = _FP8_TMA_SELF_CHECKED.get(index)
     if checked is None:
-        if torch.cuda.is_current_stream_capturing():
+        if capturing:
             return False  # the self check allocates and syncs: run it outside graph capture
         checked = _FP8_TMA_SELF_CHECKED[index] = _fp8_tma_gemm_self_check(index)
+    # The self check above still runs on the first eager call, so a later graph capture picks TMA as before.
+    if checked and not capturing and (C.numel() // N) * N * K < _FP8_TMA_EAGER_MIN_MNK:
+        return False
     return checked
+
+
+# Eager launches pay ~25 us of host work for the three descriptors (B200: M = 128, N = K = 4096 runs
+# 42 -> 67 us per call), more than the faster kernel saves below ~2**34 multiply-adds (M = 1024 at
+# N = K = 4096), so smaller eager GEMMs keep the pointer kernel. CUDA graph replays skip the host
+# work, so captured GEMMs take TMA at any size. Both kernels give bitwise identical outputs.
+_FP8_TMA_EAGER_MIN_MNK = 1 << 34
+
+# TensorDescriptor.from_tensor re-validates every field per call (~4 us each). The fields that do not
+# change per call (block shape, padding, ...) are validated once per (dtype, block shape) here;
+# _fp8_tma_gemm_ok already checked the alignment of the base and row pitch.
+_FP8_TMA_DESC_FIELDS = {}
+
+
+def _fp8_tma_descriptor(tensor, rows, cols, block_shape):
+    key = (tensor.dtype, block_shape)
+    fields = _FP8_TMA_DESC_FIELDS.get(key)
+    if fields is None:
+        proto = _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
+        fields = _FP8_TMA_DESC_FIELDS[key] = dict(getattr(proto, "__dict__", None) or {})
+    if not fields or rows <= 0 or cols <= 0:
+        return _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
+    desc = _TensorDescriptor.__new__(_TensorDescriptor)
+    desc.__dict__.update(fields)
+    # Built per call from the live tensor: a replaced or in-place edited weight is never stale.
+    desc.base = tensor
+    desc.shape = [rows, cols]
+    desc.strides = [cols, 1]
+    return desc
 
 
 def _launch_fp8_tma_gemm(A, B, C, As, Bs, M, N, K, block_n, block_k):
     BLOCK_SIZE_M = 128
-    a_desc = _TensorDescriptor.from_tensor(A.view(M, K), [BLOCK_SIZE_M, block_k])
-    b_desc = _TensorDescriptor.from_tensor(B, [block_n, block_k])
-    c_desc = _TensorDescriptor.from_tensor(C.view(M, N), [BLOCK_SIZE_M, block_n])
+    a_desc = _fp8_tma_descriptor(A, M, K, (BLOCK_SIZE_M, block_k))
+    b_desc = _fp8_tma_descriptor(B, N, K, (block_n, block_k))
+    c_desc = _fp8_tma_descriptor(C, M, N, (BLOCK_SIZE_M, block_n))
     grid = (triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(N, block_n),)
     _w8a8_block_fp8_matmul_tma[grid](
         a_desc,
