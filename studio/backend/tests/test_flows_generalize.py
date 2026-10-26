@@ -178,13 +178,13 @@ async def test_stored_partials_keep_their_position_but_not_the_value(monkeypatch
 
     _add_spec(monkeypatch, _rows_spec())
     stored = []
-    real = engine_mod.flows_db.append_event
+    real = engine_mod.flows_db.write_batch
 
-    def capture(run_id, seq, event):
-        stored.append(event)
-        return real(run_id, seq, event)
+    def capture(run_id, events, results, cache_rows):
+        stored.extend(event for _, event in events)
+        return real(run_id, events, results, cache_rows)
 
-    monkeypatch.setattr(engine_mod.flows_db, "append_event", capture)
+    monkeypatch.setattr(engine_mod.flows_db, "write_batch", capture)
 
     async def rows(ctx):
         ctx.partial("rows", list(range(500)), step = 1, total = 2)

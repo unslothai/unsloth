@@ -15,6 +15,7 @@ already finished. Each run reaches Studio as its own internal API key, revoked w
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import contextlib
 import contextvars
 import base64
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 CPU_CONCURRENCY = 4
 PROGRESS_MIN_INTERVAL_S = 0.2
+SPARE_KEY_IDLE_S = 600.0
 INVOKE_FLUSH_S = 0.05
 CANCEL_GRACE_S = 10.0
 LEASE_RETRY_S = 2.0
@@ -139,7 +141,7 @@ def param_values(spec: dict, node: dict) -> dict:
     return params
 
 
-@dataclass
+@dataclass(slots = True)
 class NodeState:
     status: str = "idle"
     outputs: Optional[dict] = None
@@ -165,6 +167,8 @@ class NodeState:
 
 class Env:
     """Node outputs visible to a scope; a For Each iteration layers its own over the run's."""
+
+    __slots__ = ("parent", "values")
 
     def __init__(self, parent: Optional["Env"] = None):
         self.parent = parent
@@ -192,7 +196,11 @@ class RunState:
     persist: bool = True
     status: str = "queued"
     seq: int = 0
-    events: list[dict] = field(default_factory = list)
+    events: deque = field(default_factory = lambda: deque(maxlen = MEMORY_EVENTS))
+    # Written in one transaction per flush instead of one per event, node result or cache entry.
+    _unsaved_events: list[tuple[int, dict]] = field(default_factory = list, repr = False)
+    _unsaved_results: dict[str, tuple] = field(default_factory = dict, repr = False)
+    _unsaved_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
     subscribers: set[asyncio.Queue] = field(default_factory = set)
     cancel_event: asyncio.Event = field(default_factory = asyncio.Event)
     nodes: dict[str, NodeState] = field(default_factory = dict)
@@ -253,8 +261,6 @@ class RunState:
             "data": data or {},
         }
         self.events.append(event)
-        if len(self.events) > MEMORY_EVENTS:
-            del self.events[: len(self.events) - MEMORY_EVENTS]
         for queue in list(self.subscribers):
             try:
                 queue.put_nowait(event)
@@ -270,13 +276,19 @@ class RunState:
             elif type_ == "node.partial":
                 # Partials often repeat everything so far: store the position only, or the table grows quadratically.
                 stored = {**event, "data": {k: v for k, v in event["data"].items() if k != "value"}}
-            try:
-                flows_db.append_event(self.id, self.seq, stored)
-            except Exception:
-                logger.warning(
-                    "flows: could not store event %s of run %s", self.seq, self.id, exc_info = True
-                )
+            self._unsaved_events.append((self.seq, stored))
         return event
+
+    def take_unsaved(self) -> Optional[tuple[list, list, list]]:
+        if not (self._unsaved_events or self._unsaved_results or self._unsaved_cache):
+            return None
+        batch = (
+            self._unsaved_events,
+            [(nid, *row) for nid, row in self._unsaved_results.items()],
+            [(key, *row) for key, row in self._unsaved_cache.items()],
+        )
+        self._unsaved_events, self._unsaved_results, self._unsaved_cache = [], {}, {}
+        return batch
 
     def set_status(
         self,
@@ -791,6 +803,45 @@ class FlowEngine:
             flow_caller.mint_run_key
         )
         self.revoke_key: Callable[[Optional[int]], None] = flow_caller.revoke_run_key
+        # One key minted ahead per account (PBKDF2, ~40 ms): each run or call still uses a key once and revokes it.
+        self._spare_keys: dict[tuple, asyncio.Task] = {}
+
+    async def take_key(self, account: AccountContext) -> tuple[str, Optional[int]]:
+        slot = (account.account_id, account.username)
+        spare = self._spare_keys.pop(slot, None)
+        found = None
+        if spare is not None:
+            try:
+                found = await spare
+            except Exception:
+                found = None
+        if found is None:
+            found = await asyncio.to_thread(self.mint_key, account)
+        self._spare_keys[slot] = asyncio.create_task(self._mint_spare(account))
+        return found
+
+    async def _mint_spare(self, account: AccountContext) -> tuple[str, Optional[int]]:
+        token, key_id = await asyncio.to_thread(self.mint_key, account)
+        asyncio.get_running_loop().call_later(SPARE_KEY_IDLE_S, self._retire_spare, account, key_id)
+        return token, key_id
+
+    def _retire_spare(self, account: AccountContext, key_id: Optional[int]) -> None:
+        slot = (account.account_id, account.username)
+        spare = self._spare_keys.get(slot)
+        if spare is None or not spare.done() or spare.cancelled() or spare.exception() is not None:
+            return
+        if spare.result()[1] == key_id:
+            self._spare_keys.pop(slot, None)
+            asyncio.create_task(asyncio.to_thread(self.revoke_key, key_id))
+
+    async def release_spare_keys(self) -> None:
+        spares, self._spare_keys = list(self._spare_keys.values()), {}
+        for spare in spares:
+            try:
+                _token, key_id = await spare
+            except BaseException:
+                continue
+            await asyncio.to_thread(self.revoke_key, key_id)
 
     def gpu_lock(self) -> GpuLease:
         loop = asyncio.get_running_loop()
@@ -920,7 +971,7 @@ class FlowEngine:
         for port, sources in plan.inputs.get(entry, {}).items():
             if port not in overrides:
                 need |= plan.ancestors(src for src, _ in sources)
-        token, key_id = await asyncio.to_thread(self.mint_key, account)
+        token, key_id = await self.take_key(account)
         rs.caller = flow_caller.make_caller(token, account, app, hf_token)
         rs.key_id = key_id
         flusher = None
@@ -1027,7 +1078,7 @@ class FlowEngine:
             app = app,
         )
         rs.hf_token = hf_token
-        token, key_id = await asyncio.to_thread(self.mint_key, account)
+        token, key_id = await self.take_key(account)
         rs.caller = flow_caller.make_caller(token, account, app, hf_token)
         rs.key_id = key_id
         ctx = NodeContextImpl(self, rs, entry, spec, params, {}, 0)
@@ -1122,7 +1173,7 @@ class FlowEngine:
 
     async def _run(self, rs: RunState) -> None:
         try:
-            token, key_id = await asyncio.to_thread(self.mint_key, rs.account)
+            token, key_id = await self.take_key(rs.account)
             rs.caller = flow_caller.make_caller(token, rs.account, rs.app, rs.hf_token)
             rs.key_id = key_id
             rs.status = "running"
@@ -1164,6 +1215,8 @@ class FlowEngine:
                 await self._stop_prefetch(rs)
                 flusher.cancel()
                 rs.flush()
+                # Node results land before the run reads as finished, so a reader that sees it done finds them.
+                await self.persist(rs)
             if rs.options.get("bake") and not rs.cancelled:
                 await self._bake(rs)
             failed = sorted(rs.ever_failed)
@@ -1195,6 +1248,7 @@ class FlowEngine:
                 finished_at = flows_db.now_ms(),
             )
             rs.emit(f"run.{rs.status}", data = {"outputs": rs.outputs, "error": rs.error})
+            await self.persist(rs)
 
     async def _flusher(
         self,
@@ -1204,6 +1258,16 @@ class FlowEngine:
         while True:
             await asyncio.sleep(interval)
             rs.flush()
+            await self.persist(rs)
+
+    async def persist(self, rs: RunState) -> None:
+        batch = rs.take_unsaved()
+        if batch is None:
+            return
+        try:
+            await asyncio.to_thread(flows_db.write_batch, rs.id, *batch)
+        except Exception:
+            logger.warning("flows: could not store events of run %s", rs.id, exc_info = True)
 
     async def _fire_cancel_hooks(self, rs: RunState) -> None:
         hooks = [fn for fns in rs.cancel_hooks.values() for fn in fns]
@@ -1323,6 +1387,12 @@ class FlowEngine:
         """Start from what Studio already holds, so the first GPU step picked keeps a model the user had loaded."""
         from studio_mcp import loading
 
+        # Only model steps read it (a called flow may load one): a CPU-only flow skips the round trip.
+        if not any(
+            spec["lane"] == "gpu" or spec.get("model_kind") or spec["type"] == "flow.call"
+            for spec in rs.plan.specs.values()
+        ):
+            return
         try:
             slots = await asyncio.wait_for(loading.resident_slots(rs.caller), RESIDENT_PROBE_S)
         except Exception:
@@ -1379,11 +1449,12 @@ class FlowEngine:
         plan = rs.plan
         running_ids = set(running.values())
         owners = {o for o in plan.owner.values() if o is not None}
+        pending_set = set(pending)
         # A pending "use the loaded model" step: any early load (any slot) could evict what it runs on.
         if any(plan.specs[n]["lane"] == "gpu" and self._uses_loaded(plan, n) for n in pending):
             return
         for nid in plan.order:
-            if nid not in pending or plan.specs[nid]["lane"] != "gpu":
+            if nid not in pending_set or plan.specs[nid]["lane"] != "gpu":
                 continue
             slot, repo = self._model_of(plan, nid)
             if not repo or (rs.resident.get(slot) or "").lower() == repo:
@@ -1663,7 +1734,8 @@ class FlowEngine:
                     seed = seed,
                     flow_params = ctx.flow_params,
                 )
-                hit = flows_db.cache_get(key)
+                pending = rs._unsaved_cache.get(key)
+                hit = pending[1] if pending is not None else flows_db.cache_get(key)
                 if hit is not None:
                     from core.flows.nodes._common import gallery_media_present
                     if not await asyncio.to_thread(gallery_media_present, hit):
@@ -1760,10 +1832,13 @@ class FlowEngine:
             rs.cancel_hooks.pop((nid, iteration), None)
         outputs = dict(outputs or {})
         if key is not None and spec["cacheable"]:
-            try:
-                flows_db.cache_put(key, spec["type"], outputs)
-            except Exception:
-                logger.debug("flows: cache write failed", exc_info = True)
+            if rs.persist:
+                rs._unsaved_cache[key] = (spec["type"], outputs)
+            else:
+                try:
+                    await asyncio.to_thread(flows_db.cache_put, key, spec["type"], outputs)
+                except Exception:
+                    logger.debug("flows: cache write failed", exc_info = True)
         rs.flush(nid)
         self._finish(rs, nid, env, outputs, "done", iteration)
 
@@ -1826,12 +1901,8 @@ class FlowEngine:
         error: Optional[str],
         iteration: Optional[tuple],
     ) -> None:
-        if not rs.persist:
-            return
-        try:
-            flows_db.save_node_result(rs.id, nid, status, outputs, error)
-        except Exception:
-            logger.debug("flows: could not store a node result", exc_info = True)
+        if rs.persist:
+            rs._unsaved_results[nid] = (status, outputs, error)
 
     def _seed(
         self, rs: RunState, nid: str, params: dict, inputs: dict, iteration: Optional[tuple]

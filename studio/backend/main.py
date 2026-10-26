@@ -1146,6 +1146,10 @@ async def lifespan(app: FastAPI):
 
     await _flow_trigger_scheduler.stop()
 
+    from core.flows.engine import get_engine as _flow_engine
+
+    await _flow_engine().release_spare_keys()
+
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:
         _idle_task.cancel()

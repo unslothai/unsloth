@@ -373,6 +373,8 @@ async def run_events(request: Request, run_id: str) -> StreamingResponse:
                     return
             else:
                 sent = after
+                if rs is not None:
+                    await engine.persist(rs)
                 while True:
                     page = await asyncio.to_thread(flows_db.events_after, run_id, sent)
                     for event in page:

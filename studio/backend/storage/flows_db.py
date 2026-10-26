@@ -247,6 +247,65 @@ def append_event(run_id: str, seq: int, event: dict) -> None:
         conn.close()
 
 
+def write_batch(
+    run_id: str,
+    events: list[tuple[int, dict]],
+    results: list[tuple[str, str, Optional[dict], Optional[str]]],
+    cache_rows: list[tuple[str, str, dict]],
+) -> None:
+    """A run's buffered events, node results and cache entries in one transaction (one per flush, not per write)."""
+    if not (events or results or cache_rows):
+        return
+    now = now_ms()
+    conn = get_connection()
+    try:
+        if events:
+            conn.executemany(
+                "INSERT OR IGNORE INTO flow_run_events (run_id, seq, event_json) VALUES (?, ?, ?)",
+                [(run_id, seq, json.dumps(event)) for seq, event in events],
+            )
+            conn.execute(
+                "UPDATE flow_runs SET last_event_seq = MAX(last_event_seq, ?) WHERE id = ?",
+                (max(seq for seq, _ in events), run_id),
+            )
+        if results:
+            conn.executemany(
+                """
+                INSERT INTO flow_node_results (run_id, node_id, status, outputs_json, error, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, node_id) DO UPDATE SET
+                    status = excluded.status, outputs_json = excluded.outputs_json,
+                    error = excluded.error, updated_at = excluded.updated_at
+                """,
+                [
+                    (
+                        run_id,
+                        nid,
+                        status,
+                        json.dumps(outputs) if outputs is not None else None,
+                        error,
+                        now,
+                    )
+                    for nid, status, outputs, error in results
+                ],
+            )
+        if cache_rows:
+            conn.executemany(
+                """
+                INSERT INTO flow_cache (key, node_type, outputs_json, created_at, last_used_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET outputs_json = excluded.outputs_json, last_used_at = excluded.last_used_at
+                """,
+                [
+                    (key, node_type, json.dumps(outputs), now, now)
+                    for key, node_type, outputs in cache_rows
+                ],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def events_after(
     run_id: str,
     after_seq: int,
