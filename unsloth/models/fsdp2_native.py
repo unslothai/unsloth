@@ -1984,8 +1984,8 @@ def native_fsdp2_unsharded(model):
         return
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
     saved = {}
-    _rebind_swapped_modules(root, units)
     try:
+        _rebind_swapped_modules(root, units)
         for unit in units:
             saved[id(unit)] = _reshard_after_forward_off(unit)
         for unit in units:
