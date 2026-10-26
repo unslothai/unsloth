@@ -176,7 +176,9 @@ def test_refusals_do_not_claim_the_variable_was_set(monkeypatch):
     assert len(messages) == 2
     for message in messages:
         assert "ignoring" not in message
-        assert message.startswith("Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set")
+        assert message.startswith(
+            "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set"
+        )
         assert "automatic" in message
 
 
