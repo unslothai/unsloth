@@ -866,12 +866,22 @@ def _merge_lora(
     bias = getattr(layer, "bias", None)
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
+        stage = None
         if quant_state is not None and W.dtype == torch.float8_e4m3fn:
             # FP8 quant_state is the fp32 scale, not the model dtype: dequant in fp32, save in model dtype.
             W = fast_dequantize(W, quant_state, dtype = torch.float32)
             dtype = dtype if isinstance(dtype, torch.dtype) else torch.bfloat16
         elif quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
+            # A tensor parallel export replica staged on the CPU (tp_replica.py): dequantize and merge this
+            # projection on its GPU, then hand the merged weight back on the CPU.
+            stage = getattr(W, "_unsloth_tp_stage_device", None)
+            if stage is not None:
+                from .models.tp_native import quant_state_copy
+
+                W, quant_state = W.data.to(stage), quant_state_copy(quant_state, stage)
+                A = None if A is None else A.to(stage)
+                B = None if B is None else B.to(stage)
             W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
@@ -883,6 +893,8 @@ def _merge_lora(
             if not torch.isfinite(maximum_element).item():
                 raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
         W = W.t().to(dtype)
+        if stage is not None:
+            W = W.cpu()
     else:
         W = layer.weight
     return W, bias

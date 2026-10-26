@@ -165,6 +165,17 @@ def _workspace(items):
     return 3 * max((_bytes(p) for p, _ in items), default = 0)
 
 
+def _merge_workspace(items):
+    """Peak bytes a merge of one CPU-staged 4-bit projection takes on the GPU: the packed weight, its 16-bit
+    dequant and the float32 merge (save.py _merge_lora), next to the gather workspace."""
+    peak = 0
+    for p, _ in items:
+        if not tpn._is_dtensor(p):
+            numel = p.data.numel() * p.data.element_size() * 2 * p._unsloth_tp_layout[3]
+            peak = max(peak, _bytes(p) + numel * (2 + 4 + 4))
+    return max(_workspace(items), peak)
+
+
 def _free_bytes(device):
     if device.type == "cuda":
         gc.collect()
@@ -244,7 +255,7 @@ def _full_params4bit(weight, base, group, device, keep):
             quant_type = state.quant_type,
             dtype = state.dtype,
         )
-    return bnb.nn.Params4bit(
+    full = bnb.nn.Params4bit(
         packed,
         requires_grad = False,
         quant_state = full_state,
@@ -255,6 +266,11 @@ def _full_params4bit(weight, base, group, device, keep):
         module = base,
         bnb_quantized = True,
     )
+    if device.type == "cpu" and weight.device.type != "cpu":
+        # An export replica staged on the CPU: a merge dequantizes this weight on the GPU it came from, one
+        # projection at a time (save.py _merge_lora), with the same kernels as a GPU replica.
+        full._unsloth_tp_stage_device = weight.device
+    return full
 
 
 class _Replica:
@@ -309,7 +325,7 @@ def _plan(root, select, keep, what, allow_cpu):
     if short is None:
         return items, device
     if allow_cpu and device.type != "cpu":
-        staging = _room(workspace, free, device)
+        staging = _room(_merge_workspace(items), free, device)
         cpu_room = _room(kept, _host_free(), device)
         if _short(staging) is None and _short(cpu_room) is None:
             if keep:
