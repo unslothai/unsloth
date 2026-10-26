@@ -871,7 +871,9 @@ _CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
 # Only enumerates candidates for the resolver to adjudicate; drift costs a candidate, not a verdict.
 _KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|NVFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"(?=(?:-[0-9]+(?:[.][0-9]+)?bpw)?(?:-[0-9]{3,}-of-[0-9]{3,})?(?:[.]gguf)?$)"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
@@ -1114,9 +1116,15 @@ async def _audio_cpp_variants_answer(
     if not umbrella and not (_is_valid_repo_id(text) and text.lower().startswith("audio-cpp/")):
         return None
     real_repo = audio_cpp_models.repo_of(text) or text
-    if account_access.managed_account():
-        await listing_thread(False, account_access.require_model_access, real_repo)
     network = not (offline or audio_cpp_models.hub_offline())
+    if account_access.managed_account():
+        # Offline: the disk pool and a disk-only grant check, never queued behind Hub listings.
+        await listing_thread(
+            not network,
+            account_access.require_model_access,
+            real_repo,
+            **({} if network else {"offline": True}),
+        )
     try:
         model = await listing_thread(
             not network, audio_cpp_models.resolve, text, None, hf_token, network = network

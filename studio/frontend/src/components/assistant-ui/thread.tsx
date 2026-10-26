@@ -397,10 +397,10 @@ import {
   BranchNextIcon,
   BranchPrevIcon,
   ContinueArrowIcon,
-  EditResponseIcon,
   ReadAloudIcon,
 } from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
+import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -435,6 +435,12 @@ import {
   UndoIcon,
   VolumeMute02Icon,
   WorkflowCircle05Icon,
+  Clock01Icon,
+  SlidersHorizontalIcon,
+  MoreHorizontalIcon,
+  PlusSignIcon,
+  StopIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshGlyph } from "@/lib/refresh-icon";
@@ -443,13 +449,8 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   Columns2Icon,
-  SlidersHorizontalIcon,
   Loader2Icon,
-  MoreHorizontalIcon,
-  PlusIcon,
-  SquareIcon,
   TerminalIcon,
-  XIcon,
 } from "lucide-react";
 import {
   type ChangeEvent,
@@ -2531,7 +2532,7 @@ const GeneratedImageViewportOverlay: FC<{
                 onClick={closeOverlay}
                 aria-label="Close generated image preview"
               >
-                <XIcon className="size-3.5" />
+                <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
               </Button>
             </div>
           </div>
@@ -2733,8 +2734,7 @@ const ThreadScrollToBottom: FC = () => {
       variant="outline"
       onClick={() => scrollToBottom("auto")}
       className={cn(
-        // Muted in dark mode: the page background made it disappear.
-        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background hover:bg-accent dark:bg-muted dark:hover:bg-accent",
+        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background shadow-[0_0_0_0.5px_rgb(0_0_0/0.15)] hover:bg-accent dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.2)] dark:bg-muted dark:hover:bg-accent",
         (isAtBottom || !enabled) && "invisible pointer-events-none",
       )}
     >
@@ -2912,7 +2912,7 @@ const PendingAudioChip: FC = () => {
           className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
           aria-label="Remove audio"
         >
-          <XIcon className="size-3" />
+          <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
         </button>
       </div>
     </div>
@@ -5907,6 +5907,12 @@ const Composer: FC<{
                 dir="auto"
                 {...inputProps}
                 cancelOnEscape={!(declineMounted && declineOwnsEscape)}
+                onScrollCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onInputCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
@@ -6676,7 +6682,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
 const PillGlyph: FC<{ children: ReactNode }> = ({ children }) => (
   <span className="composer-pill-glyph">
     {children}
-    <XIcon className="composer-pill-x" />
+    <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
   </span>
 );
 
@@ -7398,7 +7404,7 @@ const ComposerToolsMenu: FC<{
           className="unsloth-composer-plus"
           data-tour="chat-plus-menu"
         >
-          <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -7499,7 +7505,7 @@ const ComposerToolsMenu: FC<{
           ))}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
-            <MoreHorizontalIcon className="size-4" />
+            <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
             More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
@@ -7512,7 +7518,7 @@ const ComposerToolsMenu: FC<{
                 scrollTarget: "chat-composer",
               })}
             >
-              <SlidersHorizontalIcon className="size-4" />
+              <HugeiconsIcon icon={SlidersHorizontalIcon} className="size-4" />
               {t("composerSettings.settings")}
             </DropdownMenuItem>
           </DropdownMenuSubContent>
@@ -7711,7 +7717,7 @@ const ComposerRightControls: FC<{
           >
             <Spinner className="size-4" />
             <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
-            <XIcon className="size-3.5" aria-hidden="true" />
+            <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" aria-hidden="true" />
           </Button>
         ) : (
           <TooltipIconButton
@@ -7771,8 +7777,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              {/* Solid glyph, so it is smaller than the stroked send arrow. */}
-              <QueueResumeIcon className="size-4" />
+              <QueueResumeIcon className="composer-resume-glyph size-4" />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
@@ -7783,7 +7788,7 @@ const ComposerRightControls: FC<{
               aria-label="Stop queued message"
               onClick={stop}
             >
-              <SquareIcon className="size-3 fill-current" />
+              <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton
@@ -7815,29 +7820,31 @@ const ComposerRightControls: FC<{
           {researchStopping ? (
             <Spinner className="size-3.5" />
           ) : (
-            <SquareIcon className="size-3 fill-current" />
+            <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
           )}
         </Button>
       ) : (
         <AuiIf condition={({ thread }) => thread.isRunning}>
           {/* Classed so the narrow-screen rules can treat this like the
               sibling send/stop buttons; it is the flex item, not the button. */}
+          {/* With a draft only the stop shortcut stops the reply. */}
           <div className="aui-composer-run-controls ml-1.5 flex items-center gap-1.5">
-            <ComposerPrimitive.Cancel asChild={true}>
-              <Button
-                type="button"
-                variant="primary"
-                size="icon"
-                className="aui-composer-cancel size-9 rounded-full"
-                aria-label="Stop generating"
-                // Cancel only ends the reply; handlePromptQueueRunState then
-                // dispatches the next queued prompt. stop() ends the run.
-                onClick={stop}
-              >
-                <SquareIcon className="size-3 fill-current" />
-              </Button>
-            </ComposerPrimitive.Cancel>
-            {!queueDisabled ? (
+            {queueDisabled ? (
+              <ComposerPrimitive.Cancel asChild={true}>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="icon"
+                  className="aui-composer-cancel size-9 rounded-full"
+                  aria-label="Stop generating"
+                  // Cancel only ends the reply; handlePromptQueueRunState then
+                  // dispatches the next queued prompt. stop() ends the run.
+                  onClick={stop}
+                >
+                  <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
+                </Button>
+              </ComposerPrimitive.Cancel>
+            ) : (
               <TooltipIconButton
                 tooltip={followUpTooltip}
                 side="bottom"
@@ -7850,7 +7857,7 @@ const ComposerRightControls: FC<{
               >
                 <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
               </TooltipIconButton>
-            ) : null}
+            )}
           </div>
         </AuiIf>
       )}
@@ -8298,7 +8305,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
           }}
         >
           <QueueResumeIcon className="size-3.5" />
-          Resume
+          {/* Not bare text: as the last element the icon lost its margin to the message's reset. */}
+          <span>Resume</span>
         </Button>
       )}
     </div>
@@ -9013,7 +9021,7 @@ const EditAssistantMessageButton: FC = () => {
       onClick={() => setEditingId(messageId)}
     >
       <HugeiconsIcon
-        icon={EditResponseIcon}
+        icon={Edit03Icon}
         strokeWidth={1.75}
         className="size-icon"
       />
@@ -9071,7 +9079,7 @@ const EditAssistantMessageMenuItem: FC = () => {
       onSelect={() => setEditingId(messageId)}
       className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
-      <HugeiconsIcon icon={EditResponseIcon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
       Edit response
     </ActionBarMorePrimitive.Item>
   );
@@ -9175,7 +9183,7 @@ const AssistantActionBar: FC = () => {
               tooltip="More"
               className="data-[state=open]:bg-accent"
             >
-              <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
             </TooltipIconButton>
           </ActionBarMorePrimitive.Trigger>
           <ActionBarMorePrimitive.Content
@@ -9289,6 +9297,46 @@ const UserMessageAudio: FC = () => {
   );
 };
 
+const SCHEDULED_REPLY_KEY = "scheduled-task-replies";
+
+function scheduledTaskIdOf(custom: unknown): string | null {
+  const source = (custom as { scheduledTask?: { taskId?: unknown } } | undefined)?.scheduledTask;
+  return typeof source?.taskId === "string" ? source.taskId : null;
+}
+
+/** "Sent by scheduled task" over a task run's prompt; the reply carries the mark too, surviving rewrites. */
+const ScheduledTaskSource: FC = () => {
+  const t = useT();
+  const navigate = useNavigate();
+  const taskId = useAuiState(({ thread, message }) => {
+    const own = scheduledTaskIdOf(message.metadata?.custom);
+    if (own) return own;
+    // One pass per messages snapshot, not a search per prompt per streamed token.
+    const byPrompt = memoOnArrayByKey(thread.messages, SCHEDULED_REPLY_KEY, () => {
+      const map = new Map<string, string>();
+      thread.messages.forEach((entry, index) => {
+        const reply = thread.messages[index + 1];
+        const replyTask =
+          reply?.role === "assistant" ? scheduledTaskIdOf(reply.metadata?.custom) : null;
+        if (replyTask) map.set(entry.id, replyTask);
+      });
+      return map;
+    });
+    return byPrompt.get(message.id) ?? null;
+  });
+  if (!taskId) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => void navigate({ to: "/tasks", search: { edit: taskId } })}
+      className="inline-flex cursor-pointer items-center gap-1.5 rounded-md text-ui-13 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-3.5" />
+      {t("scheduledTasks.sentBy")}
+    </button>
+  );
+};
+
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
   // Attachments alone (annotations, images) get no empty bubble under them.
@@ -9302,6 +9350,7 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
+      <ScheduledTaskSource />
       <UserMessageAttachments />
       <UserMessageAudio />
 

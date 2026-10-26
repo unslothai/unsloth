@@ -33,7 +33,6 @@ import {
   Cancel01Icon,
   ChefHatIcon,
   DashboardCircleIcon,
-  DownloadSquare01Icon,
   FlimSlateIcon,
   Folder01Icon,
   Image03Icon,
@@ -45,6 +44,8 @@ import {
   Sun03Icon,
   TestTube01Icon,
   ApiIcon,
+  Clock01Icon,
+  Download01Icon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -134,7 +135,7 @@ const WORKSPACES: {
   },
   {
     id: "switchToExport",
-    icon: DownloadSquare01Icon,
+    icon: Download01Icon,
     labelKey: "shell.navigation.export",
     aliases: ["gguf", "checkpoint"],
   },
@@ -301,6 +302,13 @@ function PaletteContent() {
           >
             <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} />
             <span>{t("shell.navigation.library")}</span>
+          </PaletteItem>
+          <PaletteItem
+            onSelect={runAndClose(() => void navigate({ to: "/tasks" }))}
+            keywords={["scheduled", "schedule", "tasks", "reminders"]}
+          >
+            <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.tasks")}</span>
           </PaletteItem>
           <PaletteItem
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}

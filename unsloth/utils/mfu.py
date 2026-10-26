@@ -66,6 +66,19 @@ _PEAK_TFLOPS_16BIT = (
     ("GB200", 2500.0),
     ("B300", 2250.0),
     ("B200", 2250.0),
+    # sm120. NVIDIA RTX PRO Blackwell GPU Architecture whitepaper v1.1, Table 4 (dense FP16 / BF16
+    # tensor with FP32 accumulate): Workstation 503.8, Max-Q 438.9. Server Edition: nvidia.com
+    # rtx-pro-6000-blackwell-server-edition lists 1 PFLOP FP16 / BF16 with sparsity -> 500 dense.
+    # GeForce RTX 5090: NVIDIA RTX Blackwell GPU Architecture whitepaper v1.1, Table 3, 209.5 dense
+    # with FP32 accumulate (GeForce runs FP32 accumulate at half the FP16 accumulate rate).
+    # Specific editions first; every key needs "PRO", so "RTX 6000 Ada Generation" never matches.
+    ("RTX PRO 6000 BLACKWELL MAX-Q", 438.9),
+    ("RTX PRO 6000 BLACKWELL SERVER", 500.0),
+    ("RTX PRO 6000 BLACKWELL", 503.8),
+    # Unknown (None): the China variant and the laptop part (a smaller GB203) have no figure there.
+    ("RTX 5090 D", None),
+    ("RTX 5090 LAPTOP", None),
+    ("RTX 5090", 209.5),
     ("A100", 312.0),
     ("L40S", 362.05),
     ("L40", 181.05),

@@ -77,9 +77,10 @@ import {
   Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
+  MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowDownIcon, MoreHorizontalIcon } from "lucide-react";
+import { ArrowDownIcon } from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -615,7 +616,7 @@ export function ProjectsPage() {
                 }
               }}
               placeholder="Search projects"
-              className="h-9 w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
+              className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
               aria-label="Search projects"
             />
           </div>
@@ -626,7 +627,7 @@ export function ProjectsPage() {
                 size="icon"
                 data-tour="projects-io"
                 title="Import / Export projects"
-                className="rounded-full border-none bg-muted shadow-none dark:bg-card"
+                className="size-control rounded-full border-none bg-muted shadow-none dark:bg-card"
               >
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               </Button>
@@ -883,7 +884,7 @@ export function ProjectsPage() {
                       aria-label="Project options"
                       className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                     >
-                      <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent
@@ -990,7 +991,7 @@ export function ProjectsPage() {
                                 aria-label="Chat options"
                                 className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/chat-row:opacity-100 pointer-coarse:opacity-100 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                               >
-                                <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
                               </button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent

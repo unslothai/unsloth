@@ -191,7 +191,7 @@ function MemoryLimitRow({
             onKeyDown={(event) => {
               if (event.key === "Enter") submit();
             }}
-            className="h-8 w-24"
+            className="h-control w-24"
           />
           <span className="text-xs font-medium text-muted-foreground">
             GB

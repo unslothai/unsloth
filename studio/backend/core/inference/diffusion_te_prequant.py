@@ -472,6 +472,55 @@ def explicit_int8_takes_hosted_file(
     return len(takes) == len(TE_INT8_CONVROT_FILES[name]) and all(takes.values())
 
 
+def explicit_int8_unavailable_reason(
+    fam: Any,
+    base: Optional[str],
+    target: Any,
+    *,
+    supplied: Iterable[str] = (),
+    local_files_only: Optional[bool] = None,
+) -> Optional[str]:
+    """Why an explicit int8 request cannot take the int8 ConvRot file(s) ``fam`` names, or None when it can (or the
+    family names none). Names each unconfirmed file so an int8-only host (Apple Silicon) reports the missing file.
+    Never raises."""
+    try:
+        name = str(getattr(fam, "name", "") or "").strip().lower()
+        named = []
+        for component in TE_INT8_CONVROT_FILES.get(name, {}):
+            if component in set(supplied or ()):
+                continue
+            standalone: dict[str, str] = {}
+            if component == "text_encoder_4":
+                from .diffusion_hidream import HIDREAM_LLAMA_REPO
+                standalone = {"text_encoder_4": HIDREAM_LLAMA_REPO}
+            component_base = standalone.get(component) or base or getattr(fam, "base_repo", "")
+            got = te_prequant_sources_for_base(
+                fam,
+                str(component_base or ""),
+                te_quant_mode = "int8",
+                target = target,
+                components = (component,),
+                **({"standalone_component_bases": standalone} if standalone else {}),
+            ).get(component)
+            # Only a missing int8 FILE; other refusals carry their own reasons.
+            if got is None or got.kind != "repo" or _is_fp8_te_name(got.filename):
+                continue
+            if not te_prequant_sources_confirmed(
+                {component: replace(got, fallback_filenames = ())},
+                local_files_only = local_files_only,
+            ):
+                named.append(f"{got.location}/{got.filename}")
+        if not named:
+            return None
+        offline = bool(local_files_only) or _hub_offline()
+        where = (
+            "is not in the local cache (offline load)" if offline else "is not published on the Hub"
+        )
+        return f"the hosted int8 ConvRot text encoder {', '.join(named)} for {getattr(fam, 'name', fam)} {where}"
+    except Exception:  # noqa: BLE001 - unanswerable: no reason to add
+        return None
+
+
 def _auto_pick(te_quant_mode: Any) -> bool:
     try:
         from .diffusion_precision import te_quant_picked_automatically
@@ -1007,7 +1056,12 @@ def te_prequant_sources_for_base(
 
     A variant base whose encoder is a different model (``te_prequant_variant_repos``) resolves
     against that variant's rows and files only, never the family base's.
+
+    An automatic pick (unset request) never swaps a hosted encoder into a load from a local folder: the folder name
+    matching the upstream repo says nothing about the weights inside it, which may be a fine-tune. That load keeps
+    the folder's own encoder, as it did before the family had an automatic default. An explicit scheme is unchanged.
     """
+    auto_local = _auto_pick(te_quant_mode) and _is_local_base(base)
     fam = te_variant_family_view(fam, base)
     sources = te_prequant_sources(
         fam,
@@ -1021,9 +1075,22 @@ def te_prequant_sources_for_base(
     for component, source in sources.items():
         checkpoint_base = standalone.get(component) or registered_base
         selected_base = standalone.get(component) or base
+        if auto_local and component not in standalone:
+            continue
         if checkpoint_base and selected_base and te_base_equivalent(checkpoint_base, selected_base):
             compatible[component] = source
     return compatible
+
+
+def _is_local_base(base: Optional[str]) -> bool:
+    """Whether ``base`` is a folder on disk rather than a Hub id (the loaders' own rule)."""
+    if not base:
+        return False
+    try:
+        from .diffusion_families import _is_local_path
+        return bool(_is_local_path(str(base)))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def te_variant_family_view(fam: Any, base: Optional[str]) -> Any:
@@ -1259,11 +1326,14 @@ def load_prequant_text_encoder(
         _cast_fp8(encoder, target)
         setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "fp8")
         if logger is not None:
+            # The FILE's scheme, not the request's (an fp8 fallback used to log int8).
             logger.info(
-                "diffusion.te_prequant: loaded %s %s checkpoint (%s)",
+                "diffusion.te_prequant: loaded %s fp8 checkpoint (%s)%s",
                 component,
-                scheme,
-                source.kind,
+                path if source.kind == "path" else f"{source.location}/{os.path.basename(path)}",
+                "; the int8 request took the fp8 file because the int8 ConvRot file is not available"
+                if scheme == "int8"
+                else "",
             )
         return encoder
     except Exception as exc:  # noqa: BLE001 - fall back to the dense download + cast

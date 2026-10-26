@@ -31,7 +31,6 @@ import {
 } from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Download, X } from "lucide-react";
 import {
   type CSSProperties,
   type MouseEvent,
@@ -41,6 +40,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { Download01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 // cap for interpolation between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
@@ -493,11 +494,11 @@ export function LlamaUpdateBanner({
             className="absolute right-3 top-3 flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="llama-update-close-button"
           >
-            <X aria-hidden="true" className="size-4" strokeWidth={2} />
+            <HugeiconsIcon icon={Cancel01Icon} aria-hidden="true" className="size-4" strokeWidth={2} />
           </button>
         )}
         <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
-          <Download
+          <HugeiconsIcon icon={Download01Icon}
             aria-hidden="true"
             className="mt-1 size-5 shrink-0 text-foreground"
             strokeWidth={1.75}
