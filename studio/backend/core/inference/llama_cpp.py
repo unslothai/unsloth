@@ -30607,9 +30607,20 @@ class LlamaCppBackend:
                             mtp_may_engage = _mtp_will_engage,
                         )
                         _apple_probe_embd = _apple_host_embd
-                        # Past the wired limit Metal refuses: the resident verdict obeys it too.
-                        _apple_wired_mib = int(
-                            self._apple_metal_wired_ceiling_bytes() // (1024 * 1024)
+                        # Past the wired limit Metal refuses: the resident verdict obeys it too,
+                        # scaled like the later wired checks; None unknown, 0 used up.
+                        _apple_wired = self._apple_metal_wired_headroom_bytes()
+                        _apple_resident_budget_mib = (
+                            _apple_fit_budget_mib
+                            if _apple_wired is None
+                            else min(
+                                _apple_fit_budget_mib,
+                                int(
+                                    _apple_wired
+                                    // (1024 * 1024)
+                                    * max(0.0, 1.0 - _flat_mtp_reserve)
+                                ),
+                            )
                         )
                         _apple_host_embd = self._apple_lookup_table_discount(
                             _apple_host_embd,
@@ -30626,6 +30637,8 @@ class LlamaCppBackend:
                                 )
                                 if effective_ctx > 0
                                 and not _pass_through_reprices_cache(extra_args, n_parallel)
+                                # An unsized MTP draft prices nothing, as the discrete verdict.
+                                and not _flat_mtp_engages
                                 and (
                                     _apple_cpu_draft := self._cpu_resident_draft_bytes(
                                         effective_ctx,
@@ -30642,14 +30655,10 @@ class LlamaCppBackend:
                                 is not None
                                 else None
                             ),
-                            budget_mib = (
-                                min(_apple_fit_budget_mib, _apple_wired_mib)
-                                if _apple_wired_mib > 0
-                                else _apple_fit_budget_mib
-                            ),
+                            budget_mib = _apple_resident_budget_mib,
                             cache_ram = cache_ram,
                             binary = binary,
-                            cpu_forced = _paravirtual_cpu_forced,
+                            cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
                         )
                         _managed_lazy_flags = list(self._apple_lazy_flags)
                         _apple_model_size_fit = model_size_fit - _apple_host_embd
@@ -31758,7 +31767,18 @@ class LlamaCppBackend:
                         - _kv_bytes(effective_ctx, 0),
                     )
                     # A lazily read table stays mmap'd under every load mode: not pinned RAM.
-                    _fit_lazy_auto_off = self._lazy_auto_resolves_off(
+                    # An empty inventory beside a GPU (failed probe) may hide an iGPU, where
+                    # auto is off: priced resident, as lookup_tables_stream_by_default does.
+                    _fit_lazy_auto_off = (
+                        not _detected_gpus
+                        and (is_vulkan_backend or _gpu_device_node_present())
+                        and not self._child_runs_on_cpu(
+                            binary,
+                            _fit_extras,
+                            _fit_env,
+                            cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                        )
+                    ) or self._lazy_auto_resolves_off(
                         gpu_indices = (
                             gpu_indices
                             if gpu_indices is not None or not gpu_ids
@@ -31863,7 +31883,7 @@ class LlamaCppBackend:
                                     binary,
                                     _fit_extras,
                                     _fit_env,
-                                    cpu_forced = _paravirtual_cpu_forced,
+                                    cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
                                 )
                             ):
                                 return None

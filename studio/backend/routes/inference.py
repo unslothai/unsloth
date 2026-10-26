@@ -16170,10 +16170,13 @@ def _gguf_memory_breakdown(
                 budget = _lt_backend._apple_metal_memory_budget_bytes()
                 if budget <= 0:
                     return False
-                # Past the wired limit Metal refuses, as the launch's verdict reads it.
-                wired = _lt_backend._apple_metal_wired_ceiling_bytes()
-                if wired > 0:
+                # Past the wired limit Metal refuses, as the launch's verdict reads it:
+                # None is unknown, 0 is used up.
+                wired = _lt_backend._apple_metal_wired_headroom_bytes()
+                if wired is not None:
                     budget = min(budget, wired)
+                if budget <= 0:
+                    return False
                 return footprint <= min(
                     budget, max(0, _lt_avail - _HOST_RAM_HEADROOM_MIB) * 1024 * 1024
                 )

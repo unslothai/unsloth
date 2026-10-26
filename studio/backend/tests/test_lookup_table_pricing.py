@@ -1176,7 +1176,9 @@ class TestEstimate:
         monkeypatch.setattr(ri, "_gpu_placement_paravirtual", lambda: True)
         assert breakdown().lookup_table_on_disk is True
 
-    @pytest.mark.parametrize("wired_gib, on_disk", [(0, False), (200, False), (60, True)])
+    @pytest.mark.parametrize(
+        "wired_gib, on_disk", [(None, False), (0, True), (200, False), (60, True)]
+    )
     def test_the_apple_estimate_obeys_the_wired_headroom(
         self, breakdown, monkeypatch, wired_gib, on_disk
     ):
@@ -1195,8 +1197,8 @@ class TestEstimate:
         )
         monkeypatch.setattr(
             ri.LlamaCppBackend,
-            "_apple_metal_wired_ceiling_bytes",
-            staticmethod(lambda: wired_gib * GIB),
+            "_apple_metal_wired_headroom_bytes",
+            staticmethod(lambda: None if wired_gib is None else wired_gib * GIB),
         )
         assert breakdown().lookup_table_on_disk is on_disk
 

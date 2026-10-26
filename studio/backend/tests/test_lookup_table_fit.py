@@ -16,6 +16,7 @@ for _d in (_BACKEND_DIR, _TESTS_DIR):
     if _d not in sys.path:
         sys.path.insert(0, _d)
 
+from test_gpu_arch_gate_os_matrix_7624 import probe_env  # noqa: F401, I001 -- fixture by name
 from test_llama_cpp_placement import (  # noqa: F401, I001 -- fixtures by name
     _cache_launch,
     _discrete_linux_host,
@@ -990,3 +991,83 @@ def test_a_paravirtual_launch_keeps_llama_cpps_lazy_default(tmp_path, _moe_cache
     monkeypatch.setattr(llama_cpp_module, "_metal_device_is_paravirtual", lambda: True)
     _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128)
     assert _lazy_values(cmd) == [], cmd
+
+
+def test_the_metal_resident_verdict_abstains_on_an_unsized_mtp_draft(tmp_path, monkeypatch):
+    """A flat MTP reserve prices no draft KV, so no resident verdict (as the discrete one)."""
+    seen = _spy_resident_inputs(monkeypatch)
+    _metal_launched(tmp_path, monkeypatch)
+    assert seen[-1]["need_at_ctx"] is not None
+    _metal_launched(tmp_path, monkeypatch, extra_args = ["--spec-type", "draft-mtp"])
+    assert seen[-1]["need_at_ctx"] is None
+
+
+def test_used_up_wired_headroom_leaves_no_resident_budget(tmp_path, monkeypatch):
+    seen = _spy_resident_inputs(monkeypatch)
+    _metal_launched(tmp_path, monkeypatch, wired_exhausted = True)
+    assert seen[-1]["budget_mib"] == 0
+
+
+def test_a_rocm_arch_gated_cpu_launch_is_a_cpu_child(tmp_path, monkeypatch, probe_env):
+    """No installed kernel covers either card, so the child runs on the CPU."""
+    import test_gpu_arch_gate_os_matrix_7624 as gate
+
+    forced = []
+    real = LlamaCppBackend._child_runs_on_cpu
+
+    def spy(self, *a, **k):
+        forced.append(bool(k.get("cpu_forced")))
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(LlamaCppBackend, "_child_runs_on_cpu", spy)
+    backend = LlamaCppBackend()
+    backend._gguf_tensor_scan = lambda _p: ("qwen4exp", {PLE: FLASH_NEXT_PLE}, 0)
+    gate._apply_os(monkeypatch, "linux", is_rocm = True)
+    torch = gate._fake_torch(
+        [gate._device("gfx1030", free_mib = 12049), gate._device("gfx1036", free_mib = 12176)],
+        vendor = "amd",
+    )
+    gate._run_auto_load(
+        monkeypatch,
+        tmp_path,
+        torch,
+        ["gfx908"],
+        returncode = None,
+        backend = backend,
+        server_caps = dict(_CAPS),
+        intent_kwargs = {"gpu_memory_mode": "auto"},
+    )
+    assert backend._arch_gate_forced_cpu is True
+    assert forced and all(forced), forced
+
+
+@pytest.mark.parametrize("node", [False, True])
+def test_an_empty_inventory_beside_a_gpu_prices_the_table_resident_at_launch(
+    tmp_path, _moe_cache_host, monkeypatch, node
+):
+    """A failed probe may hide an iGPU, where lazy auto is off (as the listing prices it)."""
+    seen = []
+    real = LlamaCppBackend._fit_derived_load_mode
+
+    def spy(self, **kwargs):
+        if kwargs.get("announce", True):
+            seen.append(kwargs)
+        return real(self, **kwargs)
+
+    monkeypatch.setattr(LlamaCppBackend, "_fit_derived_load_mode", spy)
+    monkeypatch.setattr(llama_cpp_module, "_gpu_device_node_present", lambda: node)
+    _cache_launch(
+        tmp_path,
+        size_gib = FLASH_NEXT_TOTAL / GIB,
+        memory = [],
+        ram_gib = 58,
+        expert_gib = 40,
+        lazy = {
+            PLE: FLASH_NEXT_PLE,
+            "token_embd.weight": FLASH_NEXT_TOKEN_EMBD,
+            "output.weight": FLASH_NEXT_OUTPUT,
+        },
+        arch = "qwen4exp",
+    )
+    assert seen, "no load-mode fit ran"
+    assert seen[-1]["lazy_read_bytes"] == (0 if node else FLASH_NEXT_PLE), seen[-1]
