@@ -259,12 +259,23 @@ def test_a_wedged_backend_times_out_instead_of_hanging(monkeypatch):
     assert "timed out" in reason
 
 
+def _zombie(pid: int) -> bool:
+    """Killed but unreaped: a container whose PID 1 never reaps orphans keeps it in the table."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding = "ascii") as handle:
+            return handle.read().rpartition(")")[2].split()[0] == "Z"
+    except (OSError, IndexError):
+        return False
+
+
 def _gone(pid: int, within: float = 10.0) -> bool:
     deadline = time.monotonic() + within
     while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
+            return True
+        if _zombie(pid):
             return True
         time.sleep(0.05)
     return False
