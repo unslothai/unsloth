@@ -2014,6 +2014,11 @@ html.dark.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-u
 	letter-spacing: 0.023em;
 }
 
+/* WebKitGTK repaints the whole view per keystroke; this blurred shadow made each repaint ~150 ms (#15221). */
+html.tauri.render-linux .media-stage-shadow {
+	box-shadow: none;
+}
+
 /* Chat font: only applies while a custom chat font is set. Elements with
    explicit font utilities (headings, code) keep their own families. */
 html[data-chat-font] .aui-root {
