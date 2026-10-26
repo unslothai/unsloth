@@ -14,6 +14,10 @@ const twMerge = extendTailwindMerge({
     classGroups: {
       "font-size": [{ text: [isUiToken] }],
       leading: [{ leading: [isUiToken] }],
+      // index.css `h-control`, `size-control`, `min-h-menu-row`: so a caller's h-8, size-8 or min-h-0 replaces it instead of both applying.
+      h: [{ h: ["control"] }],
+      size: [{ size: ["control"] }],
+      "min-h": [{ "min-h": ["menu-row"] }],
     },
   },
 });

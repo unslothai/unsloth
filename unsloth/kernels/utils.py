@@ -230,8 +230,7 @@ elif DEVICE_TYPE == "mlx":
 elif hasattr(torch._C, "_cuda_getCurrentRawStream"):
     _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
 else:
-    # CPU-only torch wheel (no compiled CUDA backend). _get_tensor_stream is only invoked during real
-    # GPU work, so a no-op binding is safe.
+    # CPU-only torch wheel: _get_tensor_stream only runs during real GPU work, so a no-op is safe.
     def _gpu_getCurrentRawStream(_index = 0):
         return 0
 
@@ -570,8 +569,7 @@ def get_lora_parameters_bias(proj):
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         W.block_size = getattr(base_layer, "block_size", [128, 128])
-        # A decompressed compressed-tensors layer keeps quant_method == "fp8" while its weight is back to
-        # bf16, so it has no quant state to carry the block size.
+        # A decompressed compressed-tensors layer keeps quant_method fp8 but has no quant state.
         if W_quant is not None:
             W_quant.block_size = W.block_size
 
@@ -1052,8 +1050,7 @@ else:
                 W, quant_state.scale, quant_state.global_scale, quant_state.dtype
             )
         if type(quant_state) is not list:
-            # New quant_state as a class, per TimDettmers/bitsandbytes#763.
-            # https://github.com/TimDettmers/bitsandbytes/pull/763/files
+            # New quant_state as a class, per https://github.com/TimDettmers/bitsandbytes/pull/763
             absmax = quant_state.absmax
             shape = quant_state.shape
             dtype = quant_state.dtype

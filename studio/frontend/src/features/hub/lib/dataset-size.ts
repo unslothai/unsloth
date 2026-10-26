@@ -332,6 +332,10 @@ const PRECISION_FOLDER_SOURCE =
   "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)";
 const PRECISION_FOLDER_RE = new RegExp(`^(?:${PRECISION_FOLDER_SOURCE})$`, "i");
 
+export function isPrecisionFolderName(name: string): boolean {
+  return PRECISION_FOLDER_RE.test(name);
+}
+
 function precisionVariantFolders(names: string[]): Set<string> {
   const files = new Map<string, string[]>();
   for (const name of names) {
