@@ -2763,6 +2763,38 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
+def test_codex_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    user_config = source_home / "config.toml"
+    user_config.write_text(
+        'model = "cloud-model"\n\n'
+        '[mcp_servers.weather]\ncommand = "python3"\nargs = ["weather.py"]\n\n'
+        '[mcp_servers.weather.env]\nUNITS = "metric"\n\n'
+        '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "weather": {"command": "python3", "args": ["weather.py"], "env": {"UNITS": "metric"}},
+        "docs": {"url": "http://127.0.0.1:9000/mcp"},
+    }
+    assert "model" not in config
+    assert config["model_providers"]["unsloth_api"]["base_url"].endswith("/v1")
+
+    user_config.write_text('[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n')
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://127.0.0.1:9000/mcp"}}
+    assert user_config.read_text() == '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
+
+
 def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     source_home = tmp_path / "user-codex"

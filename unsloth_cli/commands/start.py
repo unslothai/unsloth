@@ -3378,17 +3378,36 @@ def _codex_model_catalog(model: dict, visibility: str = "none") -> dict:
     return {"models": [entry]}
 
 
+_CODEX_MCP_TABLE = re.compile(r"[ \t]*\[\s*mcp_servers\s*[\].]")
+
+
+def _with_user_codex_mcp_servers(text: str) -> str:
+    try:
+        user = (_codex_source_home() / "config.toml").read_text(encoding = "utf-8")
+    except OSError:
+        user = ""
+    split = re.compile(r"(?m)^(?=[ \t]*\[)")
+    text = "".join(c for c in split.split(text) if not _CODEX_MCP_TABLE.match(c))
+    tables = "".join(c for c in split.split(user) if _CODEX_MCP_TABLE.match(c))
+    if tables:
+        text = text.rstrip("\n") + "\n\n" + tables.rstrip("\n") + "\n"
+    return text
+
+
 def write_codex_config(
     base: str,
     model: dict,
     home: Path,
     reasoning_effort: Optional[str] = None,
+    keep_mcp_servers: bool = False,
 ) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
     config = home / "config.toml"
     existing = config.read_text(encoding = "utf-8") if config.exists() else ""
     merged = _merge_codex_config(existing, base)
+    if keep_mcp_servers:
+        merged = _with_user_codex_mcp_servers(merged)
     if merged != existing:
         config.write_text(merged, encoding = "utf-8")
         typer.echo(f"Updated {config}")
@@ -7469,7 +7488,7 @@ def codex(
         *ctx.args,
     ]
     with _session_config("codex", launch, persist = persist) as home:
-        write_codex_config(base, entry, home, codex_effort)
+        write_codex_config(base, entry, home, codex_effort, keep_mcp_servers = True)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
         _run(
             base,
