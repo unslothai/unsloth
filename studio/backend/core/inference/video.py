@@ -3160,7 +3160,7 @@ def _read_cast_cache(
     base: Optional[str],
     cancel_check: Any = None,
 ) -> list:
-    """Inject cached float16 casts into ``pipe_kwargs``; returns the unserved candidates. Never raises."""
+    """Inject cached float16 / bfloat16 casts into ``pipe_kwargs``; returns the unserved candidates. Never raises."""
     try:
         from .diffusion_cast_cache import candidates, read_all
 
@@ -3181,7 +3181,7 @@ def _read_cast_cache(
         pipe_kwargs.update(hits)
         if hits:
             logger.info(
-                "video.cast_cache: read %s from the local float16 cast cache",
+                "video.cast_cache: read %s from the local cast cache",
                 ", ".join(sorted(hits)),
             )
         return [c for c in cands if c.component not in hits]

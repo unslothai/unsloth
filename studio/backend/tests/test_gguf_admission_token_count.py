@@ -39,6 +39,56 @@ def _payload():
     )
 
 
+def test_prepared_legacy_image_is_charged_only_once():
+    import base64
+    import io
+    from PIL import Image
+    from models.inference import ChatCompletionRequest
+
+    image = io.BytesIO()
+    Image.new("RGB", (1, 1)).save(image, format = "PNG")
+    backend = _backend(42)
+    backend.is_vision = True
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "Describe this image"}],
+        image_base64 = base64.b64encode(image.getvalue()).decode(),
+    )
+    messages = inference._openai_messages_for_passthrough(payload, vision = True)
+    body = {"messages": messages}
+    tokens = inference._count_gguf_admission_prompt(backend, payload, messages, prepared_body = body)
+    assert tokens == 42 + inference._openai_llama_admission_image_tokens(backend)
+
+
+def test_passthrough_prices_the_prepared_prompt_before_upstream_dispatch(monkeypatch):
+    async def scenario():
+        backend = _backend(600)
+        backend.context_length = 1024
+        backend.effective_parallel_slots = 5
+        payload = _payload()
+        payload.max_tokens = 64
+        body = {"messages": payload.messages, "max_tokens": 64, "chat_template_kwargs": {}}
+
+        async def build(*args, **kwargs):
+            return body
+
+        async def upstream(*args, **kwargs):
+            assert backend.count_chat_tokens.call_count == 1
+            assert queue.snapshot().committed == 664
+            assert kwargs["prepared_body"] is body
+            return {"ok": True}
+
+        queue = LlamaAdmissionQueue("passthrough-dispatch")
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda _: queue)
+        monkeypatch.setattr(inference, "_build_openai_passthrough_body_async", build)
+        monkeypatch.setattr(inference, "_openai_passthrough_non_streaming_upstream", upstream)
+        assert await inference._openai_passthrough_non_streaming(
+            backend, payload, "test-model"
+        ) == {"ok": True}
+        assert queue.snapshot().active == 0
+
+    asyncio.run(scenario())
+
+
 def test_numeric_prompts_wait_for_room_but_short_prompts_still_overlap(monkeypatch):
     async def scenario(count):
         queue = LlamaAdmissionQueue("counted")
@@ -111,6 +161,83 @@ def test_tokenizer_failure_reserves_the_entire_pool():
     backend.count_chat_tokens.side_effect = RuntimeError("tokenizer unavailable")
     payload = _payload()
     assert inference._count_gguf_admission_prompt(backend, payload, payload.messages) == 30000
+
+
+def test_passthrough_tool_prompt_queues_using_its_rendered_count(monkeypatch):
+    async def scenario():
+        queue = LlamaAdmissionQueue("passthrough-counted")
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda _: queue)
+        backend = _backend(600)
+        backend.context_length = 1024
+        backend.effective_parallel_slots = 5
+        payload = _payload()
+        payload.max_tokens = 64
+        body = {
+            "messages": [{"role": "user", "content": "Count numbers."}],
+            "tools": [{"type": "function", "function": {"name": "unused", "parameters": {}}}],
+            "tool_choice": "none",
+            "chat_template_kwargs": {"enable_thinking": False},
+            "max_tokens": 64,
+        }
+        reservations = []
+        for _ in range(3):
+            reservation, _, prepared = await inference._reserve_counted_gguf_passthrough(
+                request = None, llama_backend = backend, payload = payload, body = body
+            )
+            assert prepared is body
+            reservations.append(reservation)
+        assert queue.snapshot().active == 1
+        assert queue.snapshot().queued == 2
+        assert queue.snapshot().committed == 664
+        args, kwargs = backend.count_chat_tokens.call_args
+        assert args[0] == body["messages"]
+        assert kwargs["tools"] == body["tools"]
+        assert kwargs["template_options"] is body
+        assert kwargs["chat_template_kwargs"] == body["chat_template_kwargs"]
+        reservations[0].lease_nowait().release()
+        await asyncio.sleep(0)
+        assert reservations[1].lease_nowait() is not None
+        reservations[1].lease_nowait().release()
+        reservations[2].cancel()
+        assert queue.snapshot().active == 0
+        assert queue.snapshot().queued == 0
+
+    asyncio.run(scenario())
+
+
+def test_prompt_counter_forwards_passthrough_template_options(monkeypatch):
+    from types import MethodType
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    httpx = _llama_httpx()
+    captured = []
+
+    def respond(request):
+        import json
+
+        captured.append(json.loads(request.content))
+        assert request.url.path == "/v1/chat/completions/input_tokens"
+        return httpx.Response(200, json = {"input_tokens": 42})
+
+    client_type = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client_type(transport = httpx.MockTransport(respond), **kw)
+    )
+    backend = _backend(42)
+    backend.base_url = "http://llama.test"
+    backend.is_loaded = True
+    backend.markup_profile = None
+    backend._auth_headers = None
+    backend.count_chat_tokens = MethodType(LlamaCppBackend.count_chat_tokens, backend)
+    options = {"tool_choice": "none", "parallel_tool_calls": False, "messages": "ignored"}
+    messages = [{"role": "user", "content": "Hello"}]
+    assert (
+        backend.count_chat_tokens(
+            messages, strict = True, prefer_native = True, template_options = options
+        )
+        == 42
+    )
+    assert captured == [{"messages": messages, "tool_choice": "none", "parallel_tool_calls": False}]
 
 
 def test_tool_recost_keeps_the_model_count(monkeypatch):
