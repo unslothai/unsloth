@@ -268,6 +268,12 @@ def _reset_gpu_query_cache():
         backend = getattr(llama, "LlamaCppBackend", None)
         if backend is not None and "_NVML_ROWS" in vars(backend):
             backend._NVML_ROWS = []
+        # Same for the id provenance the last GPU probe recorded: a torch-ordinal or MIG probe
+        # leaving False made a later CUDA launch skip its PCIe link probe.
+        if backend is not None and "_GPU_IDS_ARE_PCI_INDICES" in vars(backend):
+            backend._GPU_IDS_ARE_PCI_INDICES = None
+        if backend is not None and "_MIG_DEVICE_SNAPSHOT" in vars(backend):
+            backend._MIG_DEVICE_SNAPSHOT = None
 
     _reset()
     yield

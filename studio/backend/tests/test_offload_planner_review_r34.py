@@ -494,3 +494,43 @@ def test_the_plan_bookkeeping_starts_empty_and_unload_clears_the_lazy_mode():
     backend._studio_lazy_mode_flags = ["-lzm", "on"]
     backend.unload_model()
     assert backend._studio_lazy_mode_flags == []
+
+
+def test_an_unsized_gpu_drafter_is_not_planned():
+    """r39: the CPU drafter had its unsized decline; a GPU one the fit gave no bytes went on to a
+    --fit off plan that nothing would place it under."""
+    from test_offload_planner_seam import _inputs, _Stub
+
+    env = {"UNSLOTH_SMART_OFFLOAD": "1"}
+    inputs = _inputs()
+    inputs["gpu_draft_unsized"] = True
+    assert _Stub()._planned_tensor_spill(inputs, env = env) is None
+
+
+@pytest.mark.parametrize(
+    "extra_args, unsized",
+    [
+        (None, False),
+        (["--model-draft", "DRAFT"], True),
+        (["--model-draft", "DRAFT", "--spec-type", "draft-simple"], False),
+        (["--model-draft", "DRAFT", "--spec-draft-ngl", "0"], False),
+    ],
+    ids = ["none", "bare", "sized", "cpu"],
+)
+def test_the_launch_tells_the_seam_when_a_gpu_drafter_is_unsized(
+    tmp_path, monkeypatch, extra_args, unsized
+):
+    from test_offload_planner_launch import _launch_with
+
+    draft = tmp_path / "draft.gguf"
+    draft.write_bytes(b"GGUF")
+    args = [str(draft) if a == "DRAFT" else a for a in extra_args] if extra_args else None
+    plan = OP.Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,))
+    _cmd, _backend, seen = _launch_with(
+        tmp_path,
+        monkeypatch,
+        plan,
+        caps = {"spec_draft_ngl_flag": "--spec-draft-ngl"},
+        extra_args = args,
+    )
+    assert seen["inputs"]["gpu_draft_unsized"] is unsized

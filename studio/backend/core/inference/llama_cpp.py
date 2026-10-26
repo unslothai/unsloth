@@ -31952,6 +31952,13 @@ class LlamaCppBackend:
                         # None once the drafter is CPU-offloaded (_mtp_draft_for_budget
                         # is nulled there), which is the case that really is off-GPU.
                         "separate_draft_on_gpu": bool(_mtp_will_engage and _mtp_draft_for_budget),
+                        # A GPU drafter the fit gave no bytes: a bare pass-through --model-draft
+                        # (no draft --spec-type, so no reserve engaged), or one it could not
+                        # read (an -hfd repo, an unreadable file).
+                        "gpu_draft_unsized": bool(
+                            _mtp_draft_for_budget
+                            and (not _mtp_will_engage or _mtp_draft_weights <= 0)
+                        ),
                         # An exported EAGLE-3 drafter (drafter.json) the launch attaches but the
                         # fit above never sized: no draft bytes, no reserve, not droppable.
                         "eagle3_drafter_unsized": bool(
@@ -40311,6 +40318,12 @@ class LlamaCppBackend:
             logger.debug(
                 "Tensor spill: declined, a fixed -ngld splits the drafter between the GPU "
                 "and host RAM, which nothing here can size"
+            )
+            return None
+        if inputs.get("gpu_draft_unsized"):
+            logger.debug(
+                "Tensor spill: declined, a GPU drafter's footprint was not sized, and --fit off "
+                "would leave nothing to place it"
             )
             return None
         if inputs.get("eagle3_drafter_unsized"):
