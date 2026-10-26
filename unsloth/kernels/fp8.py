@@ -958,8 +958,10 @@ def torchao_block_matmul(
     # torchao's kernel indexes in int32 too, so route launches past 2**31 elements to the int64 one.
     # It also reads the weight scale with block_size[1] along N, writes bf16 only (fp16 outputs would
     # round through bf16), and is slower on some GPUs (_prefer_triton_block_matmul_at).
+    # Empty inputs (an MoE expert that got no tokens) too: torchao buckets M with log2(M).
     if (
-        output_dtype != torch.bfloat16
+        act_q.numel() == 0
+        or output_dtype != torch.bfloat16
         or long_indexing(act_q, weight_q)
         or (act_q.numel() // act_q.shape[-1] * weight_q.shape[0] >= 2**31)
         or block_size[0] != block_size[1]

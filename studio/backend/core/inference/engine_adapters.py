@@ -438,7 +438,23 @@ def gpu_memory_fraction(
 
 
 def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
+    # R570+ MIG ids are CUDA devices: budget each slice; nvidia-smi --id takes physical ids.
+    try:
+        from utils.hardware import mig
+        slices = mig.rows_for(gpu_ids)
+    except Exception:
+        slices = None
+    if slices is not None:
+        if not all(float(r.get("memory_total_mib") or 0) > 0 for r in slices):
+            raise RuntimeError(
+                "The selected MIG GPU instance has no memory reading right now because the GPU "
+                "probe did not answer. Retry in a few seconds."
+            )
+        return [
+            (float(r["memory_total_mib"]), float(r.get("memory_free_mib") or 0)) for r in slices
+        ]
     from utils.hardware.nvidia import _nvidia_smi_executable
+
     result = subprocess.run(
         [
             _nvidia_smi_executable(),

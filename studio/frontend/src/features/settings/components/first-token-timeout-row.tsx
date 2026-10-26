@@ -98,7 +98,7 @@ export function FirstTokenTimeoutRow() {
           >
             <SelectTrigger
               aria-label={t("settings.chat.firstTokenLabel")}
-              className="w-40"
+              className="w-40 data-[size=default]:h-control"
             >
               <SelectValue />
             </SelectTrigger>

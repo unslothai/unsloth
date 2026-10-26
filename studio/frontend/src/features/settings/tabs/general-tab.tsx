@@ -573,7 +573,7 @@ export function GeneralTab() {
                 }}
                 onBlur={commitToken}
                 className={cn(
-                  "h-8 w-full font-mono text-xs",
+                  "h-control w-full font-mono text-xs",
                   tokenValidated ? "pr-14" : "pr-8",
                 )}
               />
@@ -609,7 +609,6 @@ export function GeneralTab() {
               type="button"
               variant="outline"
               size="sm"
-              className="h-8"
               disabled={!draftToken && !hfToken}
               onClick={clearHfToken}
             >
@@ -762,7 +761,7 @@ export function GeneralTab() {
                 value={draftUploadLimit}
                 aria-label={t("settings.general.uploads.maxUploadSize")}
                 onChange={(event) => setDraftUploadLimit(event.target.value)}
-                className="h-8 w-24"
+                className="h-control w-24"
               />
               <span className="text-xs font-medium text-muted-foreground">
                 MB
@@ -883,10 +882,10 @@ export function GeneralTab() {
       ) : null}
 
       <SettingsSection
+        danger={true}
         title={t("settings.general.resetPreferences.sectionTitle")}
       >
         <SettingsRow
-          destructive={true}
           label={t("settings.general.resetPreferences.label")}
           description={t("settings.general.resetPreferences.description")}
         >

@@ -1105,7 +1105,7 @@ class ModelOverridePayload(BaseModel):
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
     # Which index space gpu_ids is in. Absent means physical, the only thing a client
     # written before this field could have meant.
-    gpu_index_kind: Optional[Literal["physical", "vulkan"]] = None
+    gpu_index_kind: Optional[Literal["physical", "vulkan", "cuda_device"]] = None
     # An all-default save carries no fields, like a forget; None keeps the legacy contract.
     remove: Optional[bool] = None
     # Fill in, don't replace: the backfill reads the map once then writes each model.
@@ -1521,7 +1521,7 @@ def update_multi_model(
     background_tasks: BackgroundTasks,
     current_subject: str = Depends(get_current_subject),
 ) -> MultiModelResponse:
-    """Off, When they fit or Always. Takes effect on the next load."""
+    """Off, When they fit or Always. Takes effect on the next load; Off also unloads the idle kept models."""
     try:
         mode = payload.mode
         if mode is None:
@@ -4789,6 +4789,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "recipes": False,
     "export": False,
     "api": False,
+    "tasks": False,
 }
 
 MAX_SIDEBAR_NAV_INPUT_ITEMS = 4 * len(SIDEBAR_NAV_ITEM_DEFAULTS)
@@ -4831,6 +4832,7 @@ SidebarNavItemId = Literal[
     "recipes",
     "export",
     "api",
+    "tasks",
 ]
 
 

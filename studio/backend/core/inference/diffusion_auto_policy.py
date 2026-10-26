@@ -25,6 +25,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .diffusion_fp16_variant import is_fp16_twin, shadowed_twins
+
 _MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)  # component sizes below are decimal GB
 
 # Steady size of a torchao-quantised transformer relative to bf16: int8/fp8 store one byte per param plus per-row
@@ -125,9 +127,7 @@ _BASE_RESIDENT_FACTORS: dict = {
     "tongyi-mai/z-image": (1.0, 1.0),
     "alpha-vllm/lumina-image-2.0": (2.0, 2.0),
     "ideogram-ai/ideogram-4-fp8": (0.5, 0.5),
-    # SDXL's default variant is fp32 throughout (headers read 2026-08-25); the loader skips the fp16 twins. At 1:1 its
-    # 12.9 GB prices against a 6.5 GB bf16 load and refuses on any 16 GB pool. Its denoiser is ``unet/``, so it lands in
-    # the companion bucket: both factors halve.
+    # SDXL defaults are fp32 (12.9 GB vs 6.5 GB loaded), unet/ is a companion: both factors halve. fp16 twins price 1:1.
     "stabilityai/stable-diffusion-xl-base-1.0": (2.0, 2.0),
     "stabilityai/sdxl-turbo": (2.0, 2.0),
 }
@@ -153,22 +153,34 @@ def resident_bytes_from_declared(
     )
     denoiser = 0
     companions = 0
-    for path, size in declared_files or ():
+    twins = 0  # already at load width: 1:1
+    declared_files = list(declared_files or ())
+    shadowed = shadowed_twins(path for path, _size in declared_files)
+    for path, size in declared_files:
         size = int(size or 0)
-        if size <= 0:
+        if size <= 0 or str(path) in shadowed:
             continue
-        if str(path).startswith(DENOISER_SUBFOLDERS):
+        if is_fp16_twin(str(path)):
+            twins += size
+        elif str(path).startswith(DENOISER_SUBFOLDERS):
             denoiser += size
         else:
             companions += size
     prequant_bytes = max(0, int(prequant_bytes or 0))
     extra_bf16_bytes = max(0, int(extra_bf16_bytes or 0))
     dtype_scale = max(1.0, float(dtype_scale or 1.0))
-    if denoiser <= 0 and companions <= 0 and prequant_bytes <= 0 and extra_bf16_bytes <= 0:
+    if (
+        denoiser <= 0
+        and companions <= 0
+        and twins <= 0
+        and prequant_bytes <= 0
+        and extra_bf16_bytes <= 0
+    ):
         return None
     dtype_resident = (
         int(denoiser / max(denoiser_factor, 0.01))
         + int(companions / max(companion_factor, 0.01))
+        + twins
         + extra_bf16_bytes
     )
     return int(dtype_resident * dtype_scale) + prequant_bytes
@@ -185,14 +197,21 @@ def companion_bytes_from_declared(
         _base_key(base_repo) if base_repo else "", (1.0, 1.0)
     )
     # An SDXL-style UNet is a denoiser too.
-    companions = sum(
-        max(0, int(size or 0))
-        for path, size in (declared_files or ())
-        if not str(path).startswith(DENOISER_SUBFOLDERS + ("unet/",))
-    )
-    if companions <= 0:
+    declared_files = list(declared_files or ())
+    shadowed = shadowed_twins(path for path, _size in declared_files)
+    kept = [
+        (str(path), max(0, int(size or 0)))
+        for path, size in declared_files
+        if not str(path).startswith(DENOISER_SUBFOLDERS + ("unet/",)) and str(path) not in shadowed
+    ]
+    companions = sum(size for path, size in kept if not is_fp16_twin(path))
+    twins = sum(size for path, size in kept if is_fp16_twin(path))
+    if companions + twins <= 0:
         return None
-    return int(int(companions / max(companion_factor, 0.01)) * max(1.0, float(dtype_scale or 1.0)))
+    return int(
+        (int(companions / max(companion_factor, 0.01)) + twins)
+        * max(1.0, float(dtype_scale or 1.0))
+    )
 
 
 def _base_key(base_repo: Optional[str]) -> str:

@@ -483,7 +483,7 @@ export function TranscribeFooter({
       ) : null}
       <div className="flex flex-wrap items-center justify-center gap-2">
         <Button
-          className="relative z-10 mx-auto h-10 px-7 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className="relative z-10 mx-auto text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
           variant={running ? "destructive" : "dark"}

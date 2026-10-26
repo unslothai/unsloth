@@ -4071,7 +4071,11 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
-from state.tool_approvals import resolve_tool_decision, tool_decision_is_pending
+from state.tool_approvals import (
+    resolve_tool_decision,
+    tool_decision_grants_host_access,
+    tool_decision_is_pending,
+)
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
@@ -9768,6 +9772,8 @@ def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
 
 
 _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
+# Routes a named model to the slot already serving it but never loads one (scheduled runs).
+LOADED_MODELS_ONLY_SCOPE_KEY = "_unsloth_loaded_models_only"
 # Sentinel a raw-body endpoint passes when the request omits ``model``: it must
 # only restore an idle-freed model, never run the resolver (so a downloaded GGUF
 # literally named "default" can't be swapped to). The NUL keeps it off any index.
@@ -11953,6 +11959,19 @@ async def _maybe_auto_switch_model(
     # pinned preview checkpoint it just loaded.
     if _auto_switch_opted_out(fastapi_request):
         return
+    if (
+        named_model
+        and isinstance(_swap_scope, dict)
+        and _swap_scope.get(LOADED_MODELS_ONLY_SCOPE_KEY)
+    ):
+        # A named model not routed to a kept slot: only the resident may answer, under the same
+        # access check. An omitted one (the reload-only sentinel) keeps the path below.
+        if not await asyncio.to_thread(_loaded_identity_satisfies, named_model):
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        await _refuse_foreign_resident()
+        if claim_resident:
+            _claim_slot_for_non_preview(fastapi_request)
+        return
     auto_switch_on = get_openai_auto_switch_enabled()
 
     def _refuse_non_gguf_endpoint() -> None:
@@ -12888,13 +12907,21 @@ def _media_on_target_gpus(placement) -> bool:
     return bool(held) and (not gpus or bool(set(held) & set(gpus)))
 
 
+def _idle_kept_chat_on_target_gpus(placement) -> bool:
+    gpus = None if placement.gpu_ids_are_vulkan_ordinals else _placement_gpu_ids(placement)
+    return bool(model_slots.eviction_victims(None, 0, set(gpus) if gpus else None, discrete = True))
+
+
 def _primary_refuses_partial_fit(serving: bool, policy: str, placement) -> bool:
-    """Whether a primary GGUF load refuses a partial GPU fit beside an image or video model, to retry once room is
-    made. Not under Always while a primary serves: the refusal lands after its teardown, leaving nothing loaded."""
+    """Whether a primary GGUF load refuses a partial fit so room can be made first. Not under Always while a primary
+    serves: the refusal lands after its teardown, leaving nothing loaded."""
     return (
         _primary_can_retry_fit.get()
         and not (serving and policy == "always")
-        and _media_on_target_gpus(placement)
+        and (
+            _media_on_target_gpus(placement)
+            or (policy == "fit" and _idle_kept_chat_on_target_gpus(placement))
+        )
     )
 
 
@@ -12980,16 +13007,17 @@ def _outgoing_chat_credit_gb(
 
 
 async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> LoadRequest:
-    """A primary chat load refused a partial GPU fit beside an image or video model: return the request to retry.
+    """A primary chat load refused a partial GPU fit beside other models: return the request to retry.
 
-    When they fit frees the image or video model (cheapest first), else lets llama-server fit what it can. Always
-    only accepts a smaller context; otherwise it refuses, since nothing may be unloaded.
+    When they fit frees the cheapest residents, else lets llama-server fit what it can. Always only accepts a
+    smaller context or a host RAM spill, else refuses.
     """
     from core.inference import gpu_arbiter, gpu_residency
 
-    if exc.capped:
+    policy = await asyncio.to_thread(gpu_residency.current_policy)
+    if exc.capped or (policy == "always" and getattr(exc, "host", False)):
         return request.model_copy(update = {"force_alongside": True})
-    if await asyncio.to_thread(gpu_residency.current_policy) == "always":
+    if policy == "always":
         rows = (await asyncio.to_thread(gpu_residency._free_mib_by_gpu))[0] or {}
         gpus = [g for g in exc.gpu_indices or () if "free_mib" in rows.get(g, {})]
         free = sum(rows[g]["free_mib"] for g in gpus)
@@ -16681,7 +16709,10 @@ async def _override_gpu_ids_still_resolve(
             )
 
         device, is_vulkan, resolved = await asyncio.to_thread(_device_and_resolution)
-        if stored_index_kind != ("vulkan" if is_vulkan else "physical"):
+        from utils.hardware.hardware import current_gpu_index_kind
+
+        current_kind = await asyncio.to_thread(current_gpu_index_kind, is_vulkan)
+        if stored_index_kind != current_kind:
             return False
         if device == DeviceType.XPU and not is_vulkan:
             # Rejected outright on XPU.
@@ -19326,7 +19357,9 @@ async def load_model_gated(
 
                         if await asyncio.to_thread(get_multi_model_mode) == "always":
                             # Always unloads nothing: try once more beside the others, else refuse.
-                            if exc.capped and not request.force_alongside:
+                            if (
+                                exc.capped or getattr(exc, "host", False)
+                            ) and not request.force_alongside:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
                             if measured and not account_access.managed_account():
@@ -19396,6 +19429,19 @@ async def load_model_gated(
                                         force = request.force_cancel_active,
                                         action = "Loading a model",
                                     )
+                                victims = await asyncio.to_thread(
+                                    model_slots.in_slot,
+                                    None,
+                                    lambda: _kept_victims_beside_primary(exc),
+                                )
+                                reports = await asyncio.to_thread(
+                                    lambda: {slot: _kept_slot_reports(slot) for slot in victims}
+                                )
+                                dropped = await asyncio.to_thread(model_slots.evict_these, victims)
+                                note_keyed([r for slot in dropped for r in reports.get(slot, ())])
+                                evicted += [
+                                    _model_key(s.request) for s in dropped if s.request is not None
+                                ]
                                 # As a pick does before a switch: the active model goes first, so
                                 # the new one is placed on a GPU it no longer shares.
                                 await asyncio.to_thread(_unload_primary)
@@ -19546,6 +19592,21 @@ def _active_model_holds_none_of(exc) -> bool:
     return bool(getattr(llama, "_requested_gpu_ids", None) and pin) and not set(pin) & set(
         exc.gpu_indices
     )
+
+
+def _kept_victims_beside_primary(exc) -> list:
+    """Idle kept slots that cover ``exc``'s shortfall together with the active server; call via ``in_slot(None, ...)``."""
+    if getattr(exc, "host", False) or not exc.short_mib:
+        return []
+    gpus = exc.gpu_indices or None
+    held = sum(
+        mib
+        for idx, mib in (getattr(get_llama_cpp_backend(), "_planned_vram_mib", None) or {}).items()
+        if not gpus or idx in gpus
+    )
+    if not held or held >= exc.short_mib:
+        return []
+    return model_slots.eviction_victims(None, exc.short_mib - held, gpus, exc.discrete)
 
 
 def _primary_model_label() -> Optional[str]:
@@ -23453,6 +23514,18 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 async def confirm_tool_call(
     request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
+    # Approving a host-path call unsandboxes it: like Full access, the UI's choice, not an API key's. Deny stays open.
+    if (
+        request.decision == "allow"
+        and auth_policy.api_full_access_refused()
+        and tool_decision_grants_host_access(request.approval_id, request.session_id)
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "This tool call reaches files outside the sandbox, and API keys cannot approve "
+            "that: approve it in the Unsloth UI, or set UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 on "
+            "the server to allow it.",
+        )
     matched = resolve_tool_decision(
         request.approval_id,
         request.decision,
@@ -28170,9 +28243,12 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
     import torchaudio
     import tempfile
     import os
+    from utils.media_playlist import refuse_playlist
     from utils.paths import ensure_dir, tmp_root
 
     raw = base64.b64decode(b64)
+    # torchaudio and torchcodec open the file through FFmpeg, which follows playlist entries.
+    refuse_playlist(raw)
     # torchaudio.load needs a path or file-like with a format hint; write a
     # temp file so it can auto-detect the format.
     with tempfile.NamedTemporaryFile(
@@ -28943,6 +29019,10 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
     for containers including m4a/webm/WMA/AMR. librosa remains the final fallback
     in full ML environments, but is absent from no-torch GGUF-only installs.
     """
+    from utils.media_playlist import refuse_playlist
+
+    # Checked once up front so no decoder below, the librosa fallback included, sees a playlist.
+    refuse_playlist(raw)
     try:
         arr, sr = _decode_audio_mono_with_soundfile(raw)
     except _DecodedAudioTooLongError:
@@ -28962,11 +29042,8 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                 ) from av_error
             import os
             import tempfile
-            from utils.media_playlist import refuse_playlist
             from utils.paths import ensure_dir, tmp_root
 
-            # librosa may hand this to unrestricted FFmpeg, which follows playlist entries.
-            refuse_playlist(raw)
             with tempfile.NamedTemporaryFile(
                 suffix = ".audio",
                 delete = False,

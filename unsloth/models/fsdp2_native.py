@@ -349,7 +349,8 @@ def _is_block_list(container, no_split):
     """A ModuleList whose children are all blocks (modules with submodules and parameters). Classes may mix
     (Jamba, Zamba / Zamba2, OlmoHybrid, Mllama text); lists of bare Linear / norm modules (Gemma3n altup
     projections, also after PEFT wraps them) are not blocks."""
-    children = list(container.children())
+    # Pipeline parallel pass-throughs (layers another stage owns, no parameters) are not blocks.
+    children = [c for c in container.children() if "_pp_index" not in c.__dict__]
     if not children:
         return False
     for child in children:
@@ -379,7 +380,7 @@ def find_shard_units(model, ignored_params = ()) -> list:
             continue
         if isinstance(module, nn.ModuleList) and _is_block_list(module, no_split):
             for child in module.children():
-                if id(child) not in inside:
+                if id(child) not in inside and "_pp_index" not in child.__dict__:
                     _take(child)
     if no_split and not units:
         # Fallback only when no block list exists: the existing `_no_split_modules` classes (transformers 5.x
@@ -1006,6 +1007,75 @@ def _fully_shard(fully_shard, module, **kwargs):
         fully_shard_module.FSDPModule = original
 
 
+def _block_cudagraphs_requested():
+    block_compile = sys.modules.get(f"{__package__}._block_compile") if __package__ else None
+    options = getattr(block_compile, "_COMPILE_OPTIONS", None)
+    if isinstance(options, dict):
+        return bool(options.get("triton.cudagraphs"))
+    return os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1"
+
+
+def _skip_free_unsharded_param():
+    return None
+
+
+def _compiled_block_modules(model):
+    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)."""
+    inside = set()
+    for module in model.modules():
+        if id(module) in inside or not getattr(
+            type(module).forward, "_unsloth_block_compiled", False
+        ):
+            continue
+        if module.__dict__.get("_unsloth_block_mode", 1) == 0:
+            continue
+        inside.update(id(m) for m in module.modules())
+    return inside
+
+
+def _keep_unsharded_for_block_cudagraphs(model):
+    """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
+    step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
+    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph."""
+    if not _block_cudagraphs_requested():
+        return 0
+    blocks = _compiled_block_modules(model)
+    if not blocks:
+        return 0
+    FSDPModule = _fsdp_module_class()
+    kept, nbytes = 0, 0
+    for module in model.modules():
+        if not isinstance(module, FSDPModule):
+            continue
+        try:
+            group = getattr(module._get_fsdp_state(), "_fsdp_param_group", None)
+        except Exception:
+            group = None
+        for fsdp_param in getattr(group, "fsdp_params", None) or ():
+            if getattr(fsdp_param, "_unsloth_keep_unsharded", False):
+                continue
+            info = getattr(fsdp_param, "_module_info", None)
+            if id(getattr(info, "module", None)) not in blocks:
+                continue
+            if not callable(getattr(type(fsdp_param), "free_unsharded_param", None)):
+                return kept  # a torch without this FSDP2 internal: graphs re-record as before
+            fsdp_param.free_unsharded_param = _skip_free_unsharded_param
+            fsdp_param._unsloth_keep_unsharded = True
+            kept += 1
+            try:
+                dtype = getattr(fsdp_param, "param_dtype", None) or fsdp_param.orig_dtype
+                nbytes += fsdp_param._orig_size.numel() * dtype.itemsize
+            except Exception:
+                pass
+    if kept:
+        _print_rank0(
+            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
+            f"{kept} parameters allocated ({nbytes / 2**30:.2f} GiB per rank) so the block CUDA graphs "
+            "replay instead of re-recording every step."
+        )
+    return kept
+
+
 def _post_shard(
     model,
     units,
@@ -1036,6 +1106,7 @@ def _post_shard(
         _print_rank0(
             f"Unsloth: native FSDP2 post-shard step skipped ({type(exc).__name__}: {exc})."
         )
+    _keep_unsharded_for_block_cudagraphs(model)
     try:
         from .fsdp2_save import reduce_unsharded_trainable_grads
         replicated = reduce_unsharded_trainable_grads(model)
@@ -1323,6 +1394,18 @@ def _content_fingerprint(p):
     return out
 
 
+def _is_strided_shard(placement):
+    return any(c.__name__ in ("_StridedShard", "StridedShard") for c in type(placement).__mro__)
+
+
+def _tp_local_view(p):
+    """The local tensor of an Unsloth tensor parallel DTensor parameter; anything else unchanged."""
+    to_local = getattr(p, "to_local", None)
+    if to_local is not None and getattr(p, "device_mesh", None) is not None:
+        return to_local()
+    return p
+
+
 def _sync_trainable_from_first_rank(
     model,
     dist,
@@ -1344,6 +1427,9 @@ def _sync_trainable_from_first_rank(
         return 0
     from .fsdp2_save import mesh_all_reduce
 
+    # Unsloth tensor parallel DTensors: the ranks of this (data parallel) mesh hold the same tp slice,
+    # so their local tensors are compared and broadcast.
+    params = [_tp_local_view(p) for p in params]
     with torch.no_grad():
         local = torch.stack([_content_fingerprint(p).to(device) for p in params])
         first = local.clone()
@@ -1424,7 +1510,37 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if config.units is not None:
         # Sharing is checked once the replicated set is known (ignored and, if replicated, frozen params).
         check_shard_units(model, list(config.units), ignored_params = None)
-    _refuse_tensor_parallel_model(model)
+    pp_stage = None
+    if any(m.__dict__.get("_unsloth_pp") for m in model.modules()):
+        # Unsloth pipeline parallel x FSDP2 data parallel (torchtitan order: split, then shard each stage over
+        # the dp dimension of the same mesh). Checked before any change.
+        from .pp_native import check_pp_dp_composition
+
+        pp_stage = check_pp_dp_composition(model, config.mesh)
+        if config.cpu_offload:
+            # The stage's device (token counts, pipeline send / recv buffers) would follow the offloaded params.
+            raise RuntimeError(
+                "Unsloth: native FSDP2 cpu_offload is not supported on a pipeline parallel model yet; shard it "
+                "without cpu_offload."
+            )
+        if config.reshard_after_forward is None:
+            # torchtitan's PP default (distributed/fsdp.py get_fsdp_reshard_after_forward_policy): keep units
+            # gathered after forward, else every micro-batch all-gathers them again.
+            config = dataclasses.replace(config, reshard_after_forward = False)
+    if _refuse_tensor_parallel_model(model, config.mesh, compose = True):
+        # Unsloth tensor parallel x FSDP2 data parallel: the frozen weights are this rank's tp slices,
+        # replicated over the data parallel mesh; FSDP2 shards only the trainable (LoRA) DTensors over it.
+        if config.shard_frozen or config.cpu_offload:
+            raise RuntimeError(
+                "Unsloth: native FSDP2 over a tensor parallel model keeps the frozen tp shards replicated "
+                "over the data parallel mesh; shard_frozen = True and cpu_offload are not supported there."
+            )
+        if not _supports_ignored_params(fully_shard):
+            raise RuntimeError(
+                "Unsloth: tensor parallel x native FSDP2 data parallel keeps the frozen tp shards out of FSDP2 "
+                f"(fully_shard(ignored_params), torch 2.7+); this is torch {torch.__version__}."
+            )
+        config = dataclasses.replace(config, shard_frozen = False)
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
@@ -1578,7 +1694,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     model._unsloth_fsdp2_units = wrapped
     model._unsloth_fsdp2_extra_units = [u for u in extra_units if isinstance(u, FSDPModule)]
     model._unsloth_fsdp2_root_only = layout.root_only
-    if config.wrap_generate:
+    if config.wrap_generate and pp_stage is None:  # a pipeline stage refuses generate itself
         _wrap_generate(model)
     model._unsloth_fsdp2_mp_policy = mp_policy
     model._unsloth_fsdp2_replicated = sum(1 for p in model.parameters() if p in replicated)
@@ -1594,6 +1710,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         from .fsdp2_save import install_dcp_bnb_state_dict
         install_dcp_bnb_state_dict()
     install_native_fsdp2_hooks()
+    if pp_stage is not None:
+        # The pipeline stage module becomes the outer FSDP2 root: one gradient reduce-scatter per step.
+        pp_stage._attach_data_parallel(mesh, mp_policy)
     global _SHARDED_ANY
     _SHARDED_ANY = True  # fsdp2_launch then leaves a custom loop's Accelerator alone
     classes = sorted({type(u).__name__.removeprefix("FSDP") for u in wrapped})
@@ -1655,7 +1774,11 @@ def native_clip_grad_norm_(
             local = getattr(g, "_local_tensor", None)
             if local is None:
                 local = g.to_local()
-            dims = tuple(i for i, pl in enumerate(g.placements) if pl.is_shard())
+            # FSDP2 over a tensor parallel DTensor shards it as (_)StridedShard, which newer torch does not
+            # report as is_shard().
+            dims = tuple(
+                i for i, pl in enumerate(g.placements) if pl.is_shard() or _is_strided_shard(pl)
+            )
             groups.setdefault((g.device_mesh, dims), []).append(local)
             sharded.append(local)
             device = device or local.device
@@ -1737,41 +1860,52 @@ def native_full_state_dict(
     trainable_only = False,
     cpu_offload = True,
 ):
-    """Collective: every rank must call. Full (unsharded) state dict on rank 0, {} on the others."""
+    """Collective over the model's mesh. Full state dict on the writer (fsdp2_save.mesh_writer_rank),
+    {} on the others."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
 
+    from .fsdp2_save import mesh_writer_rank
+
+    writer_rank = mesh_writer_rank(model) if cpu_offload else 0
     options = StateDictOptions(
-        full_state_dict = True,
-        cpu_offload = cpu_offload,
+        full_state_dict = writer_rank == 0,
+        cpu_offload = cpu_offload and writer_rank == 0,
         ignore_frozen_params = bool(trainable_only),
     )
-    return get_model_state_dict(model, options = options)
+    state = get_model_state_dict(model, options = options)
+    return state if writer_rank == 0 else _gather_to_writer(state, writer_rank)
+
+
+def _gather_to_writer(state, writer_rank):
+    """StateDictOptions(full_state_dict, cpu_offload) for `writer_rank` instead of rank 0, which a
+    sub-mesh may not contain."""
+    from torch.distributed._state_dict_utils import _gather_state_dict
+    return _gather_state_dict(state, cpu_offload = True, ranks_only = (writer_rank,))
 
 
 def _reshard_after_forward_off(unit):
-    """Keep `unit` gathered after its forward. FSDPModule.set_reshard_after_forward exists from torch
-    2.8; on 2.6 / 2.7 set the param group's post-forward mesh the same way (None is what
-    reshard_after_forward = False resolves to). Returns what _reshard_after_forward_restore needs."""
-    if hasattr(unit, "set_reshard_after_forward"):
-        unit.set_reshard_after_forward(False, recurse = False)
-        return None
-    group = getattr(unit._get_fsdp_state(), "_fsdp_param_group", None)
-    if group is None:
-        return None
-    previous = group.post_forward_mesh_info
-    group.post_forward_mesh_info = None
-    return (group, previous)
+    """Keep `unit` gathered after forward: post-forward mesh None, as set_reshard_after_forward(False)
+    writes. By hand since that setter is missing on torch 2.6 / 2.7 and refuses int values on restore."""
+    state = unit._get_fsdp_state()
+    groups = getattr(state, "_fsdp_param_groups", None)
+    if groups is None:  # torch < 2.13: at most one param group
+        group = getattr(state, "_fsdp_param_group", None)
+        groups = [] if group is None else [group]
+    previous = [(group, group.post_forward_mesh_info) for group in groups]
+    auto = getattr(state, "_auto_reshard_after_forward", None)
+    for group in groups:
+        group.post_forward_mesh_info = None
+    if auto is not None:
+        state._auto_reshard_after_forward = False
+    return state, auto, previous
 
 
 def _reshard_after_forward_restore(unit, saved):
-    if hasattr(unit, "set_reshard_after_forward"):
-        unit.set_reshard_after_forward(
-            getattr(unit, "_unsloth_reshard_after_forward", True), recurse = False
-        )
-        return
-    if saved is not None:
-        group, previous = saved
-        group.post_forward_mesh_info = previous
+    state, auto, previous = saved
+    for group, info in previous:
+        group.post_forward_mesh_info = info
+    if auto is not None:
+        state._auto_reshard_after_forward = auto
 
 
 @contextlib.contextmanager
@@ -1804,10 +1938,17 @@ def native_fsdp2_unsharded(model):
         yield model
     finally:
         root.__dict__["_unsloth_unsharded_depth"] = 0
+        errors = []
         for unit in units:
-            unit.reshard()
+            try:
+                unit.reshard()
+            except Exception as exc:
+                errors.append(exc)
+        for unit in units:
             if id(unit) in saved:
                 _reshard_after_forward_restore(unit, saved[id(unit)])
+        if errors:
+            raise errors[0]
 
 
 def _ga_mode(model = None):
@@ -2138,24 +2279,29 @@ def native_save_optimizer(
     should_save = None,
 ):
     """Collective (every rank must call): the full, unsharded optimizer state keyed by parameter FQN
-    (`get_optimizer_state_dict(full_state_dict, cpu_offload)`), written to `path` on rank 0. A plain
-    `optimizer.state_dict()` on rank 0 holds only rank 0's DTensor shards, so a resume from it is wrong."""
+    (`get_optimizer_state_dict(full_state_dict, cpu_offload)`), written to `path` by
+    fsdp2_save.mesh_writer_rank. A plain `optimizer.state_dict()` on rank 0 holds only rank 0's
+    DTensor shards, so a resume from it is wrong."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_optimizer_state_dict
 
     model = _native_root(model)
     optimizer = _inner_optimizer(optimizer)
+    from .fsdp2_save import _dist, _wait_for_writer, mesh_writer_rank
+
+    writer_rank = mesh_writer_rank(model)
     state = get_optimizer_state_dict(
         model,
         optimizer,
-        options = StateDictOptions(full_state_dict = True, cpu_offload = True),
+        options = StateDictOptions(full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0),
     )
-    if should_save is None:
-        should_save = _rank0()
+    if writer_rank != 0:
+        state = _gather_to_writer(state, writer_rank)
+    dist = _dist()
+    if should_save is None or writer_rank != 0:
+        # Only the sub-mesh writer holds the state; a global-rank-0 should_save would write nothing.
+        should_save = dist is None or dist.get_rank() == writer_rank
     if path is None:
         return state
-    from .fsdp2_save import _dist, _wait_for_writer
-
-    dist = _dist()
     writer = bool(should_save)
     try:
         if writer:
@@ -2165,7 +2311,7 @@ def native_save_optimizer(
             # The other ranks wait for the write, so no later collective overtakes it. A store key,
             # not a barrier: a large full-finetuning state can take longer to write than the
             # collective timeout. Every rank passes the same path (the Trainer does).
-            _wait_for_writer(dist, writer)
+            _wait_for_writer(dist, writer, writer_rank)
     return state
 
 
@@ -2833,6 +2979,18 @@ def _save_unwrapped(
         trainer.model = held
 
 
+def _trainer_save_writer(trainer, root):
+    """(writes, writer_rank) for a Trainer save of `root`: should_save, unless the mesh leaves out
+    rank 0, then its own first rank (else nobody writes and the mesh waits forever)."""
+    from .fsdp2_save import _dist, mesh_writer_rank
+
+    writer_rank = mesh_writer_rank(root)
+    if writer_rank == 0:
+        return bool(trainer.args.should_save), 0
+    dist = _dist()
+    return dist is not None and dist.get_rank() == writer_rank, writer_rank
+
+
 def _install_trainer_hooks():
     try:
         from transformers import Trainer
@@ -2865,23 +3023,24 @@ def _install_trainer_hooks():
 
             include = _fsdp2_peft_saved_frozen(root, {})
             with fsdp2_gathered(root, trainable_only = True, include = include) as writer:
-                if writer is not False and self.args.should_save:
+                if writer is not False and _trainer_save_writer(self, root)[0]:
                     _save_unwrapped(self, root, output_dir)
         else:
-            from .fsdp2_save import _dist, _wait_for_writer
+            from .fsdp2_save import _dist, _wait_for_writer, writes_off_rank0
 
             state_dict = native_full_state_dict(root)
-            writer = bool(self.args.should_save)
+            writer, writer_rank = _trainer_save_writer(self, root)
             try:
                 if writer:
-                    _save_unwrapped(self, root, output_dir, state_dict = state_dict)
+                    with writes_off_rank0(root, writer_rank):
+                        _save_unwrapped(self, root, output_dir, state_dict = state_dict)
             finally:
                 # As in fsdp2_gathered: the other ranks wait for the (possibly multi-GB) write
                 # through the store, so they cannot run ahead into the optimizer save's or the next
                 # step's collectives and hit their timeout while rank 0 is still writing.
                 dist = _dist()
                 if dist is not None:
-                    _wait_for_writer(dist, writer)
+                    _wait_for_writer(dist, writer, writer_rank)
         if getattr(self.args, "push_to_hub", False) and not _internal_call:
             self.push_to_hub(commit_message = "Model save", revision = self.args.hub_revision)
 
@@ -2955,10 +3114,11 @@ def _install_trainer_hooks():
         # other format in a reused directory is removed, so a resume cannot read it.
         # The flag is read per rank: every rank writes the format they all asked for (a mixed
         # choice would pair dcp.save's collectives with the full gather's), before any cleanup.
+        should_save = _trainer_save_writer(self, _native_root(model))[0]
         group, usable = _dcp_group(_native_root(model))
         sharded = usable and _all_ranks_agree(_env_on("UNSLOTH_FSDP2_DCP_OPTIM", False), group)
         stale = os.path.join(output_dir, _OPTIMIZER_NAME if sharded else _OPTIMIZER_DCP_DIR)
-        if self.args.should_save and os.path.lexists(stale):
+        if should_save and os.path.lexists(stale):
             if os.path.isdir(stale) and not os.path.islink(stale):
                 import shutil
                 shutil.rmtree(stale)
@@ -2973,10 +3133,10 @@ def _install_trainer_hooks():
                 model,
                 self.optimizer,
                 os.path.join(output_dir, _OPTIMIZER_NAME),
-                should_save = self.args.should_save,
+                should_save = should_save,
             )
         scheduler = getattr(self, "lr_scheduler", None)
-        if self.args.should_save and scheduler is not None:
+        if should_save and scheduler is not None:
             torch.save(scheduler.state_dict(), os.path.join(output_dir, _SCHEDULER_NAME))
 
     original_load_optimizer = Trainer._load_optimizer_and_scheduler
@@ -3508,12 +3668,18 @@ def _expert_parallel_requested(model):
     return False
 
 
-def _refuse_tensor_parallel_model(model):
+def _refuse_tensor_parallel_model(
+    model,
+    mesh = None,
+    compose = False,
+):
     """A model loaded with tp_plan or expert parallelism already holds DTensor / per-rank expert
     parameters on its own mesh, and the Trainer would build a ParallelismConfig from its tp_size.
-    Native FSDP2 cannot shard it again."""
+    Native FSDP2 cannot shard it again. An Unsloth tensor parallel model (apply_tensor_parallel) composes
+    with shard_model over the data parallel dimension of the same 2-D (dp, tp) mesh (compose = True and
+    mesh = that dp mesh): returns True then."""
     if not isinstance(model, nn.Module) or getattr(model, _NATIVE_FLAG, False):
-        return
+        return False
     tp_size = getattr(model, "tp_size", None)
     try:
         tp_size = int(tp_size) if tp_size is not None else None
@@ -3538,10 +3704,23 @@ def _refuse_tensor_parallel_model(model):
         m.__dict__.get("_unsloth_tp") or m.__dict__.get("_unsloth_tp_style")
         for m in model.modules()
     ):
+        if compose and mesh is not None:
+            from .tp_native import check_tp_dp_composition
+            check_tp_dp_composition(model, mesh)
+            return True
         raise RuntimeError(
             "Unsloth: native FSDP2 does not compose with Unsloth tensor parallelism "
-            "(apply_tensor_parallel) yet; train a tensor parallel model with a custom loop over the tp "
-            "ranks only (data parallel size 1)."
+            "(apply_tensor_parallel) here; for data parallel x tensor parallel call "
+            "shard_model(model, FSDP2Config(mesh = mesh['dp'])) on a model sharded with "
+            "apply_tensor_parallel(model, mesh['tp']) over the same 2-D (dp, tp) mesh."
+        )
+    if any(m.__dict__.get("_unsloth_pp") for m in model.modules()):
+        if compose and mesh is not None:
+            return False  # shard_model checked the pp x dp composition (pp_native.check_pp_dp_composition)
+        raise RuntimeError(
+            "Unsloth: native FSDP2 does not compose with Unsloth pipeline parallelism (apply_pipeline_parallel) "
+            "here; for pipeline x data parallel call shard_model(model, FSDP2Config(mesh = mesh['dp'])) on the "
+            "split model and train it with PipelineParallel.step (not the Trainer)."
         )
     if (tp_size or 1) > 1 or dtensor:
         raise RuntimeError(

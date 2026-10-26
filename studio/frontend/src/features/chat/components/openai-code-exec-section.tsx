@@ -24,7 +24,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { TrashIcon, PlusIcon } from "lucide-react";
+import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { PlusIcon } from "lucide-react";
 import {
   createOpenAIContainer,
   deleteOpenAIContainer,
@@ -536,7 +538,7 @@ export function OpenAICodeExecSection({
                     }}
                     aria-label={`Delete container ${c.name ?? c.id}`}
                   >
-                    <TrashIcon className="size-3.5" />
+                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-3.5" />
                   </Button>
                 </li>
               );
@@ -583,7 +585,7 @@ export function OpenAICodeExecSection({
           </Button>
           <Button
             size="sm"
-            className="h-7 shrink-0 px-3 text-xs"
+            className="shrink-0 text-xs"
             onClick={() => void onCreate()}
             disabled={creating || !createName.trim() || !hasCredential}
           >
@@ -594,7 +596,6 @@ export function OpenAICodeExecSection({
         <Button
           size="sm"
           variant="outline"
-          className="h-8"
           onClick={() => setCreateOpen(true)}
           disabled={!hasCredential}
         >

@@ -199,7 +199,7 @@ export function PublishExecutionDialog({
               <Button asChild={true}>
                 <a href={publishedUrl} target="_blank" rel="noreferrer">
                   Open repo
-                  <HugeiconsIcon icon={ChevronRightStandardIcon} className="ml-2 size-4" />
+                  <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4" />
                 </a>
               </Button>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>

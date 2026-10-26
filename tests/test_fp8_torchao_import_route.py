@@ -8,6 +8,7 @@ import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 from unsloth.kernels import fp8 as F8
 
@@ -165,3 +166,37 @@ def test_torchao_block_matmul_routes(monkeypatch, block_size, dtype, expect):
     w_s = torch.empty(N // block_size[0], K // block_size[1], device = "meta")
     F8.torchao_block_matmul(meta(64, K), meta(N, K), act_s, w_s, block_size, output_dtype = dtype)
     assert calls == (["triton"] if expect == "triton" else [("torchao", block_size[1])])
+
+
+def test_torchao_block_matmul_routes_empty_inputs_to_triton(monkeypatch):
+    # torchao buckets M with math.ceil(math.log2(M)), which raises for an expert that got no tokens.
+    calls = []
+    monkeypatch.setattr(F8, "_prefer_triton_block_matmul_at", lambda device, M: False)
+    monkeypatch.setattr(F8, "w8a8_block_fp8_matmul_triton", lambda *a, **k: calls.append("triton"))
+    monkeypatch.setattr(
+        F8, "torchao_blockwise_gemm", lambda *a, **k: calls.append("torchao") or a[0]
+    )
+    meta = lambda *shape: torch.empty(*shape, device = "meta", dtype = torch.float8_e4m3fn)
+    w_s = torch.empty(2, 4, device = "meta")
+    for M in (0, 1):
+        F8.torchao_block_matmul(
+            meta(M, 512), meta(256, 512), torch.empty(M, 4, device = "meta"), w_s, [128, 128]
+        )
+    assert calls == ["triton", "torchao"]
+
+
+@pytest.mark.skipif(
+    not has_real_cuda() or F8.torchao_blockwise_gemm is None,
+    reason = "needs CUDA and torchao's blockwise GEMM",
+)
+def test_fp8_block_matmul_empty_rows_on_gpu():
+    # The real kernels: an empty activation gives an empty output instead of a math domain error.
+    if torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("block FP8 GEMM needs sm_89 or newer")
+    K, N = 512, 256
+    act_q = torch.empty(0, K, device = "cuda", dtype = torch.float8_e4m3fn)
+    act_s = torch.empty(0, K // 128, device = "cuda")
+    w_q = torch.randn(N, K, device = "cuda").to(torch.float8_e4m3fn)
+    w_s = torch.ones(N // 128, K // 128, device = "cuda")
+    out = F8.torchao_block_matmul(act_q, w_q, act_s, w_s, [128, 128])
+    assert out.shape == (0, N) and out.dtype == torch.bfloat16

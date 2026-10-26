@@ -409,7 +409,7 @@ const PastedTextAttachmentUI: FC<{
     variant === "card" ? (
       <button
         className={cn(
-          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-lg text-left transition-colors",
+          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-[14px] text-left transition-colors",
           CARD_SIZE,
           CARD_EDGE,
           CARD_SURFACE,
@@ -443,7 +443,7 @@ const PastedTextAttachmentUI: FC<{
     ) : variant === "row" ? (
       <button
         className={cn(
-          "aui-pasted-text-row flex max-w-full cursor-pointer items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors",
+          "aui-pasted-text-row flex max-w-full cursor-pointer items-center gap-3 rounded-[14px] px-4 py-3 text-left transition-colors",
           SENT_ROW_WIDTH,
           CARD_EDGE,
           "hover:bg-[color-mix(in_oklab,var(--foreground)_5%,transparent)]",
@@ -503,7 +503,7 @@ const AttachmentCardRemove: FC = () => {
         variant="ghost"
         size="icon"
         aria-label="Remove file"
-        className="aui-attachment-card-remove absolute top-1.5 right-1.5 size-5 rounded-full bg-foreground p-0 opacity-0 shadow-sm transition-opacity hover:bg-foreground! focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100 [&_svg]:text-background"
+        className="aui-attachment-card-remove absolute top-1.5 right-1.5 size-5 rounded-full bg-white p-0 opacity-0 shadow-sm ring-1 ring-black/15 transition-opacity hover:bg-white! dark:bg-black dark:ring-white/20 dark:hover:bg-black! focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100 [&_svg]:text-black dark:[&_svg]:text-white"
       >
         <XIcon className="aui-attachment-remove-icon size-3 stroke-[2.5px]" />
       </Button>
@@ -558,7 +558,7 @@ const ComposerAttachmentCard: FC = () => {
       <AttachmentPreviewDialog redactFromReload={true}>
         <button
           className={cn(
-            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-lg text-left transition-colors",
+            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-[14px] text-left transition-colors",
             CARD_SIZE,
             CARD_EDGE,
             !src && CARD_SURFACE,
@@ -588,7 +588,7 @@ const SentImageTile: FC = () => {
       <AttachmentPreviewDialog redactFromReload={false}>
         <button
           className={cn(
-            "aui-attachment-image-tile block cursor-pointer overflow-hidden rounded-lg transition-opacity hover:opacity-85",
+            "aui-attachment-image-tile block cursor-pointer overflow-hidden rounded-[14px] transition-opacity hover:opacity-85",
             layout === "list" ? SENT_IMAGE_SIZE : SENT_IMAGE_SIZE_COMPACT,
             CARD_EDGE,
           )}
@@ -658,7 +658,7 @@ const SentFileItem: FC = () => {
         {layout === "list" ? (
           <button
             className={cn(
-              "aui-attachment-row flex max-w-full cursor-pointer items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors",
+              "aui-attachment-row flex max-w-full cursor-pointer items-center gap-3 rounded-[14px] px-4 py-3 text-left transition-colors",
               SENT_ROW_WIDTH,
               CARD_EDGE,
               "hover:bg-[color-mix(in_oklab,var(--foreground)_5%,transparent)]",

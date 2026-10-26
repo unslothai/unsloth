@@ -8,7 +8,6 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Refresh01Icon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
@@ -16,6 +15,7 @@ import {
   ImageCropIcon,
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -4609,7 +4609,7 @@ function VideoGenerator({
             {busy === "generating" ? (
               <Button
                 // Kept in step with the Images Stop control, which uses the same fill.
-                className="relative z-10 h-10 px-7 text-ui-13 hover:bg-muted dark:hover:bg-muted"
+                className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
@@ -4620,7 +4620,7 @@ function VideoGenerator({
               <>
                 <Button
                   variant="dark"
-                  className="relative z-10 h-10 px-7 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerate}
                   disabled={busy !== null || !status?.loaded}
                 >
@@ -4630,12 +4630,12 @@ function VideoGenerator({
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button
-                        className="relative z-10 h-10 px-4 text-ui-13"
+                        className="relative z-10 text-ui-13"
                         variant="secondary"
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={Refresh01Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={ReloadIcon} className="mr-2 size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>
