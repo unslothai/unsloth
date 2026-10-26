@@ -384,11 +384,59 @@ def _case_accelerate_fsdp(rank, world, tmp, ckpt):
     }
 
 
+def _case_model_init(rank, world, tmp, ckpt, hooked):
+    """Trainer(model_init = ...) under UNSLOTH_TP_SIZE: the model is built inside Trainer.__init__ (and again by
+    train / hyperparameter_search), after the tensor parallel Trainer setup ran on model = None."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    from unsloth.models import tp_env, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+
+    def load(name, load_in_4bit = True):
+        return AutoModelForCausalLM.from_pretrained(name, torch_dtype = torch.float32)
+
+    def peft(model):
+        return get_peft_model(model, LoraConfig(r = 4, target_modules = "all-linear"))
+
+    if hooked:  # FastLanguageModel.from_pretrained / get_peft_model inside model_init
+        load = tp_env.tensor_parallel_env_load(load)
+        peft = tp_env.tensor_parallel_env_peft(peft)
+    built = []
+
+    def model_init():
+        model = peft(load(ckpt, load_in_4bit = False))
+        built.append(tp_native.is_tensor_parallel(model))
+        return model
+
+    data = _Rows([torch.arange(9)] * 8)
+    trainer = []
+    refused = _raised(
+        lambda: trainer.append(
+            transformers.Trainer(
+                model_init = model_init, args = _trainer_args(tmp, 2), train_dataset = data
+            )
+        )
+    )
+    return {
+        "refused": refused,
+        "built": built,
+        "is_tp": bool(trainer) and tp_native.is_tensor_parallel(trainer[0].model),
+    }
+
+
 CASES = {
     "units": _case_units,
     "env": _case_env,
     "dp_average": _case_dp_average,
     "accelerate_fsdp": _case_accelerate_fsdp,
+    "model_init": _case_model_init,
 }
 
 
@@ -424,7 +472,7 @@ def _spawn(
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        if case in ("env", "accelerate_fsdp"):
+        if case in ("env", "accelerate_fsdp", "model_init"):
             kwargs["ckpt"] = _checkpoint(tmp)
         procs = [
             ctx.Process(target = _worker, args = (r, world, port, case, tmp, env or {}, kwargs))
@@ -629,3 +677,12 @@ def test_env_tp_x_accelerate_fsdp_is_refused():
     env = {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_FSDP2": "1", "ACCELERATE_USE_FSDP": "true"}
     for res in _spawn("accelerate_fsdp", 4, env):
         assert "needs Unsloth's native FSDP2" in (res["refused"] or ""), res
+
+
+@pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
+def test_env_tp_model_init_is_refused(hooked):
+    """Without the refusal, a plain model_init model trained as 2-rank DDP (no tensor parallel, each rank its own
+    batches) while the launch asked for UNSLOTH_TP_SIZE=2."""
+    for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = hooked):
+        assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
+        assert "model_init" in res["refused"] and res["built"] == [], res
