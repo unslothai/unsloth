@@ -253,6 +253,8 @@ type ActiveModelLoadRun = {
 
 /** The selection the user last asked for, so an await can tell it was superseded. */
 let modelSelectionIntentEpoch = 0;
+/** Bumped when a load ends without loading; selectModel itself resolves quietly then. */
+let modelLoadCancelEpoch = 0;
 let pendingExternalReplacement:
   | { intentId: number; config?: PerModelConfig }
   | null = null;
@@ -1099,6 +1101,7 @@ export function useChatModelRuntime() {
       if (run.cancelPromise) return run.cancelPromise;
 
       const model = loadingModelRef.current;
+      modelLoadCancelEpoch += 1;
       run.abortController.abort();
       loadAbortRef.current = null;
       loadingModelRef.current = null;
@@ -1302,6 +1305,11 @@ export function useChatModelRuntime() {
     [],
   );
 
+  const readModelLoadEpochs = useCallback(
+    () => ({ intent: modelSelectionIntentEpoch, cancels: modelLoadCancelEpoch }),
+    [],
+  );
+
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
       const modelId = typeof selection === "string" ? selection : selection.id;
@@ -1398,6 +1406,7 @@ export function useChatModelRuntime() {
       if (mayReachHub) {
         const preparedToken = await prepareHfTokenForUse(hfToken);
         if (!preparedToken.proceed) {
+          modelLoadCancelEpoch += 1;
           if (modelSelectionIntentEpoch === loadIntentId) {
             toast.error("Model load cancelled.");
             // This pick invalidated the previous run before opening credentials. If that run
@@ -1904,9 +1913,10 @@ export function useChatModelRuntime() {
       let keepsOthers =
         keepModelsLoaded && !forceReload && (paramsNow.engine ?? "auto") === "auto";
       let switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
-      // Reloading one of several touches only its own slot, so only its chats stop.
+      // Reloading one of several touches only its own slot, so only its chats stop. The target, not
+      // the selected model: the API page reloads any served row.
       const touchesOnlySelected =
-        forceReload && !isExternalModelId(paramsNow.checkpoint) && loadedNow.length > 1;
+        forceReload && !isExternalModelId(modelId) && loadedNow.length > 1;
       try {
         stopDecision = keepsOthers
           ? {
@@ -1918,13 +1928,14 @@ export function useChatModelRuntime() {
           : await confirmStopRunningChatsIfNeeded(
               forceReload ? "Applying these settings" : "Loading a different model",
               "reload",
-              touchesOnlySelected ? (paramsNow.checkpoint ?? undefined) : undefined,
+              touchesOnlySelected ? modelId : undefined,
             );
       } catch (error) {
         releasePreflightLifecycleLease();
         throw error;
       }
       if (!stopDecision.proceed) {
+        modelLoadCancelEpoch += 1;
         releasePreflightLifecycleLease();
         // The inherited target, not this pick's own previousConfig: when this pick superseded a
         // load that had already pre-applied its settings, that field holds the superseded target's
@@ -2591,6 +2602,7 @@ export function useChatModelRuntime() {
                 );
                 if (abortCtrl.signal.aborted) throw new Error("Cancelled");
                 if (!stopDecision.proceed) {
+                  modelLoadCancelEpoch += 1;
                   // Declined before anything was unloaded: exit as a cancellation, not a failed load.
                   if (
                     modelSelectionIntentEpoch === loadIntentId &&
@@ -4198,6 +4210,7 @@ export function useChatModelRuntime() {
     discardExternalReplacement,
     restoreConfigForExternalReplacement,
     isModelSelectionIntentCurrent,
+    readModelLoadEpochs,
     loadingModel,
     loadProgress,
     loadToastDismissed,

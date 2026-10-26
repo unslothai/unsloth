@@ -400,6 +400,7 @@ import {
   ReadAloudIcon,
 } from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
+import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -2733,8 +2734,7 @@ const ThreadScrollToBottom: FC = () => {
       variant="outline"
       onClick={() => scrollToBottom("auto")}
       className={cn(
-        // Muted in dark mode: the page background made it disappear.
-        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background hover:bg-accent dark:bg-muted dark:hover:bg-accent",
+        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background shadow-[0_0_0_0.5px_rgb(0_0_0/0.15)] hover:bg-accent dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.2)] dark:bg-muted dark:hover:bg-accent",
         (isAtBottom || !enabled) && "invisible pointer-events-none",
       )}
     >
@@ -5907,6 +5907,12 @@ const Composer: FC<{
                 dir="auto"
                 {...inputProps}
                 cancelOnEscape={!(declineMounted && declineOwnsEscape)}
+                onScrollCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onInputCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
@@ -7771,8 +7777,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              {/* Solid glyph, so it is smaller than the stroked send arrow. */}
-              <QueueResumeIcon className="size-4" />
+              <QueueResumeIcon className="composer-resume-glyph size-4" />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
@@ -7783,7 +7788,7 @@ const ComposerRightControls: FC<{
               aria-label="Stop queued message"
               onClick={stop}
             >
-              <HugeiconsIcon icon={StopIcon} className="size-3 fill-current" />
+              <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton
@@ -7815,7 +7820,7 @@ const ComposerRightControls: FC<{
           {researchStopping ? (
             <Spinner className="size-3.5" />
           ) : (
-            <HugeiconsIcon icon={StopIcon} className="size-3 fill-current" />
+            <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
           )}
         </Button>
       ) : (
@@ -7836,7 +7841,7 @@ const ComposerRightControls: FC<{
                   // dispatches the next queued prompt. stop() ends the run.
                   onClick={stop}
                 >
-                  <HugeiconsIcon icon={StopIcon} className="size-3 fill-current" />
+                  <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
                 </Button>
               </ComposerPrimitive.Cancel>
             ) : (
@@ -8300,7 +8305,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
           }}
         >
           <QueueResumeIcon className="size-3.5" />
-          Resume
+          {/* Not bare text: as the last element the icon lost its margin to the message's reset. */}
+          <span>Resume</span>
         </Button>
       )}
     </div>

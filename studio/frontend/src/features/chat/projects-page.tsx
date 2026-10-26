@@ -616,7 +616,7 @@ export function ProjectsPage() {
                 }
               }}
               placeholder="Search projects"
-              className="h-9 w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
+              className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
               aria-label="Search projects"
             />
           </div>
@@ -627,7 +627,7 @@ export function ProjectsPage() {
                 size="icon"
                 data-tour="projects-io"
                 title="Import / Export projects"
-                className="rounded-full border-none bg-muted shadow-none dark:bg-card"
+                className="size-control rounded-full border-none bg-muted shadow-none dark:bg-card"
               >
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               </Button>

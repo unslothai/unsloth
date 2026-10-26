@@ -8,12 +8,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   resyncInferenceStatusAfterKeptModelsUnload,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useT } from "@/i18n";
 import { ALLOW_OVERSIZED_LOAD_STORAGE_KEY } from "@/lib/unified-memory-load-refusal";
@@ -31,6 +34,7 @@ import {
   loadMultiModelMode,
   updateMultiModelMode,
 } from "../api/multi-model";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { MediaIdleUnloadSetting } from "./model-auto-switch-section";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
@@ -81,7 +85,12 @@ const MULTI_MODEL_DESCRIPTION = {
   always: "settings.resources.modelMemory.multiModelDescriptionAlways",
 } as const;
 
-export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
+// `api`: the API tab's copy, only the rows that decide which models a server can answer for.
+export function ModelMemorySection({
+  ref,
+  variant = "full",
+}: { ref?: Ref<HTMLElement>; variant?: "full" | "api" }) {
+  const full = variant === "full";
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -207,7 +216,27 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
       : null;
 
   return (
-    <SettingsSection title={t("settings.resources.modelMemory.title")} ref={ref}>
+    <SettingsSection
+      title={t("settings.resources.modelMemory.title")}
+      ref={ref}
+      action={
+        full ? undefined : (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground"
+            onClick={() =>
+              useSettingsDialogStore
+                .getState()
+                .openDialog("resources", { scrollTarget: "resources-model-memory" })
+            }
+          >
+            {t("settings.resources.modelMemory.openSystemSettings")}
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
+          </Button>
+        )
+      }
+    >
       <SettingsRow
         label={t("settings.resources.modelMemory.keepResident")}
         description={t(
@@ -222,20 +251,22 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
           onCheckedChange={(keepResident) => void persist({ keepResident })}
         />
       </SettingsRow>
-      <SettingsRow
-        label={t("settings.resources.modelMemory.noRamReserve")}
-        description={t(
-          "settings.resources.modelMemory.noRamReserveDescription",
-        )}
-        hint={t("settings.resources.modelMemory.noRamReserveHint")}
-      >
-        <Switch
-          aria-label={t("settings.resources.modelMemory.noRamReserve")}
-          checked={settings?.noRamReserve ?? false}
-          disabled={!settings || isSaving}
-          onCheckedChange={(noRamReserve) => void persist({ noRamReserve })}
-        />
-      </SettingsRow>
+      {full ? (
+        <SettingsRow
+          label={t("settings.resources.modelMemory.noRamReserve")}
+          description={t(
+            "settings.resources.modelMemory.noRamReserveDescription",
+          )}
+          hint={t("settings.resources.modelMemory.noRamReserveHint")}
+        >
+          <Switch
+            aria-label={t("settings.resources.modelMemory.noRamReserve")}
+            checked={settings?.noRamReserve ?? false}
+            disabled={!settings || isSaving}
+            onCheckedChange={(noRamReserve) => void persist({ noRamReserve })}
+          />
+        </SettingsRow>
+      ) : null}
       <SettingsRow
         label={t("settings.resources.modelMemory.multiModel")}
         description={t(MULTI_MODEL_DESCRIPTION[mode])}
@@ -271,20 +302,22 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
           </SelectContent>
         </Select>
       </SettingsRow>
-      <SettingsRow
-        label={t("settings.resources.modelMemory.allowOversizedLoad")}
-        description={t(
-          "settings.resources.modelMemory.allowOversizedLoadDescription",
-        )}
-        hint={t("settings.resources.modelMemory.allowOversizedLoadHint")}
-      >
-        <Switch
-          aria-label={t("settings.resources.modelMemory.allowOversizedLoad")}
-          checked={allowOversizedLoad}
-          onCheckedChange={setAllowOversizedLoad}
-          data-testid="allow-oversized-load-switch"
-        />
-      </SettingsRow>
+      {full ? (
+        <SettingsRow
+          label={t("settings.resources.modelMemory.allowOversizedLoad")}
+          description={t(
+            "settings.resources.modelMemory.allowOversizedLoadDescription",
+          )}
+          hint={t("settings.resources.modelMemory.allowOversizedLoadHint")}
+        >
+          <Switch
+            aria-label={t("settings.resources.modelMemory.allowOversizedLoad")}
+            checked={allowOversizedLoad}
+            onCheckedChange={setAllowOversizedLoad}
+            data-testid="allow-oversized-load-switch"
+          />
+        </SettingsRow>
+      ) : null}
       {error ? (
         <p className="pb-3 text-xs text-destructive">{error}</p>
       ) : (
@@ -309,7 +342,9 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
           ) : null}
         </>
       )}
-      <MediaIdleUnloadSetting residencyKey={settings?.keepResident} />
+      {full ? (
+        <MediaIdleUnloadSetting residencyKey={settings?.keepResident} />
+      ) : null}
     </SettingsSection>
   );
 }

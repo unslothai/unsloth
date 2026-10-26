@@ -265,7 +265,7 @@ export const ChatDictationBar: FC<{
           {transcribing === "stop" ? (
             <Spinner className="size-3.5" />
           ) : (
-            <HugeiconsIcon icon={StopIcon} className="size-3 fill-current" />
+            <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
           )}
         </TooltipIconButton>
         <TooltipIconButton

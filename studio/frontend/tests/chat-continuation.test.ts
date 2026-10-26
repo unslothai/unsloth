@@ -422,7 +422,7 @@ test("the bar offers the way out in place of a Continue that cannot help", () =>
   );
   assert.match(
     thread,
-    /\{remedy \? null : \([\s\S]{0,400}Resume\n\s*<\/Button>/,
+    /\{remedy \? null : \([\s\S]{0,700}<span>Resume<\/span>\n\s*<\/Button>/,
     "the resume button is offered again for a cut it cannot help",
   );
 });

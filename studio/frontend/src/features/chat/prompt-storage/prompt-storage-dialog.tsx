@@ -23,14 +23,22 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
-import { Download01Icon, Search01Icon, ViewIcon, Edit03Icon, PlusSignIcon, Upload01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import {
+  Delete02Icon,
+  Download01Icon,
+  Search01Icon,
+  Cancel01Icon,
+  Edit03Icon,
+  PlusSignIcon,
+  Upload01Icon,
+  ViewIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
   LayoutListIcon,
   PlayIcon,
   RotateCcwIcon,
-  Trash2Icon,
 } from "lucide-react";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { SortablePromptItems } from "./sortable-prompt-items";
@@ -1754,7 +1762,7 @@ function PromptDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
@@ -2098,7 +2106,7 @@ function PromptListDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
