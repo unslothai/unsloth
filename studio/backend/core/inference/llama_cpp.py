@@ -12117,6 +12117,49 @@ class LlamaCppBackend:
             list(gpu_indices) if gpu_indices else None
         )
 
+    def _child_runs_on_cpu(
+        self,
+        binary: Optional[str],
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]],
+        *,
+        cpu_forced: bool = False,
+    ) -> bool:
+        """Whether the child gets no model device: a CPU-only build, a CPU ``--device``
+        selection, or a launch Studio forces onto the CPU (``cpu_forced``, a paravirtual
+        Metal). Its lookup tables keep llama.cpp's lazy default."""
+        return bool(
+            cpu_forced
+            or self._binary_ships_no_gpu_backend(binary, env)
+            or _device_selection_is_cpu(extra_args, env)
+        )
+
+    @staticmethod
+    def _metal_placement_unset(
+        extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]], *, layers_fixed: bool
+    ) -> bool:
+        """Whether nothing but Studio places this Metal launch: no fixed layer count, CPU
+        placement, fitter control or pass-through adapter, in argv or env. Only then may
+        a measured discount pin the full offload."""
+        source_env = os.environ if env is None else env
+        return not (
+            layers_fixed
+            or _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
+            or _env_fixes_gpu_layers(source_env)
+            or _device_selection_is_cpu(extra_args, source_env)
+            or _args_place_tensors_on_cpu(extra_args)
+            or _env_places_tensors_on_cpu(source_env)
+            or _extra_args_set_any_flag(extra_args, _FIT_CONTROL_FLAGS)
+            or any(source_env.get(name) for name in _FIT_CONTROL_ENV_VARS)
+            # Extras are appended after the pin, while inherited values are overridden by it.
+            or fit_is_enabled_in(extra_args)
+            # A pass-through adapter is resident on the base tensor's buffer
+            # (llama-adapter.cpp:335, :67) and neither the probe nor model_size carries it,
+            # and nothing on the Apple path charges it the way _fits_without_paging does
+            # off Metal. Spending the discount would hand that budget to the KV cache.
+            or _sidecar_adapter_paths(extra_args)
+        )
+
     @staticmethod
     def _host_forced_table_archs(binary: Optional[str] = None) -> frozenset[str]:
         """``_HOST_FORCED_TABLE_ARCHS`` when the build beside ``binary`` keeps their table on
@@ -12266,6 +12309,7 @@ class LlamaCppBackend:
         cache_ram: Optional[int],
         env: Optional[Mapping[str, str]] = None,
         binary: Optional[str] = None,
+        cpu_forced: bool = False,
     ) -> int:
         """The Metal embedding discount with the lazily read lookup table settled."""
         source_env = os.environ if env is None else env
@@ -12314,6 +12358,8 @@ class LlamaCppBackend:
             return probe_discount
 
         def _resident_fits(table_bytes: int) -> Optional[bool]:
+            if self._child_runs_on_cpu(binary, extra_args, source_env, cpu_forced = cpu_forced):
+                return None
             if any(
                 str(source_env.get(name) or "").strip()
                 for name in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
@@ -15231,23 +15277,7 @@ class LlamaCppBackend:
         embeddings pageable. CPU fallback weights remain charged.
         """
         source_env = os.environ if env is None else env
-        if (
-            layers_fixed
-            or _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
-            or _env_fixes_gpu_layers(source_env)
-            or _device_selection_is_cpu(extra_args, source_env)
-            or _args_place_tensors_on_cpu(extra_args)
-            or _env_places_tensors_on_cpu(source_env)
-            or _extra_args_set_any_flag(extra_args, _FIT_CONTROL_FLAGS)
-            or any(source_env.get(name) for name in _FIT_CONTROL_ENV_VARS)
-            # Extras are appended after the pin, while inherited values are overridden by it.
-            or fit_is_enabled_in(extra_args)
-            # A pass-through adapter is resident on the base tensor's buffer
-            # (llama-adapter.cpp:335, :67) and neither the probe nor model_size carries it,
-            # and nothing on the Apple path charges it the way _fits_without_paging does
-            # off Metal. Spending the discount would hand that budget to the KV cache.
-            or _sidecar_adapter_paths(extra_args)
-        ):
+        if not self._metal_placement_unset(extra_args, source_env, layers_fixed = layers_fixed):
             return 0
         env_view = dict(source_env)
         scrub_memory_env(env_view, settings)
@@ -30576,6 +30606,11 @@ class LlamaCppBackend:
                             layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
                             mtp_may_engage = _mtp_will_engage,
                         )
+                        _apple_probe_embd = _apple_host_embd
+                        # Past the wired limit Metal refuses: the resident verdict obeys it too.
+                        _apple_wired_mib = int(
+                            self._apple_metal_wired_ceiling_bytes() // (1024 * 1024)
+                        )
                         _apple_host_embd = self._apple_lookup_table_discount(
                             _apple_host_embd,
                             model_path,
@@ -30584,7 +30619,7 @@ class LlamaCppBackend:
                             model_size_fit = model_size_fit,
                             need_at_ctx = (
                                 (
-                                    _kv_bytes(effective_ctx)
+                                    _kv_bytes(effective_ctx, _fit_ctx_checkpoints)
                                     + _cc_bytes(effective_ctx)
                                     + _mtp_bytes(effective_ctx)
                                     + _apple_cpu_draft
@@ -30607,9 +30642,14 @@ class LlamaCppBackend:
                                 is not None
                                 else None
                             ),
-                            budget_mib = _apple_fit_budget_mib,
+                            budget_mib = (
+                                min(_apple_fit_budget_mib, _apple_wired_mib)
+                                if _apple_wired_mib > 0
+                                else _apple_fit_budget_mib
+                            ),
                             cache_ram = cache_ram,
                             binary = binary,
+                            cpu_forced = _paravirtual_cpu_forced,
                         )
                         _managed_lazy_flags = list(self._apple_lazy_flags)
                         _apple_model_size_fit = model_size_fit - _apple_host_embd
@@ -30878,7 +30918,17 @@ class LlamaCppBackend:
                                 effective_ctx = max_available_ctx = _vram_fit_ctx
                         # Unmeasured floors still rely on llama.cpp's fitter.
                         _metal_full_offload_pinned = bool(
-                            _apple_host_embd and _apple_measured_ceiling is not None
+                            _apple_measured_ceiling is not None
+                            and (
+                                _apple_probe_embd
+                                or (
+                                    _apple_host_embd
+                                    and not _paravirtual_cpu_forced
+                                    and self._metal_placement_unset(
+                                        extra_args, os.environ, layers_fixed = _caller_owns_budget
+                                    )
+                                )
+                            )
                         )
                         # Weights over the budget launch here too and the fitter places
                         # them, so it must see the same wired limit the refusals do.
@@ -31809,8 +31859,12 @@ class LlamaCppBackend:
                                 or effective_ctx <= 0
                                 or _pass_through_reprices_cache(_fit_extras, n_parallel)
                                 # A CPU child cannot use the cards this fit credits.
-                                or self._binary_ships_no_gpu_backend(binary, _fit_env)
-                                or _device_selection_is_cpu(_fit_extras, _fit_env)
+                                or self._child_runs_on_cpu(
+                                    binary,
+                                    _fit_extras,
+                                    _fit_env,
+                                    cpu_forced = _paravirtual_cpu_forced,
+                                )
                             ):
                                 return None
                             return (

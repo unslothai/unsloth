@@ -1165,6 +1165,41 @@ class TestEstimate:
         )
         assert breakdown(**kw).lookup_table_on_disk is on_disk
 
+    def test_a_paravirtual_metal_estimate_keeps_the_table_streamed(self, breakdown, monkeypatch):
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 256 * 1024)
+        )
+        assert breakdown().lookup_table_on_disk is False
+        monkeypatch.setattr(ri, "_gpu_placement_paravirtual", lambda: True)
+        assert breakdown().lookup_table_on_disk is True
+
+    @pytest.mark.parametrize("wired_gib, on_disk", [(0, False), (200, False), (60, True)])
+    def test_the_apple_estimate_obeys_the_wired_headroom(
+        self, breakdown, monkeypatch, wired_gib, on_disk
+    ):
+        import routes.inference as ri
+        import utils.hardware as hw
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 256 * 1024)
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_apple_metal_memory_budget_bytes",
+            staticmethod(lambda: 120 * GIB),
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_apple_metal_wired_ceiling_bytes",
+            staticmethod(lambda: wired_gib * GIB),
+        )
+        assert breakdown().lookup_table_on_disk is on_disk
+
     def test_a_cpu_pinned_projector_is_charged_to_ram_in_the_residency_proof(
         self, breakdown, monkeypatch
     ):
@@ -1782,6 +1817,7 @@ class TestListingFollowups:
 
         attempts = []
         lock = threading.Lock()
+        reading = threading.Event()
 
         def read(
             repo,
@@ -1793,6 +1829,7 @@ class TestListingFollowups:
             with lock:
                 attempts.append(name)
                 first = len(attempts) == 1
+            reading.set()
             time.sleep(0.3)
             if first:
                 raise OSError("transient")
@@ -1806,7 +1843,9 @@ class TestListingFollowups:
 
         async def both():
             first = asyncio.ensure_future(self._listing(gv, rows, "o/retry"))
-            await asyncio.sleep(0.1)
+            # The second listing starts once the first one's read holds the key.
+            while not reading.is_set():
+                await asyncio.sleep(0.01)
             return await asyncio.gather(first, self._listing(gv, rows, "o/retry"))
 
         outs = asyncio.run(both())

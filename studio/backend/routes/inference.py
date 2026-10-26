@@ -16116,9 +16116,12 @@ def _gguf_memory_breakdown(
                 return False
             # The launch keeps llama.cpp's default for a CPU child, and Manual Auto layers
             # with no context leave its size to --fit: no resident verdict to mirror.
-            if LlamaCppBackend._binary_ships_no_gpu_backend(
-                _lt_backend._find_llama_server_binary(), _lt_env
-            ) or _device_selection_is_cpu(_lt_extras, _lt_env):
+            if _lt_backend._child_runs_on_cpu(
+                _lt_backend._find_llama_server_binary(),
+                _lt_extras,
+                _lt_env,
+                cpu_forced = bool(_gpu_placement_paravirtual()),
+            ):
                 return False
             _lt_manual = gpu_memory_mode == "manual"
             if (
@@ -16167,6 +16170,10 @@ def _gguf_memory_breakdown(
                 budget = _lt_backend._apple_metal_memory_budget_bytes()
                 if budget <= 0:
                     return False
+                # Past the wired limit Metal refuses, as the launch's verdict reads it.
+                wired = _lt_backend._apple_metal_wired_ceiling_bytes()
+                if wired > 0:
+                    budget = min(budget, wired)
                 return footprint <= min(
                     budget, max(0, _lt_avail - _HOST_RAM_HEADROOM_MIB) * 1024 * 1024
                 )

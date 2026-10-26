@@ -884,3 +884,109 @@ def test_a_cpu_child_keeps_llama_cpps_lazy_default(
     assert (_lazy_values(cmd) == ["off"]) is not cpu_build, cmd
     _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128, extra_args = ["--device", "none"])
     assert _lazy_values(cmd) == [], cmd
+
+
+def _metal_launched(tmp_path, monkeypatch, **kw):
+    """A Metal load_model (16 GiB budget, 12 GiB weights): (None, None, argv)."""
+    import test_metal_explicit_context_guard as metal
+
+    captured = metal._launch(
+        tmp_path,
+        monkeypatch,
+        n_ctx = 8192,
+        kv_per_token = 32 * 1024,
+        backend = metal._backend_with_embeddings(monkeypatch, embd = 0),
+        real_fit = True,
+        budget_bytes = 16 * GIB,
+        weights_bytes = 12 * GIB,
+        **kw,
+    )
+    return None, None, captured["cmd"]
+
+
+def _metal_tokens(cmd):
+    from test_metal_explicit_context_guard import TestInputEmbeddingsLeftInTheFileMapping
+    return TestInputEmbeddingsLeftInTheFileMapping._fit_tokens(cmd)
+
+
+@pytest.mark.parametrize(
+    "extra_args, pinned",
+    [
+        (None, True),
+        (["-ngl", "20"], False),
+        (["--fit-target", "2048"], False),
+        (["-ot", "blk=CPU"], False),
+    ],
+    ids = ["studio_owns", "user_layers", "user_fit_target", "user_cpu_override"],
+)
+def test_a_streamed_table_alone_never_pins_a_placement_the_user_owns(
+    tmp_path, monkeypatch, extra_args, pinned
+):
+    """The table discount sizes the Metal fit; only Studio's own placement may be pinned on it."""
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_apple_lookup_table_discount",
+        lambda self, probe, *a, **k: max(int(probe), 6 * GIB),
+    )
+    _pub, _ctx, cmd = _metal_launched(tmp_path, monkeypatch, extra_args = extra_args)
+    assert (_metal_tokens(cmd)[:4] == ["-ngl", "-1", "--fit", "off"]) is pinned, cmd
+
+
+def _spy_resident_inputs(monkeypatch):
+    seen = []
+
+    def spy(self, probe, *a, **k):
+        seen.append(k)
+        return int(probe)
+
+    monkeypatch.setattr(LlamaCppBackend, "_apple_lookup_table_discount", spy)
+    return seen
+
+
+def test_the_metal_resident_verdict_prices_the_context_checkpoints(tmp_path, monkeypatch):
+    needs = []
+    for ckpt in (0, GIB):
+        seen = _spy_resident_inputs(monkeypatch)
+        _metal_launched(
+            tmp_path, monkeypatch, ckpt_bytes = ckpt, extra_args = ["--ctx-checkpoints", "8"]
+        )
+        needs.append(seen[-1]["need_at_ctx"])
+    assert needs[1] > needs[0], needs
+
+
+@pytest.mark.parametrize("wired_gib, budget_gib", [(0, 16), (8, 8), (32, 16)])
+def test_the_metal_resident_verdict_obeys_the_wired_headroom(
+    tmp_path, monkeypatch, wired_gib, budget_gib
+):
+    seen = _spy_resident_inputs(monkeypatch)
+    _metal_launched(tmp_path, monkeypatch, wired_bytes = wired_gib * GIB)
+    assert seen[-1]["budget_mib"] == budget_gib * 1024
+
+
+@pytest.mark.parametrize(
+    "extra_args, cpu_forced",
+    [(["--device", "none"], False), ([], True)],
+    ids = ["device_none", "paravirtual"],
+)
+def test_a_cpu_child_on_a_mac_keeps_the_table_streamed(extra_args, cpu_forced):
+    backend = _apple_backend("qwen4exp", {PLE: FLASH_NEXT_PLE}, avail_gib = 119)
+    got = backend._apple_lookup_table_discount(
+        0,
+        "/m.gguf",
+        caps = dict(_CAPS, supports_cache_ram = True),
+        extra_args = extra_args,
+        model_size_fit = FLASH_NEXT_TOTAL,
+        need_at_ctx = GIB,
+        budget_mib = 96 * 1024,
+        cache_ram = None,
+        env = {},
+        cpu_forced = cpu_forced,
+    )
+    assert backend._apple_lazy_flags == []
+    assert got == FLASH_NEXT_PLE
+
+
+def test_a_paravirtual_launch_keeps_llama_cpps_lazy_default(tmp_path, _moe_cache_host, monkeypatch):
+    monkeypatch.setattr(llama_cpp_module, "_metal_device_is_paravirtual", lambda: True)
+    _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128)
+    assert _lazy_values(cmd) == [], cmd
