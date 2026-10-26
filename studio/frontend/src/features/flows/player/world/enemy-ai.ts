@@ -349,6 +349,8 @@ export interface Brain {
   barks: Record<BarkKind, readonly string[]>;
   wall: WallFn;
   ground: (x: number, y: number) => number;
+  /** Safe places: a hostile standing in one never attacks. */
+  safe: (x: number, y: number) => boolean;
 }
 
 export function createBrain(
@@ -370,6 +372,7 @@ export function createBrain(
     barks: barkPool(barks),
     wall,
     ground,
+    safe: () => false,
   };
   setGrid(b, grid, cover);
   return b;
@@ -516,13 +519,15 @@ export function canSee(b: Brain, a: Agent, p: PlayerSense): boolean {
   const dx = p.x - a.x;
   const dy = p.y - a.y;
   const d = Math.hypot(dx, dy);
-  if (d < FEEL_RANGE) return true;
-  const range = VIEW_RANGE * (p.crouched ? CROUCH_SEEN : 1);
-  if (d > range) return false;
-  // Right after contact it tracks the player all around; a hostile that lost them looks where it faces.
-  const aware =
-    (a.state === "chase" || a.state === "attack") && b.clock - a.lastAt < 1;
-  if (!aware && (dx * a.fx + dy * a.fy) / d < VIEW_COS) return false;
+  // Up close it feels the player whichever way it faces, but not through a wall or a closed door.
+  if (d >= FEEL_RANGE) {
+    const range = VIEW_RANGE * (p.crouched ? CROUCH_SEEN : 1);
+    if (d > range) return false;
+    // Right after contact it tracks the player all around; a hostile that lost them looks where it faces.
+    const aware =
+      (a.state === "chase" || a.state === "attack") && b.clock - a.lastAt < 1;
+    if (!aware && (dx * a.fx + dy * a.fy) / d < VIEW_COS) return false;
+  }
   const eye = b.ground(a.x, a.y) + EYE;
   const mid = p.z + 0.7 * p.h;
   return b.wall(a.x, a.y, eye, dx, dy, mid - eye, d) >= d;
@@ -789,7 +794,7 @@ function think(
         } else if (!engaged && d > ENEMY_RANGE * 0.8)
           go(b, a, tileOf(b, p.x, p.y));
       }
-      if (b.clock >= a.ready && !p.hidden) {
+      if (b.clock >= a.ready && !p.hidden && !b.safe(a.x, a.y)) {
         const melee = d <= MELEE_REACH;
         if (melee || d <= ENEMY_RANGE) {
           a.ready = b.clock + (melee ? MELEE_COOLDOWN_S : RANGED_COOLDOWN_S);

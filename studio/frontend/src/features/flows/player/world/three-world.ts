@@ -1272,6 +1272,7 @@ export function createWorld3d(
     sense.fy = -Math.cos(yaw);
     sense.crouched = body.crouched;
     sense.hidden = safe(body.x, body.y);
+    brain.safe = safe;
     brainStep(brain, dt, sense, combat, vs.noises);
     for (const a of brain.agents)
       if (a.barkSeq !== (barked.get(a.id) ?? 0)) {

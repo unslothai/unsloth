@@ -234,6 +234,25 @@ test("idle, alert after a reaction delay, attack in range, and the player takes 
   assert.ok(E.BARKS.see.includes(a.bark) || E.BARKS.attack.includes(a.bark));
 });
 
+test("up close a wall still hides the player, and a hostile in a safe place never attacks", () => {
+  const { brain } = arena([
+    [6, 5],
+    [6, 6],
+    [6, 7],
+  ]);
+  const a = E.addAgent(brain, "h", 5.5, 6.5);
+  assert.equal(E.canSee(brain, a, player(6.9, 6.5)), false, "felt through a wall");
+  const open = arena();
+  const c = A.newCombat();
+  const b = E.addAgent(open.brain, "s", 5.5, 6.5, true);
+  b.fx = 1;
+  b.fy = 0;
+  open.brain.safe = (x, y) => Math.floor(x) === 5 && Math.floor(y) === 6;
+  run(open.brain, c, player(6.5, 6.5), 3);
+  assert.equal(c.health, A.MAX_HEALTH);
+  assert.equal(b.attacks, 0);
+});
+
 test("it decides at 10 Hz while it moves every frame", () => {
   const { brain } = arena();
   const c = A.newCombat();
