@@ -7,9 +7,14 @@
 from __future__ import annotations
 
 import contextlib
+import os
 from typing import Any, Iterator, Optional
 
 _SLICE_BYTES = 64 << 20
+# Elements per finiteness slice: the bool temporary stays at 16 MiB however long the clip.
+_FINITE_SLICE_ELEMS = 16 << 20
+# "0" turns off the in-render NaN / inf refusal (decode output and postprocess input); the encoder's check remains.
+NONFINITE_CHECK_ENV = "UNSLOTH_VIDEO_NONFINITE_CHECK"
 
 
 def device_uint8(frames: Any) -> Optional[Any]:
@@ -75,9 +80,101 @@ def require_finite_frames(frames: Any) -> None:
             raise NonFiniteFramesError(NON_FINITE_FRAMES_MSG)
 
 
+def nonfinite_check_enabled() -> bool:
+    return os.environ.get(NONFINITE_CHECK_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _tensor_all_finite(frames: Any) -> bool:
+    """Device-side finiteness of a float tensor, reduced in slices (no host copy, bounded temporary); one sync."""
+    import torch
+
+    if frames.numel() == 0:
+        return True
+    if frames.ndim == 0:
+        return bool(torch.isfinite(frames))
+    dim = 2 if frames.ndim == 5 else 0  # (B, C, F, H, W) decodes slice by frame
+    count = frames.shape[dim]
+    step = max(1, _FINITE_SLICE_ELEMS // max(1, frames.numel() // max(1, count)))
+    ok = None
+    for start in range(0, count, step):
+        piece = torch.isfinite(frames.narrow(dim, start, min(step, count - start))).all()
+        ok = piece if ok is None else ok & piece
+    return bool(ok)
+
+
+def refuse_non_finite_tensor(frames: Any) -> None:
+    """Raise ``NonFiniteFramesError`` when ``frames`` is a float tensor holding NaN / inf; anything else passes."""
+    import torch
+    if (
+        isinstance(frames, torch.Tensor)
+        and frames.is_floating_point()
+        and not _tensor_all_finite(frames)
+    ):
+        raise NonFiniteFramesError(NON_FINITE_FRAMES_MSG)
+
+
+def _decoded_frames(output: Any) -> Any:
+    """The pixel tensor of a ``vae.decode`` result: a tensor, ``(tensor, ...)`` or a ``DecoderOutput``."""
+    if isinstance(output, (tuple, list)):
+        return output[0] if output else None
+    sample = getattr(output, "sample", None)
+    return output if sample is None else sample
+
+
+@contextlib.contextmanager
+def finite_video_decode(pipe: Any, attrs: "tuple[str, ...]" = ("vae",)) -> Iterator[None]:
+    """While active, a ``vae.decode`` whose pixels hold NaN / inf raises ``NonFiniteFramesError``: checked on the
+    device before any pipeline clamp (MiniMax-H3 clamps to [0, 1] first) or PIL / uint8 conversion hides it. The
+    output is returned untouched. Sits above load-time decode wrappers (the fp16 decode's fp32 rerun has run)."""
+    if not nonfinite_check_enabled():
+        yield
+        return
+    restore: list = []
+
+    def _wrap(original: Any) -> Any:
+        def decode(*args: Any, **kwargs: Any) -> Any:
+            output = original(*args, **kwargs)
+            refuse_non_finite_tensor(_decoded_frames(output))
+            return output
+
+        decode.__wrapped__ = (
+            original  # the decode stack stays walkable (diffusion_vae_oom checks its scope)
+        )
+        return decode
+
+    for name in attrs:
+        owner = getattr(pipe, name, None)
+        original = getattr(owner, "decode", None) if owner is not None else None
+        if not callable(original):
+            continue
+        had_own = "decode" in getattr(owner, "__dict__", {})
+        try:
+            owner.decode = _wrap(original)
+        except Exception:  # noqa: BLE001 - a decoder that refuses assignment keeps the postprocess / encoder checks
+            continue
+        restore.append((owner, original, had_own))
+    try:
+        yield
+    finally:
+        for owner, original, had_own in reversed(restore):
+            try:
+                if had_own:
+                    owner.decode = original
+                else:
+                    del owner.decode
+            except Exception:  # noqa: BLE001 - cleanup is best-effort
+                pass
+
+
 @contextlib.contextmanager
 def uint8_video_frames(pipe: Any) -> Iterator[None]:
-    """While active, ``pipe.video_processor``'s np / pil ``postprocess_video`` returns CPU uint8 (B, F, H, W, C)."""
+    """While active, ``pipe.video_processor``'s np / pil ``postprocess_video`` returns CPU uint8 (B, F, H, W, C), and
+    refuses a float clip holding NaN / inf (any output type) with ``NonFiniteFramesError``."""
     proc = getattr(pipe, "video_processor", None)
     original = getattr(proc, "postprocess_video", None)
     postprocess = getattr(proc, "postprocess", None)
@@ -87,12 +184,16 @@ def uint8_video_frames(pipe: Any) -> Iterator[None]:
     import torch
 
     had_own = "postprocess_video" in vars(proc)
+    check = nonfinite_check_enabled()
 
     def postprocess_video(
         video: Any,
         output_type: str = "np",
         **kwargs: Any,
     ) -> Any:
+        if check:
+            # Before the denormalize clamp (+inf -> 255) and the PIL cast (NaN -> 0) can hide a non-finite decode.
+            refuse_non_finite_tensor(video)
         if (
             output_type not in ("np", "pil")
             or not isinstance(video, torch.Tensor)

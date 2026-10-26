@@ -281,6 +281,7 @@ from .video_families import (
 from .video_frames import (
     NON_FINITE_FRAMES_MSG,
     NonFiniteFramesError,
+    finite_video_decode,
     require_finite_frames,
     uint8_video_frames,
 )
@@ -12280,6 +12281,8 @@ class VideoBackend:
                         stack.enter_context(_denoise_phase(pipe, _enter_denoise))
                         # No video family has a denoise-to-decode callback, so the decoder itself reports the decode phase.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
+                        # NaN / inf pixels are refused at the decode, before a clamp or PIL / uint8 cast hides them.
+                        stack.enter_context(finite_video_decode(pipe))
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
                         if stream_session is not None:
