@@ -291,6 +291,10 @@ def _lower_the_file_cap(source, monkeypatch):
     monkeypatch.setattr(config, "FOLDER_MAX_FILES", 1)
 
 
+def _make_it_a_venv(source, monkeypatch):
+    _write(source, "build/pyvenv.cfg", "home = /usr/bin")
+
+
 @requires_sqlite_vec
 @pytest.mark.parametrize(
     "exclude",
@@ -300,6 +304,7 @@ def _lower_the_file_cap(source, monkeypatch):
         _add_a_project_manifest,
         _shrink_the_text_limit,
         _lower_the_file_cap,
+        _make_it_a_venv,
     ],
 )
 def test_a_file_the_scan_now_skips_is_removed_from_the_index(

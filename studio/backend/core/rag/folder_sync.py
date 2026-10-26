@@ -1100,6 +1100,7 @@ def _scan(
                 rel = os.path.relpath(full, root).replace(os.sep, "/")
                 if entry.is_dir(follow_symlinks = False):
                     if _is_ignored_scan_dir(entry.name, full):
+                        excluded.add(rel)
                         continue
                     if rules and gitignore.is_ignored(rel, True, rules):
                         skipped["gitignored"] += 1
