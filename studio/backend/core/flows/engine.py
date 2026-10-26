@@ -803,6 +803,7 @@ class FlowEngine:
         self.revoke_key: Callable[[Optional[int]], None] = flow_caller.revoke_run_key
         # One key minted ahead per account (PBKDF2, ~40 ms): each run or call still uses a key once and revokes it.
         self._spare_keys: dict[tuple, asyncio.Task] = {}
+        self._revoking: set[asyncio.Task] = set()
 
     async def take_key(self, account: AccountContext) -> tuple[str, Optional[int]]:
         slot = (account.account_id, account.username)
@@ -833,6 +834,8 @@ class FlowEngine:
             asyncio.create_task(asyncio.to_thread(self.revoke_key, key_id))
 
     async def release_spare_keys(self) -> None:
+        if self._revoking:
+            await asyncio.gather(*self._revoking, return_exceptions = True)
         spares, self._spare_keys = list(self._spare_keys.values()), {}
         for spare in spares:
             try:
@@ -1011,7 +1014,13 @@ class FlowEngine:
                 timing.update(found)
             logger.info("flows: invoke %s of %s timing %s", entry, flow_id, json.dumps(found))
             await self._stop_prefetch(rs)
-            await asyncio.to_thread(self.revoke_key, key_id)
+            # The answer is ready: revoke the key without making the player wait for the write.
+            self._revoke_soon(key_id)
+
+    def _revoke_soon(self, key_id: Optional[int]) -> None:
+        task = asyncio.create_task(asyncio.to_thread(self.revoke_key, key_id))
+        self._revoking.add(task)
+        task.add_done_callback(self._revoking.discard)
 
     def _entry(self, doc: dict, entry: str) -> tuple[Any, dict]:
         plan = compile_flow(doc)

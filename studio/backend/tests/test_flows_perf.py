@@ -95,3 +95,20 @@ async def test_each_run_takes_a_fresh_key_and_the_next_is_minted_ahead():
     assert sorted(revoked) == sorted(set(revoked)) and set(revoked) == set(
         range(1, len(minted) + 1)
     )
+
+
+@run_async
+async def test_an_invoke_key_is_still_revoked_after_the_answer():
+    revoked = []
+
+    async def next_scene(ctx):
+        return {"scene": {"ok": True}}
+
+    eng = _engine({**BASE, "story.next_scene": next_scene})
+    eng.mint_key = lambda account: ("k", 7)
+    eng.revoke_key = lambda key_id: revoked.append(key_id)
+    parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
+    out = await eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n")
+    assert out["scene"] == {"ok": True}
+    await eng.release_spare_keys()
+    assert revoked.count(7) >= 1
