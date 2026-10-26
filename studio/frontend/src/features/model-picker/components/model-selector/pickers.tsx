@@ -2866,7 +2866,7 @@ function passesTaskGate(
       !(!taskFilterHasAudio(filter) && isImageEditModel(repoId))
     ) || localModel?.opaque === true;
   }
-  // Chat lists models it can load. Images/Video retain their task-scoped inventories.
+  // Chat hides diffusion models; Images/Video own them.
   return !isDiffusionTask(repoTask);
 }
 
@@ -4547,8 +4547,7 @@ export function HubModelPicker({
     catalogSeedRows,
   ]);
 
-  // Ordered by the On Device dropdown (Recent / Size / Name / Downloaded), with the
-  // same task gate for GGUFs and dense checkpoints.
+  // Ordered by the On Device dropdown (Recent / Size / Name / Downloaded).
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(

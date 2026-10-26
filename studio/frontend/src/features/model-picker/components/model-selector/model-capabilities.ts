@@ -50,7 +50,6 @@ const VIDEO_GEN_TAGS = new Set([
   "image-text-to-video",
 ]);
 
-/** Image/video generation belongs to its own picker, including downloaded GGUFs. */
 export function isDiffusionTask(task: string | null | undefined): boolean {
   return (
     task === "image-diffusion-unsupported" ||
