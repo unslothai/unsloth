@@ -6,6 +6,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -50,7 +51,8 @@ interface RunSettingsPickerProps {
 const ITEM = "flex min-h-9 items-center gap-2 px-3 py-0 text-ui-13 font-medium";
 // The default bg-border/50 vanishes on the dark menu surface.
 const SEPARATOR =
-  "bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.16*var(--contrast-wash-gain,1)))]";
+  "mx-3 bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.16*var(--contrast-wash-gain,1)))]";
+const SECTION = "pb-1 pt-2 text-ui-11 font-medium";
 const ROW_ICON =
   "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
@@ -157,13 +159,21 @@ export function RunSettingsPicker({
           sideOffset={4}
           className="menu-soft-surface max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] w-max min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[min(36rem,calc(100vw-2rem))] rounded-lg border-0 p-1 ring-0"
         >
+          <DropdownMenuLabel className={SECTION}>Default</DropdownMenuLabel>
           <DropdownMenuItem className={ITEM} onSelect={() => onPick(null)}>
             <Check on={selected === null && customName === null} />
             <span className="min-w-0 truncate">
               Default settings for {modelName}
             </span>
           </DropdownMenuItem>
-          {sets.length > 0 && <DropdownMenuSeparator className={SEPARATOR} />}
+          {sets.length > 0 && (
+            <>
+              <DropdownMenuSeparator className={SEPARATOR} />
+              <DropdownMenuLabel className={SECTION}>
+                Custom settings
+              </DropdownMenuLabel>
+            </>
+          )}
           {sets.map((entry) => (
             <DropdownMenuItem
               key={entry.name}

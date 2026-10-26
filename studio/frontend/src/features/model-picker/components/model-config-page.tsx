@@ -4389,8 +4389,8 @@ export function ModelConfigPage({
             "sticky -bottom-4.5 z-10 -mb-4.5 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4.5 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
         )}
       >
-      {/* pt-3.25: the picker's top 18px under the rule, as under the buttons. */}
-      <div className="flex flex-col gap-3.5 border-t border-border pt-3.25">
+      {/* pt-4.25 plus the 1px rule: 18px above the picker, as below the buttons. */}
+      <div className="flex flex-col gap-3.5 border-t border-border pt-4.25">
         <RunSettingsPicker
           modelName={modelName}
           sets={savedSets}
@@ -4410,7 +4410,7 @@ export function ModelConfigPage({
           aria-live="polite"
           data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
           // min-h keeps the empty line's height, so the buttons never move.
-          className="-mt-2 min-h-[calc(1.375em+0.25rem)] min-w-0 truncate pl-3.5 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+          className="-mt-2 -mb-1.5 min-h-[calc(1.375em+0.25rem)] min-w-0 truncate pl-3.5 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
         >
           {saveStatus}
         </p>
