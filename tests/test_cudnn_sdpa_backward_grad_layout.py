@@ -87,6 +87,7 @@ def _stack_is_affected():
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
         return False
     from packaging.version import Version
+
     v = Version(Version(torch.__version__).base_version)
     cudnn = torch.backends.cudnn.version()
     if not (Version("2.6") <= v < Version("2.14")) or cudnn is None or cudnn < 90501:
