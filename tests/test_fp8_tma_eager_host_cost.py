@@ -220,3 +220,8 @@ def test_empty_input_still_raises_like_from_tensor():
     t = torch.zeros(0, 256, dtype = torch.float8_e4m3fn)
     with pytest.raises(AssertionError):
         F8._fp8_tma_descriptor(t, 0, 256, (128, 128))
+
+
+def test_empty_weight_does_not_divide_by_zero(tma_device):
+    _ok(128)  # run the self check
+    assert _ok(128, N = 0) is False

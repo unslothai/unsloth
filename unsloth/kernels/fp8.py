@@ -591,7 +591,8 @@ def _fp8_tma_gemm_ok(A, B, C, BLOCK_SIZE_M, block_n, block_k, long_idx):
             return False  # the self check allocates and syncs: run it outside graph capture
         checked = _FP8_TMA_SELF_CHECKED[index] = _fp8_tma_gemm_self_check(index)
     # The self check above still runs on the first eager call, so a later graph capture picks TMA as before.
-    if checked and not capturing and (C.numel() // N) * N * K < _FP8_TMA_EAGER_MIN_MNK:
+    # C.numel() * K is M * N * K without dividing by N (an empty weight has N = 0).
+    if checked and not capturing and C.numel() * K < _FP8_TMA_EAGER_MIN_MNK:
         return False
     return checked
 
@@ -620,16 +621,23 @@ def _fp8_tma_descriptor(tensor, rows, cols, block_shape):
             if k not in ("base", "shape", "strides")
         }
         _FP8_TMA_DESC_FIELDS[key] = fields
-    view = tensor.view(rows, cols)
-    # A sliced weight's row pitch is not its width: from_tensor reads the real strides.
-    if not fields or rows <= 0 or cols <= 0 or view.stride() != (cols, 1):
-        return _TensorDescriptor.from_tensor(view, list(block_shape))
+    # A sliced weight's row pitch is not its width: from_tensor reads the real strides. A contiguous
+    # tensor of rows * cols elements has strides (cols, 1) as a (rows, cols) view, without building it.
+    if (
+        not fields
+        or rows <= 0
+        or cols <= 0
+        or tensor.numel() != rows * cols
+        or not tensor.is_contiguous()
+    ):
+        return _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
     desc = _TensorDescriptor.__new__(_TensorDescriptor)
     desc.__dict__.update(fields)
     # Built per call from the live tensor: a replaced or in-place edited weight is never stale.
     desc.base = tensor
     desc.shape = [rows, cols]
     desc.strides = [cols, 1]
+    desc.block_shape = list(block_shape)  # not shared with the cache or other descriptors
     return desc
 
 
