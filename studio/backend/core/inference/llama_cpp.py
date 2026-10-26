@@ -8047,6 +8047,7 @@ class LlamaCppBackend:
         self._vision_disabled_by_user: bool = False
         # Block-diffusion model, served by the diffusion runner; set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
+        self._gguf_type: Optional[str] = None
         self._is_diffusion: bool = False
         # Whole header walked? Separates "declares no architecture" from "unreadable".
         self._gguf_header_parsed: bool = False
@@ -18372,7 +18373,10 @@ class LlamaCppBackend:
             return None
 
     def _read_gguf_metadata(self, gguf_path: str) -> None:
-        """Metadata lives in shard 1 of split GGUFs; per-model flags are reset first so none carry over."""
+        """Populate per-model metadata from ``gguf_path``, resetting prior values first.
+
+        Metadata lives in shard 1 of split GGUFs; its type distinguishes adapters from full models.
+        """
         # Reset so stale flags do not carry over when switching models.
         self._context_length = None
         self._chat_template = None
@@ -18422,6 +18426,7 @@ class LlamaCppBackend:
         self._shared_kv_layers = None
         self._nextn_predict_layers = None
         self._architecture = None
+        self._gguf_type = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
         self._gguf_split_index = None
@@ -18430,6 +18435,7 @@ class LlamaCppBackend:
             canvas_seen = False
             WANTED = {
                 "general.architecture",
+                "general.type",
                 "tokenizer.chat_template",
                 # Vocab size = tokens array length (no vocab_size key in many GGUFs).
                 "tokenizer.ggml.tokens",
@@ -18506,6 +18512,8 @@ class LlamaCppBackend:
                                 val_s = f.read(slen).decode("utf-8")
                                 if key.startswith("general.") and key != "general.architecture":
                                     general[key] = val_s
+                                if key == "general.type":
+                                    self._gguf_type = val_s.strip().lower()
                                 if key == "general.architecture":
                                     arch = val_s
                                     self._architecture = val_s
@@ -20252,8 +20260,10 @@ class LlamaCppBackend:
             return True
 
     def _non_chat_gguf_refusal(self, gguf_path: str) -> Optional[str]:
-        """Header-only refusal of media GGUFs: a media architecture, or none at all once the header
-        parsed."""
+        """Return an explanation for adapter/media headers that cannot load as a chat model.
+
+        Read metadata from ``gguf_path`` first; unreadable headers yield no verdict.
+        """
         arch = (self._architecture or "").strip().lower()
         # A media arch is KV 0 so a partial remote prefix can carry it; the walk still gates the no-arch fallback, since an incomplete read looks like none.
         if (
@@ -20263,6 +20273,13 @@ class LlamaCppBackend:
             and not getattr(self, "_gguf_header_parsed", False)
         ):
             return None
+        # Adapters can declare a chat architecture but contain only weight deltas.
+        # Check metadata rather than filenames: merged LoRA models are complete models.
+        if self._gguf_type == "adapter":
+            return (
+                "This GGUF is a LoRA adapter and needs a matching base model. "
+                "Select a full model GGUF for chat, or use this adapter with its base model."
+            )
         if arch in self._PLACEHOLDER_ARCHES:
             # A placeholder arch counts as no architecture, so the name-based branch below decides the page.
             arch = ""
