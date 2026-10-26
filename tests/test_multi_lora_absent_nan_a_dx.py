@@ -12,7 +12,9 @@ from unsloth.kernels import multi_lora as ml
 
 def _two_layer(poison, adapter = 2):
     torch.manual_seed(0)
-    m = torch.nn.Sequential(torch.nn.Linear(16, 24), torch.nn.GELU(), torch.nn.Linear(24, 8)).double()
+    m = torch.nn.Sequential(
+        torch.nn.Linear(16, 24), torch.nn.GELU(), torch.nn.Linear(24, 8)
+    ).double()
     ml.inject_multi_lora(m, ["0", "2"], 3, r = 4)
     for _, layer in ml._layers(m):
         layer.double()
