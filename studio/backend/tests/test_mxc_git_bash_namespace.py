@@ -113,7 +113,6 @@ def _count_live_probes(monkeypatch, reason):
     calls = []
 
     def leaping_monotonic():
-        # A day per read: a TTL left anywhere in the cache would expire between two probes.
         clock[0] += 86400.0
         return clock[0]
 

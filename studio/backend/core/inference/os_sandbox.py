@@ -1045,8 +1045,7 @@ def capability_snapshot(
     )
 
 
-# Last answer per tool; the "off" permission gate reads it on every call without probing. Kept until
-# a reset (failed launch, setup, Refresh) or a real launch notes a new one: polling never re-probes.
+# Last answer per tool, read by the "off" gate; only a reset or a real launch replaces it.
 ISOLATED_TOOLS = ("python", "terminal")
 _tool_isolation_lock = threading.Lock()
 _tool_isolation: dict[str, tuple[bool, str, str]] = {}

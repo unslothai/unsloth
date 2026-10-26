@@ -465,7 +465,6 @@ def test_linux_runtime_identity_includes_the_verified_bwrap(monkeypatch):
 
 
 def test_a_verdict_is_never_re_probed_on_its_own(monkeypatch):
-    """No TTL: a re-probe on a timer is what piled up hung probes on macOS (one a minute while failing)."""
     import types
 
     leap = {"now": 1000.0}
@@ -592,7 +591,6 @@ def test_the_landlock_helper_imports_where_it_will_never_be_used():
 
 
 def test_an_unavailable_verdict_waits_for_refresh_or_a_new_runtime(monkeypatch):
-    """Installing bubblewrap changes the runtime identity, which the next tool launch re-reads."""
     probes = []
 
     class Backend:

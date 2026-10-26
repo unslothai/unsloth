@@ -597,8 +597,7 @@ def build_profile(
         # bash process substitution opens /dev/fd/63.
         '(allow file-read* (regex #"^/dev/fd/[0-9]+$"))',
         '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))',
-        # Listing lists only the caller's own fds. Denied, CPython's subprocess close()s every fd up to
-        # RLIMIT_NOFILE before exec, which never ends under an unlimited soft limit.
+        # Unlistable, CPython close()s every fd up to RLIMIT_NOFILE before exec: forever when unlimited.
         '(allow file-read* (literal "/dev/fd"))',
         _rule("allow file-ioctl", device_filters),
         "(allow ipc-posix-sem)",

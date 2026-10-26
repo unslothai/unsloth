@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - Windows never probes
 
 # The tool launch's own fd cap (tools._sandbox_preexec), so the probe qualifies what tools get.
 _PROBE_NOFILE = 16384
-# Kernel-enforced, so a payload process nobody is left to kill still ends; a healthy probe uses well under a second.
+# Kernel-enforced: ends a payload process nobody is left to kill.
 _PROBE_CPU_SECONDS = 60
 
 # ALONE on stdout: a payload that printed it early and died would satisfy "in".
@@ -43,8 +43,7 @@ _SENTINEL_TOKEN = "unsloth-host-sentinel-must-not-be-readable"
 _OUTSIDE_WRITE_TOKEN = "unsloth-sandbox-escaped-to-the-host"
 
 PROBE_TIMEOUT_SECONDS = 30.0
-# No TTL: a verdict holds until the runtime identity (the key) changes, a launch fails, or the user
-# re-checks. Re-probing on a timer is what turned one hung probe into a process per minute on macOS.
+# No TTL: re-probing on a timer turned one hung probe into one more each minute on macOS.
 _CACHE_MAX_ENTRIES = 8
 
 # ``sun_path`` is 108 bytes and multiprocessing appends about 32.
@@ -277,7 +276,7 @@ def _end_probe_group(proc: subprocess.Popen) -> None:
 
 
 def _run_grouped(argv, **popen_kwargs) -> subprocess.CompletedProcess:
-    """subprocess.run, but in its own session with the probe's limits, and the whole group ends with it."""
+    """subprocess.run in its own session; the whole group ends with it."""
     proc = subprocess.Popen(
         argv,
         stdin = subprocess.DEVNULL,

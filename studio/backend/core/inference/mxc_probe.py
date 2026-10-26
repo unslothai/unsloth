@@ -18,8 +18,7 @@ from types import SimpleNamespace
 from . import mxc_adapter, mxc_drive_alias, mxc_policy, mxc_read_grants, mxc_runtime
 
 _lock = threading.Lock()
-# No TTL, as sandbox_probe: the key changes with the runtime, shell and DACL setting, and setup,
-# host preparation and Refresh call invalidate_cache(); a timer only re-launched the probe container.
+# No TTL, as sandbox_probe: the key and invalidate_cache() decide; a timer only re-ran the container.
 _cache: dict[tuple, tuple[bool, str]] = {}
 _inflight: dict[tuple, threading.Event] = {}
 MSYS_NAMESPACE_REASON = (
