@@ -346,7 +346,86 @@ def _case_refuse(rank, world, tmp):
     return out
 
 
+def _tree(model):
+    return [(n, type(m).__name__) for n, m in model.named_modules()]
+
+
+def _case_destructive(rank, world, tmp):
+    """merged_4bit(_forced) merges LoRA into the base in place (merge_and_unload) on the writer: refused under
+    tensor parallel on every rank; and whatever an export does to rank 0's module tree is undone."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    from unsloth import save
+    from unsloth.models import tp_native, tp_replica
+
+    model = build(LLAMA)
+    ids = _batch(model)
+    tp_native.apply_tensor_parallel(model, _mesh(world))
+    before = _tree(model)
+    with torch.no_grad():
+        logits = model(input_ids = ids).logits
+    out = {}
+    for method in ("merged_4bit_forced", "merged_4bit"):
+        out[method] = _raised(
+            lambda: save.unsloth_save_model(model, None, os.path.join(tmp, f"m4_{rank}"), save_method = method)
+        )
+    out["tree_after_refusal"] = _tree(model) == before
+    # A writer that changes the module tree anyway (merge_and_unload) leaves rank 0 as it found it.
+    out["probe"] = _raised(lambda: tp_replica.tp_collective(model, "probe", lambda: model.merge_and_unload() and None))
+    out["tree_after_merge"] = _tree(model) == before
+    out["merged_flags"] = [m.merged_adapters for m in model.modules() if hasattr(m, "merged_adapters") and m.merged_adapters]
+    with torch.no_grad():
+        out["logits_err"] = float((model(input_ids = ids).logits - logits).abs().max())
+    out["still_sharded"] = not _all_plain(model)
+    return out
+
+
+class _Processor:
+    """A processor-like object (ProcessorMixin is not a tokenizer: Unsloth does not wrap its save_pretrained)."""
+
+    def __init__(self):
+        self.writers = []
+
+    def save_pretrained(self, directory, **kwargs):
+        import torch.distributed as dist
+
+        if dist.get_rank() == 0:
+            time.sleep(1.5)
+        self.writers.append(dist.get_rank())
+        os.makedirs(directory, exist_ok = True)
+        with open(os.path.join(directory, f"processor_config_{dist.get_rank()}.json"), "w") as f:
+            f.write("{}")
+        open(os.path.join(directory, "processor_config.json"), "w").write("{}")
+        return [os.path.join(directory, "processor_config.json")]
+
+
+def _case_processor(rank, world, tmp):
+    """A processor marked for a tensor parallel run (tp_env loader, apply_tensor_parallel) is written once, by
+    rank 0, the others wait for it; same for one kept on the model as _saved_temp_tokenizer."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    from unsloth.models import tp_env, tp_native
+
+    out = {}
+    env_proc = _Processor()
+    tp_env._mark_world_save((None, env_proc))
+    model = build(LLAMA)
+    kept = _Processor()
+    model.base_model.model.__dict__["_saved_temp_tokenizer"] = kept
+    tp_native.apply_tensor_parallel(model, _mesh(world))
+    for label, proc in (("env", env_proc), ("kept", kept)):
+        directory = os.path.join(tmp, label)
+        out[f"{label}_return"] = proc.save_pretrained(directory)
+        out[f"{label}_writers"] = list(proc.writers)
+        out[f"{label}_written_on_return"] = os.path.isfile(os.path.join(directory, "processor_config.json"))
+    return out
+
+
 CASES = {
+    "destructive": _case_destructive,
+    "processor": _case_processor,
     "generate": _case_generate,
     "qlora": _case_qlora,
     "save": _case_save,
@@ -522,3 +601,26 @@ def test_tp2_replica_that_does_not_fit_is_refused_on_every_rank():
             ), res[key]
         assert res["untouched"] and not res["replica"], res
         assert res["pp_for_inference"] and "pipeline parallel" in res["pp_for_inference"], res
+
+
+def test_tp2_destructive_merges_are_refused_and_rank0_tree_is_kept():
+    for rank, res in enumerate(_spawn("destructive", 2)):
+        for method in ("merged_4bit_forced", "merged_4bit"):
+            assert res[method] and "merges the LoRA weights into the 4-bit base in place" in res[method], (
+                rank,
+                method,
+                res[method],
+            )
+        assert res["tree_after_refusal"], rank
+        assert res["probe"] is None, res["probe"]
+        assert res["tree_after_merge"] and not res["merged_flags"], (rank, res["merged_flags"])
+        assert res["logits_err"] == 0.0 and res["still_sharded"], res
+
+
+def test_tp2_processor_saves_once_per_world():
+    for rank, res in enumerate(_spawn("processor", 2)):
+        for label in ("env", "kept"):
+            # Only rank 0 writes; every rank returns rank 0's result once the file exists.
+            assert res[f"{label}_writers"] == ([0] if rank == 0 else []), (rank, label, res)
+            assert res[f"{label}_written_on_return"], (rank, label)
+            assert res[f"{label}_return"] and res[f"{label}_return"][0].endswith("processor_config.json"), res

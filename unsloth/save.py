@@ -1286,6 +1286,27 @@ def _restore_tied_weights_keys(originals):
             pass
 
 
+_TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit")
+
+
+def _refuse_tp_in_place_merge(fn, method, args, kwargs):
+    """merged_4bit merges the LoRA weights into the loaded 4-bit base (merge_and_unload): under tensor parallel
+    only rank 0 would hold that merged model. Refused on every rank (every rank makes the same call)."""
+    import inspect
+
+    try:
+        save_method = inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get("save_method")
+    except (TypeError, ValueError):
+        save_method = kwargs.get("save_method")
+    if isinstance(save_method, str) and save_method.lower().strip() in _TP_IN_PLACE_MERGES:
+        raise RuntimeError(
+            f'Unsloth: `{method}(save_method = "{save_method}")` merges the LoRA weights into the 4-bit base in '
+            "place (merge_and_unload). On a tensor parallel model only rank 0 would end up with that merged "
+            "model, so it is not supported there. Save the adapter (model.save_pretrained) or use "
+            'save_method = "merged_16bit", or load the adapter on one GPU and run merged_4bit there.'
+        )
+
+
 def _model_parallel_refuses_save(method):
     """Every whole-model export refuses an apply_pipeline_parallel model before it writes anything (see
     _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
@@ -1298,6 +1319,7 @@ def _model_parallel_refuses_save(method):
             if model is not None and _is_unsloth_tensor_parallel(model):
                 from .models.tp_replica import collective_applies, tp_collective
                 if collective_applies(model):
+                    _refuse_tp_in_place_merge(fn, method, args, kwargs)
                     # The whole model, also for LoRA-only writers: they run under inference_mode, where
                     # state_dict() cannot detach the frozen DTensor shards.
                     return tp_collective(model, method, lambda: fn(*args, **kwargs), "all")

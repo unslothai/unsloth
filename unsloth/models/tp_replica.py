@@ -38,6 +38,7 @@ __all__ = [
     "tp_generate",
     "tp_collective",
     "tp_world_save",
+    "mark_world_save",
 ]
 
 _REPLICA = "_unsloth_tp_replica"
@@ -540,11 +541,43 @@ def _wait(key):
     return pickle.loads(store.get(key))
 
 
-def _on_rank0(key, what, call):
+def _keep_tree(root):
+    """Every module's children, parameters and PEFT merge flags: a writer that unloads or merges in place
+    (merge_and_unload) must leave rank 0 with the module tree the other ranks still have."""
+    if not isinstance(root, nn.Module):
+        return []
+    kept = []
+    for module in root.modules():
+        merged = getattr(module, "merged_adapters", None)
+        kept.append(
+            (
+                module,
+                list(module._modules.items()),
+                list(module._parameters.items()),
+                list(merged) if isinstance(merged, list) else None,
+            )
+        )
+    return kept
+
+
+def _restore_tree(kept):
+    for module, children, params, merged in kept:
+        if list(module._modules.items()) != children:
+            module._modules.clear()
+            module._modules.update(children)
+        if list(module._parameters.items()) != params:
+            module._parameters.clear()
+            module._parameters.update(params)
+        if merged is not None and getattr(module, "merged_adapters", None) is not None:
+            module.merged_adapters[:] = merged
+
+
+def _on_rank0(key, what, call, model = None):
     """Rank 0 runs `call`; the others wait for it on the store and return its result or raise its error."""
     if _rank() == 0:
         _ACTIVE.append(what)
         payload = ("error", "rank 0 did not finish")
+        kept = _keep_tree(model)
         try:
             result = call()
             payload = ("ok", result)
@@ -553,6 +586,7 @@ def _on_rank0(key, what, call):
             payload = ("error", f"{type(exc).__name__}: {exc}")
             raise
         finally:
+            _restore_tree(kept)
             _ACTIVE.pop()
             _publish(key, payload)
     status, value = _wait(key)
@@ -587,10 +621,32 @@ def tp_collective(
         gather_replica(root, select, keep = writer, what = what, allow_cpu = select == "all")
         gathered = writer
     try:
-        return _on_rank0(key, what, call)
+        return _on_rank0(key, what, call, root)
     finally:
         if gathered:
             release_replica(root)
+
+
+def mark_world_save(obj):
+    """Mark a tokenizer / processor of a tensor parallel run: its save_pretrained writes once per world (rank 0
+    writes, the others wait). A processor's (or any unwrapped) save_pretrained is wrapped here; a nested
+    tokenizer is marked too, for a direct processor.tokenizer.save_pretrained call."""
+    d = getattr(obj, "__dict__", None)
+    if not isinstance(d, dict) or d.get("_unsloth_tp_world_save"):
+        return obj
+    d["_unsloth_tp_world_save"] = True
+    save = getattr(obj, "save_pretrained", None)
+    if callable(save) and getattr(save, "__name__", "") != "unsloth_tokenizer_save_pretrained":
+
+        def save_pretrained(*args, **kwargs):
+            return tp_world_save(f"{type(obj).__name__}.save_pretrained", lambda: save(*args, **kwargs))
+
+        save_pretrained.__name__ = "unsloth_tp_world_save_pretrained"
+        d["save_pretrained"] = save_pretrained
+    nested = d.get("tokenizer")
+    if nested is not None and nested is not obj:
+        mark_world_save(nested)
+    return obj
 
 
 def tp_world_save(what, call):

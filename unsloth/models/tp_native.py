@@ -1233,7 +1233,9 @@ def _mark_tokenizers(chain):
     for level in chain:
         tokenizer = level.__dict__.get("_saved_temp_tokenizer")
         if tokenizer is not None and hasattr(tokenizer, "__dict__"):
-            tokenizer.__dict__["_unsloth_tp_world_save"] = True
+            from .tp_replica import mark_world_save
+
+            mark_world_save(tokenizer)
 
 
 def _sync_trainable(model, group, src):

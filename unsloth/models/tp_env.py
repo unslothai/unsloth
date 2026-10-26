@@ -298,8 +298,10 @@ def _marks_world_save(from_pretrained):
 def _mark_world_save(out):
     """The tokenizer / processor of a tensor parallel run saves once per world (rank 0 writes, save.py)."""
     if isinstance(out, (tuple, list)) and len(out) > 1 and hasattr(out[1], "__dict__"):
+        from .tp_replica import mark_world_save
+
         try:
-            out[1].__dict__["_unsloth_tp_world_save"] = True
+            mark_world_save(out[1])
         except Exception:
             pass
     return out
