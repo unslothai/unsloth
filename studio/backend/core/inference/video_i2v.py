@@ -124,7 +124,7 @@ def first_frame_pipeline(
             _restore(pipe, saved)
             raise
         try:
-            with _offload_vae_after_encode(pipe):
+            with offload_vae_after_encode(pipe):
                 yield pipe
         finally:
             pipe.__class__ = original_cls
@@ -133,7 +133,7 @@ def first_frame_pipeline(
 
 
 @contextlib.contextmanager
-def _offload_vae_after_encode(pipe: Any) -> Iterator[None]:
+def offload_vae_after_encode(pipe: Any) -> Iterator[None]:
     """Model offload chains vae after the transformer (the t2v order), so the first-frame encode would leave the VAE
     resident through denoising; send it back once the encode returns."""
     vae = getattr(pipe, "vae", None)

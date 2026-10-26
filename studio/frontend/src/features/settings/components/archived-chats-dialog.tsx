@@ -26,8 +26,13 @@ import {
 } from "@/features/chat";
 import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Delete02Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -245,6 +250,47 @@ export function ArchivedChatsView() {
         <ChatLibraryGroups
           items={filtered.slice(0, visibleCount)}
           projects={projectNames}
+          groupActions={(group) => {
+            // Every match in the group, not only the rows shown so far.
+            const groupItems = filtered.filter(
+              (item) => (item.projectId ?? "") === group.id,
+            );
+            return (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    disabled={busy}
+                    className="shrink-0 rounded-full text-muted-foreground"
+                    aria-label={t("settings.data.library.groupActions", {
+                      group: group.name,
+                    })}
+                  >
+                    <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onSelect={() => void run(groupItems, "restore")}
+                  >
+                    {group.id
+                      ? t("settings.data.library.unarchiveAllInProject")
+                      : t("settings.data.library.unarchiveAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => requestDelete(groupItems, true)}
+                  >
+                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                    {group.id
+                      ? t("settings.data.library.deleteAllInProject")
+                      : t("settings.data.deleteAllAction")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            );
+          }}
         >
           {(item) => (
             <LibraryRow
@@ -253,12 +299,6 @@ export function ArchivedChatsView() {
                 filters.sort === "updated" ? item.updatedAt : item.createdAt
               }
               onOpen={() => openChat(item)}
-              leading={
-                <HugeiconsIcon
-                  icon={MessageCircleIcon}
-                  className="size-4 shrink-0 text-muted-foreground"
-                />
-              }
               actions={
                 <>
                   <Button

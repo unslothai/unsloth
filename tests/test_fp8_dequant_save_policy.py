@@ -182,8 +182,13 @@ def test_cleanup_runs_for_every_dequantizing_route(rel, cls_name):
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 @pytest.mark.parametrize("explicit", [True, False])
-def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit):
+def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit, monkeypatch):
     from transformers import LlamaConfig, LlamaForCausalLM
+
+    if not explicit and torch.cuda.is_available():
+        # transformers dequantizes by itself only without CUDA or below sm89; on an sm89+ card
+        # (L4, H100, B200) a device_map="cpu" load keeps fp8 weights. Report a pre-sm89 card.
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
 
     torch.manual_seed(0)
     src = tmp_path / "src"

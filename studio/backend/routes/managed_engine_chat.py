@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from core.inference.engine_transport import engine_messages, engine_request_timeout
+from core.inference.inference_gate import gated_async_client
 from core.inference.http_stream import closing_response_lines
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
 
@@ -250,8 +251,7 @@ async def managed_tool_chat(
     except ValueError as exc:
         raise reject(str(exc)) from exc
     engine = backend._managed_engine
-    # The engine serves config.identifier (a local path for directory loads); clients get the
-    # same public id as every other chat path.
+    # Serves config.identifier (a local path for directory loads); clients get the same public id.
     public = api._orchestrator_public_model_id(backend) or engine.model
     messages = engine.replay_reasoning(messages, payload.preserve_thinking)
     body = {
@@ -296,7 +296,7 @@ async def managed_tool_chat(
     tracker.__enter__()
 
     async def events():
-        client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
+        client = gated_async_client(trust_env = False, timeout = engine_request_timeout())
         watcher = asyncio.create_task(
             api._await_cancel_or_disconnect_then_close_client(
                 cancel_event = cancel, request = request, client = client
@@ -526,7 +526,7 @@ async def managed_engine_completions(request, current_subject, backend, body):
     cancel = threading.Event()
     tracker = api._TrackedCancel(cancel, model = public, kind = "completions")
     tracker.__enter__()
-    client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
+    client = gated_async_client(trust_env = False, timeout = engine_request_timeout())
     watcher = asyncio.create_task(
         api._await_cancel_or_disconnect_then_close_client(
             cancel_event = cancel, request = request, client = client

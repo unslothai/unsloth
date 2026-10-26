@@ -10,7 +10,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { LineBox } from "@/components/ui/line-box";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { useLoginMode } from "@/features/auth/account-session";
@@ -30,19 +29,14 @@ import {
   remoteAccessStopDisconnectsOrigin,
 } from "@/features/settings/api/remote-access-state";
 import { isTauri } from "@/lib/api-base";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import {
-  Copy01Icon,
-  HomeWifiIcon,
-  QrCodeIcon,
-} from "@hugeicons/core-free-icons";
+import { HomeWifiIcon, QrCode01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { ChangePasswordDialog } from "./change-password-dialog";
 import { SettingsRow } from "./settings-row";
+import { UrlPill } from "./url-pill";
 
 type RemoteAccessOperation = "start" | "stop" | "auto";
 
@@ -89,48 +83,12 @@ function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
   );
 }
 
-function CopyRemoteUrlButton({ url }: { url: string }) {
-  const [copied, setCopied] = useState(false);
-  const copyTimer = useRef<number | null>(null);
-  useEffect(() => {
-    return () => {
-      if (copyTimer.current !== null) {
-        window.clearTimeout(copyTimer.current);
-      }
-    };
-  }, []);
-  return (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className="gap-1.5"
-      onClick={async () => {
-        if (!(await copyToClipboard(url))) {
-          return;
-        }
-        setCopied(true);
-        if (copyTimer.current !== null) {
-          window.clearTimeout(copyTimer.current);
-        }
-        copyTimer.current = window.setTimeout(() => setCopied(false), 1800);
-      }}
-    >
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        className="size-3.5"
-      />
-      {copied ? "Copied" : "Copy URL"}
-    </Button>
-  );
-}
-
 function RemoteUrlQrButton({ url }: { url: string }) {
   return (
     <Dialog>
       <DialogTrigger asChild={true}>
         <Button type="button" size="sm" variant="outline" className="gap-1.5">
-          <HugeiconsIcon icon={QrCodeIcon} className="size-3.5" />
+          <HugeiconsIcon icon={QrCode01Icon} className="size-3.5" />
           QR
         </Button>
       </DialogTrigger>
@@ -183,17 +141,9 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
     <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium text-foreground">Remote URL</span>
-        <div className="flex items-center gap-2">
-          <RemoteUrlQrButton url={url} />
-          <CopyRemoteUrlButton url={url} />
-        </div>
+        <RemoteUrlQrButton url={url} />
       </div>
-      <LineBox
-        as="code"
-        className="block w-full break-all border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground"
-      >
-        {url}
-      </LineBox>
+      <UrlPill url={url} />
       <span className="text-xs text-muted-foreground leading-snug">
         {multi
           ? "Anyone with this URL reaches the sign-in page, and every account and API key works here. Signing in as the owner gives full control, including running code on this computer through tools."
@@ -207,7 +157,7 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
   );
 }
 
-// The desktop owner signs in with a local secret, so this password is for remote browsers only.
+// The desktop owner uses a local secret, so this password is for remote browsers only.
 function RemotePasswordRow({
   status,
   onDone,
@@ -247,8 +197,7 @@ export function RemoteAccessSection() {
     usePlatformStore.setState({ cloudflareUrl: next.url });
   }, []);
 
-  // A password change rotates credentials outside this section's requests;
-  // discard any in-flight poll and re-read so the block resolves at once.
+  // A password change rotates credentials, so drop in-flight polls and re-read.
   const refreshStatus = useCallback(() => {
     mutationEpoch.current += 1;
     setPollEnabled(true);
@@ -332,8 +281,7 @@ export function RemoteAccessSection() {
     } finally {
       setBusy(null);
       pollSuppressed.current = false;
-      // A stop through the tunnel latches polling off when its own origin dies.
-      // Any later action means the user is on a reachable origin, so resume.
+      // A tunnel stop latches polling off; any later action means the origin is reachable.
       setPollEnabled(true);
       setPollRevision((revision) => revision + 1);
     }
@@ -377,9 +325,9 @@ export function RemoteAccessSection() {
       data-settings-label="Remote access"
       className="overflow-hidden rounded-xl border border-border/70"
     >
-      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+      <div className="flex items-start justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+          <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon
               icon={HomeWifiIcon}
               className="size-4 text-foreground"
@@ -402,7 +350,8 @@ export function RemoteAccessSection() {
           type="button"
           size="sm"
           variant={stopAction ? "outline" : "dark"}
-          className="shrink-0"
+          // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+          className="mt-[calc(var(--text-base)*0.372)] shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >

@@ -56,8 +56,7 @@ class _NoSymlinkSupport(dict):
 def _disable_hf_symlinks_for_process() -> None:
     """Switch an affected worker to HF's regular-file cache fallback."""
     os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
-    # huggingface_hub is already imported, so update its live state too. Hub 1.9
-    # added this constant; older installs decide purely from the mapping below.
+    # huggingface_hub is already imported, so its live state must be updated too; Hub 1.9 added the constant.
     try:
         from huggingface_hub import constants, file_download
     except ImportError:  # never mask the load error we are recovering
@@ -101,8 +100,7 @@ def load_dataset_cache_safe(*args, **kwargs):
             try:
                 return load_dataset(*args, **kwargs)
             except OSError as retry_error:
-                # A second 1314 is a cache dir Hub had not probed; the
-                # Unsloth-owned cache is probed fresh and clears both cases.
+                # A second 1314 is a cache dir Hub had not probed; the Unsloth-owned cache is probed fresh too.
                 if _is_retryable_cache_error(retry_error):
                     return _retry_in_studio_cache(load_dataset, args, kwargs, retry_error)
                 raise
@@ -119,8 +117,7 @@ def _retry_in_studio_cache(load_dataset, args, kwargs, error):
         fallback,
     )
     kwargs["cache_dir"] = fallback
-    # Nested builders consult the env var while the load runs; restore it
-    # after so other datasets keep trying the shared cache first.
+    # Nested builders read the env var during the load; restore it after so other datasets still try the shared cache first.
     old_env = os.environ.get("HF_DATASETS_CACHE")
     os.environ["HF_DATASETS_CACHE"] = fallback
     try:

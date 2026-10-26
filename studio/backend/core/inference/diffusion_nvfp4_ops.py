@@ -165,10 +165,8 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
 
 
 def _claim_first_call_tune(m: int, k: int, n: int) -> bool:
-    """True exactly once per ``(M, K, N)`` not yet autotuned, and only outside a CUDA graph
-    capture, where profiling is illegal (the warm-up before a capture is eager, so a graphed
-    shape tunes there). Shares ``nvfp4_prewarm``'s process-wide set, so a prewarmed shape is
-    never profiled twice."""
+    """Claims the one autotune for a shape, never inside a CUDA graph capture, where profiling is
+    illegal."""
     from .diffusion_nvfp4_linear import _TUNED_SHAPES
 
     key = (int(m), int(k), int(n))
@@ -394,8 +392,11 @@ def _preflight_probe(dev: Any) -> bool:
     import flashinfer
     import torch
     with torch.cuda.device(dev):
-        x = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.05
-        w = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.02
+        # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
+        # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
+        gen = torch.Generator().manual_seed(0)
+        x = torch.randn(128, 256, dtype = torch.bfloat16, generator = gen).to(dev) * 0.05
+        w = torch.randn(128, 256, dtype = torch.bfloat16, generator = gen).to(dev) * 0.02
         a_gsf, w_gsf = global_scale(x), global_scale(w)
         xq, x_sf = flashinfer.nvfp4_quantize(x, a_gsf, do_shuffle = False)
         wq, w_sf = flashinfer.nvfp4_quantize(w, w_gsf, do_shuffle = False)
@@ -410,7 +411,9 @@ def _preflight_probe(dev: Any) -> bool:
             out = out,
             backend = DEFAULT_MM_BACKEND,
         )
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return bool(torch.isfinite(y).all().item())
 
 

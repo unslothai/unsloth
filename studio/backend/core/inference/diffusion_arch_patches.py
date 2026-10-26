@@ -174,8 +174,7 @@ def _spec_zimage_forward():
     return (cls, "forward", _zimage_forward)
 
 
-# flux.1: FluxTransformerBlock / FluxSingleTransformerBlock. Block modulation goes via AdaLayerNormZero; here we fuse
-# the inline norm2 modulation and the gated residual adds.
+# Probes the hub FA4 build once per (device, dtype, head_dim) for cards with no code (sm110/sm120) and API drift; exact kernel, so bounds are tight
 def _flux_double_forward(
     self,
     hidden_states,
@@ -301,8 +300,7 @@ def _spec_flux_single():
     return (cls, "forward", _flux_single_forward)
 
 
-# flux.2-klein: Flux2TransformerBlock / Flux2SingleTransformerBlock. Modulation is INLINE, so fuse both;
-# scale/shift/gate are [B,1,dim], so no [:, None].
+# flux.2-klein blocks: inline modulation, fused; scale/shift/gate are [B,1,dim], so no [:, None].
 def _flux2_double_forward(
     self,
     hidden_states,
@@ -446,7 +444,6 @@ def _krea2_block_forward(
 ):
     """``Krea2TransformerBlock.forward`` with the two inline modulations
     ``(1 + scale) * norm(x) + shift`` and the two gated residuals each fused to ``torch.addcmul``."""
-    # temb: (B, 1, 6 * hidden_size), shared across blocks; each block learns an additive table.
     modulation = temb.unflatten(-1, (6, -1)) + self.scale_shift_table
     prescale, preshift, pregate, postscale, postshift, postgate = modulation.unbind(-2)
 

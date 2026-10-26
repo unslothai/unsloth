@@ -109,12 +109,9 @@ export function codexReasoningForToolCalls(
   return undefined;
 }
 
-/** Which replay exchange each tool-call part of one assistant message lands in, by the
- *  serializer's own rule: a round id that changes starts a new exchange, and a part with
- *  no round id that completes a local pair is an exchange of its own. The MCP image
- *  bound groups a message's results by this, so it shares one marker turn's allowance
- *  across exactly the results the backend will see as one batch -- grouping the whole
- *  message let a later round's picture evict an earlier round's. */
+/** Which replay exchange each tool-call part lands in, by the serializer's rule: a changed round
+ *  id starts a new exchange; a local pair with no round id is its own. The MCP image bound groups
+ *  by this so a later round's picture cannot evict an earlier round's. */
 export function localToolExchangeIndexes<TPart>(
   parts: readonly TPart[],
   roundIdOf: (part: TPart) => number | null,

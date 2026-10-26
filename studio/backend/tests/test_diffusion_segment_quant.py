@@ -54,18 +54,116 @@ def test_requested_precision(monkeypatch, value, expected):
     assert sq.requested_precision() == expected
 
 
-def test_auto_follows_the_gated_order_on_cuda(monkeypatch):
+def test_auto_follows_the_gated_order_on_a_tight_cuda_card(monkeypatch):
     import torch
 
     _cuda(monkeypatch, (9, 0))
     assert sq.AUTO_ORDER, "the gate passed at least one quantized arm"
-    assert sq.resolve_precision("cuda:0", torch.bfloat16)[0] == sq.AUTO_ORDER[0]
+    tight = dict(memory_tight = True)
+    assert sq.resolve_precision("cuda:0", torch.bfloat16, **tight)[0] == sq.AUTO_ORDER[0]
     # Only what is on disk (or published) counts.
-    assert sq.resolve_precision("cuda:0", available = ())[0] == "bf16"
-    assert sq.resolve_precision("cuda:0", available = (sq.AUTO_ORDER[-1],))[0] == sq.AUTO_ORDER[-1]
+    assert sq.resolve_precision("cuda:0", available = (), **tight)[0] == "bf16"
+    assert (
+        sq.resolve_precision("cuda:0", available = (sq.AUTO_ORDER[-1],), **tight)[0]
+        == sq.AUTO_ORDER[-1]
+    )
     monkeypatch.setattr(sq, "AUTO_ORDER", ())
-    precision, why = sq.resolve_precision("cuda:0")
+    precision, why = sq.resolve_precision("cuda:0", **tight)
     assert precision == "bf16" and "gate" in why
+
+
+def test_auto_runs_bf16_while_the_card_has_room(monkeypatch):
+    """The 8-bit files are about 2.2x slower per Find than bf16 (model card, B200), so auto only trades speed for
+    memory when the card is short of it. An explicit int8 / fp8 is honoured either way."""
+    import torch
+
+    _cuda(monkeypatch, (9, 0))
+    for args in ((), (torch.bfloat16,)):
+        precision, why = sq.resolve_precision("cuda:0", *args)
+        assert precision == "bf16" and "auto" in why
+        assert sq.resolve_precision("cuda:0", *args, memory_tight = False)[0] == "bf16"
+    for value in ("int8", "fp8"):
+        monkeypatch.setenv(sq.ENV_PRECISION, value)
+        assert sq.resolve_precision("cuda:0", torch.bfloat16)[0] == value
+        assert sq.resolve_precision("cuda:0", torch.bfloat16, memory_tight = True)[0] == value
+    monkeypatch.setenv(sq.ENV_PRECISION, "bf16")
+    assert sq.resolve_precision("cuda:0", torch.bfloat16, memory_tight = True)[0] == "bf16"
+
+
+def test_auto_memory_tight_reads_the_card_only_once_cuda_is_up(monkeypatch):
+    import torch
+
+    reads = []
+
+    def free(ordinal):
+        reads.append(ordinal)
+        return free_total
+
+    monkeypatch.setattr(seg, "_cuda_free_mib", free)
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: False)
+    free_total = (1024, 80_000)
+    # No CUDA context in this process yet: nothing of ours is on a card, and planning must not create one.
+    assert seg.auto_memory_tight("cuda:0") is False and reads == []
+    assert seg.auto_memory_tight("cpu") is False and seg.auto_memory_tight("mps") is False
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: True)
+    # 80 GB card: tight below 20% (16000 MiB) free once bf16's 2048 MiB are placed.
+    free_total = (60_000, 80_000)
+    assert seg.auto_memory_tight("cuda:1") is False and reads == [1]
+    free_total = (16_000 + seg._BF16_RESIDENT_MIB - 1, 80_000)
+    assert seg.auto_memory_tight("cuda:1") is True
+    free_total = (16_000 + seg._BF16_RESIDENT_MIB, 80_000)
+    assert seg.auto_memory_tight("cuda:1") is False
+    # Small card: the 6 GiB floor.
+    free_total = (seg._TIGHT_FREE_MIB + seg._BF16_RESIDENT_MIB - 1, 12_000)
+    assert seg.auto_memory_tight("cuda:0") is True
+    free_total = (None, None)
+    assert seg.auto_memory_tight("cuda:0") is False
+
+
+def test_a_bf16_pick_is_not_unloaded_as_tight_after_its_first_find(monkeypatch):
+    # mem_get_info free drop with bf16 resident after a Find, A100 + torch 2.11 (dequantized INT8 file, the larger).
+    import torch
+
+    measured_drop_mib = 2282
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: True)
+    for total in (12_000, 24_000, 40_000, 80_000):
+        floor = max(seg._TIGHT_FREE_MIB, int(total * seg._TIGHT_FREE_FRACTION))
+        free = floor + seg._BF16_RESIDENT_MIB
+        monkeypatch.setattr(seg, "_cuda_free_mib", lambda ordinal, f = free, t = total: (f, t))
+        assert seg.auto_memory_tight("cuda:0") is False
+        assert not seg.vram_is_tight(free - measured_drop_mib, total), total
+
+
+def test_a_loaded_segmenter_keeps_its_memory_reading(monkeypatch):
+    """Loaded on a card, the free memory read on the next call no longer counts the segmenter itself: the choice made
+    at load is reused, so a bf16 model is not swapped for int8 (or back) on every call."""
+    seen = []
+    plan = seg.WeightsPlan("bf16", "/m")
+    monkeypatch.setattr(
+        seg, "plan_weights", lambda *a, memory_tight, **k: seen.append(memory_tight) or plan
+    )
+    monkeypatch.setattr(seg, "auto_memory_tight", lambda device: True)
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    segmenter._model, segmenter._path, segmenter.device, segmenter._dtype = (
+        object(),
+        "/m",
+        "cuda:0",
+        "bf16",
+    )
+    segmenter._weights_key, segmenter._memory_tight = ("/m", None, False), False
+    segmenter._load("/m", "cuda:0", "bf16")
+    assert seen == [False]
+    # Another device (or nothing loaded) reads the card again.
+    segmenter._model = None
+    segmenter._memory_tight = None
+    monkeypatch.setattr(segmenter, "_load_weights", lambda plan, *a: (object(), plan))
+    import transformers
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: object())
+    segmenter._load("/m", "cuda:0", "bf16")
+    assert seen == [False, True] and segmenter._memory_tight is True
+    segmenter._unload_locked("test")
+    assert segmenter._memory_tight is None
 
 
 def test_quantized_kernels_are_cuda_only(monkeypatch):
@@ -175,7 +273,10 @@ def test_download_plan_fetches_one_weights_file(monkeypatch):
         seg.SAM31_SIZE_BYTES,
     )
     variant = _published(monkeypatch)
-    plan = seg.download_plan(variant, "cuda:0")
+    # A card with room fetches bf16 (the faster path); a tight one the smaller gated file.
+    assert seg.download_plan(variant, "cuda:0")["spec"] == "sam3.1"
+    assert seg.download_plan(variant, "cuda:0", memory_tight = False)["spec"] == "sam3.1"
+    plan = seg.download_plan(variant, "cuda:0", memory_tight = True)
     artifact = seg.variant_artifact(variant, sq.AUTO_ORDER[0])
     assert (
         plan["spec"] == seg.prequant_spec_id(variant, artifact)
@@ -184,10 +285,13 @@ def test_download_plan_fetches_one_weights_file(monkeypatch):
     assert plan["file"] == artifact.filename
     assert plan["size_bytes"] == artifact.size_bytes + seg.SAM31_CONFIG_BYTES < seg.SAM31_SIZE_BYTES
     # CPU / Mac hosts fetch bf16.
-    assert seg.download_plan(variant, "cpu")["spec"] == "sam3.1"
-    assert seg.download_plan(variant, "mps")["spec"] == "sam3.1"
+    assert seg.download_plan(variant, "cpu", memory_tight = True)["spec"] == "sam3.1"
+    assert seg.download_plan(variant, "mps", memory_tight = True)["spec"] == "sam3.1"
+    # An explicit int8 fetches the int8 file whatever the memory.
+    monkeypatch.setenv(sq.ENV_PRECISION, "int8")
+    assert seg.download_plan(variant, "cuda:0")["spec"] == seg.prequant_spec_id(variant, artifact)
     monkeypatch.setenv(sq.ENV_PRECISION, "bf16")
-    assert seg.download_plan(variant, "cuda:0")["spec"] == "sam3.1"
+    assert seg.download_plan(variant, "cuda:0", memory_tight = True)["spec"] == "sam3.1"
 
 
 def test_start_download_uses_the_plan(monkeypatch):
@@ -204,9 +308,12 @@ def test_start_download_uses_the_plan(monkeypatch):
 
     monkeypatch.setattr(seg, "_get_download_state", lambda: _State())
     seg.start_download(None, "sam3.1")
-    assert started == [
-        seg.prequant_spec_id(variant, seg.variant_artifact(variant, sq.AUTO_ORDER[0]))
-    ]
+    assert started == ["sam3.1"]
+    monkeypatch.setattr(seg, "auto_memory_tight", lambda device: True)
+    seg.start_download(None, "sam3.1")
+    assert started[-1] == seg.prequant_spec_id(
+        variant, seg.variant_artifact(variant, sq.AUTO_ORDER[0])
+    )
     # A spec id passes through untouched.
     seg.start_download(None, "sam3.1@fp8")
     assert started[-1] == "sam3.1@fp8"
@@ -321,7 +428,12 @@ def test_plan_weights(monkeypatch, tmp_path):
     sam31 = seg.SEGMENTER_VARIANTS["sam3.1"]
     every = [a.filename for a in sam31.prequant]
     full = _folder(tmp_path / "full", "model.safetensors", *every)
+    # auto with room: the bf16 file, though the quantized ones are on disk.
     plan = seg.plan_weights(full, "cuda:0", torch.bfloat16, variant = sam31, use_cache = False)
+    assert (plan.precision, plan.weights, plan.dequantize) == ("bf16", None, False)
+    plan = seg.plan_weights(
+        full, "cuda:0", torch.bfloat16, variant = sam31, use_cache = False, memory_tight = True
+    )
     first = seg.variant_artifact(sam31, sq.AUTO_ORDER[0])
     assert (plan.precision, plan.weights, plan.dequantize) == (
         sq.AUTO_ORDER[0],
@@ -361,7 +473,10 @@ def test_only_a_quantized_file_on_a_cpu_is_dequantized(monkeypatch, tmp_path):
         and plan.dequantize
         and plan.weights.endswith("INT8-ConvRot.safetensors")
     )
+    # A card with room runs it dequantized (bf16 speed); a tight one runs it quantized.
     plan = seg.plan_weights(only, "cuda:0", variant = sam31, use_cache = False)
+    assert plan.precision == "bf16" and plan.dequantize
+    plan = seg.plan_weights(only, "cuda:0", variant = sam31, use_cache = False, memory_tight = True)
     assert plan.precision == "int8" and not plan.dequantize
 
 
@@ -475,6 +590,9 @@ def test_status_reports_the_precision_and_its_size(monkeypatch):
     assert body["precision_requested"] == "auto"
     variant = _published(monkeypatch)
     body = seg.status()
+    assert (body["precision"], body["weights_file"]) == ("bf16", "model.safetensors")
+    monkeypatch.setattr(seg, "auto_memory_tight", lambda device: True)
+    body = seg.status()
     artifact = seg.variant_artifact(variant, sq.AUTO_ORDER[0])
     assert (body["precision"], body["weights_file"]) == (sq.AUTO_ORDER[0], artifact.filename)
     assert body["size_bytes"] == artifact.size_bytes + seg.SAM31_CONFIG_BYTES
@@ -553,7 +671,8 @@ def test_auto_skips_a_file_that_failed_the_gate(monkeypatch, tmp_path):
     sam31 = seg.SEGMENTER_VARIANTS["sam3.1"]
     fp8_only = _folder(tmp_path, "model.safetensors", "sam3.1-FP8.safetensors")
     monkeypatch.setattr(sq, "AUTO_ORDER", ("fp8",))
-    assert seg.plan_weights(fp8_only, "cuda:0", variant = sam31, use_cache = False).precision == "bf16"
+    plan = seg.plan_weights(fp8_only, "cuda:0", variant = sam31, use_cache = False, memory_tight = True)
+    assert plan.precision == "bf16"
     monkeypatch.setenv(sq.ENV_PRECISION, "fp8")
     assert seg.plan_weights(fp8_only, "cuda:0", variant = sam31, use_cache = False).precision == "fp8"
 

@@ -1849,8 +1849,7 @@ def get_model_name(
     if new_model_name is None:
         new_model_name = model_name
     else:
-        # Also when the result equals the input: main returned it lowercased, so that is what is cached.
-        # The loader drops the revision on a real remap (_revision_for_resolved_repo), so probe main then.
+        # Also when equal to the input: main returned it lowercased. A real remap drops the revision.
         same_repo = new_model_name.lower() == str(model_name).lower()
         new_model_name = _prefer_legacy_lowercase_cache(
             new_model_name, local_files_only, cache_dir, revision if same_repo else None
@@ -2086,6 +2085,9 @@ def _drop_fp8_dequantize_conversions(model):
         if not _has_dequant(conversion):
             kept.append(conversion)
             continue
+        if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+            # transformers dropped the fp8 config: 16bit weights, so no bitsandbytes stamp either.
+            model._unsloth_fp8_dequantized = True
         if all(isinstance(op, Fp8Dequantize) for op in operations):
             # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
             changed += 1
@@ -2127,6 +2129,17 @@ def _drop_fp8_dequantize_conversions(model):
     if changed:
         model._weight_conversions = kept
     return changed
+
+
+def _loaded_quant_method(config):
+    """quant_method of `config.quantization_config` as a lower-case string, dict or config object, else None."""
+    qc = getattr(config, "quantization_config", None)
+    if qc is None:
+        return None
+    method = qc.get("quant_method") if isinstance(qc, dict) else getattr(qc, "quant_method", None)
+    if method is None:
+        return None
+    return str(getattr(method, "value", method)).lower()
 
 
 def _fp8_dequantize_quantization_config(model_config):
@@ -2482,7 +2495,7 @@ def _route_compressed_tensors_fp8_to_unsloth(
     skip = (),
     default = "0",
 ):
-    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4, where the
+    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4.
     # decompressed FP8 layers would keep compressed-tensors' graph-breaking fake-quant forward.
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", default) != "1":
         return 0
@@ -2643,8 +2656,7 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
         fn,
         recurse = True,
     ):
-        # model.to(dtype) / .half() may move the packed weight and its scales but never cast them: an fp16 global
-        # scale overflows past 65504 and dequantizes the layer to zeros.
+        # model.to(dtype) must never cast the packed weight or scales: an fp16 global scale overflows.
         quant = {}
         for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
             param = self._parameters.get(name)
@@ -3445,10 +3457,59 @@ def _dequantize_bitsandbytes_for_full_finetuning(
     return True
 
 
+def _compressed_tensors_format(quant_config):
+    if isinstance(quant_config, dict):
+        fmt = quant_config.get("format", None)
+    else:
+        fmt = getattr(quant_config, "format", None)
+        inner = getattr(quant_config, "quantization_config", None)
+        if inner is not None:
+            fmt = getattr(inner, "format", None) or fmt
+    return str(getattr(fmt, "value", fmt) or "unknown format")
+
+
+def _prepare_compressed_tensors_full_finetuning(model):
+    """Full finetuning marks every parameter trainable; integer leftovers of a compressed-tensors checkpoint reject that."""
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if str(getattr(method, "value", method)).lower() != "compressed-tensors":
+        return 0
+    name = getattr(getattr(model, "config", None), "_name_or_path", "") or "this model"
+    fmt = _compressed_tensors_format(quant_config)
+    moved = 0
+    for module_name, module in model.named_modules():
+        for param_name, param in list(module._parameters.items()):
+            if param is None or param.is_floating_point() or param.is_complex():
+                continue
+            full_name = f"{module_name}.{param_name}" if module_name else param_name
+            # A weight still packed to integers was not decompressed and cannot be trained.
+            if param_name in ("weight", "weight_packed"):
+                raise RuntimeError(
+                    f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}) and `{full_name}` "
+                    f"is still stored as {param.dtype}, so full finetuning cannot train it. "
+                    "Use `full_finetuning = False` to train LoRA on top of it, or full finetune "
+                    "the original 16bit model instead."
+                )
+            # Kept by decompress_model (e.g. int64 `weight_shape`) so the module can be recompressed on save:
+            # a persistent buffer keeps the state_dict key but leaves the trainable parameter list.
+            delattr(module, param_name)
+            module.register_buffer(param_name, param.data, persistent = True)
+            moved += 1
+    print(
+        f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}), so full finetuning trains "
+        "its decompressed 16bit weights. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    return moved
+
+
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
     # Routed FP8 / NVFP4 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
     if full_finetuning:
         _decompress_compressed_tensors_model(model)
+        _prepare_compressed_tensors_full_finetuning(model)
         return
     _tag_compressed_tensors_modules(model)
     if _route_compressed_tensors_nvfp4_to_unsloth(model):
@@ -4321,12 +4382,20 @@ def gpt_oss_checkpoint_has_fused_experts(
         # Anything not named *-unsloth-bnb-4bit may be a fused save; guessing split loads random experts.
         if "unsloth-bnb-4bit" in str(model_name).lower():
             return False
+        # A lone .bin outranks its index (transformers' order): advising an index cannot help.
+        unreadable = str(exc)
+        fix = (
+            "Re-save it with `safe_serialization = True` (safetensors), or re-save "
+            f"`{os.path.basename(unreadable)}` with a recent torch (zip serialization) so it can be "
+            "memory-mapped."
+        )
+        if not os.path.isfile(unreadable):
+            fix += " Downloading it locally first also lets its tensor names be read."
         raise GptOssUnknownExpertLayoutError(
-            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint saved as a single "
-            f"`{os.path.basename(str(exc))}` with no index, so its expert layout (fused or Unsloth's split "
+            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint whose weights load from a "
+            f"single `{os.path.basename(unreadable)}`, so its expert layout (fused or Unsloth's split "
             "pre-quantized layout) cannot be read without loading the weights, and a wrong guess loads "
-            "random experts. Re-save it with `safe_serialization = True` (safetensors), add its "
-            "`pytorch_model.bin.index.json`, or download it locally first."
+            f"random experts. {fix}"
         ) from None
     layout = _gpt_oss_bnb_checkpoint_expert_layout(dtypes)
     if layout == "fused_unknown_dtype":
@@ -4479,6 +4548,45 @@ def _get_fp8_mode_and_check_settings(
 _ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
 
 
+def _is_tensor_subclass_weight(t):
+    """A wrapper tensor subclass weight such as torchao's Float8Tensor (load_in_fp8). DDP's start-up
+    broadcast flattens every parameter (reshape to [-1]), which Float8Tensor does not implement.
+    torchao.float8's training weights (WeightWithDynamicFloat8CastTensor) implement it and DDP trains
+    them, so they are not counted, as in fsdp2_native's _float8_params."""
+    if type(t).__module__.startswith("torchao.float8"):
+        return False
+    if any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__):
+        return True
+    try:
+        from torch.distributed.tensor import DTensor
+        if isinstance(t, DTensor):
+            return False
+    except Exception:
+        pass
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+        return is_traceable_wrapper_subclass(t)
+    except Exception:
+        return False
+
+
+def _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = False):
+    """Frozen tensor subclass weights (load_in_fp8's Float8Tensor) stay out of DDP: every rank loads and
+    quantizes the same checkpoint, so there is nothing to broadcast, and a frozen weight has no gradient to
+    reduce. A trainable one would need both, which DDP cannot do for it: refused when asked."""
+    frozen, trainable = [], []
+    for name, p in model.named_parameters():
+        if _is_tensor_subclass_weight(p):
+            (trainable if p.requires_grad else frozen).append(name)
+    if trainable and refuse_trainable:
+        raise NotImplementedError(
+            f"Unsloth: DDP cannot train the {type(model.get_parameter(trainable[0])).__name__} weight "
+            f"{trainable[0]} ({len(trainable)} such weights are trainable); it cannot be broadcast or have "
+            "its gradient all-reduced. Train LoRA on the frozen FP8 base (get_peft_model), or load in 16-bit."
+        )
+    return frozen
+
+
 def _exclude_rope_inv_freq_from_ddp(model):
     ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
     for module_name, module in model.named_modules():
@@ -4487,6 +4595,12 @@ def _exclude_rope_inv_freq_from_ddp(model):
                 fqn = f"{module_name}.{buffer_name}" if module_name else buffer_name
                 if fqn not in ignored:
                     ignored.append(fqn)
+    try:
+        for fqn in _frozen_tensor_subclass_names_for_ddp(model):
+            if fqn not in ignored:
+                ignored.append(fqn)
+    except Exception:
+        pass
     if ignored:
         try:
             from torch.nn.parallel import DistributedDataParallel

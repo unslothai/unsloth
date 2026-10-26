@@ -219,6 +219,8 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_stitch_mtp_head",
         "_mtp_head_tensor_names",
         "_unmerge_flags_on_error",
+        # Decorator factory; _load strips decorators.
+        "_model_parallel_refuses_save",
     }
 )
 

@@ -10,6 +10,11 @@ The fast engine shares one AST per file stage and tokenizes only headers,
 short assert spans, and f-strings. A sparse lexer handles the rest. Compatibility
 routines preserve the reference's behavior on malformed or unusual source.
 There is no dependency on ruff's canonical layout and no persistent cache.
+
+The pre-commit hook formats with ruff-unsloth, which writes the spacing, the
+magic-comma rules and the import blank lines itself, and then runs only
+``--residual``: string merging and redundant-pass removal, on the files that
+could need them. The full passes stay for running this script on its own.
 """
 
 from __future__ import annotations
@@ -34,17 +39,13 @@ from pathlib import Path
 def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
     """Write ``data`` to ``path`` atomically via same-dir tmp + fsync + os.replace, so a crash mid-write leaves either the old or the full new content, never a truncation."""
     dirpath = str(path.parent) or "."
-    # mkstemp creates the file 0600, and os.replace carries that mode over the
-    # original's, so an executable script rewritten by this pass came back
-    # without its bit. scripts/run_ruff_format.py is the hook's own entry
-    # point and is itself processed here: once it carried kwarg spacing every
-    # run stripped its executable bit, pre-commit.ci committed the flip, and the
-    # next run failed with "not executable". Carry the mode across.
+    # mkstemp creates 0600 and os.replace keeps it, so carry the original mode across
+    # (else run_ruff_format.py loses its executable bit).
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
     except OSError:
         mode = None
-    fd, tmp_path = tempfile.mkstemp(prefix=".kwargs_fix.", dir=dirpath)
+    fd, tmp_path = tempfile.mkstemp(prefix = ".kwargs_fix.", dir = dirpath)
     try:
         # newline = "\n", not the default None. Default translates every "\n" to os.linesep,
         # which on Windows is "\r\n", and the read side (tokenize.open, below) has already
@@ -53,7 +54,7 @@ def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
         # pre-commit hook got a whole-file diff on everything they edited. "\n" rather than ""
         # because it states the intended ending rather than "do not translate", and it holds even
         # if the read side stops normalising.
-        with os.fdopen(fd, "w", encoding=encoding, newline="\n") as handle:
+        with os.fdopen(fd, "w", encoding = encoding, newline = "\n") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
@@ -196,7 +197,7 @@ def _fits_one_line(segment):
 
 
 def _apply(lines, edits):
-    for row, c0, c1, replacement in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
+    for row, c0, c1, replacement in sorted(edits, key = lambda e: (e[0], e[1]), reverse = True):
         line = lines[row - 1]
         lines[row - 1] = line[:c0] + replacement + line[c1:]
 
@@ -260,7 +261,11 @@ def _assert_edits(lines, nodes):
     return edits
 
 
-def _pre(text, definitions=True, assertions=True):
+def _pre(
+    text,
+    definitions = True,
+    assertions = True,
+):
     if not _ordinary(text):
         return _reference_pre(text, definitions, assertions)
     if not ((definitions and "def" in text) or (assertions and "assert" in text)):
@@ -500,7 +505,7 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
             enclosing = [
                 n for n in nodes if isinstance(n, ast.stmt) and n.lineno <= row <= n.end_lineno
             ]
-            stmt = min(enclosing, key=lambda n: n.end_lineno - n.lineno, default=None)
+            stmt = min(enclosing, key = lambda n: n.end_lineno - n.lineno, default = None)
             if isinstance(stmt, ast.Assert) and stmt.lineno != stmt.end_lineno:
                 segment = lines[stmt.lineno - 1 : stmt.end_lineno]
                 segment[row - stmt.lineno] = lines[row - 1][:c0] + merged + lines[row - 1][c1:]
@@ -515,8 +520,8 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
             # inequality is NOT proof of file-level inequality (two changes in a
             # larger concatenation may cancel). Defer that case to the
             # reference's all-or-nothing global guard.
-            before = ast.parse("(" + original + ")", mode="eval")
-            after = ast.parse("(" + merged + ")", mode="eval")
+            before = ast.parse("(" + original + ")", mode = "eval")
+            after = ast.parse("(" + merged + ")", mode = "eval")
             if ast.dump(before) != ast.dump(after):
                 return None
         except SyntaxError:
@@ -529,7 +534,13 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
     return edits
 
 
-def _post(text, spacing=True, blanks=True, merging=True, passes=True):
+def _post(
+    text,
+    spacing = True,
+    blanks = True,
+    merging = True,
+    passes = True,
+):
     if not _ordinary(text):
         return _reference_post(text, spacing, blanks, merging, passes)
     tree = _tree(text)
@@ -581,7 +592,7 @@ def _post(text, spacing=True, blanks=True, merging=True, passes=True):
         end += merge_shift
         pass_positions.append((row, start, end))
     _apply(lines, edits)
-    for row, start, end in sorted(pass_positions, reverse=True):
+    for row, start, end in sorted(pass_positions, reverse = True):
         line = lines[row]
         segment = line[:start] + line[end:]
         lines[row] = segment if segment.strip() else ""
@@ -614,48 +625,136 @@ def _reference_post(text, spacing, blanks, merging, passes):
 
 @_without_gc
 def normalize_def_trailing_comma(text: str) -> tuple[str, bool]:
-    return _pre(text, assertions=False)
+    return _pre(text, assertions = False)
 
 
 @_without_gc
 def collapse_short_asserts(text: str) -> tuple[str, bool]:
-    return _pre(text, definitions=False)
+    return _pre(text, definitions = False)
 
 
 @_without_gc
 def enforce_spacing(text: str) -> tuple[str, bool]:
-    return _post(text, blanks=False, merging=False, passes=False)
+    return _post(text, blanks = False, merging = False, passes = False)
 
 
 @_without_gc
 def remove_blank_after_short_import(text: str) -> tuple[str, bool]:
     if "import" not in text:
         return text, False
-    return _post(text, spacing=False, merging=False, passes=False)
+    return _post(text, spacing = False, merging = False, passes = False)
 
 
 @_without_gc
 def merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
-    return _post(text, spacing=False, blanks=False, passes=False)
+    return _post(text, spacing = False, blanks = False, passes = False)
 
 
 @_without_gc
 def remove_redundant_passes(text: str) -> tuple[str, bool]:
     if "pass" not in text:
         return text, False
-    return _post(text, spacing=False, blanks=False, merging=False)
+    return _post(text, spacing = False, blanks = False, merging = False)
+
+
+# A closing quote, blanks, then an opening one: every same-line implicit concatenation
+# matches, and so does `" ".join`. The lexer below settles which it is.
+_ADJACENT_QUOTES = re.compile(r"""['"][ \t]+(?:[rRuUbBfF]{1,2})?['"]""")
+_PASS_ROW = re.compile(r"^([ \t]*)pass[ \t]*(?:#.*)?$", re.MULTILINE)
+
+
+def _may_merge(text):
+    """Whether a same-line run of adjacent literals is one _merge_string_run would fold."""
+    if not _ADJACENT_QUOTES.search(text):
+        return False
+    try:
+        _, strings = _lex(text)
+    except Exception:
+        # The lexer assumes valid source; anything it cannot read gets the full pass.
+        return True
+    # Runs built as _merge_edits builds them: single-row pieces, blanks between.
+    run = []
+    for piece in strings + [None]:
+        if (
+            piece is not None
+            and run
+            and "\n" not in text[run[-1][1] : piece[2]]
+            and not text[run[-1][2] : piece[1]].strip(" \t")
+        ):
+            run.append(piece)
+            continue
+        if len(run) > 1 and _merge_string_run([(k, text[a:b]) for k, a, b in run]) is not None:
+            return True
+        run = [] if piece is None else [piece]
+    return False
+
+
+def _may_have_redundant_pass(text):
+    """Whether some `pass` can share its suite with another statement.
+
+    Over-approximates on formatted source. A sibling before the `pass` ends on a row
+    indented at least as deep (its last line, a closing bracket, a compound body) or on
+    the row that closes a triple-quoted string; a sibling after it starts at the same
+    indent. Comment and blank rows are skipped, and a backslash continuation anywhere
+    sends the file to the full pass.
+    """
+    if "pass" not in text:
+        return False
+    if "\\\n" in text:
+        return True
+    lines = text.split("\n")
+    rows = [m for m in _PASS_ROW.finditer(text)]
+    if not rows:
+        return False
+    starts = _line_starts([line + "\n" for line in lines])
+
+    def significant(row):
+        stripped = lines[row].strip()
+        return stripped and not stripped.startswith("#")
+
+    for match in rows:
+        row = bisect.bisect_right(starts, match.start()) - 1
+        own = len(match.group(1))
+        before = next((r for r in range(row - 1, -1, -1) if significant(r)), None)
+        if before is not None:
+            line = lines[before]
+            if len(line) - len(line.lstrip()) >= own or '"""' in line or "'''" in line:
+                return True
+        after = next((r for r in range(row + 1, len(lines)) if significant(r)), None)
+        if after is not None and len(lines[after]) - len(lines[after].lstrip()) == own:
+            return True
+    return False
 
 
 @_without_gc
-def process_file(path: Path, pre: bool = False) -> bool:
+def residual(text: str) -> tuple[str, bool]:
+    """The two passes ruff-unsloth leaves to Python, run only where they could apply."""
+    if not _ordinary(text):
+        return _post(text, spacing = False, blanks = False)
+    merging = _may_merge(text)
+    passes = _may_have_redundant_pass(text)
+    if not (merging or passes):
+        return text, False
+    return _post(text, spacing = False, blanks = False, merging = merging, passes = passes)
+
+
+@_without_gc
+def process_file(
+    path: Path,
+    pre: bool = False,
+    only_residual: bool = False,
+) -> bool:
     try:
         with tokenize.open(path) as handle:
             original = handle.read()
             encoding = handle.encoding
     except (OSError, SyntaxError) as exc:
-        print(f"Failed to read {path}: {exc}", file=sys.stderr)
+        print(f"Failed to read {path}: {exc}", file = sys.stderr)
         return False
-    updated, changed = _pre(original) if pre else _post(original)
+    if only_residual:
+        updated, changed = residual(original)
+    else:
+        updated, changed = _pre(original) if pre else _post(original)
     if changed:
         _atomic_write_text(path, updated, encoding)
     return changed
@@ -667,7 +766,7 @@ def process_file(path: Path, pre: bool = False) -> bool:
 
 def _reference_enforce_spacing(text: str) -> tuple[str, bool]:
     """Return updated text with keyword '=' padded by spaces, plus change flag."""
-    lines = text.splitlines(keepends=True)
+    lines = text.splitlines(keepends = True)
     if not lines:
         return text, False
 
@@ -745,10 +844,10 @@ def _reference_remove_redundant_passes(text: str) -> tuple[str, bool]:
     if not redundant:
         return text, False
 
-    lines = text.splitlines(keepends=True)
+    lines = text.splitlines(keepends = True)
     changed = False
 
-    for node in sorted(redundant, key=lambda item: (item.lineno, item.col_offset), reverse=True):
+    for node in sorted(redundant, key = lambda item: (item.lineno, item.col_offset), reverse = True):
         start = node.lineno - 1
         end = (node.end_lineno or node.lineno) - 1
         if start >= len(lines):
@@ -762,7 +861,6 @@ def _reference_remove_redundant_passes(text: str) -> tuple[str, bool]:
             lines[start] = segment if segment.strip() else ""
             continue
 
-        # Fall-back for unexpected multi-line 'pass'.
         prefix = lines[start][: node.col_offset]
         lines[start] = prefix if prefix.strip() else ""
         for idx in range(start + 1, end):
@@ -789,9 +887,9 @@ def _reference_remove_blank_after_short_import(text: str) -> tuple[str, bool]:
     except SyntaxError:
         return text, False
 
-    lines = text.splitlines(keepends=True)
+    lines = text.splitlines(keepends = True)
     import_types = (ast.Import, ast.ImportFrom)
-    drop: set[int] = set()  # 1-based physical line numbers to delete
+    drop: set[int] = set()
 
     def suites_of(node: ast.AST) -> list[list[ast.stmt]]:
         if isinstance(node, ast.Module):
@@ -805,7 +903,7 @@ def _reference_remove_blank_after_short_import(text: str) -> tuple[str, bool]:
 
     for node in ast.walk(tree):
         for suite in suites_of(node):
-            if len(suite) > 3:  # only small blocks
+            if len(suite) > 3:
                 continue
             i = 0
             while i < len(suite):
@@ -815,7 +913,7 @@ def _reference_remove_blank_after_short_import(text: str) -> tuple[str, bool]:
                 j = i
                 while j + 1 < len(suite) and isinstance(suite[j + 1], import_types):
                     j += 1
-                if j + 1 < len(suite):  # an import block followed by another statement
+                if j + 1 < len(suite):
                     last_imp, nxt = suite[j], suite[j + 1]
                     gap = range((last_imp.end_lineno or last_imp.lineno) + 1, nxt.lineno)
                     nums = [n for n in gap if 1 <= n <= len(lines)]
@@ -825,14 +923,14 @@ def _reference_remove_blank_after_short_import(text: str) -> tuple[str, bool]:
 
     if not drop:
         return text, False
-    kept = [ln for idx, ln in enumerate(lines, start=1) if idx not in drop]
+    kept = [ln for idx, ln in enumerate(lines, start = 1) if idx not in drop]
     return "".join(kept), True
 
 
 _STRING_TRIVIA = (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT)
 
 
-_DEF_MIN_PARAMS_FOR_MULTILINE = 3  # signatures with < this many params stay one line
+_DEF_MIN_PARAMS_FOR_MULTILINE = 3
 
 
 def _def_spec(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[int, bool]:
@@ -894,7 +992,7 @@ def _reference_normalize_def_trailing_comma(text: str) -> tuple[str, bool]:
                                 m -= 1
                             last = toks[m]
                             has_comma = last.type == tokenize.OP and last.string == ","
-                            empty = m == j  # nothing between ( and )
+                            empty = m == j
                             if force_multiline and not has_comma and not empty:
                                 edits.append((last.end[0], last.end[1], "ins"))
                             elif not force_multiline and has_comma:
@@ -908,13 +1006,13 @@ def _reference_normalize_def_trailing_comma(text: str) -> tuple[str, bool]:
     if not edits:
         return text, False
 
-    lines = text.splitlines(keepends=True)
-    for row, col, kind in sorted(edits, reverse=True):
+    lines = text.splitlines(keepends = True)
+    for row, col, kind in sorted(edits, reverse = True):
         ln = lines[row - 1]
         if kind == "del":
             if col < len(ln) and ln[col] == ",":
                 lines[row - 1] = ln[:col] + ln[col + 1 :]
-        else:  # ins
+        else:
             lines[row - 1] = ln[:col] + "," + ln[col:]
     out = "".join(lines)
     try:
@@ -939,12 +1037,12 @@ def _split_string_token(s: str) -> tuple[str, str, str] | None:
     return None
 
 
-# PEP 701 split f-strings into FSTRING_START/MIDDLE/END in 3.12; before that one arrives as a single STRING token, which the branch below handles, so reading the names unguarded raised AttributeError and killed the whole post-pass, leaving every file ruff-reformatted without the kwarg spacing this script restores. `t.type` is an int, so None never matches.
+# FSTRING_* tokens exist only on 3.12+ (PEP 701); older versions emit one STRING token.
 _FSTRING_START = getattr(tokenize, "FSTRING_START", None)
 _FSTRING_END = getattr(tokenize, "FSTRING_END", None)
 
 
-# A "piece" is one string literal in source: a plain STRING token, or a whole f-string spanning FSTRING_START..FSTRING_END. (kind, (row, col0), (row, col1), raw)
+# A piece is a STRING token or a whole FSTRING_START..FSTRING_END run.
 def _string_pieces(
     toks: list[tokenize.TokenInfo], lines: list[str]
 ) -> list[tuple[str, tuple[int, int], tuple[int, int], str | None]]:
@@ -952,7 +1050,7 @@ def _string_pieces(
     n = len(toks)
 
     def raw_of(start: tuple[int, int], end: tuple[int, int]) -> str | None:
-        if start[0] != end[0]:  # only single-physical-line pieces are mergeable
+        if start[0] != end[0]:
             return None
         return lines[start[0] - 1][start[1] : end[1]]
 
@@ -965,7 +1063,7 @@ def _string_pieces(
         elif t.type == _FSTRING_START:
             depth = 0
             j = i
-            while j < n:  # walk to the matching FSTRING_END (f-strings can nest)
+            while j < n:
                 if toks[j].type == _FSTRING_START:
                     depth += 1
                 elif toks[j].type == _FSTRING_END:
@@ -991,22 +1089,18 @@ def _merge_string_run(pieces: list[tuple[str, str]]) -> str | None:
             return None
         prefix, quote, body = pqb
         if "b" in prefix.lower():
-            return None  # bytes: leave side-by-side
+            return None
         parsed.append((kind, prefix, quote, body))
     if len({p[2] for p in parsed}) != 1:
-        return None  # mixed quote style: not a safe textual merge
+        return None
     quote = parsed[0][2]
     if not any(p[0] == "f" for p in parsed):
-        # No f-string: merge plain/raw/unicode sharing one prefix by concatenation.
         if len({p[1].lower() for p in parsed}) != 1:
             return None
         return f"{parsed[0][1]}{quote}{''.join(p[3] for p in parsed)}{quote}"
-    # f-string fold only when a plain string is glued onto an f-string; a run of
-    # only f-strings is left side-by-side (folding long ones would force ruff to
-    # re-wrap the surrounding statement).
+    # Fold only a plain string glued onto an f-string; long f-string runs would force ruff to re-wrap.
     if all(p[0] == "f" for p in parsed):
         return None
-    # raw mixed with f is too subtle (backslash + brace escaping) -> skip.
     if any("r" in p[1].lower() for p in parsed):
         return None
     body = "".join(
@@ -1048,7 +1142,7 @@ def _fold_collapses(
             ln = ln[:c0] + merged + ln[c1:]
         seg.append(ln)
     indent = len(seg[0]) - len(seg[0].lstrip())
-    # Conservative over-estimate: join continuation lines with a single space (ruff joins bracketed wraps with none), so borderline cases skip the fold.
+    # Over-estimate by joining with a space so borderline cases skip the fold.
     joined = " ".join(s.strip() for s in seg)
     return indent + len(joined) <= _LINE_LENGTH
 
@@ -1061,7 +1155,7 @@ def _reference_merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
     except (tokenize.TokenError, IndentationError, SyntaxError):
         return text, False
 
-    lines = text.splitlines(keepends=True)
+    lines = text.splitlines(keepends = True)
     pieces = _string_pieces(toks, lines)
 
     runs: list[list[tuple[str, tuple[int, int], tuple[int, int], str]]] = []
@@ -1088,7 +1182,6 @@ def _reference_merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
         if merged is None:
             continue
         row, c0, c1 = run[0][1][0], run[0][1][1], run[-1][2][1]
-        # An f-string fold must not push its statement onto extra lines; a plain concatenation always collapses cleanly so it skips this check.
         if any(kind == "f" for kind, _s, _e, _r in run) and not _fold_collapses(
             tree, lines, row, c0, c1, merged
         ):
@@ -1097,7 +1190,7 @@ def _reference_merge_adjacent_string_literals(text: str) -> tuple[str, bool]:
     if not edits:
         return text, False
 
-    for row, c0, c1, repl in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
+    for row, c0, c1, repl in sorted(edits, key = lambda e: (e[0], e[1]), reverse = True):
         ln = lines[row - 1]
         lines[row - 1] = ln[:c0] + repl + ln[c1:]
     out = "".join(lines)
@@ -1117,7 +1210,7 @@ def _reference_collapse_short_asserts(text: str) -> tuple[str, bool]:
     except (tokenize.TokenError, IndentationError, SyntaxError):
         return text, False
 
-    lines = text.splitlines(keepends=True)
+    lines = text.splitlines(keepends = True)
     multiline = [
         (n.lineno, n.end_lineno)
         for n in ast.walk(tree)
@@ -1128,19 +1221,18 @@ def _reference_collapse_short_asserts(text: str) -> tuple[str, bool]:
 
     comment_rows = {t.start[0] for t in toks if t.type == tokenize.COMMENT}
 
-    targets = []  # (lo, hi) spans whose one-line form fits and have no comment
+    targets = []
     for lo, hi in multiline:
         if any(lo <= r <= hi for r in comment_rows):
-            continue  # a comment would keep ruff multi-line -> never collapses
+            continue
         seg = [lines[k].rstrip("\n") for k in range(lo - 1, hi)]
         indent = len(seg[0]) - len(seg[0].lstrip())
-        # Over-estimate (join with a space, keep the comma) so a "fits" verdict is always at least as long as ruff's real one-line output, and the two never fight.
+        # Over-estimate so a fits verdict never fights ruff's real one-line output.
         if indent + len(" ".join(s.strip() for s in seg)) <= _LINE_LENGTH:
             targets.append((lo, hi))
     if not targets:
         return text, False
 
-    # Trailing commas (a ',' whose next significant token is a closer), grouped by the target assert they belong to.
     sig = [t for t in toks if t.type not in _STRING_TRIVIA]
     by_target: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
     for i, t in enumerate(sig):
@@ -1157,9 +1249,9 @@ def _reference_collapse_short_asserts(text: str) -> tuple[str, bool]:
     base_dump = ast.dump(tree)
     working = lines[:]
     changed = False
-    for positions in by_target.values():  # apply per assert; skip any that break AST
+    for positions in by_target.values():
         trial = working[:]
-        for row, col in sorted(positions, reverse=True):
+        for row, col in sorted(positions, reverse = True):
             ln = trial[row - 1]
             if col < len(ln) and ln[col] == ",":
                 trial[row - 1] = ln[:col] + ln[col + 1 :]
@@ -1172,12 +1264,17 @@ def _reference_collapse_short_asserts(text: str) -> tuple[str, bool]:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("files", nargs="+", help="Python files to fix")
+    parser = argparse.ArgumentParser(description = __doc__)
+    parser.add_argument("files", nargs = "+", help = "Python files to fix")
     parser.add_argument(
         "--pre",
-        action="store_true",
-        help="pre-ruff pass: normalize def-signature commas + collapse short multi-line asserts",
+        action = "store_true",
+        help = "pre-ruff pass: normalize def-signature commas + collapse short multi-line asserts",
+    )
+    parser.add_argument(
+        "--residual",
+        action = "store_true",
+        help = "after ruff-unsloth: only string merging and redundant-pass removal",
     )
     args = parser.parse_args(argv)
 
@@ -1186,12 +1283,11 @@ def main(argv: list[str]) -> int:
 
     for entry in args.files:
         path = Path(entry)
-        # Skip modifying this script to avoid self-edit loops.
         if path.resolve() == self_path:
             continue
         if not path.exists() or path.is_dir():
             continue
-        if process_file(path, pre=args.pre):
+        if process_file(path, pre = args.pre, only_residual = args.residual):
             touched.append(path)
 
     if touched:

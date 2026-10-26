@@ -85,7 +85,8 @@ def test_family_records():
     for fam in (distilled, base):
         # One text-to-image call takes up to 10 reference images (the BFL reference's MAX_REFERENCES).
         assert fam.reference and fam.max_condition_images == 10
-        assert not fam.edit and not fam.unified_edit
+        # Edit is that same call (BFL's i2i / mi2i), not Qwen-Image-2.1's localized unified edit.
+        assert fam.reference_edit and not fam.edit and not fam.unified_edit
         assert fam.dimension_multiple == 16
         # A single file / GGUF denoiser assembles around the base's modular companions.
         assert not fam.pipeline_only
@@ -490,8 +491,10 @@ def test_measured_memory_rows():
         (301, 901, 2_437, 2_437, 3_359),
     )
     assert mem._MEASURED_DENSE_EAGER_PEAK_MIB["flux.3-klein"] == (2437, 10600)
-    # The base runs CFG and is unmeasured: flat estimate.
-    assert "flux.3-klein-base" not in mem._MEASURED_IMAGE_ACTIVATION_MIB
+    assert mem._MEASURED_IMAGE_ACTIVATION_MIB["flux.3-klein-base"] == (
+        (301, 901, 2_512, 2_512, 3_359),
+        (301, 901, 2_512, 2_512, 3_359),
+    )
 
 
 def test_variant_mismatch_and_bfl_quant_packages_are_refused():
@@ -2091,8 +2094,10 @@ def test_flux3_reference_edits_use_the_measured_activations(monkeypatch):
     assert distilled.reference and not tuple(getattr(distilled, "reference_resolutions", ()) or ())
     act = d._calibrated_activation(distilled, nvidia)
     assert act is not None and act == d.calibrated_image_activation("flux.3-klein", max_speed = True)
-    # the base runs CFG (two denoiser batches) and has no measured row: it keeps the flat estimate
-    assert d._calibrated_activation(_family("flux.3-klein-base"), nvidia) is None
+    base = d._calibrated_activation(_family("flux.3-klein-base"), nvidia)
+    assert base is not None and base == d.calibrated_image_activation(
+        "flux.3-klein-base", max_speed = True
+    )
 
 
 @pytest.mark.parametrize("with_upsampler", [False, True])

@@ -31,8 +31,6 @@ DEFAULT_PROMPTS = [
     "A lone lighthouse on a rocky cliff at sunset, dramatic clouds, crashing waves, highly detailed",
     "A bustling night market street in the rain, neon signs reflected in puddles, cinematic",
 ]
-
-
 # ── image metrics (pure numpy) ───────────────────────────────────────────────
 
 
@@ -99,8 +97,6 @@ def ssim(
 
 
 # ── optional CLIP (perceptual) ───────────────────────────────────────────────
-
-
 class _Clip:
     """Lazy CLIP scorer: prompt-image alignment + image-image cosine similarity."""
 
@@ -170,7 +166,7 @@ def _wait_for_load(backend: Any, timeout_s: int = 3600) -> None:
 
 
 def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
-    # Local paths: stat directly, since the Hub lookup returns None and _recommend would drop them.
+    # Local paths: the Hub lookup returns None and _recommend would drop them.
     try:
         local = Path(repo).expanduser()
         if local.is_dir():
@@ -384,7 +380,6 @@ def _print_table(rows: list[dict]) -> None:
 
 
 def _recommend(args: argparse.Namespace, rows: list[dict]) -> None:
-    # The smallest-on-disk non-reference quant that stays within the quality budget.
     passing = [
         r
         for r in rows
@@ -409,8 +404,6 @@ def _recommend(args: argparse.Namespace, rows: list[dict]) -> None:
 
 
 # ── self-test (CPU, no GPU/model) ─────────────────────────────────────────────
-
-
 def _selftest() -> int:
     import numpy as np
     from PIL import Image
@@ -418,7 +411,7 @@ def _selftest() -> int:
     rng = np.random.default_rng(0)
     base = rng.integers(0, 256, (128, 128, 3), dtype = np.uint8)
     a = Image.fromarray(base)
-    b = Image.fromarray(base)  # identical
+    b = Image.fromarray(base)
     noisy = Image.fromarray(
         np.clip(base.astype(int) + rng.integers(-40, 40, base.shape), 0, 255).astype(np.uint8)
     )
@@ -431,7 +424,6 @@ def _selftest() -> int:
     )
     checks.append(("noisy SSIM < identical", ssim(a, noisy) < ssim(a, b)))
     checks.append(("shape mismatch -> 0", psnr(a, Image.fromarray(base[:64])) == 0.0))
-    # box mean of a constant field equals the constant
     const = np.full((32, 32), 7.0)
     checks.append(
         ("box mean of constant is constant", abs(_box_mean(const, 7).mean() - 7.0) < 1e-9)

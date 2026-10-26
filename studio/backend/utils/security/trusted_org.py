@@ -23,9 +23,7 @@ logger = get_logger(__name__)
 # Orgs we auto-enable remote code for.
 TRUSTED_ORGS: frozenset[str] = frozenset({"unsloth", "nvidia"})
 
-# Keyed on (name, verify_remote, token) so an unauthenticated failure cannot poison a later
-# authenticated lookup; the token is hashed, never stored raw. And on the endpoint, which
-# decides who owns the name.
+# Keyed on (name, verify_remote, token hash, endpoint) so an unauthenticated failure cannot poison a later authenticated lookup.
 _verdict_cache: dict[tuple[str, bool, str, str], bool] = {}
 
 
@@ -48,10 +46,7 @@ def is_trusted_org_repo(
     *,
     verify_remote: bool = True,
 ) -> bool:
-    """True only if *name* is a genuine HF repo under a trusted org. Fails closed
-    (local paths, malformed names, untrusted namespaces, Hub errors); never raises.
-    Offline trusts the namespace shape, since the Hub is unreachable by design.
-    """
+    """Fails closed on any error; offline it trusts the namespace shape, as the Hub is unreachable."""
     if not name or not isinstance(name, str):
         return False
     from utils.hub_settings import MODELSCOPE, active_source

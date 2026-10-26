@@ -12,8 +12,8 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
+  FolderAddIcon,
   FolderSyncIcon,
-  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -32,7 +32,6 @@ import {
   stageFolder,
 } from "./link-staged-folders";
 
-/** Folders to link once the project is created, in the edit dialog's card layout. */
 export function ProjectFolderPicker({
   folders,
   onChange,
@@ -42,7 +41,6 @@ export function ProjectFolderPicker({
   folders: StagedFolder[];
   onChange: Dispatch<SetStateAction<StagedFolder[]>>;
   disabled?: boolean;
-  /** True while a pick is resolving, so Create waits for it. */
   onPendingChange?: (pending: boolean) => void;
 }) {
   const leasesSupported = useNativePathLeasesSupported();
@@ -56,7 +54,7 @@ export function ProjectFolderPicker({
     };
   }, []);
 
-  // Leases are short-lived: drop folders before they expire, as the dropzone does for drops.
+  // Leases are short-lived: drop folders before they expire.
   useEffect(() => {
     if (folders.length === 0) return;
     const soonest = Math.min(...folders.map((f) => f.expiresAtMs));
@@ -83,7 +81,6 @@ export function ProjectFolderPicker({
     onPendingChange?.(true);
     try {
       const selected = await pickNativeDocumentFolder();
-      // Closing the dialog unmounts this, so a late pick is dropped.
       if (!selected || !mounted.current) return;
       onChange((current) => [...current, stageFolder(selected)]);
     } catch (error) {
@@ -99,7 +96,7 @@ export function ProjectFolderPicker({
   }
 
   return (
-    <div className="space-y-2.5">
+    <div className="min-w-0 space-y-2.5">
       <p className="text-ui-15 font-medium text-foreground">Source folders</p>
       <div className={FOLDER_CARD_CLASS}>
         {folders.map((folder) => (
@@ -109,7 +106,10 @@ export function ProjectFolderPicker({
               strokeWidth={1.75}
               className="size-4 shrink-0 text-muted-foreground"
             />
-            <span className="min-w-0 flex-1 truncate text-sm">
+            <span
+              className="min-w-0 flex-1 truncate text-sm"
+              title={folder.displayName}
+            >
               {folder.displayName}
             </span>
             <Button
@@ -148,7 +148,7 @@ export function ProjectFolderPicker({
             <Spinner className="size-4 shrink-0" />
           ) : (
             <HugeiconsIcon
-              icon={PlusSignIcon}
+              icon={FolderAddIcon}
               strokeWidth={1.75}
               className="size-4 shrink-0 text-muted-foreground"
             />

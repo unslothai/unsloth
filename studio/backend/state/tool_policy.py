@@ -191,10 +191,7 @@ def requires_os_isolation(
     is_high_risk = None,
     sandbox_level: Optional[str] = None,
 ) -> bool:
-    """Whether this call must launch with tool_execution_mode="required" (no software fallback).
-
-    ``prompted`` is needs_tool_confirmation's decision; re-reading the cache here could race a refresh.
-    """
+    """Whether the call must launch with tool_execution_mode required (no software fallback); prompted is passed in to avoid a cache race."""
     if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
         return False
     if name not in OS_SANDBOXED_TOOLS or runs_without_os_sandbox(name, sandbox_level):
@@ -205,9 +202,15 @@ def requires_os_isolation(
 
 
 def account_tool_stream(stream):
-    from utils.account_context import current_account, is_owner_context, run_as
+    from utils.account_context import (
+        current_account,
+        is_owner_context,
+        run_as,
+        via_api_key_context,
+    )
 
-    if is_owner_context():
+    # An owner API-key request is rebound too: the tool thread must still know it came from an API key.
+    if is_owner_context() and not via_api_key_context():
         return stream
     account = current_account()
 

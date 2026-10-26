@@ -90,3 +90,26 @@ def test_other_dtypes_keep_native_expression(F, dtype, layout):
         out = F.weight_dequant(q.t().contiguous(), s, dtype)
     assert out.dtype == dtype
     assert torch.equal(out, expected)
+
+
+@pytest.mark.parametrize("layout", ["tensor", "row"])
+@pytest.mark.parametrize("trainable", ["scale", "weight"])
+def test_fp16_dequant_keeps_autograd_for_trainable_inputs(F, layout, trainable):
+    """The fp16 out= rounding has no autograd: a trainable scale or weight must still backprop."""
+    q = _q(448.0, (4, 8))
+    s = torch.tensor(1.234567e-4) if layout == "tensor" else torch.full((4, 1), 1.234567e-4)
+    if trainable == "scale":
+        s.requires_grad_()
+    else:
+        q = q.to(torch.float32).requires_grad_()
+    y = F.weight_dequant(q, s, torch.float16)
+    assert y.dtype == torch.float16
+    assert torch.equal(
+        y.detach(), _oracle(q.detach().to(torch.float8_e4m3fn), s.detach(), torch.float16)
+    )
+    y.float().sum().backward()
+    grad = s.grad if trainable == "scale" else q.grad
+    assert grad is not None and torch.isfinite(grad).all()
+    if trainable == "scale":
+        # d(sum q * s) / ds = sum of q over what each scale covers.
+        assert torch.allclose(grad, torch.full_like(s, 448.0 * (32 if layout == "tensor" else 8)))
