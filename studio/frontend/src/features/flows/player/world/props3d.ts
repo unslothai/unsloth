@@ -195,7 +195,6 @@ export function placeRequest(
   };
 }
 
-/** Props the solver placed, made safe to add: known kinds only, fresh ids, within the map and the cap. */
 export function mergePlaced(
   props: readonly WorldProp3d[],
   placed: unknown,

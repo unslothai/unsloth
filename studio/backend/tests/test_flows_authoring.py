@@ -57,11 +57,7 @@ def _ok(raw):
     return raw
 
 
-# --- the helper ---
-
-
 def _well_formed(schema, path = "$"):
-    """Every enum non-empty and of its type, every required key declared."""
     if schema.get("type") == "object":
         assert schema.get("additionalProperties") is False, path
         assert schema["required"] == list(schema["properties"]), path
@@ -157,8 +153,6 @@ def test_model_setup_errors_are_not_swallowed_by_the_fallback():
     with pytest.raises(FlowNodeError, match = "Load a chat model"):
         run(constrained_call(ctx, SCHEMA, "go\n", _ok, fallback = lambda: {}))
 
-
-# --- the solver ---
 
 OPEN = ["#" * 20] + ["#" + "." * 18 + "#" for _ in range(12)] + ["#" * 20]
 # a corridor joining two rooms: a solid prop on it would cut the right room off
@@ -280,8 +274,6 @@ def test_scene_validation_names_the_bad_reference():
         _spec([{"id": f"t{i}", "kind": "tree", "count": 8, "area": "main"} for i in range(6)])
 
 
-# --- the node ---
-
 SPEC_JSON = (
     '{"name": "Market", "areas": [{"id": "square", "size": "medium"}], "props": ['
     '{"id": "well", "kind": "well", "count": 1, "area": "square"},'
@@ -329,9 +321,6 @@ def test_npc_reply_task_describes_a_place_with_the_fallback():
                 FakeCtx("world.npc_reply", inputs = {"state": {"task": "describe_place"}})
             )
         )
-
-
-# --- raids ---
 
 
 def test_raid_from_the_model_keeps_to_the_enums():

@@ -100,7 +100,6 @@ SCENE_SYSTEM = (
 
 
 def validate_scene(raw: Any) -> dict:
-    """Ids unique, every reference resolves; areas default to one when the model gave none."""
     if not isinstance(raw, dict):
         raise AuthoringError("the answer is not a scene object")
     areas: list[dict] = []
@@ -282,7 +281,6 @@ def _cheb(a: tuple[int, int], b: tuple[int, int]) -> int:
 
 
 def _order(props: list[dict], relations: list[dict]) -> list[dict]:
-    """Targets of `near` / `facing` first, so they are on the map when their partners look for them."""
     deps = {
         p["id"]: {
             r["b"] for r in relations if r["a"] == p["id"] and r["type"] in ("near", "facing")
