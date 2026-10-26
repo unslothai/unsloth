@@ -247,7 +247,9 @@ def edit_takes_extra_images(fam: Any) -> bool:
 def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, Any]:
     """What the UI may offer for ``fam`` given the ``workflows`` the active engine runs for it.
     Localized editing is advertised only where the unified edit workflow itself is."""
-    unified = bool(getattr(fam, "unified_edit", False)) and "edit" in workflows
+    localized = bool(getattr(fam, "unified_edit", False)) and "edit" in workflows
+    # The page's unified Edit form (Image 1 + extras, output sized from Image 1) fits a reference-edit family too.
+    unified = localized or (bool(getattr(fam, "reference_edit", False)) and "edit" in workflows)
     return {
         "max_condition_images": int(getattr(fam, "max_condition_images", 4) or 4),
         "alpha": (getattr(fam, "condition_image_mode", "RGB") or "RGB") == "RGBA",
@@ -258,5 +260,5 @@ def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, A
         "unified_edit": unified,
         # Edit-only families whose edit takes the extra images too (the UI shows them on the Edit tab).
         "multi_image_edit": edit_takes_extra_images(fam) and "edit" in workflows,
-        "localized_edit_modes": list(LOCALIZED_EDIT_MODES) if unified else [],
+        "localized_edit_modes": list(LOCALIZED_EDIT_MODES) if localized else [],
     }

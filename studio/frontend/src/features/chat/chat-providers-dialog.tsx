@@ -40,12 +40,12 @@ import {
   Edit03Icon,
   PlusSignIcon,
   Wifi02Icon,
+  ViewIcon,
+  ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowLeftIcon,
-  Eye,
-  EyeOff,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -1680,9 +1680,9 @@ export function ChatProvidersSettings({
                       aria-pressed={showApiKey}
                     >
                       {showApiKey ? (
-                        <Eye className="size-3.5" />
+                        <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
                       ) : (
-                        <EyeOff className="size-3.5" />
+                        <HugeiconsIcon icon={ViewOffSlashIcon} className="size-3.5" />
                       )}
                     </button>
                     {editingProviderHasSavedKey ? (

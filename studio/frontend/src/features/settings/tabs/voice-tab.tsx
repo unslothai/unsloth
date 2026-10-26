@@ -63,12 +63,12 @@ import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import {
   Search01Icon,
+  StopIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resetMicrophonePermission } from "../api/microphone-permission";
 import {
@@ -1932,7 +1932,7 @@ export function VoiceTab() {
                   </>
                 ) : previewing ? (
                   <>
-                    <SquareIcon className="mr-1.5 size-3 animate-pulse fill-current text-destructive" />
+                    <HugeiconsIcon icon={StopIcon} className="mr-1.5 size-3 animate-pulse fill-current text-destructive" />
                     {t("settings.voice.readAloud.stopAction")}
                   </>
                 ) : (
