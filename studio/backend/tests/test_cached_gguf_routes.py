@@ -4825,6 +4825,18 @@ def test_cached_moss_gguf_is_listed_for_images(monkeypatch, tmp_path, variant):
     assert row["partial"] is False
 
 
+@pytest.mark.parametrize(
+    ("arch", "family"), [("moss_image", "moss-image"), ("krea2", "krea-2"), ("llama", None)]
+)
+def test_renamed_local_gguf_loads_as_the_family_its_arch_names(tmp_path, arch, family):
+    """The listing offers a renamed family-naming GGUF on Images from its arch alone; the loader must agree."""
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    model = _arch_gguf(tmp_path / "custom" / "renamed-Q4_K_M.gguf", arch)
+    assert getattr(detect_family_for_pick(str(model)), "name", None) == family
+    assert getattr(detect_family_for_pick(str(model.parent), model.name), "name", None) == family
+
+
 def test_a_mixed_local_gguf_folder_classifies_the_same_in_either_walk_order(tmp_path, monkeypatch):
     """The local twin, and the half that made an image model unfindable: with the encoder answering
     first the folder is tagged ``text-generation``, which drops it out of the Images picker
