@@ -95,6 +95,13 @@ def may_hold_audio_tokens(raw: str) -> bool:
     return any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
 
 
+def declares_audio_token(tok_config: dict) -> bool:
+    """Whether a transformers 5 tokenizer_config names an audio placeholder in its top-level
+    audio_token (Gemma 4) instead of added_tokens_decoder."""
+    token = tok_config.get("audio_token")
+    return isinstance(token, str) and bool(token)
+
+
 def classify_audio_tokens(tok_config: dict) -> Optional[str]:
     """The audio_type a parsed tokenizer_config fingerprints, or None."""
     added = tok_config.get("added_tokens_decoder") or {}
