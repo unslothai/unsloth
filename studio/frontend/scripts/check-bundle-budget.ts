@@ -423,8 +423,9 @@ export const BUDGET = {
   // Settings and the row menu on the loaded model in Recommended (#15249) add 82 B raw / 176 B transfer to the eager
   // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
   // build, Node 26, 105 chunks). Raised by that growth.
-  transferBytes: 2_100_497,
-  rawBytes: 6_971_572,
+  // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
+  transferBytes: 2_100_715,
+  rawBytes: 6_972_038,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

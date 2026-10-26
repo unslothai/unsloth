@@ -703,6 +703,14 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
+  // Not Cosmos3 Nano: its checkpoint enables the guardrail, whose package Studio does not install.
+  {
+    canonicalId: "nvidia/Cosmos3-Edge",
+    displayName: "Cosmos3 Edge",
+    description: "Text and image to video 480p, small",
+    scope: "video",
+    artifacts: [bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 })],
+  },
 ];
 
 // stt groups map to the sidecar models in stt-model-catalog.ts; their sizes are informational.

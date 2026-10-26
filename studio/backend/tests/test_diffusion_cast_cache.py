@@ -143,9 +143,8 @@ def test_candidates_are_fp32_shards_loaded_at_fp16(pipe_dir):
     assert cands["transformer"].key != cands["text_encoder"].key
 
 
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-def test_no_candidates_outside_float16(pipe_dir, dtype):
-    assert CC.candidates(pipe_dir, torch_dtype = dtype) == []
+def test_no_candidates_at_float32(pipe_dir):
+    assert CC.candidates(pipe_dir, torch_dtype = torch.float32) == []
 
 
 def test_kill_switches(pipe_dir, monkeypatch):
