@@ -656,3 +656,22 @@ test("budget: 12 villagers over a simulated day stay under 1 background call/s, 
   const throttled = await runBudget({ life });
   assert.ok(throttled.perSecond <= 4 / 60 + 1e-9);
 });
+
+test("a save with option plans drops them when the world turns option planning off", () => {
+  const sp = spec();
+  const s = W.withMind(W.initialWorldState(sp), "v0", (m) => ({
+    ...m,
+    options: [opt({ type: "item", item: "pie" })],
+    optionAt: 0,
+    optionSince: 600,
+    planAt: 600,
+    replan: true,
+  }));
+  const saved = JSON.parse(JSON.stringify(W.serialize(s)));
+  const off = W.deserialize(spec({ ...LIFE, options: false }), saved);
+  assert.equal(off?.npc.v0.options, undefined);
+  assert.equal(off?.npc.v0.optionAt, undefined);
+  assert.equal(off?.npc.v0.replan, undefined);
+  assert.equal(off?.npc.v0.planAt, 600);
+  assert.equal(W.deserialize(sp, saved)?.npc.v0.options?.length, 1);
+});

@@ -703,14 +703,22 @@ export function smallTalk(opts: {
   return true;
 }
 
-export function lifeMindOf(raw: unknown, fresh: NpcMind): Partial<NpcMind> {
+export function lifeMindOf(
+  raw: unknown,
+  fresh: NpcMind,
+  optionsOn = true,
+): Partial<NpcMind> {
   const r = (raw ?? {}) as Partial<NpcMind>;
   const out: Partial<NpcMind> = {};
-  const options = parseOptions(r.options);
+  // Option plans only advance while option planning runs, so drop them when it is off.
+  const options = optionsOn ? parseOptions(r.options) : undefined;
   if (options) out.options = options;
-  for (const k of ["optionAt", "optionSince", "planAt", "since"] as const)
+  const keys = optionsOn
+    ? (["optionAt", "optionSince", "planAt", "since"] as const)
+    : (["planAt", "since"] as const);
+  for (const k of keys)
     if (typeof r[k] === "number" && Number.isFinite(r[k])) out[k] = r[k];
-  if (r.replan === true) out.replan = true;
+  if (optionsOn && r.replan === true) out.replan = true;
   if (fresh.since !== undefined && out.since === undefined) out.since = 0;
   if (fresh.since === undefined) delete out.since;
   if (fresh.rel) {
