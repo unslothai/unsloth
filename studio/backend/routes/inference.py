@@ -7870,7 +7870,7 @@ class _PrefillProgressSignal:
 
 
 async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_timeout: float):
-    """Wait for a GGUF generator step, yielding keep-alives on stall and, when live, progress frames.
+    """Wait for a local generator step, yielding keep-alives on stall and, when live, progress frames.
     Never cancels ``next_task``: the caller's finally drains it."""
     timeout = first_timeout
     waited = 0.0
@@ -37401,6 +37401,18 @@ async def produce_openai_chat_completions(
 
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
+        _sf_tool_progress = _PrefillProgressSignal(
+            None,
+            live = bool(
+                payload.stream
+                and _ui_events
+                and not _wants_multiple_choices(payload)
+                and _accepts_keyword(backend.generate_chat_completion_with_tools, "perf_callback")
+            ),
+        )
+        _sf_tool_progress_kwargs = (
+            {"perf_callback": _sf_tool_progress} if _sf_tool_progress.live else {}
+        )
 
         from core.inference.tools import mcp_match_exchange
 
@@ -37462,6 +37474,7 @@ async def produce_openai_chat_completions(
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 compact_context = getattr(payload, "compact_context", None) is True,
                 **_sf_website_policy_kwargs,
+                **_sf_tool_progress_kwargs,
             )
 
         _sf_tool_sentinel = object()
@@ -37554,16 +37567,10 @@ async def produce_openai_chat_completions(
                         if approval_flush_pending
                         else _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                     )
-                    while True:
-                        _sf_done, _ = await asyncio.wait(
-                            {_sf_next_task},
-                            timeout = wait_timeout,
-                        )
-                        if _sf_done:
-                            break
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                        approval_flush_pending = False
-                        wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    async for stall_line in _stall_wait_frames(
+                        _sf_next_task, _sf_tool_progress, wait_timeout
+                    ):
+                        yield stall_line
                     event = _sf_next_task.result()
                     approval_flush_pending = False
                     # Done; drop the reference so the finally-block drain no-ops.
@@ -38115,6 +38122,17 @@ async def produce_openai_chat_completions(
         and _accepts_keyword(backend.generate_chat_response, "diffusion_frames")
         else {}
     )
+    # Prompt progress and decode figures, sent as the GGUF stream sends them.
+    _sf_progress = _PrefillProgressSignal(
+        None,
+        live = bool(
+            payload.stream
+            and _sf_ui_events
+            and not _wants_multiple_choices(payload)
+            and _accepts_keyword(backend.generate_chat_response, "perf_callback")
+        ),
+    )
+    _sf_progress_kwargs = {"perf_callback": _sf_progress} if _sf_progress.live else {}
 
     if payload.use_adapter is not None:
 
@@ -38124,6 +38142,7 @@ async def produce_openai_chat_completions(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **_sf_frame_kwargs,
+                **_sf_progress_kwargs,
                 **kw,
             )
     else:
@@ -38133,6 +38152,7 @@ async def produce_openai_chat_completions(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **_sf_frame_kwargs,
+                **_sf_progress_kwargs,
                 **kw,
             )
 
@@ -38256,14 +38276,10 @@ async def produce_openai_chat_completions(
                         break
                     # next(gen, _DONE) avoids StopIteration, which can't cross asyncio futures.
                     _next_task = asyncio.create_task(gen_step(_DONE))
-                    while True:
-                        _done_tasks, _ = await asyncio.wait(
-                            {_next_task},
-                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
-                        )
-                        if _done_tasks:
-                            break
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    async for stall_line in _stall_wait_frames(
+                        _next_task, _sf_progress, _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    ):
+                        yield stall_line
                     cumulative = _next_task.result()
                     # Done; drop the reference so the finally-block drain no-ops.
                     _next_task = None

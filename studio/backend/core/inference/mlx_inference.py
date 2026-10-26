@@ -3126,6 +3126,64 @@ def _build_generation_stats(
     }
 
 
+# Bounds per-token traffic to the parent process, which throttles the frames it sends again.
+_LIVE_DECODE_SAMPLE_INTERVAL_S = 0.25
+
+
+class _LiveProgress:
+    """One reply's live progress as llama-server-shaped samples: a prefill sample per chunk,
+    counted past the ``cached`` prompt-cache prefix, and decode figures at most every
+    ``_LIVE_DECODE_SAMPLE_INTERVAL_S``, timed from the first token as llama-server times them."""
+
+    def __init__(
+        self,
+        sink,
+        cached = 0,
+    ):
+        self._sink = sink
+        self._cached = int(cached or 0)
+        self._started = None
+        self._first_token = None
+        self._decode_at = None
+
+    def prefill(self, processed, total):
+        now = time.perf_counter()
+        if self._started is None:
+            self._started = now
+        sample = {
+            "prompt_progress": {
+                "total": self._cached + int(total),
+                "processed": self._cached + int(processed),
+                "cache": self._cached,
+            }
+        }
+        elapsed = now - self._started
+        sample["prompt_progress"]["time_ms"] = elapsed * 1000.0
+        if processed and elapsed > 0:
+            sample["prompt_per_second"] = processed / elapsed
+        self._send(sample)
+
+    def decode(self, tokens):
+        now = time.perf_counter()
+        if self._first_token is None:
+            self._first_token = (now, tokens)
+            return
+        first_at, first_tokens = self._first_token
+        if self._decode_at is not None and now - self._decode_at < _LIVE_DECODE_SAMPLE_INTERVAL_S:
+            return
+        if now <= first_at or tokens <= first_tokens:
+            return
+        self._decode_at = now
+        rate = (tokens - first_tokens) / (now - first_at)
+        self._send({"predicted_n": int(tokens), "predicted_per_second": rate})
+
+    def _send(self, sample):
+        try:
+            self._sink(sample)
+        except Exception:
+            logger.debug("Ignoring a live progress sink failure", exc_info = True)
+
+
 PROMPT_CACHE_ENTRIES = 6
 
 # Every bit width mx.quantize supports; unrelated to llama.cpp's cache_type_kv names.
@@ -4805,10 +4863,18 @@ class _PrefillStopped(Exception):
     pass
 
 
-def _stream_until_cancelled(stream_generate, cancel_event, *args, **kwargs):
-    def check(*_):
+def _stream_until_cancelled(
+    stream_generate,
+    cancel_event,
+    *args,
+    prompt_progress_callback = None,
+    **kwargs,
+):
+    def check(*progress):
         if cancel_event is not None and cancel_event.is_set():
             raise _PrefillStopped
+        if prompt_progress_callback is not None:
+            prompt_progress_callback(*progress)
 
     try:
         yield from stream_generate(*args, prompt_progress_callback = check, **kwargs)
@@ -6008,6 +6074,8 @@ class MLXInferenceBackend:
         # usage, timings and terminal reason of the latest generation, shipped on gen_done.
         self.last_generation_stats = None
         self.last_batch_generation_stats = []
+        # Set by the worker for one request that asked for live progress; see _LiveProgress.
+        self.generation_progress_sink = None
 
         self._model = None
         self._model_fusion = ExitStack()
@@ -6529,6 +6597,10 @@ class MLXInferenceBackend:
         if _fast_verify_zoo() is None:
             return None
         return (getattr(self, "_fast_verify", None) or {}).get("active", False)
+
+    def _live_progress(self, cached = 0):
+        sink = self.generation_progress_sink
+        return _LiveProgress(sink, cached) if sink is not None else None
 
     def _kv_quant_bits(self):
         return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
@@ -8353,6 +8425,9 @@ class MLXInferenceBackend:
                     gen_kwargs["input_embeddings"] = input_embeddings
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
+                live = self._live_progress(cached_n)
+                if live is not None:
+                    gen_kwargs["prompt_progress_callback"] = live.prefill
                 for response in _stream_until_cancelled(
                     stream_generate,
                     cancel_event,
@@ -8362,6 +8437,8 @@ class MLXInferenceBackend:
                 ):
                     final_response = response
                     token_ids.append(response.token)
+                    if live is not None:
+                        live.decode(len(token_ids))
                     if recorded:
                         token_logprobs.append(
                             _mlx_token_logprob(

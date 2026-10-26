@@ -2667,6 +2667,52 @@ def test_mlx_stop_during_prefill_ends_the_reply_before_the_prompt_is_read(monkey
     assert _delivered(snapshots) == ""
 
 
+def test_mlx_text_reply_reports_prompt_progress_past_the_cached_prefix(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+
+    backend = _byte_level_mlx_backend(monkeypatch, [b"a", b"b", b"c", b"d"])
+    monkeypatch.setattr(
+        backend,
+        "_prepare_prompt_cache",
+        lambda _prompt, _state, **_: (list(range(3000)), None, None, list(range(4000)), 1000),
+    )
+    clock = {"now": 100.0}
+    monkeypatch.setattr(mlx_inference.time, "perf_counter", lambda: clock["now"])
+    asked = []
+
+    def _stream_generate(_model, _tokenizer, **kwargs):
+        asked.append(kwargs)
+        report = kwargs.get("prompt_progress_callback", lambda *_: None)
+        for done in (0, 2048, 3000):
+            report(done, 3000)
+            clock["now"] += 1.0
+        for token in range(4):
+            yield SimpleNamespace(token = token)
+            clock["now"] += 0.125
+
+    sys.modules["mlx_lm"].stream_generate = _stream_generate
+    samples = []
+    backend.generation_progress_sink = samples.append
+    list(backend.generate_chat_response(messages = [{"role": "user", "content": "hi"}]))
+
+    assert [s["prompt_progress"] for s in samples[:3]] == [
+        {"total": 4000, "processed": processed, "cache": 1000, "time_ms": ms}
+        for processed, ms in ((1000, 0.0), (3048, 1000.0), (4000, 2000.0))
+    ]
+    assert "prompt_per_second" not in samples[0]
+    assert samples[1]["prompt_per_second"] == 2048.0
+    # Timed from the first token, one token per 0.125 s; the third lands inside the interval.
+    assert samples[3:] == [
+        {"predicted_n": 2, "predicted_per_second": 8.0},
+        {"predicted_n": 4, "predicted_per_second": 8.0},
+    ]
+
+    backend.generation_progress_sink = None
+    list(backend.generate_chat_response(messages = [{"role": "user", "content": "hi"}]))
+    assert len(samples) == 5
+
+
 @pytest.mark.parametrize(
     "pieces, expected",
     [
