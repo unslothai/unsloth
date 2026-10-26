@@ -4646,12 +4646,12 @@ class SdCppDiffusionBackend:
 
     def _native_reference_ready(self, state: Optional[_SdState], workflow: Optional[str]) -> bool:
         """Projector-free references (FLUX.3): sd.cpp feeds them through the VAE, so the arch gate that admitted the
-        load is all a reference call needs. Not an instruction edit."""
-        return (
-            state is not None
-            and bool(getattr(state.family, "sd_cpp_reference", False))
-            and workflow in (None, "reference")
-        )
+        load is all a reference call needs. A reference-edit family's Edit is that same call."""
+        if state is None or not getattr(state.family, "sd_cpp_reference", False):
+            return False
+        if workflow == "edit":
+            return bool(getattr(state.family, "reference_edit", False))
+        return workflow in (None, "reference")
 
     @holds_inference
     def generate(
@@ -5706,6 +5706,8 @@ class SdCppDiffusionBackend:
                 workflows += ["reference", "edit"]
             elif self._native_reference_ready(state, "reference"):
                 workflows.append("reference")
+                if self._native_reference_ready(state, "edit"):
+                    workflows.append("edit")
         conditioning = conditioning_capabilities(state.family, workflows)
         # No reference detail natively: sd.cpp sizes inputs to the output area.
         conditioning["reference_resolutions"] = []
@@ -5713,7 +5715,7 @@ class SdCppDiffusionBackend:
         conditioning["alpha"] = full_fidelity
         notes: list[str] = []
         # The alpha / padding notes are about the unified family's RGBA path; edit-only families are RGB, source-sized.
-        if "edit" in workflows and not getattr(state.family, "edit", False):
+        if "edit" in workflows and getattr(state.family, "unified_edit", False):
             if not full_fidelity:
                 notes.append(
                     "Transparent parts of input images are filled with white on this native build."

@@ -11133,24 +11133,47 @@ class VideoBackend:
                                 pin_streamed_top_level_group(denoiser, logger = logger)
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_top_group: %s", exc)
+                            block_pinner = None
                             if denoiser_streamed == "stream_lazy":
-                                from .video_minimax_h3_residency import pin_streamed_block_groups
+                                from .video_minimax_h3_residency import (
+                                    defer_streamed_block_pins,
+                                    pin_streamed_block_groups,
+                                )
                                 try:
-                                    done, total = pin_streamed_block_groups(denoiser, logger = logger)
-                                except Exception as exc:  # noqa: BLE001 -- a speed-up only
-                                    done, total = 0, 0
+                                    # the 9-12 s slab copy, off the load path
+                                    block_pinner = defer_streamed_block_pins(
+                                        pipe, denoiser, device, logger = logger
+                                    )
+                                except Exception as exc:  # noqa: BLE001 -- pin up front instead
                                     logger.warning("video.h3_block_pin: %s", exc)
-                                if total and done == total:
-                                    # every group now holds one pinned copy: the prefetch below engages
+                                if block_pinner is not None:
                                     denoiser_streamed = "stream"
                                     denoiser_single_host_copy = True
+                                else:
+                                    try:
+                                        done, total = pin_streamed_block_groups(
+                                            denoiser, logger = logger
+                                        )
+                                    except Exception as exc:  # noqa: BLE001 -- a speed-up only
+                                        done, total = 0, 0
+                                        logger.warning("video.h3_block_pin: %s", exc)
+                                    if total and done == total:
+                                        # every group now holds one pinned copy: the prefetch below engages
+                                        denoiser_streamed = "stream"
+                                        denoiser_single_host_copy = True
                             # after the top-level pin (it becomes one of the prefetched groups), before the residency fit
                             from .video_minimax_h3_residency import install_h3_stream_prefetch
 
+                            covered = 0
                             try:
-                                install_h3_stream_prefetch(denoiser, device, logger = logger)
+                                covered = install_h3_stream_prefetch(
+                                    denoiser, device, logger = logger
+                                )
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_stream_prefetch: %s", exc)
+                            if block_pinner is not None and not covered:
+                                # Only the prefetcher's onload is sure to wait for a group's pin: finish it now.
+                                block_pinner.join()
                         if h3_dit_resident_enabled() and denoiser_streamed in (
                             "stream",
                             "stream_lazy",
@@ -11577,6 +11600,7 @@ class VideoBackend:
         )
         with self._lock:
             if _load_token is not None and _load_token != self._load_token:
+                stop_background_pins(pipe)
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
