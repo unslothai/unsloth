@@ -35,24 +35,19 @@ export function SettingsRow({
 }: {
   label: string;
   description?: ReactNode;
-  /**
-   * Long-form explanation, shown on hover behind an info icon so `description`
-   * can stay to one line. Plain text: it doubles as the trigger's aria-label.
-   */
+  /** Shown on hover; plain text because it doubles as the trigger's aria-label. */
   hint?: string;
   icon?: ReactNode;
   children?: ReactNode;
   destructive?: boolean;
   className?: string;
-  /** Right-aligned line under the control, kept out of its box so the control keeps its alignment. */
   below?: ReactNode;
 }) {
   return (
     <div
       data-settings-label={label}
       className={cn(
-        // Controls are fixed-width and shrink-0, so an unwrapped row starves the label. justify-end
-        // right-aligns a wrapped control without breaking items-stretch for flex-col callers.
+        // Controls are fixed-width, so wrap to avoid starving the label.
         "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
         // With a description the control stays by the title, not the middle of the text block.
         description ? "items-start" : "items-center",
@@ -61,7 +56,6 @@ export function SettingsRow({
       )}
     >
       <div
-        // Widest floor that leaves already-fitting rows unchanged.
         className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-center gap-2.5"
       >
         {icon ? (
@@ -112,10 +106,7 @@ export function SettingsRow({
           {children}
         </div>
       ) : null}
-      {/* A line of its own, so it wraps under the control without moving it. */}
-      {below ? (
-        <div className="flex basis-full justify-end">{below}</div>
-      ) : null}
+      {below ? <div className="flex basis-full justify-end">{below}</div> : null}
     </div>
   );
 }

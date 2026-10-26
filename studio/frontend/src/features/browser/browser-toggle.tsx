@@ -58,7 +58,6 @@ export function BrowserToggleButton({
     },
     { enabled: active },
   );
-  // The open panel toggles full view itself.
   useShortcut(
     "toggleBrowserFullView",
     (event) => {
