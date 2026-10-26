@@ -612,8 +612,19 @@ def install_native_fsdp2_trainer_init():
     (installed by `_utils.patch_gradient_accumulation_fix`). FastLanguageModel / FastModel loads and
     DecisionTrainer install it; a model built without them (a FastSentenceTransformer encoder) left the
     Trainer unwrapped, so it trained under DDP with nothing sharded and no message. Installs the wrapper
-    once the flag selects native FSDP2. Returns whether it applies."""
+    once the flag selects native FSDP2. Returns whether it applies.
+
+    A non-CUDA install routes UNSLOTH_FSDP2=1 to accelerate's FSDP2 at the launch step, but a
+    TrainingArguments(use_cpu = True) Trainer still shards natively (reclaim_native_fsdp2_for_cpu_trainer),
+    and that decision lives in the same wrapper: install it while that route is pending too."""
     if not unsloth_fsdp2_native_requested():
+        if _NON_CUDA_EXPORT is None:
+            return False
+        from transformers import Trainer
+
+        from .models._utils import patch_gradient_accumulation_fix
+
+        patch_gradient_accumulation_fix(Trainer)
         return False
     from transformers import Trainer
 
