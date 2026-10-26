@@ -7086,7 +7086,7 @@ def _drive_vlm_generation(
     image = None,
     max_new_tokens = 1,
     session = None,
-    video = None,
+    videos = None,
     on_stream = None,
     **request,
 ):
@@ -7124,7 +7124,7 @@ def _drive_vlm_generation(
         backend.generate_chat_response(
             messages = [{"role": "user", "content": "hi"}],
             image = image,
-            video = video,
+            videos = videos,
             max_new_tokens = max_new_tokens,
             **request,
         )
@@ -7297,7 +7297,7 @@ def test_the_context_budget_counts_the_request_in_tokens_the_processor_would_pro
 
 
 def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monkeypatch):
-    """A video is counted from a readable file, not the route's base64."""
+    """Every clip is counted from a readable file, not the route's base64."""
     import base64
     import os
 
@@ -7311,15 +7311,17 @@ def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monke
     def _limit(*_a, **kwargs):
         seen.update(kwargs)
         seen["on_disk"] = [os.path.exists(clip) for clip in kwargs.get("videos") or ()]
+        seen["contents"] = [Path(clip).read_bytes() for clip in kwargs.get("videos") or ()]
         return 1
 
     monkeypatch.setattr(backend, "_generation_limit", _limit)
-    clip = base64.b64encode(b"not a readable clip").decode()
+    clips = [base64.b64encode(b"not a readable clip").decode(), "BBBB"]
     with contextlib.suppress(Exception):
-        _drive_vlm_generation(backend, monkeypatch, video = clip)
-    assert seen["videos"] != [clip]
-    assert seen["on_disk"] == [True]
-    assert not os.path.exists(seen["videos"][0])
+        _drive_vlm_generation(backend, monkeypatch, videos = clips)
+    assert seen["videos"] != clips
+    assert seen["on_disk"] == [True, True]
+    assert seen["contents"] == [base64.b64decode(clip) for clip in clips]
+    assert not any(os.path.exists(path) for path in seen["videos"])
 
 
 def test_media_is_prepared_only_under_a_budget_and_only_once(monkeypatch):
@@ -8486,8 +8488,8 @@ def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeyp
     (
         {"images": [object()]},
         {"images_base64": ["AAAA"]},
-        {"video": "AAAAGGZ0eXBtcDQy"},
-        {"video_base64": "AAAAGGZ0eXBtcDQy"},
+        {"videos": ["AAAAGGZ0eXBtcDQy"]},
+        {"videos_base64": ["AAAAGGZ0eXBtcDQy"]},
     ),
 )
 def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
@@ -10299,7 +10301,7 @@ def test_mlx_vlm_a_video_turn_never_resumes_a_prompt_cache_snapshot(monkeypatch)
         {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
     ]
     args = (turn, None, 0, 1, 0, 0, 1, 1, None)
-    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
     ((_, stream_kwargs, _),) = streams
     assert "prompt_cache" not in stream_kwargs
     assert "prompt_cache_state" not in stream_kwargs
@@ -10328,7 +10330,7 @@ def test_mlx_vlm_a_video_turn_releases_retained_snapshots(monkeypatch):
     ]
     args = (turn, None, 0, 1, 0, 0, 1, 1, None)
 
-    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
     assert released == [True]
 
 
@@ -10349,7 +10351,7 @@ def test_mlx_vlm_an_unset_budget_is_capped_for_a_video_turn(monkeypatch):
     ]
     args = (turn, None, 0, 1, 0, 0, None, 1, None)
 
-    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
     assert streams[-1][1]["max_tokens"] == UNSET_GENERATION_BUDGET
 
 
@@ -10364,18 +10366,57 @@ def test_mlx_vlm_video_clip_lives_on_disk_only_for_the_stream(monkeypatch):
     ]
     args = (turn, None, 0, 1, 0, 0, 1, 1, None)
 
-    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
     ((stream_args, stream_kwargs, contents),) = streams
     assert stream_args[3] is None, "no image was attached"
     assert contents == [base64.b64decode(_CLIP_B64)]
     assert not any(Path(p).exists() for p in stream_kwargs["video"])
 
-    gen = backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)
+    gen = backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])
     assert next(gen) == "ok"
     (path,) = streams[-1][1]["video"]
     assert Path(path).exists()
     gen.close()
     assert not Path(path).exists()
+
+
+def test_mlx_vlm_every_clip_reaches_mlx_vlm_in_order_at_one_rate(monkeypatch):
+    """Releases before 0.7.3 apply one ``fps`` to every clip, so the slowest affordable rate
+    is the one that keeps every clip inside its share of the decode budget."""
+    import base64
+
+    from core.inference import mlx_inference
+
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    # The slowest clip sits between faster ones, so neither the first nor the last rate passes.
+    rates = {b"fast clip": 2.0, b"slow clip": 0.5, b"medium clip": 1.0}
+    shares = []
+
+    def _rate(
+        path,
+        _processor,
+        clips = 1,
+    ):
+        shares.append(clips)
+        return rates[Path(path).read_bytes()]
+
+    monkeypatch.setattr(mlx_inference, "_video_frame_rate", _rate)
+    clips = [base64.b64encode(content).decode() for content in rates]
+    turn = [
+        {
+            "role": "user",
+            "content": [{"type": "video"}] * 3 + [{"type": "text", "text": "which"}],
+        }
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = clips)) == ["ok"]
+    ((_, stream_kwargs, contents),) = streams
+    assert contents == list(rates)
+    assert stream_kwargs["fps"] == 0.5
+    assert shares == [3, 3, 3]
+    assert not any(Path(p).exists() for p in stream_kwargs["video"])
 
 
 def _tiny_clip(
@@ -10415,6 +10456,11 @@ def test_mlx_vlm_the_decoded_frame_stack_is_bounded(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 4)
     assert mlx_inference._video_frame_rate(clip, plain) == pytest.approx(4 / 3)
+
+    # mlx-vlm holds every decoded clip at once, so two clips split the budget.
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 8)
+    assert mlx_inference._video_frame_rate(clip, plain) == 2.0
+    assert mlx_inference._video_sampling_fps([clip, clip], plain) == pytest.approx(4 / 3)
 
     monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 3)
     with pytest.raises(RuntimeError, match = "32x24 frames are too large"):
@@ -10502,14 +10548,14 @@ def test_mlx_vlm_the_frame_rate_rides_the_stream(monkeypatch, tmp_path):
 
     assert list(
         backend._generate_vlm(
-            turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+            turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, videos = [clip_b64]
         )
     ) == ["ok"]
     assert streams[0][1]["fps"] == pytest.approx(4 / 3)
 
     monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 3)
     gen = backend._generate_vlm(
-        turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+        turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, videos = [clip_b64]
     )
     with pytest.raises(RuntimeError, match = "too large to decode"):
         next(gen)
@@ -10528,7 +10574,7 @@ def test_mlx_vlm_a_video_turn_whose_render_is_unusable_is_refused_not_recovered(
     with pytest.raises(RuntimeError, match = "for a video turn"):
         list(
             backend._generate_vlm(
-                turn, [object()], 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = _CLIP_B64
+                turn, [object()], 0, 1, 0, 0, 1, 1, None, _adapter_state = False, videos = [_CLIP_B64]
             )
         )
 
@@ -10539,11 +10585,11 @@ def test_mlx_vlm_an_undecodable_clip_leaves_no_file_behind(monkeypatch, tmp_path
 
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     backend = _video_vlm_backend(monkeypatch, [])
-    turn = [{"role": "user", "content": [{"type": "video"}]}]
+    turn = [{"role": "user", "content": [{"type": "video"}, {"type": "video"}]}]
     with pytest.raises(binascii.Error):
         list(
             backend._generate_vlm(
-                turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = "A"
+                turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, videos = [_CLIP_B64, "A"]
             )
         )
     assert list(tmp_path.iterdir()) == []
@@ -10554,7 +10600,7 @@ def test_mlx_vlm_structured_video_items_must_match_attached_clips(monkeypatch):
     args = (None, 0, 1, 0, 0, 1, 1, None)
     without_part = [{"role": "user", "content": [{"type": "text", "text": "what moves"}]}]
     with pytest.raises(RuntimeError, match = "0 structured video item.*1 attached video"):
-        list(backend._generate_vlm(without_part, *args, _adapter_state = False, video = _CLIP_B64))
+        list(backend._generate_vlm(without_part, *args, _adapter_state = False, videos = [_CLIP_B64]))
     with_part = [{"role": "user", "content": [{"type": "video"}]}]
     with pytest.raises(RuntimeError, match = "1 structured video item.*0 attached video"):
         list(backend._generate_vlm(with_part, *args, _adapter_state = False))
@@ -10574,21 +10620,35 @@ def test_mlx_generate_chat_response_attaches_the_video_part_and_forwards_the_cli
         captured.append((messages, kwargs)) or iter(())
     )
     list(
-        backend.generate_chat_response([{"role": "user", "content": "what moves"}], video = _CLIP_B64)
+        backend.generate_chat_response(
+            [{"role": "user", "content": "what moves"}], videos = [_CLIP_B64]
+        )
     )
     messages, kwargs = captured[0]
     assert messages[-1]["content"] == [{"type": "video"}, {"type": "text", "text": "what moves"}]
-    assert kwargs["video"] == _CLIP_B64
+    assert kwargs["videos"] == [_CLIP_B64]
+    list(
+        backend.generate_chat_response(
+            [{"role": "user", "content": "what moves"}], videos = [_CLIP_B64, "BBBB"]
+        )
+    )
+    messages, kwargs = captured[1]
+    assert messages[-1]["content"][:2] == [{"type": "video"}, {"type": "video"}]
+    assert kwargs["videos"] == [_CLIP_B64, "BBBB"]
 
     backend._reads_vision = False
     with pytest.raises(RuntimeError, match = "loaded model does not read video"):
-        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+        list(
+            backend.generate_chat_response([{"role": "user", "content": "hi"}], videos = [_CLIP_B64])
+        )
 
     backend._is_vlm = True
     backend._reads_vision = True
     monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: False)
     with pytest.raises(RuntimeError, match = "installed mlx-vlm does not read video"):
-        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+        list(
+            backend.generate_chat_response([{"role": "user", "content": "hi"}], videos = [_CLIP_B64])
+        )
 
 
 def test_mlx_vlm_decodes_video_only_with_its_clip_decoder(monkeypatch):
