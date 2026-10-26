@@ -5698,6 +5698,31 @@ def test_the_apu_guard_prices_only_resident_weights(tmp_path, monkeypatch, lazy_
     assert bool(_unmapped_tokens(cmd)) is not warned, cmd
 
 
+@pytest.mark.parametrize("memory", [[(0, 60_000, 60_000)], []], ids = ["probed", "failed_probe"])
+def test_a_failed_gpu_probe_keeps_the_apu_guard_pricing_the_table(tmp_path, monkeypatch, memory):
+    """An empty inventory on a ROCm APU still launches a HIP child, where auto is off,
+    so the 26.82 GiB table is RAM the guard must charge (58 GiB free, 73.45 GiB model)."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 73.45, avail_mib = 58 * 1024, monkeypatch = monkeypatch
+    )
+    backend._get_gpu_memory = lambda *_a, **_kw: list(memory)
+    backend._get_gpu_free_memory = lambda *_a, **_kw: [(i, f) for i, f, _t in memory]
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
+    backend._gguf_tensor_scan = lambda _path: (
+        "qwen4exp",
+        {"per_layer_token_embd.weight": _QWEN38_PLE},
+        0,
+    )
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(_CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: caps
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none"])["cmd"]
+
+    assert "unified-memory APU" in (backend.last_load_warning or "")
+    assert not _unmapped_tokens(cmd), cmd
+
+
 @pytest.mark.parametrize(
     "flag, extra_args, env, expected",
     [

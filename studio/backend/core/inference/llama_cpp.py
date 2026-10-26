@@ -32203,7 +32203,17 @@ class LlamaCppBackend:
                             caps = server_caps,
                             extra_args = extra_args,
                             env = os.environ,
-                            auto_resolves_off = self._lazy_auto_resolves_off(
+                            # A failed GPU probe still launches on the APU, where auto is off.
+                            auto_resolves_off = (
+                                not _detected_gpus
+                                and not self._child_runs_on_cpu(
+                                    binary,
+                                    _apu_lazy_extras,
+                                    _apu_lazy_env,
+                                    cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                                )
+                            )
+                            or self._lazy_auto_resolves_off(
                                 gpu_indices = gpu_indices,
                                 detected_gpus = _detected_gpus,
                                 shared_gpu_ids = _shared_gpu_ids,
