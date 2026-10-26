@@ -196,6 +196,7 @@ def test_grounded_advice_petitions_event_and_name_are_kept():
         "Pollution is 99, far too high.",  # a number the report does not have
         "Zone R9 needs a road.",  # a zone that does not exist
         "Put a road at (12, 7).",  # a tile coordinate
+        "You have 17325.9 in funds.",  # a reported number with an invented fraction
         "",
     ],
 )

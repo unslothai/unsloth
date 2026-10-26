@@ -231,11 +231,12 @@ def mayor_prompt(state: dict) -> tuple[str, str]:
     return MAYOR_SYSTEM, prompt
 
 
-def _numbers(text: str) -> set[int]:
+def _numbers(text: str) -> set[float]:
+    # Exact values: 12345.9 is not the reported 12345.
     out = set()
     for m in _NUMBER.findall(text):
         try:
-            out.add(int(float(m.replace(",", ""))))
+            out.add(float(m.replace(",", "")))
         except ValueError:
             pass
     return out
