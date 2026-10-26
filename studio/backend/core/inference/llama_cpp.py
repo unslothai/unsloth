@@ -5384,7 +5384,6 @@ def _spawn_draft_on_target(
     if pin is None or not _CUDA_LIKE_DEVICE_RE.match(pin.strip()):
         return True
     if spawn_devices:
-        # A repeated card (CUDA0,CUDA0) is one device, as _distinct_device_count counts it.
         named = [d.strip().lower() for d in spawn_devices.split(",") if d.strip()]
         if _split_mode_confines_to_one_device(run_cmd, env):
             # Only devices[main_gpu] is kept, main_gpu 0 by default.
@@ -7591,7 +7590,6 @@ def _extra_args_split_mode(
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
         _, _, inline = arg.partition("=")
-        # llama.cpp reads --split_mode as --split-mode (common/arg.cpp).
         if _flag_name(arg) not in _SPLIT_MODE_FLAGS:
             continue
         value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
@@ -7623,7 +7621,6 @@ def _extra_args_tensor_split(
         raw = str(env_value).strip()
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
-        # _flag_name: llama.cpp accepts --tensor_split for --tensor-split too.
         if _flag_name(arg) not in _TENSOR_SPLIT_FLAGS:
             continue
         _, _, inline = arg.partition("=")
@@ -27922,7 +27919,6 @@ class LlamaCppBackend:
                 _sidecar_fit_reserve_mib = 0
                 _sidecar_fit_reserve_eligible_mib = 0
                 _sidecar_compute_mib = 0
-                # The child's planned device count, set where the reserve is priced.
                 _fit_device_count = 1
                 # Set by the last reprice: the draft graph's vocabulary-wide part, in MiB.
                 _sidecar_reserve_graph_mib = [0]
@@ -27936,7 +27932,6 @@ class LlamaCppBackend:
                 # Every such pair any launch appended (a retry can re-price it upward),
                 # so the drafter-free fallback can take each one back off.
                 _sidecar_override_pairs: List[List[str]] = []
-                # The spawn's last sidecar reserve report (_log_sidecar_fit_reserve).
                 _sidecar_reserve_logged: list = []
                 # Re-prices the reserve off a respawn's own argv (cache types, attention).
                 _sidecar_reserve_reprice: Optional[Callable[..., int]] = None
@@ -28549,7 +28544,6 @@ class LlamaCppBackend:
                                 at = 0 if at is None else at
                                 main = listed[at] if 0 <= at < len(listed) else None
 
-                        # As sets: CUDA0,CUDA0 is one card on either side.
                         def _names(value: str) -> set:
                             return {d.strip().lower() for d in str(value).split(",") if d.strip()}
 
@@ -29208,7 +29202,6 @@ class LlamaCppBackend:
                         # here would free the reserve for a drafter that still loads.
                         and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
                         and not _draft_cpu_no_embedded
-                        # A partly offloaded drafter's card share is unpriced (as below).
                         and not _draft_share_unknown
                         # A drafter pinned to another device does not crowd this one.
                         and _draft_on_target_device_now(apple_budget_mib = 0)
@@ -31207,7 +31200,6 @@ class LlamaCppBackend:
                                 else max(
                                     (
                                         free
-                                        # Manual mode plans with no gpus; the cards are there.
                                         for idx, free in (gpus or _detected_gpus)
                                         if gpu_indices is None or idx in gpu_indices
                                     ),
@@ -31397,7 +31389,6 @@ class LlamaCppBackend:
                                     _draft_ub,
                                     _named_batch_sizes(run_args, child_env)[0] & 0xFFFFFFFF,
                                 )
-                            # Inherited or explicit, the same context cap.
                             if _ub and _ctx and _ctx > 0:
                                 _ub = min(_ub, int(_ctx))
                             _v = self._estimate_mtp_overhead_bytes(
@@ -31409,7 +31400,6 @@ class LlamaCppBackend:
                                 draft_weights_bytes = _w,
                                 n_parallel = _np,
                                 mtp_keeps_target_ctx = _mtp,
-                                # Target rollback copies are measured by the fitter (above).
                                 target_rollback = False,
                                 swa_full = _swa_full,
                                 kv_unified = _kv_unified,
@@ -33720,7 +33710,6 @@ class LlamaCppBackend:
                 # Reconcile the sidecar reserve with the child as launched: extras can turn
                 # the fitter on, name the drafter under any alias, or carry a larger margin
                 # (argv or the inherited env) that the reserve must sit on top of.
-                # The user's tokens as emitted: what margin cleanup must leave in place.
                 _sidecar_user_tokens = list(_emit_extra_args) if _mem_extras else []
                 if (
                     _sidecar_fit_reserve_eligible_mib
@@ -34891,7 +34880,6 @@ class LlamaCppBackend:
                         run_cmd = self._per_device_fit_target_argv(
                             run_cmd, env, _fit_target_margins_by_idx
                         )
-                        # Each card's base margin as just spelled, in the child's order.
                         _spawn_base_by_dev: Optional[list[float]] = None
                         if _fit_target_margins_by_idx:
                             try:
@@ -34988,7 +34976,6 @@ class LlamaCppBackend:
                                     _child_gpu_physical_ids is None
                                     or _child_gpu_physical_ids is _parent_view_gpu_ids
                                 ):
-                                    # The child enumerates in the inherited mask's order.
                                     _det_ids = [idx for idx, _free in _detected_gpus]
                                     _spawn_ids = (
                                         self._inherited_child_gpu_order(_det_ids) or _det_ids
@@ -35008,7 +34995,6 @@ class LlamaCppBackend:
                                 )
                                 _weights = None
                                 if _spawn_free and all(f and f > 0 for f in _spawn_free):
-                                    # Past each card's own margin, as the fitter places layers.
                                     _spawn_margins = _fit_margins_by_device(
                                         extra_args, env, 0.0, len(_spawn_free)
                                     )
@@ -35048,7 +35034,6 @@ class LlamaCppBackend:
                                             _counts[min(_dev, len(_weights) - 1)] += 1
                                         _spawn_shares = [c / _layers for c in _counts]
                                     else:
-                                        # Unread draft depth: by the weights, no rounding.
                                         _spawn_shares = [w / sum(_weights) for w in _weights]
                                     # The graph's logits run over the TARGET's output tensor
                                     # when the draft borrows it: the card the target's split
@@ -35074,7 +35059,6 @@ class LlamaCppBackend:
                             )
                             and server_caps.get("supports_fit_target")
                         ):
-                            # Emitted flags and extras are final only here.
                             _spawn_total = (
                                 _sidecar_reserve_reprice(list(run_cmd), env)
                                 if _sidecar_reserve_reprice is not None
@@ -35116,7 +35100,6 @@ class LlamaCppBackend:
                                     )
                                     _spawn_body -= _spawn_head
                                 else:
-                                    # Unread head: cover the whole body on the output card too.
                                     _spawn_head = _spawn_body
                             _spawn_per_device = [
                                 math.ceil(_spawn_body * f)
@@ -40284,7 +40267,6 @@ class LlamaCppBackend:
                             logger.info("MTP-crash reload skipped: load settings changed.")
                             return
                         if self._metal_oom_is_terminal(snapshot):
-                            # Queued before the second strike was published.
                             logger.info("MTP-crash reload skipped: out of Metal memory twice.")
                             return
                         if not sidecar_oom and proc is getattr(self, "_retired_process", None):
