@@ -768,7 +768,13 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
 _BLOCK_PREP = {}
 
 
-def _block_varlen_prepare(layer, attention, hidden_states, kwargs, policy = None):
+def _block_varlen_prepare(
+    layer,
+    attention,
+    hidden_states,
+    kwargs,
+    policy = None,
+):
     if (
         _disabled()
         or _ORIG_SDPA[0] is None
