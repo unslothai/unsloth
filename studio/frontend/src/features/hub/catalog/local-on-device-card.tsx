@@ -52,6 +52,7 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
+  localGgufMemoryBarVariant,
   resolveLocalGgufVariant,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
@@ -417,6 +418,10 @@ export function LocalOnDeviceCard({
     defaultVariant: currentVariantState.defaultVariant,
   });
   const selectedQuant = selectedVariant?.quant ?? null;
+  const memoryBarVariant = localGgufMemoryBarVariant(
+    selectedVariant,
+    currentVariantState.variants,
+  );
   // True while a managed download/update for this repo+variant is in flight.
   const updateJobActive = useDownloadManagerStore((s) =>
     repoId
@@ -674,8 +679,12 @@ export function LocalOnDeviceCard({
             repoId={repoId || localGgufPath}
             loadId={localGgufPath}
             quant={selectedQuant ?? ""}
-            sizeBytes={selectedVariant?.size_bytes}
-            lookupTableBytes={selectedVariant ? ggufVariantLookupTableBytes(selectedVariant) : 0}
+            sizeBytes={memoryBarVariant?.size_bytes}
+            lookupTableBytes={
+              memoryBarVariant
+                ? ggufVariantLookupTableBytes(memoryBarVariant)
+                : 0
+            }
             gpuGb={gpuGb}
             className="px-3 pb-2"
           />
