@@ -6251,10 +6251,11 @@ def test_unload_route_clears_reload_stash(monkeypatch):
 
 
 def test_non_gguf_load_clears_reload_stash():
-    # A non-GGUF load clears the stash too, so it never lingers when idle-unload is off.
+    # A non-GGUF load clears the stash too, so it never lingers when idle-unload is off; it is
+    # handed the orchestrator, which restores an MLX chat context kept across a media swap.
 
     src = inspect.getsource(inference_route._load_model_impl)
-    assert src.count("note_model_loaded()") >= 1
+    assert "to_thread(note_model_loaded, backend)" in src
     assert "to_thread(note_model_loaded, llama_backend)" in src
 
 
@@ -6963,14 +6964,20 @@ def test_new_idle_save_purges_previous_manifest_files(tmp_path):
 def test_sweep_slot_save_dir_removes_only_resume_files(monkeypatch, tmp_path):
     from utils.paths import storage_roots
 
+    mlx_root = tmp_path / "mlx"
     monkeypatch.setattr(storage_roots, "llama_slot_cache_root", lambda: tmp_path)
+    monkeypatch.setattr(storage_roots, "mlx_prompt_cache_root", lambda: mlx_root)
     stale = tmp_path / "resume-old-slot0.bin"
     stale.write_bytes(b"kv")
     other = tmp_path / "unrelated.txt"
     other.write_text("keep")
+    (mlx_root / "resume-old").mkdir(parents = True)
+    (mlx_root / "resume-old" / "text-0.safetensors").write_bytes(b"kv")
+    (mlx_root / "unrelated").mkdir()
     kw.sweep_slot_save_dir()
     assert not stale.exists()
     assert other.exists()
+    assert not (mlx_root / "resume-old").exists() and (mlx_root / "unrelated").exists()
 
 
 def test_keep_kv_setting_roundtrip_and_default(monkeypatch):

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -552,6 +553,10 @@ def _delete_resume_files(manifest) -> None:
         for entry in manifest.get("slots") or []:
             with contextlib.suppress(OSError):
                 (base / str(entry.get("filename"))).unlink()
+        if manifest.get("engine") == "mlx":
+            # Each MLX save has a directory of its own; llama-server's is shared.
+            with contextlib.suppress(OSError):
+                base.rmdir()
     except Exception:
         pass
 
@@ -589,6 +594,12 @@ def purge_kv_resume(*, origin: Optional[str] = None) -> None:
 
 def restore_kv_resume(backend, manifest) -> None:
     try:
+        if manifest.get("engine") == "mlx":
+            # The worker checks the load matches the save; the identity names only the model.
+            restore = getattr(backend, "restore_prompt_cache_for_resume", None)
+            if callable(restore) and restore(manifest):
+                logger.info("Restored the saved MLX prompt cache onto the reloaded model")
+            return
         gguf = manifest.get("gguf")
         binary = manifest.get("binary")
         current = getattr(backend, "_gguf_path", None)
@@ -613,9 +624,14 @@ def restore_kv_resume(backend, manifest) -> None:
 def sweep_slot_save_dir() -> None:
     try:
         from utils.paths.storage_roots import llama_slot_cache_root
+
         for path in llama_slot_cache_root().glob("resume-*.bin"):
             with contextlib.suppress(OSError):
                 path.unlink()
+        from utils.paths.storage_roots import mlx_prompt_cache_root
+
+        for path in mlx_prompt_cache_root().glob("resume-*"):
+            shutil.rmtree(path, ignore_errors = True)
     except Exception:
         pass
 
