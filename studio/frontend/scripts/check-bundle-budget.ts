@@ -439,11 +439,8 @@ export const BUDGET = {
   // Settings and the row menu on the loaded model in Recommended (#15249) add 82 B raw / 176 B transfer to the eager
   // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
   // build, Node 26, 105 chunks). Raised by that growth.
-  // Their model picker and Load {model}? prompt come back: 3.0 KB raw / 1.4 KB transfer (strings in the eager en
-  // locale, the run notifier's load-prompt queue; dialog and prompt lazy): 6,783.7 -> 6,786.7 KB raw, 2,046.8 ->
-  // 2,048.2 KB transfer against main caf650e1da (raised on top of main's later raises), one machine and build, Node 24, 105 -> 106 chunks. Raised by that.
-  transferBytes: 2_102_033,
-  rawBytes: 6_974_747,
+  transferBytes: 2_100_497,
+  rawBytes: 6_971_572,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
