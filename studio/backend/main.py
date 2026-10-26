@@ -2707,7 +2707,7 @@ def get_system_info(
     from importlib.metadata import PackageNotFoundError, version as pkg_version
 
     ml_packages = {}
-    for pkg in ("torch", "transformers"):
+    for pkg in ("torch", "transformers", "mlx_lm", "mlx_vlm"):
         try:
             ml_packages[pkg] = pkg_version(pkg)
         except PackageNotFoundError:

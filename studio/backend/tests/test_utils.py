@@ -515,6 +515,21 @@ class TestLogGpuMemory:
         assert "No GPU available" in captured.out
 
 
+class TestGetPackageVersions:
+    def test_reports_mlx_under_the_key_the_engines_row_reads(self):
+        from importlib.metadata import PackageNotFoundError
+
+        def fake_version(name):
+            if name != "mlx":
+                raise PackageNotFoundError(name)
+            return "0.32.4"
+
+        with patch("utils.hardware.hardware.pkg_version", side_effect = fake_version):
+            versions = _hw_module.get_package_versions()
+
+        assert versions["mlx"] == "0.32.4"
+
+
 class TestCudaDeviceOrder:
     """Importing the hardware module pins CUDA_DEVICE_ORDER=PCI_BUS_ID when unset,
     but setdefault keeps an explicit user override, so nvidia-smi indices, torch
