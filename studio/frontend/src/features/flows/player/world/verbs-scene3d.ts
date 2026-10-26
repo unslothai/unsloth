@@ -13,7 +13,6 @@ export interface VerbFx {
   dispose(): void;
 }
 
-/** Thrown rocks and their burst flashes: a fixed pool of meshes, one per projectile slot. */
 export function createVerbFx(scene: three.Scene, slots: number): VerbFx {
   const rockGeo = new three.IcosahedronGeometry(0.09, 0);
   const rockMat = new three.MeshLambertMaterial({ color: "#8d8a83" });

@@ -34,7 +34,6 @@ export type PropStates = Record<string, PropFlags>;
 export const isOpen = (p: WorldProp3d, st: PropStates) =>
   st[p.id]?.open ?? p.open === true;
 
-/** The props that still block: open doors stand aside. */
 export const closedProps = (
   props: readonly WorldProp3d[],
   st: PropStates,
@@ -274,7 +273,6 @@ export function makeNoise(
   n.at = v.clock;
 }
 
-/** Damage a hostile; true when it is knocked out by this hit. */
 export function hurt(c: Combat, id: string, damage: number): boolean {
   const e = (c.enemies[id] ??= {
     health: ENEMY_HEALTH,
@@ -507,7 +505,6 @@ export function stepProjectiles(
   }
 }
 
-/** Splash damage from a burst: hostiles inside the radius, falling off with distance, unless a wall shields them. */
 export function splash(
   w: ActionWorld,
   c: Combat,
