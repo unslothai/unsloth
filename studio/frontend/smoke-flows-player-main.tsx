@@ -239,6 +239,33 @@ const mock: PlayerApi = {
   async invoke(_flowId, entry, inputs) {
     calls.push({ entry, inputs });
     await new Promise((r) => setTimeout(r, 300));
+    const ask = inputs.state as { task?: string; focus?: { x: number; y: number } };
+    if (ask?.task === "describe_place" && ask.focus) {
+      // What the backend solver returns for "a small market square with a well", around the camera's focus.
+      const { x, y } = ask.focus;
+      const at = (kind: string, dx: number, dy: number, rot = 0) => ({
+        kind,
+        x: x + dx + 0.5,
+        y: y + dy + 0.5,
+        rot,
+        solid: kind !== "bench",
+      });
+      return {
+        outputs: {
+          reply: {
+            place: {
+              props3d: [
+                at("well", 0, 0),
+                at("stall", -2, -1),
+                at("stall", 2, -1),
+                at("bench", -1, 2, 180),
+                at("bench", 1, 2, 180),
+              ],
+            },
+          },
+        },
+      };
+    }
     const state = inputs.state as {
       npc_id: string;
       inventory: string[];
