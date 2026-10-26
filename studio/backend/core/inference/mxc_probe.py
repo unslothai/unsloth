@@ -83,7 +83,8 @@ def host_prep_remediation() -> str | None:
             "Prepare this PC."
         )
     with _lock:
-        if generation == _generation:
+        # None = wxc-exec could not tell: asked again next time rather than kept as "nothing missing".
+        if generation == _generation and steps is not None:
             _host_prep_cache[identity] = advice
     return advice
 

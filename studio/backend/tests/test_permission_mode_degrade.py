@@ -430,6 +430,26 @@ def test_an_older_probe_finishing_last_never_replaces_a_newer_verdict(probe_env,
     assert sandbox_probe.probe(_Backend()) == (True, "forced pass")
 
 
+def test_an_undecided_answer_is_checked_again_by_the_next_read(monkeypatch):
+    monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    started = []
+
+    def refresh(tool, *, force = False):
+        started.append(tool)
+        os_sandbox.note_tool_isolation(tool, True, backend = "bubblewrap")
+        return True
+
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", refresh)
+    os_sandbox.note_tool_isolation(
+        "python", False, backend = "none", reason = sandbox_probe.UndecidedReason("out of disk")
+    )
+    assert os_sandbox.cached_tool_capability("python")[0] is False
+    assert _wait_for(lambda: os_sandbox.cached_tool_isolation("python") is True)
+    for _ in range(5):
+        os_sandbox.cached_tool_capability("python")
+    assert started == ["python"]
+
+
 def test_polling_an_answered_tool_never_probes_again(monkeypatch):
     monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
     _leap_time(monkeypatch, os_sandbox)

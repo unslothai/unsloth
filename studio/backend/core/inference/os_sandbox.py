@@ -1087,7 +1087,10 @@ def note_tool_isolation(
     global _tool_isolation_generation
     if tool not in ISOLATED_TOOLS:
         return
-    key = _host_key()
+    from .sandbox_probe import UndecidedReason
+
+    # Host resource exhaustion is not a verdict: an empty key makes the next read check again.
+    key = "" if isinstance(reason, UndecidedReason) else _host_key()
     with _tool_isolation_lock:
         if generation is None:
             _tool_isolation_generation += 1
