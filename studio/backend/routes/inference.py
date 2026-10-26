@@ -5974,10 +5974,12 @@ def _raw_park_grace(llama_backend, *, streaming: bool = True) -> Optional[Callab
 
 
 async def _nonstreaming_post_through_park(
-    client, url: str, *, llama_backend, json, upstream_headers
+    client, url: str, *, llama_backend, json, upstream_headers, timeout = None
 ):
-    """POST a non-streaming request, waiting out a server park longer than the read timeout."""
-    timeout = _llama_non_streaming_generation_timeout()
+    """POST a non-streaming request, waiting out a server park longer than the read timeout.
+    ``timeout`` defaults to the non-streaming generation timeout."""
+    if timeout is None:
+        timeout = _llama_non_streaming_generation_timeout()
     stall_grace = _raw_park_grace(llama_backend, streaming = False)
     if stall_grace is None or timeout.read is None:
         return await client.post(url, json = json, headers = upstream_headers, timeout = timeout)
@@ -44291,11 +44293,14 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             # _cancel_watcher sets _cancel_event on a disconnect, so either ends the wait.
             await _openai_llama_let_victims_go(llama_backend, _embd_holder, _cancel_event)
             upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
-            resp = await _client.post(
+            # A parked embedding prefill is waited out like any other non-streaming request.
+            resp = await _nonstreaming_post_through_park(
+                _client,
                 target_url,
+                llama_backend = llama_backend,
                 json = body,
-                headers = upstream_headers,
-                timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+                upstream_headers = upstream_headers,
+                timeout = httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S),
             )
             original, cache, limit = body.get("input"), {}, None
             for _ in range(2):
@@ -44311,11 +44316,13 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                     break
                 logger.warning("Embedding input over the %d-token limit truncated to fit", limit)
                 body["input"] = inputs
-                resp = await _client.post(
+                resp = await _nonstreaming_post_through_park(
+                    _client,
                     target_url,
+                    llama_backend = llama_backend,
                     json = body,
-                    headers = upstream_headers,
-                    timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+                    upstream_headers = upstream_headers,
+                    timeout = httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S),
                 )
         # RuntimeError: a retry or /tokenize call sent after the watcher already closed the client.
         except (httpx.RequestError, RuntimeError):

@@ -149,7 +149,7 @@ def test_the_embeddings_route_counts_waits_and_releases():
     wait = source.index(
         "await_openai_llama_let_victims_go(llama_backend,_embd_holder,_cancel_event)"
     )
-    post = source.index("await_client.post(")
+    post = source.index("await_nonstreaming_post_through_park(")
     assert count < wait < post, "room is planned and freed before the prefill goes out"
     assert "_openai_llama_release_completions_holder(llama_backend,_embd_holder)" in source
     assert "exceptLlamaAdmissionTimeoutasexc:" in source and "status_code=503" in source
