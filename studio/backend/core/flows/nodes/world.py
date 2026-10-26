@@ -13,7 +13,7 @@ from typing import Any, Optional
 from core.flows import memory as mem
 from core.flows.expr import seed_from
 from core.flows.nodes._common import JsonFieldStream
-from core.flows.nodes.memory import _plan_schema, _retrieve, clean_plan, embed
+from core.flows.nodes.memory import _plan_schema, _retrieve, clean_plan, embed, rate_importance
 from core.flows.registry import FlowNodeError, NodeContext, handler
 from core.flows.story import slug
 from core.flows.world import (
@@ -24,15 +24,22 @@ from core.flows.world import (
     SUMMARY_SCHEMA,
     TILE_PROMPTS,
     WorldError,
+    REFLECT_SCHEMA,
     chat_prompt,
     chat_schema,
+    clean_insights,
+    clean_options,
     clean_summary,
     compact_prompt,
     director_prompt,
     has_memory,
     normalize_world,
     npc_prompt,
+    options_blocks,
+    options_prompt,
+    options_schema,
     plan_prompt,
+    reflect_prompt,
     validate_chat,
     validate_director,
     validate_npc_reply,
@@ -267,7 +274,10 @@ async def _recall(
                 else:
                     _VECTORS.pop(r["text"], None)
     picked = _retrieve(stream, query, query_vec, now, ctx.params, k, touch = False)
-    return [{"id": r["id"], "text": r["text"]} for r in picked]
+    return [
+        {"id": r["id"], "text": r["text"], **({"source": r["source"]} if r.get("source") else {})}
+        for r in picked
+    ]
 
 
 def _hours(state: dict) -> float:
@@ -391,17 +401,71 @@ def _npc(world: dict, npc_id: Any) -> dict:
     return npc
 
 
+RATE_MAX = 32
+
+
+async def _rate(ctx: NodeContext, state: dict) -> dict:
+    texts = [str(t)[:300] for t in state.get("texts") or [] if isinstance(t, str) and t.strip()]
+    return {"plan": {"ratings": await rate_importance(ctx, texts[:RATE_MAX]) if texts else []}}
+
+
+async def _reflect(ctx: NodeContext, world: dict, npc: dict, state: dict) -> dict:
+    """One call instead of the paper's question-then-insight rounds."""
+    records = [
+        r
+        for r in state.get("memory") or []
+        if isinstance(r, dict) and isinstance(r.get("text"), str) and isinstance(r.get("id"), str)
+    ][-30:]
+    if not records:
+        return {"plan": {"insights": []}}
+    system, prompt = reflect_prompt(world, npc, records)
+    raw = await ctx.llm_json(
+        model = ctx.params.get("model"),
+        system = system,
+        prompt = prompt,
+        schema = REFLECT_SCHEMA,
+        temperature = 0.7,
+        max_tokens = 400,
+    )
+    return {"plan": {"npc": npc["id"], "insights": clean_insights(raw, records)}}
+
+
 @handler("world.npc_plan")
 async def world_npc_plan(ctx: NodeContext) -> dict:
     state = ctx.inputs.get("state")
     world = _sim_world(state, "NPC Plan")
+    if state.get("task") == "rate":
+        return await _rate(ctx, state)
     npc = _npc(world, state.get("npc_id"))
+    if state.get("task") == "reflect":
+        return await _reflect(ctx, world, npc, state)
     places = world["simulation"]["places"]
     names = [p["name"] for p in places]
     day = max(0, int(_hours(state) // 24))
     memories = await _recall(
         ctx, state.get("memory"), f"{npc['name']}'s plans for today", _hours(state)
     )
+    if world["simulation"].get("options") and state.get("options"):
+        system, prompt = options_prompt(
+            world, npc, memories, state.get("clock"), state.get("needs")
+        )
+        raw = await ctx.llm_json(
+            model = ctx.params.get("model"),
+            system = system,
+            prompt = prompt,
+            schema = options_schema(names, [i["name"] for i in world.get("items") or []]),
+            temperature = 0.7,
+            max_tokens = 700,
+        )
+        options = clean_options(raw, world, state.get("clock"))
+        return {
+            "plan": {
+                "npc": npc["id"],
+                "day": day,
+                "plan": options_blocks(options, state.get("clock")),
+                "options": options,
+            }
+        }
     system, prompt = plan_prompt(world, npc, memories, day)
     raw = await ctx.llm_json(
         model = ctx.params.get("model"),
@@ -436,17 +500,18 @@ async def world_npc_chat(ctx: NodeContext) -> dict:
     now = _hours(state)
     mem_a = await _recall(ctx, state.get("memory_a"), b["name"], now, 5)
     mem_b = await _recall(ctx, state.get("memory_b"), a["name"], now, 5)
-    system, prompt = chat_prompt(world, a, b, mem_a, mem_b, state)
+    social = bool(world["simulation"].get("relationships"))
+    system, prompt = chat_prompt(world, a, b, mem_a, mem_b, state, social)
     raw = await ctx.llm_json(
         model = ctx.params.get("model"),
         system = system,
         prompt = prompt,
-        schema = chat_schema(a, b),
+        schema = chat_schema(a, b, social),
         temperature = 0.8,
         max_tokens = 700,
     )
     try:
-        chat = validate_chat(raw, a, b)
+        chat = validate_chat(raw, a, b, mem_a, mem_b) if social else validate_chat(raw, a, b)
     except WorldError as exc:
         raise FlowNodeError(str(exc), retryable = True) from exc
     chat["a_recalled"] = [r["id"] for r in mem_a]

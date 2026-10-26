@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
 import { type PropStates, type UseOutcome, propStatesOf } from "./action-verbs";
@@ -12,6 +11,14 @@ import {
   clampNeeds,
   parseDoing,
 } from "./needs";
+import {
+  type LifeState,
+  freshLife,
+  lifeMindOf,
+  lifeOf,
+  lifeStateOf,
+  recordGift,
+} from "./life-sim";
 import type { Point } from "./procgen";
 import { autonomyOn } from "./roles";
 import {
@@ -66,6 +73,7 @@ export interface WorldState {
   auto?: AutoState;
   npcAt?: Record<string, Point>;
   action?: { combat?: unknown; pose?: { z: number } };
+  life?: LifeState;
   props?: PropStates;
 }
 
@@ -119,6 +127,10 @@ export function applyAction(
 
 export function initialWorldState(spec: WorldSpec): WorldState {
   const clock = simOf(spec)?.start_minute ?? 0;
+  const life = lifeOf(spec);
+  const npc = simOf(spec) ? initialMinds(spec, clock) : {};
+  for (const id of Object.keys(npc))
+    npc[id] = { ...npc[id], ...freshLife(life) };
   return {
     v: WORLD_SAVE_VERSION,
     player: null,
@@ -130,11 +142,12 @@ export function initialWorldState(spec: WorldSpec): WorldState {
     talks: {},
     summaries: {},
     clock,
-    npc: simOf(spec) ? initialMinds(spec, clock) : {},
+    npc,
     following: [],
     errands: {},
     additions: noAdditions(),
     ...(autonomyOn(spec) ? { auto: initialAuto(spec) } : {}),
+    ...(life.cache ? { life: { cache: [] } } : {}),
   };
 }
 
@@ -273,6 +286,13 @@ export function applyReply(
       inventory: st.inventory.filter((i) => i !== reply.take_item),
     };
     notes.push(`Gave away ${itemName(reply.take_item)}`);
+    st = recordGift(
+      lifeOf(spec),
+      st,
+      npcId,
+      "player",
+      itemName(reply.take_item),
+    );
   }
   const holder = reply.give_item ? st.auto?.held[reply.give_item] : undefined;
   if (holder && st.auto) {
@@ -301,8 +321,7 @@ export function applyReply(
     let vars = st.vars;
     try {
       vars = applySets(quest.set, st.vars);
-    } catch {
-    }
+    } catch {}
     st = {
       ...st,
       vars,
@@ -340,7 +359,7 @@ export function serialize(s: WorldState): WorldState {
 const num = (v: unknown, d: number) =>
   typeof v === "number" && Number.isFinite(v) ? v : d;
 
-function mindOf(raw: unknown, fresh: NpcMind): NpcMind {
+function mindOf(raw: unknown, fresh: NpcMind, optionsOn: boolean): NpcMind {
   const r = (raw ?? {}) as Partial<NpcMind>;
   const memory = (Array.isArray(r.memory) ? r.memory : []).filter(
     (m): m is MemoryRecord =>
@@ -362,6 +381,7 @@ function mindOf(raw: unknown, fresh: NpcMind): NpcMind {
     ...(fresh.needs && parseDoing(r.doing)
       ? { doing: parseDoing(r.doing) }
       : {}),
+    ...lifeMindOf(r, fresh, optionsOn),
   };
 }
 
@@ -388,8 +408,11 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   const questIds = new Set(played.quests.map((q) => q.id));
   const fresh = initialWorldState(played);
   const npc: Record<string, NpcMind> = {};
+  const optionsOn = lifeOf(played).options;
   for (const id of Object.keys(fresh.npc))
-    npc[id] = r.npc?.[id] ? mindOf(r.npc[id], fresh.npc[id]) : fresh.npc[id];
+    npc[id] = r.npc?.[id]
+      ? mindOf(r.npc[id], fresh.npc[id], optionsOn)
+      : fresh.npc[id];
   const npcIds = new Set(played.npcs.map((n) => n.id));
   const places = placeIds(spec);
   const errands: Record<string, Errand> = {};
@@ -426,6 +449,9 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
       : {}),
     ...(played.action?.movement && r.action && typeof r.action === "object"
       ? { action: r.action }
+      : {}),
+    ...(lifeOf(played).cache
+      ? { life: lifeStateOf(r.life, lifeOf(played)) }
       : {}),
     ...(r.props && Object.keys(propStatesOf(r.props, spec.props3d ?? [])).length
       ? { props: propStatesOf(r.props, spec.props3d ?? []) }
