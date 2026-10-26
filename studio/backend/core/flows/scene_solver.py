@@ -30,6 +30,7 @@ MAX_COUNT = 8
 MAX_PLACED = 40
 NEAR = 2
 FACING_RANGE = 6
+MAX_REACH_CHECKS = 40  # candidate tiles tried per solid prop before relaxing or dropping it
 WINDOW = (
     20  # tiles around the focus the solver looks at, so a big map costs no more than a small one
 )
@@ -421,7 +422,13 @@ def solve(
                     )
                 )
                 gated = any(r["type"] == "before_gate" for r in active)
+                checks = 0
                 for c in cands:
+                    if solid:
+                        # Each check is a whole-map BFS: a corridor map can refuse thousands of tiles.
+                        checks += 1
+                        if checks > MAX_REACH_CHECKS:
+                            break
                     if gated:
                         key_spots.add(c)
                     if not solid or keeps_reach(c):
