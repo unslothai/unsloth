@@ -282,7 +282,10 @@ test("the player keeps the map from the generated world and adds through the gam
   assert.match(src, /generateMap\(baseSpec\)/);
   assert.match(src, /h\?\.addNpc\(n, n\)/);
   assert.match(src, /h\?\.addItem\(i, i\)/);
-  assert.match(src, /deserialize\(baseSpec, rec\.state\)/);
+  assert.match(
+    src,
+    /deserialize\(\s*props \? \{ \.\.\.baseSpec, props3d: props \} : baseSpec,\s*rec\.state,?\s*\)/,
+  );
   assert.match(src, /await direct\(completed, state\)/);
   assert.match(src, /const s = from \?\? wsRef\.current;/);
   assert.match(src, /if \(turn === messages\.current\) await direct/);

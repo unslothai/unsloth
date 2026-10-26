@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import * as three from "three";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 
@@ -1669,7 +1668,8 @@ export function createWorld3d(
             setMapProps(map, next, standTiles(me.x, me.y));
             usable = next.filter(isUsable);
             poses.clear();
-            if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
+            // setMapProps blocks every door; reopen the open ones in both blockers.
+            syncDoors();
           },
         });
         const close = ed.close;
