@@ -210,7 +210,9 @@ def test_encode_mp4_refuses_a_nonfinite_clip_with_a_clear_error(monkeypatch):
 
 
 def test_video_speed_layer_gets_the_logger():
-    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text(
+        encoding = "utf-8"
+    )
     calls = [
         n
         for n in ast.walk(ast.parse(src))
