@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""The Intel XPU fast_dequantize / fast_gemv, run on CPU with the bitsandbytes ctypes kernels replaced by torch twins.
-
-Both are only defined when DEVICE_TYPE == "xpu", so their source is lifted out of kernels/utils.py and executed
-against the module's own helpers. Covers plain (not double-quantized) absmax states, which transformers'
-BitsAndBytesConfig writes by default, the live-stream read and the gemv block-alignment fallback.
-"""
+"""XPU fast_dequantize / fast_gemv on CPU: lifted from kernels/utils.py (defined only when DEVICE_TYPE == "xpu"),
+bitsandbytes ctypes kernels replaced by torch twins."""
 
 import ast
 import ctypes
@@ -90,7 +86,6 @@ def _quant_state(shape, dtype, nested):
 
 @pytest.fixture
 def xpu():
-    """The XPU fast_dequantize / fast_gemv bound to recording torch twins of the ctypes kernels."""
     calls = []
     live = ["stream-0"]
 
@@ -184,7 +179,7 @@ def test_gemv_matches_reference(xpu, dtype, nested):
     out = xpu.gemv(X, W, qs)
     torch.testing.assert_close(out.float(), (X.float() @ ref.float().t()), rtol = 2e-2, atol = 2e-3)
     assert [c[0] for c in xpu.calls] == (["absmax", "gemv"] if nested else ["gemv"])
-    assert xpu.calls[-1][2] == torch.float32  # a plain absmax goes to the kernel as is
+    assert xpu.calls[-1][2] == torch.float32
 
 
 @pytest.mark.parametrize("nested", [True, False], ids = ["nested", "plain"])

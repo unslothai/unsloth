@@ -767,7 +767,6 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             _unpack_quant_state(quant_state)
         )
         if code2 is None:
-            # Plain absmax (transformers' BitsAndBytesConfig defaults to no double quant): as on CUDA.
             return bnb_functional.dequantize_4bit(W, quant_state, out = out)
         device = W.device
         device_index = device.index
