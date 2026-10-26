@@ -3530,17 +3530,18 @@ export function ModelConfigPage({
       ? noted.name
       : undefined;
   };
+  // The record comes first: a set holding the pin's values still names itself, not the pin.
   const loadedOnce =
     pinnedEntry !== null &&
     pickedSet === undefined &&
     loadedConfig != null &&
-    atBaseline &&
-    !perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(pinnedEntry.config))
+    atBaseline
       ? (loadedOnceNamed(loadedConfig) ??
-        savedSets.find((entry) =>
-          perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(entry.config)),
-        )?.name ??
-        (isDefaultConfig(forSetStore(loadedConfig)) ? null : undefined))
+        (perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(pinnedEntry.config))
+          ? undefined
+          : (savedSets.find((entry) =>
+              perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(entry.config)),
+            )?.name ?? (isDefaultConfig(forSetStore(loadedConfig)) ? null : undefined))))
       : undefined;
   // Held as a pick past the first edit, else the draft falls back to the pinned set and Save writes
   // into it. A new load re-seeds the draft, which drops it.

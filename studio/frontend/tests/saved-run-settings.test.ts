@@ -53,7 +53,11 @@ test("the editor names a one-time load by what it sent, before matching saved se
     page,
     /perModelConfigsEqual\(forSetStore\(loaded\), forSetStore\(noted\.sent\)\)[\s\S]{0,200}findSavedRunSettings\(savedSets, noted\.name\)/,
   );
-  assert.match(page, /\? \(loadedOnceNamed\(loadedConfig\) \?\?\s*savedSets\.find\(/);
+  // Before the pin-equality shortcut, so a set with the pin's values still names itself.
+  assert.match(
+    page,
+    /atBaseline\s*\? \(loadedOnceNamed\(loadedConfig\) \?\?\s*\(perModelConfigsEqual\(forSetStore\(loadedConfig\), forSetStore\(pinnedEntry\.config\)\)\s*\? undefined/,
+  );
 });
 
 test("one model keeps several named settings, listed by name", () => {
