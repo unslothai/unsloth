@@ -71,6 +71,42 @@ Check "missing -> bundled"            ((D "" "" "0") -eq "bundled")
 Check "npm10 + skip -> skip"          ((D "v22.17.1" "10.9.2"  "1") -eq "skip")
 Check "missing + skip -> skip"        ((D "" "" "1") -eq "skip")
 Check "good + skip -> system"         ((D "v22.17.1" "11.13.0" "1") -eq "system")
+Check "managed on PATH -> bundled" ((Get-NodeDecision -NodeVersion 'v24.18.0' -NpmVersion '11.0.0' -ManagedOnPath $true) -eq 'bundled')
+Check "managed + skip -> read-only" ((Get-NodeDecision -NodeVersion 'v24.18.0' -NpmVersion '11.0.0' -ManagedOnPath $true -SkipInstall '1') -eq 'system')
+Check "broken managed + skip -> skip" ((Get-NodeDecision -NodeVersion '' -NpmVersion '' -ManagedOnPath $true -SkipInstall '1') -eq 'skip')
+
+# Resolve real commands from PATH instead of only passing a boolean to the decision.
+foreach ($name in @('Test-ManagedNodeOnPath', 'Get-CanonicalDir', 'Get-PathState', 'Test-AccessDeniedError')) {
+    $helper = @($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
+    }, $true))
+    if ($helper.Count -ne 1) { throw "expected one $name" }
+    Invoke-Expression $helper[0].Extent.Text
+}
+$nodeTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('unsloth-node-path-' + [guid]::NewGuid())
+$managedDir = Join-Path $nodeTestRoot 'managed node'
+$externalDir = Join-Path $nodeTestRoot 'external node'
+$oldPath = $env:PATH
+try {
+    $windowsHost = $PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows
+    $nodeName = if ($windowsHost) { 'node.exe' } else { 'node' }
+    foreach ($dir in @($managedDir, $externalDir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $exe = Join-Path $dir $nodeName
+        [System.IO.File]::WriteAllText($exe, '')
+        if (-not $windowsHost) { & chmod +x $exe }
+    }
+    $env:PATH = $managedDir
+    Check 'managed command on PATH is recognized' (Test-ManagedNodeOnPath -InstallDir $managedDir)
+    Check 'trailing separator still recognizes managed command' (Test-ManagedNodeOnPath -InstallDir ($managedDir + [IO.Path]::DirectorySeparatorChar))
+    $env:PATH = $externalDir
+    Check 'external command is not managed' (-not (Test-ManagedNodeOnPath -InstallDir $managedDir))
+    $env:PATH = $nodeTestRoot
+    Check 'missing command is not managed' (-not (Test-ManagedNodeOnPath -InstallDir $managedDir))
+} finally {
+    $env:PATH = $oldPath
+    Remove-Item -LiteralPath $nodeTestRoot -Recurse -Force
+}
 
 $nodeSourceOffset = $source.IndexOf('$NodeSource = Get-NodeDecision')
 $skipFrontendBranchOffset = $source.IndexOf('} elseif ($SkipFrontend) {')

@@ -344,7 +344,6 @@ def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, mo
     pin = M.pinned_sha256(M.load_pins(), version, asset)
     M.write_metadata(install_dir, version = version, asset = asset, sha256 = pin)
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
-    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
 
@@ -354,7 +353,7 @@ def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, mo
     monkeypatch.setattr(M, "download_file", boom)
     monkeypatch.setattr(M, "download_bytes", boom)
 
-    rc = M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
+    rc = M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
     assert rc == M.EXIT_SUCCESS
 
 
@@ -376,7 +375,6 @@ def test_a_matching_install_beside_a_running_installer_still_exits_0(tmp_path: P
     assert "node_version_checked" not in M.load_metadata(install_dir)
 
     monkeypatch.setattr(M, "detect_host", lambda: host)
-    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
 
@@ -394,7 +392,7 @@ def test_a_matching_install_beside_a_running_installer_still_exits_0(tmp_path: P
     monkeypatch.setattr(M, "RECORD_LOCK_TIMEOUT_SECONDS", 0)
     monkeypatch.setattr(M, "INSTALL_LOCK_TIMEOUT_SECONDS", 0)
 
-    assert M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False) == (
+    assert M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False) == (
         M.EXIT_SUCCESS
     )
     assert "node_version_checked" not in M.load_metadata(install_dir)
@@ -495,21 +493,19 @@ def test_install_prebuilt_keeps_existing_when_download_fails(tmp_path: Path, mon
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.9.0", asset = "x", sha256 = "y")
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
-    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
     monkeypatch.setattr(M, "download_file_verified", _offline)
-    rc = M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
+    rc = M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
     assert rc == M.EXIT_SUCCESS
 
 
 def test_install_prebuilt_reraises_download_failure_without_existing(tmp_path: Path, monkeypatch):
     install_dir = tmp_path / "node"
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
-    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "download_file_verified", _offline)
     with pytest.raises(OSError):
-        M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
+        M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
 
 
 def _swap_stays_denied(

@@ -120,6 +120,9 @@ if ($env:MODE -eq 'identical') {
     Remove-Item -LiteralPath $script:SetupSelfPath
     [System.IO.File]::WriteAllBytes($script:SetupSelfPath, $same)
 }
+if ($env:MODE -eq 'pin-only') {
+    [System.IO.File]::WriteAllText((Join-Path $ScriptDir 'node_prebuilt_pins.json'), 'new pin')
+}
 if ($env:FAIL_DEPS -eq '1') { Exit-SetupFailure -Message "Python dependency installation failed (exit code 2)" -Code 2 }
 '@
     $newDeps = @'
@@ -193,6 +196,7 @@ Write-StudioLine "__TAG__: done"
         foreach ($name in @('new.ps1', 'third.ps1')) { Copy-Item -LiteralPath (Join-Path $script:Templates $name) -Destination $dir }
         $setup = Join-Path $dir 'setup.ps1'
         Copy-Item -LiteralPath (Join-Path $script:Templates $Start) -Destination $setup
+        [System.IO.File]::WriteAllText((Join-Path $dir 'node_prebuilt_pins.json'), 'old pin')
 
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $HostPath
@@ -453,6 +457,14 @@ Describe 'finishing with the setup script the update installed (<HostName>)' -Fo
             Get-Count $r 'NEW' | Should -Be 0
             Get-Count $r '[TAURI:ERROR]' | Should -Be 1
             Get-Count $r '[TAURI:ERROR] Python dependency installation failed' | Should -Be 1
+        }
+
+        It 'a pin-only package change reruns the byte-identical setup once' {
+            $r = Invoke-Setup -HostPath $HostPath -Env @{ MODE = 'pin-only' }
+            $r.Rc | Should -Be 0 -Because $r.Text
+            Get-Count $r $script:Handoff | Should -Be 1
+            Get-Count $r ' OLD banner ' | Should -Be 2
+            Get-Count $r 'OLD: done' | Should -Be 1
         }
 
         It 'A4: hands off once even when the new copy is replaced again' {
