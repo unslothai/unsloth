@@ -6023,7 +6023,7 @@ def patch_gradient_accumulation_fix(Trainer):
             _refuse_pipeline_parallel_for_trainer(model)
             # UNSLOTH_TP_SIZE (unmodified scripts): tensor parallel before native FSDP2 shards the dp dimension.
             tp_env = _tensor_parallel_env_trainer_pre(model)
-            if tp_env is not None and model is None:
+            if tp_env is not None:  # model_init alone, or beside model (4.x: train() rebuilds from it)
                 _refuse_tensor_parallel_env_model_init(tp_env, _original_trainer_init, args, kwargs)
             from .. import fsdp2_launch as _fsdp2_launch
 
@@ -6212,6 +6212,16 @@ def _refuse_tensor_parallel_env_model_init(layout, init, args, kwargs):
             names = []
         if names and names[0] == "self":
             names = names[1:]
+        if "model" not in names:  # Trainer.__init__ wrapped without functools.wraps: transformers' order
+            names = [
+                "model",
+                "args",
+                "data_collator",
+                "train_dataset",
+                "eval_dataset",
+                "processing_class",
+                "model_init",
+            ]
         if "model_init" in names:
             index = names.index("model_init")
             model_init = args[index] if index < len(args) else None

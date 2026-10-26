@@ -384,7 +384,7 @@ def _case_accelerate_fsdp(rank, world, tmp, ckpt):
     }
 
 
-def _case_model_init(rank, world, tmp, ckpt, hooked):
+def _case_model_init(rank, world, tmp, ckpt, hooked, with_model = False):
     """Trainer(model_init = ...) under UNSLOTH_TP_SIZE: the model is built inside Trainer.__init__ (and again by
     train / hyperparameter_search), after the tensor parallel Trainer setup ran on model = None."""
     error = _import_checkout_unsloth()
@@ -417,13 +417,29 @@ def _case_model_init(rank, world, tmp, ckpt, hooked):
 
     data = _Rows([torch.arange(9)] * 8)
     trainer = []
-    refused = _raised(
-        lambda: trainer.append(
-            transformers.Trainer(
-                model_init = model_init, args = _trainer_args(tmp, 2), train_dataset = data
+    if with_model:  # transformers 4.x accepts both (FutureWarning) and train() rebuilds from model_init
+        model = peft(load(ckpt, load_in_4bit = False))
+
+        def run():
+            trainer.append(
+                transformers.Trainer(
+                    model = model,
+                    model_init = model_init,
+                    args = _trainer_args(tmp, 2),
+                    train_dataset = data,
+                )
+            )
+            trainer[0].train()
+
+        refused = _raised(run)
+    else:
+        refused = _raised(
+            lambda: trainer.append(
+                transformers.Trainer(
+                    model_init = model_init, args = _trainer_args(tmp, 2), train_dataset = data
+                )
             )
         )
-    )
     return {
         "refused": refused,
         "built": built,
@@ -686,3 +702,11 @@ def test_env_tp_model_init_is_refused(hooked):
     for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = hooked):
         assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
         assert "model_init" in res["refused"] and res["built"] == [], res
+
+
+def test_env_tp_model_and_model_init_is_refused():
+    """Trainer(model = m, model_init = f): on transformers 4.x train() replaced the tensor parallel m with a
+    plain model from f and trained it as DDP; 5.x refuses both (ValueError). Neither may train silently."""
+    for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = False, with_model = True):
+        assert res["refused"] is not None and res["built"] == [], res
+        assert "model_init" in res["refused"], res
