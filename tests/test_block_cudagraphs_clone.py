@@ -455,14 +455,14 @@ def test_pool_copies_kept_where_a_block_call_starts_a_generation(monkeypatch, re
         with torch.no_grad():
             for layer in layers:
                 x = layer(x)
-        assert seen == {"outputs": 3, "grad": 0}
+        assert seen == {"outputs": 6, "grad": 3}  # each first call runs a grad-mode trial too
         return
     y = x
     for layer in layers:
         y = checkpoint(layer, y, use_reentrant = True)
     y.sum().backward()
-    # Forward under no_grad: outputs copied; recompute inside backward: outputs and input grads.
-    assert seen == {"outputs": 6, "grad": 3}
+    # Trial + no-grad forward + recompute inside backward: every call copies (main did the same).
+    assert seen == {"outputs": 9, "grad": 6}
 
 
 def test_frozen_block_without_grad_input_still_copies(monkeypatch):
@@ -582,3 +582,17 @@ def test_graphed_call_records_the_compile_ids_it_created(monkeypatch):
     assert lookups == [0]
     assert bc._CUDAGRAPH_STATE["ours"] == {"a", "b"}
     assert bc._pool_release_verdict([manager], bc._CUDAGRAPH_STATE["ours"]) == "foreign"
+
+
+def test_grad_trial_of_a_checkpointed_block_takes_the_recompute_path(monkeypatch):
+    # The first no-grad call (checkpoint forward) runs a grad-mode trial first; it stands in for the
+    # recompute, so it copies like the recompute does.
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    seen = _counting_clones(monkeypatch)
+    A = _linear_layer_class("TrialDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = A().train()
+    with torch.no_grad():
+        layer(torch.randn(2, 4, 8, requires_grad = True))
+    assert seen == {"outputs": 2, "grad": 1}  # trial (outputs + input grad) and the no-grad call
+    assert bc._IN_TRIAL == [False]

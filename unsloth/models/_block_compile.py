@@ -182,6 +182,10 @@ def _trainable(layer):
     return any(p.requires_grad for p in params)
 
 
+# The grad-mode trial before a checkpointed block's first no-grad call stands in for the recompute.
+_IN_TRIAL = [False]
+
+
 def _pool_outputs_stay_valid(layer, hidden_states):
     """A grad-mode call outside backward leaves a forward pending, and cudagraph trees start no new
     generation while one is pending (can_start_new_generation, torch/_inductor/cudagraph_trees.py:
@@ -189,9 +193,12 @@ def _pool_outputs_stay_valid(layer, hidden_states):
     2.13 L2182, 2.14 L2410). The next block and the backward then read this call's outputs and
     produce the input gradient inside the same generation, so neither needs a copy out of the
     pool. Checkpointed blocks run without grad (forward) or inside backward (recompute), where a
-    block call can start a new generation and overwrite what the previous block handed on."""
+    block call can start a new generation and overwrite what the previous block handed on. The
+    grad-mode trial before a checkpointed block's first call takes the recompute's path too, so it
+    records what the recompute replays."""
     return (
-        torch.is_grad_enabled()
+        not _IN_TRIAL[0]
+        and torch.is_grad_enabled()
         and torch._C._current_graph_task_id() == -1
         and (hidden_states.requires_grad or _trainable(layer))
     )
@@ -1086,7 +1093,11 @@ def _wrap(
             # Grad-mode trial first (RNG forked): a checkpoint recompute must not demote below this call.
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             with torch.random.fork_rng(devices = devices), torch.enable_grad():
-                forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+                _IN_TRIAL[0] = True
+                try:
+                    forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+                finally:
+                    _IN_TRIAL[0] = False
             mode = self.__dict__["_unsloth_block_mode"]
             if mode == _OFF:
                 return original(self, hidden_states, *args, **kwargs)
