@@ -3,7 +3,9 @@
 
 """A generation limit must not turn an unfinished rewrite into an executable tool call."""
 
+import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -315,3 +317,96 @@ def test_truncated_notice_sse_does_not_repeat_streamed_text(
         for choice in chunk.get("choices", [])
         if choice.get("finish_reason")
     ] == ["length"]
+
+
+@pytest.mark.parametrize("stream", [False, True], ids = ["json", "sse"])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        pytest.param("", id = "empty"),
+        pytest.param("Updating your file.", id = "short"),
+        pytest.param("x" * 270, id = "long"),
+    ],
+)
+def test_anthropic_truncated_notice_survives_without_a_provisional_card(
+    monkeypatch, stream, prefix
+):
+    from routes.inference import _anthropic_tool_non_streaming, _anthropic_tool_stream
+
+    selected_tools = [{"type": "function", "function": {"name": "web_search"}}]
+    frames = [_sse({"content": prefix})] if prefix else []
+    frames += [
+        _sse({"content": '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'}),
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"delta": {}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 15, "completion_tokens": 9, "total_tokens": 24},
+            }
+        )
+        + "\n",
+        _done(),
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, [frames])
+    calls = _record_tool_calls(monkeypatch, "must not run")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Search"}],
+        selected_tools,
+        permission_mode = "off",
+        sandbox_level = "low",
+    )
+    assert calls == []
+    assert not any(event["type"] == "tool_start" for event in events)
+
+    async def disconnected():
+        return False
+
+    def run_gen():
+        yield from events
+
+    async def consume():
+        request = SimpleNamespace(is_disconnected = disconnected, scope = {})
+        if stream:
+            response = await _anthropic_tool_stream(
+                request,
+                threading.Event(),
+                run_gen,
+                "msg_notice",
+                "test-model",
+                openai_tools = selected_tools,
+            )
+            lines = [line async for line in response.body_iterator]
+            chunks = [
+                json.loads(line[6:])
+                for frame in lines
+                for line in frame.splitlines()
+                if line.startswith("data: {")
+            ]
+            visible = "".join(
+                chunk["delta"]["text"]
+                for chunk in chunks
+                if chunk.get("delta", {}).get("type") == "text_delta"
+            )
+            final = next(chunk for chunk in chunks if chunk["type"] == "message_delta")
+            assert final["delta"]["stop_reason"] == "max_tokens"
+            assert final["usage"]["output_tokens"] == 9
+            return visible
+        response = await _anthropic_tool_non_streaming(
+            request,
+            run_gen,
+            "msg_notice",
+            "test-model",
+            openai_tools = selected_tools,
+            cancel_event = threading.Event(),
+        )
+        body = json.loads(response.body)
+        assert body["stop_reason"] == "max_tokens"
+        assert body["usage"]["input_tokens"] == 15
+        assert body["usage"]["output_tokens"] == 9
+        return "".join(block["text"] for block in body["content"] if block["type"] == "text")
+
+    expected = (
+        prefix + "\n\n" + TRUNCATED_TOOL_TURN_MESSAGE if prefix else TRUNCATED_TOOL_TURN_MESSAGE
+    )
+    assert asyncio.run(consume()) == expected
