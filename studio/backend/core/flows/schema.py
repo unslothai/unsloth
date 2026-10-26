@@ -435,6 +435,24 @@ class WorldProp3d(_Strict):
     targets: Optional[list[str]] = None  # door ids a lever opens and closes
 
 
+class WorldFaction(_Strict):
+    id: str
+    name: str
+    player: bool = False  # the faction the player runs; at most one
+    leader: Optional[str] = None  # npc id who speaks for it
+    region: Optional[str] = None  # home town region id
+    persona: str = ""
+    color: Optional[str] = None  # "#rrggbb"
+
+
+class WorldRivals(_Strict):
+    """Village Rivals: a turn-based 4X-lite where LLM-led villages compete on the world map."""
+
+    factions: list[WorldFaction] = Field(min_length = 2, max_length = 4)
+    max_turns: int = Field(default = 30, ge = 5, le = 200)
+    hysteresis: float = Field(default = 0.15, ge = 0, le = 1)  # posture change needed to switch plans
+
+
 class WorldSpec(_Strict):
     title: str
     seed: int = 0
@@ -458,6 +476,7 @@ class WorldSpec(_Strict):
     render: Optional[Literal["2d", "3d"]] = None
     view3d: Optional[World3dView] = None
     props3d: Optional[list[WorldProp3d]] = None
+    rivals: Optional[WorldRivals] = None
     player_node: Optional[str] = None
 
 

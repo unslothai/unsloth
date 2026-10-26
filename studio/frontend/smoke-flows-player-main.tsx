@@ -140,7 +140,29 @@ const LIVELY: WorldSpec = {
     },
   ],
 };
-const AUTONOMOUS = params.get("autonomy") ? LIVELY : WORLD;
+const RIVALS: WorldSpec = {
+  ...LIVELY,
+  autonomy: null,
+  rivals: {
+    factions: [
+      {
+        id: "pond",
+        name: "Pondfolk",
+        player: true,
+        region: "pond",
+        leader: "fern",
+      },
+      { id: "rose", name: "Rose Hold", region: "cottage", leader: "ada" },
+      { id: "square", name: "Square Guild", region: "square", leader: "bo" },
+    ],
+    max_turns: 20,
+  },
+};
+const AUTONOMOUS = params.get("rivals")
+  ? RIVALS
+  : params.get("autonomy")
+    ? LIVELY
+    : WORLD;
 // `&sim=1`: the daily-life simulation (clock, needs) over the named regions.
 const LIVED: WorldSpec = params.get("sim")
   ? {
@@ -391,6 +413,49 @@ const mock: PlayerApi = {
   async invoke(_flowId, entry, inputs, opts) {
     calls.push({ entry, inputs });
     await new Promise((r) => setTimeout(r, 300));
+    const task = (inputs.state as { task?: string; faction?: string }).task;
+    if (task === "rivals_strategist") {
+      const fid = (inputs.state as { faction: string }).faction;
+      const plan =
+        fid === "rose"
+          ? {
+              posture: {
+                economy: 0.2,
+                expansion: 0.2,
+                military: 0.5,
+                diplomacy: 0.1,
+              },
+              target: "square",
+              goals: ["arm the hold", "take the square"],
+              say: "Rose Hold will not wait.",
+            }
+          : {
+              posture: {
+                economy: 0.4,
+                expansion: 0.2,
+                military: 0.1,
+                diplomacy: 0.3,
+              },
+              target: null,
+              goals: ["trade", "grow"],
+            };
+      return { outputs: { reply: { plan } } };
+    }
+    if (task === "rivals_diplomacy")
+      return {
+        outputs: {
+          reply: {
+            text: "Two wood for two of your bread, neighbour.",
+            offer: {
+              kind: "trade",
+              give: "wood",
+              give_amount: 2,
+              want: "food",
+              want_amount: 2,
+            },
+          },
+        },
+      };
     const ask = inputs.state as { task?: string; focus?: { x: number; y: number } };
     if (ask?.task === "describe_place" && ask.focus) {
       // What the backend solver returns for "a small market square with a well", around the camera's focus.

@@ -474,7 +474,24 @@ export interface WorldSpec {
   render?: "2d" | "3d";
   view3d?: World3dView;
   props3d?: WorldProp3d[];
+  rivals?: WorldRivals | null;
   player_node?: string;
+}
+
+export interface WorldFaction {
+  id: string;
+  name: string;
+  player?: boolean;
+  leader?: string | null;
+  region?: string | null;
+  persona?: string;
+  color?: string | null;
+}
+
+export interface WorldRivals {
+  factions: WorldFaction[];
+  max_turns?: number;
+  hysteresis?: number;
 }
 
 export type WorldPropKind =

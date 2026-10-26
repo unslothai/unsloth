@@ -162,3 +162,61 @@ def test_the_plain_json_retry_can_be_stopped(monkeypatch):
 
     assert asyncio.run(run()) == {"ok": True}
     assert len(set(ctx.sent)) == 2 and set(ctx.sent) <= set(ctx.cancelled)
+
+
+def test_retry_bad_json_false_sends_one_request_for_an_unparsable_answer(monkeypatch):
+    import pytest
+
+    from core.flows.registry import FlowNodeError
+
+    async def no_load(ctx, kind, model):
+        return None
+
+    monkeypatch.setattr(_common, "ensure_model", no_load)
+
+    class Ctx:
+        def __init__(self, reject_schema):
+            self.hooks, self.posts, self.reject_schema = [], [], reject_schema
+
+        def on_cancel(self, fn):
+            self.hooks.append(fn)
+
+        def log(self, *a, **k):
+            pass
+
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **kw,
+        ):
+            if path == "/api/inference/cancel":
+                return {}
+            self.posts.append("response_format" in json)
+            if self.reject_schema and "response_format" in json:
+                raise FlowNodeError("response_format is not supported", status = 400)
+            return {"choices": [{"message": {"content": "not json at all"}}]}
+
+    def ask(ctx, **kw):
+        return asyncio.run(
+            _common.llm_json(
+                ctx, model = None, system = "", prompt = "p", schema = {"type": "object"}, **kw
+            )
+        )
+
+    once = Ctx(False)
+    with pytest.raises(FlowNodeError):
+        ask(once, retry_bad_json = False)
+    assert once.posts == [True]
+    retried = Ctx(False)
+    with pytest.raises(FlowNodeError):
+        ask(retried)
+    assert retried.posts == [True, False], "default keeps the plain JSON retry"
+    no_schema = Ctx(True)
+    with pytest.raises(FlowNodeError):
+        ask(no_schema, retry_bad_json = False)
+    assert no_schema.posts == [
+        True,
+        False,
+    ], "a server without structured output is still asked once in plain JSON"

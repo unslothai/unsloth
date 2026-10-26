@@ -67,6 +67,8 @@ import {
   type WorldMap,
   generateMap,
 } from "./procgen";
+import { RIVALS_CALLS_PER_MINUTE } from "./rivals";
+import { RivalsPanel } from "./rivals-panel";
 import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
   placeAreas,
@@ -443,10 +445,12 @@ export function WorldPlayer({
     api,
     view === "3d" ? spec.view3d?.ambient : null,
   );
+  const [envoyTalking, setEnvoyTalking] = useState(false);
   const lockedRef = useRef(true);
   lockedRef.current =
     !started ||
     talking !== null ||
+    envoyTalking ||
     panel === "save" ||
     !!ws.auto?.encounter ||
     editor !== null;
@@ -473,8 +477,12 @@ export function WorldPlayer({
   const planEntry = sim ? spec.entry_points?.npc_plan : undefined;
   const chatEntry = sim ? spec.entry_points?.npc_chat : undefined;
   const queue = useMemo(
-    () => new BackgroundQueue(sim?.calls_per_minute ?? 0),
-    [sim],
+    () =>
+      new BackgroundQueue(
+        sim?.calls_per_minute ??
+          (baseSpec.rivals ? RIVALS_CALLS_PER_MINUTE : 0),
+      ),
+    [sim, baseSpec.rivals],
   );
   useEffect(() => () => queue.clear(), [queue]);
   const busy = useRef(new Set<string>());
@@ -964,7 +972,7 @@ export function WorldPlayer({
   useEffect(() => {
     queue.setPaused(!ready || lockedRef.current);
     queue.pump();
-  }, [queue, ready, started, talking, panel]);
+  }, [queue, ready, started, talking, panel, envoyTalking]);
 
   const planDay = useCallback(
     async (npcId: string, day: number, signal: AbortSignal) => {
@@ -1971,6 +1979,19 @@ export function WorldPlayer({
             ))}
           </div>
         </Panel>
+      ) : null}
+      {ready && started && !editor && spec.rivals ? (
+        <RivalsPanel
+          api={api}
+          flowId={flowId}
+          entry={replyEntry}
+          spec={baseSpec}
+          map={map}
+          state={ws.rivals}
+          onChange={(r) => setWs((st) => ({ ...st, rivals: r }))}
+          queue={queue}
+          onTalking={setEnvoyTalking}
+        />
       ) : null}
       {editor && edState ? (
         <Suspense fallback={null}>

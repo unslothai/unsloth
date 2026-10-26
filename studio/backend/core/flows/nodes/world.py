@@ -17,6 +17,7 @@ from core.flows.expr import seed_from
 from core.flows.nodes._common import JsonFieldStream
 from core.flows.nodes.memory import _plan_schema, _retrieve, clean_plan, embed, rate_importance
 from core.flows.registry import FlowNodeError, NodeContext, handler
+from core.flows.rivals import RIVAL_TASKS
 from core.flows.scene_solver import (
     SCENE_SCHEMA,
     SCENE_SYSTEM,
@@ -310,6 +311,8 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         return await _summarise(ctx, state)
     if state.get("task") == "director":
         return await _direct(ctx, state)
+    if state.get("task") in RIVAL_TASKS:
+        return await RIVAL_TASKS[state["task"]](ctx, state)
     if state.get("task") == "describe_place":
         return {"reply": {"place": await describe_place(ctx, state)}}
     memories: Optional[list[dict]] = None

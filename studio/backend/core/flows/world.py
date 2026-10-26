@@ -14,6 +14,7 @@ from typing import Any, Optional
 from core.flows import assets as asset_store
 from core.flows.authoring import strict_schema, string_enum
 from core.flows.expr import Prng, seed_from
+from core.flows.rivals import normalize_rivals
 from core.flows.schema import WorldSpec
 from core.flows.story import _unique, input_values, most_downstream, node_value, slug
 
@@ -304,6 +305,9 @@ def normalize_world(
     props = props3d(raw_props, width, height, {i["id"] for i in world["items"]})
     if props:
         world["props3d"] = props
+    rivals = normalize_rivals(raw.get("rivals"), npc_ids, regions, ref, taken)
+    if rivals:
+        world["rivals"] = rivals
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
 
 

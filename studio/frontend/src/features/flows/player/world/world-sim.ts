@@ -270,7 +270,7 @@ export class BackgroundQueue {
   private paused = false;
   readonly calls: Record<string, number> = {};
 
-  private perMinute: number;
+  readonly perMinute: number;
   private now: () => number;
 
   constructor(perMinute: number, now: () => number = () => Date.now()) {
