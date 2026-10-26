@@ -734,6 +734,8 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
         and entry[0]() is seq_lengths
         and entry[1]() is mask
         and entry[2] == (hidden_states.device, seq_lengths._version, mask._version)
+        # cu_seqlens built under inference_mode cannot be saved for a training step's backward.
+        and (not entry[4] or torch.is_inference_mode_enabled())
     ):
         if entry[3] is not None:
             HF_PACKED_ATTENTION_STATS["compiled"] += 1
@@ -752,6 +754,7 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
             weakref.ref(mask),
             (hidden_states.device, seq_lengths._version, mask._version),
             result,
+            torch.is_inference_mode_enabled(),
         )
     return result
 

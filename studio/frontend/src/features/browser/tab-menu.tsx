@@ -28,7 +28,6 @@ import {
   BubbleChatAddIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
-  Copy01Icon,
   Link01Icon,
   LinkSquare02Icon,
   PencilEdit02Icon,
@@ -37,6 +36,7 @@ import {
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";

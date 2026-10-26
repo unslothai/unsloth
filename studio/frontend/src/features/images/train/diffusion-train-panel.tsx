@@ -32,6 +32,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
@@ -116,6 +117,7 @@ import {
   resolveDiffusionTrainingBase,
 } from "./diffusion-train-deploy";
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
+import { diffusionTrainingProgress } from "./diffusion-train-progress";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 
 // Fallback list for an older backend whose /info reports none, in popularity order.
@@ -689,10 +691,7 @@ export function DiffusionTrainPanel({
     status?.status === "stopped" &&
     Boolean(status?.lora_path) &&
     status.job_id !== dismissedJobId;
-  const pct =
-    status && status.total_steps > 0
-      ? Math.min(100, Math.round((status.step / status.total_steps) * 100))
-      : 0;
+  const runProgress = diffusionTrainingProgress(status);
 
   const stopRequested = running && stopRequestedLocal;
 
@@ -2184,21 +2183,20 @@ export function DiffusionTrainPanel({
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold capitalize">
-                  {status?.status === "completed" ? "Training complete \u{1F389}" : status?.status}
+                  {runProgress.title}
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  {(status?.total_steps ?? 0) > 0
-                    ? `${status?.step}/${status?.total_steps} steps`
-                    : ""}
+                  {runProgress.count}
                 </span>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-border">
-                <div
-                  className="h-full bg-primary transition-all"
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
+              <Progress
+                className="h-2"
+                value={runProgress.percent ?? undefined}
+                indeterminate={runProgress.percent === null}
+                aria-label={runProgress.title}
+              />
+              {!runProgress.preparing && (
+                <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat
                   label="Loss"
                   value={status?.loss != null ? status.loss.toFixed(4) : "-"}
@@ -2223,9 +2221,12 @@ export function DiffusionTrainPanel({
                       : "-"
                   }
                 />
-              </div>
-              {status?.message && (
-                <p className="text-ui-11 text-muted-foreground">{status.message}</p>
+                </div>
+              )}
+              {runProgress.detail && (
+                <p role="status" className="text-ui-11 text-muted-foreground">
+                  {runProgress.detail}
+                </p>
               )}
               {running && (
                 <Button
@@ -2345,7 +2346,9 @@ export function DiffusionTrainPanel({
               </div>
             )}
 
-            <DiffusionCharts lossHistory={lossHistory} gradNormHistory={gradNormHistory} />
+            {!runProgress.preparing && lossHistory.length > 0 && (
+              <DiffusionCharts lossHistory={lossHistory} gradNormHistory={gradNormHistory} />
+            )}
             {status?.job_id ? (
               <DiffusionSamples jobId={status.job_id} samples={status.samples} />
             ) : null}

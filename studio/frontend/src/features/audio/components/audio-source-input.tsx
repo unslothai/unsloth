@@ -14,8 +14,8 @@ import {
   Alert02Icon,
   Cancel01Icon,
   PlusSignIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { MicIcon } from "@/lib/mic-icon";
 import { HugeiconsIcon } from "@hugeicons/react";

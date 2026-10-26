@@ -38,7 +38,68 @@ test("usage examples sit right under the keys, where a new key lands", () => {
   const examples = TAB.indexOf("<UsageExamples");
   assert.ok(examples > TAB.indexOf("<CreateKeyForm"));
   assert.ok(examples < TAB.indexOf("<MonitorLink />"));
-  assert.ok(examples < TAB.indexOf("<KeylessApiAccessSection"));
+  assert.ok(examples < TAB.indexOf("<KeylessApiAccessLink"));
+});
+
+test("jump links above the token form reach the tab's APIs from any page, which sit images first, then audio, then decisions", () => {
+  const links = readSrc("features/settings/components/api-jump-links.tsx");
+  const examples = readSrc("features/settings/components/usage-examples.tsx");
+  for (const target of ["api-keys-media-api", "api-keys-audio-api", "api-keys-decision-api", "api-keys-agents", "api-keys-mcp"]) {
+    assert.match(links, new RegExp(`target: "${target}"`));
+  }
+  assert.match(links, /openDialog\("api-keys", \{ scrollTarget: link\.target \}\)/);
+  assert.match(examples, /scrollTarget !== "api-keys-agents" && scrollTarget !== "api-keys-mcp"/);
+  assert.match(examples, /consumeScrollTarget\(target\)/);
+  assert.match(examples, /<div ref=\{agentsRef\} className=/);
+  assert.match(examples, /<div ref=\{mcpRef\}>\{agentsExtra\}<\/div>/);
+  assert.match(examples, /if \(agentsOnly\) return;\s*if \(scrollTarget !== "api-keys-agents"/);
+  assert.doesNotMatch(examples, /getElementById/);
+  for (const [file, target] of [
+    ["media-api-examples.tsx", "api-keys-media-api"],
+    ["audio-api-examples.tsx", "api-keys-audio-api"],
+    ["decision-api-section.tsx", "api-keys-decision-api"],
+  ]) {
+    assert.match(readSrc(`features/settings/components/${file}`), new RegExp(`if \\(!showHeading \\|\\| scrollTarget !== "${target}"`), file);
+  }
+  assert.ok(TAB.indexOf("<ApiJumpLinks") > 0);
+  assert.ok(TAB.indexOf("<ApiJumpLinks") < TAB.indexOf("<CreateKeyForm"));
+  assert.match(TAB, /<h2 className="settings-heading text-base font-semibold font-heading">\s*\{t\("settings\.apiKeys\.accessTokens"\)\}\s*<\/h2>\s*<AnimatePresence/);
+  assert.equal(TAB.split('t("settings.apiKeys.accessTokens")').length - 1, 1);
+  const monitor = readSrc("features/api-monitor/api-monitor-page.tsx");
+  assert.doesNotMatch(monitor, /<ApiJumpLinks/);
+  for (const part of [
+    /<MediaApiExamples useTunnel=\{useTunnel\} showHeading=\{false\} \/>/,
+    /<AudioApiExamples useTunnel=\{useTunnel\} showHeading=\{false\} \/>/,
+    /<DecisionApiSection showHeading=\{false\} \/>/,
+    /<UsageExamples[^>]*agentsOnly=\{true\}/,
+  ]) {
+    assert.match(monitor, part);
+  }
+  assert.match(monitor, /\.\.\.\(isOwner\s*\? \[\{ id: "decision" as const/);
+  assert.doesNotMatch(monitor, /McpAccessSection|id: "mcp"/);
+  assert.match(monitor, /font-heading text-ui-15/);
+  assert.match(examples, /\{agentsOnly \? null : \(/);
+  for (const icon of ["MessageCircleIcon", "Image01Icon", "AiSpeechIcon", "TaskDone01Icon", "BotIcon"]) {
+    assert.match(monitor, new RegExp(`label: "[^"]+", icon: ${icon} \\}`));
+  }
+  assert.ok(TAB.indexOf("<MediaApiExamples") < TAB.indexOf("<AudioApiExamples"));
+  assert.ok(TAB.indexOf("<AudioApiExamples") < TAB.indexOf("<DecisionApiSection"));
+  const decision = readSrc("features/settings/components/decision-api-section.tsx");
+  assert.match(
+    decision,
+    /<h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">\s*<HugeiconsIcon\s+icon=\{TaskDone01Icon\}/,
+  );
+});
+
+test("keyless API access is edited on Remote & LAN; the API tab links there and reads it for the examples", () => {
+  const link = readSrc("features/settings/components/keyless-api-access-link.tsx");
+  assert.match(link, /openDialog\("remote-lan", \{ scrollTarget: "remote-lan-keyless" \}\)/);
+  const remoteLan = readSrc("features/settings/tabs/remote-lan-tab.tsx");
+  assert.match(remoteLan, /scrollTarget !== "remote-lan-keyless"/);
+  assert.match(remoteLan, /<div ref=\{keylessRef\}>\s*<KeylessApiAccessSection \/>/);
+  assert.match(TAB, /loadKeylessApiAccess\(\)/);
+  assert.match(TAB, /scope: next\.suspendedByAccounts \? "off" : next\.scope/);
+  assert.doesNotMatch(TAB, /<KeylessApiAccessSection/);
 });
 
 test("the remote and LAN polls skip their request while the tab is hidden", () => {
