@@ -40,6 +40,8 @@ interface RunSettingsPickerProps {
   customName: string | null;
   /** Null on Default settings, which cannot be renamed. */
   onEditName: (() => void) | null;
+  /** The narrow sidebar: a smaller pencil, and the name box's buttons below it. */
+  compact?: boolean;
   naming: RunSettingsNaming | null;
   disabled?: boolean;
   onPick: (name: string | null) => void;
@@ -78,6 +80,7 @@ export function RunSettingsPicker({
   selected,
   customName,
   onEditName,
+  compact = false,
   naming,
   disabled = false,
   onPick,
@@ -87,7 +90,13 @@ export function RunSettingsPicker({
 }: RunSettingsPickerProps) {
   if (naming) {
     return (
-      <div className="flex min-w-0 items-center gap-2">
+      // The sidebar is too narrow for a readable name beside the buttons, so they go below it.
+      <div
+        className={cn(
+          "flex min-w-0 gap-2",
+          compact ? "flex-col" : "items-center",
+        )}
+      >
         <Input
           autoFocus={true}
           value={naming.name}
@@ -112,26 +121,31 @@ export function RunSettingsPicker({
               ? "Name for the new settings"
               : `New name for ${naming.target}`
           }
-          className="h-9 min-w-0 flex-1 rounded-full text-ui-13"
+          className={cn(
+            "h-9 min-w-0 rounded-full text-ui-13",
+            compact ? "w-full" : "flex-1",
+          )}
         />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={normalizeSavedRunSettingsName(naming.name) === ""}
-          onClick={onNamingSubmit}
-        >
-          Save
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="text-muted-foreground"
-          onClick={() => onNamingChange(null)}
-        >
-          Cancel
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={normalizeSavedRunSettingsName(naming.name) === ""}
+            onClick={onNamingSubmit}
+          >
+            Save
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => onNamingChange(null)}
+          >
+            Cancel
+          </Button>
+        </div>
       </div>
     );
   }
@@ -236,7 +250,7 @@ export function RunSettingsPicker({
           <HugeiconsIcon
             icon={Edit03Icon}
             strokeWidth={1.75}
-            className="size-4"
+            className={compact ? "size-3.5" : "size-4"}
           />
         </button>
       )}

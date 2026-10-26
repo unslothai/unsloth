@@ -4397,6 +4397,7 @@ export function ModelConfigPage({
           selected={selectedSet}
           customName={naming ? null : customName}
           onEditName={editName}
+          compact={variant === "sidebar"}
           naming={naming}
           // Until the server copy is read: a pick before then could not forget a row it has not seen.
           disabled={sharedVariantUnresolved || extraArgsHydrating || budgetSettling}
@@ -4409,8 +4410,12 @@ export function ModelConfigPage({
           id={saveStatusId}
           aria-live="polite"
           data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
-          // min-h keeps the empty line's height, so the buttons never move.
-          className="-mt-2 -mb-1.5 min-h-[calc(1.375em+0.25rem)] min-w-0 truncate pl-3.5 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+          // min-h keeps the empty line's height, so the buttons never move. Not while naming in the
+          // sidebar: the name box's own button row already moved them, and the blank line only adds a gap.
+          className={cn(
+            "-mt-2 -mb-1.5 min-h-[calc(1.375em+0.25rem)] min-w-0 truncate pl-3.5 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400",
+            naming && variant === "sidebar" && "hidden",
+          )}
         >
           {saveStatus}
         </p>
