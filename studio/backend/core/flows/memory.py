@@ -89,13 +89,23 @@ def new_record(
     return record
 
 
-@functools.lru_cache(maxsize = 8192)
 def tokens(text: str) -> frozenset[str]:
-    # Cached: a record's text never changes, and every retrieval re-scores the whole stream.
+    # Short texts (memory records) are cached: every retrieval re-scores the whole stream. Long ones are not,
+    # so the process-wide cache stays a few MB whatever callers send.
+    return _cached_tokens(text) if len(text) <= TOKEN_CACHE_MAX_CHARS else _tokens(text)
+
+
+TOKEN_CACHE_MAX_CHARS = 512
+
+
+def _tokens(text: str) -> frozenset[str]:
     words = {w for w in _WORD.findall(text.lower()) if w not in _STOP and len(w) > 1}
     for w in [w for w in words if _CJK.search(w)]:
         words.update(w[i : i + 2] for i in range(len(w) - 1))
     return frozenset(words)
+
+
+_cached_tokens = functools.lru_cache(maxsize = 4096)(_tokens)
 
 
 def keyword_relevance(query: str, text: str) -> float:

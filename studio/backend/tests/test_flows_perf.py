@@ -191,3 +191,13 @@ async def test_a_cancelled_flusher_still_finishes_its_batch_before_the_next_pers
     gate.set()
     await asyncio.gather(flusher, final, return_exceptions = True)
     assert flows_db.events_after(rs.id, 0)[-1]["data"] == {"message": "mid-write"}
+
+
+def test_the_token_cache_keeps_only_short_texts():
+    from core.flows import memory
+
+    memory._cached_tokens.cache_clear()
+    memory.tokens("a short memory about the lantern")
+    memory.tokens("lantern " * 1000)
+    assert memory._cached_tokens.cache_info().currsize == 1
+    assert memory.tokens("lantern " * 1000) == frozenset({"lantern"})
