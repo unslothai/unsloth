@@ -11,6 +11,8 @@ __all__ = [
     "fsdp2_units",
     "fsdp2_gathered",
     "fsdp2_gather_active",
+    "mesh_writer_rank",
+    "writes_off_rank0",
     "install_dcp_bnb_state_dict",
     "reduce_unsharded_trainable_grads",
 ]
@@ -71,7 +73,7 @@ def _dist():
     return None
 
 
-_SAVE_COUNTER = [0]
+_SAVE_COUNTER = {}
 
 
 def _save_timeout():
@@ -83,12 +85,70 @@ def _save_timeout():
         return datetime.timedelta(days = 7)
 
 
-def _wait_for_writer(dist, writer):
-    """The other ranks wait for rank 0's write, so no later collective overtakes it. A store key, not
-    a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
-    collective timeout, and NCCL ranks blocked in a barrier would abort before rank 0 arrives."""
-    _SAVE_COUNTER[0] += 1
-    key = f"unsloth_fsdp2_save_{_SAVE_COUNTER[0]}"
+def _unit_mesh(unit):
+    try:
+        group = unit._get_fsdp_state()._fsdp_param_group
+        return group.mesh_info.mesh if group is not None else None
+    except Exception:
+        return None
+
+
+def mesh_writer_rank(model):
+    """Lowest global rank of the model's FSDP2 mesh: a sub-mesh without rank 0 never gathers there."""
+    dist = _dist()
+    if dist is None:
+        return 0
+    DTensor = _dtensor_class()
+    mesh = None
+    if isinstance(model, torch.nn.Module):
+        if DTensor is not None:
+            mesh = next((p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None)
+        if mesh is None:
+            # Unsharded parameters (eval forward, no reshard) carry no mesh; the units still do.
+            mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
+        if mesh is None:
+            mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
+    try:
+        return int(mesh.mesh.min()) if mesh is not None else 0
+    except Exception:
+        return 0
+
+
+@contextlib.contextmanager
+def writes_off_rank0(model, writer_rank):
+    """transformers 5 save_pretrained writes only on global rank 0 (should_save_on_this_rank,
+    transformers/distributed/mixin.py); let a sub-mesh writer write for the block."""
+    patched = []
+    if writer_rank != 0 and isinstance(model, torch.nn.Module):
+        for module in model.modules():
+            if callable(getattr(module, "should_save_on_this_rank", None)) and (
+                "should_save_on_this_rank" not in module.__dict__
+            ):
+                module.should_save_on_this_rank = lambda is_main_process: bool(is_main_process)
+                patched.append(module)
+    try:
+        yield
+    finally:
+        for module in patched:
+            module.__dict__.pop("should_save_on_this_rank", None)
+
+
+def _wait_for_writer(
+    dist,
+    writer,
+    writer_rank = 0,
+):
+    """The other ranks wait for the writer's write, so no later collective overtakes it. A store key,
+    not a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
+    collective timeout, and NCCL ranks blocked in a barrier would abort before the writer arrives.
+    Keyed per writer rank so disjoint sub-meshes do not release each other."""
+    _SAVE_COUNTER[writer_rank] = _SAVE_COUNTER.get(writer_rank, 0) + 1
+    count = _SAVE_COUNTER[writer_rank]
+    key = (
+        f"unsloth_fsdp2_save_{count}"
+        if writer_rank == 0
+        else f"unsloth_fsdp2_save_r{writer_rank}_{count}"
+    )
     try:
         store = dist.distributed_c10d._get_default_store()
     except Exception:
@@ -221,14 +281,15 @@ def fsdp2_gathered(
     if not units or DTensor is None:
         yield None
         return
-    dist = _dist()
-    rank = dist.get_rank() if dist is not None else 0
-    writer = rank == 0
     for unit in units:
         # An eval forward leaves the last block and the lm_head unit gathered; make every
         # parameter a DTensor again so all ranks gather the same list.
         if hasattr(unit, "reshard"):
             unit.reshard()
+    dist = _dist()
+    rank = dist.get_rank() if dist is not None else 0
+    writer_rank = mesh_writer_rank(model)
+    writer = rank == writer_rank
     owners = {}
     for module in model.modules():
         for name, param in module._parameters.items():
@@ -278,7 +339,8 @@ def fsdp2_gathered(
         _ACTIVE.append(writer)
         _STAGED_4BIT.append(staged)
         pushed = True
-        yield writer
+        with writes_off_rank0(model, writer_rank if writer else 0):
+            yield writer
     finally:
         if pushed:
             _ACTIVE.pop()
@@ -289,7 +351,7 @@ def fsdp2_gathered(
                 module._parameters[name] = old
         replaced.clear()
         if dist is not None:
-            _wait_for_writer(dist, writer)
+            _wait_for_writer(dist, writer, writer_rank)
 
 
 def _is_4bit_base(base_layer):
@@ -304,9 +366,11 @@ def offload_all_but_4bit_merge_operands(model):
     """`offload_to_cpu` for a merged 4-bit save: PEFT merges a LoRA layer where its packed 4-bit base
     weight stays (its GPU), so only the adapter weights of those layers stay there too. Everything
     else (embeddings, unquantized towers, LoRA on unquantized layers with their base) goes to the CPU.
+    With `lora_bias = True` the merge adds lora_B's bias into the base bias, so that bias stays too.
     Selected by parameter name, not identity: `fsdp2_gathered` reshards first, and a parameter an eval
     forward left unsharded is a different object from the DTensor the gather then sees."""
     prefixes = []
+    exact = set()
     modules = model.named_modules() if isinstance(model, torch.nn.Module) else ()
     for module_name, module in modules:
         base_layer = getattr(module, "base_layer", None)
@@ -322,8 +386,13 @@ def offload_all_but_4bit_merge_operands(model):
         ):
             if isinstance(getattr(module, attr, None), torch.nn.Module):
                 prefixes.append(f"{prefix}{attr}.")
+        lora_B = getattr(module, "lora_B", None)
+        if isinstance(lora_B, torch.nn.Module) and any(
+            getattr(adapter, "bias", None) is not None for adapter in lora_B.children()
+        ):
+            exact.add(f"{prefix}base_layer.bias")
     prefixes = tuple(prefixes)
-    return lambda name, param: not name.startswith(prefixes)
+    return lambda name, param: not (name in exact or name.startswith(prefixes))
 
 
 _MERGED_4BIT_METHODS = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit")
@@ -625,7 +694,8 @@ def _restore_quant_state(model, state_dict, options):
     """Loading a full DCP state dict: the saved QuantState entries (`_add_quant_state_entries`) are
     copied into each live QuantState in place, so the packed bytes DCP loads are dequantized with the
     scales they were saved with. A saved QuantState that does not fit the live one (other shape,
-    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales. With
+    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales, as
+    does one without its packed weight unless strict=False (DCP keeps the live bytes then). With
     `broadcast_from_rank0` only rank 0 holds the entries and sends them to the others."""
     entries = _linear4bit_entries(model)
     if not entries:
@@ -649,6 +719,8 @@ def _restore_quant_state(model, state_dict, options):
             return
     from bitsandbytes.functional import QuantState
 
+    strict = bool(getattr(options, "strict", True)) if options is not None else True
+    orphans = []
     for prefix, module in entries:
         live = module.weight.quant_state
         head = prefix + "weight."
@@ -686,7 +758,24 @@ def _restore_quant_state(model, state_dict, options):
                         "quantization state is kept."
                     )
             continue
+        if not loads_weight:
+            if strict:
+                raise ValueError(
+                    f"Unsloth: the state dict has the 4-bit quantization state of `{head[:-1]}` but "
+                    "not its packed weight. Load the weight with it, or pass strict=False to keep "
+                    "the model's own weight and quantization state."
+                )
+            orphans.append(head[:-1])
+            continue
         expected = set(live.as_dict(packed = True))
+        saved_nested = any(k.startswith("nested_") for k in saved)
+        if saved_nested != bool(live.nested):
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` (nested "
+                f"{saved_nested}) does not match the model's (nested {bool(live.nested)}). Load it "
+                "into a model quantized with the same bitsandbytes settings "
+                "(bnb_4bit_use_double_quant)."
+            )
         if set(saved) != expected:
             raise ValueError(
                 f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` has entries "
@@ -720,6 +809,27 @@ def _restore_quant_state(model, state_dict, options):
         with torch.no_grad():
             for _, a, b in pairs:
                 b.copy_(a.to(b.device))
+    if orphans and (not broadcast or dist.get_rank() == 0):
+        import warnings
+        warnings.warn(
+            f"Unsloth: skipped the 4-bit quantization state of {', '.join(orphans)}: the state dict "
+            "does not have the packed weight, so the model keeps its own weight and quantization "
+            "state.",
+            stacklevel = 3,
+        )
+
+
+# Every key `QuantState.as_dict(packed = True)` can write, so skipped metadata never reaches DCP.
+_QUANT_STATE_KEYS = frozenset(
+    (
+        "absmax",
+        "quant_map",
+        "nested_absmax",
+        "nested_quant_map",
+        "quant_state.bitsandbytes__nf4",
+        "quant_state.bitsandbytes__fp4",
+    )
+)
 
 
 def _without_quant_state_entries(name, args, kwargs):
@@ -731,7 +841,8 @@ def _without_quant_state_entries(name, args, kwargs):
     drop = set()
     for prefix, module in _linear4bit_entries(model):
         drop.update(
-            prefix + "weight." + key for key in module.weight.quant_state.as_dict(packed = True)
+            prefix + "weight." + key
+            for key in _QUANT_STATE_KEYS.union(module.weight.quant_state.as_dict(packed = True))
         )
     if not drop:
         return args, kwargs
@@ -796,14 +907,13 @@ def _sync_replicated_grads(
     params,
     dist,
     mesh = None,
+    buffers = None,
 ):
-    """One all_reduce per (device, reduce dtype) over the fixed parameter list, in its order, issued
-    by every rank: a gradient this rank did not produce counts as zeros, and a per-parameter
-    "has a gradient" flag rides along so a parameter no rank used keeps grad None (as with DDP).
-    Sums in float32 (float64 stays float64), as FSDP2's reduce_dtype does: two fp16 gradients of
-    40000 overflow an fp16 sum although their mean is finite. Linear, so averaging the running
-    accumulation after each micro-step equals averaging the accumulated sum once. Over the ranks of
-    `mesh`, the model's own (mesh_all_reduce), not the whole world."""
+    """Average gradients over `mesh` (DDP-style), one all_reduce per (device, reduce dtype), entered
+    by every rank: a missing local gradient counts as zeros, and a "has a gradient" flag keeps grad
+    None for a parameter no rank used. Sums in float32 (fp16 sums overflow). The summed flags are
+    read (a host sync) only when some local gradient is None. `buffers` caches one flat buffer per
+    (device, dtype); gradients never alias it."""
     groups = {}
     for p in params:
         dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
@@ -811,35 +921,88 @@ def _sync_replicated_grads(
     for (device, dtype), group in groups.items():
         sizes = [p.numel() for p in group]
         total = sum(sizes)
-        flat = torch.zeros(total + len(group), dtype = dtype, device = group[0].device)
+        key = tuple((id(p), n) for p, n in zip(group, sizes))
+        cached = buffers.get((device, dtype)) if buffers is not None else None
+        if cached is not None and cached[0] == key:
+            flat = cached[1]
+        else:
+            flat = torch.empty(total + len(group), dtype = dtype, device = group[0].device)
+            if buffers is not None:
+                buffers[(device, dtype)] = (key, flat)
+        grads = [p.grad for p in group]
+        local_all = all(g is not None for g in grads)
+        flags = flat[total:]
+        if local_all:
+            flags.fill_(1)
+        else:
+            flags.zero_()
         offset = 0
-        for i, (p, n) in enumerate(zip(group, sizes)):
-            if p.grad is not None:
-                flat[offset : offset + n].copy_(p.grad.detach().reshape(-1))
-                flat[total + i] = 1
+        for i, (g, n) in enumerate(zip(grads, sizes)):
+            if g is not None:
+                flat[offset : offset + n].copy_(g.detach().reshape(-1))
+                if not local_all:
+                    # Not flags[i] = 1: that is a host sync on CUDA.
+                    flags[i].fill_(1)
+            else:
+                flat[offset : offset + n].zero_()
             offset += n
         world = mesh_all_reduce(flat, mesh, dist)
         flat[:total].div_(world)
-        used = flat[total:].tolist()  # one device sync, not one per parameter
+        used = None if local_all else flags.tolist()
         offset = 0
-        for i, (p, n) in enumerate(zip(group, sizes)):
-            if used[i] > 0:
+        for i, (p, g, n) in enumerate(zip(group, grads, sizes)):
+            if g is not None or used[i] > 0:
                 value = flat[offset : offset + n].view(p.shape)
                 if p.grad is None:
-                    p.grad = value.to(p.dtype).clone()
+                    p.grad = value.to(p.dtype, copy = True)
                 else:
                     p.grad.copy_(value)
             offset += n
 
 
+def _fsdp_grad_sync_deferred(model, cache):
+    """True when every FSDP2 param group has set_requires_gradient_sync(False), i.e. a non-final
+    micro-batch. False when no group is found (sync every backward)."""
+    states = cache.get("fsdp_states")
+    if states is None:
+        states = []
+        try:
+            from torch.distributed.fsdp import FSDPModule
+        except Exception:
+            try:
+                from torch.distributed._composable.fsdp import FSDPModule
+            except Exception:
+                FSDPModule = None
+        if FSDPModule is not None:
+            for module in model.modules():
+                if isinstance(module, FSDPModule):
+                    try:
+                        states.append(module._get_fsdp_state())
+                    except Exception:
+                        pass
+        cache["fsdp_states"] = states
+    found = False
+    for st in states:
+        groups = getattr(st, "_fsdp_param_groups", None)  # a list on newer torch (singular on 2.10)
+        if groups is None:
+            group = getattr(st, "_fsdp_param_group", None)
+            groups = [group] if group is not None else []
+        for group in groups:
+            reduce = getattr(group, "reduce_grads", None)
+            if reduce is None:
+                return False
+            if reduce:
+                return False
+            found = True
+    return found
+
+
 def reduce_unsharded_trainable_grads(model):
-    """Trainable parameters FSDP2 does not manage (e.g. in `ignored_modules`) get no gradient
-    reduction, so every rank would step on its own gradient and the replicas drift apart. Average
-    their gradients over the model's mesh ranks like DDP, once per backward, at its end, on every rank: a per-parameter
-    hook would make a rank that did not use the parameter (a branch, a routed MoE expert) skip the
-    collective the others enter, and hang. The sync is queued as an autograd engine callback from a
-    hook on `model`'s forward outputs (and, as a fallback, on each of these parameters), so it runs
-    after all gradients are accumulated and before the optimizer step / clip. Returns the names."""
+    """Average gradients of trainable params FSDP2 does not manage (e.g. `ignored_modules`) over the
+    mesh, else replicas drift. Runs once per backward as an autograd engine callback on every rank;
+    a per-parameter hook would hang when a rank skips the parameter (branch, routed MoE expert).
+    Skipped while FSDP2 grad sync is off (GA); the first synced backward averages the accumulated
+    sum. Returns the names."""
     dist = _dist()
     DTensor = _dtensor_class()
     if dist is None or DTensor is None:
@@ -851,10 +1014,14 @@ def reduce_unsharded_trainable_grads(model):
     seen = set()
     params = model.__dict__.setdefault("_unsloth_replicated_grad_params", [])
     state = model.__dict__.setdefault("_unsloth_replicated_grad_state", {"queued": False})
+    buffers = state.setdefault("buffers", {})
 
     def _sync():
         state["queued"] = False
-        _sync_replicated_grads(params, dist, mesh)
+        # Every rank enters the same branch: the GA flag is set alike on all ranks.
+        if _fsdp_grad_sync_deferred(model, state):
+            return
+        _sync_replicated_grads(params, dist, mesh, buffers)
 
     def _queue(*_):
         if not state["queued"]:

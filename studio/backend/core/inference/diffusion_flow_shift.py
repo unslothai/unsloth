@@ -76,6 +76,31 @@ def apply_comfy_flow_shift(
     return True
 
 
+def apply_scheduler_overrides(
+    pipe: Any,
+    overrides: Any,
+    logger: Any = None,
+) -> bool:
+    """Rebuild ``pipe.scheduler`` with a family's ``scheduler_overrides`` (the publisher's sampling config). True when
+    it changed; a scheduler that rejects them keeps the shipped schedule."""
+    pairs = dict(overrides or ())
+    scheduler = getattr(pipe, "scheduler", None)
+    config = getattr(scheduler, "config", None)
+    if not pairs or scheduler is None or config is None:
+        return False
+    if all(config.get(k) == v for k, v in pairs.items()):
+        return False
+    try:
+        pipe.scheduler = type(scheduler).from_config(config, **pairs)
+    except Exception as exc:  # noqa: BLE001 - keep the shipped schedule rather than fail the load
+        if logger is not None:
+            logger.warning("scheduler overrides %s not applied: %s", pairs, exc)
+        return False
+    if logger is not None:
+        logger.info("scheduler rebuilt with the family's overrides %s", pairs)
+    return True
+
+
 # A pipeline config's fixed sampling grid, terminal sigma excluded (QwenImage21Pipeline, huggingface/diffusers#14950).
 SAMPLE_SIGMAS_KEY = "sample_sigmas"
 

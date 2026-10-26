@@ -57,7 +57,6 @@ def _strip_nm_prefix(key: str) -> str:
     """Convert a v2/v3 `packages` key into a bare package name (leaf after last `node_modules/`)."""
     if not key:
         return ""
-    # LAST node_modules/ segment so transitives map to their leaf name.
     marker = "node_modules/"
     idx = key.rfind(marker)
     if idx == -1:
@@ -119,7 +118,6 @@ def _load_lockfile(path: Path) -> dict:
         raise ValueError(f"{path}: not valid JSON: {exc}") from exc
 
 
-# Registry lookup for the postinstall command body (best-effort).
 def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
     """Return {hook: command} for lifecycle hooks in registry metadata; None on any error (never raises)."""
     safe_name = urllib.parse.quote(name, safe = "@/")
@@ -150,7 +148,7 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
     findings: list[Finding] = []
     for key in sorted(head):
         if key in base:
-            continue  # pre-existing install-script dep; not in scope
+            continue
         name = head[key]
         version = key[len(name) + 1 :] if key.startswith(name + "@") else "<unversioned>"
         scripts = _fetch_registry_scripts(name, version)

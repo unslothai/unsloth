@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One draft per model settings identity, so the two Run settings editors cannot diverge.
+// One draft per settings identity, so the two Run settings editors cannot diverge.
 
 // Relative: the hub barrel pulls in React and the download manager.
 import {
@@ -10,7 +10,7 @@ import {
 } from "../../hub/lib/model-identity.ts";
 import type { PerModelConfig } from "./per-model-config";
 
-// Normalized like modelStorageKey; the JSON pair keeps "repo:quant" apart from "repo" at "quant".
+// The JSON pair keeps "repo:quant" apart from "repo" at "quant".
 function draftStorageKey(
   modelId: string,
   ggufVariant: string | null | undefined,
@@ -22,11 +22,9 @@ function draftStorageKey(
 }
 
 export type ModelConfigExtraArgsEdit = {
-  /** Exactly what is in the textarea, half-typed quotes included. */
   text: string;
-  /** `formatExtraArgs` of the tokens this edit published, to spot an external replacement. */
+  /** `formatExtraArgs` of the published tokens, to spot an external replacement. */
   source: string;
-  /** The row's verdict on `text`; an editor with Advanced collapsed has no row to ask. */
   loadable?: boolean;
 };
 
@@ -34,25 +32,20 @@ export type ModelConfigDraftSnapshot = {
   config: PerModelConfig;
   remember: boolean;
   savedRemember: boolean;
-  /** Last `loadedConfigSignature` applied to this draft from the resident process. */
   appliedLiveSignature: string;
 };
 
 const drafts = new Map<string, ModelConfigDraftSnapshot>();
 const listeners = new Set<() => void>();
-// Editors showing each draft: it must outlive one and not the last.
+// Editor refcount: a draft must outlive one editor but not the last.
 const hostCounts = new Map<string, number>();
-// Drafts whose stored override row is folded in. Keyed by the DRAFT, never by the candidate
-// keys: the two hosts build differently SHAPED lists, so no normalizing makes them equal.
+// Keyed by the draft, never candidate keys: the two hosts build differently shaped lists.
 const extraArgsHydratedDrafts = new Set<string>();
-// Drafts the USER changed, which the config alone cannot tell: a read may neither replace an
-// edited draft nor re-run over one, since the peer's edit is already in its configAtStart.
+// A read may neither replace an edited draft nor re-run over one.
 const editedDrafts = new Set<string>();
-// What is TYPED into the Extra Arguments box; the config holds argv tokens. Shared, or a second
-// editor re-quotes a half-typed line into balanced text and judges it loadable.
+// Shared, or a second editor re-quotes a half-typed line and judges it loadable.
 const extraArgsEditByDraftKey = new Map<string, ModelConfigExtraArgsEdit>();
 
-/** Stable React key: model + quant only. Live config sync goes through the draft store. */
 export function modelConfigEditorKey(
   modelId: string,
   ggufVariant: string | null | undefined,
@@ -86,10 +79,8 @@ export function readModelConfigDraft(
   return drafts.get(key);
 }
 
-/** Registers one editor and returns its release; the draft and its mark live while any holds. */
 export function retainModelConfigDraft(key: string): () => void {
-  // A fresh editor re-reads the row: the sidebar host never unmounts while a model is resident,
-  // so a permanent mark hid settings another origin saved. Never over an edit.
+  // A fresh editor re-reads: the sidebar host never unmounts while a model is resident. Never over an edit.
   if (!editedDrafts.has(key)) {
     extraArgsHydratedDrafts.delete(key);
   }
@@ -145,7 +136,6 @@ export function primeModelConfigDraft(
     };
     drafts.set(key, next);
     editedDrafts.delete(key);
-    // Re-seeded from the resident process, as external as a hydration.
     extraArgsEditByDraftKey.delete(key);
     notify();
     return next;
@@ -174,8 +164,7 @@ export function replaceModelConfigDraft(
   };
   drafts.set(key, next);
   editedDrafts.delete(key);
-  // Token equality cannot tell an A -> B -> A round trip from no change, so the edit goes with
-  // the value it described rather than waiting to be superseded.
+  // Token equality cannot tell A -> B -> A from no change, so drop the edit with its value.
   extraArgsEditByDraftKey.delete(key);
   notify();
 }
@@ -253,7 +242,6 @@ export function readExtraArgsEditForDraft(
   return extraArgsEditByDraftKey.get(key);
 }
 
-/** Retires the raw edit, so a replacement from outside the box is not re-quoted over. */
 export function clearExtraArgsEditForDraft(key: string): boolean {
   return extraArgsEditByDraftKey.delete(key);
 }
@@ -275,7 +263,6 @@ export function setExtraArgsEditForDraft(
   notify();
 }
 
-/** Records the row's verdict; a keystroke retires it by replacing the edit. */
 export function setExtraArgsEditLoadableForDraft(
   key: string,
   loadable: boolean,

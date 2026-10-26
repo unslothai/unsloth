@@ -212,3 +212,97 @@ def test_dequantized_load_saves_and_reloads_16bit_weights(tmp_path, arch):
     after = AutoModelForCausalLM.from_pretrained(str(dst), dtype = torch.bfloat16).state_dict()
     assert before.keys() == after.keys()
     assert all(torch.equal(before[k], after[k].cpu()) for k in before)
+
+
+@pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
+def test_transformers_own_dequantize_is_marked_and_saves_16bit(tmp_path):
+    """No GPU: transformers dequantizes by itself, the branch it takes below sm89 too."""
+    src, dst = tmp_path / "src", tmp_path / "saved"
+    src.mkdir()
+    _write_tiny_block_fp8_llama(str(src))
+    code = f"""
+import os, json, torch
+from transformers import AutoModelForCausalLM
+from safetensors import safe_open
+from unsloth.models.loader_utils import _drop_fp8_dequantize_conversions
+model = AutoModelForCausalLM.from_pretrained({str(src)!r}, dtype = torch.bfloat16)
+assert getattr(model.config, "quantization_config", None) is None
+print("DROPPED", _drop_fp8_dequantize_conversions(model))
+print("MARKED", int(getattr(model, "_unsloth_fp8_dequantized", False)))
+model.save_pretrained({str(dst)!r})
+dtypes = set()
+for name in os.listdir({str(dst)!r}):
+    if name.endswith(".safetensors"):
+        with safe_open(os.path.join({str(dst)!r}, name), "pt") as f:
+            dtypes |= {{f.get_slice(k).get_dtype() for k in f.keys()}}
+print("DTYPES", ",".join(sorted(dtypes)))
+"""
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", UNSLOTH_ALLOW_CPU = "1")
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output = True, text = True, timeout = 600, env = env
+    )
+    lines = dict(
+        l.split(" ", 1)
+        for l in out.stdout.splitlines()
+        if l.startswith(("DROPPED", "MARKED", "DTYPES"))
+    )
+    assert "DTYPES" in lines, (out.stdout[-2000:], out.stderr[-2000:])
+    assert int(lines["DROPPED"]) > 0 and lines["MARKED"] == "1", lines
+    assert lines["DTYPES"] == "BF16", lines
+
+
+def test_a_dequantized_fp8_load_gets_no_bitsandbytes_stamp():
+    # transformers deletes the fp8 config of a dequantizing load, so the quant type reads None like an
+    # unquantized load; the default load_in_4bit stamp then put a bnb config over 16bit weights.
+    import ast
+
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth/models/loader.py"
+    )
+    tree = ast.parse(open(path, encoding = "utf-8").read())
+
+    def assigned(name):
+        return [
+            ast.unparse(node.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == name for t in node.targets)
+        ]
+
+    stamps = [v for v in assigned("_stamp_bnb") if "_quant" in v]
+    assert len(stamps) == 2 and all("_unsloth_fp8_dequantized" in v for v in stamps), stamps
+    # A config object (FineGrainedFP8Config kept by an sm89+ fp8 load) is read too.
+    quants = assigned("_quant")
+    assert len(quants) == 2 and all("_loaded_quant_method" in v for v in quants), quants
+
+
+def test_loaded_quant_method_reads_dicts_and_config_objects():
+    from unsloth.models.loader_utils import _loaded_quant_method
+
+    assert _loaded_quant_method(SimpleNamespace(quantization_config = None)) is None
+    assert _loaded_quant_method(SimpleNamespace()) is None
+    assert _loaded_quant_method(SimpleNamespace(quantization_config = {"load_in_4bit": True})) is None
+    assert _loaded_quant_method(SimpleNamespace(quantization_config = dict(_BLOCK_FP8))) == "fp8"
+    if _HAS_DEQUANTIZE:
+        qc = FineGrainedFP8Config.from_dict(dict(_BLOCK_FP8))
+        assert _loaded_quant_method(SimpleNamespace(quantization_config = qc)) == "fp8"
+
+
+@pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
+def test_only_a_load_without_fp8_config_is_marked_dequantized():
+    # sm89+ keeps FP8Linear and its fp8 quantization_config: the bitsandbytes stamp must still see fp8.
+    from transformers.integrations.finegrained_fp8 import Fp8Dequantize
+    from unsloth.models.loader_utils import _drop_fp8_dequantize_conversions
+
+    def model(config):
+        conversion = SimpleNamespace(
+            operations = [Fp8Dequantize(None)], _original_target_patterns = ["weight"]
+        )
+        return SimpleNamespace(config = config, _weight_conversions = [conversion])
+
+    kept = model(SimpleNamespace(quantization_config = dict(_BLOCK_FP8)))
+    _drop_fp8_dequantize_conversions(kept)
+    assert not getattr(kept, "_unsloth_fp8_dequantized", False)
+    dequantized = model(SimpleNamespace())
+    assert _drop_fp8_dequantize_conversions(dequantized) == 1
+    assert dequantized._weight_conversions == [] and dequantized._unsloth_fp8_dequantized

@@ -660,6 +660,8 @@ def fake_runtime(monkeypatch):
     diffusers.WanTransformer3DModel = _FakeTransformer
     diffusers.HunyuanVideo15Pipeline = _FakeHV15Pipeline
     diffusers.HunyuanVideo15Transformer3DModel = _FakeTransformer
+    diffusers.Cosmos3OmniPipeline = _FakePipeline
+    diffusers.Cosmos3OmniTransformer = _FakeTransformer
     # A CLASS named as diffusers names it: the cache layer matches on type(...).__name__.
     diffusers.FirstBlockCacheConfig = FirstBlockCacheConfig
 
@@ -9158,6 +9160,7 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
     from core.inference.video_families import _FAMILIES
 
     _allow_te_prequant(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_COSMOS3_SAFETY_CHECKER", "0")
     calls = _capture_plan(monkeypatch)
     for fam in _FAMILIES:
         if fam.bf16_components_gb is None or fam.name == "wan2.2-t2v-a14b":
@@ -9177,11 +9180,8 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
         from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
         extra_gb = LTX25_WORKER_RESIDENT_GB if fam.name == "ltx-2.5" else 0.0
+        # LTX-2.5's unset request keeps its bf16 encoder (int8 is opt-in), so it is priced at the table too.
         components = list(fam.bf16_components_gb)
-        if fam.name == "ltx-2.5":
-            # LTX-2.5's unset request is its int8 ConvRot encoder (ComfyUI's), so the table's encoder is priced int8.
-            from core.inference.video_ltx25 import LTX25_TE_INT8_GB
-            components[1] = LTX25_TE_INT8_GB
         assert calls[0]["model_dense_mib"] == int(
             (sum(components) + extra_gb) * _MIB_PER_GB
         ), fam.name
@@ -12467,7 +12467,9 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
         source
     )  # the artifact the repo actually hosts
     assert resolve_prequant_source(fam, "int8", base_repo = LTX23_PREQUANT_BASE) is None
-    assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
+    # LTX-2 (2.0) resolves its own hosted fp8 file, never the 2.3 one.
+    ltx2 = resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2")
+    assert ltx2 is not None and ltx2.location == "unsloth/LTX-2-FP8"
 
 
 def _ltx23_fp8_card(monkeypatch, *, fp8 = True):
@@ -13201,6 +13203,7 @@ def test_cudnn_benchmark_opt_out_families():
         fam.vae_force_fp32
         or fam.name in ("ltx-2", "ltx-2.5")
         or fam.name.startswith("hunyuanvideo-1.5")
+        or fam.name.startswith("cosmos3-")
         for fam in _FAMILIES
         if not fam.cudnn_benchmark
     )
@@ -13332,12 +13335,19 @@ def _cuda_wan_load(monkeypatch, *, policy, speed_mode):
 
 @pytest.mark.parametrize(
     "policy,speed_mode,installed",
-    [("none", "default", True), ("model", "default", False), ("none", "off", False)],
+    [
+        ("none", "default", True),
+        ("model", "default", True),
+        ("group", "default", True),
+        ("streaming", "default", True),
+        ("sequential", "default", False),
+        ("none", "off", False),
+        ("group", "off", False),
+    ],
 )
 def test_resident_wan_load_decodes_untiled_when_it_fits(
     fake_runtime, monkeypatch, policy, speed_mode, installed
 ):
-    # Tiling is forced on; resident CUDA loads also get untiled-when-it-fits decode.
     from core.inference import video_vae_untiled
 
     calls = []

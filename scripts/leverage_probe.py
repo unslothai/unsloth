@@ -89,7 +89,6 @@ def main(argv = None) -> int:
         cdt = False,
         fbc = None,
     ):
-        # reset inductor config between runs
         import torch._inductor.config as ic
 
         ic.coordinate_descent_tuning = False
@@ -100,9 +99,9 @@ def main(argv = None) -> int:
             apply_first_block_cache(pipe.transformer, FirstBlockCacheConfig(threshold = fbc))
         if compile:
             compile_blocks(pipe, cdt = cdt)
-            _gen(pipe, steps, seed, res)  # warmup / compilation
+            _gen(pipe, steps, seed, res)
         else:
-            _gen(pipe, steps, seed, res)  # allocator warmup
+            _gen(pipe, steps, seed, res)
         img, dt = _gen(pipe, steps, seed, res)
         del pipe
         torch.cuda.empty_cache()

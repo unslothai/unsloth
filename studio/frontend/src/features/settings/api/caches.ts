@@ -4,11 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-/**
- * Caches are named by key, never by path: the backend owns the mapping from a
- * key to a directory, so nothing the browser sends can widen what a purge
- * reaches.
- */
+/** Caches are named by key, never path, so nothing the browser sends can widen a purge. */
 export const CACHE_KEYS = [
   "uv",
   "pip",
@@ -34,7 +30,6 @@ export type CacheGroup = "packages" | "compile" | "models";
 export type CacheEntry = {
   key: CacheKey;
   group: CacheGroup;
-  /** Clearing this costs a re-download, so it is never part of a bulk purge. */
   optIn: boolean;
   paths: string[];
   sizeBytes: number;
@@ -151,8 +146,7 @@ export function purgeOutcomeFromApi(
 export async function loadCacheInventory(
   options: { refresh?: boolean } = {},
 ): Promise<CacheInventory> {
-  // refresh re-walks instead of reusing a size measured a moment ago, which is
-  // what Recheck is for. UI sessions only; see the route.
+  // refresh re-walks instead of reusing a recent size; UI sessions only.
   const response = await authFetch(
     options.refresh
       ? "/api/settings/caches?refresh=true"
@@ -182,11 +176,7 @@ export async function purgeCaches(
   return purgeOutcomeFromApi(await response.json());
 }
 
-/** The caches a bulk clear covers: present, allowed, and free to rebuild.
- *
- * Entries and not bytes: a tree of empty directories measures zero, still
- * costs inodes, and the backend can empty it.
- */
+/** Present, allowed and free to rebuild; counted by entries since empty dirs measure zero. */
 export function bulkPurgeKeys(inventory: CacheInventory): CacheKey[] {
   return inventory.caches
     .filter(

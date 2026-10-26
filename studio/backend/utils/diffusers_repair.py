@@ -36,8 +36,7 @@ _INSTALLED, _NOTHING_TO_DO = 0, 1
 # The installer's DIFFUSERS_MAIN_MIN_PYTHON: diffusers main needs 3.11, and 3.9 / 3.10 stay supported.
 _MAIN_MIN_PYTHON = (3, 11)
 
-# Unattended, so secrets and index redirects stay out, as in mlx_repair. The Windows names are what
-# Python, git and uv need to start at all there; UV_OFFLINE is the operator's no-network switch.
+# Unattended, so secrets and index redirects stay out; Windows names are needed to start.
 _ENV_ALLOWLIST = frozenset(
     {
         "PATH",
@@ -134,11 +133,7 @@ def _release_behind() -> bool:
 
 
 def _diffusers_is_an_index_install() -> bool:
-    """True when diffusers came from an index, the only state the repair acts on.
-
-    Read from metadata, so the common healthy boot spawns nothing: the pinned build is a direct
-    reference (git or zip) and records one in direct_url.json.
-    """
+    """Read from metadata so a healthy boot spawns nothing; direct builds record direct_url.json."""
     try:
         from importlib.metadata import distribution
         dist = distribution("diffusers")
@@ -225,10 +220,7 @@ def _installer_would_skip(main_active: bool = True) -> bool:
 
 
 def _run_installer(flag: str, timeout: float) -> "tuple[int | None, str]":
-    """Run one installer mode; None as the code when it was stopped at ``timeout``.
-
-    Raises OSError when the installer cannot start.
-    """
+    """Returns None as the code when stopped at timeout; raises OSError if the installer cannot start."""
     from utils.child_stdio import utf8_child_env
     from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid, terminate_pid
 
@@ -267,8 +259,7 @@ def _run_repair(
 ) -> bool:
     started = time.monotonic()
     if prefetch:
-        # The slow part (clone or download, then build) goes into uv's cache only, so stopping it
-        # at the deadline leaves site-packages untouched and the app can import as it is.
+        # The slow part only fills uv's cache, so stopping it leaves site-packages untouched.
         try:
             code, output = _run_installer("--prefetch-diffusers-main", _REPAIR_TIMEOUT_S)
         except OSError as exc:
@@ -300,8 +291,7 @@ def _run_repair(
         if _peer_holds_pass():
             logger.warning("diffusers self-heal timed out behind a peer's dependency pass")
             raise PeerInstallInProgress(PEER_INSTALL_MESSAGE)
-        # Ours, and possibly stopped part way through replacing packages: importing them is unsafe.
-        # Not recorded as failed, so the next start retries from uv's cache.
+        # Possibly stopped mid-replace, so importing is unsafe; not recorded as failed to retry.
         logger.warning("diffusers self-heal install stopped after %.0fs", budget)
         raise InstallInterrupted(INTERRUPTED_MESSAGE)
     if code == _INSTALLED:
@@ -326,11 +316,8 @@ def _loaded_replaceable_modules() -> "list[str]":
 
 
 def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: None) -> bool:
-    """Repair an index install before app imports. Return True if the build was installed.
-
-    Raise PeerInstallInProgress if a peer holds the install lock at timeout, and
-    InstallInterrupted if our own install had to be stopped.
-    """
+    """Returns True if the build was installed; raises on peer lock timeout or an interrupted own
+    install."""
     main_active = _main_pin_active()
     if _opted_out(main_active) or not _MAIN_PIN.is_file() or not _INSTALLER.is_file():
         return False
@@ -340,8 +327,7 @@ def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: 
     if candidate and not _installer_would_skip(main_active):
         loaded = _loaded_replaceable_modules()
         if loaded:
-            # An embedding host (a notebook kernel) imported them already; replacing the files
-            # under those modules is what this repair exists to avoid.
+            # An embedding host already imported them; replacing files under those modules is what we avoid.
             echo(
                 f"  - skipped the pinned Diffusers build: {', '.join(loaded)} is already imported "
                 "in this process; run `unsloth studio update`, then restart it"

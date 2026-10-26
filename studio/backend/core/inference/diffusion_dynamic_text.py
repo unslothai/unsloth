@@ -89,6 +89,13 @@ _ZIMAGE_SOURCES: tuple[str, ...] = (
     r".*\['args'\]\[[0-2]\]$",
 )
 
+# Cosmos3 tokenizes the prompt unpadded (pipeline_cosmos3_omni.py ``_tokenize``): every prompt length is a new shape.
+_COSMOS3_SOURCES: tuple[str, ...] = (
+    "L['und_seq']",
+    "L['rotary_emb'][0]",
+    "L['rotary_emb'][1]",
+)
+
 # MOSS-Image: unpadded text (cond and uncond differ), so every prompt is a new length.
 _MOSS_IMAGE_SOURCES: tuple[str, ...] = (
     "L['x']",
@@ -118,6 +125,7 @@ PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "LTX2VideoTransformer3DModel": FIXED_LENGTH,  # Gemma left-padded to max_sequence_length 1024
     "WanTransformer3DModel": FIXED_LENGTH,  # UMT5 padded to max_sequence_length 512
     "HunyuanVideo15Transformer3DModel": FIXED_LENGTH,  # padded to the tokenizer max length
+    "Cosmos3OmniTransformer": _COSMOS3_SOURCES,
 }
 
 

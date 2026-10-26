@@ -27,6 +27,9 @@ _MIB = 1024 * 1024
 _STREAM_MIN_MIB = 512
 _HOST_RESERVE_MIN_MIB = 3072
 _HOST_RESERVE_FRACTION = 0.10
+# Host RAM the fp8-storage rule (``diffusion_comfy_quant.fp8_storage_wanted``) keeps free when it lets a single file
+# widen. The single-file refusal reserves at most this much, so it never refuses a widened load that rule chose.
+FP8_STORAGE_HOST_RESERVE_MIB = 4096
 # fp16 T5 keeps ``wo`` in fp32 (``_keep_in_fp32_modules``): 9.5 GB stored, 11.0 GB loaded.
 _CONVERT_MARGIN = 1.15
 _INT8_MIN_ELEMENTS = 1 << 22
@@ -184,6 +187,12 @@ def host_commit_mib() -> Optional[int]:
 
 def host_reserve_mib(total_mib: Optional[int]) -> int:
     return max(_HOST_RESERVE_MIN_MIB, int((total_mib or 0) * _HOST_RESERVE_FRACTION))
+
+
+def single_file_host_reserve_mib(total_mib: Optional[int]) -> int:
+    """Reserve of the single-file host RAM refusal: the small-host reserve, capped at the fp8-storage rule's. Hosts
+    up to 40 GB are unchanged; above, 10% would refuse loads the fp8-storage rule widens because they fit."""
+    return min(host_reserve_mib(total_mib), FP8_STORAGE_HOST_RESERVE_MIB)
 
 
 def _dtype_name(dtype: Any) -> str:
@@ -772,8 +781,7 @@ class _EncoderPrefetcher:
                         )
                     continue
                 nbytes += n
-                # Compute-stream pool (a side-stream block stays cached away from the denoise); the copy waits for
-                # work queued there, covering the last user of a freed block.
+                # Copy waits on the compute stream so it covers the last user of a freed block.
                 with torch.cuda.stream(compute):
                     dst = torch.empty(src.shape, dtype = src.dtype, device = self.device)
                     queued = torch.cuda.Event()
