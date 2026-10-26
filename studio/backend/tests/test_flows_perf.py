@@ -84,6 +84,7 @@ async def test_each_run_takes_a_fresh_key_and_the_next_is_minted_ahead():
     eng = _engine(dict(BASE))
     eng.mint_key = lambda account: (minted.append(len(minted)) or (f"k{len(minted)}", len(minted)))
     eng.revoke_key = lambda key_id: revoked.append(key_id)
+    eng.key_alive = lambda key_id: True
     d = doc([node("a", "input.text")], id = "keys")
     flows_db.save_flow(parse_document(d)[0])
     first = await _run(eng, d)
@@ -107,11 +108,60 @@ async def test_an_invoke_key_is_still_revoked_after_the_answer():
     eng = _engine({**BASE, "story.next_scene": next_scene})
     eng.mint_key = lambda account: ("k", 7)
     eng.revoke_key = lambda key_id: revoked.append(key_id)
+    eng.key_alive = lambda key_id: True
     parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
     out = await eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n")
     assert out["scene"] == {"ok": True}
     await eng.release_spare_keys()
     assert revoked.count(7) >= 1
+
+
+@run_async
+async def test_a_spare_key_deleted_by_a_credential_reset_is_not_used():
+    minted, revoked, deleted = [], [], set()
+    eng = _engine(dict(BASE))
+
+    def mint(account):
+        minted.append(len(minted) + 1)
+        return (f"k{minted[-1]}", minted[-1])
+
+    eng.mint_key = mint
+    eng.revoke_key = lambda key_id: revoked.append(key_id)
+    eng.key_alive = lambda key_id: key_id not in deleted
+    d = doc([node("a", "input.text")], id = "resetkeys")
+    flows_db.save_flow(parse_document(d)[0])
+    await _run(eng, d)
+    await asyncio.sleep(0.05)
+    deleted.update(minted)
+    second = await _run(eng, d)
+    assert second.key_id not in deleted
+    await eng.release_spare_keys()
+
+
+def test_a_run_key_reads_dead_after_revoke_or_account_reset(tmp_path, monkeypatch):
+    import secrets
+
+    from auth import policy, storage
+    from core.flows import caller
+    from utils.account_context import AccountContext
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
+    monkeypatch.setattr(storage, "_bootstrap_password", None)
+    policy.invalidate_account_cache()
+    try:
+        storage.create_initial_user("unsloth", "owner-password", secrets.token_urlsafe(32))
+        alice = storage.issue_account_setup_code(username = "alice")["account"]
+        account = AccountContext(account_id = alice["account_id"], username = "alice", role = "user")
+        _, revoked_id = caller.mint_run_key(account)
+        caller.revoke_run_key(revoked_id)
+        _, reset_id = caller.mint_run_key(account)
+        assert caller.run_key_active(reset_id) and not caller.run_key_active(revoked_id)
+        storage.set_account_active(alice["account_id"], False)
+        assert not caller.run_key_active(reset_id)
+        assert caller.run_key_active(None)
+    finally:
+        policy.invalidate_account_cache()
 
 
 @run_async
@@ -156,6 +206,7 @@ async def test_overlapping_calls_keep_one_spare_key_per_account():
 
     eng.mint_key = mint
     eng.revoke_key = lambda key_id: revoked.append(key_id)
+    eng.key_alive = lambda key_id: True
     parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
     await asyncio.gather(
         *(eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n") for _ in range(4))

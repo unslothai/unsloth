@@ -802,6 +802,7 @@ class FlowEngine:
             flow_caller.mint_run_key
         )
         self.revoke_key: Callable[[Optional[int]], None] = flow_caller.revoke_run_key
+        self.key_alive: Callable[[Optional[int]], bool] = flow_caller.run_key_active
         # One key minted ahead per account (PBKDF2, ~40 ms): each run or call still uses a key once and revokes it.
         self._spare_keys: dict[tuple, asyncio.Task] = {}
         self._revoking: set[asyncio.Task] = set()
@@ -818,6 +819,10 @@ class FlowEngine:
                     found = None
             elif not spare.cancelled() and spare.exception() is None:
                 found = spare.result()
+        # A credential reset while the spare waited deletes it.
+        if found is not None and not await asyncio.to_thread(self.key_alive, found[1]):
+            self._revoke_soon(found[1])
+            found = None
         if found is None:
             found = await asyncio.to_thread(self.mint_key, account)
         if slot not in self._spare_keys:
