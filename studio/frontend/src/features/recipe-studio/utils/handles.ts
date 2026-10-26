@@ -5,7 +5,6 @@ import type { Connection } from "@xyflow/react";
 import type { LayoutDirection } from "../types";
 
 export const HANDLE_IDS = {
-  // data flow lanes
   dataIn: "data-in",
   dataInTop: "data-in-top",
   dataInRight: "data-in-right",
@@ -14,7 +13,6 @@ export const HANDLE_IDS = {
   dataOutLeft: "data-out-left",
   dataOutTop: "data-out-top",
   dataOutBottom: "data-out-bottom",
-  // semantic dependency lanes
   semanticIn: "semantic-in",
   semanticInTop: "semantic-in-top",
   semanticInRight: "semantic-in-right",
@@ -25,7 +23,6 @@ export const HANDLE_IDS = {
   semanticOutTop: "semantic-out-top",
   semanticOutBottom: "semantic-out-bottom",
   semanticOutRight: "semantic-out-right",
-  // llm prompt/scorer lanes
   llmInputOutLeft: "llm-input-out-left",
   llmInputOutRight: "llm-input-out-right",
   llmInputOutTop: "llm-input-out-top",

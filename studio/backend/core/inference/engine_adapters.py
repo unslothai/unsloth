@@ -379,13 +379,8 @@ def launch_arguments(
 
 
 def memory_reserve_mib(engine: str, options: dict | None) -> int:
-    """MiB left outside the engine's budget, for what each engine allocates past it. On a 24 GB L4
-    with Qwen2.5-0.5B, vLLM's sampler warmup failed at 512 MiB and passed from 1536 (it scales with
-    the vocabulary, so larger ones need more); SGLang's CUDA graphs and NCCL buffers died mid-request
-    at 512 and passed from 2048. vLLM with TorchAO weights overruns by 2.4-4.8 GiB more (B200).
-    The warmup also grows with the card: vLLM raises its default max_num_seqs on large GPUs, and a
-    96 GB RTX PRO 6000 ran out of memory in the sampler warmup with 3 GiB left, so
-    ``gpu_memory_fraction`` keeps at least ``RESERVE_SHARE`` of each card free as well."""
+    """Reserve for allocations the engine does not budget; the warmup grows with vocabulary and card
+    size."""
     options = options or {}
     precision = options.get("precision", "auto")
     torchao = engine == "vllm" and (
@@ -438,7 +433,23 @@ def gpu_memory_fraction(
 
 
 def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
+    # R570+ MIG ids are CUDA devices: budget each slice; nvidia-smi --id takes physical ids.
+    try:
+        from utils.hardware import mig
+        slices = mig.rows_for(gpu_ids)
+    except Exception:
+        slices = None
+    if slices is not None:
+        if not all(float(r.get("memory_total_mib") or 0) > 0 for r in slices):
+            raise RuntimeError(
+                "The selected MIG GPU instance has no memory reading right now because the GPU "
+                "probe did not answer. Retry in a few seconds."
+            )
+        return [
+            (float(r["memory_total_mib"]), float(r.get("memory_free_mib") or 0)) for r in slices
+        ]
     from utils.hardware.nvidia import _nvidia_smi_executable
+
     result = subprocess.run(
         [
             _nvidia_smi_executable(),

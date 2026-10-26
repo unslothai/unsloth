@@ -13,11 +13,9 @@ import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
   MoreHorizontalIcon,
-  PauseIcon,
   PencilEdit02Icon,
-  PlayIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { useEffect, useRef, useState } from "react";
@@ -25,6 +23,8 @@ import { type AudioVoice, fetchAudioBlob } from "../api";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { SaveVoiceDialog } from "./save-voice-dialog";
 import { formatSeconds } from "./waveform-peaks";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { PlayIcon } from "lucide-react";
 
 // About 20 saved voices (30 s of 24 kHz mono each); older previews re-fetch.
 const voiceUrls = new BlobUrlCache(32 * 1024 * 1024);
@@ -167,10 +167,11 @@ export function VoicePicker({
                   }
                   onClick={() => void togglePlay(voice)}
                 >
-                  <HugeiconsIcon
-                    icon={playing ? PauseIcon : PlayIcon}
-                    className="size-3.5"
-                  />
+                  {playing ? (
+                    <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
+                  ) : (
+                    <PlayIcon className="size-3.5" />
+                  )}
                 </Button>
                 <button
                   type="button"

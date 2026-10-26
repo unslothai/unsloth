@@ -544,6 +544,42 @@ def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
     assert calls  # no host metadata: compiled
 
 
+def test_compiled_block_flags_packed_attention(monkeypatch):
+    """hf_packed_attention runs packed rows outside the graph only while a block's compiled call
+    runs: set there, restored after, never on the stock forward."""
+    M = _load()
+    packed_mod = types.ModuleType(M._PACKED_MODULE)
+    packed_mod.IN_COMPILED_BLOCK = [False]
+    monkeypatch.setitem(sys.modules, M._PACKED_MODULE, packed_mod)
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            seen.append(packed_mod.IN_COMPILED_BLOCK[0])
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    x = torch.randn(1, 4, 8)
+    with torch.no_grad():
+        layer(x)
+    assert seen and all(seen)
+    assert packed_mod.IN_COMPILED_BLOCK == [False]
+    seen.clear()
+    layer.eval()(x)  # stock forward
+    assert seen == [] and packed_mod.IN_COMPILED_BLOCK == [False]
+    # Without the module (never imported) the block still runs.
+    monkeypatch.delitem(sys.modules, M._PACKED_MODULE)
+    layer.train()
+    with torch.no_grad():
+        layer(x)
+    assert M._NO_PACKED == [False]
+
+
 def test_gemma4_band_fast_path_in_blocks(monkeypatch):
     M = _load()
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS

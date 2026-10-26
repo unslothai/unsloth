@@ -12,6 +12,48 @@ def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(main, "_system_gpu_cache", None)
 
 
+def test_system_monitor_ignores_spark_npu_telemetry(monkeypatch):
+    import utils.hardware as hardware
+    from utils.hardware import nvidia
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda *a, **k: SimpleNamespace(
+            returncode = 0,
+            stdout = "0, NVIDIA RTX Spark N1X, 46477\n1, NVIDIA NPU, [N/A]\n",
+        ),
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_backend_visible_gpu_info",
+        lambda: {**nvidia.get_backend_visible_gpu_info([0, 1], None), "backend": "cuda"},
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_visible_gpu_utilization",
+        lambda: {
+            "backend": "cuda",
+            "devices": [
+                {"index": 0, "vram_total_gb": 45.39, "vram_used_gb": 20.5},
+                {"index": 1, "vram_total_gb": None, "vram_used_gb": None},
+            ],
+        },
+    )
+    monkeypatch.setattr(hardware, "get_vulkan_inference_gpu_info", lambda: None)
+    monkeypatch.setattr(hardware, "get_cross_vendor_inference_gpu_info", lambda: None)
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *a: None))
+    # Both monitor views read this inventory and sum its per-device usage.
+    assert len(gpu["devices"]) == 1
+    assert gpu["devices"][0]["index"] == 0
+    assert sum(d["vram_used_gb"] for d in gpu["devices"]) == 20.5
+    assert inference_gpu["devices"] == gpu["devices"]
+
+
 def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     import utils.hardware as hardware
 

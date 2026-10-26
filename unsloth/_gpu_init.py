@@ -75,19 +75,12 @@ try:
 except Exception:
     pass
 
-# Before anything imports huggingface_hub (disable_broken_vllm, check_fbgemm_gpu_version and
-# fix_huggingface_hub all reach it): the Hub freezes HF_HUB_DISABLE_XET at import time. Stdlib
-# only, so it does not disturb the torch ordering the next comment describes.
+# Before anything imports huggingface_hub, which freezes HF_HUB_DISABLE_XET at import time.
 fix_broken_hf_xet_wheel()
-# Configure libdrm ids table path early so ROCm can resolve AMD GPU names. Stdlib only,
-# and it must stay ahead of the first `import torch` in this file: it sets
-# AMDGPU_ASIC_ID_TABLE_PATH, and a torch that has already brought up libdrm would not see
-# the discovered table.
+# Must precede the first `import torch`: it sets AMDGPU_ASIC_ID_TABLE_PATH, read when libdrm loads.
 configure_amdgpu_asic_id_table_path()
-# Ahead of every fix below and of `import unsloth_zoo`, because those are what
-# import transformers, and a transformers newer than this torch raises its bare
-# AttributeError at the first one of them to reach it (#8933). It imports torch, which is
-# why the ROCm table above comes first.
+# Must precede the fixes below and `import unsloth_zoo`: they import transformers, which raises bare AttributeError if newer than torch.
+# It imports torch, which is why the ROCm table above comes first.
 patch_torch_missing_attribute_error()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
@@ -104,8 +97,7 @@ disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
 fix_torch_check_is_size()
-# The above fixes THIS process only; vLLM's model-architecture inspector is a subprocess that
-# imports torchao itself and hits the same ImportError.
+# The fixes above cover only this process; vLLM's architecture inspector is a subprocess that imports torchao and hits the same ImportError.
 propagate_torchao_fix_to_subprocesses()
 # Warn, do not raise: this only adds the correct remedy just before transformers prints its misleading one.
 check_transformers_dependency_versions()
@@ -115,11 +107,8 @@ check_triton_py_ssize_t_clean()
 fix_triton_module_cache_python_key()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
-# Ahead of `import unsloth_zoo` below, deliberately not down with the other import fixes: unsloth_zoo's
-# temporary_patches reach transformers.processing_utils, which imports transformers.audio_utils, which
-# imports torchaudio, so a torchaudio that raises at extension init takes the whole unsloth import down at
-# that `import unsloth_zoo` line, long before the late block would have neutralised it. Measured:
-# Kaggle-Muse_Glimmer_(30B)-GRPO died at cell 4 with the guard present but not yet run.
+# Before `import unsloth_zoo`: its patches import torchaudio via transformers, and a broken
+# torchaudio would fail the whole import before the later fixes run.
 disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()
@@ -142,8 +131,7 @@ del fix_diffusers_warnings
 del fix_huggingface_hub
 del fix_broken_hf_xet_wheel
 
-# Unsloth patches these libraries at import time; if they are imported first the unoptimized
-# versions run, risking OOM or slower training.
+# If imported before Unsloth, the unpatched versions run, risking OOM or slower training.
 if already_imported:
     # stacklevel=2 points the warning at the user's import line
     warnings.warn(
@@ -166,10 +154,8 @@ del maybe_set_windows_rocm_bnb_version
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
-# `docker --gpus '"device=N"'` sets NVIDIA_VISIBLE_DEVICES but not
-# CUDA_VISIBLE_DEVICES, so Inductor's compile-worker pool cannot enumerate the
-# cgroup-pinned GPU ("Could not find an active GPU backend"). Pinned ids only, not
-# "all"/"none"/"void"/"". Opt out with UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0.
+# docker --gpus sets NVIDIA_VISIBLE_DEVICES but not CUDA_VISIBLE_DEVICES, so Inductor compile workers miss the pinned GPU.
+# Only for pinned ids, not all/none/void/empty. Opt out with UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0.
 _nvd = os.environ.get("NVIDIA_VISIBLE_DEVICES", "").strip().lower()
 _cgroup_pinned = _nvd not in ("", "all", "none", "void")
 if (
@@ -295,13 +281,8 @@ if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
             "determine_compile_threads",
             lambda: 1,
         )
-        # `import unsloth_zoo` above already ran temporary_patches, so its
-        # module-level options dicts are snapshots of the original count and
-        # replacing the function only reaches dicts built from here on. Those
-        # snapshots go to torch.compile as `options`, which Inductor applies as a
-        # config patch outranking both the env var and the value set above. Rewrite
-        # them IN PLACE: each dict is shared by identity with every zoo module
-        # re-exporting it and with the functools.partial in `torch_compile`.
+        # Zoo's options dicts were snapshotted at import and outrank the env var in Inductor; rewrite them
+        # in place, since they are shared by identity across modules and the torch_compile partial.
         for module in list(sys.modules.values()):
             name = getattr(module, "__name__", "")
             if name != "unsloth_zoo" and not name.startswith("unsloth_zoo."):
@@ -415,9 +396,7 @@ from .import_fixes import (
 fix_transformers5_legacy_config_types()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
-# Probe-gated: no-ops unless this transformers really hands SDPA a query row that attends to
-# nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
-# same process is covered too (#9708).
+# Probe-gated: no-op unless SDPA gets a query row that attends to nothing; runs before model imports so plain generate is covered.
 fix_transformers_fully_masked_rows()
 fix_transformers_flash_attention_mrope_packed_sequence()
 fix_transformers_chunked_mask_block_sequence_ids()
@@ -441,9 +420,7 @@ fix_transformers_bnb_prequantized_save()
 # A run that loads no pre-quantized multimodal checkpoint never fails either way.
 check_transformers_prequantized_vlm_quant_state()
 del check_transformers_prequantized_vlm_quant_state
-# Probe-gated: no-ops unless replacing config.rope_scaling on this transformers really loses the
-# RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
-# retry in models/llama.py sees a config that kept its base (#2405).
+# Probe-gated: no-op unless assigning config.rope_scaling drops the RoPE base; must run before configs exist so llama.py retry keeps it.
 fix_transformers_rope_scaling_drops_theta()
 fix_transformers_fp8_modulelist_experts()
 fix_transformers_fp8_unscaled_checkpoint_linears()
@@ -454,9 +431,7 @@ fix_transformers_longcat_lsa_config()
 # Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
 fix_transformers_remote_rope_scaling_none()
 fix_transformers_is_torch_fx_available()
-# Probe-gated and lazy: only wraps get_class_in_module, so the siglip image
-# modules are imported and patched when a checkpoint's own modeling file runs,
-# not on every `import unsloth`.
+# Probe-gated and lazy: only wraps get_class_in_module.
 fix_transformers5_image_processing_reexports()
 fix_transformers5_remote_code_model_api()
 fix_xformers_performance_issue()
@@ -465,8 +440,7 @@ fix_xformers_performance_issue()
 fix_flash_attn_4_namespace_shadow()
 fix_vllm_aimv2_issue()
 fix_vllm_lora_tokenizer_module()
-# torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) still imports the old path. Lazy alias, so
-# it costs nothing unless asked for.
+# torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) imports the old path. Lazy alias.
 fix_torchao_nf4tensor_move()
 fix_compressed_tensors_activation_quant_gradient()
 fix_torchao_safe_int_mm_repr_probe()
@@ -513,8 +487,7 @@ patch_peft_shared_active_adapter()
 # After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
 # replaced too, not just import_utils'.
 fix_peft_stale_torchao_import_error()
-# Same reason, one layer on: peft.tuners.lora.model imported dispatch_torchao by value, so both
-# copies have to be replaced, and both modules exist by now.
+# peft.tuners.lora.model imported dispatch_torchao by value, so both copies must be replaced.
 fix_peft_torchao_missing_tensor_subclass()
 patch_accelerate_recursively_apply()
 
@@ -575,9 +548,7 @@ del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
-    # UNSLOTH_ALLOW_CPU=1 keeps DEVICE_TYPE at "cuda" on a host with a CUDA-built torch and no usable
-    # device, so ask whether a device is present before asking what it can do: get_device_capability()
-    # would raise out of _lazy_init(). is_bf16_supported() is stubbed to match.
+    # UNSLOTH_ALLOW_CPU=1 keeps DEVICE_TYPE "cuda" with no device; get_device_capability() would raise.
     SUPPORTS_BFLOAT16 = False
     torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
 elif DEVICE_TYPE == "cuda":
@@ -646,21 +617,21 @@ if DEVICE_TYPE == "hip" and any(arch_lacks_buffer_ops(arch) for arch in hip_visi
     apply_gfx101x_triton_workaround()
 
 # For Gradio HF Spaces?
-# if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-# `triton` is optional here, like bitsandbytes below. The PyPI `triton` project publishes no
-# Windows wheel (Windows is served by the separate `triton-windows` package), so a CPU only
-# Windows install has no `triton` at all, and an unconditional import here killed
-# `import unsloth` with a bare ModuleNotFoundError from a line whose only job is to resolve
-# `libcuda_dirs` on CUDA hosts. Everything below treats `triton is None` as "no Triton
-# kernels", which is already the state of a CPU only install.
+# triton is optional (no PyPI Windows wheel); code below treats triton None as no Triton kernels, and CPU-only installs must import.
 try:
     import triton
 except Exception as _triton_import_exception:
     triton = None
     TRITON_IMPORT_ERROR = f"{type(_triton_import_exception).__name__}: {_triton_import_exception}"
+    # No Triton package at all (AMD Windows wheels), not an installed but broken one.
+    _TRITON_MISSING = (
+        isinstance(_triton_import_exception, ModuleNotFoundError)
+        and _triton_import_exception.name == "triton"
+    )
     del _triton_import_exception
 else:
     TRITON_IMPORT_ERROR = None
+    _TRITON_MISSING = False
 
 if TRITON_IMPORT_ERROR is not None:
     if DEVICE_TYPE in ("cuda", "hip") and torch.cuda.is_available():
@@ -695,8 +666,7 @@ if DEVICE_TYPE == "cuda":
     try:
         import bitsandbytes as bnb
 
-        # Bind the submodule by name: a half-imported bitsandbytes leaves the parent without a `functional`
-        # attribute, which would otherwise be misreported below as a CUDA linking failure.
+        # Bind the submodule by name: a half-imported bitsandbytes lacks functional, which would otherwise be misreported as a CUDA linking failure.
         import bitsandbytes.functional as bnb_functional
     except:
         print(
@@ -709,9 +679,7 @@ if DEVICE_TYPE == "cuda":
         libcuda_dirs()
     except:
         if not torch.cuda.is_available():
-            # UNSLOTH_ALLOW_CPU=1 on a driverless host: a missing libcuda is the expected state, not broken
-            # linkage, and repairing it would ldconfig the host's linker cache as root for a device that is
-            # not there.
+            # Driverless UNSLOTH_ALLOW_CPU host: missing libcuda is expected; do not ldconfig as root.
             pass
         elif hasattr(os, "geteuid") and os.geteuid() == 0:
             warnings.warn("Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA.")
@@ -744,9 +712,7 @@ if DEVICE_TYPE == "cuda":
                 importlib.reload(bnb)
             if triton is not None:
                 importlib.reload(triton)
-            # Same degradation as the cuda branch above: no bnb means no 4bit, not a failed `import unsloth`.
-            # No triton either means there is nothing to re-resolve here, and the missing Triton was
-            # already reported above, so do not re-report it as a CUDA linking failure.
+            # No bnb means no 4bit, not a failed import; missing Triton was already reported above.
             try:
                 libcuda_dirs = lambda: None
                 if triton is None:
@@ -806,12 +772,68 @@ from .import_fixes import patch_bitsandbytes_optimizer_step_sync
 patch_bitsandbytes_optimizer_step_sync()
 del patch_bitsandbytes_optimizer_step_sync
 
-from .models import *
-from .models import __version__
-from .save import *
-from .chat_templates import *
-from .tokenizer_utils import *
-from .trainer import *
+
+def _define_kernels_against_triton_stub():
+    """Unsloth's kernel modules define @triton.jit kernels at import. With no Triton package, a triton import made
+    by an unsloth.* module resolves to unsloth_zoo's triton stub (calling a kernel raises); every other importer
+    still sees no Triton, so no library mistakes the stub for a real one. Returns the undo callable."""
+    try:
+        from unsloth_zoo.stubs import triton_stub
+    except ImportError:
+        return None
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
+        importer = (globals or {}).get("__name__") or ""
+        if (
+            level
+            or not (name == "triton" or name.startswith("triton."))
+            or importer.split(".")[0] != "unsloth"
+        ):
+            return real_import(name, globals, locals, fromlist, level)
+        meta_path, modules = list(sys.meta_path), set(sys.modules)
+        triton_stub.inject_into_sys_modules()
+        try:
+            return real_import(name, globals, locals, fromlist, level)
+        finally:
+            sys.meta_path[:] = meta_path
+            for key in [
+                k
+                for k in sys.modules
+                if (k == "triton" or k.startswith("triton.")) and k not in modules
+            ]:
+                del sys.modules[key]
+
+    builtins.__import__ = _import
+
+    def remove():
+        if builtins.__import__ is _import:
+            builtins.__import__ = real_import
+
+    return remove
+
+
+_remove_triton_stub = _define_kernels_against_triton_stub() if _TRITON_MISSING else None
+try:
+    from .models import *
+    from .models import __version__
+    from .save import *
+    from .chat_templates import *
+    from .tokenizer_utils import *
+    from .trainer import *
+finally:
+    # Also on a failed import: the hook must never outlive `import unsloth`.
+    if _remove_triton_stub is not None:
+        _remove_triton_stub()
+del _define_kernels_against_triton_stub, _remove_triton_stub
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor

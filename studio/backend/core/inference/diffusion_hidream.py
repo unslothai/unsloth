@@ -37,25 +37,11 @@ def hidream_te4_kwargs(
     target: Any = None,
     local_files_only: bool = False,
 ) -> dict[str, Any]:
-    """``{text_encoder_4, tokenizer_4}`` kwargs for a HiDream pipeline ``from_pretrained``.
-
-    Loaded eagerly (~16 GB bf16) before the pipeline call so a failure surfaces as a
-    clear error instead of a half-built pipeline.
-
-    The generic ``quantize_text_encoders`` pass only covers ``text_encoder``..``_3``, so
-    TE4 -- HiDream's HEAVIEST encoder -- is handled here: when the requested TE quant is
-    layerwise fp8 (and the device/family qualify, same gates as the runtime cast), TE4 is
-    fp8-cast too, preferring the hosted pre-cast checkpoint (~half the download) and
-    falling back to dense-load-then-cast. Any other mode keeps today's dense bf16 TE4.
-
-    ``local_files_only`` is set by a load no user asked for, where fetching this repo is the
-    thing the caller promised would not happen: it raises here instead of downloading 16 GB."""
+    """Returns {text_encoder_4, tokenizer_4} kwargs; TE4 is fp8-cast only under layerwise fp8; local_files_only raises instead of downloading."""
     import torch  # noqa: F401 -- dtype values are torch dtypes; import keeps parity with callers
     from transformers import AutoTokenizer, LlamaForCausalLM
 
-    # Pinned to the LIVE hub root: ``encoder_repo_complete`` verifies these assets there, so an unpinned lookup after
-    # a mid-session cache-folder change searches huggingface_hub's import-time root instead and fails under
-    # local_files_only for a 16 GB encoder that is present, after the resident image pipeline was evicted.
+    # Live hub root: an unpinned lookup after a cache-folder change misses the cached encoder.
     from utils.hf_cache_settings import active_hf_hub_cache
 
     cache_dir = active_hf_hub_cache()
@@ -171,8 +157,7 @@ def hidream_te4_kwargs(
             setattr(text_encoder_4, TE_RUNTIME_SCHEME_ATTR, "fp8")
             logger.info("diffusion.hidream: TE4 layerwise fp8 cast engaged")
         except Exception as exc:  # noqa: BLE001 -- best-effort like the generic TE pass
-            # A mid-pass failure can leave fp8 storage / upcast hooks behind, and a half-cast encoder cannot run dense,
-            # so rebuild it fresh.
+            # A half-cast encoder cannot run dense, so rebuild it fresh.
             logger.warning("diffusion.hidream: TE4 fp8 cast failed, reloading dense: %s", exc)
             text_encoder_4 = LlamaForCausalLM.from_pretrained(
                 HIDREAM_LLAMA_REPO,
