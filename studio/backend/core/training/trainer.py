@@ -53,7 +53,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
-from core.training.eval_dataset import evaluation_enabled
+from core.training.eval_dataset import STREAMING_EVAL_MAX_SAMPLES, evaluation_enabled
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.tokenizer_fingerprint import install_tokenizer_fingerprint
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
@@ -123,9 +123,6 @@ _STUDIO_DEFAULT_TARGETS = (
     "down_proj",
 )
 _CPT_EMBEDDING_TARGETS = ("embed_tokens", "lm_head")
-
-# Streaming eval has no __len__, so cap it or an unbounded eval iterates the whole source on every eval step.
-STREAMING_EVAL_MAX_SAMPLES = 500
 
 
 def _build_report_targets(training_args) -> list[str] | str:

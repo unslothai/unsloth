@@ -604,6 +604,7 @@ def _load_hf_train_and_eval_datasets(
     from core.training.eval_dataset import (
         EVAL_SPLIT_CANDIDATES,
         MIN_EVAL_ROWS,
+        STREAMING_EVAL_MAX_SAMPLES,
         evaluation_enabled,
     )
 
@@ -626,13 +627,25 @@ def _load_hf_train_and_eval_datasets(
         else:
             logger.warning(message)
 
-    def load_remote(split: str):
+    def load_remote(split: str, streaming: bool = False):
         kwargs = {"split": split, "token": token}
         if subset:
             kwargs["name"] = subset
         if revision:
             kwargs["revision"] = revision
+        if streaming:
+            kwargs["streaming"] = True
         return load_dataset(hf_dataset, **kwargs)
+
+    if config.get("dataset_streaming"):
+        # Read lazily from the Hub as on CUDA; the route refuses a cache pin, and a stream has no
+        # snapshot to attest. Evaluation needs a separate split there, capped so each pass ends.
+        status_callback(f"Streaming dataset: {hf_dataset}")
+        dataset = load_remote(train_split, streaming = True)
+        eval_dataset = None
+        if eval_enabled and eval_split and eval_split != train_split:
+            eval_dataset = load_remote(eval_split, streaming = True).take(STREAMING_EVAL_MAX_SAMPLES)
+        return dataset, eval_dataset
 
     if _dataset_local_files_only(config):
         status_callback(f"Loading cached dataset: {hf_dataset}")
@@ -2797,6 +2810,15 @@ def _resolve_mlx_training_steps(
     )
 
 
+def _slice_streaming_dataset(dataset, slice_start, slice_end):
+    """A stream slices lazily, as on CUDA, and has no length to bound."""
+    if slice_start:
+        dataset = dataset.skip(slice_start)
+    if slice_end is not None:
+        dataset = dataset.take(max(0, slice_end - (slice_start or 0) + 1))
+    return dataset
+
+
 def _configure_mlx_training_schedule(
     trainer,
     requested_max_steps,
@@ -3290,6 +3312,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     hf_dataset = config.get("hf_dataset", "")
     slice_start = config.get("dataset_slice_start")
     slice_end = config.get("dataset_slice_end")
+    dataset_streaming = bool(hf_dataset and config.get("dataset_streaming"))
     config["_dataset_loaded_from_exact_snapshot"] = False
 
     # max_steps runs cannot reach the whole dataset; bound rows before mapping.
@@ -3317,6 +3340,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("status", status_message = f"Using {kept} of {total} rows (max_steps run)")
 
     def _slice(ds):
+        if dataset_streaming:
+            return _slice_streaming_dataset(ds, slice_start, slice_end)
         if slice_start is not None or slice_end is not None:
             start = slice_start if slice_start is not None else 0
             end = slice_end if slice_end is not None else len(ds) - 1
@@ -3627,7 +3652,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
-    # `streaming` stays off: without a pass length zoo cannot end an epoch on an optimizer step or report a real epoch.
+    # `streaming` only for a stream: without a pass length zoo cannot end an epoch on an optimizer step or report a
+    # real epoch, so a sized dataset keeps the eager path.
     mlx_config_kwargs = dict(
         per_device_train_batch_size = batch_size,
         gradient_accumulation_steps = grad_accum,
@@ -3646,6 +3672,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         compile = True,
         gradient_checkpointing = use_grad_checkpoint,
         packing = bool(config.get("packing", False)),
+        streaming = dataset_streaming,
         output_dir = output_dir,
         save_steps = int(config.get("save_steps", 0) or 0),
         eval_steps = eval_steps_val,
@@ -3663,7 +3690,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             True if _raw_cast is None else bool(_raw_cast)
         )
     if "dataset_order" in _supported_fields:
-        mlx_config_kwargs["dataset_order"] = "torch_randperm"
+        # CUDA's trainer reads a stream in source order; a sized dataset gets its RandomSampler order.
+        mlx_config_kwargs["dataset_order"] = "sequential" if dataset_streaming else "torch_randperm"
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "report_grad_norm" in _supported_fields:
@@ -3696,7 +3724,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     max_steps, eval_steps_val = _configure_mlx_training_schedule(
         trainer,
         requested_max_steps,
-        len(dataset),
+        None if dataset_streaming else len(dataset),
         batch_size,
         grad_accum,
         num_epochs,

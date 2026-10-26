@@ -3573,6 +3573,78 @@ def test_worker_cached_auto_eval_without_split_metadata_stays_offline(monkeypatc
     assert warnings == []
 
 
+@pytest.mark.parametrize("eval_steps", [0, 0.1])
+def test_mlx_streaming_loads_lazily_and_caps_a_separate_eval_split(eval_steps):
+    from core.training import worker
+    from core.training.eval_dataset import STREAMING_EVAL_MAX_SAMPLES
+
+    class _Stream:
+        def __init__(self, split):
+            self.split, self.taken = split, None
+
+        def take(self, count):
+            self.taken = count
+            return self
+
+    loads: list[dict] = []
+
+    def load_dataset(path, **kwargs):
+        loads.append({"path": path, **kwargs})
+        return _Stream(kwargs["split"])
+
+    config = {
+        "hf_dataset": "org/dataset",
+        "subset": "sub",
+        "train_split": "train",
+        "eval_split": "validation",
+        "eval_steps": eval_steps,
+        "dataset_streaming": True,
+    }
+
+    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+        config, None, load_dataset, lambda _message: None
+    )
+
+    assert dataset.split == "train" and dataset.taken is None
+    assert all(load["streaming"] is True and load["name"] == "sub" for load in loads)
+    if eval_steps:
+        assert eval_dataset.split == "validation"
+        assert eval_dataset.taken == STREAMING_EVAL_MAX_SAMPLES
+    else:
+        assert eval_dataset is None and len(loads) == 1
+
+
+class _SliceStream:
+    def __init__(self):
+        self.calls = []
+
+    def skip(self, count):
+        self.calls.append(("skip", count))
+        return self
+
+    def take(self, count):
+        self.calls.append(("take", count))
+        return self
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "calls"),
+    [
+        (None, None, []),
+        (3, None, [("skip", 3)]),
+        (None, 9, [("take", 10)]),
+        (5, 9, [("skip", 5), ("take", 5)]),
+        (5, 3, [("skip", 5), ("take", 0)]),
+    ],
+)
+def test_mlx_streaming_slice_is_lazy(start, end, calls):
+    from core.training import worker
+
+    stream = _SliceStream()
+    assert worker._slice_streaming_dataset(stream, start, end) is stream
+    assert stream.calls == calls
+
+
 def test_worker_model_retry_refreshes_tokenizer_before_dataset():
     from core.training import worker
 

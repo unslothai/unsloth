@@ -3935,7 +3935,6 @@ export const en = {
             "Embedding models don't support streaming (training needs the full dataset).",
           imageDataset: "This dataset looks like images, which can't stream.",
           audioDataset: "This dataset looks like audio, which can't stream.",
-          appleSilicon: "Streaming isn't supported on Apple Silicon (MLX) yet.",
         },
         options: {
           trainOnCompletions: "assistant completions only",

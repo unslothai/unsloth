@@ -4227,8 +4227,6 @@ export const tr = {
             "Bu veri kümesi görüntülerden oluşuyor gibi görünüyor; görüntüler akış olarak alınamaz.",
           audioDataset:
             "Bu veri kümesi seslerden oluşuyor gibi görünüyor; sesler akış olarak alınamaz.",
-          appleSilicon:
-            "Akış henüz Apple Silicon (MLX) üzerinde desteklenmiyor.",
         },
         options: {
           trainOnCompletions: "yalnızca asistan yanıtları",

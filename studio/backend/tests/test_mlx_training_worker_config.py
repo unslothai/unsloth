@@ -714,6 +714,115 @@ def test_mlx_cpt_embedding_learning_rate_follows_the_cuda_rule(monkeypatch):
     assert rate(1e-6, 5e-5, trains_embeddings = False) is None
 
 
+def _trainer_config_block():
+    """From the MLXTrainingConfig kwargs through the schedule call in _run_mlx_training."""
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    targets = [
+        ast.unparse(node.targets[0]) if isinstance(node, ast.Assign) else "" for node in body
+    ]
+    start = targets.index("mlx_config_kwargs")
+    end = targets.index("(max_steps, eval_steps_val)")
+    return body[start : end + 1]
+
+
+class _UnsizedStream:
+    def __len__(self):
+        raise TypeError("a stream has no length")
+
+
+@pytest.mark.parametrize("embedding_lr_value", [5e-6, None])
+@pytest.mark.parametrize("dataset_streaming", [True, False])
+def test_mlx_trainer_config_follows_streaming_and_embedding_lr(
+    dataset_streaming, embedding_lr_value
+):
+    block = compile(ast.Module(body = _trainer_config_block(), type_ignores = []), "<cfg>", "exec")
+    configs, schedules = [], []
+    namespace = dict(vars(_worker))
+    namespace.update(
+        {
+            "config": {},
+            "dataset": _UnsizedStream() if dataset_streaming else [0] * 7,
+            "dataset_streaming": dataset_streaming,
+            "embedding_lr_value": embedding_lr_value,
+            "training_type": "LoRA/QLoRA",
+            "format_type": "alpaca",
+            "MLXTrainingConfig": type(
+                "MLXTrainingConfig",
+                (),
+                {
+                    "__dataclass_fields__": {"dataset_order": None},
+                    "__init__": lambda self, **kw: configs.append(kw),
+                },
+            ),
+            "MLXTrainer": lambda **kw: kw,
+            "_configure_mlx_training_schedule": lambda *a, **kw: schedules.append(a) or (8, 0),
+            **{
+                name: None
+                for name in (
+                    "model",
+                    "tokenizer",
+                    "eval_dataset",
+                    "eval_steps_value",
+                    "max_grad_leaf_norm",
+                    "requested_max_steps",
+                    "batch_size",
+                    "grad_accum",
+                    "num_epochs",
+                    "warmup_ratio",
+                    "warmup_uses_ratio",
+                    "eval_steps_ratio",
+                    "warmup_steps",
+                    "lr_value",
+                    "lr_scheduler_type",
+                    "optim_name",
+                    "weight_decay",
+                    "max_grad_norm",
+                    "max_grad_value",
+                    "max_seq_length",
+                    "random_seed",
+                    "use_grad_checkpoint",
+                    "output_dir",
+                    "eval_steps_val",
+                )
+            },
+        }
+    )
+    exec(block, namespace)
+
+    assert configs[0]["streaming"] is dataset_streaming
+    assert configs[0]["dataset_order"] == ("sequential" if dataset_streaming else "torch_randperm")
+    assert configs[0].get("embedding_learning_rate") == embedding_lr_value
+    assert schedules[0][2] == (None if dataset_streaming else 7)
+
+
+def test_mlx_slice_reads_a_stream_lazily():
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    nodes = [n for n in body if isinstance(n, ast.FunctionDef) and n.name == "_slice"]
+    calls = []
+
+    class Stream(_UnsizedStream):
+        def skip(self, n):
+            calls.append(("skip", n))
+            return self
+
+        def take(self, n):
+            calls.append(("take", n))
+            return self
+
+    namespace = {
+        **vars(_worker),
+        "dataset_streaming": True,
+        "slice_start": 2,
+        "slice_end": 4,
+        "mlx_split_names_rows": False,
+    }
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<slice>", "exec"), namespace)
+    namespace["_slice"](Stream())
+
+    # Rows 2..4 inclusive.
+    assert calls == [("skip", 2), ("take", 3)]
+
+
 def _run_mlx_assignment(target, **names):
     body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
     nodes = [n for n in body if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == target]
