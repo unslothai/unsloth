@@ -13,13 +13,11 @@ type FireworksOpts = {
   zIndex?: number;
 };
 
-// CSP blocks canvas-confetti's default blob: worker, so reuse a single overlay
-// canvas via `confetti.create(..., { useWorker: false })`. Caller canvases
-// ignore per-fire `zIndex`; stacking is driven by `_sharedCanvas.style.zIndex`.
+// CSP blocks canvas-confetti's blob: worker, so reuse one canvas with useWorker: false; stacking
+// comes from its style.zIndex.
 const DEFAULT_FIREWORKS_Z_INDEX = 99999;
 let _sharedCanvas: HTMLCanvasElement | null = null;
 let _sharedFire: ConfettiInstance | null = null;
-// Cache the init promise so concurrent callers share one import + canvas.
 let _sharedFirePromise: Promise<ConfettiInstance | null> | null = null;
 function getSharedFire(): Promise<ConfettiInstance | null> {
   if (typeof document === "undefined") return Promise.resolve(null);
@@ -50,13 +48,12 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
   try {
     if (typeof window === "undefined") return;
 
-    // Honor Appearance > Reduce motion (on/off) first, then the OS preference.
+    // Honor Appearance > Reduce motion first, then the OS preference.
     if (prefersReducedMotion()) return;
 
     const fire = await getSharedFire();
     if (!fire || !_sharedCanvas) return;
 
-    // Per-fire zIndex is ignored on a shared canvas; drive stacking via CSS.
     _sharedCanvas.style.zIndex = String(opts.zIndex ?? DEFAULT_FIREWORKS_Z_INDEX);
 
     const duration = opts.durationMs ?? 1200;
@@ -66,8 +63,7 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
       startVelocity: 28,
       spread: 360,
       ticks: 58,
-      // Reduce motion is enforced above (incl. the in-app "off" override), so
-      // don't let the library re-suppress purely on the OS preference.
+      // Enforced above (incl. the in-app "off" override), so the library must not re-suppress.
       disableForReducedMotion: false,
     } as const;
 

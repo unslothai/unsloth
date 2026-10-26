@@ -3,8 +3,7 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// Hugeicons volume-02 (MIT), missing from the pinned @hugeicons/core-free-icons. Pairs with its
-// VolumeMute02Icon, which the package has.
+// Hugeicons volume-02 (MIT), missing from the pinned @hugeicons/core-free-icons.
 export const Volume02Icon: IconSvgElement = [
   [
     "path",

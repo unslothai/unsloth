@@ -4,7 +4,6 @@
 import { useEffect, useState } from "react";
 import { fetchInt8PrefillAvailable } from "../api/int8-prefill";
 
-/** Whether the model can run MLX int8 prefill: false until the backend says so, and for a null model. */
 export function useInt8PrefillAvailable(
   modelPath: string | null,
   hfToken: string | null,

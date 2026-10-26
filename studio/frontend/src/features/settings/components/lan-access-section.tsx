@@ -286,7 +286,7 @@ export function LanAccessSection() {
           if (mutationEpoch.current !== epoch) {
             return;
           }
-          // a stop from a LAN address kills this page's own origin, so stop polling
+          // a stop from a LAN address kills this page's own origin
           if (selfStopDisconnectExpected.current) {
             setPollEnabled(false);
             return;

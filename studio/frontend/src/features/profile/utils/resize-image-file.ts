@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 const MAX_EDGE = 256;
-// Smallest edge we shrink a transparent image to before giving up on WebP.
 const MIN_EDGE = 96;
 const EDGE_STEP = 32;
 const MAX_BYTES = 380_000;
@@ -57,15 +56,13 @@ function encodeCanvasWithinLimit(
   return dataUrl.length <= MAX_DATA_URL_LENGTH ? dataUrl : null;
 }
 
-// Lossless PNG keeps alpha and, unlike WebP encoding, works in every browser
-// (Safari cannot encode WebP). Size is controlled only by dimensions.
+// Safari cannot encode WebP, so PNG is the universal alpha-preserving fallback.
 function encodePngWithinLimit(canvas: HTMLCanvasElement): string | null {
   const dataUrl = canvas.toDataURL("image/png");
   if (!dataUrl.startsWith("data:image/png")) return null;
   return dataUrl.length <= MAX_DATA_URL_LENGTH ? dataUrl : null;
 }
 
-// Draw the image onto a canvas scaled to fit within maxEdge.
 function drawScaled(
   img: HTMLImageElement,
   w: number,
@@ -89,7 +86,6 @@ function drawScaled(
   return { canvas, ctx, cw, ch };
 }
 
-/** Downscale the image, preserving transparency, to stay localStorage-friendly. */
 export async function resizeImageFileToDataUrl(file: File): Promise<string> {
   const img = await loadImage(file);
   const w = img.naturalWidth;
@@ -100,9 +96,7 @@ export async function resizeImageFileToDataUrl(file: File): Promise<string> {
   const hasTransparency = canvasHasTransparency(base.ctx, base.cw, base.ch);
 
   if (hasTransparency) {
-    // Keep alpha, shrinking to fit. WebP is smallest where supported; PNG is
-    // the universal fallback (Safari cannot encode WebP). Never JPEG, which
-    // would paint a background behind a transparent image.
+    // Never JPEG: it would paint a background behind a transparent image.
     for (let edge = MAX_EDGE; edge >= MIN_EDGE; edge -= EDGE_STEP) {
       const { canvas } = edge === MAX_EDGE ? base : drawScaled(img, w, h, edge);
       const webpDataUrl = encodeCanvasWithinLimit(
