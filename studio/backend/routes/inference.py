@@ -46190,9 +46190,16 @@ async def _anthropic_messages_via_connection(
     fields["enable_thinking"] = reasoning["enable_thinking"]
     fields["reasoning_effort"] = reasoning["reasoning_effort"]
     fields["preserve_thinking"] = reasoning.get("preserve_thinking")
-    chat_payload = ChatCompletionRequest(
-        **{name: value for name, value in fields.items() if value is not None}
-    )
+    from fastapi.exceptions import RequestValidationError
+    from pydantic import ValidationError
+
+    # Messages bounds sampling looser than chat: a value chat rejects is a 400, not a 500.
+    try:
+        chat_payload = ChatCompletionRequest(
+            **{name: value for name, value in fields.items() if value is not None}
+        )
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from None
     response = await produce_openai_chat_completions(
         chat_payload, request, current_subject, cancel_on_disconnect = True
     )
