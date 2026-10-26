@@ -143,12 +143,30 @@ print("RESULT " + json.dumps(dict(n = len(loaded), bad = bad, fp8 = int(fp8), sa
 """
 
 
+def _write_tiny_tokenizer(path):
+    """FastModel.from_pretrained loads a tokenizer before it returns: a word level one, offline."""
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    vocab = {"<unk>": 0, "<s>": 1, "</s>": 2, "<pad>": 3, **{f"t{i}": i + 4 for i in range(60)}}
+    raw = Tokenizer(models.WordLevel(vocab = vocab, unk_token = "<unk>"))
+    raw.pre_tokenizer = pre_tokenizers.Whitespace()
+    PreTrainedTokenizerFast(
+        tokenizer_object = raw,
+        unk_token = "<unk>",
+        bos_token = "<s>",
+        eos_token = "</s>",
+        pad_token = "<pad>",
+    ).save_pretrained(path)
+
+
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 @pytest.mark.skipif(not has_real_cuda(), reason = "fp8 checkpoints load as fp8 only on CUDA")
 def test_full_finetuning_loads_and_saves_dequantized_weights(tmp_path):
     src, dst = tmp_path / "src", tmp_path / "saved"
     src.mkdir()
     _write_tiny_block_fp8_llama(str(src))
+    _write_tiny_tokenizer(str(src))
     out = subprocess.run(
         [sys.executable, "-c", _FULL_FT, str(src), str(dst)],
         capture_output = True,
