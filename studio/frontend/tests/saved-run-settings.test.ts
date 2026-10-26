@@ -63,6 +63,11 @@ test("the editor names a one-time load by what it sent, before matching saved se
     /notedOnce !== undefined\s*\? notedOnce\s*: inferOnce &&\s*!perModelConfigsEqual\(forSetStore\(loadedConfig\), forSetStore\(pinnedEntry\.config\)\)/,
   );
   assert.doesNotMatch(page, /loadedOnceNamed\(loadedConfig\) \?\?/);
+  // Recorded as submitted: the load strips managed arguments, so the record does too.
+  assert.match(
+    page,
+    /if \(cleaned\.length === onceArgs\.length\) return;\s*noteRunSettingsLoadedOnce\(configId, target\.ggufVariant, \{\s*name: loadSet,\s*sent: \{ \.\.\.effectiveLoadConfig, llamaExtraArgs: cleaned \},/,
+  );
 });
 
 test("one model keeps several named settings, listed by name", () => {

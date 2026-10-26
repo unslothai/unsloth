@@ -3998,6 +3998,27 @@ export function ModelConfigPage({
       target.ggufVariant,
       onceOnly ? { name: loadSet, sent: effectiveLoadConfig } : null,
     );
+    // The load strips arguments managed since they were saved, so record what it submits.
+    const onceArgs = effectiveLoadConfig.llamaExtraArgs;
+    if (onceOnly && target.isGguf && classifiedIsDiffusion !== true && onceArgs?.length) {
+      void loadManagedLlamaFlags()
+        .then((managed) => {
+          const cleaned = sanitizeStoredExtraArgs(
+            onceArgs,
+            managed?.managed ?? new Set<string>(),
+            {
+              maxBytes: managed?.maxBytes,
+              windowsCommandBudget: managed?.windowsCommandBudget,
+            },
+          );
+          if (cleaned.length === onceArgs.length) return;
+          noteRunSettingsLoadedOnce(configId, target.ggufVariant, {
+            name: loadSet,
+            sent: { ...effectiveLoadConfig, llamaExtraArgs: cleaned },
+          });
+        })
+        .catch(() => undefined);
+    }
     setVramBudgetLocked(true);
     const stagedBudget = settleVramBudgetSave();
     if (stagedBudget) {
