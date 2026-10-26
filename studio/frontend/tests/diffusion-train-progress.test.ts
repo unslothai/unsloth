@@ -147,3 +147,12 @@ test("a run stopped mid-preparation does not read as starting while its worker e
   assert.equal(progress.percent, 0);
   assert.equal(progress.detail, "Stopped (no adapter saved).");
 });
+
+test("encoded captions alone do not read as prepared training data", () => {
+  const progress = diffusionTrainingProgress({
+    ...running,
+    preparation: { stage: "encode_prompts", done: 12, total: 12 },
+  });
+  assert.equal(progress.title, "Preparing training data");
+  assert.equal(progress.percent, 100);
+});

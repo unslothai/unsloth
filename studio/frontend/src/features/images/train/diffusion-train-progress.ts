@@ -54,7 +54,11 @@ export function diffusionTrainingProgress(status: Status | null) {
         Number.isFinite(total) &&
         (done as number) >= 0 &&
         (total as number) > 0;
-      const finished = known && (done as number) >= (total as number);
+      // MiniMax-H3 encodes every caption in one go (n/n) and only then caches latents; that is not done yet.
+      const finished =
+        known &&
+        (done as number) >= (total as number) &&
+        prep.stage !== "encode_prompts";
       return {
         preparing: true,
         title: finished ? "Training data prepared" : "Preparing training data",
