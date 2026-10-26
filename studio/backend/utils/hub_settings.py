@@ -240,10 +240,11 @@ def apply_hub_settings() -> None:
         utils_module = sys.modules.get("utils.utils")
         if utils_module is not None:
             utils_module.reset_hf_reachability_cache()
-    if source == HUGGINGFACE:
+    endpoint = get_hf_endpoint()
+    if source == HUGGINGFACE and endpoint != DEFAULTS_BY_HEALTH_KEY["hf_endpoint"]:
         try:
             from utils.hub_mirror_probe import warn_if_mirror_redirects_to_official
-            warn_if_mirror_redirects_to_official(get_hf_endpoint())
+            warn_if_mirror_redirects_to_official(endpoint)
         except Exception:  # noqa: BLE001 - a log-only probe must never fail applying settings
             logger.debug("Hugging Face endpoint probe did not start", exc_info = True)
 

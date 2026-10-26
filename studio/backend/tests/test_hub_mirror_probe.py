@@ -186,3 +186,19 @@ def test_saving_a_mirror_probes_it_and_modelscope_does_not(monkeypatch):
     finally:
         monkeypatch.undo()
         hub_settings._refresh_imported_hub_libraries()
+
+
+def test_the_default_hub_never_imports_the_probe(monkeypatch):
+    monkeypatch.delenv("HF_ENDPOINT", raising = False)
+    monkeypatch.setattr(hub_settings, "_operator_env", None)
+    monkeypatch.setattr(hub_settings, "_operator_endpoints", None, raising = False)
+    monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset(), raising = False)
+    monkeypatch.setattr(
+        hub_settings, "get_hub_settings", lambda: hub_settings.HubSettings("", False, False)
+    )
+    monkeypatch.delitem(sys.modules, "utils.hub_mirror_probe")
+    try:
+        hub_settings.apply_hub_settings()
+        assert "utils.hub_mirror_probe" not in sys.modules
+    finally:
+        sys.modules["utils.hub_mirror_probe"] = probe
