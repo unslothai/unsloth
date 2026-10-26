@@ -1312,7 +1312,9 @@ def test_streamed_install_keeps_a_swiglu_mlp_on_another_card(monkeypatch):
 def test_swap_passes_streamed_only_for_the_onload_device_install(monkeypatch):
     seen = []
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0)
+    monkeypatch.setattr(
+        g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0
+    )
     import core.inference.diffusion_int8_fused as fused
 
     monkeypatch.setattr(fused, "resident_cuda_device", lambda t: torch.device("cuda", 0))

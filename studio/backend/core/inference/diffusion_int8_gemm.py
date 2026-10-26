@@ -784,7 +784,11 @@ def _swiglu_ff_eligible(module: Any) -> bool:
     return bool(parts[2].__dict__[_REC][2])
 
 
-def _install_swiglu_ff(transformer: Any, index: int, streamed: bool = False) -> int:
+def _install_swiglu_ff(
+    transformer: Any,
+    index: int,
+    streamed: bool = False,
+) -> int:
     """Patch the eligible SwiGLU MLPs on card ``index``; ``streamed``: also those whose weights are still on the host."""
     count = 0
     for module in transformer.modules():
@@ -990,7 +994,12 @@ def _weight_card(module: Any) -> Optional[int]:
     return dev.index if dev is not None and dev.type == "cuda" else None
 
 
-def _swap_on(transformer: Any, logger: Any, index: int, streamed: bool = False) -> int:
+def _swap_on(
+    transformer: Any,
+    logger: Any,
+    index: int,
+    streamed: bool = False,
+) -> int:
     """Swap the eligible int8 Linears of ``transformer`` against card ``index``'s probed kernels. On a layer split
     (several cards) only the Linears whose weight sits on ``index``."""
     global _OP_HANDLE
