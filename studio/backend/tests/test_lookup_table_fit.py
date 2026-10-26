@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -1096,7 +1097,11 @@ def test_split_mode_none_with_a_negative_main_gpu_is_a_cpu_child(extra_args, env
     [
         (["-sm", "none", "-mg", "0"], {}, True),
         (["--split-mode", "none", "--main-gpu", "-1"], {}, False),
-        ([], {"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "-1"}, False),
+        (["--split-mode", "none"], {"LLAMA_ARG_MAIN_GPU": "-1"}, False),
+        # load_model drops an inherited non-layer split mode on a layer launch, so this
+        # child runs layer split on CUDA0, not on the CPU.
+        ([], {"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "-1"}, True),
+        (["--main-gpu", "-1"], {"LLAMA_ARG_SPLIT_MODE": "none"}, True),
     ],
 )
 def test_a_main_gpu_of_minus_one_keeps_llama_cpps_lazy_default(
@@ -1106,3 +1111,130 @@ def test_a_main_gpu_of_minus_one_keeps_llama_cpps_lazy_default(
         monkeypatch.setenv(name, value)
     _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128, extra_args = extra_args)
     assert (_lazy_values(cmd) == ["off"]) is resident, cmd
+
+
+_INHERITED_CPU_SPLIT = {"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "-1"}
+
+
+def _spy_placement_previews(monkeypatch):
+    """(helper, caller, env split mode, tensor_parallel) for every placement preview."""
+    import sys
+
+    seen = []
+    for name in ("_lazy_auto_resolves_off", "_child_runs_on_cpu", "_apple_lookup_table_discount"):
+        real = getattr(LlamaCppBackend, name)
+
+        def make(real, name):
+            def spy(self, *a, **k):
+                env = k.get("env", a[2] if name == "_child_runs_on_cpu" and len(a) > 2 else None)
+                env = os.environ if env is None else env
+                seen.append(
+                    (
+                        name,
+                        sys._getframe(1).f_code.co_name,
+                        env.get("LLAMA_ARG_SPLIT_MODE"),
+                        k.get("tensor_parallel"),
+                    )
+                )
+                return real(self, *a, **k)
+
+            return spy
+
+        monkeypatch.setattr(LlamaCppBackend, name, make(real, name))
+    return seen
+
+
+@pytest.mark.parametrize("cards", [1, 2])
+def test_every_launch_preview_sees_the_split_mode_the_child_gets(
+    tmp_path, _moe_cache_host, monkeypatch, cards
+):
+    """load_model drops an inherited non-layer split mode before spawn; the host-input,
+    fitter-shortfall and load-mode previews must price that child, not the raw env."""
+    for name, value in _INHERITED_CPU_SPLIT.items():
+        monkeypatch.setenv(name, value)
+    seen = _spy_placement_previews(monkeypatch)
+    if cards == 1:
+        _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128)
+    else:
+        _backend, cmd = _flash_next_on_two_cards(tmp_path, [])
+    callers = {caller for _n, caller, _sm, _tp in seen}
+    assert {"_host_input_bytes_now", "load_model", "_table_resident_fits"} <= callers, seen
+    assert cards == 2 or "_fitter_vram_shortfall" in callers, seen
+    assert [s for s in seen if s[2] is not None] == [], seen
+    assert _lazy_values(cmd) == ["off"], cmd
+
+
+def test_a_tensor_launch_is_not_a_cpu_child_under_an_inherited_split_mode(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """Studio emits --split-mode tensor (argv beats env), so an inherited split mode none
+    with a negative main GPU does not move this child onto the CPU."""
+    for name, value in _INHERITED_CPU_SPLIT.items():
+        monkeypatch.setenv(name, value)
+    seen = _spy_placement_previews(monkeypatch)
+    _backend, cmd = _cache_launch(
+        tmp_path,
+        moe = False,
+        size_gib = FLASH_NEXT_TOTAL / GIB,
+        memory = [(0, 32_000, 32_768), (1, 32_000, 32_768)],
+        ram_gib = 128,
+        lazy = {
+            PLE: FLASH_NEXT_PLE,
+            "token_embd.weight": FLASH_NEXT_TOKEN_EMBD,
+            "output.weight": FLASH_NEXT_OUTPUT,
+        },
+        arch = "qwen4exp",
+        tensor_parallel = True,
+    )
+    assert "tensor" in cmd, cmd
+    cpu_calls = [s for s in seen if s[0] == "_child_runs_on_cpu" and s[1] == "_table_resident_fits"]
+    assert cpu_calls and cpu_calls[-1][3] is True, seen
+    assert _lazy_values(cmd) == ["off"], cmd
+
+
+@pytest.mark.parametrize("tensor, cpu", [(None, True), (False, True), (True, False)])
+def test_the_cpu_child_check_follows_the_launch_tensor_state(tensor, cpu):
+    backend = LlamaCppBackend()
+    backend._binary_ships_no_gpu_backend = lambda *a, **k: False
+    assert (
+        backend._child_runs_on_cpu(None, [], dict(_INHERITED_CPU_SPLIT), tensor_parallel = tensor)
+        is cpu
+    )
+
+
+def test_a_failed_probe_apu_guard_ignores_a_split_mode_the_launch_drops(tmp_path, monkeypatch):
+    """The HIP child runs layer split on the APU once load_model drops the inherited
+    split mode none, so its resident table is RAM the guard charges."""
+    import test_llama_cpp_placement as placement
+
+    for name, value in _INHERITED_CPU_SPLIT.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = placement._apu_backend(
+        tmp_path, gguf_gb = 73.45, avail_mib = 58 * 1024, monkeypatch = monkeypatch
+    )
+    backend._get_gpu_memory = lambda *_a, **_kw: []
+    backend._get_gpu_free_memory = lambda *_a, **_kw: []
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
+    backend._gguf_tensor_scan = lambda _path: (
+        "qwen4exp",
+        {"per_layer_token_embd.weight": placement._QWEN38_PLE},
+        0,
+    )
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(placement._CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: caps
+
+    res = placement._launch(backend, gguf, extra_args = ["--load-mode", "none"])
+
+    assert res["env"].get("LLAMA_ARG_SPLIT_MODE") is None
+    assert "unified-memory APU" in (backend.last_load_warning or "")
+    assert not placement._unmapped_tokens(res["cmd"]), res["cmd"]
+
+
+def test_the_metal_discount_sees_the_split_mode_the_child_gets(tmp_path, monkeypatch):
+    for name, value in _INHERITED_CPU_SPLIT.items():
+        monkeypatch.setenv(name, value)
+    seen = _spy_placement_previews(monkeypatch)
+    _metal_launched(tmp_path, monkeypatch)
+    metal = [s for s in seen if s[0] == "_apple_lookup_table_discount"]
+    assert metal and all(s[2] is None for s in metal), seen

@@ -1136,6 +1136,29 @@ class TestEstimate:
         assert breakdown().lookup_table_on_disk is cpu_build
         assert breakdown(llama_extra_args = ["--device", "none"]).lookup_table_on_disk is True
 
+    @pytest.mark.parametrize("tensor", [False, True])
+    def test_an_inherited_split_mode_the_launch_drops_keeps_the_table_resident(
+        self, breakdown, monkeypatch, tensor
+    ):
+        """A layer launch drops an inherited split mode none; a tensor launch emits
+        --split-mode tensor over it. Neither child runs on the CPU, so RAM that holds
+        the table reads it resident, as the launch does."""
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "none")
+        monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "-1")
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 256 * 1024)
+        )
+        if tensor:
+            monkeypatch.setattr(
+                ri.LlamaCppBackend,
+                "_get_gpu_memory",
+                staticmethod(lambda binary = None, **k: [(0, 22000, 24576), (1, 22000, 24576)]),
+            )
+        assert breakdown(tensor_parallel = tensor).lookup_table_on_disk is False
+
     @pytest.mark.parametrize(
         "ram_gib, kw, on_disk",
         [
@@ -1915,6 +1938,44 @@ class TestListingFollowups:
         )
         assert backend.lookup_tables_stream_by_default(["--device", "none"], {}) is True
         assert backend.lookup_tables_stream_by_default(None, {}) is False
+        # Split mode none with a negative main GPU clears the model's devices too.
+        cpu_split = ["--split-mode", "none", "--main-gpu", "-1"]
+        assert backend.lookup_tables_stream_by_default(cpu_split, {}) is True
+        # Not under tensor parallel: Studio's --split-mode tensor beats the env.
+        assert (
+            backend.lookup_tables_stream_by_default(
+                ["--main-gpu", "-1"], {"LLAMA_ARG_SPLIT_MODE": "none"}, tensor_parallel = True
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize(
+        "env, streams",
+        [
+            ({}, False),
+            ({"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "-1"}, False),
+            ({"LLAMA_ARG_SPLIT_MODE": "row", "LLAMA_ARG_MAIN_GPU": "-1"}, False),
+        ],
+        ids = ["clean", "inherited_none", "inherited_row"],
+    )
+    def test_a_listing_drops_the_split_mode_the_launch_drops(self, monkeypatch, env, streams):
+        """load_model clears an inherited non-layer split mode on a layer launch, so the
+        child runs on the shared Vulkan iGPU, where lazy auto resolves off."""
+        from core.inference import llama_cpp as lc
+
+        backend = lc.LlamaCppBackend.__new__(lc.LlamaCppBackend)
+        monkeypatch.setattr(backend, "_find_llama_server_binary", lambda: "/fake/llama-server")
+        monkeypatch.setattr(
+            backend,
+            "probe_server_capabilities",
+            lambda binary = None: {"supports_lazy_mode": True, "lazy_mode_flag": "--lazy-mode"},
+        )
+        monkeypatch.setattr(backend, "_is_vulkan_backend", lambda binary = None: True)
+        monkeypatch.setattr(backend, "_get_gpu_memory", lambda *a, **k: [(0, 8000, 0)])
+        monkeypatch.setattr(
+            lc.LlamaCppBackend, "_binary_ships_no_gpu_backend", staticmethod(lambda *a, **k: False)
+        )
+        assert backend.lookup_tables_stream_by_default(None, env) is streams
 
     def test_differently_cased_listings_share_one_header_read(self, monkeypatch):
         from hub.schemas.inventory import GgufVariantDetail

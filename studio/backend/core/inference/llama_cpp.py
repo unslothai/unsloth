@@ -12241,20 +12241,25 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]],
         *,
         cpu_forced: bool = False,
+        tensor_parallel: Optional[bool] = None,
     ) -> bool:
         """Whether the child gets no model device: a CPU-only build, a CPU ``--device``
         selection, or a launch Studio forces onto the CPU (``cpu_forced``, a paravirtual
-        Metal). Its lookup tables keep llama.cpp's lazy default."""
+        Metal). Its lookup tables keep llama.cpp's lazy default. ``tensor_parallel`` is the
+        launch's decision (Studio's --split-mode tensor beats the env), else read from both."""
         if (
             cpu_forced
             or self._binary_ships_no_gpu_backend(binary, env)
             or _device_selection_is_cpu(extra_args, env)
         ):
             return True
+        tensor = (
+            _effective_tensor_parallel(extra_args, False, env)
+            if tensor_parallel is None
+            else bool(tensor_parallel)
+        )
         # Split mode none with a negative main GPU clears the model's devices (src/llama.cpp).
-        if not _effective_tensor_parallel(extra_args, False, env) and (
-            _split_mode_confines_to_one_device(extra_args, env)
-        ):
+        if not tensor and _split_mode_confines_to_one_device(extra_args, env):
             main = self._effective_main_gpu(extra_args, env)
             return main is not None and main < 0
         return False
@@ -12318,7 +12323,7 @@ class LlamaCppBackend:
         tensor_parallel: Optional[bool] = None,
     ) -> bool:
         """Whether a launch on this host leaves lazily read lookup tables on disk."""
-        _env = os.environ if env is None else env
+        _env = dict(os.environ if env is None else env)
         try:
             binary = self._find_llama_server_binary()
             caps = self.probe_server_capabilities(binary)
@@ -12329,10 +12334,15 @@ class LlamaCppBackend:
             )
             if mode != "auto":
                 return mode == "on"
-            # A CPU child has no model device to turn auto off (RPC aside, read below).
-            cpu_child = self._binary_ships_no_gpu_backend(binary, _env) or _device_selection_is_cpu(
-                extra_args, _env
+            # The split env the child gets: load_model drops an inherited non-layer one.
+            tensor = (
+                _effective_tensor_parallel(extra_args, False, _env)
+                if tensor_parallel is None
+                else bool(tensor_parallel)
             )
+            self._reconcile_split_mode_env(_env, tensor_parallel = tensor)
+            # A CPU child has no model device to turn auto off (RPC aside, read below).
+            cpu_child = self._child_runs_on_cpu(binary, extra_args, _env, tensor_parallel = tensor)
             vulkan = not cpu_child and self._is_vulkan_backend(binary)
             rows = []
             if not cpu_child:
@@ -19000,6 +19010,27 @@ class LlamaCppBackend:
         card."""
         for name in ("LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_TENSOR_SPLIT"):
             env.pop(name, None)
+
+    @classmethod
+    def _reconcile_split_mode_env(cls, env: dict[str, str], *, tensor_parallel: bool) -> None:
+        """Reconcile the inherited LLAMA_ARG_* split env with Unsloth's final decision.
+
+        Stripping CLI extras on a tensor->layer downgrade can't remove env vars, so the
+        child could run a mode Unsloth didn't budget. Shared by load_model's spawn env and
+        every placement preview, so a preview prices the split the child really gets."""
+        if not tensor_parallel:
+            # Layer split: clear a non-layer inherited split mode (and any paired
+            # tensor-split) so the child can't override the layer plan.
+            _inherited_sm = (env.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower()
+            if _inherited_sm and _inherited_sm != "layer":
+                env.pop("LLAMA_ARG_SPLIT_MODE", None)
+                env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
+        else:
+            # Unsloth owns the tensor split: it emits --tensor-split when it picks an
+            # uneven one (CLI wins) and nothing when an even split is safe. Clear any
+            # inherited LLAMA_ARG_TENSOR_SPLIT so the even case can't be overridden by a
+            # stale env (the layer branch above clears it too).
+            env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
 
     @staticmethod
     def _discrete_tier(
@@ -29423,6 +29454,7 @@ class LlamaCppBackend:
                             self._clear_manual_placement_env(_inp_env)
                         if _gpu_ids_own_device_flags:
                             self._clear_device_placement_env(_inp_env)
+                        self._reconcile_split_mode_env(_inp_env, tensor_parallel = tensor_parallel)
                         try:
                             _inp_lazy = "off"
                             if server_caps.get("supports_lazy_mode"):
@@ -30769,11 +30801,24 @@ class LlamaCppBackend:
                                 ),
                             )
                         )
+                        # The extras and env as the child gets them, as the fit below.
+                        _apple_extras = (
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
+                        _apple_env = dict(os.environ)
+                        if gpu_memory_mode == "manual":
+                            self._clear_manual_placement_env(_apple_env)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_apple_env)
+                        self._reconcile_split_mode_env(_apple_env, tensor_parallel = tensor_parallel)
                         _apple_host_embd = self._apple_lookup_table_discount(
                             _apple_host_embd,
                             model_path,
                             caps = server_caps,
-                            extra_args = extra_args,
+                            extra_args = _apple_extras,
+                            env = _apple_env,
                             model_size_fit = model_size_fit,
                             need_at_ctx = (
                                 (
@@ -31354,6 +31399,7 @@ class LlamaCppBackend:
                         _child_env = dict(os.environ)
                         if _gpu_ids_own_device_flags:
                             self._clear_device_placement_env(_child_env)
+                        self._reconcile_split_mode_env(_child_env, tensor_parallel = tensor_parallel)
                         if _pass_through_overrides_placement(
                             _child_extras,
                             _child_env,
@@ -31786,6 +31832,7 @@ class LlamaCppBackend:
                         self._clear_manual_placement_env(_fit_env)
                     if _gpu_ids_own_device_flags:
                         self._clear_device_placement_env(_fit_env)
+                    self._reconcile_split_mode_env(_fit_env, tensor_parallel = tensor_parallel)
                     # What the placement branch below will emit, so the effective
                     # (last-wins) fitter state is readable before the final argv exists.
                     # Every reachable branch is fixed by use_fit.
@@ -31924,6 +31971,7 @@ class LlamaCppBackend:
                             _fit_extras,
                             _fit_env,
                             cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                            tensor_parallel = tensor_parallel,
                         )
                     ) or self._lazy_auto_resolves_off(
                         gpu_indices = (
@@ -32031,6 +32079,7 @@ class LlamaCppBackend:
                                     _fit_extras,
                                     _fit_env,
                                     cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                                    tensor_parallel = tensor_parallel,
                                 )
                             ):
                                 return None
@@ -32334,14 +32383,15 @@ class LlamaCppBackend:
                         self._clear_manual_placement_env(_apu_lazy_env)
                     if _gpu_ids_own_device_flags:
                         self._clear_device_placement_env(_apu_lazy_env)
+                    self._reconcile_split_mode_env(_apu_lazy_env, tensor_parallel = tensor_parallel)
                     _apu_resident_model_size = max(
                         1,
                         model_size
                         - self._lazy_read_host_bytes(
                             model_path,
                             caps = server_caps,
-                            extra_args = extra_args,
-                            env = os.environ,
+                            extra_args = _apu_lazy_extras,
+                            env = _apu_lazy_env,
                             # A failed GPU probe still launches on the APU, where auto is off.
                             auto_resolves_off = (
                                 not _detected_gpus
@@ -32350,6 +32400,7 @@ class LlamaCppBackend:
                                     _apu_lazy_extras,
                                     _apu_lazy_env,
                                     cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                                    tensor_parallel = tensor_parallel,
                                 )
                             )
                             or self._lazy_auto_resolves_off(
@@ -34178,24 +34229,9 @@ class LlamaCppBackend:
                         # compare, so "Q8_0" and " q8_0 " are rewritten alike.
                         env[_ct_var] = _ct_norm
 
-                # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
-                # decision: stripping CLI extras on a tensor->layer downgrade
-                # can't remove env vars, so the child could run a mode Unsloth
-                # didn't budget.
-                if not tensor_parallel:
-                    # Layer split: clear a non-layer inherited split mode (and any
-                    # paired tensor-split) so the child can't override the layer plan.
-                    _inherited_sm = (env.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower()
-                    if _inherited_sm and _inherited_sm != "layer":
-                        env.pop("LLAMA_ARG_SPLIT_MODE", None)
-                        env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
-                else:
-                    # Unsloth owns the tensor split: it emits --tensor-split when it
-                    # picks an uneven one (CLI wins) and nothing when an even split
-                    # is safe. Clear any inherited LLAMA_ARG_TENSOR_SPLIT so the even
-                    # case can't be overridden by a stale env (the layer branch above
-                    # clears it too).
-                    env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
+                # Reconcile the inherited LLAMA_ARG_* split env with Unsloth's final
+                # decision (the previews above apply the same helper).
+                self._reconcile_split_mode_env(env, tensor_parallel = tensor_parallel)
 
                 # A gpu_ids pin also owns inherited device placement.
                 if _gpu_ids_own_device_flags:

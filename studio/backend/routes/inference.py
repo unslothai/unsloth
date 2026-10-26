@@ -16044,6 +16044,8 @@ def _gguf_memory_breakdown(
         LlamaCppBackend._clear_device_placement_env(_lt_env)
     if gpu_memory_mode == "manual":
         LlamaCppBackend._clear_manual_placement_env(_lt_env)
+    # The split env the child gets: load_model drops an inherited non-layer one.
+    LlamaCppBackend._reconcile_split_mode_env(_lt_env, tensor_parallel = bool(tensor_parallel))
     if lookup_table_bytes:
         lookup_table_on_disk = _lt_backend.lookup_tables_stream_by_default(
             _lt_extras,
@@ -16121,6 +16123,7 @@ def _gguf_memory_breakdown(
                 _lt_extras,
                 _lt_env,
                 cpu_forced = bool(_gpu_placement_paravirtual()),
+                tensor_parallel = bool(tensor_parallel),
             ):
                 return False
             _lt_manual = gpu_memory_mode == "manual"
