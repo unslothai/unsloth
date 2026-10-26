@@ -29,6 +29,7 @@ from ..models._utils import *
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
 from ..utils.packing import (
+    _inference_mode,
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
     cover_padded_cu_seqlens,
@@ -1222,7 +1223,12 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
     """Causal band mask of shape (1, 1, q_len, k_len). Read-only: callers must not mutate it."""
     params = (q_len, k_len, sliding_window)
     entry = _WINDOW_MASK_CACHE.get(device)
-    if entry is not None and entry["params"] == params:
+    if (
+        entry is not None
+        and entry["params"] == params
+        # A mask built under inference_mode cannot be saved for a training step's backward.
+        and (not entry["inference"] or _inference_mode())
+    ):
         return entry["mask"]
     # Drop the outgoing mask first so a shape change does not peak a whole mask higher.
     _WINDOW_MASK_CACHE.pop(device, None)
@@ -1233,7 +1239,7 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
         (k_pos[None, :] <= q_pos[:, None])
         & (k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1)))
     )[None, None, :, :]
-    _WINDOW_MASK_CACHE[device] = {"params": params, "mask": mask}
+    _WINDOW_MASK_CACHE[device] = {"params": params, "mask": mask, "inference": _inference_mode()}
     return mask
 
 
