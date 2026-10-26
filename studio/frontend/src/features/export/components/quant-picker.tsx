@@ -8,9 +8,9 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  CheckmarkCircle01Icon,
   InformationCircleIcon,
   LayersIcon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { QUANT_OPTIONS } from "../constants";
@@ -91,7 +91,7 @@ export function QuantPicker({
             >
               {active && (
                 <HugeiconsIcon
-                  icon={CheckmarkCircle01Icon}
+                  icon={CheckmarkCircle02Icon}
                   className="size-3 text-primary"
                 />
               )}

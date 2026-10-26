@@ -30,6 +30,30 @@
 	}
 }
 
+/* A Settings card's leading icon: a borderless disc a step darker (light) or lighter (dark) than the card. */
+@utility icon-disc {
+	border-radius: 9999px;
+	background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), transparent);
+	&:where(.dark *) {
+		background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), transparent);
+	}
+}
+
+/* A filled Button's height (text-sm line, 7px padding, 1px border), for controls beside one. */
+@utility h-control {
+	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
+}
+
+/* A one-line menu row (py-2) rounded up to a whole pixel: a fractional one blurred the last pill. */
+@utility min-h-menu-row {
+	min-height: round(up, 1lh + 16px * var(--ui-space-scale, 1), 1px);
+}
+
+@utility size-control {
+	width: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
+	height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px);
+}
+
 @layer components {
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface
@@ -3113,6 +3137,13 @@ html[data-chat-font] .aui-root {
 		margin-block: 2px;
 	}
 
+	/* Whole-pixel label, inside it, not a margin: the next row's 2px margin collapses with one. */
+	[data-slot="dropdown-menu-label"]::after {
+		content: "";
+		display: block;
+		height: calc(round(up, 1lh, 1px) - 1lh);
+	}
+
 	/* A menu's corner is its 12px row radius plus its gutter, so the hover nests in the corner:
 	   16px around the standard 4px gutter. !important beats per-menu rounded-*. */
 	[data-slot="dropdown-menu-content"],
@@ -3132,6 +3163,15 @@ html[data-chat-font] .aui-root {
 	}
 	html.dark .unsloth-model-selector-menu .btn-fill:hover {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+	}
+
+	/* Settings only: every option picker (select or picker variant) one size; action menus keep theirs. */
+	[data-settings-dialog] :is([data-slot="select-trigger"], [data-variant="picker"]) {
+		height: calc(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px) !important;
+		padding-inline: calc(14px * var(--ui-space-scale, 1)) !important;
+		border-radius: 9999px !important;
+		font-size: var(--text-sm) !important;
+		font-weight: 400 !important;
 	}
 
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
@@ -3167,6 +3207,16 @@ html[data-chat-font] .aui-root {
 	/* More menu and its sub-menus use the sidebar colour. */
 	.dark .sidebar-more-menu[data-slot] {
 		background-color: var(--sidebar) !important;
+	}
+	/* More menu: pill rows, corner of half a row plus the p-1 gutter so the pill nests. */
+	.sidebar-more-menu[data-slot] {
+		border-radius: calc(
+			(1.25rem * var(--ui-font-scale, 1) + 14px * var(--ui-space-scale, 1) + 2px) / 2 + 4px *
+				var(--ui-space-scale, 1)
+		) !important;
+	}
+	.sidebar-more-menu :is([data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-sub-trigger"]) {
+		border-radius: 9999px;
 	}
 
 	/* On <html> so --accent can be reassigned without a cycle. */
@@ -3510,7 +3560,36 @@ html[data-chat-font] .aui-root {
 		min-height: 100%;
 		max-height: 100% !important;
 		/* Reserved before typing, or the toggle appearing would reflow the text. */
-		padding-right: calc(2.25rem * var(--ui-space-scale, 1));
+		padding-right: calc(2.625rem * var(--ui-space-scale, 1));
+	}
+
+	/* 6px wider (and as much more padding) so the scrollbar sits near the composer's edge. */
+	.unsloth-composer-line .unsloth-composer-editor .unsloth-composer-input {
+		width: calc(100% + 0.375rem * var(--ui-space-scale, 1));
+	}
+
+	/* Edge fades: faint on the last line, clearer past a scrolled edge (markComposerScrollEdges). */
+	.unsloth-composer-input:not(:placeholder-shown) {
+		mask-image:
+			linear-gradient(
+				to bottom,
+				transparent,
+				#000 var(--composer-fade-top, 0px),
+				#000 calc(100% - var(--composer-fade-bottom, calc(0.375rem * var(--ui-space-scale, 1)))),
+				transparent
+			),
+			linear-gradient(#000, #000);
+		mask-size: calc(100% - 12px) 100%, 12px 100%;
+		mask-position: left top, right top;
+		mask-repeat: no-repeat;
+	}
+
+	.unsloth-composer-input[data-fade-top] {
+		--composer-fade-top: calc(1.5rem * var(--ui-space-scale, 1));
+	}
+
+	.unsloth-composer-input[data-fade-bottom] {
+		--composer-fade-bottom: calc(1rem * var(--ui-space-scale, 1));
 	}
 
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
@@ -3530,6 +3609,14 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
 		padding-top: calc(1rem * var(--ui-space-scale, 1));
+	}
+
+	/* Welcome: grows by the pt-[27.5dvh] given up, so the bottom edge stays put and it expands upward. */
+	.aui-thread-welcome-center:not(:has(.unsloth-files-panel)) [data-writing-expanded="true"] .unsloth-composer-editor {
+		height: calc(
+			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))) + 27.5dvh - 1rem *
+				var(--ui-space-scale, 1)
+		);
 	}
 
 	.unsloth-composer-plus {
@@ -4307,11 +4394,24 @@ html[data-chat-font] .aui-root {
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
+	/* In em, growing with font and digits: a fixed 1.25rem let "10." hang past the composer's edge. */
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		padding-left: 1.6em;
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
+	}
+
+	/* A list that continues past 9 (start="10") is two digits from its first item. */
+	[data-streamdown="ordered-list"]:is(
+			:has(> li:nth-child(10)),
+			[start]:not([start="1"], [start="2"], [start="3"], [start="4"], [start="5"], [start="6"], [start="7"], [start="8"], [start="9"])
+		) {
+		padding-left: 2.2em;
+	}
+
+	[data-streamdown="ordered-list"]:has(> li:nth-child(100)) {
+		padding-left: 2.8em;
 	}
 
 	[data-streamdown="list-item"] {
@@ -5981,6 +6081,19 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	& svg.size-3\.5 { width: calc(0.875rem * var(--ui-font-scale, 1)); height: calc(0.875rem * var(--ui-font-scale, 1)); }
 	& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-4\.5 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	/* Round-button glyphs at even pixel sizes, so (circle - glyph) / 2 is a whole pixel: an svg at a
+	   fractional offset rasterises snapped up and left. Browsers without round() keep the size above. */
+	& svg.composer-glyph-snap.size-3\.5 {
+		width: round(up, calc(0.875rem * var(--ui-font-scale, 1)), 2px);
+		height: round(up, calc(0.875rem * var(--ui-font-scale, 1)), 2px);
+	}
+	/* Queue Resume's solid play: about a third of the circle's height, like the Stop square. */
+	& svg.composer-resume-glyph {
+		width: calc(var(--ui-icon-size) * 1.125);
+		height: calc(var(--ui-icon-size) * 1.125);
+		width: round(up, calc(var(--ui-icon-size) * 1.125), 2px);
+		height: round(up, calc(var(--ui-icon-size) * 1.125), 2px);
+	}
 	& svg.size-5 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-6 { width: calc(1.5rem * var(--ui-font-scale, 1)); height: calc(1.5rem * var(--ui-font-scale, 1)); }
 	& svg:is(.size-\[5px\], [class~='size-[calc(5px*var(--ui-space-scale,1))]']) { width: calc(5px * var(--ui-font-scale, 1)); height: calc(5px * var(--ui-font-scale, 1)); }
@@ -6010,6 +6123,8 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	& svg.unsloth-send-icon {
 		width: calc(var(--ui-icon-size) * 1.3);
 		height: calc(var(--ui-icon-size) * 1.3);
+		width: round(up, calc(var(--ui-icon-size) * 1.3), 2px);
+		height: round(up, calc(var(--ui-icon-size) * 1.3), 2px);
 	}
 	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
 	   curve a 22px glyph would follow), so only its scaling changed. */
@@ -6549,3 +6664,4 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		border-color: color-mix(in oklab, var(--border), var(--foreground) 15%);
 	}
 }
+

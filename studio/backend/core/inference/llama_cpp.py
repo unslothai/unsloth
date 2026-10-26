@@ -66,13 +66,14 @@ from core.inference.context_window import (
     compact_completed_tool_arguments,
     compact_executed_call_arguments,
     compact_refused_tool_arguments,
-    estimate_message_tokens_without_unpriced_media,
-    estimate_messages_tokens_without_unpriced_media,
+    estimate_message_tokens_with_priced_images,
     _reply_floor,
     estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
+    image_dimensions,
+    messages_with_priced_images,
     messages_without_unpriced_media,
     retrieval_budget,
     fit_oversized_attachments,
@@ -112,6 +113,7 @@ from core.inference.llama_server_args import (
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
     extra_args_image_max_tokens,
+    extra_args_image_min_tokens,
     extra_args_mmproj_auto,
     extra_args_select_load_mode,
     fit_is_enabled_in,
@@ -1009,6 +1011,16 @@ _STDOUT_HEAD_MAX = 5000
 _LOOPBACK_REACHABLE_BIND_IPS = frozenset(
     {"127.0.0.1", "0.0.0.0", "::", "::ffff:127.0.0.1", "::ffff:0.0.0.0"}
 )
+
+
+def _socket_owner_is_always_named() -> bool:
+    """Windows' connection tables carry every socket's owning pid, so an unnamed one there is a
+    psutil quirk rather than another user's listener (#15022)."""
+    return sys.platform == "win32"
+
+
+# Left in startup output when the ownership gate refuses, so it is not reported as a bad GGUF.
+_PORT_OWNER_REFUSED_MARKER = "llama-server port ownership check refused the listener"
 
 
 def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
@@ -2705,6 +2717,43 @@ def _mcp_image_tokens(backend) -> int:
         return int(_openai_llama_admission_image_tokens(backend))
     except Exception:  # noqa: BLE001 -- sizing must never break a tool call
         return _FALLBACK_IMAGE_TOKENS
+
+
+# mtmd's delimiters around an image's embeddings, as admission allows for them.
+_IMAGE_WRAPPER_TOKENS = 128
+# Qwen-VL merges a 2x2 patch square per embedding: 14 px patches on Qwen2/2.5-VL, 16 on Qwen3-VL.
+_MERGED_PATCH_PX = {"qwen2vl_merger": 28, "qwen2.5vl_merger": 28, "qwen3vl_merger": 32}
+# Fixed per image: Gemma 3 pools 896 px to 16 x 16 (258 measured on Gemma 3 4B, ceiling 4224).
+_FIXED_IMAGE_TOKENS = {"gemma3": 256}
+
+
+def _image_token_price(backend, part: dict) -> int:
+    """One image's prompt cost for the fit and tool-result sizing (#14968): the admission ceiling,
+    unless a known projector gives a closer upper bound (the ceiling evicts history that fits)."""
+    ceiling = _mcp_image_tokens(backend)
+    if ceiling <= 0:
+        return 0
+    projector = str(getattr(backend, "_mmproj_projector_type", None) or "").strip().lower()
+    fixed = _FIXED_IMAGE_TOKENS.get(projector)
+    if fixed:
+        return min(ceiling, fixed + _IMAGE_WRAPPER_TOKENS)
+    merged = _MERGED_PATCH_PX.get(projector)
+    dims = image_dimensions(part) if merged else None
+    if dims is None:
+        return ceiling
+    width, height = dims
+    # Ceil, not round: mtmd may round either side up, and this must stay an upper bound.
+    tokens = math.ceil(width / merged) * math.ceil(height / merged)
+    extra_args = getattr(backend, "_extra_args", None)
+    try:
+        cap = extra_args_image_max_tokens(extra_args) or 0
+        # mtmd resizes against --image-min-tokens on its own rounded grid, which this does not model.
+        if extra_args_image_min_tokens(extra_args):
+            return ceiling
+    except Exception:  # noqa: BLE001 -- pricing must never break a count
+        cap = 0
+    cap = cap or ceiling - _IMAGE_WRAPPER_TOKENS
+    return min(ceiling, min(tokens, cap) + _IMAGE_WRAPPER_TOKENS)
 
 
 # How many times one tool may return a byte-identical result before the model is told the
@@ -5493,6 +5542,57 @@ def _reasoning_from_env(env: Mapping[str, str]) -> Optional[bool]:
     if value in _LLAMA_ARG_FALSE_VALUES:
         return False
     return None
+
+
+def _reasoning_preserve_from_args_or_env(
+    extra_args: Optional[Iterable[str]], env: Mapping[str, str]
+) -> Optional[bool]:
+    """The user's --[no-]reasoning-preserve choice, else None: last flag wins, as in
+    llama.cpp's parser, and the extras beat the inherited LLAMA_ARG_REASONING_PRESERVE."""
+    choice: Optional[bool] = None
+    for raw in extra_args or ():
+        flag = _flag_name(str(raw))
+        if flag == "--reasoning-preserve":
+            choice = True
+        elif flag == "--no-reasoning-preserve":
+            choice = False
+    if choice is not None:
+        return choice
+    value = env.get("LLAMA_ARG_REASONING_PRESERVE")
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
+def _template_preserves_thinking_by_default(template: str, context: Mapping) -> bool:
+    """Whether ``template`` replays an earlier turn's reasoning with preserve_thinking
+    omitted (Qwen3.8's own does, ``|default(false)`` does not); False if unrenderable."""
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def _raise(message):
+        raise ValueError(message)
+
+    marker = "unsloth-preserve-thinking-probe"
+    messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1", "reasoning_content": marker},
+        {"role": "user", "content": "q2"},
+    ]
+    try:
+        jinja = ImmutableSandboxedEnvironment(
+            trim_blocks = True,
+            lstrip_blocks = True,
+            extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"],
+        )
+        jinja.globals.update(raise_exception = _raise, strftime_now = lambda fmt: time.strftime(fmt))
+        rendered = jinja.from_string(template).render(
+            **{**context, "messages": messages, "add_generation_prompt": True}
+        )
+    except Exception:
+        return False
+    return marker in rendered
 
 
 def _reasoning_effort_from_env(env: Mapping[str, str]) -> Optional[str]:
@@ -9182,6 +9282,23 @@ class LlamaCppBackend:
     @property
     def model_identifier(self) -> Optional[str]:
         return self._model_identifier
+
+    def _price_image(self, part: dict) -> int:
+        return _image_token_price(self, part)
+
+    def _countable_messages(self, messages: list[dict]) -> list[dict]:
+        """The counting copy every fit and size probe uses: images charged, audio and video dropped."""
+        from core.inference.mcp_images import prepare_image_turn_boundaries
+
+        # Before pricing: a stand-in hides an image turn from Ministral's alternation fix-up.
+        messages = prepare_image_turn_boundaries(
+            messages,
+            getattr(self, "_chat_template_override", None) or getattr(self, "_chat_template", None),
+        )
+        return messages_with_priced_images(messages, self._price_image)
+
+    def _estimate_countable_message(self, message: dict) -> int:
+        return estimate_message_tokens_with_priced_images(message, self._price_image)
 
     @property
     def is_vision(self) -> bool:
@@ -20225,7 +20342,8 @@ class LlamaCppBackend:
         _find_free_port releases the port before llama-server binds it, so another local user could
         answer /health and receive every prompt plus the per-launch key. Their socket shows no pid
         on Linux/macOS, so our own (readable) tree not listening counts as foreign. Unreadable
-        ownership keeps today's behaviour."""
+        ownership keeps today's behaviour. On Windows psutil can report our live listener as NONE
+        and/or pid 0 (#15022), so only a named foreign pid refuses there."""
         port = getattr(self, "_port", None)
         pid = getattr(process, "pid", None)
         if not isinstance(pid, int) or not isinstance(port, int):
@@ -20247,13 +20365,24 @@ class LlamaCppBackend:
         except Exception:  # noqa: BLE001 -- access denied / platform quirk
             return True
 
+        windows = _socket_owner_is_always_named()
+
         def _listens(conn) -> bool:
             laddr = getattr(conn, "laddr", None)
-            return (
+            if not (
                 bool(laddr)
                 and getattr(laddr, "port", None) == port
                 and getattr(laddr, "ip", None) in _LOOPBACK_REACHABLE_BIND_IPS
-                and conn.status == psutil.CONN_LISTEN
+            ):
+                return False
+            if conn.status == psutil.CONN_LISTEN:
+                return True
+            # Windows can report the live listener as NONE: a TCP socket with no peer still is one.
+            return (
+                windows
+                and conn.status == psutil.CONN_NONE
+                and not getattr(conn, "raddr", None)
+                and getattr(conn, "type", socket.SOCK_STREAM) == socket.SOCK_STREAM
             )
 
         tree_readable = True
@@ -20271,7 +20400,8 @@ class LlamaCppBackend:
         try:
             # Scan every listener: a foreign one listed before ours must not refuse our start.
             for conn in psutil.net_connections(kind = "inet"):
-                if not _listens(conn) or conn.pid is None:
+                # pid 0 is the System Idle Process on Windows: psutil's other "unknown owner".
+                if not _listens(conn) or conn.pid is None or (windows and conn.pid == 0):
                     continue
                 if conn.pid in tree_pids or _has_ancestor(conn.pid, pid):
                     return True
@@ -20286,7 +20416,7 @@ class LlamaCppBackend:
                 pid,
             )
             return False
-        if tree_readable:
+        if tree_readable and not windows:
             logger.error(
                 "llama-server port %s answered /health but our child %s is not listening on it; "
                 "refusing to use it",
@@ -23638,7 +23768,16 @@ class LlamaCppBackend:
         """
         lowered = (output or "").lower()
 
-        # First: every branch below advises reinstall, memory or administrator,
+        # A healthy server we stopped ourselves: its output holds no failure to classify.
+        if _PORT_OWNER_REFUSED_MARKER.lower() in lowered:
+            return (
+                "llama-server started and answered on its local port, but Studio could not "
+                "confirm that the listener on that port belongs to the server it launched, so it "
+                "stopped the server. The model file and memory are not the problem; the backend "
+                "log names the port and the process that held it."
+            )
+
+        # Then: every branch below advises reinstall, memory or administrator,
         # none of which lift a refusal to load a file that is present.
         blocked = code_integrity_block_reason(returncode) or code_integrity_block_reason(output)
         if blocked is not None:
@@ -32433,7 +32572,19 @@ class LlamaCppBackend:
                     # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
                     # supporting family keep the existing off default. The
                     # frontend receives the same resolved value via load/status.
+                    # An override takes the default its own text renders, and an explicit
+                    # --[no-]reasoning-preserve beats both: llama.cpp applies this kwarg
+                    # after that flag, so it would otherwise undo it (#15115).
                     if self._supports_preserve_thinking:
+                        if chat_template_override:
+                            self._preserve_thinking_default = (
+                                _template_preserves_thinking_by_default(
+                                    chat_template_override, reasoning_kw
+                                )
+                            )
+                        _preserve = _reasoning_preserve_from_args_or_env(extra_args, env)
+                        if _preserve is not None:
+                            self._preserve_thinking_default = _preserve
                         reasoning_kw["preserve_thinking"] = self._preserve_thinking_default
                     _reasoning_args = _build_launch_reasoning_args(server_caps, reasoning_kw)
                     cmd.extend(_reasoning_args)
@@ -34516,26 +34667,6 @@ class LlamaCppBackend:
                     self._vram_fraction_pending = None
                     raise RuntimeError(detail)
 
-                def _recover_vulkan_stall(stalled_cmd: list[str]) -> bool:
-                    """A probe that could not enumerate plus no loading work replays on CPU (True
-                    once up, False if it could not start); any other stall fails with advice."""
-                    if (
-                        _vulkan_suspect
-                        and getattr(self, "_health_wait_stall_kind", None) == "no_progress"
-                    ):
-                        return _try_auto_vulkan_cpu_fallback(stalled_cmd, None, stalled = True)
-                    _why = (
-                        "startup time limit reached"
-                        if getattr(self, "_health_wait_stall_kind", None) == "ceiling"
-                        else "no loading progress"
-                    )
-                    _raise_terminal_load_failure(
-                        "llama-server did not finish starting on the auto-selected Vulkan "
-                        f"backend ({_why}). If this keeps happening, choose CPU "
-                        "in Settings > GGUF inference engine to run models without the "
-                        "Vulkan driver."
-                    )
-
                 def _vulkan_stall_pending() -> bool:
                     return (
                         getattr(self, "_health_wait_stalled", False)
@@ -34711,6 +34842,26 @@ class LlamaCppBackend:
                         "stalled" if stalled else "crashed",
                     )
                     return True
+
+                def _recover_vulkan_stall(stalled_cmd: list[str]) -> bool:
+                    """A probe that could not enumerate plus no loading work replays on CPU (True
+                    once up, False if it could not start); any other stall fails with advice."""
+                    if (
+                        _vulkan_suspect
+                        and getattr(self, "_health_wait_stall_kind", None) == "no_progress"
+                    ):
+                        return _try_auto_vulkan_cpu_fallback(stalled_cmd, None, stalled = True)
+                    _why = (
+                        "startup time limit reached"
+                        if getattr(self, "_health_wait_stall_kind", None) == "ceiling"
+                        else "no loading progress"
+                    )
+                    _raise_terminal_load_failure(
+                        "llama-server did not finish starting on the auto-selected Vulkan "
+                        f"backend ({_why}). If this keeps happening, choose CPU "
+                        "in Settings > GGUF inference engine to run models without the "
+                        "Vulkan driver."
+                    )
 
                 # Store the resolved on-disk path, not the caller's kwarg: in
                 # HF mode gguf_path is None and ``model_path`` is what
@@ -39632,6 +39783,7 @@ class LlamaCppBackend:
                         self._health_wait_cancelled = True
                         return False
                     if not self._health_listener_is_ours(process):
+                        self._stdout_lines.append(_PORT_OWNER_REFUSED_MARKER)
                         return False
                     return True
             except (
@@ -40728,7 +40880,7 @@ class LlamaCppBackend:
                     max_tokens = payload["max_tokens"],
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                            self._countable_messages(fitted), None, self.markup_profile
                         ),
                         None,
                         None,
@@ -40737,7 +40889,7 @@ class LlamaCppBackend:
                         continue_final_message = continue_final_message,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
-                    estimate_message = estimate_message_tokens_without_unpriced_media,
+                    estimate_message = self._estimate_countable_message,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky,
                     sticky_is_checkpoint = _sticky_is_checkpoint,
@@ -40770,7 +40922,7 @@ class LlamaCppBackend:
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                messages_without_unpriced_media(fitted),
+                                self._countable_messages(fitted),
                                 None,
                                 self.markup_profile,
                             ),
@@ -41568,7 +41720,7 @@ class LlamaCppBackend:
                     ),
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            messages_without_unpriced_media(fitted),
+                            self._countable_messages(fitted),
                             _markup_cache,
                             self.markup_profile,
                         ),
@@ -41578,7 +41730,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = reasoning_kw,
                         continue_final_message = continue_flag,
                     ),
-                    estimate_message = estimate_message_tokens_without_unpriced_media,
+                    estimate_message = self._estimate_countable_message,
                     anchor_ids = (_rolling_anchor_ids | protect) if protect else _rolling_anchor_ids,
                 )
             except Exception:
@@ -41613,7 +41765,7 @@ class LlamaCppBackend:
             try:
                 _tokens = self.count_chat_tokens(
                     neutralize_control_markup_in_messages(
-                        messages_without_unpriced_media(candidate),
+                        self._countable_messages(candidate),
                         _markup_cache,
                         self.markup_profile,
                     ),
@@ -41784,7 +41936,7 @@ class LlamaCppBackend:
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                messages_without_unpriced_media(fitted),
+                                self._countable_messages(fitted),
                                 _markup_cache,
                                 self.markup_profile,
                             ),
@@ -41798,7 +41950,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
-                        estimate_message = estimate_message_tokens_without_unpriced_media,
+                        estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
@@ -41817,7 +41969,7 @@ class LlamaCppBackend:
                         # messages, priced by the fit with the catalogue and template.
                         _prompt_token_offset = int(
                             truncation.get("prompt_tokens_after") or 0
-                        ) - estimate_messages_tokens_without_unpriced_media(conversation)
+                        ) - sum(self._estimate_countable_message(m) for m in conversation)
                     if truncation:
                         _recalled = _archive_and_recall(
                             conversation,
@@ -41847,7 +41999,7 @@ class LlamaCppBackend:
                             ),
                             count_tokens = lambda fitted: self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
-                                    messages_without_unpriced_media(fitted),
+                                    self._countable_messages(fitted),
                                     _markup_cache,
                                     self.markup_profile,
                                 ),
@@ -41973,7 +42125,7 @@ class LlamaCppBackend:
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                messages_without_unpriced_media(fitted),
+                                self._countable_messages(fitted),
                                 _markup_cache,
                                 self.markup_profile,
                             ),
@@ -41987,7 +42139,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
-                        estimate_message = estimate_message_tokens_without_unpriced_media,
+                        estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
@@ -42111,15 +42263,13 @@ class LlamaCppBackend:
                         self._effective_context_length, _iteration_max_tokens
                     )
                     if (
-                        estimate_messages_tokens_dense(
-                            messages_without_unpriced_media(conversation)
-                        )
+                        estimate_messages_tokens_dense(self._countable_messages(conversation))
                         > 0.7 * _reply_target
                     ):
                         try:
                             _prompt_now = self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
-                                    messages_without_unpriced_media(conversation),
+                                    self._countable_messages(conversation),
                                     _markup_cache,
                                     self.markup_profile,
                                 ),
@@ -43654,7 +43804,7 @@ class LlamaCppBackend:
                         # whole gate.
                         if (
                             estimate_messages_tokens_conservative(
-                                messages_without_unpriced_media(conversation)
+                                self._countable_messages(conversation)
                             )
                             > 0.7 * _room_target
                         ):
@@ -43683,7 +43833,7 @@ class LlamaCppBackend:
                                 try:
                                     _turn_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            messages_without_unpriced_media(
+                                            self._countable_messages(
                                                 [*conversation, _probe_message]
                                             ),
                                             _markup_cache,
@@ -43742,7 +43892,7 @@ class LlamaCppBackend:
                                     try:
                                         _after_tokens = self.count_chat_tokens(
                                             neutralize_control_markup_in_messages(
-                                                messages_without_unpriced_media(_as_if_run),
+                                                self._countable_messages(_as_if_run),
                                                 _markup_cache,
                                                 self.markup_profile,
                                             ),
@@ -43963,9 +44113,7 @@ class LlamaCppBackend:
                                 try:
                                     _exact_prompt_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            messages_without_unpriced_media(
-                                                [*conversation, _size_probe]
-                                            ),
+                                            self._countable_messages([*conversation, _size_probe]),
                                             _markup_cache,
                                             self.markup_profile,
                                         ),
@@ -43996,7 +44144,7 @@ class LlamaCppBackend:
                                     else _exact_prompt_tokens
                                     if _exact_prompt_tokens is not None
                                     else estimate_messages_tokens_dense(
-                                        messages_without_unpriced_media(conversation)
+                                        self._countable_messages(conversation)
                                     )
                                     + (
                                         _prompt_token_offset
@@ -44133,7 +44281,7 @@ class LlamaCppBackend:
                                                 # is handed to the result.
                                                 _spent_after = self.count_chat_tokens(
                                                     neutralize_control_markup_in_messages(
-                                                        messages_without_unpriced_media(
+                                                        self._countable_messages(
                                                             [*conversation, _size_probe]
                                                         ),
                                                         _markup_cache,
@@ -44665,7 +44813,7 @@ class LlamaCppBackend:
                     max_tokens = _final_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                            self._countable_messages(fitted), None, self.markup_profile
                         ),
                         None,
                         _final_tools,
@@ -44673,7 +44821,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
-                    estimate_message = estimate_message_tokens_without_unpriced_media,
+                    estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _final_can_reset,
@@ -44704,7 +44852,7 @@ class LlamaCppBackend:
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                messages_without_unpriced_media(fitted),
+                                self._countable_messages(fitted),
                                 None,
                                 self.markup_profile,
                             ),
@@ -44830,7 +44978,7 @@ class LlamaCppBackend:
                     max_tokens = max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                            self._countable_messages(fitted), None, self.markup_profile
                         ),
                         None,
                         _final_tools,
@@ -44838,7 +44986,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
-                    estimate_message = estimate_message_tokens_without_unpriced_media,
+                    estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
@@ -44986,7 +45134,7 @@ class LlamaCppBackend:
                 return True
             try:
                 _tokens = self.count_chat_tokens(
-                    messages_without_unpriced_media(candidate_messages),
+                    self._countable_messages(candidate_messages),
                     None,
                     _final_tools,
                     strict = True,

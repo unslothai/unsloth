@@ -184,6 +184,24 @@ def _path_basename_is_default_embedder(value: str) -> bool:
     )
 
 
+def is_selected_embedder(repo_id: str | None) -> bool:
+    """True if *repo_id* is the Settings-picked (not env/default) embedder or its GGUF; the Hub keeps it as a deletable non-chat row."""
+    if not repo_id or not _HF_REPO_ID_RE.match(repo_id):
+        return False
+    from core.rag import config as rag_config
+
+    defaults = {
+        rag_config.EMBEDDING_MODEL.lower(),
+        rag_config.default_gguf_repo().lower(),
+        *(repo.lower() for repo in _DEFAULT_EMBEDDING_REPO_IDS),
+    }
+    wanted = repo_id.lower()
+    return wanted not in defaults and any(
+        model and model.lower() == wanted and not _existing_resolved_path(model)
+        for model in (rag_config.effective_embedding_model(), rag_config.effective_gguf_repo())
+    )
+
+
 def is_hidden_model(*values: str | None) -> bool:
     """True if any id/path is the RAG embedding model (the effective embedder or its GGUF companion repo), the llama.cpp install validation probe (ggml-org/models / stories260K), a curated/custom Whisper dictation model, or a Decision API model, so pickers hide them (GGUF and non-GGUF). None are usable chat models, and the probe can be cached as a side effect of installing the prebuilt llama-server and otherwise sorts smallest, so it would be auto-selected.
 

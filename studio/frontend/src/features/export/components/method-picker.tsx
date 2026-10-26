@@ -9,8 +9,8 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  CheckmarkCircle01Icon,
   InformationCircleIcon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
@@ -82,7 +82,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
               >
                 {selected && (
                   <HugeiconsIcon
-                    icon={CheckmarkCircle01Icon}
+                    icon={CheckmarkCircle02Icon}
                     className="size-3 text-primary-foreground"
                   />
                 )}

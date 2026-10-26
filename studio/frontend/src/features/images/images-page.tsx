@@ -35,6 +35,7 @@ import {
   Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -1820,7 +1821,7 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
-  const [localizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
+  const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
   const [localizedColors, setLocalizedColors] = useState<string[]>([]);
@@ -1999,6 +2000,11 @@ export function ImagesPage({
   const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
   const unifiedEdit = Boolean(conditioning?.unified_edit);
+  // Localized modes and the transparent-background prompt are Qwen-Image-2.1's; FLUX.3 shares the Edit form without them.
+  const localizedEdit = Boolean(conditioning?.localized_edit_modes?.length);
+  // A mode picked on a model that has it would be refused by one that does not.
+  const localizedMode =
+    pickedLocalizedMode && conditioning?.localized_edit_modes?.includes(pickedLocalizedMode) ? pickedLocalizedMode : null;
   // Edit-only model whose Edit takes more images after the source (Qwen-Image-Edit-Plus).
   const multiImageEdit = !unifiedEdit && Boolean(conditioning?.multi_image_edit);
   const referenceResolutions = conditioning?.reference_resolutions ?? [];
@@ -4046,7 +4052,7 @@ export function ImagesPage({
   }, []);
   const applyEditSource = useCallback(
     (dataUrl: string) => {
-      // FLUX.2 klein and FLUX.3 edit through Reference; without this fallback the source lands hidden on Create.
+      // FLUX.2 klein edits through Reference; without this fallback the source lands hidden on Create.
       const target: WorkflowId | null = isWorkflowEnabled("edit", supported)
         ? "edit"
         : isWorkflowEnabled("transform", supported)
@@ -6876,7 +6882,7 @@ export function ImagesPage({
                 {editSizing === "custom" && sizeControls}
                 {referenceDetailControl}
                 {engineNotes}
-                {unifiedEdit && (
+                {localizedEdit && (
                   <Button
                     type="button"
                     variant="secondary"
@@ -7362,7 +7368,7 @@ export function ImagesPage({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={Refresh01Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={ReloadIcon} className="mr-2 size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>
