@@ -45161,8 +45161,7 @@ async def _openai_passthrough_stream_admitted(
     """Reasoning and tool-call splitting stay with llama-server, so delta.content is not re-parsed."""
     _tracker = tracker
     upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
-    # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is seen: the
-    # middleware must not claim a preview-owned model on a failed passthrough stream.
+    # A mid-stream error keeps HTTP 200, so flag the scope or the middleware claims a preview model.
     from core.inference.llama_keepwarm import mark_response_failed
 
     client = None
