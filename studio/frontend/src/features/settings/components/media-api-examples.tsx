@@ -85,7 +85,8 @@ export function MediaApiExamples({
   }, [mediaApiRequested]);
 
   useEffect(() => {
-    if (scrollTarget !== "api-keys-media-api") return;
+    // The API page's copy (no heading) must not answer, or the dialog's section never scrolls.
+    if (!showHeading || scrollTarget !== "api-keys-media-api") return;
     const section = sectionRef.current;
     if (!section) return;
     const pin = () => section.scrollIntoView({ block: "start" });
@@ -107,7 +108,7 @@ export function MediaApiExamples({
       window.clearTimeout(timer);
       for (const name of events) window.removeEventListener(name, release);
     };
-  }, [scrollTarget]);
+  }, [scrollTarget, showHeading]);
 
   useEffect(() => {
     let cancelled = false;

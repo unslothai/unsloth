@@ -17,9 +17,6 @@ import {
   useSettingsDialogStore,
 } from "../stores/settings-dialog-store";
 
-export const API_AGENTS_SECTION_ID = "api-keys-agents-section";
-export const API_MCP_SECTION_ID = "api-keys-mcp-section";
-
 /** Links to the API settings sections; each section consumes its scroll target, so they work from any page. */
 export function ApiJumpLinks({ className }: { className?: string }) {
   const t = useT();

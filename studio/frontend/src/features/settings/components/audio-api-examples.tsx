@@ -131,7 +131,8 @@ export function AudioApiExamples({
   }, [audioApiRequested]);
 
   useEffect(() => {
-    if (scrollTarget !== "api-keys-audio-api") return;
+    // The API page's copy (no heading) must not answer, or the dialog's section never scrolls.
+    if (!showHeading || scrollTarget !== "api-keys-audio-api") return;
     const section = sectionRef.current;
     if (!section) return;
     // Consumed only after the user scrolls: clearing it re-runs this effect, whose cleanup stops the pinning.
@@ -154,7 +155,7 @@ export function AudioApiExamples({
       window.clearTimeout(timer);
       for (const name of events) window.removeEventListener(name, release);
     };
-  }, [scrollTarget]);
+  }, [scrollTarget, showHeading]);
 
   useEffect(() => watchAudioModels(listOpenAIAudioModels, setModels), []);
 

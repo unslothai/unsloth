@@ -73,7 +73,6 @@ import {
   statusGgufVerdict,
 } from "./agent-command";
 import { AgentIcon } from "./agent-command-block";
-import { API_AGENTS_SECTION_ID, API_MCP_SECTION_ID } from "./api-jump-links";
 import {
   ExampleCodeBox,
   ExampleToggle,
@@ -561,12 +560,14 @@ export function UsageExamples({
   const t = useT();
   const isOwner = useIsAccountOwner();
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  // Refs, not ids: the API page can mount a second copy, and an id lookup found that one.
+  const agentsRef = useRef<HTMLDivElement | null>(null);
+  const mcpRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
+    if (agentsOnly) return;
     if (scrollTarget !== "api-keys-agents" && scrollTarget !== "api-keys-mcp") return;
     const target = scrollTarget;
-    const section = document.getElementById(
-      target === "api-keys-agents" ? API_AGENTS_SECTION_ID : API_MCP_SECTION_ID,
-    );
+    const section = (target === "api-keys-agents" ? agentsRef : mcpRef).current;
     if (!section) return;
     // As the other API sections do: hold the section in place while the cards above it load.
     const pin = () => scrollIntoPane(section);
@@ -586,7 +587,7 @@ export function UsageExamples({
       window.clearTimeout(timer);
       for (const name of events) window.removeEventListener(name, release);
     };
-  }, [scrollTarget]);
+  }, [scrollTarget, agentsOnly]);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const secure = usePlatformStore((s) => s.secure);
@@ -971,7 +972,7 @@ export function UsageExamples({
           />
         </>
       )}
-      <div id={API_AGENTS_SECTION_ID} className="flex min-w-0 scroll-mt-6 flex-col gap-2.5 pt-2">
+      <div ref={agentsRef} className="flex min-w-0 scroll-mt-6 flex-col gap-2.5 pt-2">
         <div className="flex items-center justify-between gap-3">
           {agentsOnly ? (
             <span />
@@ -1089,7 +1090,7 @@ export function UsageExamples({
             {t("settings.agents.vscodeNote")}
           </p>
         )}
-        {agentsExtra ? <div id={API_MCP_SECTION_ID}>{agentsExtra}</div> : null}
+        {agentsExtra ? <div ref={mcpRef}>{agentsExtra}</div> : null}
       </div>
     </section>
   );

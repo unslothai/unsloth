@@ -43,7 +43,6 @@ import {
 import { RAISED_SURFACE } from "@/features/library/surface";
 import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
 import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
-import { McpAccessSection } from "@/features/settings/components/mcp-access-section";
 import { MediaApiExamples } from "@/features/settings/components/media-api-examples";
 import {
   UsageExamples,
@@ -52,6 +51,7 @@ import {
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -59,7 +59,10 @@ import {
   ArrowDataTransferVerticalIcon,
   Cancel01Icon,
   CodeIcon,
+  BotIcon,
   ComputerTerminal01Icon,
+  Image01Icon,
+  TaskDone01Icon,
   Delete02Icon,
   FileSearchIcon,
   FlashIcon,
@@ -865,13 +868,7 @@ function RequestDetail({
   );
 }
 
-type QuickStartKind =
-  | "chat"
-  | "media"
-  | "audio"
-  | "decision"
-  | "agents"
-  | "mcp";
+type QuickStartKind = "chat" | "media" | "audio" | "decision" | "agents";
 
 function QuickStart({
   baseUrl,
@@ -884,14 +881,15 @@ function QuickStart({
   const isOwner = useIsAccountOwner();
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
   const [kind, setKind] = useState<QuickStartKind>("chat");
-  // The other APIs' examples as Settings > API shows them; Decision and MCP are owner-only there too.
-  const kinds: { id: QuickStartKind; label: string }[] = [
-    { id: "chat", label: "Chat" },
-    { id: "media", label: "Images / Video" },
-    { id: "audio", label: "Audio" },
-    ...(isOwner ? [{ id: "decision" as const, label: "Decision" }] : []),
-    { id: "agents", label: "Agents" },
-    ...(isOwner ? [{ id: "mcp" as const, label: "MCP" }] : []),
+  // The other APIs' examples, with the icons Settings > API gives them; Decision is owner-only there too.
+  const kinds: { id: QuickStartKind; label: string; icon: IconSvgElement }[] = [
+    { id: "chat", label: "Chat", icon: MessageCircleIcon },
+    { id: "media", label: "Images / Video", icon: Image01Icon },
+    { id: "audio", label: "Audio", icon: AiSpeechIcon },
+    ...(isOwner
+      ? [{ id: "decision" as const, label: "Decision", icon: TaskDone01Icon }]
+      : []),
+    { id: "agents", label: "Agents", icon: BotIcon },
   ];
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
@@ -912,7 +910,7 @@ function QuickStart({
             : "Load a model, then send a request to see it here."}
         </p>
       </div>
-      {/* The Library's tab row: no track, the current tab lifted. */}
+      {/* The Library's tab row: Hellix, no track, the current tab lifted. */}
       <nav aria-label="Example" className="flex flex-wrap justify-center gap-1">
         {kinds.map((entry) => (
           <button
@@ -921,7 +919,7 @@ function QuickStart({
             aria-current={entry.id === kind ? "page" : undefined}
             onClick={() => setKind(entry.id)}
             className={cn(
-              "flex h-9 shrink-0 items-center rounded-full px-3.5 text-ui-15 text-foreground/80 transition-colors hover:text-foreground",
+              "flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 font-heading text-ui-15 text-foreground/80 transition-colors hover:text-foreground",
               // On the card, the lift is one step up from it, not the card colour itself.
               entry.id === kind &&
                 cn(
@@ -930,6 +928,11 @@ function QuickStart({
                 ),
             )}
           >
+            <HugeiconsIcon
+              icon={entry.icon}
+              strokeWidth={1.75}
+              className="size-4 shrink-0"
+            />
             {entry.label}
           </button>
         ))}
@@ -955,14 +958,12 @@ function QuickStart({
             <AudioApiExamples useTunnel={useTunnel} showHeading={false} />
           ) : kind === "decision" ? (
             <DecisionApiSection showHeading={false} />
-          ) : kind === "agents" ? (
+          ) : (
             <UsageExamples
               useTunnel={useTunnel}
               onUseTunnelChange={setUseTunnel}
               agentsOnly={true}
             />
-          ) : (
-            <McpAccessSection />
           )}
         </div>
       )}

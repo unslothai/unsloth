@@ -155,7 +155,9 @@ export function DecisionApiSection({
   }, []);
 
   useEffect(() => {
-    if (scrollTarget !== "api-keys-decision-api" || !settings) return;
+    // The API page's copy (no heading) must not answer, or the dialog's section never scrolls.
+    if (!showHeading || scrollTarget !== "api-keys-decision-api" || !settings)
+      return;
     const frame = window.requestAnimationFrame(() => {
       if (sectionRef.current) scrollIntoPane(sectionRef.current);
       useSettingsDialogStore
@@ -163,7 +165,7 @@ export function DecisionApiSection({
         .consumeScrollTarget("api-keys-decision-api");
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [scrollTarget, settings]);
+  }, [scrollTarget, settings, showHeading]);
 
   useEffect(() => {
     if (!enabled) return;

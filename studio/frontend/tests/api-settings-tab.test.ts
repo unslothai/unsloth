@@ -51,8 +51,18 @@ test("jump links above the token form reach the tab's APIs from any page, which 
   // Agents and MCP hold their section in place like the other API sections.
   assert.match(examples, /scrollTarget !== "api-keys-agents" && scrollTarget !== "api-keys-mcp"/);
   assert.match(examples, /consumeScrollTarget\(target\)/);
-  assert.match(examples, /<div id=\{API_AGENTS_SECTION_ID\}/);
-  assert.match(examples, /<div id=\{API_MCP_SECTION_ID\}>\{agentsExtra\}<\/div>/);
+  // Per-instance refs, and the API page's copies stay out of Settings navigation.
+  assert.match(examples, /<div ref=\{agentsRef\} className=/);
+  assert.match(examples, /<div ref=\{mcpRef\}>\{agentsExtra\}<\/div>/);
+  assert.match(examples, /if \(agentsOnly\) return;\s*if \(scrollTarget !== "api-keys-agents"/);
+  assert.doesNotMatch(examples, /getElementById/);
+  for (const [file, target] of [
+    ["media-api-examples.tsx", "api-keys-media-api"],
+    ["audio-api-examples.tsx", "api-keys-audio-api"],
+    ["decision-api-section.tsx", "api-keys-decision-api"],
+  ]) {
+    assert.match(readSrc(`features/settings/components/${file}`), new RegExp(`if \\(!showHeading \\|\\| scrollTarget !== "${target}"`), file);
+  }
   assert.ok(TAB.indexOf("<ApiJumpLinks") > 0);
   assert.ok(TAB.indexOf("<ApiJumpLinks") < TAB.indexOf("<CreateKeyForm"));
   // The token form and list share one section heading.
@@ -66,13 +76,18 @@ test("jump links above the token form reach the tab's APIs from any page, which 
     /<AudioApiExamples useTunnel=\{useTunnel\} showHeading=\{false\} \/>/,
     /<DecisionApiSection showHeading=\{false\} \/>/,
     /<UsageExamples[^>]*agentsOnly=\{true\}/,
-    /<McpAccessSection \/>/,
   ]) {
     assert.match(monitor, part);
   }
-  assert.match(monitor, /\.\.\.\(isOwner \? \[\{ id: "decision" as const/);
-  assert.match(monitor, /\.\.\.\(isOwner \? \[\{ id: "mcp" as const/);
+  assert.match(monitor, /\.\.\.\(isOwner\s*\? \[\{ id: "decision" as const/);
+  // No MCP tab: it is a setting, not an example.
+  assert.doesNotMatch(monitor, /McpAccessSection|id: "mcp"/);
+  assert.match(monitor, /font-heading text-ui-15/);
   assert.match(examples, /\{agentsOnly \? null : \(/);
+  // Each tab carries the icon its Settings section has.
+  for (const icon of ["MessageCircleIcon", "Image01Icon", "AiSpeechIcon", "TaskDone01Icon", "BotIcon"]) {
+    assert.match(monitor, new RegExp(`label: "[^"]+", icon: ${icon} \\}`));
+  }
   assert.ok(TAB.indexOf("<MediaApiExamples") < TAB.indexOf("<AudioApiExamples"));
   assert.ok(TAB.indexOf("<AudioApiExamples") < TAB.indexOf("<DecisionApiSection"));
   // The Decision API has a heading like the other API sections, outside its card.
