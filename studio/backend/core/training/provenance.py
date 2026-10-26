@@ -27,6 +27,7 @@ _REASON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _MODEL_WEIGHT_RE = re.compile(
     r"(?:"
     r"model(?:-\d+-of-\d+)?|"
+    r"model\.safetensors(?:-\d+-of-\d+)?|"
     r"pytorch_model(?:-\d+-of-\d+)?|"
     r"adapter_model(?:-\d+-of-\d+)?|"
     r"consolidated(?:[._-]\d+)?|"
