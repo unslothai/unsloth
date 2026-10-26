@@ -146,3 +146,31 @@ def test_tp2_kept_tokenizer_saves_complete_files_on_every_rank():
         paths = [p for p in res["after_return"] if str(p).endswith("tokenizer_config.json")]
         assert paths and os.path.basename(os.path.dirname(paths[0])) == "same", res["after_return"]
         assert res["leftovers"] == [], res["leftovers"]  # private directories removed
+
+
+class _PicklableProcessor:
+    """A processor stand-in with its own save_pretrained (mark_world_save wraps it)."""
+
+    def __init__(self):
+        self.saved = []
+
+    def save_pretrained(self, save_directory, **kwargs):
+        self.saved.append(save_directory)
+        return (save_directory,)
+
+
+def test_marked_processor_stays_picklable(tmp_path):
+    """Spawn-based DataLoader workers pickle the processor (and any collator holding it)."""
+    import pickle
+
+    from unsloth.models.tp_replica import mark_world_save
+
+    processor = mark_world_save(_PicklableProcessor())
+    assert processor.__dict__["save_pretrained"].__name__ == "unsloth_tp_world_save_pretrained"
+    clone = pickle.loads(pickle.dumps(processor))
+    # Unpickled in a worker, it is the plain class method again.
+    assert clone.save_pretrained.__name__ == "save_pretrained"
+    assert clone.save_pretrained(str(tmp_path)) == (str(tmp_path),)
+    # Outside torch.distributed the wrapped save still writes through the object's own save.
+    assert processor.save_pretrained(str(tmp_path / "out"))
+    assert processor.saved

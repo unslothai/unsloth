@@ -659,35 +659,36 @@ def mark_world_save(obj):
     d["_unsloth_tp_world_save"] = True
     save = getattr(obj, "save_pretrained", None)
     if callable(save) and getattr(save, "__name__", "") != "unsloth_tokenizer_save_pretrained":
+        from ..save import _TokenizerBoundMethod
 
-        def save_pretrained(
-            save_directory,
-            *args,
-            push_to_hub = False,
-            **kwargs,
-        ):
-            what = f"{type(obj).__name__}.save_pretrained"
-            result = tp_world_save(what, lambda path: save(path, *args, **kwargs), save_directory)
-            if push_to_hub:
-                repo_id = kwargs.pop(
-                    "repo_id", os.path.basename(os.path.normpath(os.fspath(save_directory)))
-                )
-                push = {
-                    k: kwargs[k]
-                    for k in ("commit_message", "token", "private", "revision")
-                    if k in kwargs
-                }
-                tp_world_push(
-                    f"{type(obj).__name__}.push_to_hub", lambda: obj.push_to_hub(repo_id, **push)
-                )
-            return result
-
-        save_pretrained.__name__ = "unsloth_tp_world_save_pretrained"
-        d["save_pretrained"] = save_pretrained
+        if "save_pretrained" in d:
+            d["_unsloth_tp_inner_save"] = d["save_pretrained"]
+        # A picklable bound wrapper, not a closure: spawn-based DataLoader workers pickle the processor.
+        d["save_pretrained"] = _TokenizerBoundMethod(
+            unsloth_tp_world_save_pretrained, obj, "save_pretrained"
+        )
     nested = d.get("tokenizer")
     if nested is not None and nested is not obj:
         mark_world_save(nested)
     return obj
+
+
+def unsloth_tp_world_save_pretrained(
+    obj,
+    save_directory,
+    *args,
+    push_to_hub = False,
+    **kwargs,
+):
+    """mark_world_save's save_pretrained: the object's own save, through tp_world_save."""
+    save = obj.__dict__.get("_unsloth_tp_inner_save") or type(obj).save_pretrained.__get__(obj)
+    what = f"{type(obj).__name__}.save_pretrained"
+    result = tp_world_save(what, lambda path: save(path, *args, **kwargs), save_directory)
+    if push_to_hub:
+        repo_id = kwargs.pop("repo_id", os.path.basename(os.path.normpath(os.fspath(save_directory))))
+        push = {k: kwargs[k] for k in ("commit_message", "token", "private", "revision") if k in kwargs}
+        tp_world_push(f"{type(obj).__name__}.push_to_hub", lambda: obj.push_to_hub(repo_id, **push))
+    return result
 
 
 def _relocated(value, private, target):
