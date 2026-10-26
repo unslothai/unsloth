@@ -10602,6 +10602,20 @@ def _model_switch_allowed_for_request(fastapi_request) -> bool:
     return isinstance(scope, dict) and bool(scope.get(_ALLOW_MODEL_SWITCH_SCOPE_KEY))
 
 
+_LOAD_ALONGSIDE_SCOPE_KEY = "unsloth.load_alongside"
+
+
+def load_alongside_for_request(scope) -> None:
+    """Under Keep multiple models loaded, let this in-process request's switch load beside the loaded model, as Chat's picker does."""
+    if isinstance(scope, dict):
+        scope[_LOAD_ALONGSIDE_SCOPE_KEY] = True
+
+
+def _load_alongside_for_request(fastapi_request) -> bool:
+    scope = getattr(fastapi_request, "scope", None)
+    return isinstance(scope, dict) and bool(scope.get(_LOAD_ALONGSIDE_SCOPE_KEY))
+
+
 _NO_AUTO_DOWNLOAD_SCOPE_KEY = "unsloth.no_auto_download"
 
 
@@ -12486,6 +12500,8 @@ async def _maybe_auto_switch_model(
                 try:
                     # Hold the keep-warm gate across the swap so no new inference can
                     # start on the model while it is being torn down and replaced.
+                    from utils.multi_model_settings import get_multi_model_enabled
+
                     # Beside: load_model_gated takes the load gate itself; the primary keeps serving.
                     beside = await asyncio.to_thread(
                         _switch_loads_beside,
@@ -12496,6 +12512,10 @@ async def _maybe_auto_switch_model(
                             and _target_speech_audio_type(target_id, target_is_gguf, variant)
                             is not None
                         ),
+                    ) or (
+                        # The load itself still replaces the loaded model when it does not fit beside it.
+                        _load_alongside_for_request(fastapi_request)
+                        and await asyncio.to_thread(get_multi_model_enabled)
                     )
                     async with AsyncExitStack() as swap_gates:
                         if not beside:

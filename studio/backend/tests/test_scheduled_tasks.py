@@ -1092,6 +1092,7 @@ def test_a_run_skips_a_speech_primary_for_the_text_model_kept_alongside(monkeypa
 def test_a_run_never_loads_a_model_and_a_vanished_kept_model_means_no_model(monkeypatch):
     request = scheduler_module._producer_request(None, "run-1", threading.Event(), "UTC")
     assert request.scope[inference_routes.LOADED_MODELS_ONLY_SCOPE_KEY] is True
+    assert not inference_routes._load_alongside_for_request(request)
 
     # Named the kept model, which was unloaded before the request reached it.
     names = iter(["kept/model", None])
@@ -1277,6 +1278,8 @@ def test_a_task_allowed_to_load_its_model_lets_only_its_own_request_switch(monke
     )
     assert producer.payload.model == "unsloth/Qwen3-1.7B-GGUF"
     assert inference_routes._model_switch_allowed_for_request(producer.request)
+    # Keep multiple models loaded applies to the run's load as to Chat's picker.
+    assert inference_routes._load_alongside_for_request(producer.request)
 
 
 def test_a_one_time_yes_lets_that_run_alone_load_the_model(monkeypatch):
@@ -1506,6 +1509,8 @@ def test_a_header_cannot_turn_on_the_switch_opt_in():
     assert not inference_routes._model_switch_allowed_for_request(request)
     inference_routes.allow_model_switch_for_request(request.scope)
     assert inference_routes._model_switch_allowed_for_request(request)
+    spoofed = Request({"type": "http", "headers": [(b"unsloth.load_alongside", b"1")], "path": "/"})
+    assert not inference_routes._load_alongside_for_request(spoofed)
 
 
 def test_a_scheduled_run_leaves_the_model_alone_while_training(monkeypatch):

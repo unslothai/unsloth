@@ -463,6 +463,7 @@ async def generate_answer(
         _chat_completion_from_connection_stream,
         _relay_split_thinking,
         allow_model_switch_for_request,
+        load_alongside_for_request,
         produce_openai_chat_completions,
     )
 
@@ -493,6 +494,8 @@ async def generate_answer(
     )
     if allow_switch:
         allow_model_switch_for_request(request.scope)
+        # Keep multiple models loaded: the task model goes beside the user's when it fits, as from Chat's picker.
+        load_alongside_for_request(request.scope)
     with unattended_activity():
         activity = InferenceActivityReservation()
         activity.reserve()
