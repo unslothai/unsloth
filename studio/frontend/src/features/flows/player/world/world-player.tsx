@@ -181,8 +181,7 @@ async function loadArt(
       try {
         const blob = await api.mediaBlob({ kind: "image", ref });
         if (art.models) art.models[ref] = await blob.arrayBuffer();
-      } catch {
-      }
+      } catch {}
     }),
   );
   let done = 0;
@@ -1645,7 +1644,14 @@ export function WorldPlayer({
       toast(`Could not load: ${e instanceof Error ? e.message : e}`);
       return;
     }
-    const state = rec ? deserialize(baseSpec, rec.state) : null;
+    // Props edited in the scene editor this session are what the save's door and chest states refer to.
+    const props = worldRef.current?.props;
+    const state = rec
+      ? deserialize(
+          props ? { ...baseSpec, props3d: props } : baseSpec,
+          rec.state,
+        )
+      : null;
     if (!state) {
       toast("That save is empty or from another world");
       return;

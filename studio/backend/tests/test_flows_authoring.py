@@ -471,3 +471,40 @@ def test_fixed_instructions_come_first_so_the_prompt_cache_hits():
     run(generate_raid(ctx, {"title": "A"}, "spooky", seed = 1))
     run(generate_raid(ctx, {"title": "B"}, "", seed = 1))
     assert len({c["system"] for c in ctx.llm_calls}) == 1
+
+
+def test_a_corridor_map_is_solved_quickly_and_off_the_event_loop(monkeypatch):
+    import threading
+    import time
+
+    from core.flows import scene_solver
+
+    rows = []
+    for y in range(48):
+        if y % 2 == 0:
+            rows.append("#" + "." * 46 + "#")
+        else:
+            gap = 46 if y % 4 == 1 else 1
+            rows.append("".join("." if x == gap else "#" for x in range(48)))
+    rows[0] = rows[-1] = "#" * 48
+    spec = _spec([{"id": "trees", "kind": "tree", "count": 8, "area": "main"}])
+    t = time.perf_counter()
+    out = solve(spec, Grid(rows, (1, 2)), focus = (24, 24), seed = 0)
+    assert time.perf_counter() - t < 3.0
+    assert out["reachable"] and len(out["props3d"]) + len(out["dropped"]) == 8
+
+    threads = []
+    real = scene_solver.solve
+
+    def spy(*a, **k):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(*a, **k)
+
+    monkeypatch.setattr(world_nodes, "solve", spy)
+    ctx = TextCtx(
+        "world.describe_place",
+        inputs = {"request": {"text": "a market", "rows": OPEN, "spawn": {"x": 2, "y": 2}}},
+        llm = _replies(SPEC_JSON),
+    )
+    run(world_nodes.world_describe_place(ctx))
+    assert threads == [False], "the solver runs in a worker thread"
