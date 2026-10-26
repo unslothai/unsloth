@@ -430,13 +430,22 @@ export const BUDGET = {
   // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
   // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
   // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
+  // The control heights and API page round (#15232) adds 2,639 B raw / 717 B transfer, mostly its token table,
+  // regenerate and tooltip strings in the eager locales (6,945,181 -> 6,947,820 B raw, 2,095,616 -> 2,096,333 B
+  // transfer against 6eeb690f8d, one machine and build, 105 chunks). Raised by that growth.
+  // The run settings dropdown per model (#15247: saved settings store, dropdown, pencil and Reset to Default)
+  // adds 9.9 KB raw / 3.2 KB transfer inside the eager model config page: 6,787.4 -> 6,797.3 KB raw, 2,047.9 ->
+  // 2,051.1 KB transfer against d4be247222, one machine and build, Node 26, 105 chunks. Raised by that growth.
+  // Settings and the row menu on the loaded model in Recommended (#15249) add 82 B raw / 176 B transfer to the eager
+  // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
+  // build, Node 26, 105 chunks). Raised by that growth.
   // System-wide voice typing adds 29,943 B raw / 9,178 B transfer: the background controller, PCM capture and
   // pause segmenter, transcript cleanup and the Voice settings rows are shared with the eager composer
   // dictation path, so they cannot be split without delaying the first recording (6,958,713 -> 6,987,656 B raw,
   // 2,096,327 -> 2,105,505 B transfer against 1185f84cb4, Node 24, 97 chunks). Raised by that growth plus
   // about 300 B raw / 200 B transfer, as for #14568.
-  transferBytes: 2_105_705,
-  rawBytes: 6_987_956,
+  transferBytes: 2_109_875,
+  rawBytes: 7_001_815,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
