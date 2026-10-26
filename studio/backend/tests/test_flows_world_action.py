@@ -3,6 +3,8 @@
 
 """Action play in the 3D view: opt-in per world, through the World Player's Gameplay setting."""
 
+import json
+
 from core.flows.schema import WorldSpec
 from core.flows.world import action_of, apply_play_view, normalize_world, props3d
 
@@ -75,6 +77,20 @@ def test_doors_chests_and_levers_keep_valid_links_only():
     assert {p["id"]: p.get("contents") for p in played["props3d"]}["box"] == ["key"]
 
 
+def test_door_and_chest_links_follow_the_normalised_item_id():
+    props = [
+        {"id": "gate", "kind": "door", "x": 5.5, "y": 5.5, "locked_by": "brass-key"},
+        {"id": "box", "kind": "chest", "x": 3.5, "y": 3.5, "contents": ["Brass key"]},
+    ]
+    world = normalize_world(
+        {**RAW, "items": [{"id": "brass-key", "name": "Brass key"}], "props3d": props}, seed = 1
+    )
+    key = world["items"][0]["id"]
+    by = {p["id"]: p for p in world["props3d"]}
+    assert by["gate"]["locked_by"] == key and by["box"]["contents"] == [key]
+    assert normalize_world(json.loads(json.dumps(world)), seed = 1)["props3d"] == world["props3d"]
+
+
 def test_props_without_item_context_keep_well_formed_ids():
     out = {p["id"]: p for p in props3d(DOORS, 20, 20)}
     assert out["hatch"]["locked_by"] == "ghost"
@@ -105,8 +121,6 @@ def test_hostile_ai_v2_is_opt_in_with_clean_barks_and_survives_the_gameplay_sett
 
 
 def test_new_action_and_prop_fields_round_trip_through_normalize_save_and_the_player_node():
-    import json
-
     raw = {
         **RAW,
         "items": [{"id": "key", "name": "Brass key"}],

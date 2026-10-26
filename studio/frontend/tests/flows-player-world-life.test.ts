@@ -656,3 +656,45 @@ test("budget: 12 villagers over a simulated day stay under 1 background call/s, 
   const throttled = await runBudget({ life });
   assert.ok(throttled.perSecond <= 4 / 60 + 1e-9);
 });
+
+test("a save with option plans drops them when the world turns option planning off", () => {
+  const sp = spec();
+  const s = W.withMind(W.initialWorldState(sp), "v0", (m) => ({
+    ...m,
+    options: [opt({ type: "item", item: "pie" })],
+    optionAt: 0,
+    optionSince: 600,
+    planAt: 600,
+    replan: true,
+  }));
+  const saved = JSON.parse(JSON.stringify(W.serialize(s)));
+  const off = W.deserialize(spec({ ...LIFE, options: false }), saved);
+  assert.equal(off?.npc.v0.options, undefined);
+  assert.equal(off?.npc.v0.optionAt, undefined);
+  assert.equal(off?.npc.v0.replan, undefined);
+  assert.equal(off?.npc.v0.planAt, 600);
+  assert.equal(W.deserialize(sp, saved)?.npc.v0.options?.length, 1);
+});
+
+test("a cached plan with options installs only the plan when option planning is off", () => {
+  const sp = spec();
+  const cfg = L.lifeOf(sp);
+  let s = W.initialWorldState(sp);
+  const key = L.planCacheKey(cfg, sp, "v0", s.npc.v0, 600, "forge");
+  s = L.storePlan(
+    s,
+    cfg,
+    key,
+    {
+      plan: [{ start: 600, minutes: 60, activity: "Work", place: "forge" }],
+      options: [opt({ type: "time", at: 720 })],
+    },
+    600,
+  );
+  const off = { ...cfg, options: false };
+  const hit = L.cachedPlan(sp, off, s, "v0", 1440 * 2 + 600, "forge");
+  assert.ok(hit);
+  const after = hit(s).npc.v0;
+  assert.equal(after.planDay, 2);
+  assert.equal(after.options, undefined);
+});
