@@ -96,6 +96,35 @@ function AccessStatus({ status }: { status: LanAccessStatus | null }) {
   );
 }
 
+function KeylessScopeBadge({
+  scope,
+}: {
+  scope?: LanAccessStatus["keylessScope"];
+}) {
+  const on = scope === "inference" || scope === "full";
+  return (
+    <span
+      role="status"
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium",
+        on ? "text-foreground" : "text-muted-foreground",
+      )}
+    >
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          on ? "bg-emerald-500" : "bg-muted-foreground/60",
+        )}
+      />
+      {scope === "inference"
+        ? "Inference"
+        : scope === "full"
+          ? "Local full"
+          : "Off"}
+    </span>
+  );
+}
+
 function LanUrlQrButton({ url }: { url: string }) {
   return (
     <Dialog>
@@ -286,7 +315,7 @@ export function LanAccessSection() {
           if (mutationEpoch.current !== epoch) {
             return;
           }
-          // a stop from a LAN address kills this page's own origin, so stop polling
+          // a stop from a LAN address kills this page's own origin
           if (selfStopDisconnectExpected.current) {
             setPollEnabled(false);
             return;
@@ -404,7 +433,7 @@ export function LanAccessSection() {
       data-settings-label="LAN access"
       className="overflow-hidden rounded-xl border border-border/70"
     >
-      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+      <div className="flex items-start justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon
@@ -429,7 +458,8 @@ export function LanAccessSection() {
           type="button"
           size="sm"
           variant={stopAction ? "outline" : "dark"}
-          className="shrink-0"
+          // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+          className="mt-[calc(var(--text-base)*0.372)] shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >
@@ -628,13 +658,7 @@ export function LanAccessSection() {
           label="Keyless API status"
           description={keylessLanAccessDescription(status)}
         >
-          <span className="text-xs font-medium text-muted-foreground">
-            {status?.keylessScope === "inference"
-              ? "Inference"
-              : status?.keylessScope === "full"
-                ? "Local full"
-                : "Off"}
-          </span>
+          <KeylessScopeBadge scope={status?.keylessScope} />
         </SettingsRow>
         <SettingsRow
           label="Start automatically"

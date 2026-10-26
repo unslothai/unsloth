@@ -101,6 +101,7 @@ function tab(
     "@hugeicons/core-free-icons": {},
     "@hugeicons/react": { HugeiconsIcon: "Icon" },
     "@/lib/tick-icon": {},
+    "@/lib/copy-icon": { Copy01Icon: {} },
     "@/lib/utils": {
       cn: (...values: unknown[]) => values.filter(Boolean).join(" "),
     },

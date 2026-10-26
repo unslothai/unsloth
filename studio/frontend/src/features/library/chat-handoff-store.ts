@@ -4,10 +4,8 @@
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT } from "../auth/session-events.ts";
 
-// "Chat about this" hands files to a composer that may not be mounted yet (the chat page mounts
-// on navigation) or already is (it stays mounted off-route). Keyed by the composer's attachment
-// target, so only the fresh chat that was opened for the files picks them up. Kept free of other
-// imports but an event name: the chat thread reads it, and must not pull the Library in.
+// Keyed by composer attachment target so only the fresh chat picks the files up.
+// Kept import-free: the chat thread reads it and must not pull the Library in.
 export interface LibraryChatHandoff {
   files: File[];
 }

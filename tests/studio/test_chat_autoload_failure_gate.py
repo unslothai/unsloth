@@ -545,6 +545,7 @@ function unreportedWindowMaxTokens(g: boolean, held: number) { return g ? held :
 function resolveManualAutoCtxPin(..._a: any[]) { return null; }
 async function ensureGpuDeviceCache() {}
 function reconcilePersistedGpuIds(ids: any) { return ids; }
+function reconcileTensorSplit(..._a: any[]) { return null; }
 function saveSpeculativeType(_x: any) {}
 function persistGpuMemoryModeOnLoad(..._a: any[]) {}
 function reasoningCapsFromLoad(_x: any) { return {}; }

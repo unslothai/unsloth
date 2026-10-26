@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { PauseIcon } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -199,7 +199,6 @@ export function Waveform({
   );
 }
 
-/** Seekable bars; keys are left to the caller. */
 export function WaveformBars({
   peaks,
   fraction,

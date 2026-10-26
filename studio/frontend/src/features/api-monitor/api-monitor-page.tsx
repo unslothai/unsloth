@@ -5,9 +5,6 @@ import { useAppShellReadySignal } from "@/components/app-readiness";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { apiMonitorTourSteps } from "./tour";
 
-// Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
-// configuration (keys, auto-switch, examples); this page owns observability.
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -32,14 +29,25 @@ import {
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   loadLanAccess,
   publishLanUrls,
   useSettingsDialogStore,
 } from "@/features/settings";
+// Not through the barrel: these pull in chat, which every barrel importer would then load.
+import { RAISED_SURFACE } from "@/features/library/surface";
+import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
+import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
+import { MediaApiExamples } from "@/features/settings/components/media-api-examples";
+import {
+  UsageExamples,
+  useApiTunnelPref,
+} from "@/features/settings/components/usage-examples";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -47,12 +55,13 @@ import {
   ArrowDataTransferVerticalIcon,
   Cancel01Icon,
   CodeIcon,
+  BotIcon,
   ComputerTerminal01Icon,
-  Copy01Icon,
+  Image01Icon,
+  TaskDone01Icon,
   Delete02Icon,
   FileSearchIcon,
   FlashIcon,
-  PauseIcon,
   PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
@@ -60,6 +69,8 @@ import {
   Settings02Icon,
   Timer01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
@@ -468,7 +479,6 @@ function ContextUsageBar({ value }: { value?: number | null }): ReactElement {
         <div
           className={cn(
             "h-full rounded-full transition-[width]",
-            // Near-full context is the usual cause of truncated replies.
             pct >= 90
               ? "bg-red-500"
               : pct >= 75
@@ -503,7 +513,6 @@ const RequestRow = memo(function RequestRow({
     entry.reply_preview ||
     entry.prompt_preview ||
     (entry.status === "running" ? "Waiting for output…" : "No preview");
-  // A lifecycle row has no payload, so it reads as a status line.
   if (isLifecycleEntry(entry)) {
     return (
       <div className="flex w-full min-w-0 flex-col gap-0.5 rounded-md px-3 py-2">
@@ -596,7 +605,6 @@ const RequestRow = memo(function RequestRow({
           ) : null}
         </span>
       </div>
-      {/* A prompt or reply excerpt, same as the expanded payload below it. */}
       <p
         data-reload-snapshot-sensitive
         className={cn(
@@ -747,8 +755,7 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
-  // The detail fetch can describe an older state of a streaming entry, so prefer it
-  // only once it is as fresh as the list row, or the panel rewinds.
+  // Prefer the detail only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&
     detail.status === entry.status &&
@@ -853,6 +860,8 @@ function RequestDetail({
   );
 }
 
+type QuickStartKind = "chat" | "media" | "audio" | "decision" | "agents";
+
 function QuickStart({
   baseUrl,
   model,
@@ -861,6 +870,18 @@ function QuickStart({
   model: string | null;
 }): ReactElement {
   const choices = useApiExampleChoices(baseUrl, "curl");
+  const isOwner = useIsAccountOwner();
+  const [useTunnel, setUseTunnel] = useApiTunnelPref();
+  const [kind, setKind] = useState<QuickStartKind>("chat");
+  const kinds: { id: QuickStartKind; label: string; icon: IconSvgElement }[] = [
+    { id: "chat", label: "Chat", icon: MessageCircleIcon },
+    { id: "media", label: "Images / Video", icon: Image01Icon },
+    { id: "audio", label: "Audio", icon: AiSpeechIcon },
+    ...(isOwner
+      ? [{ id: "decision" as const, label: "Decision", icon: TaskDone01Icon }]
+      : []),
+    { id: "agents", label: "Agents", icon: BotIcon },
+  ];
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -876,22 +897,66 @@ function QuickStart({
         </h3>
         <p className="text-sm text-muted-foreground">
           {model
-            ? "Send a request to the base URL and it appears here as it streams."
-            : "Load a model, then send a request to the base URL. It appears here as it streams."}
+            ? "Send a request to the base URL to see it here."
+            : "Load a model, then send a request to see it here."}
         </p>
       </div>
-      <div className="w-full max-w-2xl text-left">
-        <ApiExampleBox
-          choices={choices}
-          code={buildApiExample({
-            baseUrl,
-            model: model ?? "MODEL_ID",
-            sampling: {},
-            language: choices.language,
-            os: choices.os,
-          })}
-        />
-      </div>
+      <nav aria-label="Example" className="flex flex-wrap justify-center gap-1">
+        {kinds.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            aria-current={entry.id === kind ? "page" : undefined}
+            onClick={() => setKind(entry.id)}
+            className={cn(
+              "flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 font-heading text-ui-15 text-foreground/80 transition-colors hover:text-foreground",
+              // On a card, so a step above it, not the card colour.
+              entry.id === kind &&
+                cn(
+                  RAISED_SURFACE,
+                  "font-medium text-foreground dark:bg-accent",
+                ),
+            )}
+          >
+            <HugeiconsIcon
+              icon={entry.icon}
+              strokeWidth={1.75}
+              className="size-4 shrink-0"
+            />
+            {entry.label}
+          </button>
+        ))}
+      </nav>
+      {kind === "chat" ? (
+        <div className="w-full max-w-2xl text-left">
+          <ApiExampleBox
+            choices={choices}
+            code={buildApiExample({
+              baseUrl,
+              model: model ?? "MODEL_ID",
+              sampling: {},
+              language: choices.language,
+              os: choices.os,
+            })}
+          />
+        </div>
+      ) : (
+        <div className="w-full max-w-3xl text-left">
+          {kind === "media" ? (
+            <MediaApiExamples useTunnel={useTunnel} showHeading={false} />
+          ) : kind === "audio" ? (
+            <AudioApiExamples useTunnel={useTunnel} showHeading={false} />
+          ) : kind === "decision" ? (
+            <DecisionApiSection showHeading={false} />
+          ) : (
+            <UsageExamples
+              useTunnel={useTunnel}
+              onUseTunnelChange={setUseTunnel}
+              agentsOnly={true}
+            />
+          )}
+        </div>
+      )}
       <Button
         type="button"
         variant="outline"
@@ -1000,8 +1065,7 @@ export function ApiMonitorPage(): ReactElement {
           if (!checkpoint) {
             return null;
           }
-          // Both spellings, since status reports the load path while the store may
-          // hold the advertised repo id.
+          // Both spellings: status reports the load path, the store may hold the repo id.
           return {
             checkpoint,
             aliases: [checkpoint, status.active_model].filter(
@@ -1011,9 +1075,7 @@ export function ApiMonitorPage(): ReactElement {
         },
         unload: (checkpoint) => unloadModel({ model_path: checkpoint }),
       });
-      // As in the chat eject flow, but only when the store holds a model just unloaded: chat
-      // can have an external provider selected while a local model stays resident, and
-      // clearCheckpoint would delete a selection this button never touched.
+      // Only clear when the store holds the model just unloaded: an external provider may be selected.
       const store = useChatRuntimeStore.getState();
       const selected = store.params.checkpoint;
       if (
@@ -1092,8 +1154,7 @@ export function ApiMonitorPage(): ReactElement {
     [modelEntries],
   );
 
-  // Refetch the selected entry while it streams. Keyed on identity and revision, never
-  // on `details`: the fetch rewrites it on success, so depending on it loops.
+  // Keyed on identity and revision, never `details`, which the fetch rewrites (loop).
   const selectedId_ = selected?.id ?? null;
   const selectedUpdatedAt = selected?.updated_at ?? null;
   const selectedIsMissing = selectedId_ != null && details[selectedId_] == null;
@@ -1109,14 +1170,11 @@ export function ApiMonitorPage(): ReactElement {
     if (selectedId_ == null || detailInFlight) {
       return;
     }
-    // `updated_at` advances per poll and settles when terminal; a missing payload
-    // always retries, covering a fetch that failed late.
     const revision = `${selectedId_}@${selectedUpdatedAt ?? ""}`;
     if (!selectedIsMissing && lastFetchedRef.current === revision) {
       return;
     }
-    // A terminal row's revision never advances, so a failed fetch had nothing to re-run
-    // this effect. `loadingDetails` settling is the trigger; the count bounds it.
+    // A terminal row's revision never advances; `loadingDetails` settling re-runs this, bounded by count.
     if (attemptsRef.current.revision !== revision) {
       attemptsRef.current = { revision, count: 0 };
     }
@@ -1124,8 +1182,7 @@ export function ApiMonitorPage(): ReactElement {
       return;
     }
     attemptsRef.current.count += 1;
-    // Only when a fetch started: the guard can refuse, and recording it anyway skips
-    // that revision for good.
+    // Only when a fetch started; recording a refused one skips that revision for good.
     if (requestDetail(selectedId_)) {
       lastFetchedRef.current = revision;
       setRetryTick(0);
@@ -1436,7 +1493,7 @@ export function ApiMonitorPage(): ReactElement {
           className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
         />
       </div>
-      <main className="@container/page mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
+      <main className="api-monitor-page @container/page mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
         <GuidedTour {...tour.tourProps} />
         <header className="flex items-start justify-between gap-4 @2xl/page:items-end">
           <div className="flex min-w-0 flex-col gap-1">

@@ -34,15 +34,13 @@ from typing import Any, Optional
 
 NATIVE_REBUILD_ENV = "UNSLOTH_PREQUANT_NATIVE_REBUILD"
 
-# Header keys the converter adds beside torchao's. Namespaced like the other unsloth_* keys, so torchao's
-# ``is_metadata_torchao`` (which walks ``tensor_names`` only) and every released Studio build ignore them.
+# Namespaced unsloth_* so torchao's is_metadata_torchao and released Studio builds ignore them.
 QUANT_LAYOUT_KEY = "unsloth_quant_layout"
 SOURCE_KEY = "unsloth_source"
 QUANT_LAYOUT_VERSION = 1
 INT8_SOURCE_V1 = "torchao_v1"
 
-# What a torchao v1 int8 pre-quant checkpoint holds, as validated by prequant_legacy_int8._rebuild_weight
-# and recorded by the converter. A file declaring anything else is not rebuilt as v1.
+# Must match what prequant_legacy_int8._rebuild_weight validates; anything else is not rebuilt as v1.
 INT8_V1_FACTS = {
     "act_quant": "_int8_symm_per_token_reduced_range_quant",
     "quant_kwargs": {},
@@ -219,8 +217,7 @@ def _rebuild_int8(
         )
     qdata, scale = tensors[keys["qdata"]], tensors[keys["scale"]]
     zero_point = tensors.get(keys["zero_point"]) if "zero_point" in keys else None
-    # Only the layout Unsloth ships is modelled here (2-D, symmetric, one scale per output row). Any other valid
-    # torchao int8 weight (per-tensor, 3-D experts) goes to torchao's own reader rather than being refused.
+    # Only Unsloth's layout (2-D, per-row scale); other int8 weights go to torchao's reader.
     if qdata.dtype != torch.int8 or qdata.dim() != 2:
         raise _Unsupported(f"{name}: int8 qdata {qdata.dtype} {tuple(qdata.shape)}")
     n, k = qdata.shape
@@ -351,13 +348,7 @@ def native_unflatten(
     *,
     path: str = "",
 ) -> Optional[dict]:
-    """``tensors`` + ``raw`` header -> state dict, or None when torchao's reader has to do it.
-
-    ``tensors`` is not modified when this returns None. Raises ValueError for a checkpoint that is
-    recognised but incomplete (a listed tensor or a weight part missing, a tensor the header does not
-    list, a live field this torchao lacks): torchao's reader would fail the same file, later and less
-    clearly. A weight of a layout this module does not model returns None instead.
-    """
+    """Returns None with tensors untouched when the torchao reader must handle it; raises ValueError on an incomplete checkpoint, which torchao would fail later."""
     api = _torchao_api()
     if api is None:
         return None

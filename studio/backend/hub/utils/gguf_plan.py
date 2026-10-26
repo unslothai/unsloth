@@ -123,9 +123,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     gguf_names = [name for sibling in siblings if (name := _gguf_rfilename(sibling))]
 
     def _complete(name: str) -> bool:
-        # Match detect_mtp_file's launchability gate. A half-published family
-        # must step aside before preference ranking so a complete fallback can
-        # be selected instead of making the plan omit MTP entirely.
+        # Match detect_mtp_file launchability gate; a half-published family must step aside before ranking.
         return split_listing_is_complete(gguf_names, name)
 
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
@@ -143,10 +141,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     if candidates:
         return candidates[0]
 
-    # The remote planner cannot read an undownloaded GGUF header to prove
-    # ``qwen4exp`` the way the loader can. This family token is part of every
-    # main weight and every sidecar in the sole repo that needs the fallback,
-    # and boundary matching keeps future names such as Flash-Next2 out.
+    # Remote planner cannot read the GGUF header to prove qwen4exp; match the family token.
     flash_next = any(
         re.search(r"(?:^|[/_-])qwen3\.8-flash-next(?:$|[/_.-])", name, re.IGNORECASE)
         for sibling in siblings
@@ -237,14 +232,7 @@ def dflash_plan_files(
     *,
     max_bytes: int = 0,
 ) -> tuple[ExpectedFile, ...]:
-    """Every shard of the DFlash sidecar to plan alongside ``weight_name``, or ().
-
-    Whole shard family, not the ranked file alone: the loader refuses an incomplete split set, so planning shard 1 reports the variant complete and then loses DFlash. A half-published family is dropped for the same reason.
-
-    Bounded by ``max_bytes``, the variant's own weights: ``dflash-`` is a prefix real weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF) and a listing cannot read the ``general.architecture`` the loader rejects them by, but a drafter is a few layers of its target and cannot outweigh it. An unknown size stays out.
-
-    Both rules filter BEFORE the ranking, so an oversized or half-published name at the top steps aside for a usable sidecar behind it.
-    """
+    """Whole DFlash shard family; bounded by max_bytes, and an unknown size stays out."""
     from utils.models.drafters import dflash_repo_preference_key, split_listing_is_complete
 
     families: dict[str, list[ExpectedFile]] = {}
@@ -439,12 +427,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
 
 
 def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optional[GgufVariantPlan]:
-    """The plan for *variant*, accepting a bare quant when exactly one plan carries it.
-
-    A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``) qualifies every key, because the key is a pure function of the path and cannot know that the directory disambiguates nothing. Every stored pin and every explicit ``repo:Q4_K_M`` then missed the plan map and the worker exited with "No GGUF shards matching variant".
-
-    Resolved at LOOKUP rather than by aliasing the map, so the key stays a pure function of the path (the remote listing and a partial cache scan have to agree on it) and the advertised rows stay one per checkpoint. Only when the bare name is UNAMBIGUOUS: a repo that really does hold several checkpoints at one quant gets no fallback, because there the bare name genuinely does not name one of them.
-    """
+    """A bare quant matches at lookup only when exactly one plan carries it; map keys stay path-based."""
     wanted = (variant or "").strip().lower()
     if not wanted:
         return None

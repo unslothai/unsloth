@@ -55,12 +55,11 @@ export function LoraParamsSection(): ReactElement | null {
       setTargetModules: state.setTargetModules,
     })),
   );
-  // Only mounted in advanced mode, so start expanded when the user switches to it.
+  // Only mounted in advanced mode, so start expanded.
   const [open, setOpen] = useState(true);
   const isCpt = store.trainingMethod === "cpt";
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
-  // `isVisionModel` can go stale, so this blocks only a NEW selection;
-  // the backend settles an existing one.
+  // `isVisionModel` can go stale, so this blocks only a NEW selection.
   const doraNeedsVisionOff =
     deviceType === "mac" && showVisionLora && store.finetuneVisionLayers;
 

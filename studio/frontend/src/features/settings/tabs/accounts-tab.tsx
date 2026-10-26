@@ -4,7 +4,6 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import {
   Add01Icon,
-  Copy01Icon,
   CubeIcon,
   Delete02Icon,
   Key01Icon,
@@ -14,6 +13,7 @@ import {
   UserBlock01Icon,
   UserCheck01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -65,7 +65,6 @@ import { ManagedProviderUrlsSection } from "../components/managed-provider-urls-
 
 export function AccountsTab() {
   const owner = useIsAccountOwner();
-  // managed accounts cannot request or render account administration.
   return owner ? <OwnerAccountsTab /> : null;
 }
 
@@ -160,17 +159,13 @@ function OwnerAccountsTab() {
     day: "numeric",
   });
   function createdDate(account: StudioAccount) {
-    // `new Date(null)` is the epoch, not an invalid date, so a NaN check alone
-    // renders "Jan 1, 1970" for the null created_at an upgraded install can
-    // return (nullable column, backfill skips rows that already have an id).
+    // `new Date(null)` is the epoch, so check null created_at (possible after upgrade) explicitly.
     const raw = account.created_at;
     const date = typeof raw === "string" && raw ? new Date(raw) : new Date(Number.NaN);
     return Number.isNaN(date.getTime()) ? "—" : dateFormatter.format(date);
   }
   function closeEditor() {
-    // Deliberately NOT gated on `busy`: `perform` stays busy through the refresh
-    // that follows the mutation, which would pin a displayed one-time code on
-    // screen with no exit (Done disabled, Escape swallowed, no close button).
+    // Not gated on `busy`, which lasts through the refresh and would trap a one-time code on screen.
     setCreating(false);
     setSetup(null);
     setUsername("");

@@ -140,8 +140,7 @@ def _is_loopback_ip(host: str | None) -> bool:
     return ip.is_loopback or (mapped is not None and mapped.is_loopback)
 
 
-# A loopback peer carrying any of these is a proxy/tunnel relaying a remote client, so the peer is the
-# proxy, not the caller: cloudflared sets cf-connecting-ip, reverse proxies set the rest.
+# A loopback peer with these headers is a proxy relaying a remote client.
 _PROXIED_CLIENT_HEADERS = (
     "cf-connecting-ip",
     "forwarded",
