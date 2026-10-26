@@ -426,13 +426,20 @@ def test_diffusion_capability_labeled_image_video_gen():
         "features/hub/lib/view-models.ts",
     ):
         assert "Image to text" not in _read(rel), rel
-    assert '{ value: "diffusion", label: "Image/video gen" }' in _read(
-        "features/hub/lib/model-type-filter.ts"
-    )
     # The Hub filter splits the capability into its two generator kinds (#13749).
     hub = _read("features/hub/lib/view-models.ts")
     assert '{ value: "image-gen", label: "Image gen" }' in hub
     assert '{ value: "video-gen", label: "Video gen" }' in hub
+    # The badge on a model carries the same two names.
+    assert '"Video gen" : "Image gen"' in _read("features/hub/lib/model-capabilities.ts")
+    # Since #14083 the On Device list takes Discover's picks and matcher instead of
+    # keeping its own option list, so the names above are the only ones it shows.
+    # Should it grow its own list again, the diffusion entry must still name generators.
+    on_device = _read("features/hub/lib/model-type-filter.ts")
+    if 'value: "diffusion"' in on_device:
+        assert '{ value: "diffusion", label: "Image/video gen" }' in on_device
+    else:
+        assert "matchesHubCapability" in on_device
 
 
 def test_active_model_config_round_trips_gpu_fields():
@@ -731,7 +738,7 @@ def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
 
     tabs = _read("features/model-picker/components/model-selector/pill-tabs.tsx")
     assert 'fit ? "min-w-0 shrink" : "min-w-0 flex-1"' in tabs
-    assert '<span className="min-w-0 truncate">{tab.label}</span>' in tabs
+    assert '<span data-pill-tab-label className="min-w-0 truncate">' in tabs
 
     selector = _read("features/model-picker/components/model-selector.tsx")
     assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector
@@ -1214,9 +1221,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "update(contextPinPatch(value, pinsContextLength))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
-        "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
+        "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"
         in page
     )
+    assert "const targetIsMlx = servedByMlx;" in page
     # Both props are optional, so dropping either still typechecks.
     assert "isMlx={pinsContextLength}" in page
     assert "windowUnknown={" in page
@@ -1383,7 +1391,7 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
 
 def _save_button_gate():
     page = _read("features/model-picker/components/model-config-page.tsx")
-    save_button = page.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[1]
+    save_button = page.split("onClick={onSaveClick}", 1)[0].rsplit("<Button", 1)[1]
     assert "disabled={" in save_button, "the Save button no longer has a disabled gate"
     return save_button.split("disabled={", 1)[1].split("}", 1)[0]
 
@@ -1403,38 +1411,55 @@ def test_save_settings_waits_for_the_vram_budget_to_settle():
 
 
 def test_forget_settings_is_not_locked_by_unloadable_extra_args():
-    """Forget only deletes, so invalid saved llama args must not lock it: the args gates
-    apply to a save only."""
+    """Saving Default only forgets, so invalid saved llama args must not lock it: the args gates
+    apply to a save into a set (a selected one, or the custom one an edited Default becomes)."""
     gate = " ".join(_save_button_gate().split())
-    assert "(remember && ((!extraArgsLoadable && !sharedExtraArgsCleared) ||" in gate, gate
-    assert "sharedExtraArgsRefused || extraArgsHydrating))" in gate, gate
+    assert "((selectedSet !== null || customName !== null) && extraArgsBlocked)" in gate, gate
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert (
+        "const extraArgsBlocked = (!extraArgsLoadable && !sharedExtraArgsCleared) || "
+        "sharedExtraArgsRefused || extraArgsHydrating;" in page
+    )
 
 
 def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     """A footer that wraps on demand moved Load ~30px between mousedown and mouseup when the
     blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    before = src.split("<Checkbox id={rememberId}", 1)[0]
-    footer = before.rsplit("<div", 2)[1]
-    assert "flex-wrap" not in footer, footer[:200]
-    assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]
+    before = src.split("<RunSettingsPicker ", 1)[0]
+    # Opening tags of the divs enclosing the settings dropdown, nearest first. The footer column is the one
+    # under the rule. A wrapper just outside it (the picker's sticky pin) may vary by variant, but
+    # only in placement: it must not make the footer wrap either.
+    attr = r"""(?:[^>"'{]|"[^"]*"|'[^']*'|\{(?:[^{}]|\{[^{}]*\})*\})*"""
+    stack = []
+    for match in re.finditer(r"<div\b(" + attr + r")>|</div>", before):
+        if match.group(0) == "</div>":
+            stack.pop()
+        elif not match.group(1).rstrip().endswith("/"):
+            stack.append(match.group(1))
+    tags = stack[::-1]
+    footer = next((i for i, tag in enumerate(tags) if "border-t" in tag), None)
+    assert footer is not None, tags[:4]
+    assert "flex flex-col" in tags[footer] and "variant ===" not in tags[footer], tags[footer]
+    for tag in tags[: footer + 2]:
+        assert "flex-wrap" not in tag, tag
 
 
 def test_save_settings_is_not_rendered_when_it_could_do_nothing():
-    """A never-configured model must not show a dead "Forget settings" (#10216)."""
-    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    before = src.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[0]
-    guard = "!persistenceOnly && (remember || savedRemember) && ("
-    assert guard in before, before[-160:]
-    assert "</Button>" not in before.rsplit(guard, 1)[1]
+    """A never-configured model must not offer a Save that does nothing (#10216): the one Save
+    stays in place, so the footer does not move, but is disabled until there is something to keep."""
+    gate = " ".join(_save_button_gate().split())
+    assert "!canSave" in gate, gate
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert "? !atDefault || savedRemember" in page
 
 
 def test_save_settings_reflects_the_context_it_pinned():
     """Save stays on the page, so a pinned context must show; a forget must not pin one."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    handler = src.split("const handleSave = () => {", 1)[1].split("const handleRun", 1)[0]
+    handler = src.split("const handleSave = (", 1)[1].split("const handleRun", 1)[0]
     assert (
-        "if ( remember && effectiveRuntimeConfig.customContextLength !== config.customContextLength"
+        "if ( keep && effectiveRuntimeConfig.customContextLength !== config.customContextLength"
         in handler
     )
     assert (
@@ -1937,12 +1962,16 @@ def test_local_model_sections_respect_the_task_filter():
 
 
 def test_chat_picker_routes_diffusion_picks_to_their_page():
-    """Chat cannot load a diffusion or audio model. Rather than hiding an on-device one or
-    letting it 400, the unfiltered picker routes the pick to the page that loads it."""
+    """Chat cannot load a diffusion or audio model. The unfiltered picker hides on-device diffusion
+    rows (Images / Video list them; #15336), and a pick that still reaches it routes to its page."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     gate = re.search(r"function passesTaskGate\(.*?\n\}", src, re.S)
     assert gate, "passesTaskGate not found"
-    assert "UNSUPPORTED_DIFFUSION_TASK" in gate.group(0)
+    assert "!isDiffusionTask(repoTask)" in gate.group(0)
+    caps = _read("features/model-picker/components/model-selector/model-capabilities.ts")
+    assert (
+        'task === "image-diffusion-unsupported"' in caps
+    ), "the never-loadable tag must stay hidden"
     wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
     assert wrapper, "the routing wrapper around onSelect is missing"
     body = wrapper.group(0)
@@ -2457,14 +2486,18 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     assert (
         "pinnable: pinnableBackend && "
         '(d.index_kind === "vulkan" || '
-        '(data?.device_backend !== "xpu" && d.index_kind === "physical")),' in src
+        '(data?.device_backend !== "xpu" && '
+        '(d.index_kind === "physical" || d.index_kind === "cuda_device"))),' in src
     )
     # ROCm reuses torch.cuda.* and physical IDs, so excluding it hides the multi-GPU picker.
     assert (
         "const diffusionBackend = "
         'data?.device_backend === "cuda" || data?.device_backend === "rocm";' in src
     )
-    assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
+    assert (
+        "diffusionPinnable: diffusionBackend && "
+        '(d.index_kind === "physical" || d.index_kind === "cuda_device"),' in src
+    )
 
 
 def test_chat_autoload_records_every_validation_failure():
@@ -2543,10 +2576,10 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     resolver indexes GGUFs only."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) "
-        "{ syncModelOverride(" in src
+        "if ( saved && (keep || forgets) && (target.apiLoadable ?? target.isGguf) && "
+        "!nativePathToken ) { syncModelOverride(" in src
     )
-    assert "const saved = remember ? savePerModelConfig(" in src
+    assert "const saved = keep ? savePerModelConfig(" in src
 
 
 def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
@@ -2554,7 +2587,7 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     /api/inference/status reports model_identifier as null for it, so the checkpoint the
     browser keys settings by is the bare file name the backend echoes back."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "&& !nativePathToken) { syncModelOverride(" in page
+    assert "&& !nativePathToken ) { syncModelOverride(" in page
     assert (
         "const nativePathToken = target.meta.nativePathToken ?? "
         "(isActiveModel ? activeNativePathToken : null);" in page
@@ -2809,14 +2842,10 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert "_BPW_SUFFIX" in backend and "bpw" in identity
     assert "extract_quant_label(filename).casefold()" in backend, "the label rule"
     # The known-quant pattern itself, not tokens from it: #13899 widened MXFP to (?:MX|NV)FP in all
-    # three places, which a literal "MXFP" check read as a drift. What has to hold is that the
-    # frontend, the hub scanner and the llama.cpp backend spell one pattern, and that it still
-    # recognises each quant family.
+    # three places, which a literal "MXFP" check read as a drift. The frontend must spell the
+    # backend's pattern (utils/gguf_names.py) and still recognise each quant family.
     patterns = {
-        "llama_cpp.py": _python_regex_source(
-            _read_backend("core/inference/llama_cpp.py"), "_GGUF_KNOWN_QUANT_RE"
-        ),
-        "gguf.py": _python_regex_source(_read_backend("hub/utils/gguf.py"), "_GGUF_QUANT_RE"),
+        "gguf.py": _python_regex_source(_read_backend("utils/gguf_names.py"), "GGUF_QUANT_RE"),
         "model-identity.ts": re.search(r'const QUANT_TOKEN_SOURCE =\s*"([^"]+)";', identity).group(
             1
         ),
@@ -2846,7 +2875,7 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
     assert "storedSpeculativeAuto(rememberedConfig, !target.isGguf)" in src
     assert "defaultConfig: isDefaultConfig(normalized)" in src
     assert "savePerModelConfig(configId, target.ggufVariant, normalized, evicted)" in src
-    assert "remember ? normalized : null," in src
+    assert "keep ? normalized : null," in src
     assert "isDefaultConfig(effectiveRuntimeConfig)" not in src
     assert "isDefaultConfig(next)" not in src
 
@@ -2958,8 +2987,11 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     assert "markModelConfigDraftEdited(draftKey)" in page
     # Only once the write landed, or the next read replaces values still on screen.
     assert re.search(r"if \(saved\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
-    # An unticked Remember is a pending Forget the read's guard would otherwise re-tick.
-    assert "markModelConfigDraftEdited(draftKey); setRemember(checked === true);" in page
+    # Picking a saved setting fills the panel as an edit, so the read's guard does not overwrite it.
+    assert (
+        "const applyToPanel = (next: PerModelConfig) => { // As Reset: an edit that drops the raw "
+        "arguments text. handleSharedConfigEdit(); markModelConfigDraftEdited(draftKey);" in page
+    )
     assert "(!extraArgsLoadable && !sharedExtraArgsCleared) ||" in page
     # Run reads the draft, not the render closure: the peer's input blurs during this click.
     assert "const liveDraftConfig = readModelConfigDraft(draftKey)?.config;" in page
@@ -3112,6 +3144,25 @@ def test_run_settings_gear_label_names_its_model():
     assert "aria-label={ariaLabel}" in action
 
 
+def _gutter_class_names(pickers: str) -> set[str]:
+    """ROW_ACTIONS_CLASS plus every `const X = ...;` whose value is built from it."""
+    names = {"ROW_ACTIONS_CLASS"}
+    for match in re.finditer(r"\bconst\s+(ROW_ACTIONS_\w+)\s*=\s*([^;]*);", pickers):
+        if re.search(r"\bROW_ACTIONS_CLASS\b", match.group(2)):
+            names.add(match.group(1))
+    return names
+
+
+def test_the_gutter_aliases_are_read_from_their_definitions():
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    names = _gutter_class_names(pickers)
+    assert names - {
+        "ROW_ACTIONS_CLASS"
+    }, f"no constant built from ROW_ACTIONS_CLASS was found: {names}"
+    # A constant that does not build on the gutter class is not a gutter.
+    assert _gutter_class_names("const ROW_ACTIONS_OTHER = cn('w-4');") == {"ROW_ACTIONS_CLASS"}
+
+
 def test_a_multi_quant_parent_row_still_has_no_gear():
     """The driver reads the absence of a gear as "this row expands rather than loads".
     Give the parent row a gear and that inference silently inverts."""
@@ -3120,11 +3171,22 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     start = pickers.index("const renderDownloadedGgufRow")
     parent = pickers[start : pickers.index("const renderDownloadedModelRow", start)]
     parent_row = parent[: parent.index("{expanderOpen && (")]
-    # The gutter by reference, not pixel width.
-    gutter = "ROW_ACTIONS_CLASS" in parent_row or re.search(r"w-\[\d+px\]", parent_row)
+    # A partial repo puts a row menu in the gutter instead; the gear invariant is about the
+    # branch that expands, so read that one when the row splits on it.
+    split = parent_row.find("isPartialRepo ?")
+    expandable = parent_row[parent_row.index(") : (", split) :] if split >= 0 else parent_row
+    # The gutter by reference, not pixel width: ROW_ACTIONS_CLASS or a constant built from it
+    # (ROW_ACTIONS_PINNED_CLASS holds the chevron in that same column).
+    gutter = any(
+        re.search(rf"\b{name}\b", expandable) for name in _gutter_class_names(pickers)
+    ) or re.search(r"w-\[\d+px\]", expandable)
     assert (
-        'aria-hidden="true"' in parent_row and gutter
+        'aria-hidden="true"' in expandable and gutter
     ), "the multi-quant parent row lost the spacer that stands in for a gear"
+    # The driver finds gears by accessible name, so whatever fills this gutter must not have one.
+    assert (
+        "aria-label" not in expandable
+    ), "the expandable parent row's gutter gained a labelled control"
     assert "ModelLoadSettingsAction" not in parent_row, (
         "the multi-quant parent row grew a gear, so the driver's 'no gear means "
         "this row expands rather than loads' inference is now wrong"
@@ -3136,14 +3198,14 @@ def test_run_settings_page_keeps_its_identifying_controls():
     assert 'aria-label="Back to model list"' in page
     assert 'ariaLabel="Context Length"' in page
     assert 'aria-label="Context Length"' in page
-    # The button element, not the word: "Reset" also appears in comments.
+    # The button element, not the word: "Reset" also appears in comments. Reset picks Default
+    # settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
     reset = any(
-        "DEFAULT_PER_MODEL_CONFIG" in el.group(0)
-        and ">\n          Reset\n        <" in el.group(0)
-        or ("DEFAULT_PER_MODEL_CONFIG" in el.group(0) and re.search(r">\s*Reset\s*<", el.group(0)))
+        "onClick={() => pickSet(null)}" in el.group(0) and re.search(r">\s*Reset\s*<", el.group(0))
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )
     assert reset, "the Reset button's JSX is gone or no longer named Reset"
+    assert "const next = entry?.config ?? DEFAULT_PER_MODEL_CONFIG;" in page
 
 
 def test_the_primary_action_keeps_its_four_labels():

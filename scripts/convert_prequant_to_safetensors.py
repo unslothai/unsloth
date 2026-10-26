@@ -179,6 +179,27 @@ def _untie(flat: dict) -> dict:
     return out
 
 
+def tied_copies(state_dict: dict) -> dict:
+    """``{alias: source}`` for keys that share storage, shape and stride with an earlier key (a tied embedding)."""
+    seen: dict = {}
+    aliases = {}
+    for key, value in state_dict.items():
+        if not getattr(value, "numel", lambda: 0)():
+            continue
+        ident = (
+            value.untyped_storage().data_ptr(),
+            value.storage_offset(),
+            tuple(value.shape),
+            tuple(value.stride()),
+            value.dtype,
+        )
+        if ident in seen:
+            aliases[key] = seen[ident]
+        else:
+            seen[ident] = key
+    return aliases
+
+
 def write_plain_safetensors(
     path: str, *, fmt: str, state_dict: dict, metadata: dict, extra: dict
 ) -> None:
@@ -214,7 +235,13 @@ def write_plain_safetensors(
 
 
 def convert(
-    src: str, out_dir: str, *, repo: str | None, revision: str | None, sha: str | None
+    src: str,
+    out_dir: str,
+    *,
+    repo: str | None,
+    revision: str | None,
+    sha: str | None,
+    drop_tied: bool = False,
 ) -> dict:
     import torch
 
@@ -247,7 +274,7 @@ def convert(
         pass
     source["converter_torch"] = torch.__version__
 
-    # Read exactly as Studio does (allowlisted weights_only); on torchao >= 0.18 v1 int8 comes back as Int8Tensor.
+    # Read as Studio does (allowlisted weights_only); on torchao >= 0.18 v1 int8 loads as Int8Tensor.
     facts: list = []
     restore = _record_v1_facts(facts)
     try:
@@ -259,9 +286,24 @@ def convert(
     metadata = dict(ckpt.get("metadata") or {})
     state_dict = ckpt["state_dict"]
     extra = {SOURCE_KEY: json.dumps(source)}
+    dropped: dict = {}
     if is_te:
-        write_plain_safetensors(dst, fmt = fmt, state_dict = state_dict, metadata = metadata, extra = extra)
+        written = state_dict
+        if drop_tied:
+            # Store a tied embedding once (UMT5's encoder.embed_tokens.weight is shared.weight): the TE loader fills
+            # the alias from the model's own tie (diffusion_te_prequant._fill_tied_aliases). Older readers refuse such
+            # a file and load the dense encoder, so only use it for an encoder no older release was pointed at.
+            # A tied lm_head stays: the loader never fills a head alias (whether a head is tied is per config).
+            dropped = {
+                alias: key
+                for alias, key in tied_copies(state_dict).items()
+                if not alias.endswith("lm_head.weight")
+            }
+            written = {k: v for k, v in state_dict.items() if k not in dropped}
+        write_plain_safetensors(dst, fmt = fmt, state_dict = written, metadata = metadata, extra = extra)
         back = ps.load_plain_prequant_safetensors(dst)
+        for alias, source_key in dropped.items():
+            back["state_dict"][alias] = back["state_dict"][source_key]
     else:
         if fmt not in dp.PREQUANT_FORMATS:
             raise ValueError(f"{src}: unrecognised format {fmt!r}")
@@ -280,7 +322,6 @@ def convert(
                 )
             int8_source = INT8_SOURCE_V1
         layout = quant_layout_header(flat_sd, int8_source = int8_source)
-        # save_prequant_safetensors writes torchao's flattened layout plus our two keys; add the layout and source.
         from safetensors.torch import save_file
 
         helpers = ps._torchao_helpers()
@@ -306,7 +347,7 @@ def convert(
             header[ps.UNSLOTH_ROOT_KEYS_KEY] = json.dumps([str(k) for k in roots])
         save_file(_untie(dict(flat)), dst, metadata = header)
         back = ps.load_prequant_safetensors(dst, mmap = True)
-    # Bit-identity against the .pt as THIS install reads it (v1 on <= 0.17 via the native v1 rebuild).
+    # Bit-identity against the .pt as this install reads it.
     bad = compare_state_dicts(state_dict, back["state_dict"])
     if bad:
         raise AssertionError(f"{dst}: {len(bad)} tensors differ from {src}, e.g. {bad[:3]}")
@@ -328,6 +369,7 @@ def convert(
         "dst_sha256": sha256_of(dst),
         "seconds": round(time.time() - t0, 1),
         "verified_bit_identical": True,
+        "tied_copies_dropped": dropped,
     }
     return rec
 
@@ -342,6 +384,11 @@ def main(argv = None) -> int:
     p.add_argument("--revision", default = None)
     p.add_argument("--sha256", default = None, help = "known sha256 of a single SRC (skips hashing it)")
     p.add_argument("--report", default = None, help = "append one JSON line per file here")
+    p.add_argument(
+        "--drop-tied-copies",
+        action = "store_true",
+        help = "text encoders: store a tied tensor once (the loader re-fills the alias from the model's tie)",
+    )
     args = p.parse_args(argv)
     sys.path.insert(0, str(BACKEND))
     for src in args.src:
@@ -351,6 +398,7 @@ def main(argv = None) -> int:
             repo = args.repo,
             revision = args.revision,
             sha = args.sha256 if len(args.src) == 1 else None,
+            drop_tied = args.drop_tied_copies,
         )
         line = json.dumps(rec)
         print(line, flush = True)

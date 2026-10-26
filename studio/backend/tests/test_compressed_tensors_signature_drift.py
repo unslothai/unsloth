@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The compressed-tensors drift guard, with nothing but transformers installed.
-
-`test_compressed_tensors_load_error_message.py` runs the same check, but only where the
-whole backend imports, and `studio-backend-ci.yml` pins that environment to
-`transformers>=4.51,<=5.17.0`. That window now spans the 5.10 rewording the matcher exists
-to survive rather than stopping below it, but it still resolves ONE version per run, so it
-proves the matcher against whatever that run happened to pick and not against both sides of
-the rewording. This file reads the signatures and `_diagnosis_text` out of
-`routes/inference.py` with `ast` instead, so it needs no fastapi and runs on any
-transformers.
-"""
+"""Drift guard reads the route's signatures via ast, so it runs with only transformers installed."""
 
 from __future__ import annotations
 
@@ -62,10 +52,7 @@ def _matches(message: str) -> bool:
 
 
 def _refusals_from_installed_transformers():
-    """The two refusals the INSTALLED transformers raises with the library absent.
-
-    Through `is_compressed_tensors_available`, so these are the real strings, not a copy.
-    """
+    """The two refusals are taken from the installed transformers, so they are real strings, not copies."""
     pytest.importorskip("transformers")
     from transformers.quantizers import quantizer_compressed_tensors as quantizer_module
     from transformers.utils import quantization_config as config_module
@@ -103,16 +90,11 @@ def test_no_signature_pins_a_version_number():
     assert signatures
     for signature in signatures:
         assert not re.search(r"\d+\.\d+", signature), signature
-        # Long enough to be this refusal and not an arbitrary sentence saying the words.
         assert len(signature) >= 30, signature
 
 
 def test_no_other_quantizer_family_is_claimed():
-    """Every other quantizer's "you are missing a library" message must not match.
-
-    Parsed from the installed transformers, so a family added upstream is covered the day
-    it lands. The module count is asserted: a parse finding too little would pass empty.
-    """
+    """No other quantizer's missing-library message may match; the module count is asserted."""
     pytest.importorskip("transformers")
     import transformers.quantizers as quantizers_package
 
@@ -136,10 +118,7 @@ def test_no_other_quantizer_family_is_claimed():
 
 
 def test_this_guard_needs_no_studio_backend_dependency():
-    """The property that makes it runnable outside the backend's pinned environment.
-
-    An import of fastapi or the route module puts it back inside the `<5.5` pin.
-    """
+    """The guard must not import fastapi or the route module, which would pull in the <5.5 pin."""
     tree = ast.parse(Path(__file__).read_text(encoding = "utf-8"))
     imported = set()
     for node in ast.walk(tree):
@@ -152,12 +131,7 @@ def test_this_guard_needs_no_studio_backend_dependency():
 
 
 def test_a_workflow_that_installs_a_modern_transformers_actually_collects_this_file():
-    """The guard above is worth nothing in an environment that never runs it.
-
-    Every auto-discovering job pins a transformers RANGE (`>=4.51,<=5.17.0` in
-    studio-backend-ci.yml) and so resolves a single version per run; the jobs that pin a
-    modern one exactly collect listed paths, not trees, so an unlisted file never runs.
-    """
+    """The guard must be collected by a workflow that installs modern transformers, or it never runs."""
     workflow = (
         Path(__file__).resolve().parents[3] / ".github" / "workflows" / "consolidated-tests-ci.yml"
     )

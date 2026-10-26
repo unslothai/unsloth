@@ -14,7 +14,7 @@ export type InventoryHintRow = {
   size_bytes: number;
   partial?: boolean;
   optimistic?: boolean;
-  /** epoch seconds from the server or milliseconds from an optimistic row. */
+  /** Epoch seconds from the server or milliseconds from an optimistic row. */
   last_modified?: number | null;
 };
 
@@ -46,7 +46,6 @@ function optimisticRow(hint: InventoryHint): InventoryHintRow {
     size_bytes: hint.bytes ?? 0,
     partial: false,
     optimistic: true,
-    // keep a finished download first until the cache scan catches up
     ...(hint.createdAt && hint.createdAt > 0
       ? { last_modified: hint.createdAt }
       : {}),
@@ -117,10 +116,7 @@ function mergeInventoryHint(
   );
   const merged = {
     ...serverRow,
-    // A completed hint may arrive before a partial server scan catches up. In
-    // that case keep the synthetic row non-runnable. A complete server row is
-    // already authoritative even when its runnable-weight size is smaller than
-    // the hint's full-snapshot byte count, so do not mark that merge optimistic.
+    // A partial server row keeps the hint non-runnable; a complete server row is authoritative.
     ...(serverRow.partial ? seed : { optimistic: false }),
     size_bytes: Math.max(rowSizeBytes(rows[idx]), rowSizeBytes(seed)),
     ...(lastModified > 0 ? { last_modified: lastModified } : {}),

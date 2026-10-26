@@ -10,11 +10,12 @@ import {
   Maximize2,
   Minimize2,
   Minus,
-  Plus,
 } from "lucide-react";
 import { type ReactElement, useCallback } from "react";
 import { buildFitViewOptions } from "../../utils/graph/fit-view";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "../recipe-floating-icon-button-class";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 type ViewportControlsProps = {
   interactive: boolean;
@@ -45,7 +46,6 @@ export function ViewportControls({
     fitView(buildFitViewOptions(getNodes()));
   }, [fitView, getNodes]);
 
-  // Stack vertically on narrow canvases to clear the Run / Check bar.
   return (
     <Panel
       position="bottom-left"
@@ -59,7 +59,7 @@ export function ViewportControls({
         onClick={handleZoomIn}
         aria-label="Zoom in"
       >
-        <Plus className="size-4" />
+        <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
       </Button>
       <Button
         type="button"

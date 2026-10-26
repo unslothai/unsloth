@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { LazyImportBoundary } from "@/components/lazy-import-boundary";
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -44,7 +46,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type CurrentDatePromptSettings,
@@ -63,6 +65,13 @@ import { SettingsRow } from "../components/settings-row";
 import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+
+// Off the startup bundle: the settings chunk loads eagerly, this section only when the Chat tab opens.
+const ChatMemorySection = lazy(() =>
+  import("../components/chat-memory-section").then((module) => ({
+    default: module.ChatMemorySection,
+  })),
+);
 
 // Adjustable "+" menu items shown in settings; the list shows them in the user's order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -281,6 +290,7 @@ function ToolResultLimitRow() {
 export function ChatTab() {
   const isOwner = useIsAccountOwner();
   const t = useT();
+  const pillId = useId();
   const navigate = useNavigate();
   const resetPlusMenu = usePlusMenuPrefsStore((state) => state.resetMenu);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
@@ -302,6 +312,12 @@ export function ChatTab() {
   );
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
+  );
+  const keepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.keepRunningWhenTabClosed,
+  );
+  const setKeepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.setKeepRunningWhenTabClosed,
   );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
@@ -347,6 +363,18 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const showReplyTimes = useChatPreferencesStore(
+    (state) => state.showReplyTimes,
+  );
+  const setShowReplyTimes = useChatPreferencesStore(
+    (state) => state.setShowReplyTimes,
+  );
+  const showGenerationDetails = useChatPreferencesStore(
+    (state) => state.showGenerationDetails,
+  );
+  const setShowGenerationDetails = useChatPreferencesStore(
+    (state) => state.setShowGenerationDetails,
+  );
   const autoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.autoScrollWhileGenerating,
   );
@@ -390,7 +418,7 @@ export function ChatTab() {
   const setFoldToolActivityIntoThinking = useChatPreferencesStore(
     (state) => state.setFoldToolActivityIntoThinking,
   );
-  // Cannot coexist with always expanded. The stored preference is left alone so it comes back.
+  // Fold cannot coexist with always expanded; the stored fold preference is kept so it comes back.
   const foldBlockedByAlwaysExpanded = toolVisibility === "expanded";
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
@@ -398,9 +426,7 @@ export function ChatTab() {
   const setPastedTextMinChars = useChatPreferencesStore(
     (state) => state.setPastedTextMinChars,
   );
-  // The platform's own paste-without-formatting chord, which the composer reads
-  // as "put it in the box" whatever this threshold says. macOS carries it on
-  // Option, that being the chord its Edit menu binds.
+  // The composer always pastes this chord as plain text; macOS binds it on Option.
   const macPlatform = isMacPlatform();
   const plainPasteLabel = formatBindingLabel(
     { code: "KeyV", mod: true, ctrl: false, shift: true, alt: macPlatform },
@@ -469,7 +495,6 @@ export function ChatTab() {
         >
           <Button
             variant="outline"
-            className="px-3.5"
             onClick={() => {
               useSettingsDialogStore.getState().closeDialog();
               void navigate({ to: "/library", search: { show: "chats" } });
@@ -528,6 +553,17 @@ export function ChatTab() {
             onCheckedChange={setAutoCompactEnabled}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.keepRunningWhenTabClosed")}
+          description={t("settings.chat.keepRunningWhenTabClosedDescription")}
+          hint={t("settings.chat.keepRunningWhenTabClosedHint")}
+        >
+          <Switch
+            aria-label={t("settings.chat.keepRunningWhenTabClosed")}
+            checked={keepRunningWhenTabClosed}
+            onCheckedChange={setKeepRunningWhenTabClosed}
+          />
+        </SettingsRow>
         {isOwner ? <ToolResultLimitRow /> : null}
         {isOwner ? <FirstTokenTimeoutRow /> : null}
         <SettingsRow
@@ -546,12 +582,15 @@ export function ChatTab() {
                 aria-pressed={autoScrollWhileGenerating === follow}
                 onClick={() => setAutoScrollWhileGenerating(follow)}
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   autoScrollWhileGenerating === follow
-                    ? "hub-tab-toggle-pill text-foreground"
+                    ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
+                {autoScrollWhileGenerating === follow && (
+                  <SegmentedPill group={`${pillId}-auto-scroll`} />
+                )}
                 {t(
                   follow
                     ? "settings.chat.autoScrollAuto"
@@ -649,6 +688,12 @@ export function ChatTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <LazyImportBoundary fallback={null}>
+        <Suspense fallback={null}>
+          <ChatMemorySection />
+        </Suspense>
+      </LazyImportBoundary>
+
       <SettingsSection title={t("settings.chat.groups.display.title")}>
         <SettingsRow
           label={t("settings.chat.webSearch.images")}
@@ -720,7 +765,6 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.tools.foldIntoThinking")}
-          // Says why the row is off rather than letting a checked switch do nothing.
           description={t(
             foldBlockedByAlwaysExpanded
               ? "settings.chat.tools.foldIntoThinkingBlocked"
@@ -742,6 +786,26 @@ export function ChatTab() {
             aria-label={t("settings.chat.showResponseModel")}
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.showReplyTimes")}
+          description={t("settings.chat.showReplyTimesDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.showReplyTimes")}
+            checked={showReplyTimes}
+            onCheckedChange={setShowReplyTimes}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.showGenerationDetails")}
+          description={t("settings.chat.showGenerationDetailsDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.showGenerationDetails")}
+            checked={showGenerationDetails}
+            onCheckedChange={setShowGenerationDetails}
           />
         </SettingsRow>
         <SettingsRow

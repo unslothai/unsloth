@@ -2,7 +2,7 @@
 
 Fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the training stack (PyTorch 2.11 with CUDA 12.8, [Unsloth](https://github.com/unslothai/unsloth), unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks), and prebuilt llama.cpp. The `latest` image adds whisper.cpp for Unsloth Studio's speech-to-text and audio.cpp (CUDA build on `linux/amd64`) for its text-to-speech, music and transcription models.
 
-Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
+Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guide: [unsloth.ai/docs](https://unsloth.ai/docs/get-started/install/docker).
 
 ## Quick start
 
@@ -63,7 +63,7 @@ docker rm -f unsloth     # stop and delete the container
 docker ps -a             # find it again, running or not
 ```
 
-`docker rm -f` deletes the container, not your work: models stay in the Hugging Face cache, your files in the directory you mounted, the notebooks with your edits and what they save on the `unsloth-workspace` volume, and Unsloth Studio's accounts, chats and project folders on the `unsloth-studio` volume, so the next container with the same `-v unsloth-studio:/opt/unsloth-studio` resumes where this one left off, password included. Only what was written inside the container is lost, which includes the folders of projects created by an image from before project folders moved to the volume: those keep their old place under `/root/Documents`, so copy their files out before removing the container. `docker volume rm unsloth-studio` discards the Unsloth Studio data too, and cannot be undone.
+`docker rm -f` deletes the container, not your work: models stay in the Hugging Face cache, your files in the directory you mounted, the notebooks with your edits and what they save on the `unsloth-workspace` volume, and Unsloth Studio's accounts, chats, project folders and the skills made in it on the `unsloth-studio` volume, so the next container with the same `-v unsloth-studio:/opt/unsloth-studio` resumes where this one left off, password included. Only what was written inside the container is lost, which includes the folders of projects created by an image from before project folders moved to the volume, and the skills it created: those keep their old place under `/root/Documents` and `/root/.agents/skills`, so copy them out before removing the container (skills go in `/opt/unsloth-studio/skills`). `docker volume rm unsloth-studio` discards the Unsloth Studio data too, and cannot be undone.
 
 These take a container, not an image, so `docker stop unsloth/unsloth` fails with "No such container". Use the `NAMES` or `CONTAINER ID` column of `docker ps -a`; without `--name`, Docker assigns a random one.
 
@@ -93,7 +93,7 @@ docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host -w /workspace/ho
 `latest` starts without a GPU on its own. Unsloth Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not. `core` refuses to start without a GPU unless you opt in:
 
 ```bash
-docker run -d -p 8000:8000 -p 8888:8888 -v unsloth-workspace:/workspace unsloth/unsloth
+docker run -d --name unsloth -p 8000:8000 -p 8888:8888 -v unsloth-studio:/opt/unsloth-studio -v unsloth-workspace:/workspace unsloth/unsloth
 docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import unsloth"
 ```
 
@@ -152,7 +152,7 @@ The working directory is `/workspace`. Mount what you want to keep:
 | `/workspace` | The notebooks, your edits to them and what they save (`lora_model/`, `outputs/`). Use a named volume: without one, `docker rm` loses them. Files the image puts there, such as `smoke_test.py`, keep the first image's copy. |
 | `/workspace/host` | Your files. Mount your project directory here. |
 | `/workspace/.cache/huggingface` | Model downloads. Mount your host HF cache to reuse it. |
-| `/opt/unsloth-studio` | Unsloth Studio's accounts, chats, project folders, outputs, exports and runs (`latest`). Use a named volume: without one, `docker rm` loses them. |
+| `/opt/unsloth-studio` | Unsloth Studio's accounts, chats, project folders, the skills made in it, outputs, exports and runs (`latest`). Use a named volume: without one, `docker rm` loses them. |
 | `/workspace/.cache/triton` | Compiled kernels. Optional, speeds up restarts. |
 | `/workspace/unsloth-notebooks` | The synced notebooks. Your edits are kept across refreshes. |
 | `/workspace/Unsloth Notebooks` | The same notebooks grouped by topic, rebuilt on each start. |
@@ -194,7 +194,7 @@ Both images refresh the notebooks from GitHub on each start, which costs 10 to 2
 
 ## Help
 
-- [Documentation](https://docs.unsloth.ai)
+- [Documentation](https://unsloth.ai/docs)
 - [r/unsloth](https://reddit.com/r/unsloth)
 - [Issues](https://github.com/unslothai/unsloth/issues)
 

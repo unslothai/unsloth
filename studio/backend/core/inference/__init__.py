@@ -19,8 +19,7 @@ inference stack.
 import os
 from typing import TYPE_CHECKING
 
-# Same ROCm AOTriton opt-in as main.py, for entry points that skip main.py: without it gfx1151 refuses fused
-# SDPA and runs MATH. torch reads it at the first SDPA dispatch; `setdefault` keeps an explicit "0".
+# Same ROCm AOTriton opt-in as main.py, for entries that skip main.py; read at first SDPA dispatch, setdefault keeps explicit 0; else gfx1151 runs MATH
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 __all__ = [

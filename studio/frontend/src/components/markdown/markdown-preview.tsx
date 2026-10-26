@@ -7,9 +7,14 @@ import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
+import {
+  MARKDOWN_TABLE_ICONS,
+  MarkdownTable,
+  StaticMarkdownTable,
+} from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
+import { mermaid } from "@/components/assistant-ui/mermaid-plugin";
 import {
   type ComponentProps,
   type ReactElement,
@@ -31,7 +36,7 @@ const MARKDOWN_COMPONENTS = {
     <a
       href={href}
       rel="noopener noreferrer"
-      className="cursor-pointer text-primary underline decoration-primary/40 underline-offset-2 transition-colors hover:decoration-primary"
+      className="cursor-pointer text-foreground underline decoration-foreground/40 underline-offset-2 transition-colors hover:decoration-foreground"
       onClick={(event) => {
         if (href && openLink(href)) {
           event.preventDefault();
@@ -42,19 +47,19 @@ const MARKDOWN_COMPONENTS = {
       {children}
     </a>
   ),
+  table: MarkdownTable,
+};
+const INERT_COMPONENTS = {
+  ...INERT_MARKDOWN_COMPONENTS,
+  table: StaticMarkdownTable,
 };
 
 type MarkdownPreviewProps = {
   markdown: string;
   className?: string;
   plain?: boolean;
-  /** No links or checkboxes, for a preview nested in another control. */
   inert?: boolean;
-  /**
-   * Parse on the next idle callback so the surrounding UI paints first. For a document that
-   * arrives whole and is big enough to stall - a finished research report - the wait is the same
-   * either way, but the window stays interactive through it.
-   */
+  /** Parse on the next idle callback so the UI stays interactive for large documents. */
   defer?: boolean;
 };
 
@@ -65,8 +70,7 @@ function MarkdownPreviewImpl({
   inert = false,
   defer = false,
 }: MarkdownPreviewProps): ReactElement {
-  // Math and mermaid over a document with neither still cost a pass per node, and shiki over a
-  // very long one costs more than it is worth; the report lands in one synchronous commit.
+  // Skip plugins with nothing to do or too costly on very long documents.
   const plugins = useMemo<MarkdownPlugins>(() => {
     const needs = markdownPluginNeeds(markdown);
     const next: MarkdownPlugins = {};
@@ -75,9 +79,7 @@ function MarkdownPreviewImpl({
     if (needs.mermaid) next.mermaid = mermaid;
     return next;
   }, [markdown]);
-  // Readiness belongs to the markdown value, not the component: resetting it from an effect is
-  // one commit late, so the new document is parsed synchronously and thrown away - the stall
-  // `defer` exists to avoid, paid twice. Deriving it during render keeps it out of Streamdown.
+  // Derived during render: resetting from an effect is one commit late and parses twice.
   const [readyMarkdown, setReadyMarkdown] = useState<string | null>(null);
   const ready = !defer || readyMarkdown === markdown;
   useEffect(() => {
@@ -94,7 +96,7 @@ function MarkdownPreviewImpl({
       className={cn(
         plain
           ? "h-full w-full min-w-0 overflow-auto p-2 text-xs leading-relaxed pointer-events-none select-none"
-          : "nodrag max-h-56 w-full min-w-0 overflow-auto scroll-rounded rounded-md border border-border/60 bg-muted/20 p-2 text-xs leading-relaxed",
+          : "nodrag max-h-56 w-full min-w-0 overflow-auto scroll-rounded rounded-lg border border-border/60 bg-muted/20 p-2 text-xs leading-relaxed",
         className,
       )}
     >
@@ -103,7 +105,8 @@ function MarkdownPreviewImpl({
           mode="static"
           plugins={plugins}
           rehypePlugins={REHYPE_PLUGINS}
-          components={inert ? INERT_MARKDOWN_COMPONENTS : MARKDOWN_COMPONENTS}
+          components={inert || plain ? INERT_COMPONENTS : MARKDOWN_COMPONENTS}
+          icons={MARKDOWN_TABLE_ICONS}
           urlTransform={safeMarkdownUrl}
           controls={false}
           className={markdownClassName}

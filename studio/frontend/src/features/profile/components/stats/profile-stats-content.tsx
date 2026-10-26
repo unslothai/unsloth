@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { useT } from "@/i18n";
 import { useProfileStats } from "../../hooks/use-profile-stats";
+import { ExportUsageButton } from "./export-usage-button";
 import { ActivityInsightsCard, TopModelsCard } from "./insights-card";
 import { StatsCard } from "./stat-primitives";
 import { StatsHighlights } from "./stats-highlights";
@@ -12,13 +13,7 @@ import { TokenActivityCard } from "./token-activity-card";
 import { TrainingHighlightsCard } from "./training-card";
 
 /**
- * Everything below the personalization form on the Profile tab: headline
- * numbers, activity grid, insights and training.
- *
- * All of it comes from `/api/profile/stats`, which reads local history only.
- *
- * Loaded lazily by `profile-stats-panel.tsx` so none of it reaches the main
- * bundle, since the Profile tab is the only place it renders.
+ * Loaded lazily by `profile-stats-panel.tsx` to keep it out of the main bundle.
  */
 export function ProfileStatsContent() {
   const t = useT();
@@ -48,16 +43,19 @@ export function ProfileStatsContent() {
 
   return (
     <div className="flex w-full flex-col gap-4">
-      <header className="flex flex-col gap-0.5">
-        <h2
-          data-settings-label={t("settings.profile.stats.title")}
-          className="settings-heading text-base font-semibold font-heading"
-        >
-          {t("settings.profile.stats.title")}
-        </h2>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.profile.stats.subtitle")}
-        </p>
+      <header className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-0.5">
+          <h2
+            data-settings-label={t("settings.profile.stats.title")}
+            className="settings-heading text-base font-semibold font-heading"
+          >
+            {t("settings.profile.stats.title")}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.profile.stats.subtitle")}
+          </p>
+        </div>
+        {hasUsage ? <ExportUsageButton /> : null}
       </header>
 
       <StatsHighlights stats={stats} />

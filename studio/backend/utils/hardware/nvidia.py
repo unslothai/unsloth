@@ -240,6 +240,53 @@ def _parse_mig_gpu_indices(stdout: Any) -> frozenset[int]:
     return frozenset(indices)
 
 
+_mig_mode_entry: Optional[tuple[int, float, Optional[frozenset[int]]]] = None
+
+
+def get_mig_mode_gpu_indices_or_none() -> Optional[set[int]]:
+    """Physical indices of cards in MIG mode, with instances or not, or None when the query fails.
+    A MIG-mode card with no instances has no ``-L`` MIG row and no CUDA device either."""
+    global _mig_mode_entry
+    entry = _mig_mode_entry
+    if entry is not None and entry[0] == gpu_query._static_gen:
+        ttl = gpu_query.ttl_for(gpu_query.STATIC)
+        if time.monotonic() - entry[1] < (
+            ttl if entry[2] is not None else min(ttl, _MIG_FAILURE_RETRY_S)
+        ):
+            return None if entry[2] is None else set(entry[2])
+    gen, indices = gpu_query._static_gen, None
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [
+                _nvidia_smi_executable(),
+                "--query-gpu=index,mig.mode.current",
+                "--format=csv,noheader",
+            ],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        stdout = getattr(result, "stdout", None)
+        if getattr(result, "returncode", 1) == 0 and isinstance(stdout, str) and stdout.strip():
+            found: set[int] = set()
+            for line in stdout.splitlines():
+                parts = [part.strip() for part in line.split(",")]
+                if len(parts) != 2 or not parts[0].isdecimal():
+                    found = None
+                    break
+                if parts[1].lower() == "enabled":
+                    found.add(int(parts[0]))
+            indices = None if found is None else frozenset(found)
+    except Exception:
+        indices = None
+    _mig_mode_entry = (gen, time.monotonic(), indices)
+    return None if indices is None else set(indices)
+
+
 def get_mig_gpu_indices() -> set[int]:
     """Physical indices of GPUs with MIG instances (indented ``MIG`` rows under their
     ``GPU N:`` row in ``nvidia-smi -L``). CUDA sees such a card as one slice, so its
@@ -457,12 +504,7 @@ _inventory_exit = threading.local()
 
 
 def _query_gpu_inventory(caller: str) -> Any:
-    """``[{index, name, memory_total_gb}]`` for every GPU nvidia-smi enumerates.
-
-    ``None`` when the query could not be answered at all (no nvidia-smi on PATH, a driver that hung past the timeout, a non-zero exit), which callers report as "unknown" and is not the same as the empty list a working driver with no cards returns. Never raises.
-
-    Split out of get_backend_visible_gpu_info so the same rows can be read WITHOUT a ``DeviceType.CUDA`` precondition: get_physical_gpu_inventory below is reached on exactly the host where torch reports no CUDA device, and that host still has its GPUs. Rows a caller cannot make sense of are dropped rather than raised on: a name holding commas is rejoined, and a malformed index or memory column skips the row.
-    """
+    """None when nvidia-smi could not answer at all, not the empty list of a working driver with no cards; never raises, and needs no DeviceType.CUDA precondition."""
     try:
         result = gpu_query.run_nvidia_smi(
             [
@@ -501,6 +543,9 @@ def _query_gpu_inventory(caller: str) -> Any:
             continue
         # Rejoin in case the GPU name contains commas
         name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
+        # RTX Spark's MCDM NPU: listed by nvidia-smi, not a CUDA GPU, no memory metrics.
+        if name.casefold() == "nvidia npu":
+            continue
         # A capacity this build of nvidia-smi will not report ("[N/A]", as _parse_smi_value already recognises) is a missing metric, not a missing card. Dropping the row hid the GPU from the whole inventory, and the Linux procfs fallback does not run either since it answers for a query that FAILED rather than one that came back short: the host lost its mismatch and its repair guidance over an unknown size.
         mem_total_mb = _parse_smi_value(parts[-1])
         rows.append(
@@ -613,10 +658,11 @@ def get_card_identities() -> dict[int, tuple[str, ...]]:
         return {}
     identities: dict[int, tuple[str, ...]] = {}
     for line in result.stdout.strip().splitlines():
-        index, *fields = (part.strip() for part in line.split(","))
-        if not index.isdigit() or len(fields) != 4:
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 5 or not parts[0].isdigit():
             return {}
-        identities[int(index)] = tuple(fields)
+        # nvidia-smi csv does not quote: a name holding commas spans several parts, so rejoin it.
+        identities[int(parts[0])] = (", ".join(parts[1:-3]), *parts[-3:])
     return identities
 
 

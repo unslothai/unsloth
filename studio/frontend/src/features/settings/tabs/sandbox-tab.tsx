@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Badge } from "@/components/ui/badge";
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -27,7 +27,7 @@ import { ShieldIcon } from "@/lib/shield-cog-icon";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   type HostPrepJob,
@@ -79,9 +79,8 @@ function ToolRow({
   label: string;
   tool: SandboxToolStatus;
   shell?: SandboxStatus["terminalShell"];
-  /** The setup row below already says why and what to run; repeating it per tool is noise. */
   quiet?: boolean;
-  /** Off on Windows: the generic MXC remediation repeats what the Windows section offers. */
+  /** Off on Windows: the generic MXC remediation repeats the Windows section. */
   withRemediation?: boolean;
 }) {
   const t = useT();
@@ -101,17 +100,22 @@ function ToolRow({
   );
   return (
     <SettingsRow label={label} description={description}>
-      <Badge
-        variant="outline"
-        // Grey and sized like the dropdown pills.
-        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
-      >
+      <SandboxStatus>
         {view.isolated ? <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} /> : null}
         {view.isolated
           ? t("settings.sandbox.osIsolation", { backend: view.backendLabel })
           : t("settings.sandbox.softwareSafeguards")}
-      </Badge>
+      </SandboxStatus>
     </SettingsRow>
+  );
+}
+
+// A read-only value, not a control: plain text, so it is not mistaken for a button.
+function SandboxStatus({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground [&>svg]:size-3.5">
+      {children}
+    </span>
   );
 }
 
@@ -186,7 +190,7 @@ function MemoryLimitRow({
             onKeyDown={(event) => {
               if (event.key === "Enter") submit();
             }}
-            className="h-8 w-24"
+            className="h-control w-24"
           />
           <span className="text-xs font-medium text-muted-foreground">
             GB
@@ -237,6 +241,7 @@ function PermissionsSection() {
   );
   const [setupOpen, setSetupOpen] = useState(false);
   const levelDescriptionId = useId();
+  const pillId = useId();
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
 
@@ -301,12 +306,13 @@ function PermissionsSection() {
                   void pickSandboxLevel(level, setSandboxLevel, () => setSetupOpen(true));
                 }}
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
                   selected
-                    ? "hub-tab-toggle-pill cursor-default text-foreground"
+                    ? "cursor-default text-foreground"
                     : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
                 )}
               >
+                {selected && <SegmentedPill group={`${pillId}-level`} />}
                 {t(SANDBOX_LEVEL_TEXT[level].name)}
               </button>
             );
@@ -340,7 +346,7 @@ export function SandboxTab() {
             target="_blank"
             rel="noreferrer"
             title={t("settings.sandbox.docsLabel")}
-            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {t("settings.sandbox.docs")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -372,17 +378,16 @@ function OsSandboxSections() {
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Save and prepare failures sit with the Windows controls, e.g. the remote-browser refusal.
   const [actionError, setActionError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [restored, setRestored] = useState<number | null>(null);
   const [absent, setAbsent] = useState(false);
-  // The Linux install and the Windows runtime install; the Windows prepare step keeps `job`.
+  // Linux install and Windows runtime install use setupJob; the Windows prepare step keeps job.
   const [setupJob, setSetupJob] = useState<SandboxSetupJob | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const mounted = useRef(true);
-  // Bumped by every read and save: an older status read must not overwrite a newer answer.
+  // Bumped by every read and save so an older read cannot overwrite a newer answer.
   const statusGeneration = useRef(0);
 
   useEffect(() => {
@@ -436,7 +441,7 @@ function OsSandboxSections() {
 
   useEffect(() => {
     void refresh(false);
-    // A job started from another window, or before this tab was reopened, keeps reporting here.
+    // A job started elsewhere keeps reporting here.
     void loadHostPreparation(t("settings.sandbox.prepareError"))
       .then((current) => {
         if (!mounted.current || current.state === "idle") return;
@@ -477,7 +482,6 @@ function OsSandboxSections() {
     return () => window.clearTimeout(timer);
   }, [setupJob, refresh, t]);
 
-  // Poll while the elevated helper runs; the status is re-read once it finishes.
   useEffect(() => {
     if (!shouldPollJob(job)) return;
     const timer = window.setTimeout(() => {
@@ -592,7 +596,6 @@ function OsSandboxSections() {
 
   const windows = status?.windows ?? null;
   const view = windows ? windowsView(windows, job, saving) : null;
-  // The runtime-only install reports under its own row; the setup row keeps the other operations.
   const runtimeJob = setupJob?.operation === "windows-runtime" ? setupJob : null;
   const runtimeRunning = runtimeJob?.state === "running";
   const runtimeFailed = jobResult(runtimeJob) === "failed";
@@ -728,7 +731,7 @@ function OsSandboxSections() {
                           >
                             {t("settings.sandbox.setupCommandHint")}
                           </span>
-                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 text-left font-mono text-ui-11">
+                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-lg bg-muted px-2 py-1.5 text-left font-mono text-ui-11">
                             {setupRow.command}
                           </pre>
                           <Button
@@ -818,13 +821,10 @@ function OsSandboxSections() {
                       label={t("settings.sandbox.builtinLabel")}
                       description={t("settings.sandbox.builtinDescription")}
                     >
-                      <Badge
-                        variant="outline"
-                        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
-                      >
+                      <SandboxStatus>
                         <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} />
                         {t("settings.sandbox.builtinInUse")}
-                      </Badge>
+                      </SandboxStatus>
                     </SettingsRow>
                   ) : null}
                   {view.builtinUpdate ? (

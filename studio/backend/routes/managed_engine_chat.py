@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import threading
 import time
 import uuid
 from contextlib import aclosing
@@ -14,6 +15,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from core.inference.engine_transport import engine_messages, engine_request_timeout
+from core.inference.inference_gate import gated_async_client
 from core.inference.http_stream import closing_response_lines
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
 
@@ -102,7 +104,13 @@ def _with_reasoning_content(line: str) -> str:
     return "data: " + json.dumps(event) if changed else line
 
 
-def _message_fitter(payload, engine, public, tools):
+def _message_fitter(
+    payload,
+    engine,
+    public,
+    tools,
+    studio_loop = False,
+):
     """Auto-compact to the vLLM engine's window; the exact count refuses tools, so this estimates."""
     from routes import inference as api
 
@@ -122,9 +130,21 @@ def _message_fitter(payload, engine, public, tools):
         }
     )
 
+    # The first fit sees the client's branch; later ones see the loop's conversation, which can end
+    # on a controller re-prompt that recall must not query for.
+    branch: list = []
+    tool_loop = studio_loop and not api._tool_calls_are_disabled(payload)
+
     async def fit(messages):
+        if not branch:
+            branch.extend(messages)
         fitted, truncation, max_tokens = await asyncio.to_thread(
-            api._fit_external_context, messages, fit_payload, tools = tools
+            api._fit_external_context,
+            messages,
+            fit_payload,
+            tools = tools,
+            branch = branch,
+            tool_loop = tool_loop,
         )
         line = None
         if truncation and truncation.get("dropped_messages"):
@@ -203,7 +223,7 @@ async def managed_tool_chat(
         else []
     )
     if tools and api._wants_multiple_choices(payload):
-        raise reject("Multiple choices are unavailable when Studio executes tools.")
+        raise reject("Multiple choices are unavailable when Unsloth executes tools.")
     if tools:
         api._reject_confirm_gate_without_channel(
             payload, ui_events, monitor_id, api._catalog_names(tools)
@@ -222,6 +242,8 @@ async def managed_tool_chat(
             full_access = bool(payload.bypass_permissions),
         )
         nudge = await api._apply_rag_nudge(nudge, tools, rag_scope = payload.rag_scope)
+        if not api._tool_calls_are_disabled(payload):
+            nudge = api._apply_compaction_nudge(nudge, tools, payload = payload)
         if nudge:
             messages = api._append_to_system_message(messages, nudge)
     try:
@@ -229,8 +251,7 @@ async def managed_tool_chat(
     except ValueError as exc:
         raise reject(str(exc)) from exc
     engine = backend._managed_engine
-    # The engine serves config.identifier (a local path for directory loads); clients get the
-    # same public id as every other chat path.
+    # Serves config.identifier (a local path for directory loads); clients get the same public id.
     public = api._orchestrator_public_model_id(backend) or engine.model
     messages = engine.replay_reasoning(messages, payload.preserve_thinking)
     body = {
@@ -275,7 +296,7 @@ async def managed_tool_chat(
     tracker.__enter__()
 
     async def events():
-        client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
+        client = gated_async_client(trust_env = False, timeout = engine_request_timeout())
         watcher = asyncio.create_task(
             api._await_cancel_or_disconnect_then_close_client(
                 cancel_event = cancel, request = request, client = client
@@ -286,7 +307,9 @@ async def managed_tool_chat(
             engine,
             body,
             preserve_thinking = payload.preserve_thinking,
-            message_fitter = _message_fitter(payload, engine, public, tools or payload.tools),
+            message_fitter = _message_fitter(
+                payload, engine, public, tools or payload.tools, studio_loop = bool(tools)
+            ),
         )
         stripper = api.ServerToolCallStripper()
         stream = None
@@ -316,6 +339,7 @@ async def managed_tool_chat(
                         or api._off_mode_sandbox_gate(payload, ui_events),
                         bypass_permissions = bool(payload.bypass_permissions),
                         rag_scope = payload.rag_scope,
+                        website_policy = getattr(payload, "_website_policy", None),
                         auto_heal = payload.auto_heal_tool_calls,
                         nudge_tool_calls = payload.nudge_tool_calls,
                         deduplicate_tool_calls = payload.deduplicate_tool_calls,
@@ -476,3 +500,132 @@ async def managed_tool_chat(
                 if choice.get("finish_reason"):
                     result["choices"][0]["finish_reason"] = choice["finish_reason"]
     return JSONResponse(result)
+
+
+async def managed_engine_completions(request, current_subject, backend, body):
+    from routes import inference as api
+    from core.inference.llama_keepwarm import mark_response_failed
+
+    engine = backend._managed_engine
+    public = api._orchestrator_public_model_id(backend) or engine.model
+    stream = bool(body.get("stream"))
+    include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+    upstream = {**body, "model": engine.model}
+    if stream:
+        # Always asked for so the monitor counts tokens; dropped again unless the caller opted in.
+        upstream["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
+    monitor_id = api.api_monitor.start(
+        endpoint = request.url.path,
+        via_api_key = api._request_used_api_key(request),
+        method = request.method,
+        model = public,
+        prompt = api._flatten_monitor_prompt(body.get("prompt", "")),
+        context_length = engine.context,
+        subject = current_subject,
+    )
+    cancel = threading.Event()
+    tracker = api._TrackedCancel(cancel, model = public, kind = "completions")
+    tracker.__enter__()
+    client = gated_async_client(trust_env = False, timeout = engine_request_timeout())
+    watcher = asyncio.create_task(
+        api._await_cancel_or_disconnect_then_close_client(
+            cancel_event = cancel, request = request, client = client
+        )
+    )
+    scope = getattr(request, "scope", None)
+
+    async def close():
+        try:
+            await api._stop_local_disconnect_cancel_watcher(watcher)
+            await client.aclose()
+        finally:
+            tracker.__exit__(None, None, None)
+
+    url = engine.base_url + "/v1/completions"
+    try:
+        if stream:
+            response = await client.send(
+                client.build_request("POST", url, headers = engine.headers, json = upstream),
+                stream = True,
+            )
+            if response.status_code != 200:
+                await response.aread()
+        else:
+            response = await client.post(url, headers = engine.headers, json = upstream)
+    except asyncio.CancelledError:
+        cancel.set()
+        await close()
+        api.api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        await close()
+        if cancel.is_set():
+            mark_response_failed(scope)
+            api.api_monitor.finish(monitor_id, "cancelled")
+            raise HTTPException(status_code = 499, detail = "Request cancelled.") from exc
+        api.api_monitor.fail(monitor_id, api._friendly_error(exc))
+        raise
+    if response.status_code != 200:
+        await close()
+        api.api_monitor.fail(monitor_id, response.text[:500])
+        raise api._openai_passthrough_error(response.status_code, response.text)
+
+    if not stream:
+        await close()
+        data = response.json()
+        if isinstance(data, dict) and "model" in data:
+            data["model"] = public
+        try:
+            api._monitor_openai_chunk(monitor_id, data, engine.context)
+        except Exception:
+            pass
+        api.api_monitor.finish(monitor_id)
+        return JSONResponse(data)
+
+    async def relay():
+        lines = closing_response_lines(response)
+        try:
+            async for line in lines:
+                if not line.startswith("data:"):
+                    continue
+                if api._monitor_openai_sse_line(monitor_id, line, engine.context) == "error":
+                    mark_response_failed(scope)
+                out = api._cmpl_stream_event_out(_with_model(line, public).encode(), include_usage)
+                if out is not None:
+                    yield out + b"\n\n"
+            if cancel.is_set():
+                mark_response_failed(scope)
+                api.api_monitor.finish(monitor_id, "cancelled")
+            else:
+                api.api_monitor.finish(monitor_id)
+        except asyncio.CancelledError:
+            cancel.set()
+            api.api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except Exception as exc:
+            mark_response_failed(scope)
+            if cancel.is_set():
+                api.api_monitor.finish(monitor_id, "cancelled")
+                return
+            api.api_monitor.fail(monitor_id, api._friendly_error(exc))
+            yield api._openai_stream_error_sse_bytes(api._openai_stream_error_chunk(exc))
+        finally:
+            try:
+                await lines.aclose()
+            finally:
+                await close()
+
+    async def unstarted_cleanup():
+        cancel.set()
+        try:
+            # close() releases the active-generation entry even when aclose fails.
+            try:
+                await response.aclose()
+            finally:
+                await close()
+        finally:
+            api.api_monitor.finish(monitor_id, "cancelled")
+
+    return api._sse_streaming_response(
+        relay(), unstarted_cleanup = unstarted_cleanup, monitor_id = monitor_id
+    )

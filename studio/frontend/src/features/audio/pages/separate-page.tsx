@@ -19,9 +19,8 @@ import {
   fetchAudioBlob,
   setAudioClipFlags,
 } from "../api";
-import { audioCppModelFor, audioCppWorkflowsFor } from "../audio-cpp-catalog";
+import { audioCppModelFor } from "../audio-cpp-catalog";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
-import { macTtsCatalogChoiceIsRunnable } from "../catalog";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
@@ -51,42 +50,6 @@ import {
 import { useAudioSeparateStore } from "../stores/audio-separate-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import { TtsFooter, TtsRailFields } from "./tts-workspace";
-
-const SEPARATE_MODEL_ORDER = [
-  "HTDemucs-GGUF",
-  "BS-RoFormer-ep368-GGUF",
-  "HTDemucs-6stems-GGUF",
-  "Mel-Band-RoFormer-GGUF",
-];
-
-function separateRank(id: string): number {
-  const index = SEPARATE_MODEL_ORDER.findIndex((name) =>
-    id.endsWith(`/${name}`),
-  );
-  return index === -1 ? SEPARATE_MODEL_ORDER.length : index;
-}
-
-export function separatePageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models
-    .filter((model) => {
-      const entry = audioCppModelFor(model.id);
-      return (
-        entry !== null &&
-        audioCppWorkflowsFor(entry).includes("separate") &&
-        (!isMac || macTtsCatalogChoiceIsRunnable(model.id))
-      );
-    })
-    .map((model, index) => ({ model, index }))
-    .sort(
-      (a, b) =>
-        separateRank(a.model.id) - separateRank(b.model.id) ||
-        a.index - b.index,
-    )
-    .map(({ model }) => model);
-}
 
 export function separateOutputStems(
   family: string | null | undefined,
@@ -435,7 +398,6 @@ export function SeparateOutput({
     lastResult !== null &&
     selected !== null &&
     (lastResult.groupId === null || selected.groupId === lastResult.groupId);
-  // Once only; later re-renders keep focus where the user put it.
   const [focusedGroup, setFocusedGroup] = useState<string | null>(null);
   useEffect(() => {
     if (fresh && selected) setFocusedGroup(selected.groupId);
@@ -487,7 +449,7 @@ export function SeparateOutput({
         )}
       >
         {pendingRun ? (
-          <output className="corner-squircle grid w-full gap-1 rounded-4xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]">
+          <output className="corner-squircle grid w-full gap-1 rounded-2xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]">
             <span className="block truncate text-ui-13 font-medium text-foreground">
               {pendingRun.title}
             </span>
@@ -619,7 +581,7 @@ export function SeparateOutput({
                     >
                       {audioModelLabel(group.model)}
                     </span>
-                    <span className="shrink-0 rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground group-hover:bg-background">
+                    <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground group-hover:bg-background">
                       {group.complete
                         ? `${group.stems.length} stems`
                         : `${group.stems.length} of ${group.expectedStems} stems`}

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`search_conversation` under a safetensors model.
-
-The tool is advertised by thread, not by backend: a GGUF-compacted chat keeps its
-archive across a model switch and `_select_request_tools` is shared, so this loop offers
-the tool too and needs both guards the GGUF loop applies.
-"""
+"""search_conversation is offered per thread, not per backend, so this loop needs both GGUF guards."""
 
 import os
 import sys
@@ -69,17 +64,12 @@ def test_the_loop_hands_its_search_the_active_branch():
 
     _run(1, execute_tool)
 
-    # The client's messages, then the call the loop itself appended, as the GGUF loop passes.
     [branch] = seen
     assert branch[: len(MESSAGES)] == MESSAGES and len(branch) == len(MESSAGES) + 1
 
 
 def test_conversation_searches_share_the_per_turn_cap():
-    """Paraphrased re-searches slip past the exact-args duplicate guard.
-
-    Each appends passages into the protected current tool exchange, so uncapped the turn
-    can only end in a context-length error.
-    """
+    """Paraphrased re-searches slip past the duplicate guard, so one per-turn cap is shared by all."""
     executed = []
 
     def execute_tool(name, arguments, **kwargs):
@@ -92,13 +82,7 @@ def test_conversation_searches_share_the_per_turn_cap():
 
 
 def test_the_budget_charges_token_dense_text_at_its_real_rate():
-    """Four characters per token is about right for English and half the truth for CJK.
-
-    The result side already prices non-ASCII at a token per character; the spend side did
-    not, so a CJK chat reported roughly twice the room it had. This path runs no rolling
-    fit, so nothing downstream recovers: the tool exchange it sized lands in the next
-    prompt and takes it past the window.
-    """
+    """Four chars per token is wrong for CJK; spend must price non-ASCII at a token per character."""
     from core.inference.context_window import (
         estimate_messages_tokens,
         estimate_messages_tokens_dense,
@@ -129,8 +113,6 @@ def test_the_budget_charges_token_dense_text_at_its_real_rate():
 
     budget = seen.get("conversation_budget_tokens")
     assert budget is not None
-    # The flat estimate is the one that overstates the room. Charged densely, the budget
-    # has to be at most what is left after the real cost of what is already there.
     assert budget <= prompt_budget(4096, 512) - estimate_messages_tokens_dense(dense_messages)
     assert estimate_messages_tokens_dense(dense_messages) > estimate_messages_tokens(dense_messages)
 
@@ -145,11 +127,7 @@ def test_the_dense_estimate_matches_the_flat_one_on_plain_ascii():
 
 
 def test_the_loop_budgets_its_search_against_this_models_context():
-    """Without it the clamp in the tool is skipped and top_k 8 lands unbudgeted.
-
-    Roughly 4K tokens appended into the current tool exchange, which the rolling window
-    protects and cannot evict.
-    """
+    """The loop must budget its search against this model's context, or top_k 8 appends unbudgeted."""
     from core.inference.context_window import estimate_messages_tokens, prompt_budget
 
     seen = {}
@@ -175,7 +153,6 @@ def test_the_loop_budgets_its_search_against_this_models_context():
 
     budget = seen.get("conversation_budget_tokens")
     assert budget is not None
-    # Everything already in the prompt is charged: the messages and the catalogue.
     assert budget <= prompt_budget(4096, 512) - estimate_messages_tokens(tools)
     assert budget < prompt_budget(4096, 512) - estimate_messages_tokens(MESSAGES)
 
@@ -227,43 +204,25 @@ def _budget_after_a_preamble(preamble, reported, stats_holder):
 
 
 def test_the_budget_charges_this_turns_own_output_in_tokens_not_bytes():
-    """A 4600-character English preamble costs about 1150 tokens, not 4600.
-
-    Charged by its byte length it takes the whole prompt budget of an 8K window, so the
-    search is refused with roughly 3.4K tokens still free, which is worse than the
-    estimate it replaces. The fixture is deliberately large: on a three-line chat the
-    two numbers differ by too little to fail an assertion.
-    """
+    """Charge the turn's own output in tokens, not bytes: 4600 English chars are about 1150 tokens."""
     from core.inference.context_window import retrieval_budget
 
     preamble = "the answer is somewhere in the earlier turns. " * 100
     budget = _budget_after_a_preamble(preamble, 3_067, {})
 
-    # Charged as its 4600 bytes this is nothing. Charged as tokens it is a real search.
     assert budget > 3_000
-    # And it IS charged: the room is smaller than it was before the turn wrote anything.
     assert budget < retrieval_budget(8192, 512, 3_067, reply_returns = True)
 
 
 def test_the_budget_spends_the_count_the_turn_reported():
-    """The reported prompt count is a tokenizer's, so it outranks the character estimate.
-
-    Six thousand tokens of a window this size leaves room for a small retrieval and no
-    more; the estimate alone would price the same thread at a third of that and hand out
-    room the next prompt does not have.
-    """
+    """The reported prompt count beats the character estimate, which would hand out room not there."""
     budget = _budget_after_a_preamble("thinking. ", 6_000, {})
 
     assert 0 < budget < 1_800
 
 
 def test_the_budget_estimates_when_no_usage_was_reported():
-    """A cancelled or unreported turn falls back to the estimate, never to zero.
-
-    Zero reaches the tool as "there is no room left in this context to search earlier
-    conversation", the same failure `_recall_top_k` carries a note about: it switches
-    recall off on exactly the tight windows that need it.
-    """
+    """Unreported turns fall back to the estimate, never zero, which would switch recall off entirely."""
     from core.inference.context_window import (
         estimate_messages_tokens_dense,
         retrieval_budget,
@@ -295,11 +254,7 @@ def test_the_budget_estimates_when_no_usage_was_reported():
 
 
 def test_the_orchestrator_gives_the_loop_a_holder_of_its_own(monkeypatch):
-    """One holder, one contract: the request's summed stats are not the loop's input.
-
-    `stats_holder` accumulates every turn for the reply's usage report, so reading it
-    here would mix turns. The loop gets the per-turn holder instead.
-    """
+    """The loop needs its own per-turn stats holder; the request-wide holder accumulates every turn."""
     import core.inference.safetensors_agentic as agentic
     from core.inference.orchestrator import InferenceOrchestrator
 

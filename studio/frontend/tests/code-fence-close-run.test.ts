@@ -6,23 +6,9 @@ import test from "node:test";
 
 import { getCodeFence } from "../src/features/chat/artifacts/html-fences.ts";
 
-/**
- * WHAT A CLOSING FENCE IS ALLOWED TO LOOK LIKE.
- *
- * CommonMark 0.31.2: the close uses the same character and "at least as many" of it as the opener,
- * so a model closing a fence whose body holds three backticks writes four. `{3}` matched that by
- * its LAST three and handed the surplus to `source`; a bare lazy `+?` is the other half of the rule
- * and accepts a one- or two-backtick run as a close, deleting real code. The opener is fixed at
- * three, so the close is `{3,}`.
- *
- * Each row names the answer `micromark` gives, so the expectation is CommonMark's and not this
- * file's.
- */
+/** CommonMark close: same character, at least as many as the opener, so `{3,}`. */
 
-/** The code text `micromark` produces for a whole-block fence, with its trailing break removed. */
 const commonmarkSource = (markdown: string): string => {
-  // Read out of `micromark(markdown)` directly: the runner has no HTML parser, and a second parser
-  // would be a second thing to disagree.
   const expected: Record<string, string> = {
     "```python\nx = 1\n```\n": "x = 1",
     "```python\nx = 1\n````\n": "x = 1",
@@ -75,10 +61,8 @@ test("every closing run a model writes yields the body CommonMark gives it", () 
 });
 
 test("a body's OWN trailing backticks survive", () => {
-  // A run the BODY owns is code, not a delimiter, at both fence lengths.
   assert.equal(getCodeFence("```\nfoo `\n```\n")?.source, "foo `");
   assert.equal(getCodeFence("```\nfoo ``\n```\n")?.source, "foo ``");
-  // Only the close's own run is eaten; anything shorter before it is the body's.
   assert.equal(
     getCodeFence("```\nfoo `````\n`````\n")?.source,
     "foo `````",
@@ -104,7 +88,6 @@ test("the language tag and the block-level shapes are unchanged", () => {
 });
 
 test("the close is at least three, not exactly three", () => {
-  // The regression in one row: `{3}` matched the last three of a four-backtick close.
   const four = getCodeFence("```python\nx = 1\n````\n");
   assert.equal(four?.source, "x = 1");
   assert.ok(
@@ -116,16 +99,12 @@ test("the close is at least three, not exactly three", () => {
 });
 
 test("a run with no line break before it does not close the fence", () => {
-  // A close needs a LINE BREAK before it unless the body is empty. Without one, a body ending in a
-  // run of backticks had that run eaten: `` ```\nfoo```` `` returned `foo` where CommonMark keeps
-  // `foo```` `. Such a block is not closed, so it must be declined and left to the streaming route.
   assert.equal(getCodeFence("```\nfoo````"), null);
   assert.equal(getCodeFence("```\nfoo```"), null);
   assert.equal(getCodeFence("```python\n````")?.source, "", "an empty fence still closes");
 });
 
 test("a run shorter than three does not close the fence", () => {
-  // A short run is code, so the block is still open and the collapse must decline it.
   for (const short of ["`", "``"]) {
     const markdown = `\`\`\`python\nx = 1\n${short}`;
     assert.equal(
@@ -139,7 +118,6 @@ test("a run shorter than three does not close the fence", () => {
     null,
     "two separate one-backtick lines are still not a close",
   );
-  // The same run one line higher is a body line, and must survive both a short and a long close.
   assert.equal(getCodeFence("```\nfoo `\n```\n")?.source, "foo `");
   assert.equal(getCodeFence("```\nfoo ``\n```\n")?.source, "foo ``");
 });

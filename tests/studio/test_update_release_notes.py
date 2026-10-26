@@ -1731,7 +1731,7 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
     assert top >= 14, f"the top gutter {top}px is inside the card shadow's 14px reach"
     expected = {
         "paddingTop": "STACK_SHADOW_GUTTER_TOP",
-        "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM",
+        "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER",
         "paddingLeft": "STACK_SHADOW_GUTTER_LEFT",
         "paddingRight": "STACK_CARD_INSET_RIGHT_PAST_PANEL",
     }
@@ -1739,6 +1739,10 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         r"const STACK_CARD_INSET_RIGHT_PAST_PANEL =\s*`calc\(\$\{STACK_CARD_INSET_RIGHT\}px \+ var\(",
         provider,
     ), "the rail's right padding is no longer the px card inset plus the panel width"
+    assert re.search(
+        r"const STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER =\s*`calc\(\$\{STACK_SHADOW_GUTTER_BOTTOM\}px \+ var\(",
+        provider,
+    ), "the rail's bottom padding is no longer the px gutter plus the composer clearance"
     openings = _rail_openings(provider)
     assert len(openings) == 2, f"expected the browser and desktop rails, found {len(openings)}"
     for tag in openings:
@@ -1891,7 +1895,7 @@ def test_link_resolver_reads_comments_before_fences():
     """A fence delimiter inside an HTML comment is not a fence: reading it as one
     left the fence open, so every link below went unresolved. The order matters
     both ways, so a comment opener inside a real fence is not a comment."""
-    links = LINKS.read_text(encoding="utf-8")
+    links = LINKS.read_text(encoding = "utf-8")
     # Fence state is read before comments are masked, the order the collapsed preview uses.
     assert "const fenceSource = inComment\n      ? null\n      : FENCE.exec(" in links
     # Masking happens only after the in-fence early return.
@@ -1906,11 +1910,11 @@ def test_preview_heading_and_quote_markers_follow_the_backend_rule():
     dropped. A blockquote marker takes at most three leading spaces, or an
     indented sample holding "> - sample output" sheds its indent into the
     summary."""
-    src = PREVIEW.read_text(encoding="utf-8")
+    src = PREVIEW.read_text(encoding = "utf-8")
     assert "const HEADING = /^#{1,6}(?:[ \\t]|$)/;" in src
     assert "const HEADING_LINE = /^ {0,3}#{1,6}(?:[ \\t]|$)/;" in src
     assert "const BLOCKQUOTE = /^ {0,3}>[ \\t]?/;" in src
-    backend = MODULE.read_text(encoding="utf-8")
+    backend = MODULE.read_text(encoding = "utf-8")
     assert "^ {0,3}(?P<hashes>#{1,6})(?:[ \\t]+(?P<title>.*?))?[ \\t]*$" in backend
 
 
@@ -1919,7 +1923,7 @@ def test_preview_collects_labels_only_from_real_definitions():
     so recording its label made toPlainText strip brackets the expanded view
     keeps. The pre-scan skips the same code the collector pass skips; a real
     definition takes at most three spaces, so the indent test cannot reject one."""
-    src = PREVIEW.read_text(encoding="utf-8")
+    src = PREVIEW.read_text(encoding = "utf-8")
     scan = src.index("const labels = new Set<string>();")
     collect = src.index("let deepFence: string | null = null;")
     prescan = " ".join(src[scan:collect].split())
@@ -1946,15 +1950,15 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
     the fixed update card rather than the scrolling download list. Only the
     shared-stack branch needs it; standalone is fixed and not a flex item."""
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
-        encoding="utf-8"
+        encoding = "utf-8"
     )
     assert 'positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end"' in panel
-    provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
     assert _capped_rails(provider) == stacks, "the cap this has to absorb"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def run_scanner(tmp_path_factory):
     """Run the frontend's markdown scanners under node.
 
@@ -1966,16 +1970,16 @@ def run_scanner(tmp_path_factory):
         pytest.skip("node is needed to run the TypeScript scanners")
     work = tmp_path_factory.mktemp("release-notes-scanners")
     for source in (PREVIEW, CODE_SPANS, LINKS, LIST_COLUMNS, INLINE_COMMENTS):
-        rewritten = _TS_ALIAS.sub(r'"./\1.ts"', source.read_text(encoding="utf-8"))
-        (work / source.name).write_text(rewritten, encoding="utf-8")
-    (work / "run.ts").write_text(_TS_RUNNER, encoding="utf-8")
+        rewritten = _TS_ALIAS.sub(r'"./\1.ts"', source.read_text(encoding = "utf-8"))
+        (work / source.name).write_text(rewritten, encoding = "utf-8")
+    (work / "run.ts").write_text(_TS_RUNNER, encoding = "utf-8")
 
     def run(kind: str, markdown: str):
         result = subprocess.run(
             [node, "--experimental-strip-types", "--no-warnings", str(work / "run.ts"), kind],
-            input=markdown,
-            capture_output=True,
-            text=True,
+            input = markdown,
+            capture_output = True,
+            text = True,
         )
         if result.returncode != 0:
             pytest.skip(f"node could not run the scanners: {result.stderr.strip()[:200]}")
@@ -2063,31 +2067,31 @@ def test_the_three_scanners_share_one_list_column_rule():
     """The parser and both frontend scanners must classify a line the same way;
     drifting on indentation is what put a paragraph link inside a code block.
     The frontend pair shares one module, ported from the backend's tracker."""
-    shared = LIST_COLUMNS.read_text(encoding="utf-8")
+    shared = LIST_COLUMNS.read_text(encoding = "utf-8")
     assert "export function openLists(" in shared
     assert "_open_lists" in shared, "the backend function this mirrors"
     for source in (PREVIEW, LINKS):
-        src = source.read_text(encoding="utf-8")
+        src = source.read_text(encoding = "utf-8")
         assert 'from "@/lib/markdown-list-columns"' in src
         assert "openLists(" in src
-    backend = MODULE.read_text(encoding="utf-8")
+    backend = MODULE.read_text(encoding = "utf-8")
     assert "_indent_width(visible) - column >= 4" in backend
     assert "indentWidth(structure) - column >= INDENTED_CODE_INDENT" in LINKS.read_text(
-        encoding="utf-8"
+        encoding = "utf-8"
     )
 
 
 def test_a_failed_fetch_keeps_retry_reachable():
     """A release with no notes is ready and a failed fetch is error; only the
     error is retryable, and rendering there would replace the Retry button."""
-    src = " ".join(PANEL.read_text(encoding="utf-8").split())
+    src = " ".join(PANEL.read_text(encoding = "utf-8").split())
     assert "const source = notes?.matched ? notes.markdown : null;" in src
     # Only NotesStatus renders retry, in the else of the markdown branch: an error has no markdown.
     assert "{markdown ? (" in src
     assert "retry={retry}" in src
 
     hook = " ".join(
-        (FRONTEND / "hooks" / "use-release-notes.ts").read_text(encoding="utf-8").split()
+        (FRONTEND / "hooks" / "use-release-notes.ts").read_text(encoding = "utf-8").split()
     )
     assert (
         "const failed = !next || (!next.matched && next.error !== null);" in hook
@@ -2453,7 +2457,7 @@ def test_a_comment_written_as_an_item_first_content_is_a_block(notes_module, run
     ],
 )
 def test_real_release_bodies_keep_their_announcement(notes_module, tag, kept, dropped):
-    body = (BODIES / f"{tag}.md").read_text(encoding="utf-8")
+    body = (BODIES / f"{tag}.md").read_text(encoding = "utf-8")
     stripped = notes_module.strip_release_body(body)
     for text in kept:
         assert text in stripped, f"{tag} lost {text!r}"
@@ -2569,7 +2573,7 @@ def test_a_paragraph_install_block_does_not_swallow_deeper_headings(notes_module
     assert stripped == "Intro.\n\n###### Deeply nested announcement\n\n- a real change"
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def github_lockout(notes_module):
     from utils.prebuilt import freshness_flow
 
@@ -2596,17 +2600,17 @@ def test_where_the_release_notes_token_may_travel(
 
     seen = []
 
-    def capture(request, timeout=None):
+    def capture(request, timeout = None):
         seen.append(request)
         raise urllib.error.URLError("offline")
 
     monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
     for name in ("GH_TOKEN", "GITHUB_TOKEN"):
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name, raising = False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     if url_override is None:
-        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
     else:
         monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
     notes_module._fetch_latest_release()
@@ -2640,14 +2644,14 @@ def test_which_release_note_refusals_reach_the_shared_lockout(
     import urllib.error
 
     if url_override is None:
-        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
     else:
         monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
     headers = email.message.Message()
     headers["X-RateLimit-Remaining"] = remaining
     headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
 
-    def refuse(request, timeout=None):
+    def refuse(request, timeout = None):
         raise urllib.error.HTTPError(request.full_url, status, "refused", headers, io.BytesIO(body))
 
     monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
@@ -2663,16 +2667,16 @@ def test_the_shared_lockout_parks_only_the_github_api(
     import urllib.error
 
     if url_override is None:
-        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
     else:
         monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
     github_lockout.hold_github_api(60)
     calls = []
 
-    def capture(request, timeout=None):
+    def capture(request, timeout = None):
         calls.append(request.full_url)
         raise urllib.error.URLError("offline")
 
     monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
-    notes_module.get_latest_release(refresh=True)
+    notes_module.get_latest_release(refresh = True)
     assert calls == ([] if url_override is None else [url_override])

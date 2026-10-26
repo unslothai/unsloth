@@ -10,9 +10,7 @@ import { SpeechToTextIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useState } from "react";
 import { type AudioGalleryClip, fetchAudioBlob } from "../api";
-import { audioCppModelFor, audioCppWorkflowsFor } from "../audio-cpp-catalog";
 import { EDIT_SOURCE_MAX_SECONDS } from "../audio-run-request";
-import { macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { ABCompare } from "../components/ab-compare";
 import {
   AudioHistoryProvider,
@@ -30,38 +28,6 @@ import { useAudioEditStore } from "../stores/audio-edit-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
 
-const EDIT_MODEL_ORDER = [
-  "DotTTS-Edit-GGUF",
-  "Vevo2-GGUF",
-  "FireRedAudio-GGUF",
-];
-
-function editRank(id: string): number {
-  const index = EDIT_MODEL_ORDER.findIndex((name) => id.endsWith(`/${name}`));
-  return index === -1 ? EDIT_MODEL_ORDER.length : index;
-}
-
-export function editPageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models
-    .filter((model) => {
-      const entry = audioCppModelFor(model.id);
-      return (
-        entry !== null &&
-        audioCppWorkflowsFor(entry).includes("edit") &&
-        (!isMac || macTtsCatalogChoiceIsRunnable(model.id))
-      );
-    })
-    .map((model, index) => ({ model, index }))
-    .sort(
-      (a, b) =>
-        editRank(a.model.id) - editRank(b.model.id) || a.index - b.index,
-    )
-    .map(({ model }) => model);
-}
-
 type RailProps = Omit<
   ComponentProps<typeof TtsRailFields>,
   | "musicGeneration"
@@ -72,7 +38,6 @@ type RailProps = Omit<
   | "claimedOptions"
 >;
 
-/** Selects ②'s last word so typing replaces it. */
 function selectLastWord(field: HTMLTextAreaElement | null) {
   if (!field) return;
   const match = /([\p{L}\p{N}'’-]+)[^\p{L}\p{N}]*$/u.exec(field.value);

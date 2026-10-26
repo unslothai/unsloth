@@ -5,6 +5,7 @@
 
 import importlib.util
 import json
+import os
 import sys
 import zipfile
 from pathlib import Path
@@ -125,6 +126,116 @@ def test_driver_cuda_version_reads_both_spellings(monkeypatch, smi, expected):
     monkeypatch.setattr(M.shutil, "which", lambda name: "nvidia-smi")
     monkeypatch.setattr(M.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": smi})())
     assert M.nvidia_driver_cuda_version() == expected
+
+
+def test_driver_cuda_version_is_read_once_per_binary(monkeypatch, tmp_path):
+    # detect_accelerator and the release pick both ask; nvidia-smi runs once.
+    exe = tmp_path / "nvidia-smi"
+    exe.write_text("")
+    calls = []
+
+    def run(*a, **k):
+        calls.append(a)
+        return type("R", (), {"stdout": "CUDA Version: 12.6"})()
+
+    monkeypatch.setattr(M.shutil, "which", lambda name: str(exe))
+    monkeypatch.setattr(M.subprocess, "run", run)
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert len(calls) == 1
+    # A driver update replaces the binary: asked again.
+    os.utime(exe, ns = (1, 1))
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert len(calls) == 2
+
+
+def test_driver_cuda_version_keeps_no_failed_answer(monkeypatch, tmp_path):
+    # A driver that did not answer can recover without a restart (in-app update): ask again.
+    exe = tmp_path / "nvidia-smi"
+    exe.write_text("")
+    outputs = [
+        "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver",
+        "CUDA Version: 12.8",
+    ]
+    monkeypatch.setattr(M.shutil, "which", lambda name: str(exe))
+    monkeypatch.setattr(
+        M.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": outputs.pop(0)})()
+    )
+    assert M.nvidia_driver_cuda_version() is None
+    assert M.nvidia_driver_cuda_version() == (12, 8)
+
+
+def _fake_nvidia_smi(
+    monkeypatch,
+    caps,
+    returncode = 0,
+    amd = False,
+):
+    def run(cmd, *a, **k):
+        if any("compute_cap" in part for part in cmd):
+            if isinstance(caps, Exception):
+                raise caps
+            return type("R", (), {"stdout": caps, "returncode": returncode})()
+        return type("R", (), {"stdout": "CUDA Version: 12.6", "returncode": 0})()
+
+    monkeypatch.setattr(M.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(M.shutil, "which", lambda name: "nvidia-smi")
+    monkeypatch.setattr(M.subprocess, "run", run)
+    monkeypatch.setattr(M, "_amd_gpu_present", lambda: amd)
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_REPO", raising = False)
+
+
+@pytest.mark.parametrize(
+    "caps,expected",
+    [
+        ("6.1\n", "cpu"),  # GTX 10xx / P40: no kernels in the sm_75+ bundles
+        ("7.0\n7.0\n", "cpu"),  # V100 x2
+        ("6.0\n", "cpu"),  # P100
+    ],
+)
+def test_pre_turing_nvidia_does_not_get_the_cuda_bundle(monkeypatch, caps, expected):
+    _fake_nvidia_smi(monkeypatch, caps)
+    assert M.detect_accelerator() == expected
+
+
+def test_pre_turing_nvidia_beside_amd_still_skips_vulkan(monkeypatch):
+    _fake_nvidia_smi(monkeypatch, "6.1\n", amd = True)
+    assert M.detect_accelerator() == "cpu"
+
+
+@pytest.mark.parametrize(
+    "caps",
+    [
+        "7.5\n",  # T4
+        "8.6\n",
+        "12.0\n",
+        "6.1\n8.9\n",  # mixed: one card has kernels
+        "",  # no rows
+        "[N/A]\n",  # old driver
+        "6.1\n[N/A]\n",  # one unreadable card: unknown
+        'Field "compute_cap" is not a valid field to query.\n',
+    ],
+)
+def test_sm75_or_unreadable_compute_cap_keeps_cuda(monkeypatch, caps):
+    _fake_nvidia_smi(monkeypatch, caps)
+    assert M.detect_accelerator() == "cuda"
+
+
+@pytest.mark.parametrize("repo", ["0xShug0/audio.cpp", "someone/audio.cpp-fork"])
+def test_custom_audio_repo_keeps_cuda_on_pre_turing(monkeypatch, repo):
+    """The sm_75 floor is the default fork's; a custom publisher may ship Pascal / Volta kernels."""
+    _fake_nvidia_smi(monkeypatch, "6.1\n")
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_REPO", repo)
+    assert M.detect_accelerator() == "cuda"
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_REPO", "UnslothAI/Audio.cpp")
+    assert M.detect_accelerator() == "cpu"
+
+
+def test_a_failing_compute_cap_query_keeps_cuda(monkeypatch):
+    _fake_nvidia_smi(monkeypatch, "6.1\n", returncode = 6)
+    assert M.detect_accelerator() == "cuda"
+    _fake_nvidia_smi(monkeypatch, M.subprocess.TimeoutExpired("nvidia-smi", 15))
+    assert M.detect_accelerator() == "cuda"
 
 
 # Install flow. Archives are real zips in tmp_path; the download copies them, the staged-server check
@@ -253,6 +364,8 @@ def _stub_install_io(monkeypatch, version = "audio.cpp test\nbackends: cpu"):
     monkeypatch.setattr(M, "smoke_test_staged_server", lambda server, **kw: version)
     monkeypatch.setattr(M, "detect_accelerator", lambda: "cpu")
     monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: True)
+    # The spec fetch is offline here; the model_specs tests below put the real one back.
+    monkeypatch.setattr(M, "_fetch_model_specs", lambda *a: False)
 
 
 def _install(
@@ -1855,6 +1968,7 @@ def _fake_host(
     )
     monkeypatch.setattr(M.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if smi else None)
     monkeypatch.setattr(M, "nvidia_driver_cuda_version", lambda: cuda)
+    monkeypatch.setattr(M, "_nvidia_has_prebuilt_arch", lambda: None)
     real_listdir = M.os.listdir
     monkeypatch.setattr(
         M.os,
@@ -2029,3 +2143,291 @@ def test_explicit_vulkan_is_not_checked_for_a_device(monkeypatch, tmp_path):
     )
     assert checked == [("vulkan", False)]
     assert _record(tmp_path)[:3] == (VK_ZIP, "vulkan", "vulkan")
+
+
+# model_specs: fetched at the manifest's source_commit, verified per git blob sha, all or nothing.
+
+_REAL_FETCH_MODEL_SPECS = M._fetch_model_specs
+_SPEC_COMMIT = "0097d365a00b52a6991ad7618f0a04e8d2935e47"
+
+
+def _git_sha(data):
+    import hashlib
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def _spec_repo(
+    monkeypatch,
+    files = None,
+    *,
+    tree = None,
+    fail = None,
+    bad_sha = None,
+):
+    """Serve ``files`` ({name: bytes}) through the tree/blob seams; returns the calls made."""
+    if files is None:
+        files = {
+            "chatterbox.json": b'{"family": "chatterbox"}',
+            "seed_vc.json": b'{"family": "seed_vc"}',
+        }
+    if tree is None:
+        tree = {
+            "truncated": False,
+            "tree": [
+                {"path": n, "type": "blob", "sha": _git_sha(d), "size": len(d)}
+                for n, d in files.items()
+            ],
+        }
+    calls = []
+
+    def spec_tree(repo, commit):
+        calls.append(("tree", repo, commit))
+        return tree
+
+    def spec_blob(repo, commit, name):
+        calls.append(("blob", repo, commit, name))
+        if name == fail:
+            raise OSError(f"HTTP Error 404: {name}")
+        return b'{"tampered": true}' if name == bad_sha else files[name]
+
+    monkeypatch.setattr(M, "_fetch_model_specs", _REAL_FETCH_MODEL_SPECS)
+    monkeypatch.setattr(M, "_spec_tree", spec_tree)
+    monkeypatch.setattr(M, "_spec_blob", spec_blob)
+    return calls
+
+
+def _specs_release(
+    monkeypatch,
+    tmp_path,
+    server_path = "bin/audiocpp_server.exe",
+):
+    release = dict(_release(tmp_path, CPU_ZIP, server_path = server_path), source_commit = _SPEC_COMMIT)
+    monkeypatch.setattr(M, "resolve", lambda accel, token, tag = None: (FORK, release, CPU_ZIP))
+    _stub_install_io(monkeypatch)
+
+
+def _install_with_specs(
+    monkeypatch,
+    tmp_path,
+    server_path = "bin/audiocpp_server.exe",
+    **specs,
+):
+    _specs_release(monkeypatch, tmp_path, server_path)
+    calls = _spec_repo(monkeypatch, **specs)
+    server = M.install(install_dir = tmp_path / "audio.cpp", accelerator = "cpu")
+    return server, calls
+
+
+def test_release_index_carries_the_manifest_source_commit(monkeypatch):
+    _download_host(monkeypatch)
+    assert M._release_index(FORK, _V091)["source_commit"] == _V091_COMMIT
+
+
+def test_install_fetches_model_specs_at_the_source_commit(monkeypatch, tmp_path, capsys):
+    server, calls = _install_with_specs(monkeypatch, tmp_path)
+    root = tmp_path / "audio.cpp"
+    specs = server.parent / "model_specs"
+    # Windows bundles keep the server under bin/; the folder sits beside it.
+    assert server.parent == root / "bin"
+    assert sorted(p.name for p in specs.iterdir()) == ["chatterbox.json", "seed_vc.json"]
+    assert json.loads((specs / "seed_vc.json").read_text()) == {"family": "seed_vc"}
+    assert json.loads((root / M.INSTALL_RECORD).read_text())["source_commit"] == _SPEC_COMMIT
+    # By commit, never the release tag (the fork tags point at a packaging commit).
+    assert calls[0] == ("tree", FORK, _SPEC_COMMIT)
+    assert {c[2] for c in calls} == {_SPEC_COMMIT}
+    assert "audio.cpp: 2 model specs beside the server" in capsys.readouterr().out
+    assert not list(tmp_path.rglob(".model_specs-*"))
+
+
+def test_a_flat_bundle_gets_model_specs_beside_its_server(monkeypatch, tmp_path):
+    server, _ = _install_with_specs(monkeypatch, tmp_path, server_path = "audiocpp_server.exe")
+    assert server.parent == tmp_path / "audio.cpp"
+    assert (server.parent / "model_specs" / "chatterbox.json").is_file()
+
+
+_UNSAFE_TREE = {
+    "truncated": False,
+    "tree": [
+        {"path": "../x.json", "type": "blob", "sha": "0" * 40},
+        {"path": "README.md", "type": "blob", "sha": "0" * 40},
+        {"path": "nested.json", "type": "tree", "sha": "0" * 40},
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "specs",
+    [
+        {"bad_sha": "seed_vc.json"},
+        {"fail": "seed_vc.json"},
+        {
+            "tree": {
+                "truncated": True,
+                "tree": [{"path": "a.json", "type": "blob", "sha": "0" * 40}],
+            }
+        },
+        {"tree": {"truncated": False, "tree": []}},
+        {"tree": _UNSAFE_TREE},
+        {"files": {"list.json": b"[1, 2]"}},
+    ],
+    ids = ["sha-mismatch", "blob-404", "truncated", "empty", "unsafe-names", "not-an-object"],
+)
+def test_a_failed_spec_fetch_leaves_no_folder_and_installs_anyway(
+    monkeypatch, tmp_path, capsys, specs
+):
+    server, calls = _install_with_specs(monkeypatch, tmp_path, **specs)
+    assert server.is_file()
+    assert not list(tmp_path.rglob("model_specs")) and not list(tmp_path.rglob(".model_specs-*"))
+    assert "model specs at 0097d365a00b not fetched" in capsys.readouterr().err
+    assert "source_commit" in json.loads((tmp_path / "audio.cpp" / M.INSTALL_RECORD).read_text())
+    # Unsafe or non-blob entries are never requested.
+    assert not any(
+        c[0] == "blob" and c[3] in ("../x.json", "README.md", "nested.json") for c in calls
+    )
+
+
+def test_unsafe_names_are_skipped_beside_good_ones(monkeypatch, tmp_path):
+    good = b'{"family": "ace_step"}'
+    tree = {
+        "truncated": False,
+        "tree": [
+            *_UNSAFE_TREE["tree"],
+            {"path": "ace_step.json", "type": "blob", "sha": _git_sha(good)},
+        ],
+    }
+    dest = tmp_path / "bin"
+    dest.mkdir()
+    calls = _spec_repo(monkeypatch, {"ace_step.json": good}, tree = tree)
+    assert M._fetch_model_specs(FORK, _SPEC_COMMIT, dest) is True
+    assert [p.name for p in (dest / "model_specs").iterdir()] == ["ace_step.json"]
+    assert [c[3] for c in calls if c[0] == "blob"] == ["ace_step.json"]
+    assert sorted(p.name for p in tmp_path.rglob("*")) == ["ace_step.json", "bin", "model_specs"]
+
+
+def test_an_offline_spec_fetch_still_installs(monkeypatch, tmp_path):
+    asked = []
+
+    class _Offline:
+        def open(
+            self,
+            request,
+            timeout = None,
+        ):
+            asked.append(request.full_url)
+            raise M.urllib.error.URLError("offline")
+
+    _specs_release(monkeypatch, tmp_path)
+    monkeypatch.setattr(M, "_fetch_model_specs", _REAL_FETCH_MODEL_SPECS)
+    monkeypatch.setattr(M.core, "_URL_OPENER", _Offline())
+    server = M.install(install_dir = tmp_path / "audio.cpp", accelerator = "cpu")
+    assert server.is_file() and not (server.parent / "model_specs").exists()
+    # The real seams ask one trees URL, once, by commit; no retry and no blob.
+    assert asked == [f"https://api.github.com/repos/{FORK}/git/trees/{_SPEC_COMMIT}:model_specs"]
+    assert not list(tmp_path.rglob(".model_specs-*"))
+
+
+@pytest.mark.parametrize("commit", [None, "", FORK_TAG, "0097D365", "abc", "0097d365/../x"])
+def test_no_valid_commit_means_no_network(monkeypatch, tmp_path, commit):
+    calls = _spec_repo(monkeypatch)
+    assert M._fetch_model_specs(FORK, commit, tmp_path) is False
+    assert calls == [] and not (tmp_path / "model_specs").exists()
+
+
+def test_an_existing_specs_folder_is_kept_without_a_fetch(monkeypatch, tmp_path):
+    (tmp_path / "model_specs").mkdir()
+    calls = _spec_repo(monkeypatch)
+    assert M._fetch_model_specs(FORK, _SPEC_COMMIT, tmp_path) is True
+    assert calls == []
+
+
+# #14052: a tree an elevated run staged under mkdtemp's ACL is unreadable to the same account unelevated
+
+
+def test_windows_staging_dirs_inherit_the_parent_acl(monkeypatch, tmp_path):
+    # mkdtemp's 0o700 is a protected owner-only ACL on Windows, which a tree renamed out of it keeps.
+    made = []
+    real_mkdir = M.core.os.mkdir
+
+    def mkdir(path, *args, **kwargs):
+        made.append((Path(path), args, kwargs))
+        real_mkdir(path)
+
+    monkeypatch.setattr(M.core.sys, "platform", "win32")
+    monkeypatch.setattr(M.core.os, "mkdir", mkdir)
+    monkeypatch.setattr(M.core.tempfile, "mkdtemp", lambda *a, **k: pytest.fail("mkdtemp used"))
+    path = M.core.make_staging_dir(tmp_path, ".audio.cpp-staging-")
+    assert path.is_dir() and path.parent == tmp_path
+    assert path.name.startswith(".audio.cpp-staging-")
+    assert made == [(path, (), {})]
+
+
+def _unreadable(path):
+    # Write but no search: nothing inside can be stat'ed.
+    path.chmod(0o200)
+    if M.os.access(path, M.os.X_OK):
+        path.chmod(0o755)
+        pytest.skip("chmod denies nothing to root or on Windows")
+
+
+def test_an_unreadable_install_names_the_repair_instead_of_in_use(monkeypatch, tmp_path, capsys):
+    release = _release(tmp_path, CPU_ZIP)
+    _install(monkeypatch, tmp_path, release)
+    root = tmp_path / "audio.cpp"
+    downloaded = []
+    monkeypatch.setattr(M, "_download", lambda *a, **k: downloaded.append(a))
+    _unreadable(root)
+    try:
+        assert M.main(["--install-dir", str(root), "--accelerator", "cpu"]) == M.EXIT_FAILED
+        assert root.is_dir() and not list(tmp_path.glob("audio.cpp.old-*"))
+    finally:
+        root.chmod(0o755)
+    err = capsys.readouterr().err
+    assert "cannot be read by this account" in err and f"sudo rm -rf '{root}'" in err
+    assert "in use" not in err and downloaded == []
+    assert (root / M.OWNERSHIP_MARKER).is_file()
+
+
+def test_the_unreadable_repair_on_windows_is_powershell(monkeypatch, tmp_path):
+    root = tmp_path / "audio.cpp"
+    root.mkdir()
+    monkeypatch.setattr(M, "_is_unreadable", lambda target: True)
+    monkeypatch.setattr(M.sys, "platform", "win32")
+    with pytest.raises(RuntimeError, match = "elevated PowerShell with Remove-Item -Recurse -Force"):
+        M.install(install_dir = root, accelerator = "cpu")
+
+
+def test_the_sweep_skips_a_retired_tree_it_cannot_read(monkeypatch, tmp_path):
+    release = _release(tmp_path, CPU_ZIP)
+    _install(monkeypatch, tmp_path, release)
+    stuck = tmp_path / "audio.cpp.old-123"
+    stuck.mkdir()
+    (stuck / M.OWNERSHIP_MARKER).touch()
+    _unreadable(stuck)
+    try:
+        server = _install(monkeypatch, tmp_path, release, force = True)
+        assert server.is_file() and stuck.is_dir()
+    finally:
+        stuck.chmod(0o755)
+
+
+def test_driver_cuda_version_is_asked_again_after_the_memo_window(monkeypatch, tmp_path):
+    # A later install in the same Studio process reads the driver again.
+    exe = tmp_path / "nvidia-smi"
+    exe.write_text("")
+    calls = []
+    now = [1000.0]
+
+    def run(*a, **k):
+        calls.append(a)
+        return type("R", (), {"stdout": "CUDA Version: 12.6"})()
+
+    monkeypatch.setattr(M.shutil, "which", lambda name: str(exe))
+    monkeypatch.setattr(M.subprocess, "run", run)
+    monkeypatch.setattr(M.time, "monotonic", lambda: now[0])
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    now[0] += M._DRIVER_CUDA_MEMO_TTL_S - 1
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert len(calls) == 1
+    now[0] += 2
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert len(calls) == 2

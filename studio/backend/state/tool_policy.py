@@ -45,16 +45,34 @@ def require_tool_access(
     *,
     bypass_permissions: bool = False,
     disable_sandbox: bool = False,
+    sandbox_level: Optional[str] = None,
 ) -> None:
     if permission_mode != "full" and not bypass_permissions and not disable_sandbox:
+        if sandbox_level == "low":
+            from auth.policy import api_full_access_refused
+            if api_full_access_refused():
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Sandbox Low (sandbox_level 'low') is off for API keys: Python and Terminal "
+                    "run in the OS sandbox. Use sandbox_level 'high', or set "
+                    "UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 on the server to allow it.",
+                )
         return
-    from auth.policy import full_access_permitted
+    from auth.policy import api_full_access_refused, full_access_permitted
     from fastapi import HTTPException
 
     if not full_access_permitted():
         raise HTTPException(
             status_code = 400,
             detail = "Full access is only available to the installation owner.",
+        )
+    if api_full_access_refused():
+        raise HTTPException(
+            status_code = 400,
+            detail = "Full access (bypass_permissions, permission_mode 'full', disable_sandbox) is off for "
+            "API keys: tools run in the sandbox. Use permission_mode 'auto', 'ask' or 'off', or set "
+            "UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 on the server to allow it.",
         )
 
 
@@ -92,15 +110,20 @@ def runs_without_os_sandbox(name: str, sandbox_level: Optional[str]) -> bool:
     return name in OS_SANDBOXED_TOOLS and sandbox_level == "low"
 
 
-def off_mode_still_gates(name: str, sandbox_level: Optional[str] = None) -> bool:
+def off_mode_still_gates(
+    name: str,
+    sandbox_level: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> bool:
     """Whether "off" must still ask for this tool. Cached only; unknown counts as not isolated."""
     if name not in OS_SANDBOXED_TOOLS:
         return False
     if runs_without_os_sandbox(name, sandbox_level):
         return True
     from core.inference.os_sandbox import cached_tool_isolation
+    from core.inference.tools import workdir_scan_overran
 
-    return cached_tool_isolation(name) is not True
+    return cached_tool_isolation(name) is not True or workdir_scan_overran(session_id)
 
 
 def tool_call_may_prompt(
@@ -110,12 +133,13 @@ def tool_call_may_prompt(
     permission_mode: Optional[str],
     name: str,
     sandbox_level: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> bool:
     """Before the arguments are known: whether a call to ``name`` could stop and ask."""
     if not confirm_tool_calls or bypass_permissions:
         return False
     if permission_mode == "off":
-        return off_mode_still_gates(name, sandbox_level)
+        return off_mode_still_gates(name, sandbox_level, session_id)
     if permission_mode == "auto":
         from core.inference.tools import is_always_safe_tool
         return not is_always_safe_tool(name)
@@ -132,6 +156,7 @@ def needs_tool_confirmation(
     is_high_risk = None,
     never_needs = None,
     sandbox_level: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> bool:
     if is_high_risk is None or never_needs is None:
         from core.inference import tools
@@ -140,7 +165,7 @@ def needs_tool_confirmation(
     if not confirm_tool_calls or bypass_permissions or never_needs(name):
         return False
     if permission_mode == "off":
-        return off_mode_still_gates(name, sandbox_level) and _classify(
+        return off_mode_still_gates(name, sandbox_level, session_id) and _classify(
             is_high_risk, name, arguments, sandbox_level
         )
     if permission_mode == "auto":
@@ -166,10 +191,7 @@ def requires_os_isolation(
     is_high_risk = None,
     sandbox_level: Optional[str] = None,
 ) -> bool:
-    """Whether this call must launch with tool_execution_mode="required" (no software fallback).
-
-    ``prompted`` is needs_tool_confirmation's decision; re-reading the cache here could race a refresh.
-    """
+    """Whether the call must launch with tool_execution_mode required (no software fallback); prompted is passed in to avoid a cache race."""
     if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
         return False
     if name not in OS_SANDBOXED_TOOLS or runs_without_os_sandbox(name, sandbox_level):
@@ -180,9 +202,15 @@ def requires_os_isolation(
 
 
 def account_tool_stream(stream):
-    from utils.account_context import current_account, is_owner_context, run_as
+    from utils.account_context import (
+        current_account,
+        is_owner_context,
+        run_as,
+        via_api_key_context,
+    )
 
-    if is_owner_context():
+    # An owner API-key request is rebound too: the tool thread must still know it came from an API key.
+    if is_owner_context() and not via_api_key_context():
         return stream
     account = current_account()
 

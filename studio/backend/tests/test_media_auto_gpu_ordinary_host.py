@@ -177,6 +177,8 @@ def test_route_auto_still_ranks_on_a_multi_gpu_cuda_host(monkeypatch):
     from routes import inference as routes
 
     _ordinary(monkeypatch, visible = (0, 1))
+    # The event-loop gate reads live detection state; defer to the worker gate _ordinary stubs.
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible_cached", lambda: None)
     targets = _counting_target(monkeypatch, dd)
     ranks = _counting_rank(monkeypatch)
 
@@ -398,6 +400,11 @@ def test_catalog_refresh_ranks_once_on_mixed_or_unknown_cards(monkeypatch, ident
     ],
 )
 def test_cached_gate_defers_anything_that_could_probe(monkeypatch, device, count, mask, cached):
+    import threading
+
+    settled = threading.Event()
+    settled.set()
+    monkeypatch.setattr(hw, "DETECTION_COMPLETE", settled)
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "DEVICE", device)
     monkeypatch.setattr(hw, "_physical_gpu_count", count)
@@ -496,10 +503,15 @@ def test_mig_listing_parses_slices():
     from utils.hardware import nvidia
 
     out = "GPU 0: A100 (UUID: GPU-a)\n  MIG 3g.40gb Device 0: (UUID: MIG-x)\nGPU 1: A100 (UUID: GPU-b)\n"
-    with _patch.object(
-        nvidia.gpu_query,
-        "run_nvidia_smi",
-        lambda argv, **_k: types.SimpleNamespace(returncode = 0, stdout = out),
+    with (
+        _patch.object(
+            nvidia.gpu_query,
+            "run_nvidia_smi",
+            lambda argv, **_k: types.SimpleNamespace(returncode = 0, stdout = out),
+        ),
+        _patch.object(nvidia.gpu_query, "enabled", lambda: False),
+        _patch.object(nvidia, "_mig_entry", None),
+        _patch.object(nvidia, "get_mig_mode_gpu_indices_or_none", lambda: set()),
     ):
         assert hw._nvidia_mig_gpu_indices_or_none() == {0}
 

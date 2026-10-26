@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Wiring guard for the plan-without-action ``nudge_tool_calls`` policy.
-
-The request flag is explicit at every boundary. ``None`` follows the shared
-process default from ``passthrough_healing.nudge_enabled`` (off unless
-``UNSLOTH_TOOL_CALL_NUDGE=1``), while Unsloth may opt in by sending ``True``.
-
-Mechanism (verified here without loading a model):
-
-  * the GGUF loop and external Unsloth loop use the same normalizer;
-  * the external route forwards the request flag into ``ToolLoopPolicy``;
-  * the API request models default the flag to ``None`` (opt-in / off);
-  * the Unsloth-facing routes forward the request's flag;
-  * the frontend sends the user setting locally and an explicit ``false`` externally.
-"""
+"""nudge_tool_calls of None follows nudge_enabled, off unless UNSLOTH_TOOL_CALL_NUDGE=1."""
 
 import inspect
 import pathlib
@@ -37,11 +24,7 @@ _CHAT_ADAPTER_SOURCE = (
 )
 
 try:
-    # core.inference.inference imports unsloth at module scope, which requires
-    # unsloth_zoo. The dependency-light backend CI matrix job does not install
-    # it, so the safetensors InferenceBackend is folded into the checks below
-    # only when the unsloth stack is importable (local runs / full CI); the
-    # other entry points are always checked.
+    # InferenceBackend needs unsloth_zoo, absent from the light CI job; checked only if importable.
     from core.inference.inference import InferenceBackend
 except ImportError:
     InferenceBackend = None
@@ -60,18 +43,16 @@ def test_backends_accept_the_flag():
         InferenceOrchestrator.generate_chat_completion_with_tools,
         LlamaCppBackend.generate_chat_completion_with_tools,
     ]
-    if InferenceBackend is not None:  # safetensors path; needs the unsloth stack
+    if InferenceBackend is not None:
         methods.append(InferenceBackend.generate_chat_completion_with_tools)
     for method in methods:
         assert "nudge_tool_calls" in _params(method), method.__qualname__
 
 
 def test_delegating_backends_forward_the_flag_to_the_shared_loop():
-    # safetensors (in-process transformers) and MLX (parent-process orchestrator)
-    # both delegate to run_safetensors_tool_loop; GGUF runs its own in-file loop
-    # and consumes the flag directly (asserted separately by the gate test).
+    # safetensors and MLX delegate to run_safetensors_tool_loop; GGUF has its own loop.
     methods = [InferenceOrchestrator.generate_chat_completion_with_tools]
-    if InferenceBackend is not None:  # safetensors path; needs the unsloth stack
+    if InferenceBackend is not None:
         methods.append(InferenceBackend.generate_chat_completion_with_tools)
     for method in methods:
         src = inspect.getsource(method)
@@ -148,3 +129,35 @@ def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
     local_src = src.replace(external_body, "")
     assert "nudge_tool_calls: runtime.nudgeToolCalls" in local_src
     assert "run_tools_locally: true" not in local_src
+
+
+def test_safetensors_loop_runs_identical_generate_image_calls_in_one_turn():
+    # Two identical renders are two images; an identical web_search is still deduplicated.
+    ran = []
+    turns = iter(
+        [
+            '<tool_call>{"name": "generate_image", "arguments": {"prompt": "x"}}</tool_call>' * 2
+            + '<tool_call>{"name": "web_search", "arguments": {"query": "q"}}</tool_call>' * 2,
+            "done",
+        ]
+    )
+
+    def single_turn(_messages):
+        for turn in turns:
+            yield turn
+            return
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "two images"}],
+            tools = [
+                {"type": "function", "function": {"name": "generate_image"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            execute_tool = lambda name, arguments, **_k: ran.append(name) or "OK",
+            session_id = "s",
+            confirm_tool_calls = False,
+        )
+    )
+    assert ran == ["generate_image", "generate_image", "web_search"]

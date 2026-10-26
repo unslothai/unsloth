@@ -42,7 +42,6 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
-  PlayIcon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -68,6 +67,7 @@ import {
 } from "../lib/decision-model-labels";
 import { DecisionTryDialog } from "./decision-try-dialog";
 import { SettingsRow } from "./settings-row";
+import { PlayIcon } from "lucide-react";
 
 const DOWNLOAD_SCOPE = "systemone";
 const DOCS_URL = "https://unsloth.ai/docs/models/decision-laya";
@@ -263,7 +263,7 @@ export function DecisionApiSection(): ReactElement | null {
     setBusy(true);
     setError(null);
     try {
-      // Offer the download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
+      // Offer the download on the switch so a first API call does not wait on a 700 MB transfer.
       const nextEnabled = patch.enabled ?? settings?.enabled;
       const nextModel = patch.model ?? settings?.model;
       const nextBackend = patch.backend ?? backend;
@@ -349,7 +349,7 @@ export function DecisionApiSection(): ReactElement | null {
   const header = (
     <>
       <div className="flex items-start gap-3 bg-muted/30 p-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+        <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
           <HugeiconsIcon
             icon={TaskDone01Icon}
             className="size-4 text-foreground"
@@ -366,7 +366,7 @@ export function DecisionApiSection(): ReactElement | null {
               target="_blank"
               rel="noreferrer"
               title={t("settings.apiKeys.decisionApi.docsLabel")}
-              className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {t("settings.apiKeys.decisionApi.docs")}
               <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -386,8 +386,7 @@ export function DecisionApiSection(): ReactElement | null {
                   disabled={!enabled}
                   onClick={() => setTryOpen(true)}
                 >
-                  <HugeiconsIcon
-                    icon={PlayIcon}
+                  <PlayIcon
                     strokeWidth={2}
                     className="size-3.5"
                   />
@@ -416,7 +415,7 @@ export function DecisionApiSection(): ReactElement | null {
     return error ? (
       <section
         data-settings-label={t("settings.apiKeys.decisionApi.title")}
-        className="overflow-hidden rounded-lg border border-border/70"
+        className="overflow-hidden rounded-xl border border-border/70"
       >
         {header}
       </section>
@@ -491,7 +490,7 @@ export function DecisionApiSection(): ReactElement | null {
     <section
       ref={sectionRef}
       data-settings-label={t("settings.apiKeys.decisionApi.title")}
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       {header}
 
@@ -558,7 +557,7 @@ export function DecisionApiSection(): ReactElement | null {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
+                className="shrink-0 text-xs"
                 disabled={busy || downloading}
                 onClick={() => plan && void startDownload(plan)}
               >
@@ -569,7 +568,7 @@ export function DecisionApiSection(): ReactElement | null {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
+                className="shrink-0 text-xs"
                 disabled={busy}
                 onClick={() => void unload()}
               >
