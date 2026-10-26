@@ -35,6 +35,7 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
+from .fsdp2_load import sharded_load_env as fsdp2_sharded_load_env
 from .float8_training import convert_model_to_float8_training, resolve_float8_training
 from .mistral_format import (
     MistralFormatRedirect,
@@ -1229,6 +1230,7 @@ class FastLanguageModel(FastLlamaModel):
         return get_mtp_head(model, *args, **kwargs)
 
     @staticmethod
+    @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
     @_offline_aware_load
     @mistral_format_redirect
@@ -2186,6 +2188,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
     @_restore_load_scoped_env
     @_offline_aware_load
