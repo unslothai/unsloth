@@ -31,12 +31,16 @@ NO_BUILTIN_CONTAINER_REASON = (
 
 
 _host_prep_cache: dict[str, str | None] = {}
+# Bumped by invalidate_cache(): a check that started before it must not publish, since nothing expires it.
+_generation = 0
 
 
 def invalidate_cache() -> None:
+    global _generation
     with _lock:
         _cache.clear()
         _host_prep_cache.clear()
+        _generation += 1
     # Only when already loaded: the MXC child paths import this module without the tool stack.
     os_sandbox = sys.modules.get(f"{__package__}.os_sandbox")
     if os_sandbox is not None:
@@ -63,6 +67,7 @@ def host_prep_remediation() -> str | None:
     with _lock:
         if identity in _host_prep_cache:
             return _host_prep_cache[identity]
+        generation = _generation
     steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
     advice = None
     if steps:
@@ -78,7 +83,8 @@ def host_prep_remediation() -> str | None:
             "Prepare this PC."
         )
     with _lock:
-        _host_prep_cache[identity] = advice
+        if generation == _generation:
+            _host_prep_cache[identity] = advice
     return advice
 
 
@@ -376,6 +382,7 @@ def probe(
             if flight is None:
                 flight = threading.Event()
                 _inflight[key] = flight
+                generation = _generation
                 break
         while not flight.wait(0.05):
             if cancel_event is not None and cancel_event.is_set():
@@ -384,7 +391,7 @@ def probe(
     try:
         result = _probe(selected_executable, execution_kind, cancel_event)
         with _lock:
-            if cancel_event is None or not cancel_event.is_set():
+            if generation == _generation and (cancel_event is None or not cancel_event.is_set()):
                 _cache[key] = result
         return result
     finally:

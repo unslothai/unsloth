@@ -147,6 +147,32 @@ def test_a_failure_is_held_until_invalidated_not_until_a_timer(monkeypatch, tmp_
     assert len(calls) == 3
 
 
+def test_an_invalidate_during_a_probe_keeps_its_result_out(monkeypatch, tmp_path):
+    import threading
+
+    _clock, calls = _count_live_probes(monkeypatch, "blocked before the fix")
+    started, release = threading.Event(), threading.Event()
+    live = mxc_probe._probe
+
+    def slow(*args, **kwargs):
+        started.set()
+        release.wait(5)
+        return live(*args, **kwargs)
+
+    monkeypatch.setattr(mxc_probe, "_probe", slow)
+    bash = str(tmp_path / "bash.exe")
+    worker = threading.Thread(
+        target = mxc_probe.probe, args = (bash,), kwargs = {"execution_kind": "terminal"}
+    )
+    worker.start()
+    assert started.wait(5)
+    mxc_probe.invalidate_cache()
+    release.set()
+    worker.join(5)
+    mxc_probe.probe(bash, execution_kind = "terminal")
+    assert len(calls) == 2, "a verdict from before the invalidate was cached"
+
+
 def test_a_new_runtime_or_opt_in_probes_the_shell_again(monkeypatch, tmp_path):
     _clock, calls = _count_live_probes(monkeypatch, mxc_probe.MSYS_NAMESPACE_REASON)
     bash = str(tmp_path / "bash.exe")
