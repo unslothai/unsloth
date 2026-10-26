@@ -822,15 +822,17 @@ def _define_kernels_against_triton_stub():
 
 
 _remove_triton_stub = _define_kernels_against_triton_stub() if _TRITON_MISSING else None
-from .models import *
-from .models import __version__
-from .save import *
-from .chat_templates import *
-from .tokenizer_utils import *
-from .trainer import *
-
-if _remove_triton_stub is not None:
-    _remove_triton_stub()
+try:
+    from .models import *
+    from .models import __version__
+    from .save import *
+    from .chat_templates import *
+    from .tokenizer_utils import *
+    from .trainer import *
+finally:
+    # Also on a failed import: the hook must never outlive `import unsloth`.
+    if _remove_triton_stub is not None:
+        _remove_triton_stub()
 del _define_kernels_against_triton_stub, _remove_triton_stub
 
 # Export dataprep utilities for CLI and downstream users
