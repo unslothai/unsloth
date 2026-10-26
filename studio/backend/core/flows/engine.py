@@ -199,6 +199,7 @@ class RunState:
     _unsaved_events: list[tuple[int, dict]] = field(default_factory = list, repr = False)
     _unsaved_results: dict[str, tuple] = field(default_factory = dict, repr = False)
     _unsaved_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
+    _unsaved_touch: set[str] = field(default_factory = set, repr = False)
     subscribers: set[asyncio.Queue] = field(default_factory = set)
     cancel_event: asyncio.Event = field(default_factory = asyncio.Event)
     nodes: dict[str, NodeState] = field(default_factory = dict)
@@ -273,15 +274,22 @@ class RunState:
             self._unsaved_events.append((self.seq, stored))
         return event
 
-    def take_unsaved(self) -> Optional[tuple[list, list, list]]:
-        if not (self._unsaved_events or self._unsaved_results or self._unsaved_cache):
+    def take_unsaved(self) -> Optional[tuple[list, list, list, tuple]]:
+        if not (
+            self._unsaved_events
+            or self._unsaved_results
+            or self._unsaved_cache
+            or self._unsaved_touch
+        ):
             return None
         batch = (
             self._unsaved_events,
             [(nid, *row) for nid, row in self._unsaved_results.items()],
             [(key, *row) for key, row in self._unsaved_cache.items()],
+            tuple(self._unsaved_touch),
         )
         self._unsaved_events, self._unsaved_results, self._unsaved_cache = [], {}, {}
+        self._unsaved_touch = set()
         return batch
 
     def set_status(
@@ -1713,7 +1721,13 @@ class FlowEngine:
                     flow_params = ctx.flow_params,
                 )
                 pending = rs._unsaved_cache.get(key)
-                hit = pending[1] if pending is not None else flows_db.cache_get(key)
+                hit = (
+                    pending[1]
+                    if pending is not None
+                    else flows_db.cache_get(key, touch = not rs.persist)
+                )
+                if hit is not None and pending is None and rs.persist:
+                    rs._unsaved_touch.add(key)
                 if hit is not None:
                     from core.flows.nodes._common import gallery_media_present
                     if not await asyncio.to_thread(gallery_media_present, hit):

@@ -56,13 +56,47 @@ def _summary_from_row(row: sqlite3.Row) -> dict:
     }
 
 
+_SUMMARY_SQL = """
+    SELECT id, name, kind, created_at, updated_at,
+           json_extract(doc_json, '$.description') AS description,
+           json_extract(doc_json, '$.meta.cover') AS cover,
+           json_type(doc_json, '$.meta.cover') AS cover_type,
+           json_array_length(doc_json, '$.nodes') AS node_count
+    FROM flows ORDER BY updated_at DESC
+"""
+
+
 def list_flows() -> list[dict]:
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT * FROM flows ORDER BY updated_at DESC").fetchall()
-        return [_summary_from_row(r) for r in rows]
+        try:
+            # The gallery needs four fields: read them in SQLite instead of parsing every document (baked outputs included).
+            rows = conn.execute(_SUMMARY_SQL).fetchall()
+        except sqlite3.OperationalError:
+            rows = conn.execute("SELECT * FROM flows ORDER BY updated_at DESC").fetchall()
+            return [_summary_from_row(r) for r in rows]
+        return [_summary_from_columns(r) for r in rows]
     finally:
         conn.close()
+
+
+def _summary_from_columns(row: sqlite3.Row) -> dict:
+    cover = row["cover"]
+    if row["cover_type"] == "object":
+        cover = json.loads(cover).get("url")
+    elif row["cover_type"] != "text":
+        cover = None
+    description = row["description"]
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "kind": row["kind"],
+        "description": description if isinstance(description, str) and description else "",
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "cover": cover if isinstance(cover, str) else None,
+        "nodeCount": row["node_count"] or 0,
+    }
 
 
 def get_flow(flow_id: str) -> Optional[dict]:
@@ -251,9 +285,10 @@ def write_batch(
     events: list[tuple[int, dict]],
     results: list[tuple[str, str, Optional[dict], Optional[str]]],
     cache_rows: list[tuple[str, str, dict]],
+    touched: tuple[str, ...] = (),
 ) -> None:
     """A run's buffered events, node results and cache entries in one transaction (one per flush, not per write)."""
-    if not (events or results or cache_rows):
+    if not (events or results or cache_rows or touched):
         return
     now = now_ms()
     conn = get_connection()
@@ -449,14 +484,15 @@ def reconcile_orphaned_runs(
         conn.close()
 
 
-def cache_get(key: str) -> Optional[dict]:
+def cache_get(key: str, touch: bool = True) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute("SELECT outputs_json FROM flow_cache WHERE key = ?", (key,)).fetchone()
         if row is None:
             return None
-        conn.execute("UPDATE flow_cache SET last_used_at = ? WHERE key = ?", (now_ms(), key))
-        conn.commit()
+        if touch:
+            conn.execute("UPDATE flow_cache SET last_used_at = ? WHERE key = ?", (now_ms(), key))
+            conn.commit()
         return json.loads(row["outputs_json"])
     finally:
         conn.close()

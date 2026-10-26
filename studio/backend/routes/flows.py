@@ -8,6 +8,7 @@ visible to the account that started them."""
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import re
 import time
@@ -172,7 +173,12 @@ def _example_needs(doc: dict) -> list[str]:
 
 @router.get("/examples")
 def list_examples() -> dict:
-    return {"examples": [_example_summary(examples.example(i)) for i in examples.example_ids()]}
+    return {"examples": _example_summaries()}
+
+
+@functools.lru_cache(maxsize = 1)
+def _example_summaries() -> list[dict]:
+    return [_example_summary(doc) for doc in examples.example_docs()]
 
 
 def _import_doc(data: bytes, name: Optional[str] = None) -> tuple[dict, dict]:
