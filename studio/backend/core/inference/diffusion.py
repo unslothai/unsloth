@@ -374,6 +374,7 @@ from .diffusion_precision import (
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
+from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
 from .diffusion_fp16_variant import (
     fp16_variant_enabled,
     is_fp16_dtype,
@@ -4527,6 +4528,17 @@ class DiffusionBackend:
             )
         elif te_effective is not None and not te_quant_supported(target, te_effective):
             te_reason = te_quant_unsupported_reason(te_effective)
+            if normalize_te_quant(te_mode) == "int8":
+                from .diffusion_te_prequant import explicit_int8_unavailable_reason
+                missing = explicit_int8_unavailable_reason(
+                    fam,
+                    base_repo,
+                    target,
+                    supplied = supplied_text_encoders or _active_supplied_text_encoders(),
+                    local_files_only = local_files_only,
+                )
+                if missing:
+                    te_reason = f"{missing}, and the fp8 fallback cannot run here ({te_reason})"
         elif te_quant_needs_resident_weights(te_effective) and _memory_request_forces_offload(
             memory_mode, cpu_offload
         ):
@@ -5745,6 +5757,19 @@ class DiffusionBackend:
                 ).items()
                 if c not in replaced
             }
+            vae_hosted_files = (
+                {}
+                if "vae" in replaced
+                else self._hosted_vae_plan_files(
+                    fam,
+                    kind,
+                    base,
+                    kwargs.get("gpu_ordinal"),
+                    kwargs.get("hf_token"),
+                    local_files_only,
+                )
+            )
+            kwargs["_hosted_vae_planned"] = bool(vae_hosted_files)
             pipeline_planned = self._pipeline_planned_denoiser_scheme(
                 fam,
                 base = base,
@@ -5810,7 +5835,7 @@ class DiffusionBackend:
                     if kind == "gguf"
                     else False
                 ),
-                skip_te_components = tuple(te_prequant_files) + replaced,
+                skip_te_components = tuple(te_prequant_files) + replaced + tuple(vae_hosted_files),
                 skip_transformer_weights = skip_transformer_weights,
                 skipped_files_out = skipped_transformer_files,
                 local_files_only = local_files_only,
@@ -5854,7 +5879,7 @@ class DiffusionBackend:
 
             te_hub_files = [
                 (repo, name, int(size or 0))
-                for repo, files in te_prequant_files.values()
+                for repo, files in (*te_prequant_files.values(), *vae_hosted_files.values())
                 for name, size in te_prequant_unmirrored(repo, files)
             ]
             expected += sum(size for _repo, _name, size in te_hub_files)
@@ -5908,6 +5933,7 @@ class DiffusionBackend:
                 kind = kind,
                 declared_files = resident_sizes,
                 prequant_bytes = _prequant_plan_bytes(te_prequant_files)
+                + _prequant_plan_bytes(vae_hosted_files)
                 + (int(dit_prequant[2]) if skip_transformer_weights else 0),
                 extra_bf16_bytes = _predownload_encoder_bf16_bytes(
                     fam, te_prequant_files, pipeline_declared = bool(resident_sizes)
@@ -6199,6 +6225,32 @@ class DiffusionBackend:
         """
         with self._load_cancel_lock:
             return tuple(dict.fromkeys(r for repos in self._draining_repos.values() for r in repos))
+
+    def _hosted_vae_plan_files(
+        self,
+        fam: Any,
+        kind: Optional[str],
+        base: Optional[str],
+        gpu_ordinal: Optional[int],
+        hf_token: Optional[str],
+        local_files_only: bool,
+    ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
+        """``diffusion_hosted_vae.hosted_vae_plan_files`` at this pick's load dtype; {} for a family without one."""
+        if not getattr(fam, "hosted_bf16_vae", None):
+            return {}
+        try:
+            dtype = getattr(self._target_for_ordinal(fam, gpu_ordinal), "dtype", None)
+        except Exception:  # noqa: BLE001 -- no target: keep the dense VAE
+            return {}
+        return hosted_vae_plan_files(
+            fam,
+            base,
+            kind = kind,
+            dtype = dtype,
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+            logger = logger,
+        )
 
     @staticmethod
     def _te_prequant_plan_files(
@@ -7129,6 +7181,13 @@ class DiffusionBackend:
             if allow_device_probe
             else {}
         )
+        vae_hosted_files = (
+            self._hosted_vae_plan_files(
+                fam, kind, base, load_kwargs.get("gpu_ordinal"), hf_token, False
+            )
+            if allow_device_probe and "vae" not in replaced
+            else {}
+        )
         # Settled before the listing: only a checkpoint that resolves on the Hub may drop the released shards.
         pipeline_planned = (
             self._pipeline_planned_denoiser_scheme(
@@ -7210,7 +7269,7 @@ class DiffusionBackend:
             resident_file_sizes_out = resident_file_sizes,
             revisions_out = revisions,
             fetch_repos_out = fetch_repos,
-            skip_te_components = tuple(te_files) + replaced,
+            skip_te_components = tuple(te_files) + replaced + tuple(vae_hosted_files),
             skip_transformer_weights = skip_transformer_weights,
             failures_out = plan_failures,
             fp16_twins = kind == "pipeline"
@@ -7232,7 +7291,8 @@ class DiffusionBackend:
                 file_sizes.get(repo_id, {}).get(gguf_filename, sizes.get(repo_id, 0))
             )
         te_prequant_bytes = _prequant_plan_bytes(te_files)
-        required_total += te_prequant_bytes
+        required_total += te_prequant_bytes + _prequant_plan_bytes(vae_hosted_files)
+        te_prequant_bytes += _prequant_plan_bytes(vae_hosted_files)
         # The prequant replacing the dropped transformer/ shards is footprint nothing else reports.
         dit_prequant_bytes = int(dit_prequant[2]) if dit_prequant is not None else 0
         required_total += dit_prequant_bytes
@@ -7350,7 +7410,7 @@ class DiffusionBackend:
 
         from .diffusion_te_prequant import te_prequant_unmirrored
 
-        for repo, files in te_files.values():
+        for repo, files in (*te_files.values(), *vae_hosted_files.values()):
             # A mirrored encoder still drops the dense shards above but is never staged: the Hub may not hold it.
             files = te_prequant_unmirrored(repo, files)
             if not files:
@@ -8382,6 +8442,7 @@ class DiffusionBackend:
         _pipeline_prequant_skipped: tuple[str, ...] = (),
         _prequant_unreachable: tuple[str, ...] = (),
         _te_prequant_resolved: bool = True,
+        _hosted_vae_planned: bool = False,
         # begin_load's ``normalize_token`` of the request token: False stays the anonymous sentinel.
         _hub_token: Any = None,
     ) -> dict[str, Any]:
@@ -9670,6 +9731,22 @@ class DiffusionBackend:
                                         ),
                                     )
                                 )
+                                # A miss reads vae/, fetched here when the plan dropped it.
+                                if "vae" not in pipe_kwargs:
+                                    pipe_kwargs.update(
+                                        hosted_vae_pipe_kwargs(
+                                            fam,
+                                            fetch_base,
+                                            kind = kind,
+                                            dtype = dtype,
+                                            hf_token = hf_token,
+                                            local_files_only = local_files_only,
+                                            config_source = _base_local_dir,
+                                            cache_dir = hub_cache_dir(),
+                                            dense_staged = not _hosted_vae_planned,
+                                            logger = logger,
+                                        )
+                                    )
                                 if pipeline_seed_scheme is not None:
                                     from .diffusion_denoiser_prequant import (
                                         denoiser_prequant_pipe_kwargs,

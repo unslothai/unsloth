@@ -857,7 +857,11 @@ def _assert_video_precision_for_target(
         return
     # MPS runs a family's hosted int8 ConvRot encoder without fp8 (the loader's own rule), so an explicit int8 must not
     # be rewritten to fp8 below and then refused for the fp8 support MPS lacks.
-    from .diffusion_te_prequant import family_te_int8_convrot, int8_convrot_te_runs_on
+    from .diffusion_te_prequant import (
+        explicit_int8_unavailable_reason,
+        family_te_int8_convrot,
+        int8_convrot_te_runs_on,
+    )
 
     if (
         te_mode == "int8"
@@ -865,6 +869,19 @@ def _assert_video_precision_for_target(
         and family_te_int8_convrot(fam, "text_encoder") is not None
         and int8_convrot_te_runs_on(target)
     ):
+        # An unpublished file otherwise failed inside the load, after the eviction.
+        missing = explicit_int8_unavailable_reason(fam, getattr(fam, "base_repo", None), target)
+        if missing:
+            raise RuntimeError(
+                precision_refusal_message(
+                    "text_encoder_quant",
+                    te_mode,
+                    f"{missing}, and this host runs int8 text encoders only from that file "
+                    f"({te_quant_unsupported_reason('fp8')})",
+                    off_label = "leave it unset to keep the dense bf16 encoder",
+                    auto_available = False,
+                )
+            )
         return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
     te_reason = None

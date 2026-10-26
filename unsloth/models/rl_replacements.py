@@ -180,6 +180,66 @@ def gkd_trainer_mask_prompt(function_name, function):
 RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_mask_prompt)
 
 
+def gkd_trainer_generate_before_counting(function_name, function):
+    if function_name != "training_step":
+        return function
+    start = re.search(
+        r"^        if (?:self\.seq_kd|random\.random\(\) <= self\.lmbda):", function, re.M
+    )
+    end = function.find("        loss = super().training_step(")
+    if start is None or end < start.start():
+        return function
+    start = start.start()
+    generation = function[start:end]
+    function = (
+        function[:start]
+        + """        pending = getattr(self, "_unsloth_gkd_pending_batches", None)
+        if pending is not None:
+            batches, batch_args, batch_kwargs = pending
+            self._unsloth_gkd_pending_batches = None
+
+            def prepared_batches():
+                for batch in batches:
+                    self._unsloth_prepare_gkd_batch(model, batch)
+                    yield batch
+
+            _, count = super().get_batch_samples(
+                prepared_batches(), len(batches), *batch_args, **batch_kwargs
+            )
+            # TRL 1.7-1.8 mask EOS when it is the pad token, so an all-EOS window counts 0: sum / 0 is NaN.
+            if torch.is_tensor(count):
+                count = count.clamp_min(1)
+            elif count is not None:
+                count = max(count, 1)
+            for batch in batches:
+                batch["_unsloth_gkd_num_items"] = count
+
+        if "_unsloth_gkd_num_items" in inputs:
+            num_items_in_batch = inputs.pop("_unsloth_gkd_num_items")
+        else:
+            self._unsloth_prepare_gkd_batch(model, inputs)
+"""
+        + function[end:]
+    )
+    # Prepare the whole accumulation window before counting its replacement
+    # labels. Keep generation in training_step, after checkpoint RNG restoration.
+    return (
+        function
+        + "\n    def _unsloth_prepare_gkd_batch(self, model, inputs):\n"
+        + generation
+        + """
+    def get_batch_samples(self, epoch_iterator, num_batches, *args, **kwargs):
+        batches, count = super().get_batch_samples(epoch_iterator, num_batches, *args, **kwargs)
+        if self.lmbda > 0 or self.seq_kd:
+            self._unsloth_gkd_pending_batches = (batches, args, kwargs)
+        return batches, count
+"""
+    )
+
+
+RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_generate_before_counting)
+
+
 def ppo_trainer_free_rollout_logits(function_name, function):
     # TRL keeps the float32 (batch, response_length, vocab) generation logits alive through every PPO
     # epoch, though only the logprobs taken from them are read: 1.2 GB on a T4 for 8 x 256 Qwen3 tokens.
