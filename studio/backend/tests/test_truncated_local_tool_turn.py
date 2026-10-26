@@ -3,10 +3,14 @@
 
 """A generation limit must not turn an unfinished rewrite into an executable tool call."""
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from core.inference import tools
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
+from core.inference.tool_loop_controller import TRUNCATED_TOOL_TURN_MESSAGE
 from .test_llama_cpp_tool_loop import (
     _backend_and_payloads,
     _done,
@@ -53,7 +57,7 @@ def test_gguf_never_executes_calls_from_a_truncated_turn(monkeypatch, reason, sh
     text = [event["text"] for event in events if event["type"] == "content"][-1]
     assert "These tool calls were not run" in text
     if shape == "prefaced_xml":
-        assert text.startswith("Updating your file.")
+        assert text == "\n\n" + TRUNCATED_TOOL_TURN_MESSAGE
     starts = {event["tool_call_id"] for event in events if event["type"] == "tool_start"}
     ends = {event["tool_call_id"] for event in events if event["type"] == "tool_end"}
     assert starts <= ends
@@ -173,3 +177,141 @@ def test_safetensors_complete_turn_still_executes(stats):
         )
     )
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("backend_kind", ["gguf", "safetensors"])
+@pytest.mark.parametrize("prefix", ["", "Updating your file."])
+@pytest.mark.parametrize("name", ["web_search", "terminal", "render_html"])
+def test_truncated_notice_sse_does_not_repeat_streamed_text(
+    monkeypatch, backend_kind, prefix, name
+):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    import routes.inference as inference_route
+    from .llama_backend_double import FakeLlamaCppBackend
+
+    selected_tools = [{"type": "function", "function": {"name": name}}]
+    if name == "web_search":
+        call = '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+    else:
+        key = "command" if name == "terminal" else "code"
+        call = f"<function={name}><parameter={key}>" + _COMMAND
+    split = call.index(_COMMAND) if name != "web_search" else len(call) // 2
+    calls = []
+
+    def execute(tool_name, arguments, **kwargs):
+        calls.append((tool_name, arguments))
+        return "must not run"
+
+    if backend_kind == "gguf":
+        stream = [_sse({"content": prefix})] if prefix else []
+        if name == "render_html":
+            stream.append(_tool_call_sse(name, {"code": _COMMAND}, "call_preview"))
+        else:
+            stream += [_sse({"content": call[:split]}), _sse({"content": call[split:]})]
+        stream += [_finish("length"), _done()]
+        backend, _ = _backend_and_payloads(monkeypatch, [stream])
+        monkeypatch.setattr(tools, "execute_tool", execute)
+        events = _run_tool_loop(
+            backend,
+            [{"role": "user", "content": "Update the file"}],
+            selected_tools,
+            permission_mode = "off",
+            sandbox_level = "low",
+        )
+    else:
+        holder = {}
+
+        def single_turn(messages, **kwargs):
+            if prefix:
+                yield prefix
+            yield prefix + call[:split]
+            yield prefix + call
+            holder["stats"] = {"truncated": True}
+
+        events = list(
+            run_safetensors_tool_loop(
+                single_turn = single_turn,
+                messages = [{"role": "user", "content": "Update the file"}],
+                tools = selected_tools,
+                execute_tool = execute,
+                generation_stats_holder = holder,
+                permission_mode = "off",
+                sandbox_level = "low",
+            )
+        )
+    assert calls == []
+    starts = [event for event in events if event["type"] == "tool_start"]
+    if name == "render_html":
+        assert starts, "exercise the cursor reset from a provisional card"
+    elif name == "web_search":
+        assert not starts, "exercise rejection without a provisional card"
+
+    class EventBackend(FakeLlamaCppBackend):
+        supports_tools = True
+        context_length = 8192
+        active_model_name = "sf-model"
+        models = {"sf-model": {"context_length": 8192}}
+
+        def generate_chat_completion_with_tools(self, **kwargs):
+            yield from events
+            if kwargs.get("stats_holder") is not None:
+                kwargs["stats_holder"]["stats"] = {"truncated": True}
+
+    event_backend = EventBackend()
+    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
+
+    async def select_tools(payload, **kwargs):
+        return selected_tools
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", select_tools)
+    if backend_kind == "gguf":
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: event_backend)
+    else:
+        monkeypatch.setattr(
+            inference_route,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(is_loaded = False, supports_tools = False),
+        )
+        monkeypatch.setattr(inference_route, "get_inference_backend", lambda: event_backend)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *args, **kwargs: {"supports_tools": True, "supports_reasoning": False},
+        )
+    app = FastAPI()
+    app.include_router(inference_route.router)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "Update the file"}],
+                "stream": True,
+                "enable_tools": True,
+                "permission_mode": "off",
+                "sandbox_level": "low",
+            },
+            headers = {"X-Unsloth-Events": "1"},
+        )
+    assert response.status_code == 200, response.text
+    chunks = [
+        json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: {")
+    ]
+    visible = "".join(
+        choice.get("delta", {}).get("content") or ""
+        for chunk in chunks
+        for choice in chunk.get("choices", [])
+    )
+    expected = (
+        prefix + "\n\n" + TRUNCATED_TOOL_TURN_MESSAGE if prefix else TRUNCATED_TOOL_TURN_MESSAGE
+    )
+    assert visible == expected
+    assert [
+        choice["finish_reason"]
+        for chunk in chunks
+        for choice in chunk.get("choices", [])
+        if choice.get("finish_reason")
+    ] == ["length"]

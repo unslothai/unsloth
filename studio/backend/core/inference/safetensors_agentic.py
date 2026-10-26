@@ -1291,12 +1291,13 @@ def run_safetensors_tool_loop(
                     "result": TRUNCATED_TOOL_TURN_MESSAGE,
                     "provenance": _tool_event_provenance(provisional = True),
                 }
+            # Empty status resets the route cursor; send only text not already streamed.
+            display = _strip_streaming_display(cumulative_display)
+            notice = display[len(last_emitted) :] + ("\n\n" if display else "")
             yield {"type": "status", "text": ""}
             yield {
                 "type": "content",
-                "text": with_appended_text(
-                    _strip_streaming_display(cumulative_display), TRUNCATED_TOOL_TURN_MESSAGE
-                ),
+                "text": notice + TRUNCATED_TOOL_TURN_MESSAGE,
             }
             return
 

@@ -38668,13 +38668,14 @@ class LlamaCppBackend:
                                 "result": TRUNCATED_TOOL_TURN_MESSAGE,
                                 "provenance": provisional_tool_provenance(_pname),
                             }
+                    # Empty status starts a new route segment. Keep text already sent
+                    # out of that segment, including when a provisional card reset its cursor.
+                    display = _strip_tool_markup(cumulative_display, final = True, force = True)
+                    notice = display[len(_last_emitted) :] + ("\n\n" if display else "")
                     yield {"type": "status", "text": ""}
                     yield {
                         "type": "content",
-                        "text": with_appended_text(
-                            _strip_tool_markup(cumulative_display, final = True, force = True),
-                            TRUNCATED_TOOL_TURN_MESSAGE,
-                        ),
+                        "text": notice + TRUNCATED_TOOL_TURN_MESSAGE,
                     }
                     yield _build_metadata_event(_iter_usage, _iter_timings, _iter_finish_reason)
                     return
