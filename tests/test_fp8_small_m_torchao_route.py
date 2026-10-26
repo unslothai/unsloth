@@ -19,7 +19,12 @@ class _CudaLike(torch.Tensor):
         return True
 
 
-def _operands(M, dtype, N = 256, K = 512):
+def _operands(
+    M,
+    dtype,
+    N = 256,
+    K = 512,
+):
     X = torch.randn(M, K).to(dtype).as_subclass(_CudaLike)
     weight = torch.zeros(N, K, dtype = torch.float8_e4m3fn)
     scale = torch.ones(N // 128, K // 128, dtype = torch.float32)
@@ -40,7 +45,15 @@ def calls(monkeypatch):
         return x.to(torch.float8_e4m3fn), torch.ones(x.shape[0], x.shape[-1] // block)
 
     def gemm(name):
-        def run(A, B, As, Bs, *args, output_dtype = torch.bfloat16, **kwargs):
+        def run(
+            A,
+            B,
+            As,
+            Bs,
+            *args,
+            output_dtype = torch.bfloat16,
+            **kwargs,
+        ):
             seen.append(name)
             return torch.zeros(A.shape[:-1] + (B.shape[0],), dtype = output_dtype)
 
@@ -55,7 +68,9 @@ def calls(monkeypatch):
     monkeypatch.setattr(F8, "_prefer_triton_block_matmul_at", lambda device, M: False)
     monkeypatch.setattr(F8, "w8a8_block_fp8_matmul_triton", triton_gemm)
     monkeypatch.setattr(
-        F8, "torchao_blockwise_gemm", lambda a, a_s, b, b_s, block_size: gemm("torchao")(a, b, a_s, b_s)
+        F8,
+        "torchao_blockwise_gemm",
+        lambda a, a_s, b, b_s, block_size: gemm("torchao")(a, b, a_s, b_s),
     )
     return seen
 
