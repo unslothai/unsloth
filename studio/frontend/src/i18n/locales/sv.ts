@@ -3847,6 +3847,8 @@ export const sv = {
       history: "Historik",
     },
     goToLibrary: "Gå till biblioteket",
+    imageTraining: "Bildträning",
+    goToImageTraining: "Träna bild-LoRA",
     loadingRuntime: "Läser in träningsmiljö ...",
     checkingSupport: "Kontrollerar denna dators stöd för träning ...",
     backToHistory: "Tillbaka till historiken",

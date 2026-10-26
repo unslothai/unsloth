@@ -3427,6 +3427,8 @@ export const ru = {
   },
   studio: {
     goToLibrary: "Перейти в Библиотеку",
+    imageTraining: "Обучение изображений",
+    goToImageTraining: "Обучить LoRA для изображений",
     routeTitle: "Обучение",
     wizard: {
       modelTitle: "Модель",

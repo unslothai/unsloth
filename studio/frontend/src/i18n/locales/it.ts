@@ -3456,6 +3456,8 @@ export const it = {
   },
   studio: {
     goToLibrary: "Vai alla Libreria",
+    imageTraining: "Addestramento immagini",
+    goToImageTraining: "Addestra LoRA per immagini",
     routeTitle: "Addestra",
     wizard: {
       modelTitle: "Modello",

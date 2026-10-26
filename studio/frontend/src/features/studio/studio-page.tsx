@@ -18,7 +18,11 @@ import {
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
+// deep import avoids the Images index because its ImagesPage re-export would undo the code split.
+// eslint-disable-next-line no-restricted-imports
+import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import {
+  Image03Icon,
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
@@ -52,6 +56,7 @@ import { TrainingWizard } from "./wizard/training-wizard";
 export function StudioPage(): ReactElement {
   const signalReady = useAppShellReadySignal();
   const t = useT();
+  const setImagesPageMode = useImageWorkflowStore((s) => s.setPageMode);
   const [paramMode, setParamMode] = useParamMode();
   useTrainingRuntimeLifecycle();
   useTrainingCacheReconciliation();
@@ -206,11 +211,22 @@ export function StudioPage(): ReactElement {
                 />
                 <div className="ml-auto flex items-center gap-2">
                   <MediaPageLink
+                    to="/images"
+                    label={t("studio.imageTraining")}
+                    tooltip={t("studio.goToImageTraining")}
+                    icon={Image03Icon}
+                    onNavigate={() => setImagesPageMode("train")}
+                    labelClassName="max-sm:hidden"
+                    arrowClassName="max-sm:hidden"
+                  />
+                  <MediaPageLink
                     to="/library"
                     libraryTab="models"
                     label={t("shell.navigation.library")}
                     tooltip={t("studio.goToLibrary")}
                     icon={LibrariesIcon}
+                    labelClassName="max-sm:hidden"
+                    arrowClassName="max-sm:hidden"
                   />
                 </div>
               </div>
