@@ -1350,11 +1350,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
         )
-    if request.is_dataset_audio:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Audio dataset training is not yet supported on Apple Silicon.",
-        )
     if request.use_loftq:
         raise HTTPException(
             status_code = 400,

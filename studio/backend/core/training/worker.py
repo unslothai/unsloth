@@ -2540,6 +2540,66 @@ def _resize_mlx_vlm_images(
     return _resize_mlx_vlm_image(value, resize, image_layout = image_layout)
 
 
+_RESOLVE_IMAGE_COLUMN = object()
+
+
+def _mlx_audio_rows(
+    dataset,
+    processor,
+    custom_format_mapping = None,
+    image_col = _RESOLVE_IMAGE_COLUMN,
+) -> tuple:
+    """The CUDA transcription rows, with each clip left decoded so zoo can check its rate, and
+    the row's images (a mixed audio + image dataset) beside them. Returns (rows, image column);
+    an eval split takes the train split's image column, None for none."""
+    from datasets import Audio
+    from unsloth_zoo.mlx.utils import audio_extractor_sampling_rate
+
+    from utils.datasets.audio_decode import ensure_audio_decoding
+    from utils.datasets.audio_rows import (
+        audio_transcription_messages,
+        prepare_audio_vlm_image_column,
+        resolve_audio_columns,
+        resolve_audio_vlm_image_column,
+    )
+
+    if not ensure_audio_decoding():
+        raise RuntimeError(
+            "No audio decoder is available: install the audio runtime (librosa and soundfile)."
+        )
+    columns = resolve_audio_columns(dataset, custom_format_mapping)
+    audio_col, text_col = columns["audio_col"], columns["text_col"]
+    if not audio_col or not text_col:
+        raise ValueError(
+            f"Audio dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
+        )
+    if image_col is _RESOLVE_IMAGE_COLUMN:
+        image_col = resolve_audio_vlm_image_column(
+            dataset, custom_format_mapping, audio_col, text_col, columns["speaker_col"]
+        )
+    elif image_col not in dataset.column_names:
+        image_col = None
+    rate = audio_extractor_sampling_rate(processor) or 16000
+    dataset = dataset.cast_column(audio_col, Audio(sampling_rate = rate))
+    if image_col:
+        dataset = prepare_audio_vlm_image_column(dataset, image_col)
+    rows = []
+    for row in dataset:
+        images = row[image_col] if image_col else None
+        if not isinstance(images, list):
+            images = [] if images is None else [images]
+        images = [image for image in images if image is not None]
+        item = {
+            "messages": audio_transcription_messages(
+                row[audio_col], str(row[text_col]), len(images)
+            )
+        }
+        if images:
+            item["images"] = images
+        rows.append(item)
+    return rows, image_col
+
+
 def _adapt_for_mlx_vlm(
     items,
     resize = None,
@@ -3138,6 +3198,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_cpt = training_type == "Continued Pretraining"
     # As on CUDA, CPT trains on raw text, so an image dataset loads and formats as text.
     is_dataset_image = bool(config.get("is_dataset_image", False)) and not is_cpt
+    # CUDA takes its raw-text path (CPT or format "raw") before the audio one.
+    is_dataset_audio = bool(config.get("is_dataset_audio", False)) and not (
+        is_cpt or config.get("format_type") == "raw"
+    )
     use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
     # Before the download/load below: unlike the CUDA path, this needs none of the model.
     # A continued adapter keeps its own targets, and CPT builds its adapter from target_modules alone.
@@ -3162,7 +3226,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             model_load_name,
             load_in_4bit = config.get("load_in_4bit", True),
             full_finetuning = not use_lora,
-            text_only = None if is_dataset_image else True,
+            text_only = None if is_dataset_image or is_dataset_audio else True,
             token = hf_token,
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
@@ -3197,7 +3261,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             model_load_name,
             load_in_4bit = config.get("load_in_4bit", True),
             full_finetuning = not use_lora,
-            text_only = None if is_dataset_image else True,
+            text_only = None if is_dataset_image or is_dataset_audio else True,
             token = hf_token,
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
@@ -3218,8 +3282,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
 
     loaded_model_for_provenance = model
-    is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
+    is_vlm = bool((is_dataset_image or is_dataset_audio) and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
+    if is_dataset_audio and not is_vlm:
+        # zoo trains audio only as input to an audio-capable vision-language model.
+        raise ValueError(
+            "Audio dataset training on Apple Silicon needs an audio-input model such as "
+            "Gemma 3n or Gemma 4; text-to-speech and speech-recognition checkpoints are not "
+            "supported on MLX yet."
+        )
     vision_image_size = config.get("vision_image_size")
     # DeepSeek OCR uses a coupled preset tuple; skip resize like the Torch path.
     _model_name_lower = str(config.get("model_name", "")).lower()
@@ -3289,7 +3360,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
         finetune_mlp = config.get("finetune_mlp_modules", True)
-        finetune_vision = config.get("finetune_vision_layers", False) if is_vlm else False
+        # Audio-only rows carry no image, so vision LoRA would get no gradient; zoo also refuses a
+        # vision tower with no linear layer to adapt (Gemma 3n's).
+        finetune_vision = (
+            config.get("finetune_vision_layers", False) if is_vlm and is_dataset_image else False
+        )
 
         if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
@@ -3309,6 +3384,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
         model = FastMLXModel.get_peft_model(model, **peft_kwargs)
 
     _send("status", status_message = "Loading dataset...")
+    if config.get("is_dataset_audio"):
+        # Raw-text runs still read rows carrying the Audio column, so install the decoder for them too.
+        from utils.datasets.audio_decode import ensure_audio_decoding
+        ensure_audio_decoding()
     hf_dataset = config.get("hf_dataset", "")
     slice_start = config.get("dataset_slice_start")
     slice_end = config.get("dataset_slice_end")
@@ -3440,7 +3519,28 @@ def _run_mlx_training(event_queue, stop_queue, config):
         def _fmt_progress(status_message = "", **_kw):
             _send("status", status_message = status_message)
 
-        if is_vlm:
+        if is_dataset_audio:
+            _send("status", status_message = "Formatting audio dataset...")
+            dataset, audio_image_col = _mlx_audio_rows(dataset, tokenizer, custom_format_mapping)
+            if eval_dataset is not None:
+                eval_dataset, _ = _mlx_audio_rows(
+                    eval_dataset, tokenizer, custom_format_mapping, audio_image_col
+                )
+            if audio_image_col:
+                # Lift and resize the images as the VLM path does; the audio stays in the turns.
+                image_layout = (
+                    _mlx_vlm_resized_image_layout(tokenizer)
+                    if vision_image_size is not None
+                    else None
+                )
+                dataset = _adapt_for_mlx_vlm(
+                    dataset, resize = vision_image_size, image_layout = image_layout
+                )
+                if eval_dataset is not None:
+                    eval_dataset = _adapt_for_mlx_vlm(
+                        eval_dataset, resize = vision_image_size, image_layout = image_layout
+                    )
+        elif is_vlm:
             _send("status", status_message = "Formatting VLM dataset...")
             vlm_info = format_and_template_dataset(
                 dataset,
@@ -3976,17 +4076,6 @@ def run_mlx_training_process(
             {
                 "type": "error",
                 "error": "MLX training requires Apple Silicon with the MLX backend available.",
-                "stack": "",
-                "ts": time.time(),
-            }
-        )
-        return
-
-    if config.get("is_dataset_audio"):
-        event_queue.put(
-            {
-                "type": "error",
-                "error": "Audio dataset training is not yet supported on Apple Silicon.",
                 "stack": "",
                 "ts": time.time(),
             }

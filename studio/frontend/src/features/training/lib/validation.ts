@@ -40,7 +40,12 @@ function isTrainingConfigSupportedOnDevice(
   if (deviceType !== "mac") {
     return true;
   }
-  return !(config.isEmbeddingModel || hasChatAudioRows(config, deviceType));
+  // MLX trains audio only as input to an audio-capable vision-language model (Gemma 3n/4).
+  const audioVlm = config.isVisionModel && config.isAudioModel;
+  return !(
+    config.isEmbeddingModel ||
+    (hasChatAudioRows(config, deviceType) && !audioVlm)
+  );
 }
 
 /** A Mac Clef (or Clef-head LLM) trainer reads its own audio rows; elsewhere, and for Laya, they train as text. */

@@ -577,7 +577,9 @@ def test_the_effective_check_runs_after_the_back_fill_at_the_mlx_call_site():
     source = inspect.getsource(worker)
     call = source.index("_check_mlx_effective_targets(\n            config,")
     backfill = source.index("            finetune_language = True")
-    forced = source.index('config.get("finetune_vision_layers", False) if is_vlm else False')
+    forced = source.index(
+        'config.get("finetune_vision_layers", False) if is_vlm and is_dataset_image else False'
+    )
     assert (
         forced < backfill < call
     ), "the effective check must follow both the is_vlm narrowing and the back-fill"

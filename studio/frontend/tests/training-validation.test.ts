@@ -215,7 +215,7 @@ test("training validation rejects MLX-incompatible training modes", () => {
   );
 });
 
-test("training validation rejects audio training on MLX", () => {
+test("training validation rejects non-VLM audio training on MLX", () => {
   assert.deepEqual(
     validateTrainingConfig(
       {
@@ -237,6 +237,22 @@ test("training validation rejects audio training on MLX", () => {
       ok: false,
       errorKey: "studio.params.notSupportedAppleSilicon",
     },
+  );
+});
+
+test("training validation allows audio-capable vision models on MLX with audio data", () => {
+  assert.deepEqual(
+    validateTrainingConfig(
+      {
+        ...validConfig,
+        modelType: "vision",
+        isVisionModel: true,
+        isAudioModel: true,
+        isDatasetAudio: true,
+      },
+      "mac",
+    ),
+    { ok: true, errorKey: null },
   );
 });
 

@@ -839,9 +839,16 @@ def test_mlx_cpt_formats_raw_text_whatever_format_was_sent(is_cpt, expected):
 
 
 @pytest.mark.parametrize("is_cpt", [True, False])
-def test_mlx_cpt_reads_an_image_dataset_as_text(is_cpt):
-    config = {"is_dataset_image": True}
-    assert _run_mlx_assignment("is_dataset_image", is_cpt = is_cpt, config = config) is not is_cpt
+@pytest.mark.parametrize("flag", ["is_dataset_image", "is_dataset_audio"])
+def test_mlx_cpt_reads_a_multimodal_dataset_as_text(is_cpt, flag):
+    assert _run_mlx_assignment(flag, is_cpt = is_cpt, config = {flag: True}) is not is_cpt
+
+
+@pytest.mark.parametrize("format_type", ["raw", "auto"])
+def test_mlx_raw_format_reads_an_audio_dataset_as_text(format_type):
+    config = {"is_dataset_audio": True, "format_type": format_type}
+    is_audio = _run_mlx_assignment("is_dataset_audio", is_cpt = False, config = config)
+    assert is_audio is (format_type != "raw")
 
 
 def test_mlx_cpt_embedding_lr_reaches_heads_zoo_resolved():
@@ -858,3 +865,184 @@ def test_mlx_cpt_embedding_lr_reaches_heads_zoo_resolved():
         tree_flatten = lambda tree: list(tree.items()),
     )
     assert rate == pytest.approx(5e-6)
+
+
+def _mlx_body_if(test_source):
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    nodes = [
+        n
+        for n in ast.walk(ast.Module(body = body, type_ignores = []))
+        if isinstance(n, ast.If) and ast.unparse(n.test) == test_source
+    ]
+    assert len(nodes) == 1
+    return compile(ast.Module(body = nodes, type_ignores = []), "<if>", "exec")
+
+
+@pytest.mark.parametrize("is_vlm", [True, False])
+def test_mlx_audio_dataset_needs_an_audio_vlm(is_vlm):
+    block = _mlx_body_if("is_dataset_audio and (not is_vlm)")
+    namespace = {**vars(_worker), "is_dataset_audio": True, "is_vlm": is_vlm}
+    if is_vlm:
+        exec(block, namespace)
+    else:
+        with pytest.raises(ValueError, match = "audio-input model"):
+            exec(block, namespace)
+
+
+@pytest.mark.parametrize("image_col", [None, "image"])
+def test_mlx_audio_dataset_formats_both_splits_as_audio_rows(image_col):
+    formatted, adapted = [], []
+    namespace = {
+        **vars(_worker),
+        "is_dataset_audio": True,
+        "is_vlm": True,
+        "dataset": "train",
+        "eval_dataset": "eval",
+        "tokenizer": "processor",
+        "custom_format_mapping": None,
+        "_send": lambda *_a, **_kw: None,
+        "vision_image_size": None,
+        "_mlx_audio_rows": lambda ds, processor, mapping, *column: formatted.append((ds, *column))
+        or ([ds], image_col),
+        "_adapt_for_mlx_vlm": lambda rows, **_kw: adapted.append(rows) or [*rows, "lifted"],
+        "format_and_template_dataset": lambda *_a, **_kw: pytest.fail(
+            "audio skips the VLM formatter"
+        ),
+    }
+    exec(_mlx_body_if("is_dataset_audio"), namespace)
+
+    # The eval split takes the train split's image column, and only a split with images is lifted.
+    assert formatted == [("train",), ("eval", image_col)]
+    assert adapted == ([] if image_col is None else [["train"], ["eval"]])
+    suffix = [] if image_col is None else ["lifted"]
+    assert namespace["dataset"] == ["train", *suffix]
+    assert namespace["eval_dataset"] == ["eval", *suffix]
+
+
+@pytest.mark.parametrize("audio", [True, False])
+def test_mlx_audio_request_installs_the_decoder(monkeypatch, audio):
+    # A CPT or raw-format run masks is_dataset_audio but still reads rows with an Audio column.
+    from utils.datasets import audio_decode
+
+    calls = []
+    monkeypatch.setattr(audio_decode, "ensure_audio_decoding", lambda: calls.append(1) or True)
+    exec(_mlx_body_if("config.get('is_dataset_audio')"), {"config": {"is_dataset_audio": audio}})
+
+    assert calls == ([1] if audio else [])
+
+
+class _AudioRowsDataset:
+    def __init__(self, rows):
+        self.rows, self.cast = rows, None
+        self.column_names = list(rows[0])
+        self.features = {}
+
+    def cast_column(self, column, feature):
+        if not hasattr(feature, "sampling_rate"):
+            return self
+        # A real cast returns a new dataset decoding at the target rate.
+        rate = feature.sampling_rate
+        cast = _AudioRowsDataset(
+            [{**row, column: {**row[column], "sampling_rate": rate}} for row in self.rows]
+        )
+        cast.cast = (column, rate)
+        return cast
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
+def test_mlx_audio_rows_keep_the_decoded_clip(monkeypatch):
+    from utils.datasets import audio_decode
+
+    decoders = [True]
+    monkeypatch.setattr(audio_decode, "ensure_audio_decoding", lambda: decoders[0])
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.audio_extractor_sampling_rate = lambda processor: {"processor": 24000}.get(processor)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", zoo_utils)
+    clips = [{"array": [0.1], "sampling_rate": 8000}, {"array": [0.2], "sampling_rate": 8000}]
+    dataset = _AudioRowsDataset([{"audio": clip, "text": t} for clip, t in zip(clips, "ab")])
+
+    rows, image_col = _worker._mlx_audio_rows(dataset, "processor")
+
+    assert image_col is None
+    assert [row["messages"][1]["content"][0]["audio"] for row in rows] == [
+        {"array": [0.1], "sampling_rate": 24000},
+        {"array": [0.2], "sampling_rate": 24000},
+    ]
+    unknown_rate, _ = _worker._mlx_audio_rows(dataset, "unknown")
+    assert unknown_rate[0]["messages"][1]["content"][0]["audio"]["sampling_rate"] == 16000
+    assert [row["messages"][2]["content"][0]["text"] for row in rows] == ["a", "b"]
+    with pytest.raises(ValueError, match = "'audio' and 'text'"):
+        _worker._mlx_audio_rows(_AudioRowsDataset([{"audio": clips[0], "x": 1}]), "processor")
+    decoders[0] = False
+    with pytest.raises(RuntimeError, match = "audio runtime"):
+        _worker._mlx_audio_rows(dataset, "processor")
+
+
+def test_mlx_audio_rows_carry_each_rows_images(monkeypatch):
+    from PIL import Image
+
+    from utils.datasets import audio_decode
+
+    monkeypatch.setattr(audio_decode, "ensure_audio_decoding", lambda: True)
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.audio_extractor_sampling_rate = lambda processor: 16000
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", zoo_utils)
+    red, blue = Image.new("RGB", (4, 4), "red"), Image.new("RGB", (4, 4), "blue")
+    clip = {"array": [0.1], "sampling_rate": 16000}
+    dataset = _AudioRowsDataset(
+        [
+            {"audio": clip, "photo": [red, blue], "text": "a"},
+            {"audio": clip, "photo": [None], "text": "b"},
+        ]
+    )
+
+    rows, image_col = _worker._mlx_audio_rows(dataset, "processor")
+
+    assert image_col == "photo"
+    assert rows[0]["images"] == [red, blue] and "images" not in rows[1]
+    kinds = [[part["type"] for part in row["messages"][1]["content"]] for row in rows]
+    assert kinds == [["image", "image", "audio", "text"], ["audio", "text"]]
+    # An eval split whose train split had no images trains on audio alone.
+    eval_rows, eval_image_col = _worker._mlx_audio_rows(dataset, "processor", None, None)
+    assert eval_image_col is None and "images" not in eval_rows[0]
+
+
+@pytest.mark.parametrize("is_dataset_audio", [True, False])
+def test_mlx_audio_dataset_loads_and_trains_as_a_vlm(is_dataset_audio):
+    names = {"is_dataset_image": False, "is_dataset_audio": is_dataset_audio}
+    model = types.SimpleNamespace(_is_vlm_model = True)
+    assert _run_mlx_assignment("is_vlm", model = model, **names) is is_dataset_audio
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    text_only = {
+        ast.unparse(kw.value)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        for kw in n.keywords
+        if kw.arg == "text_only"
+    }
+    assert len(text_only) == 1
+    assert eval(text_only.pop(), names) is (None if is_dataset_audio else True)
+
+
+@pytest.mark.parametrize(
+    "is_dataset_image, is_dataset_audio, expected",
+    [(True, False, True), (False, True, False), (True, True, True)],
+)
+def test_mlx_vision_layers_train_only_on_image_rows(is_dataset_image, is_dataset_audio, expected):
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    nodes = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "finetune_vision"
+    ]
+    assert len(nodes) == 1
+    namespace = {
+        "config": {"finetune_vision_layers": True},
+        "is_vlm": True,
+        "is_dataset_image": is_dataset_image,
+        "is_dataset_audio": is_dataset_audio,
+    }
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<vision>", "exec"), namespace)
+    assert namespace["finetune_vision"] is expected

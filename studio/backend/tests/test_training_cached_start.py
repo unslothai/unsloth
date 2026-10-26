@@ -1847,7 +1847,6 @@ def test_streaming_rejects_cached_dataset_hints(cache_overrides):
     ("request_overrides", "expected"),
     [
         ({"is_embedding": True}, "Embedding model training"),
-        ({"is_dataset_audio": True}, "Audio dataset training"),
         ({"use_loftq": True}, "LoftQ"),
     ],
 )
@@ -1868,7 +1867,7 @@ def test_mlx_start_rejects_unsupported_training_config(request_overrides, expect
     assert expected in exc_info.value.detail
 
 
-def test_mlx_start_accepts_dora_and_cpt():
+def test_mlx_start_accepts_dora_cpt_and_audio_datasets():
     # LoftQ alongside DoRA so a gate that refuses nothing cannot pass.
     from utils.hardware import hardware
 
@@ -1878,6 +1877,7 @@ def test_mlx_start_accepts_dora_and_cpt():
         route._validate_training_platform(_request(use_dora = True))
         route._validate_training_platform(_request(is_decision = True))
         route._validate_training_platform(_request(training_type = "Continued Pretraining"))
+        route._validate_training_platform(_request(is_dataset_audio = True))
         with pytest.raises(HTTPException) as exc_info:
             route._validate_training_platform(_request(use_loftq = True))
 
