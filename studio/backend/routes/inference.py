@@ -43588,6 +43588,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         except (_NonStreamingRequestCancelled, LlamaAdmissionCancelled) as exc:
             api_monitor.finish(monitor_id, "cancelled")
             raise _openai_admission_http_exception(exc, status_code = 499)
+        except LlamaAdmissionTimeout as exc:
+            # The cache did not free room in time: the same 503 as embeddings and chat.
+            api_monitor.fail(monitor_id, str(exc))
+            raise _openai_admission_http_exception(exc, status_code = 503)
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise

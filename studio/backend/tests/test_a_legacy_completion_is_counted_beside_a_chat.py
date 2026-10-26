@@ -247,3 +247,13 @@ def test_a_numeric_prompt_is_not_undercounted_before_planning(monkeypatch):
     finally:
         for gen_id in list(controller._participants):
             controller.unregister(gen_id)
+
+
+def test_a_non_streaming_completion_answers_a_cache_room_timeout_with_503():
+    # The victim wait raises LlamaAdmissionTimeout; the generic handler turned it into a 500.
+    source = "".join(inspect.getsource(inference.openai_completions).split())
+    wait = source.index("await_openai_llama_let_victims_go(llama_backend,_cmpl_holder,_cancel_event)")
+    handlers = source[wait : source.index("finally:", wait)]
+    timeout = handlers.index("exceptLlamaAdmissionTimeoutasexc:")
+    assert timeout < handlers.index("exceptExceptionase:"), "caught before the generic 500"
+    assert "status_code=503" in handlers[timeout : handlers.index("exceptExceptionase:")]
