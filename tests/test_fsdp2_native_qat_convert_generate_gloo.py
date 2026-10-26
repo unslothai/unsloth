@@ -130,7 +130,6 @@ def _worker(rank, world, port, out):
         out.put((rank, _case(_load_native())))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         try:
