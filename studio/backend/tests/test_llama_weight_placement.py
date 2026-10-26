@@ -430,7 +430,9 @@ def test_metal_nvfp4_weights_left_on_the_cpu_are_reported():
     assert metal_unsupported_weight_types(_METAL_NVFP4_LOG, placement) == ["nvfp4"]
     # Older builds without the device table still name the device they load onto.
     no_table = [line for line in _METAL_NVFP4_LOG if not line.startswith(("device_info", "  -"))]
-    no_table.insert(0, "llama_model_load_from_file_impl: using device MTL0 (Apple M3 Ultra) - 475135 MiB free")
+    no_table.insert(
+        0, "llama_model_load_from_file_impl: using device MTL0 (Apple M3 Ultra) - 475135 MiB free"
+    )
     assert metal_unsupported_weight_types(no_table, placement) == ["nvfp4"]
 
 
@@ -452,9 +454,7 @@ def test_metal_types_are_not_reported_off_metal_or_once_the_gpu_holds_them():
 
 def test_only_the_main_models_type_table_counts():
     """A drafter loads after the main model and prints its own table."""
-    lines = [
-        line for line in _METAL_NVFP4_LOG if "nvfp4" not in line
-    ] + [
+    lines = [line for line in _METAL_NVFP4_LOG if "nvfp4" not in line] + [
         "srv load_model: loading draft model",
         "llama_model_loader: - type nvfp4:   12 tensors",
     ]
