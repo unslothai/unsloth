@@ -90,8 +90,7 @@ def new_record(
 
 
 def tokens(text: str) -> frozenset[str]:
-    # Short texts (memory records) are cached: every retrieval re-scores the whole stream. Long ones are not,
-    # so the process-wide cache stays a few MB whatever callers send.
+    # Records are short and re-scored on every retrieval; long texts skip the cache so it stays small.
     return _cached_tokens(text) if len(text) <= TOKEN_CACHE_MAX_CHARS else _tokens(text)
 
 
