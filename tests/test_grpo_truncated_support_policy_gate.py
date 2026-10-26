@@ -162,8 +162,7 @@ def test_policies_with_their_own_kept_set_score_the_full_vocabulary(monkeypatch,
 
 
 def test_refusals_do_not_claim_the_variable_was_set(monkeypatch):
-    # unsloth-zoo turns kept-set scoring on automatically, so a refusal can fire with
-    # UNSLOTH_GRPO_TRUNCATED_SUPPORT unset: the message must not say "ignoring ...=1".
+    # zoo's automatic gate means refusals fire with the variable unset: never say "ignoring ...=1".
     monkeypatch.delenv("UNSLOTH_GRPO_TRUNCATED_SUPPORT", raising = False)
     _, messages = _bind(monkeypatch, _trainer(beta = 0.04))
     refuse = _refuse_helper(monkeypatch, _SUPPORT)

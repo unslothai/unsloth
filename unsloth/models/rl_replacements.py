@@ -3545,9 +3545,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     **kwargs,
                 )
 
-            # UNSLOTH_GRPO_TRUNCATED_SUPPORT (=1, or automatic in unsloth-zoo for truncated rollouts
-            # feeding the IS correction): score over the rollout's top_k / top_p /
-            # min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
+            # UNSLOTH_GRPO_TRUNCATED_SUPPORT (=1 or zoo's automatic gate): score over the rollout's
+            # top_k / top_p / min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
             # normalisations unless this marker says the old / ref logps were scored the same way.
             try:
                 from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
