@@ -271,7 +271,6 @@ def _mapped(folder_id: str) -> set[str]:
         }
 
 
-
 def _gitignore_the_folder(source, monkeypatch):
     _write(source, ".gitignore", "build/\n")
 
