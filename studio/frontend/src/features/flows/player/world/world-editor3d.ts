@@ -20,6 +20,8 @@ import {
   commit,
   freeTileNear,
   makeProp,
+  mergePlaced,
+  placeRequest,
   redo,
   removeProp,
   snapRotation,
@@ -240,6 +242,21 @@ export function createWorldEditor(ctx: EditorContext): WorldEditorRuntime {
       );
       selected = p.id;
       apply([...h.props, p]);
+    },
+    placeRequest(text) {
+      return placeRequest(map, h.props, ctx.openTile, text, {
+        x: Math.floor(orbit.target.x),
+        y: Math.floor(orbit.target.z),
+      });
+    },
+    addPlaced(placed) {
+      const next = mergePlaced(h.props, placed, map);
+      const added = next.length - h.props.length;
+      if (added > 0) {
+        selected = null;
+        apply(next);
+      }
+      return added;
     },
     select(id) {
       selected = id && h.props.some((p) => p.id === id) ? id : null;

@@ -143,16 +143,29 @@ def test_director_task_returns_a_patch():
     out = run(world_nodes.world_npc_reply(ctx))
     assert out["reply"]["patch"]["quest"]["requires_item"] == "bell"
     call = ctx.llm_calls[0]
-    assert call["schema"] is DIRECTOR_SCHEMA
+    assert call["schema"]["required"] == DIRECTOR_SCHEMA["required"]
+    assert call["schema"]["properties"]["giver"]["enum"] == ["old_tom", "mira"]
+    assert call["schema"]["properties"]["item"]["enum"] == ["bell"]
     assert (
         "The Lost Rod (open)" in call["prompt"] and "Quest complete: The Lost Rod" in call["prompt"]
     )
     ctx = FakeCtx(
         "world.npc_reply", inputs = {"state": _state()}, llm = lambda **kw: {"title": "x", "giver": "?"}
     )
+    patch = run(world_nodes.world_npc_reply(ctx))["reply"]["patch"]
+    assert len(ctx.llm_calls) == 2, "one more try, then the built-in quest"
+    assert patch["quest"]["requires_item"] == "bell" and patch["quest"]["giver"] in (
+        "old_tom",
+        "mira",
+    )
+    assert set(patch) == {"npcs", "items", "quest"}
+    ctx = FakeCtx(
+        "world.npc_reply",
+        inputs = {"state": _state(picked = ["bell"])},
+        llm = lambda **kw: {"title": "x", "giver": "?"},
+    )
     with pytest.raises(FlowNodeError):
         run(world_nodes.world_npc_reply(ctx))
-    assert len(ctx.llm_calls) == 2, "one more try, then give up"
 
 
 def test_a_refused_quest_is_asked_again_with_the_reason():
@@ -166,7 +179,10 @@ def test_a_refused_quest_is_asked_again_with_the_reason():
     out = run(world_nodes.world_npc_reply(ctx))
     assert out["reply"]["patch"]["quest"]["requires_item"] == "bell"
     assert "refused" not in ctx.llm_calls[0]["prompt"]
-    assert "Your last answer was refused: the new quest needs an item" in ctx.llm_calls[1]["prompt"]
+    assert (
+        "Your last answer was refused: `item` is 'rod', not one of 'bell'"
+        in ctx.llm_calls[1]["prompt"]
+    )
     assert ctx.llm_calls[0].get("seed") is None and ctx.llm_calls[1].get("seed") is None
 
 

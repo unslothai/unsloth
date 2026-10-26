@@ -12,6 +12,7 @@ import re
 from typing import Any, Optional
 
 from core.flows import assets as asset_store
+from core.flows.authoring import string_enum
 from core.flows.expr import Prng, seed_from
 from core.flows.schema import WorldSpec
 from core.flows.story import _unique, input_values, most_downstream, node_value, slug
@@ -21,6 +22,7 @@ WORLD_ENTRY_TYPES = {
     "world.npc_reply": "npc_reply",
     "world.npc_plan": "npc_plan",
     "world.npc_chat": "npc_chat",
+    "world.describe_place": "describe_place",
 }
 BIOMES = ("meadow", "forest", "desert", "snow", "town", "dungeon", "beach")
 BIOME_TILES = {
@@ -920,6 +922,69 @@ def validate_director(raw: Any, state: dict) -> dict:
         "reward_text": text("reward_text", 200) or "Thank you!",
     }
     return patch
+
+
+def director_schema(state: dict) -> dict:
+    """DIRECTOR_SCHEMA with the giver and item fields limited to what the world has, when nothing new may be invented."""
+    world = state.get("world") if isinstance(state.get("world"), dict) else {}
+    props = dict(DIRECTOR_SCHEMA["properties"])
+    if not state.get("allow_npc"):
+        props["giver"] = string_enum(n.get("id") for n in world.get("npcs") or [])
+    if not state.get("allow_item"):
+        used = _used_items(world, state)
+        props["item"] = string_enum(
+            i.get("id") for i in world.get("items") or [] if i.get("id") not in used
+        )
+    regions = [r.get("id") for r in world.get("regions") or []]
+    if regions:
+        props["region"] = string_enum(regions, allow_empty = True)
+    return {**DIRECTOR_SCHEMA, "properties": props}
+
+
+def fallback_quest(state: dict) -> dict:
+    """A plain fetch quest from what the world already has, when the model's answers keep being refused."""
+    world = state.get("world") if isinstance(state.get("world"), dict) else {}
+    npcs = world.get("npcs") or []
+    if not npcs:
+        raise WorldError("the world has no villager to give a quest")
+    used = _used_items(world, state)
+    free = [i for i in world.get("items") or [] if i.get("id") not in used]
+    n = len(world.get("quests") or [])
+    giver = npcs[n % len(npcs)]
+    if free:
+        item = free[n % len(free)]
+        raw = {"item": item["id"], "new_item_name": ""}
+        name = item["name"]
+    elif state.get("allow_item"):
+        name = FALLBACK_ITEMS[n % len(FALLBACK_ITEMS)]
+        raw = {
+            "item": "",
+            "new_item_name": name,
+            "new_item_description": f"A {name.lower()} someone lost.",
+        }
+    else:
+        raise WorldError("every item is already used and new ones are off")
+    return validate_director(
+        {
+            **raw,
+            "title": f"Find the {name}",
+            "description": f"{giver['name']} has lost the {name} and would be glad to have it back.",
+            "reward_text": "Thank you, that means a lot!",
+            "giver": giver["id"],
+            "new_npc_name": "",
+        },
+        state,
+    )
+
+
+FALLBACK_ITEMS = (
+    "Brass Key",
+    "Old Map",
+    "Silver Locket",
+    "Lucky Coin",
+    "Lost Letter",
+    "Little Bell",
+)
 
 
 def world_places(world: dict) -> list[dict]:

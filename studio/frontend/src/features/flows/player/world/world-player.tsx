@@ -648,6 +648,7 @@ export function WorldPlayer({
   const [thinking, setThinking] = useState(false);
   const [live, setLive] = useState<LiveReply | null>(null);
   const replyEntry = spec.entry_points?.npc_reply;
+  const placeEntry = spec.entry_points?.describe_place;
   const [warmed, setWarmed] = useState(true);
   useEffect(() => {
     if (!replyEntry || !api.warm) return;
@@ -1666,6 +1667,26 @@ export function WorldPlayer({
             onExport={() => void exportScene()}
             onSave={() => void saveScene()}
             onDone={() => void closeEditor()}
+            onDescribe={
+              placeEntry || replyEntry
+                ? async (req) => {
+                    const res = await api.invoke(
+                      flowId,
+                      (placeEntry || replyEntry)!,
+                      placeEntry
+                        ? { request: req }
+                        : { state: { task: "describe_place", ...req } },
+                    );
+                    const out = (
+                      placeEntry
+                        ? res.outputs.place
+                        : (res.outputs.reply as { place?: unknown } | undefined)
+                            ?.place
+                    ) as { props3d?: unknown } | undefined;
+                    return out?.props3d;
+                  }
+                : undefined
+            }
           />
         </Suspense>
       ) : null}

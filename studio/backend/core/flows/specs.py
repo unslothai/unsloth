@@ -2094,6 +2094,25 @@ NODE_SPECS: list[dict] = [
         icon = "users",
     ),
     spec(
+        "world.describe_place",
+        "Describe a Place",
+        "world",
+        "Lays out a place from a short description: the model lists areas, props and how they relate (near, against "
+        "a wall, facing, in an area) and a solver puts them on free tiles the player can still walk to. The 3D "
+        "scene editor calls it; a refused answer is asked again twice, then a built-in layout is used.",
+        inputs = [inp("request", "json", optional = True), inp("world", "world", optional = True)],
+        outputs = [out("place", "json")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("description", "textarea", "A small market square with a well", "Description"),
+        ],
+        lane = "gpu",
+        model_kind = "chat",
+        entrypoint = True,
+        cacheable = False,
+        icon = "map",
+    ),
+    spec(
         "world.play",
         "World Player",
         "world",

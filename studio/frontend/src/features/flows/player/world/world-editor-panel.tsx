@@ -10,13 +10,14 @@ import {
   Scale3dIcon,
   Undo2Icon,
 } from "lucide-react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
 import {
   type EditorState,
   type GizmoMode,
+  type PlaceRequest,
   PROP_KINDS,
   PROP_LABELS,
   type WorldEditor,
@@ -40,6 +41,8 @@ export interface WorldEditorPanelProps {
   onExport(): void;
   onSave(): void;
   onDone(): void;
+  /** Lays out a described place; returns the solver's props3d. Absent when the flow has no model entry. */
+  onDescribe?(req: PlaceRequest): Promise<unknown>;
 }
 
 const btn =
@@ -57,8 +60,27 @@ export default function WorldEditorPanel({
   onExport,
   onSave,
   onDone,
+  onDescribe,
 }: WorldEditorPanelProps) {
   const file = useRef<HTMLInputElement>(null);
+  const [place, setPlace] = useState("");
+  const [placing, setPlacing] = useState(false);
+  const [placeNote, setPlaceNote] = useState<string | null>(null);
+  const describe = async () => {
+    if (!onDescribe || placing || !place.trim()) return;
+    setPlacing(true);
+    setPlaceNote(null);
+    try {
+      const added = editor.addPlaced(
+        await onDescribe(editor.placeRequest(place)),
+      );
+      setPlaceNote(added ? `Added ${added} props` : "Nothing fit here");
+    } catch (e) {
+      setPlaceNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPlacing(false);
+    }
+  };
   const sel = state.props.find((p) => p.id === state.selected) ?? null;
   return (
     <div
@@ -118,6 +140,41 @@ export default function WorldEditorPanel({
           Import .glb model
         </button>
       </div>
+
+      {onDescribe ? (
+        <form
+          className="flex flex-col gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void describe();
+          }}
+        >
+          <p className="text-[11px] text-white/45 uppercase tracking-wide">
+            Describe a place
+          </p>
+          <div className="flex gap-1">
+            <input
+              value={place}
+              maxLength={600}
+              placeholder="A market square with a well"
+              className="min-w-0 flex-1 rounded-md bg-white/10 px-2 py-1 text-xs text-white placeholder:text-white/35"
+              data-testid="world-editor-describe"
+              onChange={(e) => setPlace(e.target.value)}
+            />
+            <button
+              type="submit"
+              disabled={placing || !place.trim()}
+              className={cn(btn, "bg-white/10")}
+              data-testid="world-editor-describe-go"
+            >
+              {placing ? "Placing" : "Place"}
+            </button>
+          </div>
+          {placeNote ? (
+            <p className="text-[11px] text-white/55">{placeNote}</p>
+          ) : null}
+        </form>
+      ) : null}
 
       <div className="flex items-center gap-1">
         {MODES.map(([m, label, Icon, key]) => (

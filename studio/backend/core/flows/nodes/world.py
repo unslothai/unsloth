@@ -7,14 +7,24 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 from collections import OrderedDict
 from typing import Any, Optional
 
 from core.flows import memory as mem
+from core.flows.authoring import AuthoringError, constrained_call
 from core.flows.expr import seed_from
 from core.flows.nodes._common import JsonFieldStream
 from core.flows.nodes.memory import _plan_schema, _retrieve, clean_plan, embed
 from core.flows.registry import FlowNodeError, NodeContext, handler
+from core.flows.scene_solver import (
+    SCENE_SCHEMA,
+    SCENE_SYSTEM,
+    Grid,
+    fallback_scene,
+    solve,
+    validate_scene,
+)
 from core.flows.story import slug
 from core.flows.world import (
     BIOME_TILES,
@@ -29,6 +39,8 @@ from core.flows.world import (
     clean_summary,
     compact_prompt,
     director_prompt,
+    director_schema,
+    fallback_quest,
     has_memory,
     normalize_world,
     npc_prompt,
@@ -288,6 +300,8 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         return await _summarise(ctx, state)
     if state.get("task") == "director":
         return await _direct(ctx, state)
+    if state.get("task") == "describe_place":
+        return {"reply": {"place": await describe_place(ctx, state)}}
     memories: Optional[list[dict]] = None
     if has_memory(state):
         npc = next(
@@ -352,27 +366,76 @@ async def _direct(ctx: NodeContext, state: dict) -> dict:
         system, prompt = director_prompt(state)
     except WorldError as exc:
         raise FlowNodeError(str(exc)) from exc
-    world = state.get("world") or {}
-    refused = ""
-    for attempt in range(2):
-        raw = await ctx.llm_json(
-            model = ctx.params.get("model"),
-            system = system,
-            prompt = prompt
-            + (
-                f"Your last answer was refused: {refused}. Answer again and fix that.\n"
-                if refused
-                else ""
-            ),
-            schema = DIRECTOR_SCHEMA,
-            temperature = 0.9,
-            max_tokens = 500,
-        )
-        try:
-            return {"reply": {"patch": validate_director(raw, state)}}
-        except WorldError as exc:
-            refused = str(exc)
-    raise FlowNodeError(refused, retryable = True)
+    out = await constrained_call(
+        ctx,
+        director_schema(state),
+        prompt,
+        lambda raw: validate_director(raw, state),
+        repair_max = 1,
+        fallback = lambda: fallback_quest(state),
+        system = system,
+        temperature = 0.9,
+        max_tokens = 500,
+        defaults = {k: "" for k in DIRECTOR_SCHEMA["required"]},
+    )
+    return {"reply": {"patch": out.value}}
+
+
+async def describe_place(ctx: NodeContext, req: dict) -> dict:
+    """Lay out the described place on the request's map (rows of ``#`` / ``.`` / ``R``, or an open field)."""
+    text = re.sub(r"\s+", " ", str(req.get("text") or ctx.params.get("description") or "")).strip()[
+        :600
+    ]
+    if not text:
+        raise FlowNodeError("Describe the place first.")
+    try:
+        Grid.from_request(req)
+    except (AuthoringError, TypeError, ValueError, KeyError) as exc:
+        raise FlowNodeError(f"Unreadable map: {exc}") from exc
+    f = req.get("focus") if isinstance(req.get("focus"), dict) else {}
+    focus = (
+        (int(f["x"]), int(f["y"]))
+        if all(isinstance(f.get(k), (int, float)) for k in ("x", "y"))
+        else None
+    )
+    taken = {str(i) for i in req.get("taken") or [] if isinstance(i, str)}
+    seed = int(req["seed"]) if isinstance(req.get("seed"), int) else int(ctx.seed or 0)
+
+    def place(spec: dict) -> dict:
+        return solve(spec, Grid.from_request(req), focus = focus, seed = seed, taken_ids = taken)
+
+    def check(raw: Any) -> dict:
+        spec = validate_scene(raw)
+        result = place(spec)
+        want = sum(p["count"] for p in spec["props"])
+        if len(result["props3d"]) * 2 < want:
+            raise AuthoringError(
+                f"only {len(result['props3d'])} of {want} props fit on the free ground; ask for fewer"
+            )
+        return {**result, "spec": spec}
+
+    out = await constrained_call(
+        ctx,
+        SCENE_SCHEMA,
+        f"Describe this place as a scene: {text}\n",
+        check,
+        fallback = lambda: {**place(spec := fallback_scene(text)), "spec": spec},
+        system = SCENE_SYSTEM,
+        temperature = 0.7,
+        max_tokens = 900,
+    )
+    return {**out.value, "fallback": out.fallback, "attempts": out.attempts}
+
+
+@handler("world.describe_place")
+async def world_describe_place(ctx: NodeContext) -> dict:
+    req = ctx.inputs.get("request")
+    req = dict(req) if isinstance(req, dict) else {}
+    w = ctx.inputs.get("world")
+    if not req.get("rows") and isinstance(w, dict):
+        req.setdefault("width", w.get("width"))
+        req.setdefault("height", w.get("height"))
+    return {"place": await describe_place(ctx, req)}
 
 
 def _sim_world(state: Any, who: str) -> dict:
