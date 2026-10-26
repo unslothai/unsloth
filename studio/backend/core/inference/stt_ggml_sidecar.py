@@ -1004,7 +1004,7 @@ class GgmlSttSidecar:
         ``None`` is no opinion: it keeps the running server's placement, so a
         caller that never sends one cannot restart it onto the other device.
         """
-        from core.inference.audio_device import audio_device_forces_cpu
+        from core.inference.audio_device import stt_device_forces_cpu
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1018,7 +1018,7 @@ class GgmlSttSidecar:
             force_cpu = (
                 self._forced_cpu
                 if device is None and self._process_alive()
-                else audio_device_forces_cpu(device)
+                else stt_device_forces_cpu(device)
             )
             if (
                 self._process_alive()

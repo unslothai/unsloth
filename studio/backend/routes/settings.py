@@ -3101,9 +3101,9 @@ class SttDeviceResponse(BaseModel):
 
 
 def _stt_device_state() -> tuple[str, bool]:
-    from core.inference.audio_device import audio_device_default, audio_device_env_locked
+    from core.inference.audio_device import audio_device_env_locked, stt_device_default
     try:
-        return audio_device_default(), audio_device_env_locked()
+        return stt_device_default(), audio_device_env_locked()
     except Exception:  # noqa: BLE001 - probe must never block reading settings
         return "auto", False
 

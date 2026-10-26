@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisted Voice Settings "Load into" for STT (#15280).
+"""Voice Settings "Load into" for speech-to-text, persisted for API loads (#15280).
 
-The desktop UI stores ``sttDevice`` in browser localStorage. OpenAI-compatible
-``/v1/audio/transcriptions`` never sees that preference, so a cold API load fell
-through to ``auto`` (GPU). Mirroring the choice into ``app_settings`` lets
-``audio_device_default`` honour it when ``UNSLOTH_AUDIO_DEVICE`` is unset —
-same pattern as ``rag_embedding_device``.
+The UI keeps ``sttDevice`` in browser localStorage, which ``/v1/audio/transcriptions`` never
+sees. Mirrored into ``app_settings`` (as ``rag_embedding_device`` is), ``stt_device_default``
+reads it when ``UNSLOTH_AUDIO_DEVICE`` is unset.
 """
 
 from __future__ import annotations

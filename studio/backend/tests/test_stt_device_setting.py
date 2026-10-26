@@ -44,8 +44,9 @@ def test_unset_defaults_to_auto():
 def test_saving_cpu_is_what_a_device_less_cold_load_uses():
     response = _put("cpu")
     assert response.device == "cpu"
-    assert audio_device.audio_device_default() == "cpu"
-    assert audio_device.audio_device_forces_cpu(None)
+    assert audio_device.stt_device_default() == "cpu"
+    assert audio_device.stt_device_forces_cpu(None)
+    assert audio_device.audio_device_default() == "auto"
 
 
 def test_env_locks_settings(monkeypatch):
@@ -54,5 +55,5 @@ def test_env_locks_settings(monkeypatch):
     with pytest.raises(HTTPException) as raised:
         _put("auto")
     assert raised.value.status_code == 409
-    assert audio_device.audio_device_default() == "gpu"
+    assert audio_device.stt_device_default() == "gpu"
     assert audio_device.audio_device_env_locked() is True

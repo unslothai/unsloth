@@ -1614,7 +1614,7 @@ class WhisperSttSidecar:
 
         Returns a ``(model, processor)`` pair.
         """
-        from core.inference.audio_device import audio_device_default, normalize_audio_device
+        from core.inference.audio_device import normalize_audio_device, stt_device_default
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1622,7 +1622,7 @@ class WhisperSttSidecar:
         # None is "no opinion", not "auto": a caller sending none must not drag a model
         # off the device another surface asked for.
         requested = None if device is None else normalize_audio_device(device)
-        preference = audio_device_default() if requested is None else requested
+        preference = stt_device_default() if requested is None else requested
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")

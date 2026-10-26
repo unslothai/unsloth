@@ -15,9 +15,6 @@ Values match ``RAG_EMBED_DEVICE`` (``core/rag/config.py``):
           still applies, so this is a preference and not a guarantee.
 
 ``UNSLOTH_AUDIO_DEVICE`` supplies the default for a request that names none.
-When that env is unset, the owner's saved Voice Settings "Load into" preference
-(``stt_device`` in app_settings) is used so OpenAI-compatible STT routes honour
-the same choice as the Settings Load button (#15280).
 """
 
 from __future__ import annotations
@@ -32,6 +29,8 @@ __all__ = [
     "audio_device_forces_cpu",
     "mask_accelerators_for_cpu_audio",
     "normalize_audio_device",
+    "stt_device_default",
+    "stt_device_forces_cpu",
 ]
 
 AUDIO_DEVICE_CHOICES = ("auto", "cpu", "gpu")
@@ -66,18 +65,8 @@ def normalize_audio_device(value: Optional[str]) -> str:
     return "auto"
 
 
-def audio_device_env_locked() -> bool:
-    """Whether ``UNSLOTH_AUDIO_DEVICE`` names a device, which Settings then cannot override."""
-    return bool(str(os.environ.get("UNSLOTH_AUDIO_DEVICE") or "").strip())
-
-
 def audio_device_default() -> str:
-    """The preference for a request that carries none.
-
-    ``UNSLOTH_AUDIO_DEVICE`` wins when set (headless/CLI). Otherwise the owner's
-    saved Voice Settings "Load into" value is used, so a cold
-    ``/v1/audio/transcriptions`` load matches the Settings UI (#15280). Falls
-    back to ``auto`` when neither is set.
+    """The preference for a request that carries none (``UNSLOTH_AUDIO_DEVICE``).
 
     Scope: the native audio backend and the three STT sidecars. It does NOT reach a
     GGUF TTS model. llama.cpp placement is decided from ``gpu_memory_mode`` and
@@ -87,14 +76,32 @@ def audio_device_default() -> str:
     from the catalog it already has; a headless caller must send the GGUF placement
     fields itself.
     """
-    env = str(os.environ.get("UNSLOTH_AUDIO_DEVICE") or "").strip()
-    if env:
-        return normalize_audio_device(env)
+    return normalize_audio_device(os.environ.get("UNSLOTH_AUDIO_DEVICE"))
+
+
+def audio_device_env_locked() -> bool:
+    """Whether ``UNSLOTH_AUDIO_DEVICE`` names a device, which Settings then cannot override."""
+    return bool(str(os.environ.get("UNSLOTH_AUDIO_DEVICE") or "").strip())
+
+
+def stt_device_default() -> str:
+    """``audio_device_default`` for speech-to-text only: with the environment unset, the owner's
+    saved Voice Settings "Load into", so a device-less API load lands where Settings says (#15280).
+    Native audio / TTS keep the environment-only default."""
+    if audio_device_env_locked():
+        return audio_device_default()
     try:
         from utils.stt_device_settings import get_stored_stt_device
         return get_stored_stt_device()
     except Exception:  # noqa: BLE001 - store unavailable: detect as before
         return "auto"
+
+
+def stt_device_forces_cpu(value: Optional[str]) -> bool:
+    """``audio_device_forces_cpu`` with ``None`` read through ``stt_device_default``."""
+    if value is None:
+        return stt_device_default() == "cpu"
+    return normalize_audio_device(value) == "cpu"
 
 
 def audio_device_forces_cpu(value: Optional[str]) -> bool:

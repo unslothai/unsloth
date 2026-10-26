@@ -45,6 +45,14 @@ test("the device preference travels with every load and transcribe", () => {
 test("Load into is synced to the server for cold API STT loads", () => {
   // Browser localStorage alone left /v1/audio/transcriptions on auto/GPU (#15280).
   assert.match(sttDeviceApi, /\/api\/settings\/stt-device/);
-  assert.match(voiceStore, /syncSttDevicePreference\(sttDevice\)/);
-  assert.match(voiceStore, /onRehydrateStorage/);
+  assert.match(sttDeviceApi, /from "@\/features\/auth\/api"/);
+  assert.match(
+    voiceStore,
+    /set\(\{ sttDevice \}\);\s*\/\/[^\n]*\n\s*syncSttDevice\(sttDevice\)/,
+  );
+  // A fresh browser still on the default must not overwrite what another one saved.
+  assert.match(
+    voiceStore,
+    /onRehydrateStorage[\s\S]*?state\.sttDevice !== DEFAULT_STT_DEVICE[\s\S]*?syncSttDevice\(state\.sttDevice\)/,
+  );
 });

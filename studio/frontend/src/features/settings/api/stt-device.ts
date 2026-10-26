@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+// The module, not the barrel: the barrel pulls in page components the store tests cannot load.
+import { authFetch } from "@/features/auth/api";
 import type { SttDevice } from "../stores/voice-settings-store";
 
 /**

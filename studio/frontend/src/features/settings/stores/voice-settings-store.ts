@@ -226,6 +226,13 @@ const quotaSafeLocalStorage = {
   },
 };
 
+// Server copy of "Load into" for device-less API loads (#15280); localStorage stays the UI's source.
+function syncSttDevice(device: SttDevice): void {
+  void import("../api/stt-device")
+    .then(({ syncSttDevicePreference }) => syncSttDevicePreference(device))
+    .catch(() => {});
+}
+
 export const useVoiceSettingsStore = create<VoiceSettingsState>()(
   persist(
     (set) => ({
@@ -259,9 +266,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         const sttDevice = normalizeSttDevice(value);
         set({ sttDevice });
         // Server default for cold /v1/audio/transcriptions loads (#15280).
-        void import("../api/stt-device").then(({ syncSttDevicePreference }) => {
-          syncSttDevicePreference(sttDevice);
-        });
+        syncSttDevice(sttDevice);
       },
 
       sttProviderId: "",
@@ -439,11 +444,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         };
       },
       onRehydrateStorage: () => (state) => {
-        // Push the browser-local "Load into" choice so API cold loads match Settings (#15280).
-        if (!state) return;
-        void import("../api/stt-device").then(({ syncSttDevicePreference }) => {
-          syncSttDevicePreference(state.sttDevice);
-        });
+        // Only a non-default choice: a fresh browser must not reset what another one saved.
+        if (state && state.sttDevice !== DEFAULT_STT_DEVICE) {
+          syncSttDevice(state.sttDevice);
+        }
       },
     },
   ),
