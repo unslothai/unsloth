@@ -8715,8 +8715,14 @@ def _convert_module_by_module(model, base_config, filter_fn, device):
     for fqn, module in model.named_modules():
         if fqn and select(module, fqn):
             home = next(itertools.chain(module.parameters(), module.buffers()), None)
-            targets.append((fqn, module, home.device if home is not None else None))
-    for fqn, module, home in targets:
+            # Per tensor: a bias FSDP2 replicates (ignored_params) stays on the GPU while the
+            # gathered weight sits on the CPU, and each must go back where it was.
+            homes = {
+                name: t.device
+                for name, t in itertools.chain(module.named_parameters(), module.named_buffers())
+            }
+            targets.append((fqn, module, home.device if home is not None else None, homes))
+    for fqn, module, home, homes in targets:
         parent_fqn, _, child = fqn.rpartition(".")
         parent = model.get_submodule(parent_fqn)
         if getattr(parent, child, None) is not module:
@@ -8730,9 +8736,30 @@ def _convert_module_by_module(model, base_config, filter_fn, device):
         new = getattr(parent, child)
         quantize_(parent, base_config, filter_fn = lambda m, _, n = new: m is n and unquantized(m, fqn))
         if home is not None:
-            getattr(parent, child).to(home)
+            _restore_tensor_devices(getattr(parent, child), homes, home)
             # The replaced module may still be referenced (a kept module tree, a tied weight).
-            module.to(home)
+            _restore_tensor_devices(module, homes, home)
+
+
+def _restore_tensor_devices(module, homes, default):
+    """Move each parameter / buffer of `module` to `homes[name]` (else `default`), keeping
+    Parameter objects (optimizer state and FSDP2 hold them)."""
+    for prefix, sub in module.named_modules():
+        for store in (sub._parameters, sub._buffers):
+            for key, tensor in list(store.items()):
+                if tensor is None:
+                    continue
+                target = homes.get(f"{prefix}.{key}" if prefix else key, default)
+                if tensor.device == target:
+                    continue
+                if not isinstance(tensor, torch.nn.Parameter):
+                    store[key] = tensor.to(target)
+                    continue
+                moved = tensor.data.to(target)
+                try:
+                    tensor.data = moved
+                except RuntimeError:  # a tensor subclass that refuses .data swaps
+                    store[key] = torch.nn.Parameter(moved, requires_grad = tensor.requires_grad)
 
 
 def _convert_torchao_model(model):

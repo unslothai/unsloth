@@ -344,11 +344,28 @@ def _run_cases(rank, world_size, base, out):
         finally:
             builtins.open = real_open
 
+    def restore_devices():
+        # A replicated bias on another device than the gathered weight goes back to its own device
+        # (the meta device stands in for the GPU; CPU <-> CUDA keeps the Parameter object via .data,
+        # CPU -> meta cannot, so it gets a new one). A tensor already home is left untouched.
+        from unsloth.models import _utils
+
+        layer = torch.nn.Linear(4, 4)
+        weight = layer.weight
+        homes = {"weight": torch.device("cpu"), "bias": torch.device("meta")}
+        _utils._restore_tensor_devices(layer, homes, torch.device("cpu"))
+        result["restore_devices"] = [
+            str(layer.weight.device),
+            str(layer.bias.device),
+            layer.weight is weight,
+            isinstance(layer.bias, torch.nn.Parameter),
+        ]
+
     def placement():
         # 10 GiB gathered converts on a 16 GiB card only with the quantized copy counted too.
         result["placement_need"] = fsdp2_save._accelerator_convert_bytes(10 * 1024**3)
 
-    cases = [merged, gguf, push_gguf, placement]
+    cases = [merged, gguf, push_gguf, placement, restore_devices]
     if sharded:
         cases += [fail, ram, estimate, cgroup]
     if HAS_TORCHAO:
@@ -576,3 +593,8 @@ def test_host_ram_check_honours_the_cgroup_limit(runs):
 def test_gpu_placement_counts_the_converted_copy(runs):
     _no_raise(runs, "placement")
     assert runs["single"]["placement_need"] == 15 * 1024**3
+
+
+def test_module_by_module_convert_restores_each_tensor_device(runs):
+    _no_raise(runs, "restore_devices")
+    assert list(runs["single"]["restore_devices"]) == ["cpu", "meta", True, True]
