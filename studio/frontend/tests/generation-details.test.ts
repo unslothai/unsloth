@@ -256,6 +256,27 @@ test("one memory pool gets one figure, and amounts under 0.1 GiB read in MiB", (
   );
 });
 
+test("weights Metal cannot run are named in the placement readout", () => {
+  // #15409: 61/61 layers logged on an M3 Ultra, NVFP4 experts in CPU_Mapped (218.7 GiB vs 22.6 GiB MTL0).
+  const placement = loadedPlacementFrom({
+    is_gguf: true,
+    offloaded_layers: 61,
+    offload_total_layers: 61,
+    gpu_weights_mib: 23110.48,
+    host_weights_mib: 223960.5,
+    metal_unsupported_weight_types: ["nvfp4"],
+  });
+  assert.ok(placement);
+  assert.equal(
+    describePlacement(placement, "unified memory").layers,
+    "All 61 layers on the GPU, NVFP4 weights on the CPU (unsupported by Metal)",
+  );
+  assert.equal(
+    loadedPlacementFrom({ is_gguf: true, offload_total_layers: 61, metal_unsupported_weight_types: [] })?.cpuWeightTypes,
+    null,
+  );
+});
+
 test("the prefill label gives way once decoding started, not at 100%", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const status = thread.slice(thread.indexOf("const GeneratingStatus"), thread.indexOf("// Placeholder when stop fires"));

@@ -15,6 +15,7 @@ export interface OffloadCounts {
   offloadOverridden?: boolean | null;
   cpuFallbackReason?: string | null;
   gpuBackendUnavailable?: boolean | null;
+  metalUnsupportedWeightTypes?: string[] | null;
 }
 
 export interface OffloadCountsSource {
@@ -25,6 +26,7 @@ export interface OffloadCountsSource {
   offload_overridden?: boolean | null;
   cpu_fallback_reason?: string | null;
   gpu_backend_unavailable?: boolean | null;
+  metal_unsupported_weight_types?: string[] | null;
 }
 
 export function offloadCountsFrom(
@@ -38,7 +40,19 @@ export function offloadCountsFrom(
     offloadOverridden: response.offload_overridden,
     cpuFallbackReason: response.cpu_fallback_reason,
     gpuBackendUnavailable: response.gpu_backend_unavailable,
+    metalUnsupportedWeightTypes: response.metal_unsupported_weight_types,
   };
+}
+
+/** "NVFP4", "NVFP4 and TQ1_0": GGUF type names as llama.cpp prints them, upper-cased. */
+function weightTypeList(types: string[] | null | undefined): string | null {
+  const names = (types ?? [])
+    .filter((t) => typeof t === "string" && t.length > 0)
+    .map((t) => t.toUpperCase());
+  if (names.length === 0) return null;
+  return names.length === 1
+    ? names[0]
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 export interface OffloadWarning {
@@ -58,6 +72,7 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
     offloadOverridden,
     cpuFallbackReason,
     gpuBackendUnavailable,
+    metalUnsupportedWeightTypes,
   } = counts;
   const cpuFallbackDescription = cpuFallbackMessage(cpuFallbackReason);
   if (cpuFallbackDescription) {
@@ -68,6 +83,14 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
   }
   if (cpuFallbackReason) return null;
   if (typeof offloaded !== "number" || typeof total !== "number") return null;
+  // A full offload still runs these weights on the CPU, and no layer split or context changes that.
+  const unsupported = weightTypeList(metalUnsupportedWeightTypes);
+  if (unsupported && total > 0 && offloaded > 0) {
+    return {
+      titleSuffix: ", partly on CPU",
+      description: `Metal cannot run this model's ${unsupported} weights, so llama.cpp keeps them in system memory and runs them on the CPU even though its layers count as offloaded. Generation will be much slower, and a shorter context will not help. A quantization without ${unsupported} tensors runs fully on the GPU.`,
+    };
+  }
   if (total <= 0 || offloaded >= total) return null;
   // Before the pin check: a failed GPU backend is never what was asked for.
   if (offloaded <= 0 && gpuBackendUnavailable && gpuLayers !== 0) {
@@ -125,6 +148,7 @@ export function loadedPlacementFrom(response: {
   expert_cache_mib?: number | null;
   gpu_memory_mode?: string | null;
   n_cpu_moe?: number | null;
+  metal_unsupported_weight_types?: string[] | null;
 }): LoadedPlacement | null {
   if (response.is_gguf === false) return null;
   const manualExperts =
@@ -137,6 +161,9 @@ export function loadedPlacementFrom(response: {
     gpuWeightsMib: count(response.gpu_weights_mib),
     hostWeightsMib: count(response.host_weights_mib),
     expertCacheMib: count(response.expert_cache_mib) || null,
+    cpuWeightTypes: response.metal_unsupported_weight_types?.length
+      ? response.metal_unsupported_weight_types
+      : null,
   };
   return placement.total === null &&
     placement.gpuWeightsMib === null &&
@@ -153,6 +180,15 @@ function describeLayers(p: LoadedPlacement): string | null {
   // A GPU build whose backend failed to start still logs "offloaded N/N"; its buffers are all host ones.
   const noGpuBuffers = p.gpuWeightsMib === 0 && (p.hostWeightsMib ?? 0) > 0;
   if (offloaded <= 0 || noGpuBuffers) return `All ${total} layers on the CPU`;
+  // Metal could not take these weights, so they run on the CPU whatever the layer count says.
+  const cpuTypes = weightTypeList(p.cpuWeightTypes);
+  if (cpuTypes) {
+    const layers =
+      offloaded < total
+        ? `${offloaded} of ${total} layers on the GPU`
+        : `All ${total} layers on the GPU`;
+    return `${layers}, ${cpuTypes} weights on the CPU (unsupported by Metal)`;
+  }
   if (offloaded < total)
     return `${offloaded} of ${total} layers on the GPU, ${total - offloaded} on the CPU`;
   if (expertCacheMib !== null && expertCacheMib > 0) {
