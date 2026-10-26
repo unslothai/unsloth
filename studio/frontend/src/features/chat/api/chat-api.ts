@@ -26,6 +26,7 @@ import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports
 import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
+import { isPreemptGaveUp } from "../utils/continuation";
 import {
   type ModelRuntime,
   withModelLoadNotice,
@@ -53,6 +54,10 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import {
+  type AdmissionStatus,
+  readAdmissionComment,
+} from "../utils/admission-status";
 import {
   CHAT_HISTORY_REVISION_KEY,
   publishChatHistoryRevision,
@@ -1762,14 +1767,25 @@ export async function estimateKvCache(
   return parseJsonOrThrow<KvCacheEstimate>(response);
 }
 
-function parseSseEvent(rawEvent: string): string[] {
+/**
+ * Split one SSE block into its data lines and its admission signal, if it carries one. Those
+ * comments arrive in blocks with no `data:` line at all, so the caller must handle the signal
+ * BEFORE its empty-block early exit.
+ */
+function parseSseEvent(rawEvent: string): {
+  dataLines: string[];
+  admission: AdmissionStatus | null;
+} {
   const dataLines: string[] = [];
+  let admission: AdmissionStatus | null = null;
   for (const line of rawEvent.split(/\r?\n/)) {
     if (line.startsWith("data:")) {
       dataLines.push(line.slice(5).trimStart());
+      continue;
     }
+    admission = readAdmissionComment(line) ?? admission;
   }
-  return dataLines;
+  return { dataLines, admission };
 }
 
 function hasNonWhitespaceText(value: unknown): boolean {
@@ -1862,13 +1878,18 @@ export async function* streamChatCompletions(
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
   let sawReasoningContent = false;
-  // Needed to tell the walls apart: a Max Tokens below context did not necessarily stop it.
+  // A turn the backend gave up on ends on `length` because that is the shape a continuation
+  // resumes from.
+  let sawPreemptGaveUp = false;
+  // Reported by the server on the final chunk. Needed to tell the two walls apart: a finite Max
+  // Tokens below the context length does not mean Max Tokens stopped the generation.
   let promptTokens: number | null = null;
   let windowCount: number | null = null;
   // Anthropic's explicit model_context_window_exceeded signal.
   let providerReportedWindow = false;
 
   const throwIfReasoningOnlyLength = () => {
+    if (sawPreemptGaveUp) return;
     if (
       terminalFinishReason === "length" &&
       sawReasoningContent &&
@@ -1908,7 +1929,12 @@ export async function* streamChatCompletions(
         const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
         buffer = buffer.slice(separatorIndex + separatorLength);
 
-        const dataLines = parseSseEvent(rawEvent);
+        const { dataLines, admission } = parseSseEvent(rawEvent);
+        if (admission) {
+          yield {
+            _admissionStatus: admission,
+          } as unknown as OpenAIChatChunk;
+        }
         if (dataLines.length === 0) {
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
@@ -2028,6 +2054,9 @@ export async function* streamChatCompletions(
         const finishReason = parsedChoices?.[0]?.finish_reason;
         if (finishReason) {
           sawTerminalSignal = true;
+        }
+        if (isPreemptGaveUp((parsed as OpenAIChatChunk).context_truncated)) {
+          sawPreemptGaveUp = true;
         }
         yield parsed as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);

@@ -11,13 +11,14 @@ backend and provide a cancellable FIFO queue for excess requests.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Optional
+from typing import Callable, Deque, Optional
 
 
 # slots=True halves per-instance memory but needs 3.10+, and this package supports 3.9; gate it.
@@ -31,6 +32,8 @@ ADMISSION_MAX_QUEUE_ENV = "UNSLOTH_LLAMA_ADMISSION_MAX_QUEUE"
 ADMISSION_QUEUE_PER_SLOT_ENV = "UNSLOTH_LLAMA_ADMISSION_QUEUE_PER_SLOT"
 # off restores slot-only admission, for a backend whose context length mismatches its cache
 ADMISSION_KV_BUDGET_ENV = "UNSLOTH_LLAMA_ADMISSION_KV_BUDGET"
+# The one switch here that is OFF unless it is asked for: UNSLOTH_LLAMA_ADMISSION_PREEMPT=1 lets a
+# chat that outgrows its charge be paused and resumed instead of serialising the queue.
 
 # Legacy UNSLOTH_OPENAI_COMPAT_* names still honored; the neutral name wins when both are set.
 _LEGACY_ENV = {
@@ -53,8 +56,14 @@ DEFAULT_ADMISSION_MIN_QUEUE = 64
 # --kv-unified allocates ONE n_ctx cache but reports n_ctx to every slot, so slot-only
 # admission overcommits; llama.cpp kills every colliding task.
 DEFAULT_ADMISSION_KV_BUDGET = True
-# Generous: legit waits are bounded by the longest round; a cap stops a reparker holding the line.
+# Ceiling on one round's wait for cache room; generous, since a legitimate wait is bounded by the longest round in
+# flight. Bounded at all because a reparker holds the wait line shut for every other caller, so an unbounded wait
+# freezes the queue. See recost_waiting.
+_log = logging.getLogger(__name__)
+
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
+
+_MAX_REPARK_WAIT_MULTIPLE = 80
 
 
 def _executor_workers() -> int:
@@ -161,6 +170,10 @@ class LlamaAdmissionCancelled(LlamaAdmissionError):
     pass
 
 
+class LlamaAdmissionRecostRefused(LlamaAdmissionError):
+    """The lease could not grow; end the turn without dispatching the larger prompt."""
+
+
 def _raw_env(name: str) -> Optional[str]:
     """Value for a canonical name, falling back to its legacy spelling."""
     value = os.environ.get(name)
@@ -261,6 +274,8 @@ class LlamaAdmissionLease:
         "_parked",
         "_budgeted",
         "_tokens",
+        "_preempted",
+        "_charge_seq",
         "_parked_tokens",
         "_park_id",
     )
@@ -277,14 +292,25 @@ class LlamaAdmissionLease:
         self._release_lock = threading.Lock()
         self._parked = False
         self._budgeted = False
+        self._preempted = False
         self._tokens = max(0, int(tokens or 0))
         self._parked_tokens = 0
         self._park_id = None
+        self._charge_seq = 0
+
+    @property
+    def charge_seq(self) -> int:
+        return self._charge_seq
 
     @property
     def slot(self) -> Optional[int]:
         """Pool slot this lease holds, or None when admission is disabled."""
         return self._slot
+
+    @property
+    def released(self) -> bool:
+        """Whether release() has run: the run is being torn down, not refused."""
+        return self._released
 
     def park(self) -> bool:
         """Releases the slot during an approval wait; tokens stay committed. False means it was kept."""
@@ -301,6 +327,23 @@ class LlamaAdmissionLease:
             self._budgeted = True
             self._slot = None
         return True
+
+    def yield_parked_commitment(self, *, charged_at: Optional[int] = None) -> int:
+        """Hand this lease's KV commitment back while its cells are gone. `park()` keeps `_tokens` on
+        purpose, but not once the preemptor erases its idle slot: that kept two chats out for 3 min.
+        `charged_at` is the `charge_seq` read when the cells were judged gone: a holder that re-charged
+        meanwhile is prefilling again, and a moved sequence means nothing to hand back."""
+        queue = self._queue
+        with self._release_lock:
+            if queue is None or self._released or self._tokens <= 0:
+                return 0
+            if charged_at is not None and charged_at != self._charge_seq:
+                return 0
+            held, self._tokens = self._tokens, 0
+        queue.yield_commitment(held)
+        # `yield_commitment` would hold the wait line shut for a caller that never asks again.
+        queue.abandon_repark(0)
+        return held
 
     @property
     def parked_tokens(self) -> int:
@@ -385,8 +428,136 @@ class LlamaAdmissionLease:
         if stranded is not None:
             queue.release(stranded, tokens)
 
+    @property
+    def tokens(self) -> int:
+        """What this lease is currently charged, after any recost. A property so a caller cannot
+        get a silent zero from ``getattr`` and conclude nothing needs preempting."""
+        return int(self._tokens or 0)
+
+    def preempt(self) -> bool:
+        """Hand back BOTH the slot and the KV commitment so someone else may decode.
+
+        The difference from ``park`` is what llama-server does afterwards: a parked holder's task is
+        alive with its cells resident, while preemption ends the upstream task and its cells become
+        purgeable by ``try_clear_idle_slots``. **The caller must have closed the upstream response
+        first**, and nothing here can check that.
+        """
+        queue = self._queue
+        with self._release_lock:
+            if queue is None or self._released or self._preempted:
+                return False
+            slot, self._slot = self._slot, None
+            tokens, self._tokens = self._tokens, 0
+            self._preempted = True
+            # Before the slot goes back: it is coming back to this queue, so the queue must not
+            # read as idle and be evicted in between.
+            queue.retain_preempted()
+        queue.release(slot, tokens)
+        return True
+
+    @property
+    def is_preempted(self) -> bool:
+        return self._preempted
+
+    @property
+    def is_released(self) -> bool:
+        """Whether this lease is finished with the cache. Lets the preemptor prune a participant
+        without the route saying so: release happens on many branches, and one missed leaks forever."""
+        return self._released
+
+    async def resume_async(
+        self,
+        tokens: int,
+        *,
+        cancel_event = None,
+        poll_s: float = 0.02,
+        timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
+        progress = None,
+        hard_deadline_at: Optional[float] = None,
+    ) -> bool:
+        """Take the room back after a preemption, waiting until the cache has it. ``tokens`` is
+        re-stated rather than remembered, a resumed run carrying the partial it generated, and
+        ``acquire_parked_slot`` commits them itself, so there is no double charge. Bounded, a caller
+        spinning here holding room nobody can plan against. ``progress`` is a callable whose result
+        moves when the backend does work, resetting the bound under ``_MAX_REPARK_WAIT_MULTIPLE``;
+        ``hard_deadline_at`` (monotonic) is a caller's own absolute bound, not started afresh."""
+        want = max(0, int(tokens or 0))
+        queue = self._queue
+        with self._release_lock:
+            if self._released:
+                return False
+            if queue is None:
+                return True
+            if not self._preempted:
+                return True
+            commitment_only = self._parked or self._slot is not None
+        deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
+        patience = None if deadline is None else float(timeout_s)
+        hard_deadline = (
+            None if patience is None else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
+        )
+        if hard_deadline_at is not None:
+            hard_deadline = (
+                hard_deadline_at if hard_deadline is None else min(hard_deadline, hard_deadline_at)
+            )
+        last_progress = progress() if progress is not None else None
+        if commitment_only:
+            last_committed = queue.committed_now()
+            while True:
+                if queue.try_recost(0, want):
+                    return self._record_resume(queue, want, slot = None)
+                if self._released or (cancel_event is not None and cancel_event.is_set()):
+                    return False
+                if deadline is not None:
+                    now = time.monotonic()
+                    current = queue.committed_now()
+                    if current < last_committed:
+                        deadline = now + patience
+                    last_committed = current
+                    if progress is not None:
+                        signature = progress()
+                        if signature != last_progress:
+                            last_progress = signature
+                            deadline = now + patience
+                    if now >= deadline or (hard_deadline is not None and now >= hard_deadline):
+                        return False
+                await asyncio.sleep(poll_s)
+        slot = await queue.acquire_parked_slot(
+            tokens = want,
+            cancel_event = cancel_event,
+            poll_s = poll_s,
+            deadline = deadline,
+            patience = patience,
+            hard_deadline = hard_deadline,
+            progress = progress,
+            abandoned = lambda: self._released,
+        )
+        if slot is None:
+            return False
+        return self._record_resume(queue, want, slot = slot)
+
+    def _record_resume(self, queue, want: int, *, slot: Optional[int]) -> bool:
+        """Record room the queue has already committed, or give it straight back: release() may
+        have run during the wait and will not run again, stranding it for the process."""
+        with self._release_lock:
+            if self._released:
+                stranded = True
+            else:
+                stranded = False
+                if slot is not None:
+                    self._slot = slot
+                self._tokens = want
+                self._charge_seq += 1
+                if self._preempted:
+                    queue.drop_preempted()
+                self._preempted = False
+        if stranded:
+            queue.release(slot, want)
+            return False
+        return True
+
     def recost(self, tokens: int) -> bool:
-        """Returns False when the cache cannot back the growth; the old commitment then still stands."""
+        """Re-state what this lease actually occupies as its conversation grows."""
         want = max(0, int(tokens or 0))
         # Held across try_recost or an interleaved release strands the difference as committed.
         # release() takes this lock then the queue's, so the order cannot deadlock.
@@ -394,10 +565,14 @@ class LlamaAdmissionLease:
             if self._released or self._queue is None:
                 return True
             if want == self._tokens:
+                # Restated all the same: a yield planned from a reading older than this round must
+                # find the epoch moved, or it hands back cells now filling.
+                self._charge_seq += 1
                 return True
             if not self._queue.try_recost(self._tokens, want):
                 return False
             self._tokens = want
+            self._charge_seq += 1
             return True
 
     def recost_waiting(
@@ -408,8 +583,32 @@ class LlamaAdmissionLease:
         poll_s: float = 0.05,
         timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
         allow_yield: bool = True,
+        progress: Optional[Callable[[], object]] = None,
+        gen_id: Optional[str] = None,
+        stall_clock: bool = True,
     ) -> bool:
-        """Waits for cache room; call between rounds; allow_yield needs --cache-idle-slots; False on timeout."""
+        """Re-state this lease's cost, waiting for room rather than running over it.
+
+        ``progress`` is a second opinion on whether the pool is moving: this ledger only changes at
+        round boundaries, so a lease waiting behind a leader decoding at full rate sees ``committed``
+        sit still and decides the pool is stuck. Any change resets the stall clock.
+        ``stall_clock = False`` keeps the plain wall-clock ``timeout_s`` instead.
+
+        ``recost`` declines when the cache is full and the caller carries on at its old figure, so
+        the next round sends a bigger prompt than the pool was told about, and enough of those is
+        the ``Context size has been exceeded`` that kills every decoding slot at once.
+
+        Call this only between rounds, and only with ``allow_yield`` true where an idle
+        slot's cells actually come back. Being between rounds makes the slot IDLE; what
+        makes its cells REUSABLE under ``--kv-unified`` is ``prompt_clear()``, which
+        llama-server runs only under ``--cache-idle-slots``, force-disabled by
+        ``--cache-ram 0`` (which Studio emits on Windows under full GPU offload, #5692) and
+        absent on older servers. With yielding off this degrades to plain ``recost``.
+
+        False means this lease still holds the figure it came in with. The timeout is the
+        blast radius: a reparker holds the wait line shut for everyone, so an endless wait
+        freezes the queue rather than one chat.
+        """
         want = max(0, int(tokens or 0))
         # Cheap path first: growth that already fits never touches the wait line.
         if self.recost(want):
@@ -422,16 +621,36 @@ class LlamaAdmissionLease:
                 return True
             held, self._tokens = self._tokens, 0
         queue.yield_commitment(held)
-        deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
+        # Stall, not wall clock: the deadline resets whenever commitment FALLS, never on growth.
+        patience = None if not timeout_s or timeout_s <= 0 else float(timeout_s)
+        started = time.monotonic()
+        deadline = None if patience is None else started + patience
+        hard_deadline = None if patience is None else started + patience * _MAX_REPARK_WAIT_MULTIPLE
+        last_committed = queue.committed_now()
+        last_progress = self._read_progress(progress)
+        _log.info(
+            "llama admission recost-wait: gen_id=%s want=%s held=%s committed=%s",
+            gen_id,
+            want,
+            held,
+            last_committed,
+        )
         try:
             while True:
                 if queue.try_reclaim_commitment(want):
+                    _log.info(
+                        "llama admission recost-granted: gen_id=%s want=%s after=%.1fs",
+                        gen_id,
+                        want,
+                        time.monotonic() - started,
+                    )
                     with self._release_lock:
                         if self._released:
                             # release() already gave back 0 and will not run again, so return the commitment here.
                             queue.release(None, want)
                             return True
                         self._tokens = want
+                        self._charge_seq += 1
                     return True
                 # Every pass: release() from route teardown does not set the cancel event.
                 if self._released:
@@ -439,12 +658,43 @@ class LlamaAdmissionLease:
                     return False
                 if cancel_event is not None and cancel_event.is_set():
                     return self._give_up_repark(queue, held, cancelled = True)
-                if deadline is not None and time.monotonic() >= deadline:
-                    return self._give_up_repark(queue, held, cancelled = False)
+                if deadline is not None:
+                    now = time.monotonic()
+                    if stall_clock:
+                        current = queue.committed_now()
+                        if current < last_committed:
+                            deadline = now + patience
+                        last_committed = current
+                        current_progress = self._read_progress(progress)
+                        if current_progress != last_progress:
+                            deadline = now + patience
+                            last_progress = current_progress
+                    if now >= deadline or (hard_deadline is not None and now >= hard_deadline):
+                        _log.warning(
+                            "llama admission recost-gave-up: gen_id=%s want=%s held=%s after=%.1fs "
+                            "(%s); continuing at the old figure",
+                            gen_id,
+                            want,
+                            held,
+                            now - started,
+                            "no progress"
+                            if now >= deadline
+                            else "still unserved after a moving pool",
+                        )
+                        return self._give_up_repark(queue, held, cancelled = False)
                 time.sleep(poll_s)
         except BaseException:
             self._give_up_repark(queue, held, cancelled = True)
             raise
+
+    @staticmethod
+    def _read_progress(progress: Optional[Callable[[], object]]) -> object:
+        if progress is None:
+            return None
+        try:
+            return progress()
+        except Exception:  # pragma: no cover - a failed read is "no change"
+            return None
 
     def _give_up_repark(self, queue, held: int, *, cancelled: bool) -> bool:
         """Restores the held figure unconditionally; try_recost could refuse it on a full cache."""
@@ -454,6 +704,7 @@ class LlamaAdmissionLease:
                 queue.abandon_repark()
                 return False
             self._tokens = held
+            self._charge_seq += 1
             queue.abandon_repark(restore = held)
         return False
 
@@ -467,8 +718,11 @@ class LlamaAdmissionLease:
             queue = self._queue
             parked, self._parked = self._parked, False
             park_id = self._park_id
+            preempted = self._preempted
         self._drop_budget()
         if queue is not None:
+            if preempted:
+                queue.drop_preempted()
             if parked:
                 queue.unpark(park_id)
             queue.release(self._slot, self._tokens)
@@ -481,7 +735,7 @@ class LlamaAdmissionLease:
 
 
 class LlamaAdmissionReservation:
-    __slots__ = ("_queue", "_lease", "_waiter", "snapshot")
+    __slots__ = ("_queue", "_lease", "_waiter", "snapshot", "counted_prompt_tokens")
 
     def __init__(
         self,
@@ -495,6 +749,7 @@ class LlamaAdmissionReservation:
         self._lease = lease
         self._waiter = waiter
         self.snapshot = snapshot
+        self.counted_prompt_tokens: Optional[int] = None
 
     @property
     def is_cancelled(self) -> bool:
@@ -572,6 +827,7 @@ class LlamaAdmissionQueue:
         "_held",
         "_waiters",
         "_parked",
+        "_preempted",
         "_unpark_tickets",
         "_unpark_tokens",
         "_unpark_lapsed",
@@ -594,7 +850,10 @@ class LlamaAdmissionQueue:
         self._waiters: Deque[_Waiter] = deque()
         # Parked holders own no slot; this only keeps the queue off the idle-eviction list.
         self._parked = 0
-        # FIFO tickets: a bare count deadlocked, every approved holder blocked every other one.
+        # Holders preempted and not yet resumed or released: the same, for a paused generation.
+        self._preempted = 0
+        # FIFO tickets for holders resuming from a park (see acquire_parked_slot). A bare count deadlocked: every
+        # approved holder blocked every other one.
         self._unpark_tickets: Deque[int] = deque()
         self._unpark_tokens: dict[int, int] = {}
         self._unpark_lapsed: set = set()
@@ -646,7 +905,7 @@ class LlamaAdmissionQueue:
         # Count every held slot against the ceiling; slots above a shrunk capacity still occupy the backend.
         if not (bool(self._free) and (self._held + reserved) < self._capacity):
             return False
-        # With --kv-unified every slot reports full n_ctx, so also check the token budget.
+        # A free slot is not enough: with --kv-unified every slot reports the full n_ctx, so the pool can hand out more
         return self._fits_budget_locked(tokens, reserved_tokens)
 
     def _take_slot_locked(
@@ -765,6 +1024,12 @@ class LlamaAdmissionQueue:
             self._reparking += 1
             self._grant_waiters_locked()
 
+    def committed_now(self) -> int:
+        """Tokens the pool currently believes are spoken for. Read by a reparking lease to tell
+        "the pool is draining" from "nothing here is moving"."""
+        with self._lock:
+            return int(self._committed)
+
     def try_reclaim_commitment(self, tokens: int) -> bool:
         """Test and commit under one lock, so only one racer wins the empty-cache escape."""
         want = max(0, int(tokens or 0))
@@ -866,34 +1131,62 @@ class LlamaAdmissionQueue:
     async def acquire_parked_slot(
         self,
         *,
+        tokens: int = 0,
         cancel_event = None,
         poll_s: float = 0.02,
-        tokens: int = 0,
         timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
         abandoned = None,
+        deadline: Optional[float] = None,
+        patience: Optional[float] = None,
+        hard_deadline: Optional[float] = None,
+        progress = None,
     ) -> Optional[int]:
-        """Ordered by ticket so approvals resume in return order; the claim never admits over budget."""
-        tokens = max(0, int(tokens or 0))
+        """Wait for a slot, and for ``tokens`` of cache room, None if cancelled.
+
+        Ordered by ticket rather than counted: counting made every approved holder block
+        every other one, and with nothing decoding that never resolved.
+
+
+        ``tokens`` is the KV commitment to take back alongside the slot, committed here so a resumed
+        holder cannot be admitted into room the cache does not have; 0 is a park resuming. It is
+        held from arrivals until ``timeout_s`` lapses the claim, which keeps the ticket's place in
+        the slot order and still never admits it over budget.
+
+        ``deadline`` is a monotonic instant to give up at, separate from that lapse, None being the
+        park default. ``progress`` makes that bound a stall bound, each change moving the deadline
+        out by ``patience`` seconds.
+        """
+        want = max(0, int(tokens or 0))
+        last_progress = progress() if progress is not None else None
         with self._lock:
             self._unpark_seq += 1
             ticket = self._unpark_seq
             self._unpark_tickets.append(ticket)
-            self._unpark_tokens[ticket] = tokens
-        deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
+            self._unpark_tokens[ticket] = want
+        lapse_at = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         try:
             while True:
                 with self._lock:
-                    if deadline is not None and time.monotonic() >= deadline:
+                    if lapse_at is not None and time.monotonic() >= lapse_at:
                         self._unpark_lapsed.add(ticket)
-                        deadline = None
+                        lapse_at = None
                         self._grant_waiters_locked()
                     ahead, ahead_tokens = self._ticket_position_locked(ticket)
-                    slot = self._take_slot_locked(ahead, tokens, ahead_tokens)
+                    slot = self._take_slot_locked(ahead, want, ahead_tokens)
                     if slot is not None:
                         return slot
                     if cancel_event is not None and cancel_event.is_set():
                         return None
                     if abandoned is not None and abandoned():
+                        return None
+                if deadline is not None:
+                    now = time.monotonic()
+                    if progress is not None and patience is not None:
+                        signature = progress()
+                        if signature != last_progress:
+                            last_progress = signature
+                            deadline = now + patience
+                    if now >= deadline or (hard_deadline is not None and now >= hard_deadline):
                         return None
                 await asyncio.sleep(poll_s)
         finally:
@@ -935,8 +1228,20 @@ class LlamaAdmissionQueue:
     def is_idle(self) -> bool:
         with self._lock:
             self._prune_waiters_locked()
-            # A parked holder will return here; evicting would resume it against a fresh 1-slot pool.
-            return self._in_use == 0 and not self._waiters and not self._parked
+            # A parked holder owns no slot but is coming back to this queue, so evicting it here would resume it against
+            # a fresh 1-slot pool.
+            return (
+                self._in_use == 0 and not self._waiters and not self._parked and not self._preempted
+            )
+
+    def retain_preempted(self) -> None:
+        with self._lock:
+            self._preempted += 1
+
+    def drop_preempted(self) -> None:
+        with self._lock:
+            if self._preempted > 0:
+                self._preempted -= 1
 
     def _grant_waiters_locked(self) -> None:
         # Reparkers go first, or steady arrivals hold a growing run at its old size.

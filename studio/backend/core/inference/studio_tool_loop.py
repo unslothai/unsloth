@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 
 from dataclasses import dataclass, field
@@ -406,6 +407,7 @@ class ToolLoopPolicy:
     # None keeps the request default (on); explicit booleans win.
     deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
+    parallel_tool_calls: bool | None = None
     website_policy: dict[str, Any] | None = None
 
 
@@ -1283,8 +1285,100 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
         return _STEP_DONE
 
 
+_PARALLEL_TOOL_CALLS_ENV = "UNSLOTH_PARALLEL_TOOL_CALLS"
+
+# Same figure as the GGUF loop's `_MAX_PARALLEL_TOOL_CALLS_PER_ROUND`; the two loops must not import
+# each other.
+_MAX_PARALLEL_TOOL_CALLS_PER_ROUND = 8
+
+
+def parallel_tool_calls_enabled(*, armed: bool = False) -> bool:
+    """Whether one turn's tool calls may run at the same time. Unset, only on a request preemption
+    armed: without it a round runs in the model's order, as before preemption existed, since
+    independent is the model's claim and two calls that write the same file interleave differently.
+    Set, it is on or off for every request."""
+    raw = (os.environ.get(_PARALLEL_TOOL_CALLS_ENV) or "").strip().lower()
+    if not raw:
+        return bool(armed)
+    return raw not in ("0", "false", "no", "off")
+
+
+def round_call_key(name: Any, arguments: Any) -> tuple:
+    """A conservative identity for one call, computed before the controller heals it: llama.cpp can
+    leak the raw `<tool_call>` markup AND emit the parsed call, so both are re-serialised sorted."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except Exception:
+            return (name, "raw:" + arguments)
+    try:
+        return (name, json.dumps(arguments, sort_keys = True, default = str))
+    except Exception:
+        return (name, repr(arguments))
+
+
+# Tools that can change the session workdir: python and terminal write anywhere in it, the editor
+# replaces whole files, and the media tools render into it. create_skill writes a manifest a sibling
+# read_skill would otherwise find missing.
+_WORKDIR_WRITING_TOOLS = frozenset(
+    {"python", "terminal", "edit_file", "create_skill", "generate_image", "generate_video"}
+)
+
+
+def round_needs_order(calls: Any) -> bool:
+    """Whether a round of more than one call must run in the model's order rather than overlapped.
+
+    A workdir writer beside any other call: the editor checks the old text and then replaces the
+    file, so a write between the two by a sibling (another edit, a python or terminal call, a
+    render) is overwritten while both report success, and which files a sandbox call touches cannot
+    be read off its arguments. A browser call: its reply timeout starts when it queues its action,
+    and an overlapped call's events wait behind the earlier calls', so it could expire unseen. An
+    MCP call: what a server's tool changes cannot be read off its name, and an HTTP session does not
+    serialise its calls, so two edits of one document overlapped could each read the old copy and
+    one update would be lost while both report success."""
+    from core.inference.browser_agent import is_browser_tool
+    from core.inference.mcp_client import MCP_TOOL_PREFIX
+
+    calls = list(calls or [])
+    if len(calls) < 2:
+        return False
+    for item in calls:
+        name = str(((item or {}).get("function") or {}).get("name") or "").strip()
+        if (
+            name in _WORKDIR_WRITING_TOOLS
+            or is_browser_tool(name)
+            or name.startswith(MCP_TOOL_PREFIX)
+        ):
+            return True
+    return False
+
+
+async def _pump_tool_stream(
+    tool_stream: Any,
+    outcome: dict[str, Any],
+    queue: "asyncio.Queue[Any]",
+    cancel_event: threading.Event,
+) -> None:
+    """Drive one tool's event stream to completion, buffering what it emits: the tool only advances
+    while somebody calls ``next()``. Events are queued, the SSE stream staying in the model's order."""
+    try:
+        while True:
+            if cancel_event.is_set():
+                break
+            event = await asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
+            if event is _STEP_DONE:
+                break
+            await queue.put(event)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - handed back to the model as the result
+        outcome["error"] = exc
+    finally:
+        await queue.put(_STEP_DONE)
+
+
 async def _drain_step_task(task: Any, cancel_event: threading.Event) -> None:
-    """Closing a generator mid-next() raises and skips its cleanup, so the worker thread is joined first."""
+    """Join a pending ``next(gen)`` worker before its generator is closed."""
     if task is None:
         return
     if task.done():
@@ -1314,8 +1408,12 @@ async def stream_with_studio_tools(
     run: ToolLoopRun,
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
+    preempt_signal = None,
     mcp_image = None,
 ) -> AsyncIterator[str]:
+    """Stream a provider, execute requested Unsloth tools, continue to a final answer.
+    ``preempt_signal`` lets a KV-pressure pause interrupt the provider stream; tool execution is
+    not interruptible, so the signal is held off there and honoured at the next round's stream."""
     # Off the loop: restoring may parse an envelope.
     restored = await asyncio.to_thread(restore_replayed_tool_results, run.messages)
     conversation = [dict(message) for message in restored]
@@ -1342,6 +1440,7 @@ async def stream_with_studio_tools(
         normalize_sandbox_level,
         normalize_tool_permissions,
         requires_os_isolation,
+        round_may_prompt,
         runs_without_os_sandbox,
     )
 
@@ -1432,7 +1531,22 @@ async def stream_with_studio_tools(
     # Headroom for no-op, nudge and final-answer passes; unlimited keeps its own budget, not a smaller cap, or productive runs get cut short.
     max_provider_turns = max(1, remaining) + 2 * MAX_ACT_REPROMPTS + 4
 
+    _unsafe_window = None
+
+    def _close_unsafe_window() -> None:
+        nonlocal _unsafe_window
+        if _unsafe_window is not None:
+            _unsafe_window.__exit__(None, None, None)
+            _unsafe_window = None
+
+    def _open_unsafe_window() -> None:
+        nonlocal _unsafe_window
+        if preempt_signal is not None and _unsafe_window is None:
+            _unsafe_window = preempt_signal.unsafe_window()
+            _unsafe_window.__enter__()
+
     while not cancel_event.is_set():
+        _close_unsafe_window()
         if provider_turns >= max_provider_turns:
             # Caps requests for unrunnable tools (disabled or budget gone) so the conversation stays bounded.
             break
@@ -1678,6 +1792,8 @@ async def stream_with_studio_tools(
                     yield card_line
         # tool_choice none forbids calls, so a call echoed back anyway by the provider must not run.
         calls = [] if unrun_reason is not None else turn.calls(used_call_ids, painted_card_ids)
+        if calls:
+            _open_unsafe_window()
         if not calls:
             # Clear the badge only when a call was streamed, so the client closes the card of a refused call; [DONE]-only streams have no other boundary.
             if turn.by_index:
@@ -1727,280 +1843,74 @@ async def stream_with_studio_tools(
         turn_mcp_images: list[list[dict[str, Any]]] = []
         turn_executed_real_tool = False
 
-        for call in calls:
-            if cancel_event.is_set():
-                break
-            # Before the gate: an exhausted call is replayed too, and only the decision's replay is guaranteed to parse.
-            decision = controller.prepare_call(call)
-            signed_provider_call = _signed_provider_call_for_replay(call)
-            if not unlimited and remaining <= 0:
-                # Budget spent.
-                for card_line in _unrun_call_card(
-                    tool_name = call["function"]["name"],
-                    tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
-                    arguments = decision.tool_start_payload()["arguments"],
-                    result = _TOOL_BUDGET_EXHAUSTED,
-                    provenance = _unrun_provenance(call["function"]["name"], round_id),
-                ):
-                    yield card_line
-                # The result below has to be replayed with its call: only the call that spent the last slot reaches
-                # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
-                # OpenAI, Anthropic and Gemini all reject that history instead of answering.
-                exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
-                exhausted_extra = call.get("extra_content")
-                if (
-                    signed_provider_call is None
-                    and isinstance(exhausted_extra, dict)
-                    and exhausted_extra
-                ):
-                    exhausted_call["extra_content"] = exhausted_extra
-                assistant_tool_calls.append(exhausted_call)
-                tool_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call["id"],
-                        "name": call["function"]["name"],
-                        "content": _TOOL_BUDGET_EXHAUSTED,
-                    }
-                )
-                continue
-            # Every tool card must carry this round id, including the budget-exhausted card; the frontend groups reasoning by codexLocalToolRoundId.
-            decision.provenance["round_id"] = round_id
-            image_share = None
-            if decision.should_execute and mcp_image is not None:
-                image_share = await asyncio.to_thread(
-                    mcp_image_share, decision.tool_name, decision.arguments, mcp_image
-                )
-                if image_share is not None:
-                    decision = controller.reprepare_call(decision)
-            if not decision.should_execute:
-                completion = controller.record_noop(decision)
-                if getattr(transport, "tool_result_only_continuation", False):
-                    assistant_tool_calls.append(
-                        signed_provider_call or decision.as_assistant_tool_call()
-                    )
-                    tool_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": decision.tool_call_id,
-                            "content": completion.model_message()["content"],
-                        }
-                    )
-                else:
-                    noop_messages.append(completion.model_message())
-                # Close the provider-streamed card for enabled tools or it spins; an unknown tool gets no card, since that would advertise a tool the user switched off.
-                if decision.action == "disabled":
-                    continue
-                for card_line in _unrun_call_card(
-                    tool_name = decision.tool_name,
-                    tool_call_id = (
-                        call.get("card_id") or call.get("stream_id") or decision.tool_call_id
-                    ),
-                    arguments = decision.arguments,
-                    result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
-                    provenance = decision.provenance,
-                ):
-                    yield card_line
-                continue
-            assistant_call = signed_provider_call or decision.as_assistant_tool_call()
-            call_extra = call.get("extra_content")
-            if signed_provider_call is None and isinstance(call_extra, dict) and call_extra:
-                assistant_call["extra_content"] = call_extra
-            assistant_tool_calls.append(assistant_call)
-
-            name = decision.tool_name
-            arguments = decision.arguments
-            call_id = decision.tool_call_id
-            # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
-            card_id = decision.card_id
-            needs_confirmation = needs_tool_confirmation(
-                confirm_tool_calls = confirm_tool_calls,
-                bypass_permissions = bypass_permissions,
-                permission_mode = permission_mode,
-                name = name,
-                arguments = arguments,
-                is_high_risk = is_high_risk_tool_call,
-                never_needs = never_needs_approval,
-                sandbox_level = sandbox_level,
-                session_id = session_id,
-            )
-            # Sending the user's image always asks, whatever the permission mode.
-            needs_confirmation = needs_confirmation or image_share is not None
-            strict_isolation = requires_os_isolation(
-                confirm_tool_calls = confirm_tool_calls,
-                bypass_permissions = bypass_permissions,
-                permission_mode = permission_mode,
-                name = name,
-                arguments = arguments,
-                prompted = needs_confirmation,
-                is_high_risk = is_high_risk_tool_call,
-                sandbox_level = sandbox_level,
-            )
-            approval_id = new_approval_id() if needs_confirmation else ""
-            decision_slot = (
-                begin_tool_decision(session_id, approval_id) if needs_confirmation else None
-            )
-            if needs_confirmation:
-                note_host_access(approval_id, name, arguments)
-
-            start_event = decision.tool_start_event()
-            start_event["approval_id"] = approval_id
-            start_event["awaiting_confirmation"] = needs_confirmation
-            if image_share is not None:
-                start_event["image_disclosure"] = image_share["disclosure"]
-            denied = False
+        _approval_gate = round_may_prompt(
+            calls,
+            confirm_tool_calls = confirm_tool_calls,
+            bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            sandbox_level = sandbox_level,
+            is_high_risk = is_high_risk_tool_call,
+            never_needs = never_needs_approval,
+            healed = getattr(controller, "healed_arguments", None),
+            session_id = session_id,
+        )
+        _one_shot = frozenset(getattr(controller, "_one_shot_tools", ()) or ())
+        _round_keys = []
+        for item in calls:
             try:
-                # A gated call has not started, so it must not read as running.
-                yield _status_sse(
-                    awaiting_approval_status(name) if needs_confirmation else decision.status_text
-                )
-                yield _sse(start_event)
-                verdict = None
-                denied_reason = None
-                if decision_slot is not None:
-                    waiter = asyncio.ensure_future(
-                        asyncio.to_thread(
-                            wait_tool_decision, decision_slot, approval_id, cancel_event
-                        )
+                _round_keys.append(controller.call_key(item))
+            except Exception:
+                _round_keys.append(
+                    round_call_key(
+                        (item.get("function") or {}).get("name", ""),
+                        (item.get("function") or {}).get("arguments"),
                     )
-                    try:
-                        # Delay the first keepalive so the gated Allow/Deny card flushes on its own write before blocking.
-                        done, _pending = await asyncio.wait(
-                            {waiter}, timeout = _TOOL_APPROVAL_FLUSH_DELAY_S
-                        )
-                        while not done:
-                            yield _SSE_KEEPALIVE
-                            done, _pending = await asyncio.wait(
-                                {waiter}, timeout = TOOL_HEARTBEAT_INTERVAL_S
-                            )
-                    finally:
-                        if not waiter.done():
-                            waiter.cancel()
-                    verdict = waiter.result() if waiter.done() else None
-                if verdict == "deny":
-                    # Read decision_slot before it is dropped: it tells a user's refusal from an unanswered approval.
-                    denied_reason = decision_reason(decision_slot)
-                    decision_slot = None
-                    denied = True
-                elif verdict is not None:
-                    yield _sse(decision.tool_approved_event(approval_id))
-                    yield _status_sse(decision.status_text)
-                if not denied:
-                    decision_slot = None
-            finally:
-                if decision_slot is not None:
-                    abort_tool_decision(decision_slot, approval_id)
-
-            if denied:
-                # An unanswered approval is not a user decision; do not say the user declined.
-                denied_text = (
-                    TOOL_APPROVAL_EXPIRED_MESSAGE
-                    if denied_reason == DECISION_EXPIRED
-                    else TOOL_REJECTED_MESSAGE
                 )
-                yield _sse(
-                    {
-                        "type": "tool_end",
-                        "tool_name": name,
-                        "tool_call_id": card_id,
-                        "result": denied_text,
-                        "provenance": decision.provenance,
-                    }
-                )
-                denied_message: dict[str, Any] = {
-                    "role": "tool",
-                    "name": name,
-                    "content": denied_text,
-                }
-                if call_id:
-                    denied_message["tool_call_id"] = call_id
-                tool_messages.append(denied_message)
-                # A denial is an answer, not a stall: never nudge after one.
-                reprompts = max_reprompts
-                continue
+        _round_names = [
+            str((item.get("function") or {}).get("name") or "").strip() for item in calls
+        ]
+        _round_one_shot = [name for name in _round_names if name in _one_shot]
+        parallel_round = (
+            parallel_tool_calls_enabled(armed = preempt_signal is not None)
+            and policy.parallel_tool_calls is not False
+            and len(calls) > 1
+            and len(calls) <= _MAX_PARALLEL_TOOL_CALLS_PER_ROUND
+            and not _approval_gate
+            and mcp_image is None
+            and len(set(_round_keys)) == len(_round_keys)
+            and len(set(_round_one_shot)) == len(_round_one_shot)
+            and not round_needs_order(calls)
+        )
+        pending_calls: list[tuple] = []
 
-            # Only a call the user answered: the executor lets it reach the host paths it names.
-            host_access_approved = verdict not in (None, "deny")
-
-            def _invoke(
-                output_callback: Any,
-                call = decision,
-                approved = host_access_approved,
-                strict = strict_isolation,
-            ) -> str:
-                kwargs: dict[str, Any] = {
-                    "cancel_event": cancel_event,
-                    "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
-                    "session_id": session_id,
-                    "thread_id": thread_id,
-                    "rag_scope": rag_scope,
-                    "disable_sandbox": bypass_permissions,
-                }
-                if website_policy:
-                    kwargs["website_policy"] = website_policy
-                # Run unasked only because the OS sandbox was on: refuse if it is not any more.
-                if strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
-                    kwargs["tool_execution_mode"] = "required"
-                elif runs_without_os_sandbox(call.tool_name, sandbox_level) and accepts_kwarg(
-                    execute_tool, "tool_execution_mode"
-                ):
-                    kwargs["tool_execution_mode"] = "software"
-                # Provider loops share the local catalogue selector, so search_conversation is advertised here too
-                # once a thread has an archive and needs the same branch: the stored rows are the whole DAG, and Retry
-                # leaves the replaced response in them.
-                if accepts_kwarg(execute_tool, "conversation_branch"):
-                    kwargs["conversation_branch"] = request_branch
-                if approved and accepts_kwarg(execute_tool, "host_access_approved"):
-                    kwargs["host_access_approved"] = True
-                # External window is unknowable: 0 keeps the default page cap; unmeasurable budget means one recall, since 8 chunks is ~4K tokens replayed each later call.
-                if accepts_kwarg(execute_tool, "context_tokens"):
-                    kwargs["context_tokens"] = 0
-                if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
-                    try:
-                        from core.rag import config as rag_config
-                        kwargs["conversation_budget_tokens"] = max(
-                            1, int(rag_config.CHUNK_TOKENS)
-                        ) * max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
-                    except Exception:
-                        pass
-                if accepts_output_callback(execute_tool):
-                    kwargs["output_callback"] = output_callback
-                kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
-                if image_share is not None:
-                    kwargs["mcp_image"] = image_share["image"]
-                return execute_tool(call.tool_name, call.arguments, **kwargs)
-
-            # Same wrapper as local loops: live stdout for the card and a heartbeat keeping long calls alive.
-            tool_stream = scoped_tool_stream(
-                _invoke,
-                tool_name = name,
-                tool_call_id = card_id,
-                cancel_event = cancel_event,
-            )
-            outcome: dict[str, Any] = {}
-            step_task: Any = None
+        async def _settle_call(entry: tuple) -> AsyncIterator[str]:
+            """Yield one call's events in order, then record its result. Everything after the
+            tool returns stays sequential; only the WAITING was ever worth overlapping."""
+            nonlocal remaining, turn_executed_real_tool, executed_any, last_reprompt_text
+            if entry[0] == "lines":
+                _, lines, tool_message = entry
+                for line in lines:
+                    yield line
+                if tool_message is not None:
+                    tool_messages.append(tool_message)
+                return
+            _, decision, name, call_id, card_id, tool_stream, outcome, queue, pump = entry
+            drained = False
             try:
                 while True:
-                    if cancel_event.is_set():
-                        # A tool ignoring the cancel event would heartbeat forever; let the bounded drain join it.
-                        break
-                    step_task = asyncio.create_task(
-                        asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
-                    )
-                    # wait, not await: cancelling must leave the worker pending for the drain.
-                    await asyncio.wait({step_task})
-                    event = step_task.result()
-                    step_task = None
+                    event = await queue.get()
                     if event is _STEP_DONE:
+                        drained = True
                         break
                     if isinstance(event, dict) and event.get("type") == "heartbeat":
                         yield _SSE_KEEPALIVE
                     else:
                         yield _sse(event)
-                if "result" in outcome:
+                if outcome.get("error") is not None:
+                    result = f"Error: tool raised an exception: {outcome['error']}"
+                elif "result" in outcome:
                     result = outcome["result"]
                 elif cancel_event.is_set():
-                    # Not an empty string: that records a successful empty result for an abandoned tool whose side effects may already have run.
                     result = _TOOL_CANCELLED
                 else:
                     result = ""
@@ -2009,11 +1919,20 @@ async def stream_with_studio_tools(
             except Exception as exc:  # noqa: BLE001 - reported back to the model
                 result = f"Error: tool raised an exception: {exc}"
             finally:
-                await _drain_step_task(step_task, cancel_event)
+                if not drained and not pump.done():
+                    cancel_event.set()
+                # Joined however often this is cancelled meanwhile: closed while the pump's
+                # worker is inside next(), the generator raises instead of closing.
+                while not pump.done():
+                    try:
+                        await asyncio.shield(pump)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
                 tool_stream.close()
 
             completion = controller.record_result(decision, result)
-            # Counted even on failure, since a failed call may have had side effects; counted per call.
             if not unlimited:
                 remaining -= 1
             turn_executed_real_tool = True
@@ -2027,6 +1946,305 @@ async def stream_with_studio_tools(
             )
             if _completion_images:
                 turn_mcp_images.append(_completion_images)
+
+        try:
+            for call in calls:
+                if cancel_event.is_set():
+                    break
+                decision = controller.prepare_call(call)
+                signed_provider_call = _signed_provider_call_for_replay(call)
+                # Only LAUNCHED entries: duplicates, denials and refusals never decrement
+                # `remaining`.
+                _launched = sum(1 for _entry in pending_calls if _entry[0] != "lines")
+                if not unlimited and remaining - _launched <= 0:
+                    _exhausted_lines = list(
+                        _unrun_call_card(
+                            tool_name = call["function"]["name"],
+                            tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
+                            arguments = decision.tool_start_payload()["arguments"],
+                            result = _TOOL_BUDGET_EXHAUSTED,
+                            provenance = _unrun_provenance(call["function"]["name"], round_id),
+                        )
+                    )
+                    if not parallel_round:
+                        for card_line in _exhausted_lines:
+                            yield card_line
+                    exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
+                    exhausted_extra = call.get("extra_content")
+                    if (
+                        signed_provider_call is None
+                        and isinstance(exhausted_extra, dict)
+                        and exhausted_extra
+                    ):
+                        exhausted_call["extra_content"] = exhausted_extra
+                    assistant_tool_calls.append(exhausted_call)
+                    _exhausted_message = {
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "name": call["function"]["name"],
+                        "content": _TOOL_BUDGET_EXHAUSTED,
+                    }
+                    if parallel_round:
+                        pending_calls.append(("lines", _exhausted_lines, _exhausted_message))
+                    else:
+                        tool_messages.append(_exhausted_message)
+                    continue
+                decision.provenance["round_id"] = round_id
+                image_share = None
+                if decision.should_execute and mcp_image is not None:
+                    image_share = await asyncio.to_thread(
+                        mcp_image_share, decision.tool_name, decision.arguments, mcp_image
+                    )
+                    if image_share is not None:
+                        decision = controller.reprepare_call(decision)
+                if not decision.should_execute:
+                    completion = controller.record_noop(decision)
+                    _noop_message = None
+                    if getattr(transport, "tool_result_only_continuation", False):
+                        assistant_tool_calls.append(
+                            signed_provider_call or decision.as_assistant_tool_call()
+                        )
+                        _noop_message = {
+                            "role": "tool",
+                            "tool_call_id": decision.tool_call_id,
+                            "content": completion.model_message()["content"],
+                        }
+                        if not parallel_round:
+                            tool_messages.append(_noop_message)
+                    else:
+                        noop_messages.append(completion.model_message())
+                    if decision.action == "disabled":
+                        if parallel_round and _noop_message is not None:
+                            pending_calls.append(("lines", [], _noop_message))
+                        continue
+                    _noop_lines = list(
+                        _unrun_call_card(
+                            tool_name = decision.tool_name,
+                            tool_call_id = (
+                                call.get("card_id")
+                                or call.get("stream_id")
+                                or decision.tool_call_id
+                            ),
+                            arguments = decision.arguments,
+                            result = _TOOL_SKIPPED.get(
+                                decision.action, "Unsloth did not run this call."
+                            ),
+                            provenance = decision.provenance,
+                        )
+                    )
+                    if parallel_round:
+                        pending_calls.append(("lines", _noop_lines, _noop_message))
+                    else:
+                        for card_line in _noop_lines:
+                            yield card_line
+                    continue
+                assistant_call = signed_provider_call or decision.as_assistant_tool_call()
+                call_extra = call.get("extra_content")
+                if signed_provider_call is None and isinstance(call_extra, dict) and call_extra:
+                    assistant_call["extra_content"] = call_extra
+                assistant_tool_calls.append(assistant_call)
+
+                name = decision.tool_name
+                arguments = decision.arguments
+                call_id = decision.tool_call_id
+                card_id = decision.card_id
+                needs_confirmation = needs_tool_confirmation(
+                    confirm_tool_calls = confirm_tool_calls,
+                    bypass_permissions = bypass_permissions,
+                    permission_mode = permission_mode,
+                    name = name,
+                    arguments = arguments,
+                    is_high_risk = is_high_risk_tool_call,
+                    never_needs = never_needs_approval,
+                    sandbox_level = sandbox_level,
+                    session_id = session_id,
+                )
+                needs_confirmation = needs_confirmation or image_share is not None
+                strict_isolation = requires_os_isolation(
+                    confirm_tool_calls = confirm_tool_calls,
+                    bypass_permissions = bypass_permissions,
+                    permission_mode = permission_mode,
+                    name = name,
+                    arguments = arguments,
+                    prompted = needs_confirmation,
+                    is_high_risk = is_high_risk_tool_call,
+                    sandbox_level = sandbox_level,
+                )
+                approval_id = new_approval_id() if needs_confirmation else ""
+                decision_slot = (
+                    begin_tool_decision(session_id, approval_id) if needs_confirmation else None
+                )
+                if needs_confirmation:
+                    note_host_access(approval_id, name, arguments)
+
+                start_event = decision.tool_start_event()
+                start_event["approval_id"] = approval_id
+                start_event["awaiting_confirmation"] = needs_confirmation
+                if image_share is not None:
+                    start_event["image_disclosure"] = image_share["disclosure"]
+                denied = False
+                try:
+                    # A gated call has not started, so it must not read as running.
+                    yield _status_sse(
+                        awaiting_approval_status(name)
+                        if needs_confirmation
+                        else decision.status_text
+                    )
+                    yield _sse(start_event)
+                    verdict = None
+                    denied_reason = None
+                    if decision_slot is not None:
+                        waiter = asyncio.ensure_future(
+                            asyncio.to_thread(
+                                wait_tool_decision, decision_slot, approval_id, cancel_event
+                            )
+                        )
+                        try:
+                            done, _pending = await asyncio.wait(
+                                {waiter}, timeout = _TOOL_APPROVAL_FLUSH_DELAY_S
+                            )
+                            while not done:
+                                yield _SSE_KEEPALIVE
+                                done, _pending = await asyncio.wait(
+                                    {waiter}, timeout = TOOL_HEARTBEAT_INTERVAL_S
+                                )
+                        finally:
+                            if not waiter.done():
+                                waiter.cancel()
+                        verdict = waiter.result() if waiter.done() else None
+                    if verdict == "deny":
+                        denied_reason = decision_reason(decision_slot)
+                        decision_slot = None
+                        denied = True
+                    elif verdict is not None:
+                        yield _sse(decision.tool_approved_event(approval_id))
+                        yield _status_sse(decision.status_text)
+                    if not denied:
+                        decision_slot = None
+                finally:
+                    if decision_slot is not None:
+                        abort_tool_decision(decision_slot, approval_id)
+
+                if denied:
+                    denied_text = (
+                        TOOL_APPROVAL_EXPIRED_MESSAGE
+                        if denied_reason == DECISION_EXPIRED
+                        else TOOL_REJECTED_MESSAGE
+                    )
+                    _denied_line = _sse(
+                        {
+                            "type": "tool_end",
+                            "tool_name": name,
+                            "tool_call_id": card_id,
+                            "result": denied_text,
+                            "provenance": decision.provenance,
+                        }
+                    )
+                    denied_message: dict[str, Any] = {
+                        "role": "tool",
+                        "name": name,
+                        "content": denied_text,
+                    }
+                    if call_id:
+                        denied_message["tool_call_id"] = call_id
+                    if parallel_round:
+                        pending_calls.append(("lines", [_denied_line], denied_message))
+                        reprompts = max_reprompts
+                        continue
+                    yield _denied_line
+                    tool_messages.append(denied_message)
+                    # A denial is an answer, not a stall: never nudge after one.
+                    reprompts = max_reprompts
+                    continue
+
+                host_access_approved = verdict not in (None, "deny")
+
+                def _invoke(
+                    output_callback: Any,
+                    call = decision,
+                    approved = host_access_approved,
+                    strict = strict_isolation,
+                    share = image_share,
+                ) -> str:
+                    kwargs: dict[str, Any] = {
+                        "cancel_event": cancel_event,
+                        "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
+                        "session_id": session_id,
+                        "thread_id": thread_id,
+                        "rag_scope": rag_scope,
+                        "disable_sandbox": bypass_permissions,
+                    }
+                    if website_policy:
+                        kwargs["website_policy"] = website_policy
+                    # Run unasked only because the OS sandbox was on: refuse if it is not any
+                    # more.
+                    if strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "required"
+                    elif runs_without_os_sandbox(call.tool_name, sandbox_level) and accepts_kwarg(
+                        execute_tool, "tool_execution_mode"
+                    ):
+                        kwargs["tool_execution_mode"] = "software"
+                    if accepts_kwarg(execute_tool, "conversation_branch"):
+                        kwargs["conversation_branch"] = request_branch
+                    if approved and accepts_kwarg(execute_tool, "host_access_approved"):
+                        kwargs["host_access_approved"] = True
+                    if accepts_kwarg(execute_tool, "context_tokens"):
+                        kwargs["context_tokens"] = 0
+                    if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
+                        try:
+                            from core.rag import config as rag_config
+                            kwargs["conversation_budget_tokens"] = max(
+                                1, int(rag_config.CHUNK_TOKENS)
+                            ) * max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
+                        except Exception:
+                            pass
+                    if accepts_output_callback(execute_tool):
+                        kwargs["output_callback"] = output_callback
+                    kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
+                    if share is not None:
+                        kwargs["mcp_image"] = share["image"]
+                    return execute_tool(call.tool_name, call.arguments, **kwargs)
+
+                tool_stream = scoped_tool_stream(
+                    _invoke,
+                    tool_name = name,
+                    tool_call_id = card_id,
+                    cancel_event = cancel_event,
+                )
+                outcome: dict[str, Any] = {}
+                # Unbounded on purpose: the pump must never block on a consumer that has not
+                # reached this call yet, or two overlapping tools deadlock.
+                events: "asyncio.Queue[Any]" = asyncio.Queue()
+                pump = asyncio.create_task(
+                    _pump_tool_stream(tool_stream, outcome, events, cancel_event)
+                )
+                entry = (
+                    "call",
+                    decision,
+                    name,
+                    call_id,
+                    card_id,
+                    tool_stream,
+                    outcome,
+                    events,
+                    pump,
+                )
+                if parallel_round:
+                    pending_calls.append(entry)
+                    continue
+                async for line in _settle_call(entry):
+                    yield line
+
+            while pending_calls:
+                async for line in _settle_call(pending_calls.pop(0)):
+                    yield line
+        except BaseException:
+            for entry in pending_calls:
+                if entry[0] != "lines":
+                    await _drain_step_task(entry[8], cancel_event)
+                    entry[5].close()
+            pending_calls = []
+            raise
 
         yield _status_sse("")
 
@@ -2094,6 +2312,7 @@ async def stream_with_studio_tools(
             if not getattr(transport, "tool_result_only_continuation", False):
                 _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
 
+    _close_unsafe_window()
     usage_line = _usage_chunk_line(model_name, usage_totals, last_timings)
     if usage_line is not None:
         yield usage_line

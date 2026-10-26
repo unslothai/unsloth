@@ -36,6 +36,7 @@ const {
   providerCompactionContinuationFields,
   readContinuationRequest,
   readIncompleteInfo,
+  resumesEarlierTurn,
   readTextThoughtSignature,
   resolveIncompleteReason,
   restoredAssistantStatus,
@@ -53,6 +54,10 @@ const {
 
 const { createImageGateRunOwner, isImageGateRunOnly } = await import(
   "../src/features/chat/utils/image-input-support.ts"
+);
+
+const { mergeContextTruncation } = await import(
+  "../src/features/chat/utils/context-truncation.ts"
 );
 
 const { issuedRunFrom } = await import(
@@ -402,7 +407,7 @@ test("the bar offers the way out in place of a Continue that cannot help", () =>
   );
   assert.match(
     thread,
-    /const remedy = reason \? incompleteRemedy\(reason\) : null/,
+    /const remedy = reason \? incompleteRemedyFor\(reason, canResume\) : null/,
     "the bar no longer asks whether resuming can help",
   );
   assert.match(
@@ -442,6 +447,34 @@ test("a continuation request is read only when it carries text", () => {
   );
   assert.equal(readContinuationRequest({}), null);
   assert.equal(readContinuationRequest(undefined), null);
+});
+
+test("Continue on an empty paused answer retries the turn without taking staged audio", () => {
+  const empty = { custom: { unslothContinuation: { partial: "" } } };
+  assert.equal(readContinuationRequest(empty), null);
+  assert.equal(resumesEarlierTurn(empty), true);
+  assert.equal(
+    resumesEarlierTurn({ custom: { unslothContinuation: { partial: "half an answer" } } }),
+    true,
+  );
+  assert.equal(resumesEarlierTurn({}), false);
+  assert.equal(resumesEarlierTurn(undefined), false);
+  assert.equal(resumesEarlierTurn({ custom: { unslothContinuation: null } }), false);
+
+  const gates = [
+    ...CHAT_ADAPTER.matchAll(/findLatestUserAudioBase64\(\s*\w+,\s*([^)]*?),?\s*\)/g),
+  ].map((match) => match[1]);
+  assert.ok(gates.length >= 3, `found ${gates.length} pending-audio reads`);
+  for (const gate of gates) {
+    assert.ok(
+      gate === "false" || gate === "!queuedRunSettings && !resumesTurn",
+      `a pending-audio read is gated on ${gate}`,
+    );
+  }
+  assert.match(
+    CHAT_ADAPTER,
+    /const resumesTurn = continuation !== null \|\| resumesEarlierTurn\(runConfig\);/,
+  );
 });
 
 test("a continuation carries a complete provider compaction tuple", () => {
@@ -708,6 +741,26 @@ test("a partial that already fills the budget is not resumed", () => {
       promptTarget: 3648,
     }),
     true,
+  );
+});
+
+test("a decline-time refusal arriving after the answer still blocks resuming", () => {
+  resetAutoContinue();
+  // The backend's own decline arrives AFTER the content and must decide the turn.
+  const merged = mergeContextTruncation(
+    { dropped_messages: 2, fits: true, context_length: 8192, boundary_messages: 4 },
+    { dropped_messages: 0, fits: false, context_length: 8192, prompt_target: 6144 },
+  );
+  assert.equal(merged.fits, false);
+  assert.equal(merged.dropped_messages, 2);
+  assert.equal(merged.boundary_messages, 4);
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", {
+      fits: merged.fits,
+      partialTokens: 1800,
+      promptTarget: merged.prompt_target,
+    }),
+    false,
   );
 });
 

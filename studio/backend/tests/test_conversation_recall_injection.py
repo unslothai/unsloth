@@ -1296,7 +1296,8 @@ def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
     text = " ".join(source.read_text(encoding = "utf-8").split())
 
     assert "branch_messages = _extend_live_branch(" in text
-    assert 'kwargs["conversation_branch"] = _extend_live_branch(' in text
+    assert "list(_extend_live_branch(conversation))" in text
+    assert 'kwargs["conversation_branch"] = _branch' in text
     assert "branch_messages = _request_branch" not in text
     assert 'kwargs["conversation_branch"] = _request_branch' not in text
     assert "_boundary_metadata( conversation, _request_branch," in text

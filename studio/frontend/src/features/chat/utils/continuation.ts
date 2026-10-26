@@ -25,6 +25,7 @@ export type IncompleteReason =
   | "cancelled"
   | "interrupted"
   | "context_window"
+  | "paused"
   | "empty"
   | "quote_cut";
 
@@ -51,6 +52,7 @@ const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "cancelled",
   "interrupted",
   "context_window",
+  "paused",
   "empty",
   "quote_cut",
 ];
@@ -83,7 +85,7 @@ export function incompleteReasonAfterError(
 export function isProviderReportedReason(
   reason: IncompleteReason | null | undefined,
 ): boolean {
-  return reason === "context_window";
+  return reason === "context_window" || reason === "paused";
 }
 
 export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
@@ -100,7 +102,6 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
   return null;
 }
 
-/** `length` maps to a non-error status: the Continue bar already covers it. */
 const STATUS_REASON: Record<
   IncompleteReason,
   "cancelled" | "length" | "error"
@@ -109,7 +110,10 @@ const STATUS_REASON: Record<
   length: "length",
   interrupted: "error",
   context_window: "length",
-  // Not `cancelled` (drops the stamped reason on reload) and not `error` (red box over the bar).
+  paused: "cancelled",
+  // Not `cancelled`: the bar reads that status as a real Stop and drops the stamped
+  // reason, losing the explanation on reload. `context_window` maps here for the same
+  // reason. Not `error` either, which would paint a red box over the bar.
   empty: "length",
   quote_cut: "length",
 };
@@ -129,6 +133,7 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
   context_window: "Response filled the model's context window",
+  paused: "Response paused while another chat used the model, and did not get it back",
   empty: "The model returned an empty response",
   quote_cut: "This response may have ended early",
 };
@@ -148,7 +153,22 @@ export function incompleteRemedy(reason: IncompleteReason): string | null {
   return INCOMPLETE_REMEDIES[reason] ?? null;
 }
 
-/** Providers ignoring assistant prefill can restate the last words; trim that leading overlap. */
+const UNRESUMABLE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
+  paused: "Regenerate the response once the other chat finishes",
+};
+
+export function incompleteRemedyFor(
+  reason: IncompleteReason,
+  canResume: boolean,
+): string | null {
+  return (
+    incompleteRemedy(reason) ?? (canResume ? null : (UNRESUMABLE_REMEDIES[reason] ?? null))
+  );
+}
+
+/** Drop text the continuation repeated from the end of the partial: local models continue
+ *  token-exactly, but a provider that ignores assistant prefill can restate the last few
+ *  words. Only a suffix the continuation opens with is removed. */
 export function stripContinuationOverlap(
   partial: string,
   continuation: string,
@@ -222,13 +242,13 @@ export function budgetImpliesTruncation({
   );
 }
 
-/** Mirrors the backend guard: tool calls block; reasoning-only needs `thought`. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
   {
     thought = false,
     replay = false,
-  }: { thought?: boolean; replay?: boolean } = {},
+    allowEmpty = false,
+  }: { thought?: boolean; replay?: boolean; allowEmpty?: boolean } = {},
 ): boolean {
   if (!content) {
     return replay;
@@ -251,7 +271,7 @@ export function isContinuableContent(
     }
     return false;
   }
-  return hasText || (thought && hasReasoning) || replay;
+  return hasText || (thought && hasReasoning) || replay || allowEmpty;
 }
 
 export function readContinuationSource(
@@ -282,6 +302,31 @@ export function continuationSeed(partial: string, thought: string): string {
   return partial ? `<think>${thought}</think>${partial}` : `<think>${thought}`;
 }
 
+/** The `reason` the backend stamps on a `context_truncated` event when it stopped waiting for
+ *  room in the shared KV cache. Not a truncation: that event carries it because it is the one
+ *  event that reaches this client on every surface. */
+export const PREEMPT_GAVE_UP_REASON = "preempt_gave_up";
+
+export function isPreemptGaveUp(
+  truncation: { reason?: string } | null | undefined,
+): boolean {
+  return truncation?.reason === PREEMPT_GAVE_UP_REASON;
+}
+
+export function completedAfterGivingUp(
+  finishReason: string | null | undefined,
+): boolean {
+  return Boolean(finishReason) && finishReason !== "length";
+}
+
+export function resumesWithoutText(
+  reason: IncompleteReason | null | undefined,
+): boolean {
+  return reason === "paused";
+}
+
+/** The newest Gemini text-part thoughtSignature on an assistant turn, carried so the resumed turn
+ *  is replayed signed rather than as bare text. */
 export function readTextThoughtSignature(
   content: readonly unknown[] | undefined,
 ): string | undefined {
@@ -353,6 +398,8 @@ export type ContinuationRequest = {
   providerCompactionProviderType?: string;
   providerCompactionModelId?: string;
   providerCompactionConnectionKey?: string;
+  preemptRecomputed?: boolean;
+  preemptRecomputedModelIds?: string[];
 };
 
 type ProviderCompactionContinuationFields = Pick<
@@ -410,6 +457,15 @@ export function providerCompactionContinuationFields(
   return providerCompactionFields(custom);
 }
 
+/** Whether a run is a Continue of an earlier turn, even one carrying nothing to continue: an
+ *  empty paused answer retries its turn, and must not take what the composer staged since. */
+export function resumesEarlierTurn(runConfig: unknown): boolean {
+  const custom = (runConfig as { custom?: Record<string, unknown> } | undefined)
+    ?.custom;
+  const request = custom?.[CONTINUATION_RUN_CONFIG_KEY];
+  return typeof request === "object" && request !== null;
+}
+
 /** Read a continuation request out of a run's `runConfig`, if it is one. */
 export function readContinuationRequest(
   runConfig: unknown,
@@ -430,6 +486,7 @@ export function readContinuationRequest(
         providerCompactionProviderType?: unknown;
         providerCompactionModelId?: unknown;
         providerCompactionConnectionKey?: unknown;
+        preemptRecomputed?: unknown;
       }
     | undefined;
   const partial = typeof request?.partial === "string" ? request.partial : "";
@@ -469,10 +526,57 @@ export function readContinuationRequest(
     ...(answerParts.length > 0 ? { answerParts } : {}),
     ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
     ...providerCompactionFields(request),
+    ...preemptRecomputedField(request),
   };
 }
 
-/** Auto-resume only Max Tokens cuts, bounded so a model that never stops cannot loop forever. */
+export function recomputedModelIds(value: unknown): string[] {
+  const fields = value as
+    | { preemptRecomputedModelIds?: unknown; preemptRecomputedModelId?: unknown }
+    | undefined;
+  const listed = Array.isArray(fields?.preemptRecomputedModelIds)
+    ? fields.preemptRecomputedModelIds
+    : [fields?.preemptRecomputedModelId];
+  return listed.reduce<string[]>(
+    (ids, id) => (typeof id === "string" && id ? withRecomputedModel(ids, id) : ids),
+    [],
+  );
+}
+
+export function withRecomputedModel(ids: string[], modelId: string | null | undefined): string[] {
+  return !modelId || ids.includes(modelId) ? ids : [...ids, modelId];
+}
+
+function preemptRecomputedField(
+  value: unknown,
+): { preemptRecomputed?: true; preemptRecomputedModelIds?: string[] } {
+  if ((value as { preemptRecomputed?: unknown } | undefined)?.preemptRecomputed !== true) {
+    return {};
+  }
+  const modelIds = recomputedModelIds(value);
+  return modelIds.length > 0
+    ? { preemptRecomputed: true, preemptRecomputedModelIds: modelIds }
+    : { preemptRecomputed: true };
+}
+
+export function readPreemptRecomputedFields(
+  metadata: unknown,
+): { preemptRecomputed?: true; preemptRecomputedModelIds?: string[] } {
+  return preemptRecomputedField((metadata as { custom?: unknown } | undefined)?.custom);
+}
+
+export function readPreemptRecomputed(metadata: unknown): boolean {
+  return preemptRecomputedField((metadata as { custom?: unknown } | undefined)?.custom)
+    .preemptRecomputed === true;
+}
+
+/** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
+ *  Every other reason is left alone, since `cancelled` would restart what the user just
+ *  stopped, `interrupted` can hide a broken link, and `context_window` has no room left to
+ *  resume into. Bounded, because a model that will not stop would loop forever and each round
+ *  drives compaction harder. `paused` is refused, pinned by a test: a pause is the backend
+ *  rationing one KV cache and it resumes in place, so a client continuation would ask for a
+ *  SECOND slot. */
 export const AUTO_CONTINUE_LIMIT = 3;
 
 /** Keyed by parent: a continuation runs as a sibling, so a per-message counter would reset. */

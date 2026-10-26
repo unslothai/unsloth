@@ -266,12 +266,7 @@ class _Builder(ast.NodeVisitor):
                 self._visit_annotation(node.annotation, scope)
             for t in targets:
                 self._bind_targets(scope, t)
-                if isinstance(node, ast.AugAssign):
-                    self._record_loads(t, scope)
-                else:
-                    # `overrides[dependency] = fn` loads both names.
-                    if not isinstance(t, ast.Name):
-                        self._record_loads(t, scope)
+                self._record_loads(t, scope)
             return
         if isinstance(node, (ast.For, ast.AsyncFor)):
             self._visit_expr(node.iter, scope)
@@ -766,6 +761,12 @@ _SELF_TESTS = {
         "    return x\n",
         "BLOCKER",
     ),
+    "a_name_loaded_inside_an_assignment_target_is_a_use": (
+        "def f(app):\n    return app\n",
+        "from auth import key\ndef f(app):\n    app.overrides[key] = 1\n    return app\n",
+        None,
+    ),
+    # Prose is not a type, and a parse error there is not a finding.
     "unparseable_annotation_string_is_ignored": (
         "from typing import Annotated\ndef f(x: Annotated[int, 'ok']) -> int:\n    return x\n",
         "from typing import Annotated\n"

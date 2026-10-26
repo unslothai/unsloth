@@ -424,7 +424,53 @@ export const BUDGET = {
   // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
   // build, Node 26, 105 chunks). Raised by that growth.
   // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
-  transferBytes: 2_100_715,
+  // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
+  // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
+  // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
+  // raised by that.
+  // The exact concurrency setting, its chat chip and their strings in every eager locale add 4.5 KB
+  // raw / 1.2 KB transfer to the eager settings and chat chunks (6,572.9 -> 6,577.4 KB raw,
+  // 1,976.5 -> 1,977.7 KB transfer against bfab55021, one machine and build), raised by that.
+  // Together they measure 7,058 B raw / 2,903 B transfer against c77695db2 (6,743,283 -> 6,750,341 B
+  // raw, 2,026,381 -> 2,029,284 B transfer, one machine and build).
+  // Re-measured merged with main at 3ba06aa596: +7,310 B raw / +2,259 B transfer (6,886,472 -> 6,893,782 B raw,
+  // 2,075,354 -> 2,077,613 B transfer, one machine and build, Node 24, 98 chunks). Set to main's limits plus that
+  // growth, keeping main's 528 B raw / 196 B transfer above the measured build.
+  // Merged with main at c0c0759bb9, which adds the passive Settings update check (+24 B raw / +43 B transfer):
+  // raised by that.
+  // Merged with main at f76dd22958, whose limits rose by +1,892 B raw / +702 B transfer since c0c0759bb9: raised by that.
+  // Merged with main at 3569dfa8a5, whose limits rose by +16,304 B raw / +4,589 B transfer since f76dd22958: raised by that.
+  // Merged with main at 9880bc0af9, whose limits rose by +11,301 B raw / +3,212 B transfer since 3569dfa8a5: raised by that.
+  // Merged with main at aab980fe77. CI on the previous head measured 6,765.1 KB raw / 2,037.8 KB transfer (over by 3.5 KB / 0.3 KB:
+  // the summed limits under-counted). This merge measured 6,766.0 KB raw / 2,038.1 KB transfer (Node 24, 97 chunks): set to that plus about 200 B.
+  // Merged with main at 96ccc9a256: measured 6,767.9 KB raw / 2,038.8 KB transfer (Node 24, 98 chunks), set to that plus about 200 B.
+  // Merged with main at 14e0178e00: measured 6,770.5 KB raw / 2,039.7 KB transfer (Node 24, 98 chunks), set to that plus
+  // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
+  // Merged with main at fb104d2b57: measured 6,774.6 KB raw / 2,041.2 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
+  // Merged with main at 74b699513c: measured 6,777.4 KB raw / 2,042.0 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
+  // Merged with main at 54ddc6932e: measured 6,770.7 KB raw / 2,040.7 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 500 B raw / 200 B transfer (CI measures about 100 B over a local build).
+  // Merged with main at 50bb320f7d: measured 6,771.6 KB raw / 2,041.0 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 500 B raw / 200 B transfer (CI measures about 100 B over a local build).
+  // Merged with main at 40840d7212, which adds live prefill / decode progress: measured 6,780.0 KB raw / 2,043.4 KB
+  // transfer (Node 24, 99 chunks), set to that plus about 600 B raw / 250 B transfer.
+  // Merged with main at abfe8dc5cd: measured 6,780.8 KB raw / 2,043.2 KB transfer (Node 24, 99 chunks). Main keeps
+  // moving under this branch, so set to that plus about 1.4 KB raw / 1.1 KB transfer.
+  // Merged with main at ec0895c9f3: measured 6,789.4 KB raw / 2,048.7 KB transfer (Node 24, 105 chunks), set to that
+  // plus about 1.4 KB raw / 1.1 KB transfer.
+  // Merged with main at a4a6350830: measured 6,790.3 KB raw / 2,048.8 KB transfer (Node 24, 105 chunks), set to that plus
+  // about 1.4 KB raw / 1.1 KB transfer.
+  // Merged with main at 6c3dcdd4b0 (limits 2,100,497 B transfer / 6,971,572 B raw): measured 6,791.6 KB raw /
+  // 2,050.3 KB transfer (104 chunks). Raw kept at main's limit, which is above it; transfer set to the
+  // measured build plus about 1.2 KB, as main's limit sat below it.
+  // Merged with main at 4f18eb4326 (the scheduled task model picker among its frontend changes): measured
+  // 6,794.7 KB raw / 2,051.7 KB transfer (105 chunks). Raw still under main's limit; transfer set to that
+  // plus about 1.2 KB.
+  // Merged with main at 9e1ddce97f (Cosmos3 video families): measured 6,795.1 KB raw / 2,051.9 KB transfer
+  // (105 chunks). Raw kept at main's limit, above it; transfer set to that plus about 1.2 KB.
+  transferBytes: 2_102_400,
   rawBytes: 6_972_038,
 };
 
