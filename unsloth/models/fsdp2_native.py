@@ -1908,6 +1908,60 @@ def _reshard_after_forward_restore(unit, saved):
         state._auto_reshard_after_forward = auto
 
 
+def _unit_param_groups(unit):
+    state = unit._get_fsdp_state()
+    groups = getattr(state, "_fsdp_param_groups", None)
+    if groups is None:  # torch < 2.13: at most one param group
+        group = getattr(state, "_fsdp_param_group", None)
+        groups = [] if group is None else [group]
+    return groups
+
+
+def _rebind_swapped_modules(model, units):
+    """Point FSDP2 at modules swapped in after sharding. torchao's QATConfig(step = "convert")
+    replaces each FakeQuantizedLinear with a new nn.Linear holding the same Parameter
+    (`new.weight = old.weight`), but FSDPParam keeps the dropped module, so unshard() writes the
+    gathered weight there and the live module keeps the sharded DTensor ("mixed torch.Tensor and
+    DTensor"). Rebind each FSDPParam to the modules that hold its parameter now. A no-op unless a
+    module was swapped."""
+    owners = {}
+    for module in model.modules():
+        for name, param in module._parameters.items():
+            if param is not None:
+                owners.setdefault(id(param), []).append((module, name))
+    for unit in units:
+        try:
+            groups = _unit_param_groups(unit)
+        except Exception:
+            continue
+        for group in groups:
+            for fsdp_param in getattr(group, "fsdp_params", None) or ():
+                info = getattr(fsdp_param, "_module_info", None)
+                if info is None:
+                    continue
+                current = []
+                for attr in ("sharded_param", "_unsharded_param"):
+                    param = getattr(fsdp_param, attr, None)
+                    for pair in owners.get(id(param), ()) if param is not None else ():
+                        if not any(pair[0] is m and pair[1] == n for m, n in current):
+                            current.append(pair)
+                if not current:
+                    continue
+                known = [(info.module, info.param_name)]
+                known += list(zip(info.shared_modules, info.shared_param_names))
+                if all(any(m is km and n == kn for km, kn in known) for m, n in current):
+                    continue
+                # Keep the original primary module when it is still in the model.
+                current.sort(key = lambda pair: pair[0] is not info.module)
+                fsdp_param._module_info = dataclasses.replace(
+                    info,
+                    module = current[0][0],
+                    param_name = current[0][1],
+                    shared_modules = [m for m, _ in current[1:]],
+                    shared_param_names = [n for _, n in current[1:]],
+                )
+
+
 @contextlib.contextmanager
 def native_fsdp2_unsharded(model):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
@@ -1931,6 +1985,7 @@ def native_fsdp2_unsharded(model):
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
     saved = {}
     try:
+        _rebind_swapped_modules(root, units)
         for unit in units:
             saved[id(unit)] = _reshard_after_forward_off(unit)
         for unit in units:
