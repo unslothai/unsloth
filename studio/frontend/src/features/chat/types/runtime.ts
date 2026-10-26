@@ -44,13 +44,19 @@ export type ChatModelRow = ChatModelSummary & SeedGateFlags;
 
 export function modelReadsSamplingSeed(
   activeModel: SeedGateFlags | null | undefined,
+  loadedEngine?: InferenceParams["engine"],
 ): boolean {
   // Audio-output models use generateAudio, whose request carries no seed.
   if (activeModel?.isAudio && !activeModel.hasAudioInput) {
     return false;
   }
   // The transformers backend declares no `seed` kwarg, so worker.py drops it.
-  return activeModel?.isGguf === true || activeModel?.isMlx === true;
+  // SGLang ignores it unless launched with --enable-deterministic-inference.
+  return (
+    activeModel?.isGguf === true ||
+    activeModel?.isMlx === true ||
+    (activeModel != null && loadedEngine === "vllm")
+  );
 }
 
 export type PersistedInferenceParams = Partial<
