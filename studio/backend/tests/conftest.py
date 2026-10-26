@@ -138,12 +138,20 @@ def _forget_hub_unreachable_verdict():
 @pytest.fixture(autouse = True)
 def _forget_mcp_discovery_state():
     # Discovered tools and failed-probe cool-offs are keyed by server id, and most tests reuse "s1": a cool-off
-    # one test records made a later test on the worker skip discovery for its own "s1".
+    # one test records made a later test on the worker skip discovery for its own "s1". A scoped HTTP session a
+    # test leaves cached is the same: test_mcp_http_sessions asserts the cache is empty after its own calls.
     def _forget():
         client = sys.modules.get("core.inference.mcp_client")
         if client is not None:
             client._tool_cache.clear()
             client._probe_cooloff_until.clear()
+            if client._mcp_sessions:
+                try:
+                    client.close_mcp_sessions(all_accounts = True)
+                except AttributeError:
+                    # A test's monkeypatched stand-in sessions (SimpleNamespace) have no close(); its own
+                    # monkeypatch puts the real dict back.
+                    pass
 
     _forget()
     yield
