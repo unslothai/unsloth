@@ -40,7 +40,6 @@ export function NameDialog({ open, title, onOpenChange, ...form }: NameDialogPro
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
-        {/* Content unmounts on close, so every open starts from initialValue. */}
         <NameForm {...form} busy={busy} setBusy={setBusy} onClose={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>

@@ -33,7 +33,6 @@ import {
   Cancel01Icon,
   ChefHatIcon,
   DashboardCircleIcon,
-  DownloadSquare01Icon,
   FlimSlateIcon,
   Folder01Icon,
   Image03Icon,
@@ -46,6 +45,7 @@ import {
   TestTube01Icon,
   ApiIcon,
   Clock01Icon,
+  Download01Icon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -77,7 +77,6 @@ function PaletteShortcut({
   );
 }
 
-// matches sidebar: drop interior bubble paths
 const TestTubeOutlineIcon = TestTube01Icon.slice(0, 3) as typeof TestTube01Icon;
 
 // Through the root's workspace shortcuts: gated (Train, Video) and landing (Chat keeps its thread) as the chords do.
@@ -135,7 +134,7 @@ const WORKSPACES: {
   },
   {
     id: "switchToExport",
-    icon: DownloadSquare01Icon,
+    icon: Download01Icon,
     labelKey: "shell.navigation.export",
     aliases: ["gguf", "checkpoint"],
   },
@@ -369,7 +368,6 @@ function PaletteContent() {
             </span>
           </PaletteItem>
         </CommandGroup>
-        {/* Settings pages only once the user types. */}
         {hasQuery && (
           <>
             <CommandSeparator />

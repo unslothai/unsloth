@@ -666,6 +666,7 @@ export function ToolProfileDialog({
                   </p>
                 </div>
                 <Button
+                  className="mt-[var(--ui-title-cap-inset)]"
                   type="button"
                   size="xs"
                   variant="outline"

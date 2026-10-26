@@ -12,11 +12,11 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Archive02Icon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   MoreVerticalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -161,8 +161,7 @@ export function TranscriptGallery({
       })
       .catch((error: unknown) => {
         if (ticket !== generation.current) return;
-        // Rows and cursor belong to the view we just left: keeping them renders History
-        // entries under the Archived heading and pages the wrong cursor onto them.
+        // Rows and cursor belong to the view just left; keeping them mislabels and mispages.
         setRecords([]);
         setCursor(null);
         toast.error(

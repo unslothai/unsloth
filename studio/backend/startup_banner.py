@@ -81,14 +81,7 @@ def print_studio_access_banner(
     lan_addresses: "tuple[str, ...]" = (),
     scheme: str = "http",
 ) -> None:
-    """Pretty-print URLs once the server is listening. Set ``include_stop_hint=False`` to omit the
-    trailing stop block; pair with :func:`print_studio_stop_hint` after inserting your own content.
-    ``lan_addresses`` are the addresses a runtime LAN listener (Settings > LAN access) is already
-    serving on. A loopback launch that carries one is not reachable on this machine only, so the
-    banner must say where else it answers. ``network_host`` is the address printed under "another
-    device on your network", defaulting to ``display_host``. A wildcard-bind caller passes both:
-    ``display_host`` can be a public WAN IP, which is the reachability probe's business and not what
-    a LAN peer can open (#8868)."""
+    """Prints server URLs once listening; display_host may be a public WAN IP, so pass network_host for LAN; include_stop_hint=False omits the stop block."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"

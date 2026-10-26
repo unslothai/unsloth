@@ -64,8 +64,6 @@ function MovableRow({ item }: { item: SidebarMenuItemPref }) {
       dragListener={false}
       dragControls={controls}
       layout="position"
-      // Rows sit flat on the dialog surface; the dragged row lifts above its
-      // siblings so it stays readable while crossing them.
       whileDrag={{
         backgroundColor: "var(--popover)",
         boxShadow: "0 4px 16px rgb(0 0 0 / 0.18)",
@@ -109,11 +107,6 @@ function MovableRow({ item }: { item: SidebarMenuItemPref }) {
   );
 }
 
-/**
- * Show/hide and reorder the optional sidebar profile menu items. The pinned
- * entries (Settings on top; Help, Log out, Shutdown below) are rendered as
- * static rows so the final menu layout is obvious.
- */
 export function SidebarMenuCustomizer() {
   const t = useT();
   const sidebarMenu = useAppearanceCustomStore(

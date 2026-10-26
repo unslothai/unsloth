@@ -496,7 +496,6 @@ export const fr = {
       clearDataFailed: "Impossible d'effacer les données des sites. Réessayez.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "Le bac à sable du système n'est pas disponible",
@@ -705,7 +704,6 @@ export const fr = {
     shutdown: "Arrêter",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Documentation",
       keyboardShortcuts: "Raccourcis clavier",
@@ -777,11 +775,8 @@ export const fr = {
       export: "Exporter",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
-      // Shown under an empty project folder in the sidebar.
       noChats: "Aucune discussion",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Tous les projets sont epingles",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "Tous les projets sont épinglés ou dans des sections",
       noProjects: "Aucun projet",
       showMore: "Afficher plus",
@@ -883,11 +878,9 @@ export const fr = {
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
-      // Header of the menu's section-visibility toggles.
       show: "Afficher",
       newSection: "Nouvelle section",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "Nouvelle section",
       createDescription: "Regroupez les discussions et les projets comme vous le souhaitez",
@@ -898,16 +891,13 @@ export const fr = {
       edit: "Modifier",
       remove: "Retirer la section",
       markAllRead: "Tout marquer comme lu",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Déplacer vers",
       section: "Section",
       sectionsHeading: "Sections",
       removeFromProject: "Retirer du projet",
       newSection: "Nouvelle section",
       removeFromSection: "Retirer de la section",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "Retirer de {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "Faites glisser des discussions ou des projets ici",
       sectionOptions: "Options de la section",
       newChatInSection: "Nouveau chat dans {name}",
@@ -2453,7 +2443,6 @@ export const fr = {
           updateChecksDisabled:
             "Les vérifications de mise à jour sont désactivées (UNSLOTH_DISABLE_UPDATE_CHECK=1), les backends disponibles ne sont donc pas recherchés.",
         },
-        // Non affiché : termes supplémentaires pour la recherche dans les réglages.
         llamaBackendKeywords:
           "llama.cpp backend gguf inférence cuda rocm hip vulkan metal cpu gpu accélérateur prebuilt changer moteur",
       },
@@ -2466,6 +2455,7 @@ export const fr = {
         noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
         noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
         multiModel: "Garder plusieurs modèles chargés",
+        openSystemSettings: "Réglages système",
         multiModelOff: "Désactivé",
         multiModelFit: "S'ils tiennent",
         multiModelAlways: "Toujours",
@@ -2486,7 +2476,6 @@ export const fr = {
         reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",
         loadError: "Impossible de charger les paramètres de mémoire du modèle",
         saveError: "Impossible d'enregistrer les paramètres de mémoire du modèle",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoire ram resident epingler verrouiller garder charge decharger inactif mmap no-mmap load-mode pagination echange",
         multiModelKeywords:
@@ -2629,8 +2618,6 @@ export const fr = {
       docsLabel: "Ouvrir la documentation de unsloth start",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -3189,13 +3176,22 @@ export const fr = {
       readDocs: "Lire la documentation de l'API",
       noAccess: "Aucun accès API pour le moment.",
       accessTokens: "Jetons d’accès",
+      columnName: "Nom",
+      columnToken: "Jeton",
+      columnCreated: "Créé",
+      columnLastUsed: "Dernière utilisation",
+      columnExpires: "Expire",
       loadError: "Impossible de charger l'accès API.",
       createError: "Impossible de créer le jeton d’accès.",
       revokeError: "Impossible de révoquer le jeton d’accès.",
       never: "Jamais",
-      tokenNamePlaceholder: "Nom du jeton (par ex. production)",
+      tokenNamePlaceholder: "Nom du jeton",
       newAccessTokenName: "Nom du nouveau jeton d’accès",
       createToken: "Créer un jeton",
+      neverExpiresHint: "N'expire jamais",
+      expiresInDaysHint: "Expire dans {n} jours",
+      createTokenHint: "Créer un jeton nommé « {name} »",
+      defaultTokenName: "Nouveau jeton {n}",
       creating: "Création...",
       newTokenCreated: "Nouveau jeton d’accès créé",
       accessTokenCopied: "Jeton d’accès copié",
@@ -3230,13 +3226,16 @@ export const fr = {
       expired: "expiré",
       expiredStatus: "Expiré",
       today: "aujourd'hui",
-      created: "Créé {value}",
-      used: "Utilisé {value}",
-      expires: "Expire {value}",
       actionsFor: "Actions pour {name}",
       copyPrefix: "Copier le préfixe",
       copyFailed: "Impossible de copier",
       revokeToken: "Révoquer le jeton",
+      regenerateToken: "Régénérer le jeton",
+      regenerateTitle: "Régénérer le jeton d'accès « {name} » ?",
+      regenerateDescription: "Un nouveau jeton avec le même nom et la même durée remplace celui-ci. Les apps qui utilisent le jeton actuel perdent l'accès immédiatement.",
+      regenerateAction: "Régénérer",
+      regenerating: "Régénération...",
+      regenerateError: "Impossible de régénérer le jeton d'accès.",
       revokeTitle: "Révoquer le jeton d’accès « {name} » ?",
       revokeDescription:
         "Les applications utilisant ce jeton perdent immédiatement l’accès. Cette action est irréversible.",
@@ -4436,6 +4435,21 @@ export const fr = {
       archiveSuccessful: "Archiver les exécutions réussies",
       project: "Projet",
       projectNone: "Aucun",
+      model: "Modèle",
+      modelLoaded: "Le modèle chargé à ce moment-là",
+      modelOnDevice: "Sur cet appareil",
+      modelNote: "Si ce modèle n’est pas chargé au moment de la tâche, Unsloth demande d’abord.",
+      modelNoteAllowed: "Passe à ce modèle uniquement quand vous n’utilisez pas Unsloth, puis revient au vôtre.",
+      modelEmpty: "Téléchargez un modèle dans Model Hub ou ajoutez une connexion pour en choisir un autre.",
+      modelMissing: "{model} (absent de cet appareil)",
+      allowLoad: "Changer automatiquement en mon absence",
+      allowLoadHint:
+        "Quand cette tâche arrive à échéance et que vous n'avez pas utilisé Unsloth depuis 5 minutes, elle charge ce modèle sans demander, exécute la tâche, puis revient au modèle que vous aviez. Si vous utilisez Unsloth ou qu'un entraînement est en cours, l'exécution est ignorée et votre modèle n'est pas touché. Désactivé, Unsloth demande avant de charger.",
+      reasoning: "Effort de réflexion",
+      reasoningDefault: "Par défaut",
+      reasoningOff: "Désactivé",
+      reasoningLowest: "Minimal",
+      reasoningHighest: "Maximal",
       create: "Créer",
     },
     deleteDialog: {
@@ -4444,6 +4458,10 @@ export const fr = {
     },
     errors: {
       noModel: "Aucun modèle n’était chargé. Chargez un modèle dans le chat, puis relancez la tâche.",
+      modelNotLoaded: "Le modèle de la tâche n’était pas chargé. Chargez-le dans le chat, puis relancez la tâche.",
+      modelLoadFailed: "Impossible de charger le modèle de la tâche. Vérifiez qu’il est toujours téléchargé dans Model Hub.",
+      modelBusy: "Ignorée pendant que vous utilisiez Unsloth ; votre modèle n’a pas été touché.",
+      connectionUnavailable: "La connexion de la tâche est introuvable ou désactivée. Vérifiez-la dans Connexions.",
       timeout: "Le modèle a mis trop de temps à répondre.",
       cancelled: "L’exécution a été arrêtée avant la fin.",
       interrupted: "Unsloth a été fermé avant la fin de l’exécution.",
@@ -4453,6 +4471,13 @@ export const fr = {
       updateFailed: "Impossible de mettre à jour la tâche",
       deleteFailed: "Impossible de supprimer la tâche",
       runFailed: "Impossible de lancer la tâche",
+    },
+    loadPrompt: {
+      title: "Charger {model} ?",
+      description: "« {title} » utilise {model}, qui n’est pas chargé. L’exécuter passe le chat sur {model} jusqu’à la fin, puis revient.",
+      always: "Ne plus demander. Changer uniquement quand je n’utilise pas Unsloth.",
+      notNow: "Pas maintenant",
+      load: "Charger et exécuter",
     },
     toast: {
       finished: "« {title} » est prête",
@@ -4476,7 +4501,6 @@ export const fr = {
       all: "Tout",
       chats: "Discussions",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Discussions",

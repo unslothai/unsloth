@@ -816,7 +816,8 @@ class TestPipelineParallelPredicate:
     def test_layer_path_scrubs_a_non_layer_split_mode_env(self):
         import inspect
 
-        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "self._reconcile_split_mode_env(env" in inspect.getsource(LlamaCppBackend.load_model)
+        compact = "".join(inspect.getsource(LlamaCppBackend._reconcile_split_mode_env).split())
         assert 'if_inherited_smand_inherited_sm!="layer":' in compact
         assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
 
