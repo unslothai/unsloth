@@ -189,7 +189,7 @@ def _case_guards(rank, world, tmp):
     import transformers
     from torch.distributed.device_mesh import init_device_mesh
     from unsloth import FastLanguageModel, FastModel
-    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models import fsdp2_native, tp_native, tp_replica
     from unsloth.models._utils import patch_gradient_accumulation_fix
 
     patch_gradient_accumulation_fix(transformers.Trainer)
@@ -216,10 +216,16 @@ def _case_guards(rank, world, tmp):
             res[f"fsdp2:{name}"] = _raised(
                 lambda: fsdp2_native._refuse_tensor_parallel_model(level)
             )
+            # for_inference / generate gather a whole replica (tp_replica.py); release it before the next.
             res[f"for_inference:{name}"] = _raised(lambda: FastLanguageModel.for_inference(level))
+            res[f"replica_released:{name}"] = tp_replica.release_replica(level)
             res[f"FastModel.for_inference:{name}"] = _raised(lambda: FastModel.for_inference(level))
+            tp_replica.release_replica(level)
             if name != "decoder":
-                res[f"generate:{name}"] = _raised(lambda: level.generate(input_ids = ids))
+                res[f"generate:{name}"] = _raised(
+                    lambda: level.generate(input_ids = ids, max_new_tokens = 2, pad_token_id = 0)
+                )
+                tp_replica.release_replica(level)
                 res[f"trainer:{name}"] = _raised(
                     lambda: transformers.Trainer(model = level, args = args)
                 )
@@ -970,7 +976,7 @@ def test_tp2_tied_norm_weight_is_summed_once():
     _check_parity(_spawn("parity", 2, arch = "qwen3", tie_norms = True), 2)
 
 
-def test_tp2_entry_points_outside_the_regions_are_refused():
+def test_tp2_entry_points_outside_the_regions_are_refused_or_gather():
     results = _spawn("guards", 2)
     if "skip" in results[0]:
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
@@ -986,14 +992,10 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
                         key,
                         value,
                     )
-                elif "for_inference" in key:
-                    assert value and "for_inference is not supported" in value, (
-                        applied,
-                        key,
-                        value,
-                    )
-                elif key.startswith("generate:"):
-                    assert value and "generation is not supported" in value, (applied, key, value)
+                elif "for_inference" in key or key.startswith("generate:"):
+                    assert value is None, (applied, key, value)  # gathered a replica (tp_replica.py)
+                elif key.startswith("replica_released:"):
+                    assert value is True, (applied, key, value)
                 elif key.startswith("model_init:"):
                     assert value and "cannot be trained by the Trainer" in value, (
                         applied,

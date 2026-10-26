@@ -250,30 +250,61 @@ def tensor_parallel_env_load(fn):
         mesh = layout.tp_mesh
         _DEPTH["load"] += 1
         try:
-            if _four_bit(values, fn) or not layout.sharded_loading:
-                return fn(*args, **kwargs)  # full load; get_peft_model shards it (Params4bit included)
-            from .tp_native import sharded_loading
-
-            try:
-                with sharded_loading(mesh) as state:
-                    out = fn(*args, **kwargs)
-            except ValueError as exc:
-                if not str(exc).startswith("Unsloth: tensor parallel sharded loading"):
-                    raise
-                if _rank0():
-                    print(f"{exc} Loading in full on every rank instead; get_peft_model shards it.")
-                return fn(*args, **kwargs)
-            if not state["models"] and _rank0():
-                print(
-                    "Unsloth: UNSLOTH_TP_SIZE: this loader did not go through transformers from_pretrained; "
-                    "the model loaded in full and is sharded at get_peft_model."
-                )
-            return out
+            return _mark_world_save(_load(fn, args, kwargs, values, layout, mesh))
         finally:
             _DEPTH["load"] -= 1
 
     from_pretrained._unsloth_tp_env = True
     return from_pretrained
+
+
+def _mark_world_save(out):
+    """The tokenizer / processor of a tensor parallel run saves once per world (rank 0 writes, save.py)."""
+    if isinstance(out, (tuple, list)) and len(out) > 1 and hasattr(out[1], "__dict__"):
+        try:
+            out[1].__dict__["_unsloth_tp_world_save"] = True
+        except Exception:
+            pass
+    return out
+
+
+def _is_adapter(values):
+    """A LoRA adapter directory / repo (a reload cell): loaded in full on every rank, nothing to shard."""
+    name = values.get("model_name", values.get("pretrained_model_name_or_path"))
+    if not isinstance(name, str):
+        return False
+    if os.path.isdir(name):
+        return os.path.isfile(os.path.join(name, "adapter_config.json"))
+    if os.path.exists(name) or name.count("/") != 1:
+        return False
+    try:
+        from huggingface_hub import file_exists
+
+        return bool(file_exists(name, "adapter_config.json", token = values.get("token")))
+    except Exception:
+        return False
+
+
+def _load(fn, args, kwargs, values, layout, mesh):
+    if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values):
+        return fn(*args, **kwargs)  # full load; get_peft_model shards it (Params4bit included)
+    from .tp_native import sharded_loading
+
+    try:
+        with sharded_loading(mesh) as state:
+            out = fn(*args, **kwargs)
+    except ValueError as exc:
+        if not str(exc).startswith("Unsloth: tensor parallel sharded loading"):
+            raise
+        if _rank0():
+            print(f"{exc} Loading in full on every rank instead; get_peft_model shards it.")
+        return fn(*args, **kwargs)
+    if not state["models"] and _rank0():
+        print(
+            "Unsloth: UNSLOTH_TP_SIZE: this loader did not go through transformers from_pretrained; "
+            "the model loaded in full and is sharded at get_peft_model."
+        )
+    return out
 
 
 def _model_of(out):

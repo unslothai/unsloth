@@ -70,6 +70,7 @@ from .models.loader_utils import (
     _tokenizer_wants_local_only,
 )
 from .models._utils import (
+    _is_unsloth_tensor_parallel,
     _refuse_model_parallel_export,
     _convert_torchao_model,
     _merged_torchao_config_for_peft_qat,
@@ -1286,13 +1287,21 @@ def _restore_tied_weights_keys(originals):
 
 
 def _model_parallel_refuses_save(method):
-    """Every whole-model export refuses an apply_tensor_parallel / apply_pipeline_parallel model before it
-    writes anything (see _refuse_model_parallel_export)."""
+    """Every whole-model export refuses an apply_pipeline_parallel model before it writes anything (see
+    _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
+    which runs the export; the other ranks wait for it (models/tp_replica.py)."""
 
     def decorate(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             model = args[0] if args else kwargs.get("model", kwargs.get("self"))
+            if model is not None and _is_unsloth_tensor_parallel(model):
+                from .models.tp_replica import collective_applies, tp_collective
+
+                if collective_applies(model):
+                    # The whole model, also for LoRA-only writers: they run under inference_mode, where
+                    # state_dict() cannot detach the frozen DTensor shards.
+                    return tp_collective(model, method, lambda: fn(*args, **kwargs), "all")
             if model is not None:
                 _refuse_model_parallel_export(model, method)
             return fn(*args, **kwargs)
@@ -6696,6 +6705,34 @@ def _fsdp2_collective_save(
     return decorate
 
 
+def _tp_collective_save(method):
+    """save_pretrained / push_to_hub under tensor parallel: every rank calls, rank 0 writes the one-GPU files
+    (the LoRA tensors gathered for an adapter, the whole model otherwise) and the others wait for it. A
+    tokenizer of a tensor parallel run is written once, by rank 0. A call that brings its own `state_dict`
+    (save_tp_adapter's rank 0 write) is passed through."""
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            if isinstance(self, torch.nn.Module) and _is_unsloth_tensor_parallel(self):
+                from .models.tp_replica import collective_applies, tp_collective
+
+                arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
+                if arguments.get("state_dict") is None and collective_applies(self):
+                    adapter = isinstance(self, PeftModel) and not torch.is_inference_mode_enabled()
+                    select = "adapters" if adapter else "all"
+                    return tp_collective(self, method, lambda: fn(self, *args, **kwargs), select)
+            elif getattr(self, "__dict__", {}).get("_unsloth_tp_world_save"):
+                from .models.tp_replica import tp_world_save
+
+                return tp_world_save(method, lambda: fn(self, *args, **kwargs))
+            return fn(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
 def _fsdp2_rank():
     import torch.distributed as dist
     return dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
@@ -8561,6 +8598,29 @@ def unsloth_tokenizer_save_pretrained(
     push_to_hub = False,
     **kwargs,
 ):
+    if self.__dict__.get("_unsloth_tp_world_save"):
+        # Tensor parallel run: rank 0 writes, the others wait (a reload cell then reads complete files).
+        from .models.tp_replica import tp_world_save
+
+        return tp_world_save(
+            "tokenizer.save_pretrained",
+            lambda: _unsloth_tokenizer_save_pretrained(
+                self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
+            ),
+        )
+    return _unsloth_tokenizer_save_pretrained(
+        self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
+    )
+
+
+def _unsloth_tokenizer_save_pretrained(
+    self,
+    save_directory,
+    legacy_format = None,
+    filename_prefix = None,
+    push_to_hub = False,
+    **kwargs,
+):
     # Forward only what the caller set: MistralCommonBackend (Voxtral, tekken checkpoints) rejects these even as None.
     save_kwargs = dict(kwargs)
     if legacy_format is not None:
@@ -8669,11 +8729,14 @@ def patch_saving_functions(model, vision = False):
     exec(push_to_hub_text, globals())
     # Under FSDP2 every rank calls push_to_hub: the shards are gathered and rank 0 uploads. Inside,
     # the wrapped save_pretrained sees the gather already active and writes directly.
-    globals()["unsloth_push_to_hub"] = _fsdp2_collective_save(
-        lambda self, args, kwargs: isinstance(self, PeftModel),
-        offload_4bit = True,
-    )(globals()["unsloth_push_to_hub"])
+    globals()["unsloth_push_to_hub"] = _tp_collective_save("push_to_hub")(
+        _fsdp2_collective_save(
+            lambda self, args, kwargs: isinstance(self, PeftModel),
+            offload_4bit = True,
+        )(globals()["unsloth_push_to_hub"])
+    )
 
+    @_tp_collective_save("save_pretrained")
     @_fsdp2_collective_save(
         lambda self, args, kwargs: isinstance(self, PeftModel), offload_4bit = True
     )

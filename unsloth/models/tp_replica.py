@@ -1,0 +1,568 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Post-training cells on a tensor parallel model (apply_tensor_parallel / UNSLOTH_TP_SIZE).
+
+- for_inference / generate: every rank gathers a whole single-GPU replica of the trained model in place (the
+  sharded attention / MLP weights, 4-bit included, and the LoRA factors), when it fits the free memory, and runs
+  the normal generate path on it. The sharded parameters (the ones the optimizer holds) are kept and put back
+  by for_training or by the next training forward. Sampling RNG states are copied from tp rank 0 to its tp
+  group before each generate, so every tp rank prints the same text.
+- save_pretrained / push_to_hub (adapter) and the merged / GGUF / torchao / OpenVINO exports: the weights the
+  save needs are gathered to global rank 0, which runs the single-process save; the other ranks wait on the
+  rendezvous store (no collective timeout, no NCCL watchdog) and return what rank 0 returned.
+
+Every rank must make these calls, as in a one-process script run under torchrun.
+"""
+
+from __future__ import annotations
+
+import datetime
+import gc
+import os
+import pickle
+import types
+
+import torch
+import torch.nn as nn
+
+from . import tp_native as tpn
+
+__all__ = [
+    "tp_root",
+    "gather_replica",
+    "release_replica",
+    "replica_active",
+    "tp_for_inference",
+    "tp_for_training",
+    "tp_generate",
+    "tp_collective",
+    "tp_world_save",
+]
+
+_REPLICA = "_unsloth_tp_replica"
+_ACTIVE = []  # rank 0 inside a collective save: nested saves write directly
+_GENERATE_DEPTH = [0]
+_COUNTERS = {}
+_MiB = 1 << 20
+
+
+def _dist():
+    import torch.distributed as dist
+
+    return dist if dist.is_available() and dist.is_initialized() else None
+
+
+def _rank():
+    dist = _dist()
+    return dist.get_rank() if dist is not None else 0
+
+
+def tp_root(model):
+    """The module apply_tensor_parallel was called on (any wrapper level of it resolves there)."""
+    for level in tpn._tp_chain(model):
+        root = level.__dict__.get("_unsloth_tp_root")
+        if root is not None:
+            return root
+    return model
+
+
+def replica_active(model):
+    return tp_root(model).__dict__.get(_REPLICA) is not None
+
+
+def _device(root):
+    for param in root.parameters():
+        if tpn._is_dtensor(param):
+            return param.to_local().device
+        return param.device
+    return torch.device("cpu")
+
+
+def _gib(n):
+    return f"{n / (1 << 30):.2f} GiB"
+
+
+def _marked(model, flag):
+    return any(level.__dict__.get(flag) is not None for level in tpn._tp_chain(model))
+
+
+def _fsdp2_units(model):
+    try:
+        from torch.distributed.fsdp import FSDPModule
+    except ImportError:
+        try:
+            from torch.distributed._composable.fsdp import FSDPModule
+        except ImportError:
+            return []
+    return [m for m in model.modules() if isinstance(m, FSDPModule)]
+
+
+def _refusal(root, what):
+    """None when `what` can run on this model, else why not."""
+    if _marked(root, "_unsloth_pp"):
+        return (
+            f"Unsloth: `{what}` is not supported on a pipeline parallel model (each rank holds one stage); save "
+            "the adapter (PipelineParallel.save_adapter) and run it on one GPU."
+        )
+    if _fsdp2_units(root):
+        return (
+            f"Unsloth: `{what}` is not supported on a tensor parallel x native FSDP2 model yet; save the adapter "
+            "(model.save_pretrained or save_tp_adapter, on every rank) and run it on one GPU."
+        )
+    if any(tpn._is_dtensor(p) and p.device_mesh.ndim != 1 for p in root.parameters()):
+        return f"Unsloth: `{what}` supports 1-D tensor parallel meshes only."
+    return None
+
+
+def collective_applies(model):
+    """True when the save / generate of `model` goes through this module (tensor parallel, tp x DDP)."""
+    return _marked(model, tpn._TP_FLAG) and _refusal(tp_root(model), "save") is None
+
+
+# Gathering
+
+
+def _items(root, select):
+    """(module, name, param) of the sharded parameters a replica replaces, in the same order on every rank."""
+    owners, order, seen = {}, [], set()
+    for module in root.modules():
+        for name, param in module._parameters.items():
+            if param is None:
+                continue
+            owners.setdefault(id(param), []).append((module, name))
+            if id(param) not in seen:
+                seen.add(id(param))
+                order.append(param)
+    names = {id(p): n for n, p in root.named_parameters(remove_duplicate = False)}
+    out = []
+    for param in order:
+        name = names.get(id(param), "")
+        four_bit = getattr(param, "_unsloth_tp_layout", None) is not None
+        if not (tpn._is_dtensor(param) or four_bit):
+            continue
+        if select != "all" and (four_bit or not (param.requires_grad or "lora_" in name)):
+            continue
+        out.append((param, owners[id(param)]))
+    return out
+
+
+def _bytes(param):
+    if tpn._is_dtensor(param):
+        return param.numel() * param.element_size()  # global shape
+    tp = param._unsloth_tp_layout[3]
+    full_state = getattr(param, "_unsloth_tp_quant_state", None)
+    absmax = (full_state or param.quant_state).absmax
+    extra = absmax.numel() * absmax.element_size() * (1 if full_state is not None else tp)
+    return param.data.numel() * param.data.element_size() * tp + extra
+
+
+def _free_bytes(device):
+    if device.type == "cuda":
+        gc.collect()
+        torch.cuda.empty_cache()
+        free, _ = torch.cuda.mem_get_info(device)
+        return free, f"free on {device}"
+    return _host_free(), "available host RAM"
+
+
+def _host_free():
+    try:
+        import psutil
+
+        return psutil.virtual_memory().available
+    except Exception:
+        pages = os.sysconf("SC_AVPHYS_PAGES") if hasattr(os, "sysconf") else 0
+        return pages * os.sysconf("SC_PAGE_SIZE") if pages else 1 << 62
+
+
+def _margin(need):
+    return max(512 * _MiB, need // 10)
+
+
+def _comm_device(group, device):
+    dist = _dist()
+    backend = str(dist.get_backend(group)) if dist is not None else "gloo"
+    if "nccl" in backend or "xccl" in backend or "hccl" in backend:
+        return device
+    return torch.device("cpu")
+
+
+def _agree(ok, device):
+    """Every rank's verdict ANDed (all ranks run the gather or none does)."""
+    dist = _dist()
+    if dist is None:
+        return ok
+    flag = torch.tensor([1 if ok else 0], dtype = torch.int32, device = _comm_device(None, device))
+    dist.all_reduce(flag, op = dist.ReduceOp.MIN)
+    return bool(flag.item())
+
+
+def _gather_cat(local, dim, group, tp):
+    import torch.distributed as dist
+
+    local = local.contiguous()
+    pieces = [torch.empty_like(local) for _ in range(tp)]
+    dist.all_gather(pieces, local, group = group)
+    return torch.cat(pieces, dim = dim)
+
+
+def _full_params4bit(weight, base, group, device, keep):
+    """The whole 4-bit weight: the shards' packed codes concatenated back in the 1-GPU order (bitwise the 1-GPU
+    codes) with the 1-GPU QuantState apply_tensor_parallel kept on the CPU (double quantized absmax included)."""
+    import bitsandbytes as bnb
+
+    style, parts, rank, tp = weight._unsloth_tp_layout
+    state = weight.quant_state
+    blocksize = state.blocksize
+    out_local, in_local = state.shape
+    codes = weight.data.reshape(-1).view(torch.uint8).view(out_local, in_local // 2)
+    col = style == tpn.COLWISE
+    dim = 0 if col else 1
+    codes = _gather_cat(codes, dim, group, tp)
+    full_state = getattr(weight, "_unsloth_tp_quant_state", None)
+    absmax = None
+    if full_state is None:  # no 1-GPU state kept: the shards' float32 absmax, gathered the same way
+        absmax = _gather_cat(state.absmax.float().view(out_local, in_local // blocksize), dim, group, tp)
+    if not keep:
+        return None
+    if col:
+        codes = tpn._unpermute(codes, 0, parts, tp)
+        absmax = None if absmax is None else tpn._unpermute(absmax, 0, parts, tp)
+        shape = (sum(parts), in_local)
+    else:
+        shape = (out_local, in_local * tp)
+    storage = weight.data.dtype
+    packed = codes.contiguous().view(storage).reshape(-1, 1).to(device)
+    if full_state is not None:
+        full_state = tpn.quant_state_copy(full_state, device)
+    else:
+        full_state = bnb.functional.QuantState(
+            absmax = absmax.contiguous().to(device),
+            shape = torch.Size(shape),
+            code = state.code.to(device),
+            blocksize = blocksize,
+            quant_type = state.quant_type,
+            dtype = state.dtype,
+        )
+    return bnb.nn.Params4bit(
+        packed,
+        requires_grad = False,
+        quant_state = full_state,
+        blocksize = blocksize,
+        compress_statistics = full_state.nested,
+        quant_type = state.quant_type,
+        quant_storage = storage,
+        module = base,
+        bnb_quantized = True,
+    )
+
+
+class _Replica:
+    def __init__(self, select, device):
+        self.select = select
+        self.device = device
+        self.swaps = []  # (module, name, sharded parameter)
+        self.attrs = []  # (module __dict__, key, previous value or _MISSING)
+        self.hooks = []
+
+    def set(self, obj, key, value):
+        d = obj.__dict__
+        self.attrs.append((d, key, d.get(key, tpn._MISSING)))
+        if value is tpn._MISSING:
+            d.pop(key, None)
+        else:
+            d[key] = value
+
+
+def _plan(root, select, keep, what, allow_cpu):
+    """(items, device) for the gather, after every rank agreed it fits; raises with the numbers otherwise."""
+    items = _items(root, select)
+    need = sum(_bytes(p) for p, _ in items) if keep else 0
+    device = _device(root)
+    free, where = _free_bytes(device)
+    ok = need + _margin(need) <= free if keep else True
+    if _agree(ok, device):
+        return items, device
+    if allow_cpu and device.type != "cpu":
+        host = _host_free()
+        ok_cpu = need + _margin(need) <= host if keep else True
+        if _agree(ok_cpu, device):
+            if keep:
+                print(
+                    f"Unsloth: tensor parallel `{what}`: the whole model ({_gib(need)}) does not fit "
+                    f"{device} ({_gib(free)} free); gathering it to the CPU ({_gib(host)} available) instead."
+                )
+            return items, torch.device("cpu")
+        where = f"{where}, {_gib(host)} available host RAM"
+    if keep:
+        detail = (
+            f"the whole model needs {_gib(need)} more (+ {_gib(_margin(need))} headroom) on every rank, and "
+            f"not every rank has it (rank {_rank()}: {_gib(free)} {where})"
+        )
+    else:
+        detail = "rank 0 has no room for it (see rank 0's error)"
+    raise RuntimeError(
+        f"Unsloth: tensor parallel `{what}` gathers a whole single-GPU replica of the model, but {detail}. "
+        "Free memory (e.g. del trainer; gc.collect(); torch.cuda.empty_cache()), or save the adapter with "
+        "model.save_pretrained(...) and run this on one GPU."
+    )
+
+
+def gather_replica(model, select = "all", keep = True, what = "generate", allow_cpu = False):
+    """Collective (every rank of the tensor parallel world): replace the sharded parameters of `model` by whole
+    tensors. select "all" (everything sharded, plus the module state the shards changed: a one-GPU model) or
+    "adapters" (the trainable / LoRA tensors only, for an adapter save). keep = False takes part in the gather
+    without keeping anything (a rank that does not write). Idempotent; release_replica undoes it."""
+    root = tp_root(model)
+    current = root.__dict__.get(_REPLICA)
+    if current is not None and (current.select == "all" or current.select == select):
+        return current
+    if current is not None:
+        release_replica(root)
+    refusal = _refusal(root, what)
+    if refusal is not None:
+        raise RuntimeError(refusal)
+    mesh = tpn._tp_meshes(root)[0]
+    if mesh is None:
+        raise RuntimeError("Unsloth: this tensor parallel model has no tp mesh.")
+    group, tp = mesh.get_group(), mesh.size()
+    items, device = _plan(root, select, keep, what, allow_cpu)
+    layouts = tpn._param_layouts(root)
+    replica = _Replica(select, device) if keep else None
+    with torch.no_grad():
+        for param, owners in items:
+            module = owners[0][0]
+            if tpn._is_dtensor(param):
+                full = tpn._full(param, param, layouts.get(id(param)))
+                if not keep:
+                    del full
+                    continue
+                new = nn.Parameter(full.detach().to(device), requires_grad = param.requires_grad)
+            else:
+                new = _full_params4bit(param, module, group, device, keep)
+                if not keep:
+                    continue
+                if "quant_state" in module.__dict__:
+                    replica.set(module, "quant_state", new.quant_state)
+            for owner, name in owners:
+                replica.swaps.append((owner, name, param))
+                owner._parameters[name] = new
+    if not keep:
+        return None
+    if select == "all":
+        _switch_to_one_gpu(root, replica)
+    root.__dict__[_REPLICA] = replica
+    return replica
+
+
+def _switch_to_one_gpu(root, replica):
+    """The module state apply_tensor_parallel changed, back to the one-GPU model while the replica is in."""
+    plan = root.__dict__.get("_unsloth_tp_plan")
+    for region in plan.regions if plan is not None else ():
+        module = region.module
+        replica.set(module, "_unsloth_tp_gathered", True)  # the region hooks pass through
+        saved = module.__dict__.get("_unsloth_tp_saved_attrs")
+        if saved is not None:
+            for key, value in saved.items():
+                replica.set(module, key, value)
+        for key in ("_unsloth_tp_heads", "_unsloth_tp_kv_heads"):
+            if key in module.__dict__:
+                replica.set(module, key, tpn._MISSING)
+        for proj in region.projs:
+            p = proj.module
+            if "_unsloth_tp_prior_forward" in p.__dict__:
+                replica.set(p, "forward", p.__dict__["_unsloth_tp_prior_forward"])
+            if "_unsloth_tp_local" in p.__dict__:
+                replica.set(p, "_unsloth_tp_local", tpn._MISSING)
+    for level in tpn._tp_chain(root):
+        forward = level.__dict__.get("forward")
+        original = getattr(forward, "__wrapped__", None)
+        if getattr(forward, "__name__", "") != "forward_without_cache" or original is None:
+            continue
+        bound_class = getattr(original, "__func__", None) is getattr(type(level), "forward", None)
+        same = getattr(original, "__self__", None) is level
+        replica.set(level, "forward", tpn._MISSING if bound_class and same else original)
+    replica.hooks.append(root.register_forward_pre_hook(_release_before_training))
+
+
+def _release_before_training(module, args):
+    # A training forward on the replica would train tensors the optimizer does not hold.
+    if torch.is_grad_enabled() and module.training:
+        release_replica(module)
+
+
+def release_replica(model):
+    """Put the sharded parameters back (local, no collective). True when a replica was in."""
+    root = tp_root(model)
+    replica = root.__dict__.pop(_REPLICA, None)
+    if replica is None:
+        return False
+    for owner, name, param in reversed(replica.swaps):
+        owner._parameters[name] = param
+    for d, key, value in reversed(replica.attrs):
+        if value is tpn._MISSING:
+            d.pop(key, None)
+        else:
+            d[key] = value
+    for hook in replica.hooks:
+        hook.remove()
+    replica.swaps.clear()
+    replica.attrs.clear()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return True
+
+
+# Inference
+
+
+def tp_for_inference(model):
+    """for_inference: the whole replica on every rank (collective)."""
+    if _marked(model, tpn._TP_FLAG):
+        gather_replica(model, "all", keep = True, what = "for_inference")
+    elif _marked(model, "_unsloth_pp"):
+        raise RuntimeError(_refusal(model, "for_inference"))
+
+
+def tp_for_training(model):
+    """for_training: the sharded parameters back (local)."""
+    if _marked(model, tpn._TP_FLAG):
+        release_replica(model)
+
+
+def sync_generation_rng(model):
+    """tp rank 0's CPU and accelerator RNG states to its tp group: sampled tokens agree across tp ranks."""
+    dist = _dist()
+    root = tp_root(model)
+    mesh = tpn._tp_meshes(root)[0]
+    if dist is None or mesh is None or mesh.size() == 1:
+        return
+    group = mesh.get_group()
+    src = dist.get_global_rank(group, 0)
+    device = _device(root)
+    comm = _comm_device(group, device)
+    cpu = torch.get_rng_state().to(comm)
+    dist.broadcast(cpu, src = src, group = group)
+    torch.set_rng_state(cpu.cpu())
+    if device.type == "cuda":
+        state = torch.cuda.get_rng_state(device).to(comm)
+        dist.broadcast(state, src = src, group = group)
+        torch.cuda.set_rng_state(state.cpu(), device)
+
+
+def tp_generate(level, prior, args, kwargs):
+    """generate on a tensor parallel model: gather the replica (collective), sync sampling, generate."""
+    if _GENERATE_DEPTH[0] == 0:
+        gather_replica(level, "all", keep = True, what = "generate")
+        sync_generation_rng(level)
+    if prior is not None:
+        fn = prior
+    elif hasattr(type(level), "generate"):
+        fn = types.MethodType(type(level).generate, level)
+    else:  # a forwarding wrapper (PEFT LoraModel): what its __getattr__ resolves, the level below
+        fn = type(level).__getattr__(level, "generate")
+    _GENERATE_DEPTH[0] += 1
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _GENERATE_DEPTH[0] -= 1
+
+
+# Rank 0 writes, the others wait
+
+
+def _timeout():
+    try:
+        return datetime.timedelta(seconds = float(os.environ.get("UNSLOTH_TP_SAVE_TIMEOUT", 7 * 86400)))
+    except ValueError:
+        return datetime.timedelta(days = 7)
+
+
+def _key(namespace):
+    _COUNTERS[namespace] = _COUNTERS.get(namespace, 0) + 1
+    return f"unsloth_tp_{namespace}_{_COUNTERS[namespace]}"
+
+
+def _store():
+    dist = _dist()
+    try:
+        return dist.distributed_c10d._get_default_store()
+    except Exception:
+        return None
+
+
+def _publish(key, payload):
+    store = _store()
+    if store is None:
+        _dist().barrier()
+        return
+    try:
+        data = pickle.dumps(payload)
+    except Exception:
+        data = pickle.dumps((payload[0], None))
+    store.set(key, data)
+
+
+def _wait(key):
+    store = _store()
+    if store is None:
+        _dist().barrier()
+        return ("ok", None)
+    store.wait([key], _timeout())
+    return pickle.loads(store.get(key))
+
+
+def _on_rank0(key, what, call):
+    """Rank 0 runs `call`; the others wait for it on the store and return its result or raise its error."""
+    if _rank() == 0:
+        _ACTIVE.append(what)
+        payload = ("error", "rank 0 did not finish")
+        try:
+            result = call()
+            payload = ("ok", result)
+            return result
+        except BaseException as exc:
+            payload = ("error", f"{type(exc).__name__}: {exc}")
+            raise
+        finally:
+            _ACTIVE.pop()
+            _publish(key, payload)
+    status, value = _wait(key)
+    if status != "ok":
+        raise RuntimeError(f"Unsloth: tensor parallel `{what}` failed on rank 0: {value}")
+    return value
+
+
+def tp_collective(model, what, call, select = "all"):
+    """Every rank calls; the tensors `select` needs are gathered to rank 0, which runs `call` (the unchanged
+    single-process save) on the one-GPU-looking model; the other ranks wait and return rank 0's result."""
+    if _ACTIVE or _dist() is None:
+        return call()
+    root = tp_root(model)
+    refusal = _refusal(root, what)
+    if refusal is not None:
+        raise RuntimeError(refusal)
+    key = _key("save")
+    writer = _rank() == 0
+    current = root.__dict__.get(_REPLICA)
+    gathered = False
+    if current is None or (current.select != "all" and select == "all"):
+        if _rank() == 0 and select == "all":
+            print(f"Unsloth: tensor parallel `{what}`: gathering the whole model to rank 0, which saves.")
+        gather_replica(root, select, keep = writer, what = what, allow_cpu = select == "all")
+        gathered = writer
+    try:
+        return _on_rank0(key, what, call)
+    finally:
+        if gathered:
+            release_replica(root)
+
+
+def tp_world_save(what, call):
+    """A save of something every rank holds whole (a tokenizer): rank 0 writes, the others wait for it."""
+    dist = _dist()
+    if _ACTIVE or dist is None or dist.get_world_size() == 1:
+        return call()
+    return _on_rank0(_key("world"), what, call)
