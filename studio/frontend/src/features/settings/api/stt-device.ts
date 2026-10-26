@@ -5,11 +5,7 @@
 import { authFetch } from "@/features/auth/api";
 import type { SttDevice } from "../stores/voice-settings-store";
 
-/**
- * Persist Voice Settings "Load into" on the server so a cold
- * `/v1/audio/transcriptions` load honours the same placement as the Settings
- * Load button (#15280). Soft-fails: localStorage remains the UI source of truth.
- */
+// Soft-fails: localStorage stays the UI's source of truth (#15280).
 export function syncSttDevicePreference(device: SttDevice): void {
   void authFetch("/api/settings/stt-device", {
     method: "PUT",
