@@ -294,7 +294,6 @@ def test_a_parked_partial_copy_picks_its_complete_revision(catalog, tmp_path):
     assert pick.model_path == str(complete)
 
 
-
 class _FakeMediaBackend:
     def __init__(
         self,
