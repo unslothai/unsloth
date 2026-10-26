@@ -65,11 +65,18 @@ def _free_port():
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA + NCCL")
 def test_context_parallel_sdpa_backward_with_the_grad_layout_wrapper():
-    env = dict(os.environ, MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(_free_port()),
-               RANK = "0", WORLD_SIZE = "1", LOCAL_RANK = "0")
+    env = dict(
+        os.environ,
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(_free_port()),
+        RANK = "0",
+        WORLD_SIZE = "1",
+        LOCAL_RANK = "0",
+    )
     env.pop("UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX", None)
-    r = subprocess.run([sys.executable, "-c", _PROBE], capture_output = True, text = True,
-                       env = env, timeout = 900)
+    r = subprocess.run(
+        [sys.executable, "-c", _PROBE], capture_output = True, text = True, env = env, timeout = 900
+    )
     line = [x for x in r.stdout.splitlines() if x.startswith("PROBE_RESULT ")]
     assert line, f"probe crashed (rc {r.returncode}):\n{r.stdout[-3000:]}\n{r.stderr[-3000:]}"
     res = json.loads(line[-1][len("PROBE_RESULT ") :])

@@ -7703,12 +7703,7 @@ def fix_cudnn_sdpa_backward_grad_layout():
         out = original(*args, **kwargs)
         # Plain tensors only: a DTensor output (torch context_parallel, DTensor TP) gets a DTensor
         # gradient, which the plain empty_strided buffer in the backward cannot be copied from.
-        if (
-            type(out) is torch.Tensor
-            and out.requires_grad
-            and out.is_cuda
-            and not out.is_nested
-        ):
+        if type(out) is torch.Tensor and out.requires_grad and out.is_cuda and not out.is_nested:
             return grad_in_output_layout.apply(out)
         return out
 
