@@ -874,6 +874,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             updated_at INTEGER NOT NULL,
             notify TEXT NOT NULL DEFAULT 'all',
             named INTEGER NOT NULL DEFAULT 1,
+            model TEXT,
+            reasoning_effort TEXT,
+            allow_model_load INTEGER NOT NULL DEFAULT 0,
             archive_successful INTEGER NOT NULL DEFAULT 0,
             project_id TEXT
         )
@@ -886,6 +889,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN notify TEXT NOT NULL DEFAULT 'all'")
     if "named" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN named INTEGER NOT NULL DEFAULT 1")
+    if "model" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN model TEXT")
+    if "reasoning_effort" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN reasoning_effort TEXT")
+    if "allow_model_load" not in scheduled_task_cols:
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN allow_model_load INTEGER NOT NULL DEFAULT 0"
+        )
     if "archive_successful" not in scheduled_task_cols:
         conn.execute(
             "ALTER TABLE scheduled_tasks ADD COLUMN archive_successful INTEGER NOT NULL DEFAULT 0"
@@ -911,10 +922,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             thread_id TEXT REFERENCES chat_threads(id) ON DELETE SET NULL,
             model TEXT,
             error_code TEXT,
-            error TEXT
+            error TEXT,
+            allow_model_load INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    scheduled_run_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(scheduled_task_runs)").fetchall()
+    }
+    if "allow_model_load" not in scheduled_run_cols:
+        conn.execute(
+            "ALTER TABLE scheduled_task_runs ADD COLUMN allow_model_load INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task"
         " ON scheduled_task_runs(task_id, created_at)"
@@ -3908,32 +3927,42 @@ def _settle_handed_off_generation(conn: sqlite3.Connection, message: dict) -> di
 def _detach_terminal_generation_for_edit(
     conn: sqlite3.Connection, thread_id: str, message: dict
 ) -> bool:
-    row = conn.execute(
-        """SELECT r.id AS run_id, r.status AS run_status,
-                  m.parent_id, m.role, m.metadata_json, m.attachments_json, m.created_at
-           FROM chat_generation_runs r
-           JOIN chat_messages m ON m.id = r.assistant_message_id
-           WHERE r.thread_id = ? AND r.assistant_message_id = ?""",
+    stored = conn.execute(
+        """SELECT parent_id, role, metadata_json, attachments_json
+           FROM chat_messages WHERE thread_id = ? AND id = ?""",
         (thread_id, str(message["id"])),
+    ).fetchone()
+    if stored is None:
+        return False
+    stored_metadata = json.loads(stored["metadata_json"]) if stored["metadata_json"] else {}
+    run_id = stored_metadata.get("generationRunId") if isinstance(stored_metadata, dict) else None
+    if not isinstance(run_id, str):
+        return False
+    # Bind by the stamped run id. Refresh/Reload inserts a new run for a new assistant
+    # id, but create_run stamps created_at itself, so a tab that kept its own Date would
+    # fail a createdAt match (#15004). The run row is the authority.
+    row = conn.execute(
+        """SELECT id AS run_id, status AS run_status
+           FROM chat_generation_runs
+           WHERE id = ? AND thread_id = ? AND assistant_message_id = ?""",
+        (run_id, thread_id, str(message["id"])),
     ).fetchone()
     if row is None or str(row["run_status"]) not in _GENERATION_TERMINAL_STATUSES:
         return False
-    stored_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
     incoming_metadata = message.get("metadata")
     # Not generationSettled: a settle whose `incomplete` disagrees with the producer's is refused,
     # so a finished reply would never become editable (#13938). The run status above decides.
     if (
-        not isinstance(stored_metadata, dict)
-        or stored_metadata.get("serverManaged") is not True
-        or stored_metadata.get("generationRunId") != row["run_id"]
+        stored_metadata.get("serverManaged") is not True
         or isinstance(incoming_metadata, dict)
         and incoming_metadata.get("serverManaged") is True
-        or str(message.get("role")) != str(row["role"])
-        or (message.get("parentId") or None) != (row["parent_id"] or None)
-        or int(message.get("createdAt", row["created_at"])) != int(row["created_at"])
+        or str(message.get("role")) != str(stored["role"])
+        or (message.get("parentId") or None) != (stored["parent_id"] or None)
     ):
         return False
-    stored_attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
+    stored_attachments = (
+        json.loads(stored["attachments_json"]) if stored["attachments_json"] else None
+    )
     if json.dumps(message.get("attachments"), sort_keys = True) != json.dumps(
         stored_attachments, sort_keys = True
     ):

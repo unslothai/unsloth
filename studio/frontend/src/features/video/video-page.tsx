@@ -8,7 +8,6 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Refresh01Icon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
@@ -16,6 +15,7 @@ import {
   ImageCropIcon,
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -4635,7 +4635,7 @@ function VideoGenerator({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={Refresh01Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={ReloadIcon} className="mr-2 size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>

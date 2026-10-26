@@ -6,9 +6,9 @@ import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { UploadIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -483,7 +483,7 @@ function KnowledgeBaseDocuments({
           All knowledge bases
         </Button>
         <Button size="sm" onClick={() => fileInputRef.current?.click()}>
-          {uploading ? <Spinner /> : <UploadIcon className="size-3.5" />}
+          {uploading ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />}
           Upload
         </Button>
         <input

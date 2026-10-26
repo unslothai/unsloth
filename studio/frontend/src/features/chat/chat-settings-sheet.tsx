@@ -66,9 +66,9 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cornerInsets, watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
-import { Edit03Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
+import { Edit03Icon, PanelRightIcon, LinkSquare02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Braces, ExternalLink } from "lucide-react";
+import { Braces } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import {
@@ -365,7 +365,7 @@ function CollapsibleSection({
             className="inline-flex cursor-pointer items-center gap-1 leading-none transition-colors hover:text-nav-fg"
           >
             <span>{label}</span>
-            <ExternalLink className="size-3" />
+            <HugeiconsIcon icon={LinkSquare02Icon} className="size-3" />
           </a>
           <button
             type="button"

@@ -3408,15 +3408,15 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
-    # Strix defers only where the discrete card's wheel can be installed and will run: a ROCm
-    # version with a generic tag (unreadable or pre-6.0 has none, so nothing would install) and
-    # no HSA override (which spoofs every agent, the dGPU included). Otherwise it keeps its own
-    # per-arch index, as before.
+    # Strix defers only to a generic tag at the per-arch floor (7.13, AMD's Strix fixes) with no HSA
+    # override (it spoofs every agent); below it the generic wheel would leave the APU broken.
     _strix_rocm = _detect_rocm_version() if runtime_gfx in _STRIX_APU_GFX else None
+    _strix_tag = _automatic_generic_pytorch_rocm_tag(_strix_rocm) if _strix_rocm else None
     _strix_first = (
         runtime_gfx in _STRIX_APU_GFX
-        and _strix_rocm is not None
-        and _generic_pytorch_rocm_tag(_strix_rocm) is not None
+        and _strix_tag is not None
+        and next((k for k, t in _ROCM_TORCH_INDEX.items() if t == _strix_tag), (0, 0))
+        >= _ROCM_ARCH_INDEX_FLOOR
         and _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION")) is None
     )
     if (runtime_gfx in _SHADOWING_INTEGRATED_GFX or _strix_first) and not _visible_devices_pinned():

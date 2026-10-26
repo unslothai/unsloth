@@ -331,6 +331,7 @@ export {
 } from "./stores/plus-menu-prefs-store";
 export {
   useChatModelRuntime,
+  resyncInferenceStatusAfterKeptModelsUnload,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";
@@ -345,6 +346,11 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export type { ExternalProviderConfig } from "./external-providers";
+export {
+  externalReasoningTakesEffort,
+  getExternalReasoningCapabilities,
+} from "./provider-capabilities";
 // A provider catalogue lands async, so capability reads need to re-run when it does.
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 // What a per-model reasoning pin displaced in the live runtime, so clearing it can put it back.

@@ -6926,6 +6926,29 @@ def resolve_install_attempts(
     return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
 
 
+def _hipcc_available() -> bool:
+    """hipcc where setup.sh's HIP source build looks: PATH, /opt/rocm/bin, /opt/rocm-*/bin."""
+    return bool(
+        shutil.which("hipcc")
+        or os.access("/opt/rocm/bin/hipcc", os.X_OK)
+        or glob.glob("/opt/rocm-*/bin/hipcc")
+    )
+
+
+def _uncovered_rocm_gpu_takes_vulkan(host: HostInfo) -> bool:
+    """No hipcc means a CPU-only source build; Vulkan ignores HIP masks and would reach an NVIDIA card."""
+    return (
+        host.is_linux
+        and host.is_x86_64
+        and not host.has_physical_nvidia
+        # Following ROCm torch clears has_physical_nvidia but keeps the card's evidence.
+        and not (host.nvidia_smi or host.physical_compute_caps or host.driver_cuda_version)
+        and not _hip_visible_device_mask_set()
+        and not _vulkan_visible_device_mask_set()
+        and not _hipcc_available()
+    )
+
+
 def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) -> list[AssetChoice]:
     """Build the install attempts for a fork Linux host from a manifest-described
     bundle: CUDA, per-gfx ROCm, Vulkan, or CPU. Same selection the upstream filename
@@ -6948,6 +6971,14 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         published_rocm = published_rocm_choice_for_host(bundle, host, "linux-rocm")
         if published_rocm is not None:
             attempts.append(published_rocm)
+        elif _uncovered_rocm_gpu_takes_vulkan(host):
+            vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
+            if vulkan_choice is not None:
+                log(
+                    f"no ROCm prebuilt covers {_active_rocm_gfx_target(host) or 'this AMD GPU'} "
+                    "and hipcc is not installed -- using the Vulkan prebuilt"
+                )
+                attempts.append(vulkan_choice)
     else:
         if (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
             vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)

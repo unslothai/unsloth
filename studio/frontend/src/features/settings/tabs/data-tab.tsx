@@ -83,7 +83,6 @@ import {
   FlimSlateIcon,
   Image03Icon,
   LibrariesIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -112,6 +111,7 @@ import {
   type FineTuneAction,
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 // display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];

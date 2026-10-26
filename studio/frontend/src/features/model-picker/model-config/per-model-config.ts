@@ -576,6 +576,7 @@ function normalizeGpuFields(partial: RawConfig): {
   if (
     partial.selectedGpuIndexKind === "physical" ||
     partial.selectedGpuIndexKind === "vulkan" ||
+    partial.selectedGpuIndexKind === "cuda_device" ||
     partial.selectedGpuIndexKind === null
   ) {
     out.selectedGpuIndexKind = partial.selectedGpuIndexKind;
@@ -1744,4 +1745,14 @@ export function resolveResidentInitialConfig(
     return direct;
   }
   return resolveInitialConfig(alias, ggufVariant);
+}
+
+/** For another store to keep a config, schema version included. */
+export function toStoredPerModelConfig(config: PerModelConfig): PerModelConfig & { version: number } {
+  return toStoredConfig(config);
+}
+
+/** Null for a schema this client cannot read. */
+export function fromStoredPerModelConfig(raw: unknown): PerModelConfig | null {
+  return storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION ? null : normalize(raw);
 }

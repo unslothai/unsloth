@@ -74,6 +74,7 @@ _TP_FLAG = "_unsloth_tp"
 COLWISE = "colwise"
 ROWWISE = "rowwise"
 HEAD_NORM = "replicated_with_grad_allreduce"
+ELEMENTWISE = "elementwise_replicated"  # scalar-parameter activations inside an MLP
 
 # transformers TP styles (4.5x and 5.x names) -> what this module does with them.
 _STYLES = {
@@ -115,15 +116,36 @@ _MLP_NAMES = ("mlp", "feed_forward", "ffn")
 _Q, _K, _V = ("q_proj", "query"), ("k_proj", "key"), ("v_proj", "value")
 _FUSED_QKV = ("qkv_proj",)  # [q, k, v] along the output dim (Phi3)
 _ATTN_ROW = ("o_proj", "out_proj", "dense")
-_MLP_COL = ("gate_proj", "up_proj", "w1", "w3", "fc1", "c_fc")
+_MLP_COL = ("gate_proj", "up_proj", "w1", "w3", "fc1", "c_fc", "fc_in", "dense_h_to_4h")
 _MLP_PACKED = ("gate_up_proj",)  # [gate, up] along the output dim
-_MLP_ROW = ("down_proj", "w2", "fc2")
-_HEAD_NORMS = ("q_norm", "k_norm", "query_norm", "key_norm")
+_MLP_ROW = ("down_proj", "w2", "fc2", "fc_out", "dense_4h_to_h", "c_proj")
+_HEAD_NORMS = (
+    "q_norm",
+    "k_norm",
+    "query_norm",
+    "key_norm",
+    "q_layernorm",
+    "k_layernorm",
+    "query_layernorm",
+    "key_layernorm",
+)
 _MLA_NAMES = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
 _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 # An attention forward reading these sizes off the config would reshape to the global head count.
 _GLOBAL_HEAD_READS = re.compile(r"config\.(num_attention_heads|num_key_value_heads)\b")
-_GLOBAL_WIDTH_READS = re.compile(r"(config|self)\.hidden_size\b")
+_GLOBAL_WIDTH_READS = re.compile(
+    r"(config|self)\.(hidden_size|embed_dim|all_head_size|n_embd|d_model|split_size)\b"
+)
+# An MLP forward reducing over its features (activation sparsity statistics, a norm, a softmax) would see
+# only this rank's 1 / tp of the intermediate dimension; one reading the intermediate size splits wrongly.
+_FEATURE_REDUCTIONS = re.compile(
+    r"(?:\btorch\.|\bF\.|\bfunctional\.|\.)(mean|std|var|var_mean|std_mean|sum|nansum|prod|amax|amin|"
+    r"argmax|argmin|topk|kthvalue|sort|argsort|softmax|log_softmax|logsumexp|cumsum|cumprod|norm|normalize|"
+    r"layer_norm|rms_norm|group_norm)\s*\("
+)
+_GLOBAL_INTERMEDIATE_READS = re.compile(r"(config|self)\.(intermediate_size|ffn_dim|n_inner)\b")
+# A fused qkv_proj is [q, k, v] blocks only when the forward slices it by the (local) head counts (Phi3).
+_LOCAL_QKV_SLICE = re.compile(r"(num_key_value_heads|num_kv_heads)\s*\*\s*self\.head_dim")
 
 
 @dataclasses.dataclass
@@ -226,13 +248,19 @@ def _decoder_layers(model):
             decoder = inner
     text = _text_config(model)
     n = getattr(text, "num_hidden_layers", None)
+    # A decoder-only use of an encoder-decoder config (BartForCausalLM): num_hidden_layers is the encoder's.
+    counts = {n, getattr(text, "decoder_layers", None)} - {None}
     prefix = ""
     for name, module in inner.named_modules():
         if module is decoder:
             prefix = name
             break
     for name, module in decoder.named_modules():
-        if isinstance(module, nn.ModuleList) and len(module) and (n is None or len(module) == n):
+        if (
+            isinstance(module, nn.ModuleList)
+            and len(module)
+            and (n is None or len(module) in counts)
+        ):
             path = ".".join(x for x in (prefix, name) if x)
             return path, module
     raise ValueError(
@@ -336,7 +364,23 @@ def _classify(region_path, name, child, kind, compiled):
             return COLWISE, "packed"
         if name in _MLP_ROW:
             return ROWWISE, None
+        if _elementwise_scalars(child):
+            return ELEMENTWISE, None
     return None, None
+
+
+def _elementwise_scalars(module):
+    """A parameterised activation with scalar parameters only (Apertus xIELU): elementwise on any shard of
+    the intermediate dimension, so it stays replicated (gradients summed over tp)."""
+    if isinstance(module, nn.Linear) or "lora_A" in module._modules or list(module.children()):
+        return False
+    if any(p.numel() != 1 for p in module.parameters()):
+        return False
+    try:
+        source = inspect.getsource(type(module))
+    except (OSError, TypeError):
+        return False
+    return not _FEATURE_REDUCTIONS.search(_drop_init(source))
 
 
 def _attention_sizes(module, projs, text):
@@ -393,7 +437,7 @@ def derive_tp_plan(
         if style not in _STYLES and style not in _REPLICATED_STYLES:
             raise ValueError(f"Unsloth: unknown tensor parallel style '{style}' for '{key}'.")
     text = _text_config(model)
-    regions, replicated = [], 0
+    regions, replicated, seen = [], 0, {}
     for index, layer in enumerate(layers):
         found = 0
         for child_name, child in layer.named_children():
@@ -405,9 +449,13 @@ def derive_tp_plan(
             if kind is None or not _has_params(child):
                 continue
             path = f"{layers_path}.{index}.{child_name}"
-            regions.append(_region(path, child, kind, compiled, text, tp_size))
             found += 1
-        replicated += found == 0
+            if id(child) in seen:
+                continue  # a block shared by several layers (Zamba2, ALBERT style): sharded once
+            seen[id(child)] = path
+            regions.append(_region(path, child, kind, compiled, text, tp_size))
+        # A pipeline parallel pass-through (a layer another stage owns) is not a replicated layer.
+        replicated += found == 0 and "_pp_index" not in layer.__dict__
     if not regions:
         raise ValueError(
             "Unsloth: tensor parallelism found no attention / MLP modules to shard in the decoder layers."
@@ -438,7 +486,7 @@ def _region(path, module, kind, compiled, text, tp):
                 "every module with parameters inside a sharded attention / MLP must be in the plan. Pass "
                 "plan = {...} to apply_tensor_parallel."
             )
-        if style == HEAD_NORM:
+        if style in (HEAD_NORM, ELEMENTWISE):
             norms.append((name, child))
             continue
         weight, _ = _weight(child)
@@ -467,15 +515,20 @@ def _region(path, module, kind, compiled, text, tp):
             )
         _check_divisible("num_key_value_heads", kv_heads, tp, path)
         for name, norm in norms:
-            numel = sum(p.numel() for p in norm.parameters())
+            weight = norm._parameters.get("weight")
+            numel = (
+                weight.numel() if weight is not None else sum(p.numel() for p in norm.parameters())
+            )
             if numel != head_dim:
                 raise ValueError(
                     f"Unsloth: '{path}.{name}' normalizes {numel} features, not one head ({head_dim}): a norm "
                     "across all heads needs the full projection, which tensor parallelism v1 does not gather."
                 )
         _check_attention_source(module, path)
-    elif norms:
-        raise ValueError(f"Unsloth: unexpected per-head norm in MLP '{path}'.")
+    else:
+        if any(not _elementwise_scalars(norm) for _, norm in norms):
+            raise ValueError(f"Unsloth: unexpected per-head norm in MLP '{path}'.")
+        _check_mlp_source(module, path)
     for proj in projs:
         weight, base = _weight(proj.module)
         out_features, in_features = _logical_shape(weight, base)
@@ -484,6 +537,7 @@ def _region(path, module, kind, compiled, text, tp):
             proj.parts = (out_features,)
             continue
         if proj.parts == "qkv":
+            _check_fused_qkv_source(module, path, proj.name)
             q, kv = region.heads * region.head_dim, region.kv_heads * region.head_dim
             if q + 2 * kv != out_features:
                 raise ValueError(
@@ -526,19 +580,101 @@ def _forward_source(module):
     return inspect.getsource(forward)
 
 
-def _check_attention_source(module, path):
+def _drop_init(source):
+    """A class source without its __init__ (sizes read there are construction, not forward math)."""
+    return re.sub(r"\n(\s+)def __init__\(.*?(?=\n\1def |\Z)", "\n", source, flags = re.S)
+
+
+def _region_source(module, path, what):
+    """The forward of a region module plus the methods of its own class that forward calls (self._helper)."""
     try:
         source = _forward_source(module)
     except (OSError, TypeError):
         raise ValueError(
             f"Unsloth: tensor parallelism cannot read the forward of '{path}' ({type(module).__name__}) to "
-            "check it uses this rank's head count."
+            f"check {what}."
         )
-    if _GLOBAL_WIDTH_READS.search(source) and "_unsloth_tp_heads" not in source:
+    seen = set()
+    for name in re.findall(r"\bself\.(\w+)\s*\(", source):
+        if name in seen or name in module._modules or name == "forward":
+            continue
+        seen.add(name)
+        method = getattr(type(module), name, None)
+        if not inspect.isfunction(method):
+            continue
+        try:
+            source += "\n" + inspect.getsource(inspect.unwrap(method))
+        except (OSError, TypeError):
+            pass
+    return source
+
+
+def _input_width_names(source, module):
+    """Variables a forward reads the full input width into (`bsz, len, dim = hidden_states.size()`)."""
+    names = set()
+    for x in {_input_name(module), "hidden_states"}:
+        x = re.escape(x)
+        for m in re.finditer(
+            r"\b\w+\s*,\s*\w+\s*,\s*(\w+)\s*=\s*" + x + r"\.(?:size\(\)|shape\b)", source
+        ):
+            names.add(m.group(1))
+        for m in re.finditer(
+            r"\b(\w+)\s*=\s*" + x + r"\.(?:shape\[(?:-1|2)\]|size\((?:-1|2)\))", source
+        ):
+            names.add(m.group(1))
+    names.discard("_")
+    return sorted(n for n in names if len(re.findall(r"\b" + re.escape(n) + r"\b", source)) > 1)
+
+
+def _check_attention_source(module, path):
+    source = _region_source(module, path, "it uses this rank's head count")
+    if "_unsloth_tp_heads" in source:
+        return  # an Unsloth forward written for tensor parallelism
+    read = _GLOBAL_WIDTH_READS.search(source)
+    if read:
         raise ValueError(
-            f"Unsloth: the attention forward of '{path}' ({type(module).__name__}) reshapes with hidden_size, "
-            "the global width; tensor parallelism v1 needs it to follow the local heads."
+            f"Unsloth: the attention forward of '{path}' ({type(module).__name__}) reshapes with "
+            f"{read.group(0)}, the global width; tensor parallelism v1 needs it to follow the local heads."
         )
+    width = _input_width_names(source, module)
+    if width:
+        raise ValueError(
+            f"Unsloth: the attention forward of '{path}' ({type(module).__name__}) keeps the input width "
+            f"({', '.join(width)}) for its output shape; tensor parallelism v1 needs it to follow the local heads."
+        )
+
+
+def _check_mlp_source(module, path):
+    source = _region_source(module, path, "it is elementwise over the intermediate features")
+    if "_unsloth_tp" in source:
+        return
+    reduction = _FEATURE_REDUCTIONS.search(source)
+    if reduction:
+        raise ValueError(
+            f"Unsloth: the MLP forward of '{path}' ({type(module).__name__}) reduces over its features "
+            f"({reduction.group(0).strip()}...); with tensor parallelism each rank holds 1 / tp of them, so v1 "
+            "cannot shard it."
+        )
+    read = _GLOBAL_INTERMEDIATE_READS.search(source)
+    if read:
+        raise ValueError(
+            f"Unsloth: the MLP forward of '{path}' ({type(module).__name__}) reads {read.group(0)}, the global "
+            "size; tensor parallelism v1 needs it to follow the local shard."
+        )
+
+
+def _check_fused_qkv_source(module, path, name):
+    try:
+        source = _forward_source(module)
+    except (OSError, TypeError):
+        source = ""
+    if "_unsloth_tp_heads" in source or _LOCAL_QKV_SLICE.search(source):
+        return
+    raise ValueError(
+        f"Unsloth: the attention forward of '{path}' ({type(module).__name__}) does not slice the fused "
+        f"'{name}' by the key / value head count ([q, k, v] blocks); its layout is unknown to tensor "
+        "parallelism v1."
+    )
 
 
 def shard_slice(tensor, dim, parts, rank, tp):
@@ -1131,10 +1267,9 @@ def apply_tensor_parallel(
             "load it without tp_plan before apply_tensor_parallel."
         )
     if any(level.__dict__.get("_unsloth_pp") is not None for level in _tp_chain(model)):
-        raise ValueError(
-            "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism "
-            "(apply_pipeline_parallel) in v1."
-        )
+        # pp x tp (torchtitan order): each pipeline stage is tensor parallel over the tp dimension of the
+        # same mesh. Checked before any change.
+        _check_pp_tp_composition(model, tp_mesh)
     tp_plan = derive_tp_plan(model, tp, plan)
     covered = set()
     for region in tp_plan.regions:
@@ -1144,6 +1279,11 @@ def apply_tensor_parallel(
             _refuse_base(path, proj.module, weight, base)
             _refuse_adapter(path, proj.module)
             _check_preloaded(path, proj, weight, base, tp_mesh)
+            if id(weight) in covered:
+                raise ValueError(
+                    f"Unsloth: '{path}' shares its weight with another sharded projection; tensor "
+                    "parallelism v1 shards every projection once."
+                )
             covered.update((id(weight), id(base.bias)))
             if _is_params4bit(weight):
                 _check_params4bit(path, weight, proj.style, tp)
@@ -1264,6 +1404,57 @@ def _shard_projection(region, proj, mesh, rank, tp):
     module.forward = types.MethodType(_tp_projection_forward, module)
 
 
+def _check_pp_tp_composition(model, tp_mesh):
+    from .pp_native import check_mesh_composition, pipeline_stage_of
+
+    stage = pipeline_stage_of(model)
+    if stage is None or stage.model is not model:
+        raise ValueError(
+            "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism "
+            "(apply_pipeline_parallel) here: pass the model apply_pipeline_parallel was given."
+        )
+    if stage.dp_mesh is not None:
+        raise ValueError(
+            "Unsloth: apply_tensor_parallel must come before shard_model on a pipeline parallel model "
+            "(pp, then tp inside each stage, then FSDP2 over dp)."
+        )
+    import torch.distributed as dist
+
+    meshes = {"pp": stage.mesh, "tp": tp_mesh}
+    world = dist.get_world_size() if dist.is_initialized() else 1
+    if stage.mesh.size() * tp_mesh.size() == world:
+        try:
+            check_mesh_composition(meshes, "pipeline parallel x tensor parallel")
+        except ValueError as exc:
+            raise ValueError(
+                "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism on these "
+                f"meshes. {exc}"
+            ) from None
+    else:
+        # pp x dp x tp: the dp dimension comes with shard_model; here only orthogonality and divisibility.
+        pp_ranks, tp_ranks = set(stage.mesh.mesh.tolist()), set(tp_mesh.mesh.tolist())
+        if (
+            tp_mesh.ndim != 1
+            or pp_ranks & tp_ranks != {dist.get_rank()}
+            or world % (stage.mesh.size() * tp_mesh.size())
+        ):
+            raise ValueError(
+                "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism on these "
+                f"meshes: the tp mesh (ranks {sorted(tp_ranks)}) must be the tensor parallel dimension of the "
+                f"mesh whose pp dimension (ranks {sorted(pp_ranks)}) apply_pipeline_parallel used: pass "
+                "mesh['tp'] of init_device_mesh(..., (pp, tp)) or (pp, dp, tp)."
+            )
+    return stage
+
+
+def _pp_size(model):
+    for level in _tp_chain(model):
+        info = level.__dict__.get("_unsloth_pp")
+        if info is not None:
+            return int(info.get("size", 1))
+    return 1
+
+
 def check_tp_dp_composition(model, dp_mesh):
     """shard_model(model, FSDP2Config(mesh = dp_mesh)) on a model sharded by apply_tensor_parallel: valid when
     dp_mesh and the tp mesh are the two dimensions of one (dp, tp) mesh covering the world. Marks the model."""
@@ -1284,7 +1475,9 @@ def check_tp_dp_composition(model, dp_mesh):
         )
     dp_ranks, tp_ranks = set(dp_mesh.mesh.tolist()), set(tp_mesh.mesh.tolist())
     me = dist.get_rank()
-    if dp_ranks & tp_ranks != {me} or dp_mesh.size() * tp_mesh.size() != dist.get_world_size():
+    # A pipeline parallel model (apply_pipeline_parallel first): every stage is one (dp, tp) slice of the world.
+    pp = _pp_size(model)
+    if dp_ranks & tp_ranks != {me} or dp_mesh.size() * tp_mesh.size() * pp != dist.get_world_size():
         raise ValueError(
             f"Unsloth: native FSDP2's mesh (ranks {sorted(dp_ranks)}) must be the data parallel dimension of the "
             f"(dp, tp) mesh whose tp dimension (ranks {sorted(tp_ranks)}) apply_tensor_parallel used, covering "
@@ -1360,11 +1553,24 @@ def tp_clip_grad_norm_(
         dist.all_reduce(shard_sq, group = group)
         total = total + shard_sq
     total = total.sqrt()
-    coef = float(max_norm) / (float(total) + eps)
-    if coef < 1:
-        for p in params:
-            p.grad.mul_(coef)
+    _scale_grads_(params, total, max_norm, eps)
     return total
+
+
+def _scale_grads_(params, total, max_norm, eps):
+    """torch's clip: a tensor coefficient clamped at 1 and applied unconditionally (no host sync, no
+    data-dependent branch). DTensor grads are scaled through their local shard."""
+    with torch.no_grad():
+        coef = torch.clamp(max_norm / (total + eps), max = 1.0)
+        for p in params:
+            g = p.grad
+            local = g.to_local() if _is_dtensor(g) else g
+            c = coef.to(device = local.device, dtype = torch.float32)
+            if local.dtype in (torch.float16, torch.bfloat16):
+                # A small coefficient rounds to 0 in fp16 (a device tensor is cast to the grad dtype).
+                local.copy_(local.float().mul_(c))
+            else:
+                local.mul_(c.to(local.dtype))
 
 
 def _clip_over_world(params, max_norm, eps):
@@ -1398,10 +1604,7 @@ def _clip_over_world(params, max_norm, eps):
         total = sq if total is None else total + sq
     dist.all_reduce(total)
     total = total.sqrt()
-    coef = float(max_norm) / (float(total) + eps)
-    if coef < 1:
-        for p in params:
-            p.grad.mul_(coef)
+    _scale_grads_(params, total, max_norm, eps)
     return total
 
 

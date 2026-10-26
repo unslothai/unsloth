@@ -1849,8 +1849,7 @@ def get_model_name(
     if new_model_name is None:
         new_model_name = model_name
     else:
-        # Also when the result equals the input: main returned it lowercased, so that is what is cached.
-        # The loader drops the revision on a real remap (_revision_for_resolved_repo), so probe main then.
+        # Also when equal to the input: main returned it lowercased. A real remap drops the revision.
         same_repo = new_model_name.lower() == str(model_name).lower()
         new_model_name = _prefer_legacy_lowercase_cache(
             new_model_name, local_files_only, cache_dir, revision if same_repo else None
@@ -2086,6 +2085,9 @@ def _drop_fp8_dequantize_conversions(model):
         if not _has_dequant(conversion):
             kept.append(conversion)
             continue
+        if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+            # transformers dropped the fp8 config: 16bit weights, so no bitsandbytes stamp either.
+            model._unsloth_fp8_dequantized = True
         if all(isinstance(op, Fp8Dequantize) for op in operations):
             # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
             changed += 1
@@ -2127,6 +2129,17 @@ def _drop_fp8_dequantize_conversions(model):
     if changed:
         model._weight_conversions = kept
     return changed
+
+
+def _loaded_quant_method(config):
+    """quant_method of `config.quantization_config` as a lower-case string, dict or config object, else None."""
+    qc = getattr(config, "quantization_config", None)
+    if qc is None:
+        return None
+    method = qc.get("quant_method") if isinstance(qc, dict) else getattr(qc, "quant_method", None)
+    if method is None:
+        return None
+    return str(getattr(method, "value", method)).lower()
 
 
 def _fp8_dequantize_quantization_config(model_config):
@@ -2482,7 +2495,7 @@ def _route_compressed_tensors_fp8_to_unsloth(
     skip = (),
     default = "0",
 ):
-    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4, where the
+    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4.
     # decompressed FP8 layers would keep compressed-tensors' graph-breaking fake-quant forward.
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", default) != "1":
         return 0
@@ -2643,8 +2656,7 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
         fn,
         recurse = True,
     ):
-        # model.to(dtype) / .half() may move the packed weight and its scales but never cast them: an fp16 global
-        # scale overflows past 65504 and dequantizes the layer to zeros.
+        # model.to(dtype) must never cast the packed weight or scales: an fp16 global scale overflows.
         quant = {}
         for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
             param = self._parameters.get(name)
@@ -4370,12 +4382,20 @@ def gpt_oss_checkpoint_has_fused_experts(
         # Anything not named *-unsloth-bnb-4bit may be a fused save; guessing split loads random experts.
         if "unsloth-bnb-4bit" in str(model_name).lower():
             return False
+        # A lone .bin outranks its index (transformers' order): advising an index cannot help.
+        unreadable = str(exc)
+        fix = (
+            "Re-save it with `safe_serialization = True` (safetensors), or re-save "
+            f"`{os.path.basename(unreadable)}` with a recent torch (zip serialization) so it can be "
+            "memory-mapped."
+        )
+        if not os.path.isfile(unreadable):
+            fix += " Downloading it locally first also lets its tensor names be read."
         raise GptOssUnknownExpertLayoutError(
-            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint saved as a single "
-            f"`{os.path.basename(str(exc))}` with no index, so its expert layout (fused or Unsloth's split "
+            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint whose weights load from a "
+            f"single `{os.path.basename(unreadable)}`, so its expert layout (fused or Unsloth's split "
             "pre-quantized layout) cannot be read without loading the weights, and a wrong guess loads "
-            "random experts. Re-save it with `safe_serialization = True` (safetensors), add its "
-            "`pytorch_model.bin.index.json`, or download it locally first."
+            f"random experts. {fix}"
         ) from None
     layout = _gpt_oss_bnb_checkpoint_expert_layout(dtypes)
     if layout == "fused_unknown_dtype":

@@ -54,7 +54,6 @@ import { asPng } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type FC,
@@ -65,6 +64,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { PlayIcon } from "lucide-react";
 
 type TextPreviewState =
   | { status: "loading" }
@@ -583,7 +583,7 @@ const AttachmentTextDialog: FC<
                 active={!showCode}
                 onClick={() => setShowCode(false)}
               >
-                <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-5" />
+                <PlayIcon strokeWidth={1.75} className="size-5" />
               </ViewButton>
             </div>
           )}
