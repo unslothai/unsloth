@@ -2225,6 +2225,38 @@ def test_thinking_off_reaches_a_model_kept_beside_a_primary_without_reasoning(mo
     assert world.unloaded == [] and world.loaded == SwapWorld.EARLIER
 
 
+def test_switching_back_reloads_a_transformers_model_the_run_replaced_by_name(monkeypatch):
+    world = SwapWorld(monkeypatch, earlier = None)
+    backend = SimpleNamespace(active_model_name = "Qwen/Qwen3-0.6B")
+    monkeypatch.setattr(inference_routes, "get_inference_backend", lambda: backend)
+    reloads = []
+
+    async def reload(model, request, subject, **kwargs):
+        reloads.append(
+            (
+                model,
+                inference_routes._model_switch_allowed_for_request(request),
+                request.scope.get(inference_routes.LOADED_MODELS_ONLY_SCOPE_KEY, False),
+            )
+        )
+        world.loaded, backend.active_model_name = None, model
+
+    monkeypatch.setattr(inference_routes, "_maybe_auto_switch_model", reload)
+
+    class ReplacesIt(FakeProducer):
+        async def __call__(self, payload, request, current_subject, *, cancel_on_disconnect):
+            backend.active_model_name = None
+            world.loaded = ("/models/qwen.gguf", "Q4_K_M", SwapWorld.TASK_MODEL)
+            return await super().__call__(
+                payload, request, current_subject, cancel_on_disconnect = cancel_on_disconnect
+            )
+
+    world.run(monkeypatch, {"id": "run-1", "source": "manual"}, ReplacesIt(completion("Ok.")))
+    assert world.unloaded == ["/models/qwen.gguf"]
+    assert reloads == [("Qwen/Qwen3-0.6B", True, False)]
+    assert backend.active_model_name == "Qwen/Qwen3-0.6B"
+
+
 def test_switching_back_unloads_a_non_gguf_task_model_first(monkeypatch):
     world = SwapWorld(monkeypatch)
     backend = SimpleNamespace(active_model_name = None)

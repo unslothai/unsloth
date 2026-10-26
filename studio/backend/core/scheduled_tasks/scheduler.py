@@ -80,6 +80,8 @@ class _Swap:
     task_id: Optional[str] = None
     # llama_keepwarm.attended_stamp() at the swap: a different one later means someone came back.
     attended: Optional[float] = None
+    # A Transformers or MLX model in the primary has no GGUF identity: it is loaded back by name.
+    previous_model: Optional[str] = None
 
 
 @dataclass
@@ -360,13 +362,20 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
             raise RunFailed("model_busy")
     # A model loaded since the carried swap is the user's latest choice, and the one to put back.
     keep_carried = carried is not None and carried.model and _model_is_loaded(carried.model)
+    previous = carried.previous if keep_carried else loaded_identity()
+    previous_model = carried.previous_model if keep_carried else None
+    if not keep_carried and previous is None and _resident_npu_model() is None:
+        previous_model = getattr(
+            await asyncio.to_thread(get_inference_backend), "active_model_name", None
+        )
     return _Swap(
-        carried.previous if keep_carried else loaded_identity(),
+        previous,
         model = model,
         subject = task["ownerSubject"],
         timezone = task["timezone"],
         task_id = task["id"],
         attended = attended_stamp(),
+        previous_model = previous_model,
     )
 
 
@@ -415,16 +424,26 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
                     await _unload_model_impl(UnloadRequest(model_path = target), swap.subject)
             elif current is not None:
                 return
-            if swap.previous is None:
+            if swap.previous is None and not swap.previous_model:
                 return
-            stash_for_reload(swap.previous)
+            if swap.previous is not None:
+                stash_for_reload(swap.previous)
+            # Named for a non-GGUF model, which must not be held to what is loaded now.
             request = _producer_request(
-                app, f"{swap.task_id}:restore", threading.Event(), swap.timezone
+                app,
+                f"{swap.task_id}:restore",
+                threading.Event(),
+                swap.timezone,
+                loaded_only = swap.previous is not None,
             )
             allow_model_switch_for_request(request.scope)
             restored = False
             try:
-                await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, swap.subject)
+                await _maybe_auto_switch_model(
+                    _RELOAD_ONLY_MODEL if swap.previous is not None else swap.previous_model,
+                    request,
+                    swap.subject,
+                )
                 restored = True
             finally:
                 # No middleware ends this in-process request; its admission would block previews.
