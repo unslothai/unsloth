@@ -25,7 +25,12 @@ def _load_block_compile():
     return module
 
 
-def run_rank(rank, port, queue, recompute_miss = False):
+def run_rank(
+    rank,
+    port,
+    queue,
+    recompute_miss = False,
+):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),

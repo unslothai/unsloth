@@ -44,7 +44,9 @@ def _run(recompute_miss = False):
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
     port = _free_port()
-    procs = [ctx.Process(target = worker.run_rank, args = (r, port, queue, recompute_miss)) for r in range(2)]
+    procs = [
+        ctx.Process(target = worker.run_rank, args = (r, port, queue, recompute_miss)) for r in range(2)
+    ]
     for p in procs:
         p.start()
     results = {}
