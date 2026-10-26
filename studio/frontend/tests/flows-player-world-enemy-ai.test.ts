@@ -241,7 +241,11 @@ test("up close a wall still hides the player, and a hostile in a safe place neve
     [6, 7],
   ]);
   const a = E.addAgent(brain, "h", 5.5, 6.5);
-  assert.equal(E.canSee(brain, a, player(6.9, 6.5)), false, "felt through a wall");
+  assert.equal(
+    E.canSee(brain, a, player(6.9, 6.5)),
+    false,
+    "felt through a wall",
+  );
   const open = arena();
   const c = A.newCombat();
   const b = E.addAgent(open.brain, "s", 5.5, 6.5, true);
@@ -251,6 +255,22 @@ test("up close a wall still hides the player, and a hostile in a safe place neve
   run(open.brain, c, player(6.5, 6.5), 3);
   assert.equal(c.health, A.MAX_HEALTH);
   assert.equal(b.attacks, 0);
+});
+
+test("a hostile waking from a knockout does not chase noises made while it was out", () => {
+  const { brain } = arena();
+  const c = A.newCombat();
+  const a = E.addAgent(brain, "h", 5.5, 6.5, true);
+  c.enemies.h = { health: A.ENEMY_HEALTH, down: c.clock + 2, cooldown: 0 };
+  const noises = [{ seq: 1, x: 8.5, y: 6.5, radius: 10, at: 0 }];
+  const states = new Set<string>();
+  run(brain, c, player(20.5, 20.5, { hidden: true }), 4, noises, () =>
+    states.add(a.state),
+  );
+  assert.deepEqual(
+    [...states].filter((x) => x !== "idle" && x !== "patrol"),
+    [],
+  );
 });
 
 test("it decides at 10 Hz while it moves every frame", () => {
