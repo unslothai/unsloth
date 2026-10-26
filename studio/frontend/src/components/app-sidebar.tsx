@@ -6950,6 +6950,7 @@ export function AppSidebar() {
               </span>
             </label>
             <Switch
+              className="mt-[var(--ui-title-cap-inset)]"
               id="delete-files-on-delete"
               checked={deleteFilesOnDelete}
               onCheckedChange={setDeleteFilesOnDelete}

@@ -350,7 +350,8 @@ export function RemoteAccessSection() {
           type="button"
           size="sm"
           variant={stopAction ? "outline" : "dark"}
-          className="shrink-0"
+          // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+          className="mt-[calc(var(--text-base)*0.372)] shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >

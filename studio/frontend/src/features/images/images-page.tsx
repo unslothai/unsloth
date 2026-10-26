@@ -6001,18 +6001,21 @@ export function ImagesPage({
               </div>
 
               {workflow === "create" && (
-                <MediaGenerationPresetControl
-                  kind="image"
-                  presets={imagePresets.presets}
-                  activePreset={imagePresets.activePreset}
-                  ready={imagePresets.presetsReady}
-                  hasUnsavedChanges={imagePresets.hasUnsavedChanges}
-                  onSelect={imagePresets.selectPreset}
-                  onSave={imagePresets.savePreset}
-                  onDelete={imagePresets.deletePreset}
-                  onImportFromImage={() => importFileRef.current?.click()}
-                  onPasteParameters={() => setPasteOpen(true)}
-                />
+                // Top edge on the heading's cap top (text-xl, leading-none; Hellix: 0.122em).
+                <div className="mt-[calc(var(--text-xl)*0.122)]">
+                  <MediaGenerationPresetControl
+                    kind="image"
+                    presets={imagePresets.presets}
+                    activePreset={imagePresets.activePreset}
+                    ready={imagePresets.presetsReady}
+                    hasUnsavedChanges={imagePresets.hasUnsavedChanges}
+                    onSelect={imagePresets.selectPreset}
+                    onSave={imagePresets.savePreset}
+                    onDelete={imagePresets.deletePreset}
+                    onImportFromImage={() => importFileRef.current?.click()}
+                    onPasteParameters={() => setPasteOpen(true)}
+                  />
+                </div>
               )}
               <PasteParametersDialog
                 open={pasteOpen}

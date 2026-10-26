@@ -1527,7 +1527,7 @@ export function ChatProvidersSettings({
                 >
                   <SelectTrigger
                     id="provider-preset"
-                    className="h-9 w-full text-sm"
+                    className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
                     disabled={editingProviderId != null}
                   >
                     <SelectValue placeholder="Choose a connection" />
@@ -1603,7 +1603,7 @@ export function ChatProvidersSettings({
                         : "Saved securely after you connect."}
                     </p>
                   </div>
-                  <div className="relative min-w-0">
+                  <div className="relative mt-[var(--ui-title-cap-inset)] min-w-0 @max-[520px]:mt-0">
                     <Input
                       id="provider-api-key"
                       type={showApiKey ? "text" : "password"}
@@ -1695,7 +1695,10 @@ export function ChatProvidersSettings({
                       if (value !== "chat_completions") setReasoningConfig(null);
                     }}
                   >
-                    <SelectTrigger id="provider-api-type" className="h-9 w-full text-sm">
+                    <SelectTrigger
+                      id="provider-api-type"
+                      className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1728,7 +1731,7 @@ export function ChatProvidersSettings({
                     value={baseUrlDraft}
                     onChange={(event) => setBaseUrlDraft(event.target.value)}
                     placeholder={customProviderBaseUrlPlaceholder(providerType)}
-                    className="h-9 text-sm"
+                    className="mt-[var(--ui-title-cap-inset)] h-9 text-sm @max-[520px]:mt-0"
                   />
                 </div>
               ) : null}
@@ -1751,7 +1754,7 @@ export function ChatProvidersSettings({
                       32,768 for a model without one.
                     </p>
                   </div>
-                  <div className="flex min-w-0 flex-col gap-1.5">
+                  <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
                     {/* Text, not type=number: that blanks "131,072" and silently clears the override. */}
                     <Input
                       id="provider-max-output-tokens"
@@ -1796,6 +1799,7 @@ export function ChatProvidersSettings({
                     </p>
                   </div>
                   <Switch
+                    className="mt-[var(--ui-title-cap-inset)]"
                     id="provider-auto-reload-models"
                     checked={autoReloadModels}
                     onCheckedChange={setAutoReloadModels}
@@ -1823,6 +1827,7 @@ export function ChatProvidersSettings({
                     </p>
                   </div>
                   <Switch
+                    className="mt-[var(--ui-title-cap-inset)]"
                     id="provider-shared"
                     checked={sharedDraft}
                     onCheckedChange={setSharedDraft}
@@ -1864,7 +1869,7 @@ export function ChatProvidersSettings({
                           Choose the request format your endpoint supports.
                         </p>
                       </div>
-                      <div className="flex min-w-0 flex-col gap-1.5">
+                      <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
                         <Select
                           value={reasoningConfig.style}
                           onValueChange={(style) => setReasoningConfig({
@@ -2003,30 +2008,32 @@ export function ChatProvidersSettings({
                       {modelStatusLabel}
                     </p>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className={
-                      availableModels.length > 0
-                        ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
-                        : "shrink-0"
-                    }
-                    disabled={loadModelsDisabled}
-                    title={loadModelsTitle}
-                    onClick={() => void loadModels()}
-                  >
-                    {modelsLoading ? (
-                      <>
-                        <Spinner className="mr-2 size-3.5" />
-                        Loading…
-                      </>
-                    ) : availableModels.length > 0 ? (
-                      "Reload models"
-                    ) : (
-                      "Load available models"
-                    )}
-                  </Button>
+                  <div data-title-line-control={true} className="shrink-0">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className={
+                        availableModels.length > 0
+                          ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
+                          : "shrink-0"
+                      }
+                      disabled={loadModelsDisabled}
+                      title={loadModelsTitle}
+                      onClick={() => void loadModels()}
+                    >
+                      {modelsLoading ? (
+                        <>
+                          <Spinner className="mr-2 size-3.5" />
+                          Loading…
+                        </>
+                      ) : availableModels.length > 0 ? (
+                        "Reload models"
+                      ) : (
+                        "Load available models"
+                      )}
+                    </Button>
+                  </div>
                 </div>
                 {isCustomProvider && !supportsRemoteModelCatalog(providerType) ? (
                   <div className="space-y-3 px-4 py-4">

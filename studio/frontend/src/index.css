@@ -416,6 +416,8 @@
 	--ui-icon-size-sm: calc(0.875rem * var(--ui-font-scale, 1));
 	/* Info "i" beside a settings label, a notch under the label text. */
 	--ui-icon-size-hint: calc(0.75rem * var(--ui-font-scale, 1));
+	/* Gap from a text-sm title's line top to its cap top (Inter at leading 1.43: 0.35em). */
+	--ui-title-cap-inset: calc(0.875rem * 0.35 * var(--ui-font-scale, 1));
 	/* Model picker header controls. Padding and gaps follow --ui-space-scale,
 	   icons and label follow --ui-font-scale, so reserve each separately. The
 	   trigger is 2.25rem of padding and gaps, two icons, then the label, plus
@@ -2712,6 +2714,17 @@ html[data-chat-font] .aui-root {
 	}
 	.dark .settings-heading {
 		color: color-mix(in oklab, var(--muted-foreground), var(--background) 7%);
+	}
+
+	/* The control beside a title + description: its top edge meets the top of the title's letters. */
+	[data-title-line-control] {
+		display: flex;
+		align-items: flex-start;
+		padding-top: var(--ui-title-cap-inset);
+	}
+	/* Plain text (a status like "Off") lines up letter to letter instead, from the line top. */
+	[data-title-line-control]:not(:has(button, input, select, textarea, [role])) {
+		padding-top: 0;
 	}
 
 	/* Disabled ones (native, aria-disabled, Radix data-disabled) keep the default cursor. */

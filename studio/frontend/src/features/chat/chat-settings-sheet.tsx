@@ -2080,7 +2080,11 @@ function ConfirmToolCallsToggle() {
         ) : null}
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        // Cap top of the 13px title at leading 1.25 (Inter: 0.26em).
+        className={cn(
+          "panel-switch shrink-0",
+          permissionMode === "full" && "mt-[calc(var(--text-ui-13)*0.26)]",
+        )}
         checked={permissionMode === "ask"}
         onCheckedChange={(checked) => {
           if (checked) {

@@ -2035,6 +2035,7 @@ export function ExportPage() {
                           </div>
                         </div>
                         <Switch
+                          className="mt-[var(--ui-title-cap-inset)]"
                           aria-label="Importance matrix (imatrix)"
                           checked={effectiveImatrix}
                           onCheckedChange={setUseImatrix}
@@ -2088,6 +2089,7 @@ export function ExportPage() {
                           </div>
                         </div>
                         <Switch
+                          className="mt-[var(--ui-title-cap-inset)]"
                           aria-label="Also convert to Q4NX (AMD NPU)"
                           checked={effectiveNpuQ4nx}
                           onCheckedChange={setNpuQ4nx}

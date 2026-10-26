@@ -438,6 +438,7 @@ function RunDialogBody({
                   </p>
                 </div>
                 <Switch
+                  className="mt-[var(--ui-title-cap-inset)]"
                   checked={settings.batchEnabled}
                   onCheckedChange={(checked) =>
                     onSettingsChange({ batchEnabled: Boolean(checked) })
@@ -531,6 +532,7 @@ function RunDialogBody({
                       </p>
                     </div>
                     <Switch
+                      className="mt-[var(--ui-title-cap-inset)]"
                       checked={settings.mergeBatches}
                       onCheckedChange={(checked) =>
                         onSettingsChange({ mergeBatches: Boolean(checked) })
@@ -631,6 +633,7 @@ function RunDialogBody({
                   </p>
                 </div>
                 <Switch
+                  className="mt-[var(--ui-title-cap-inset)]"
                   checked={settings.disableEarlyShutdown}
                   onCheckedChange={(checked) =>
                     onSettingsChange({

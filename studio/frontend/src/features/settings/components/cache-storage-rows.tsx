@@ -28,7 +28,6 @@ import {
   loadCacheInventory,
   purgeCaches,
 } from "../api/caches";
-import { TitleLineStrut } from "./settings-row";
 import { SettingsCardRow } from "./storage-overview";
 
 /** Decimal units, matching the Storage section's disk readings. */
@@ -300,8 +299,7 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
                     </span>
                   ) : null}
                 </div>
-                <div className="flex items-center gap-3">
-                  <TitleLineStrut className="-mr-3" />
+                <div data-title-line-control={true} className="flex gap-3">
                   <span className="text-xs tabular-nums text-muted-foreground">
                     {formatCacheSize(entry.sizeBytes)}
                   </span>

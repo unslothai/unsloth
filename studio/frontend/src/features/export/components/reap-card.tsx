@@ -41,6 +41,7 @@ export function ReapCard({
           </div>
         </div>
         <Switch
+          className="mt-[var(--ui-title-cap-inset)]"
           aria-label="Prune experts (REAP)"
           checked={settings.enabled}
           onCheckedChange={(enabled) => set({ enabled })}

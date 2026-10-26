@@ -10,7 +10,6 @@ import { cn } from "@/lib/utils";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
-import { TitleLineStrut } from "./settings-row";
 
 export const STORAGE_COLORS = {
   yellow: "bg-amber-400 dark:bg-[#f7d35f]",
@@ -162,8 +161,13 @@ export function SettingsCardRow({
           ) : null}
         </div>
         {children ? (
-          <div className="flex shrink-0 items-center gap-2">
-            {description ? <TitleLineStrut className="-mr-2" /> : null}
+          <div
+            data-title-line-control={description ? true : undefined}
+            className={cn(
+              "flex shrink-0 gap-2",
+              !description && "items-center",
+            )}
+          >
             {children}
           </div>
         ) : null}

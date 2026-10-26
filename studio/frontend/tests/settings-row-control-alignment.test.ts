@@ -4,6 +4,8 @@ import test from "node:test";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const ALIGN_BY_DESCRIPTION = /description \? "items-start" : "items-center"/;
+const TITLE_LINE_CONTROL =
+  /data-title-line-control=\{description \? true : undefined\}\s*className=\{cn\(\s*"flex [^"]*",\s*!description && "items-center",?\s*\)\}/;
 
 for (const path of [
   "features/settings/components/settings-row.tsx",
@@ -12,16 +14,26 @@ for (const path of [
   test(`${path}: a row with a description keeps its control by the title`, async () => {
     const source = await readSrcAsync(path);
     assert.match(source, ALIGN_BY_DESCRIPTION);
-    assert.match(source, /description \? <TitleLineStrut\b/);
+    // items-center on the control box would beat the title-line rule in index.css.
+    assert.match(source, TITLE_LINE_CONTROL);
   });
 }
 
-test("the strut is exactly one label line tall and takes no width", async () => {
-  const source = await readSrcAsync(
-    "features/settings/components/settings-row.tsx",
+test("every control's top edge meets the title's cap top, whatever the control", async () => {
+  const css = await readSrcAsync("index.css");
+  assert.match(
+    css,
+    /--ui-title-cap-inset: calc\(0\.875rem \* 0\.35 \* var\(--ui-font-scale, 1\)\);/,
   );
   assert.match(
-    source,
-    /aria-hidden=\{true\}\s*className=\{cn\("w-0 select-none text-sm"/,
+    css,
+    /\[data-title-line-control\] \{\s*display: flex;\s*align-items: flex-start;\s*padding-top: var\(--ui-title-cap-inset\);\s*\}/,
+  );
+  // A per-control-type rule misclassified a dropdown whose trigger replaced Button's data-slot.
+  assert.doesNotMatch(css, /\[data-title-line-control\]:has\(/);
+  // Only text with no control in it drops the inset.
+  assert.match(
+    css,
+    /\[data-title-line-control\]:not\(:has\(button, input, select, textarea, \[role\]\)\) \{\s*padding-top: 0;\s*\}/,
   );
 });

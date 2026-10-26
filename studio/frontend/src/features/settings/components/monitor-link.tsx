@@ -94,6 +94,7 @@ export function MonitorLink(): ReactElement {
           </span>
         </span>
         <Switch
+          className="mt-[var(--ui-title-cap-inset)]"
           checked={autoOpen}
           onCheckedChange={setAutoOpen}
           aria-label={t("settings.resources.liveMonitor.autoOpen")}

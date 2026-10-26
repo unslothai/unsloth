@@ -86,6 +86,7 @@ export function ConfigDialog({
                     </p>
                   </div>
                   <Switch
+                    className="mt-[var(--ui-title-cap-inset)]"
                     checked={config.drop ?? false}
                     disabled={readOnly}
                     onCheckedChange={(value) => onUpdate(config.id, { drop: value })}
