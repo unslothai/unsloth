@@ -17,8 +17,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -42,6 +44,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ApiIcon,
+  ArrowDataTransferVerticalIcon,
   Cancel01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
@@ -58,7 +61,8 @@ import {
   Settings02Icon,
   Timer01Icon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { ReloadIcon } from "@/lib/reload-icon";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
   type KeyboardEvent,
@@ -85,15 +89,16 @@ import { useSingleLine } from "./use-single-line";
 import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
+import { useApiModelReload } from "./use-api-model-reload";
+import { ContextUsageBar as ContextUsageChip } from "@/features/chat/components/context-usage-bar";
 import {
   residentHasRunSettings,
-  residentHasSlotsSetting,
   keptRunSettingsRequest,
   runSettingsRequest,
-  slotsSettingsRequest,
 } from "./slots-settings-request";
 import {
   monitorSelection,
+  useResidentFileGrant,
   useResidentRunTarget,
 } from "./use-resident-run-target";
 import {
@@ -244,15 +249,20 @@ function statusTextClass(status: ApiMonitorEntry["status"]): string {
 
 type ServedModel = {
   name: string;
+  /** The id the monitor logs under; the label can carry an MLX folder suffix. */
+  id: string;
   checkpoint: string;
   active: boolean;
   quant: string | null;
+  isMlx: boolean;
 };
 
 function servedModels(
   loaded: { id: string; quant?: string | null; checkpoint?: string }[],
   activeModel: string | null,
   residentCheckpoint: string | null | undefined,
+  // Status says MLX only for the primary model; kept slots carry no backend.
+  loadedIsMlx: boolean | null,
 ): ServedModel[] {
   const activeId = monitorSelection(activeModel).id;
   // At most one primary row: two local files can share a public name, and marking both ejected the primary.
@@ -271,16 +281,20 @@ function servedModels(
       model.quant && !model.id.includes(":")
         ? `${model.id}:${model.quant}`
         : model.id,
+    id: monitorSelection(model.id).id,
     checkpoint: model.checkpoint ?? model.id,
     active: index === activeIndex,
     quant: model.quant ?? null,
+    isMlx: index === activeIndex && loadedIsMlx === true,
   }));
   if (activeModel && !rows.some((row) => row.active)) {
     rows.unshift({
       name: activeModel,
+      id: activeId,
       checkpoint: activeModel,
       active: true,
       quant: monitorSelection(activeModel).ggufVariant,
+      isMlx: loadedIsMlx === true,
     });
   }
   return rows.sort((a, b) => Number(b.active) - Number(a.active));
@@ -375,19 +389,31 @@ function CopyButton({
   );
 }
 
+const FACT_CELL =
+  "order-2 min-w-0 @max-3xl/served:pl-3.5 @max-3xl/served:empty:hidden @3xl/served:order-none";
+
 function Fact({
   label,
+  icon,
   children,
   className,
 }: {
   label: string;
+  icon?: IconSvgElement;
   children: ReactNode;
   className?: string;
 }): ReactElement {
   return (
-    <div className={cn("flex min-w-0 items-center gap-2", className)}>
-      <dt className="shrink-0 text-ui-12 text-muted-foreground">{label}</dt>
-      <dd className="flex min-w-0 items-center gap-1 text-ui-12 text-foreground">
+    <div className={cn("flex min-w-0 items-center", className)} title={label}>
+      <dt className="sr-only">{label}</dt>
+      <dd className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-ui-12 text-foreground">
+        {icon ? (
+          <HugeiconsIcon
+            icon={icon}
+            strokeWidth={1.75}
+            className="size-3.5 shrink-0 text-muted-foreground"
+          />
+        ) : null}
         {children}
       </dd>
     </div>
@@ -837,12 +863,7 @@ function QuickStart({
   const choices = useApiExampleChoices(baseUrl, "curl");
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
-      <span
-        className={cn(
-          "flex size-10 items-center justify-center rounded-md text-muted-foreground",
-          INSET,
-        )}
-      >
+      <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
         <HugeiconsIcon
           icon={ComputerTerminal01Icon}
           strokeWidth={1.75}
@@ -878,7 +899,11 @@ function QuickStart({
         onClick={openApiSettings}
         className="gap-1.5 rounded-full"
       >
-        <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+        <HugeiconsIcon
+          icon={PlusSignIcon}
+          strokeWidth={1.75}
+          className="size-4"
+        />
         Create an API key and see more examples
       </Button>
     </div>
@@ -887,6 +912,8 @@ function QuickStart({
 
 export function ApiMonitorPage(): ReactElement {
   const signalReady = useAppShellReadySignal();
+  const isMobileShell = useIsMobileShell();
+  const { pinned } = useSidebar();
   const tour = useGuidedTourController({
     id: "api-monitor",
     steps: apiMonitorTourSteps,
@@ -920,6 +947,7 @@ export function ApiMonitorPage(): ReactElement {
   const runtime = useChatModelRuntime();
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const [unloading, setUnloading] = useState(false);
   const [ejectingKept, setEjectingKept] = useState(false);
   const [exampleModel, setExampleModel] = useState<ServedModel | null>(null);
@@ -933,14 +961,21 @@ export function ApiMonitorPage(): ReactElement {
         .join(","),
     [entries],
   );
-  const [unloadError, setUnloadError] = useState<string | null>(null);
   const resident = useResidentRunTarget(data?.active_model);
+  const fileGrant = useResidentFileGrant(data?.active_model);
+  const reload = useApiModelReload({
+    selectModel: runtime.selectModel,
+    loadNpuModel: runtime.loadNpuModel,
+    readModelLoadEpochs: runtime.readModelLoadEpochs,
+    fileGrant,
+    onSettled: refresh,
+    residencyKey,
+  });
+  const [unloadError, setUnloadError] = useState<string | null>(null);
   const [configRequest, setConfigRequest] =
     useState<ModelConfigHandoffRequest | null>(null);
   const canEditSettings =
     !modelLoading && !unloading && residentHasRunSettings(resident);
-  const canEditSlots =
-    !modelLoading && !unloading && residentHasSlotsSetting(resident);
 
   useEffect(() => {
     const refreshRemoteBase = () => {
@@ -1148,8 +1183,9 @@ export function ApiMonitorPage(): ReactElement {
   const activeModel = data?.active_model ?? null;
   const now = useServerNow(data?.server_time, entries.length > 0);
   const served = useMemo(
-    () => servedModels(loadedModels, activeModel, residentCheckpoint),
-    [loadedModels, activeModel, residentCheckpoint],
+    () =>
+      servedModels(loadedModels, activeModel, residentCheckpoint, loadedIsMlx),
+    [loadedModels, activeModel, residentCheckpoint, loadedIsMlx],
   );
   const serverStatus =
     SERVER_STATUS[
@@ -1160,15 +1196,6 @@ export function ApiMonitorPage(): ReactElement {
   // older backends omit the field, so only explicit `false` disables recording.
   const loggingDisabled = data?.logging_enabled === false;
   const queued = data?.queue?.queued ?? 0;
-  const slotsLabel = data?.queue
-    ? `${data.queue.active}/${data.queue.capacity} busy${
-        queued > 0 ? ` · ${queued} queued` : ""
-      }`
-    : "";
-  const slotsClassName = cn(
-    "tabular-nums",
-    queued > 0 && "text-amber-700 dark:text-amber-500",
-  );
 
   const ejecting = unloading || ejectingKept;
   const ejectServed = async (model: ServedModel): Promise<void> => {
@@ -1214,10 +1241,54 @@ export function ApiMonitorPage(): ReactElement {
         disabled={
           ejecting || modelLoading || (model.active && !canEditSettings)
         }
-        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
           icon={Settings02Icon}
+          strokeWidth={1.75}
+          className="size-3.5"
+        />
+      </Button>
+    </ToolbarTooltip>
+  );
+  const reloadBusy = reload.reloadingKey != null || ejecting || modelLoading;
+  const reloadButton = (model: ServedModel): ReactElement => (
+    <ToolbarTooltip label={`Reload ${model.name}`}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={`Reload ${model.name}`}
+        onClick={() => void reload.reloadServed(model)}
+        disabled={reloadBusy || !reload.canReload(model)}
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
+      >
+        <HugeiconsIcon
+          icon={ReloadIcon}
+          strokeWidth={1.75}
+          className={cn(
+            "size-3.5",
+            (reload.reloadingKey === model.checkpoint ||
+              reload.reloadingKey === "*") &&
+              "animate-spin",
+          )}
+        />
+      </Button>
+    </ToolbarTooltip>
+  );
+  const ejectButton = (model: ServedModel): ReactElement => (
+    <ToolbarTooltip label={`Eject ${model.name}`}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={`Eject ${model.name}`}
+        onClick={() => void ejectServed(model)}
+        disabled={ejecting || modelLoading}
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
+      >
+        <HugeiconsIcon
+          icon={RemoveCircleIcon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -1233,13 +1304,9 @@ export function ApiMonitorPage(): ReactElement {
         aria-label={`API example for ${model.name}`}
         aria-haspopup="dialog"
         onClick={() => setExampleModel(model)}
-        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100 dark:hover:bg-chat-icon-bg-hover [@media(hover:none)]:opacity-100"
       >
-        <HugeiconsIcon
-          icon={CodeIcon}
-          strokeWidth={1.75}
-          className="size-4"
-        />
+        <HugeiconsIcon icon={CodeIcon} strokeWidth={1.75} className="size-4" />
       </Button>
     </ToolbarTooltip>
   );
@@ -1249,151 +1316,240 @@ export function ApiMonitorPage(): ReactElement {
       : served.length === 1
         ? `Eject ${served[0].name} and free its memory`
         : "No model is loaded";
-  const contextFact = (
+  const rowFacts = (model: ServedModel): ReactElement => {
+    const { id } = model;
+    // Since the latest completed load: an earlier one may have had another window; a failed one changed nothing.
+    let loadedAt = 0;
+    for (const entry of entries) {
+      if (
+        isLifecycleEntry(entry) &&
+        entry.event === "load" &&
+        entry.status === "completed" &&
+        modelIdsMatch(monitorSelection(entry.model).id, id)
+      ) {
+        loadedAt = Math.max(loadedAt, entry.started_at);
+      }
+    }
+    const requests = entries.filter(
+      (entry) =>
+        !isLifecycleEntry(entry) &&
+        entry.started_at >= loadedAt &&
+        // Requests may be logged as "<id>:<quant>".
+        modelIdsMatch(monitorSelection(entry.model).id, id),
+    );
+    let last: ApiMonitorEntry | null = null;
+    for (const entry of requests) {
+      if (
+        entry.total_tokens != null &&
+        entry.context_length &&
+        (last == null || entry.started_at > last.started_at)
+      ) {
+        last = entry;
+      }
+    }
+    const rowStats = computeStats(requests);
+    const used = last?.total_tokens ?? (model.active ? 0 : null);
+    const windowSize =
+      last?.context_length ?? (model.active ? data?.context_length : null);
+    return (
+      <>
+        <dl className={FACT_CELL}>
+          {used != null && windowSize ? (
+            <Fact label="Context">
+              <ContextUsageChip
+                ringFirst={true}
+                pinOnClick={true}
+                hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
+                padX={2}
+                className="-my-1 -ml-2 h-6 min-w-(--full) [--icon-size:--spacing(3.5)] [&>button]:rounded-full"
+                used={used}
+                total={windowSize}
+                promptTokens={last?.prompt_tokens ?? undefined}
+                completionTokens={last?.completion_tokens ?? undefined}
+              />
+            </Fact>
+          ) : null}
+        </dl>
+        <dl className={FACT_CELL}>
+          {rowStats.tokensPerSecond != null ? (
+            <Fact label="Speed" icon={FlashIcon}>
+              <span className="tabular-nums">
+                {rowStats.tokensPerSecond.toFixed(1)} tok/s
+              </span>
+            </Fact>
+          ) : null}
+        </dl>
+        <dl className={FACT_CELL}>
+          {rowStats.avgDurationMs != null ? (
+            <Fact label="Total time, average per request" icon={Timer01Icon}>
+              <span className="tabular-nums">
+                {formatDuration(rowStats.avgDurationMs)}
+              </span>
+            </Fact>
+          ) : null}
+        </dl>
+        <dl className={FACT_CELL}>
+          <Fact label="Requests" icon={ArrowDataTransferVerticalIcon}>
+            <span className="tabular-nums">{formatCount(rowStats.total)}</span>
+            {rowStats.errors > 0 ? (
+              <span className="tabular-nums text-red-600 dark:text-red-400">
+                · {formatCount(rowStats.errors)}{" "}
+                {rowStats.errors === 1 ? "error" : "errors"}
+              </span>
+            ) : null}
+          </Fact>
+        </dl>
+      </>
+    );
+  };
+  return (
     <>
-      {data?.context_length ? (
-        <Fact label="Context">
-          <span className="tabular-nums">
-            {formatCount(data.context_length)} tokens
-          </span>
-        </Fact>
-      ) : null}
-    </>
-  );
-  const slotsFact = (
-    <>
-      {data?.queue ? (
-        <Fact label="Slots">
-          {canEditSlots ? (
-            <ToolbarTooltip label="Change parallel slots">
-              <button
-                type="button"
-                onClick={() =>
-                  setConfigRequest(
-                    slotsSettingsRequest(
-                      resident,
-                      createModelConfigHandoffRequestId(),
-                    ),
-                  )
-                }
+      {/* Model picker where Chat keeps it; sticky, so the log scrolls under it. */}
+      <div
+        className={cn(
+          "sticky top-0 z-30 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+          isMobileShell
+            ? "pl-12"
+            : pinned
+              ? "pl-2"
+              : isTauri
+                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+        )}
+      >
+        <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
+          <ApiModelLoadControls
+            runtime={runtime}
+            activeModel={data?.active_model}
+            residencyKey={residencyKey}
+            onSettled={refresh}
+            onUnloadActive={unloadActiveModel}
+            unloading={ejecting}
+            configRequest={configRequest}
+            onConfigRequestAdopted={() => setConfigRequest(null)}
+            onEjectAll={() => void ejectAll()}
+            onLastLoadChanged={reload.refreshLastLoad}
+          />
+        </div>
+        <div
+          aria-hidden={true}
+          className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
+        />
+      </div>
+      <main className="@container/page mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
+        <GuidedTour {...tour.tourProps} />
+        <header className="flex items-start justify-between gap-4 @2xl/page:items-end">
+          <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="font-heading text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+                API
+              </h1>
+              <span
                 className={cn(
-                  slotsClassName,
-                  "w-fit cursor-pointer text-left underline decoration-dotted decoration-muted-foreground/60 underline-offset-4 hover:decoration-foreground",
+                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-ui-12 font-medium text-foreground",
+                  INSET,
                 )}
               >
-                {slotsLabel}
-              </button>
-            </ToolbarTooltip>
-          ) : (
-            <span className={slotsClassName}>{slotsLabel}</span>
-          )}
-        </Fact>
-      ) : null}
-    </>
-  );
-  const activeFacts = (
-    <>
-      {contextFact}
-      {slotsFact}
-    </>
-  );
-
-  return (
-    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 sm:px-10">
-      <GuidedTour {...tour.tourProps} />
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex min-w-0 flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-heading text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
-              API
-            </h1>
-            <span
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-ui-12 font-medium text-foreground",
-                INSET,
-              )}
-            >
-              <span
-                className={cn("size-2 rounded-full", serverStatus.dot)}
-                aria-hidden={true}
-              />
-              {serverStatus.label}
-              {served.length > 1 ? (
-                <span className="text-muted-foreground">
-                  · {served.length} models
-                </span>
-              ) : null}
-            </span>
+                <span
+                  className={cn("size-2 rounded-full", serverStatus.dot)}
+                  aria-hidden={true}
+                />
+                {serverStatus.label}
+                {served.length > 1 ? (
+                  <span className="text-muted-foreground">
+                    · {served.length} models
+                  </span>
+                ) : null}
+              </span>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Serve your local models to any OpenAI-compatible client and watch
+              each request live.
+            </p>
           </div>
-          <p className="text-sm text-muted-foreground">
-            Serve your local models to any OpenAI-compatible client and watch
-            each request live.
-          </p>
-        </div>
-        <ToolbarTooltip label="API settings">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={openApiSettings}
-            aria-label="API settings"
-            className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
-          >
-            <HugeiconsIcon
-              icon={Settings02Icon}
-              strokeWidth={1.75}
-              className="size-[calc(18px*var(--ui-space-scale,1))]"
-            />
-          </Button>
-        </ToolbarTooltip>
-      </header>
-
-      {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
-      <section
-        data-tour="api-endpoint"
-        className={cn("flex flex-col", SURFACE)}
-      >
-        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <span
-              className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
-              style={
-                { "--chip-tint": "var(--control-accent)" } as CSSProperties
-              }
+          <ToolbarTooltip label="API settings">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={openApiSettings}
+              aria-label="API settings"
+              className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
             >
               <HugeiconsIcon
-                icon={ApiIcon}
-                strokeWidth={1.5}
+                icon={Settings02Icon}
+                strokeWidth={1.75}
                 className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
-            </span>
-            <div className="flex min-w-0 flex-col">
-              <span className="text-ui-11 text-muted-foreground">Base URL</span>
-              {/* h-5: at the copy button's 28px the chip sat below the text. */}
-              <div className="group/copy flex h-5 min-w-0 items-center gap-1">
-                <span className="truncate font-mono text-ui-13 text-foreground">
-                  {baseUrl}
-                </span>
-                <CopyButton
-                  value={baseUrl}
-                  label="Copy API base URL"
-                  revealOnHover={true}
+            </Button>
+          </ToolbarTooltip>
+        </header>
+
+        <section
+          data-tour="api-endpoint"
+          className={cn("flex flex-col", SURFACE)}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <span
+                className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
+                style={
+                  { "--chip-tint": "var(--control-accent)" } as CSSProperties
+                }
+              >
+                <HugeiconsIcon
+                  icon={ApiIcon}
+                  strokeWidth={1.5}
+                  className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />
+              </span>
+              <div className="flex min-w-0 flex-col">
+                <span className="text-ui-11 text-muted-foreground">
+                  Base URL
+                </span>
+                {/* h-5: at the copy button's 28px the chip sat below the text. */}
+                <div className="group/copy flex h-5 min-w-0 items-center gap-1">
+                  <span className="truncate font-mono text-ui-13 text-foreground">
+                    {baseUrl}
+                  </span>
+                  <CopyButton
+                    value={baseUrl}
+                    label="Copy API base URL"
+                    revealOnHover={true}
+                  />
+                </div>
               </div>
             </div>
-          </div>
-          <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
-            <ApiModelLoadControls
-              runtime={runtime}
-              activeModel={data?.active_model}
-              residencyKey={residencyKey}
-              onSettled={refresh}
-              onUnloadActive={unloadActiveModel}
-              unloading={ejecting}
-              configRequest={configRequest}
-              onConfigRequestAdopted={() => setConfigRequest(null)}
-              onEjectAll={() => void ejectAll()}
-            >
+            <div className="flex items-center gap-2">
+              <ToolbarTooltip label={reload.reloadAllTitle(served)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void reload.reloadAll(served)}
+                  disabled={
+                    reloadBusy ||
+                    (served.length === 0 && reload.lastLoadLabel == null) ||
+                    (served.length > 0 &&
+                      !served.some((model) => reload.canReload(model)))
+                  }
+                  className="gap-1.5 rounded-full"
+                >
+                  <HugeiconsIcon
+                    icon={ReloadIcon}
+                    strokeWidth={1.75}
+                    className={cn(
+                      "size-4",
+                      reload.reloadingKey === "*" && "animate-spin",
+                    )}
+                  />
+                  {reload.reloadingKey === "*"
+                    ? "Reloading"
+                    : served.length > 1
+                      ? "Reload all"
+                      : "Reload"}
+                </Button>
+              </ToolbarTooltip>
               <ToolbarTooltip label={ejectLabel}>
                 <Button
                   type="button"
@@ -1419,404 +1575,372 @@ export function ApiMonitorPage(): ReactElement {
                       : "Eject"}
                 </Button>
               </ToolbarTooltip>
-            </ApiModelLoadControls>
-          </div>
-        </div>
-        <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>
-          {served.length > 1 ? (
-            <div className="flex flex-col gap-2">
-              <p className="text-ui-12 text-muted-foreground">
-                {served.length} models answering requests
-              </p>
-              <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
-                {served.map((model) => (
-                  <div key={model.checkpoint} className="contents">
-                    <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
-                      <span
-                        className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                        aria-hidden={true}
-                      />
-                      <span className="ml-1 truncate font-mono text-foreground">
-                        {model.name}
-                      </span>
-                      <CopyButton
-                        value={model.name}
-                        label="Copy model name"
-                        revealOnHover={true}
-                      />
-                    </span>
-                    <span className="flex items-center gap-0.5">
-                      {settingsButton(model)}
-                      {exampleButton(model)}
-                    </span>
-                    <dl className="min-w-0">
-                      {model.active ? contextFact : null}
-                    </dl>
-                    <dl className="min-w-0">
-                      {model.active ? slotsFact : null}
-                    </dl>
-                    <span className="justify-self-end">
-                      <ToolbarTooltip label={`Eject ${model.name}`}>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Eject ${model.name}`}
-                          onClick={() => void ejectServed(model)}
-                          disabled={ejecting || modelLoading}
-                          className="size-7 rounded-full p-0 text-muted-foreground hover:text-foreground"
-                        >
-                          <HugeiconsIcon
-                            icon={RemoveCircleIcon}
-                            strokeWidth={1.75}
-                            className="size-3.5"
-                          />
-                        </Button>
-                      </ToolbarTooltip>
-                    </span>
-                  </div>
-                ))}
-              </div>
             </div>
-          ) : (
-            <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
-              <Fact label="Model" className="max-w-full">
-                {served.length === 1 ? (
-                  <>
-                    {/* Its own reveal group: hovering settings or code must not show Copy. */}
-                    <span className="group/copy flex min-w-0 items-center gap-1">
-                      <span className="truncate font-mono">{served[0].name}</span>
-                      <CopyButton
-                        value={served[0].name}
-                        label="Copy model name"
-                        revealOnHover={true}
-                      />
-                    </span>
-                    {settingsButton(served[0])}
-                    {exampleButton(served[0])}
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">None loaded</span>
-                )}
-              </Fact>
-              {served[0]?.active ? activeFacts : null}
-            </dl>
-          )}
-        </div>
-      </section>
-
-      {error ? <Banner>{error}</Banner> : null}
-      {unloadError ? (
-        <Banner onDismiss={() => setUnloadError(null)}>{unloadError}</Banner>
-      ) : null}
-
-      <section
-        aria-label="Traffic summary"
-        className="elevated-card grid grid-cols-2 gap-px overflow-hidden bg-border/60 sm:grid-cols-3 lg:grid-cols-6 dark:bg-background"
-      >
-        <Stat
-          label="In flight"
-          value={formatCount(modelStats.active)}
-          tone={modelStats.active > 0 ? "active" : "default"}
-          hint={queued > 0 ? `${formatCount(queued)} queued` : undefined}
-        />
-        <Stat
-          label="Requests"
-          value={formatCount(modelStats.total)}
-          hint={loggingDisabled ? "recording off" : "in the recent log"}
-        />
-        <Stat
-          label="Errors"
-          value={formatCount(modelStats.errors)}
-          tone={modelStats.errors > 0 ? "error" : "default"}
-          hint={
-            modelStats.errorRate != null
-              ? `${Math.round(modelStats.errorRate * 100)}% of finished`
-              : undefined
-          }
-        />
-        <Stat
-          label="Avg latency"
-          value={formatDuration(modelStats.avgDurationMs)}
-          hint={
-            modelStats.maxDurationMs != null
-              ? `max ${formatDuration(modelStats.maxDurationMs)}`
-              : undefined
-          }
-        />
-        <Stat
-          label="Generation speed"
-          value={
-            modelStats.tokensPerSecond == null
-              ? "–"
-              : `${modelStats.tokensPerSecond.toFixed(1)} tok/s`
-          }
-          hint="while decoding"
-        />
-        <Stat
-          label="Tokens"
-          value={formatCount(modelStats.totalTokens)}
-          hint={`${formatCount(modelStats.inputTokens)} in · ${formatCount(modelStats.outputTokens)} out`}
-        />
-      </section>
-
-      <section className={cn("flex min-h-0 flex-col overflow-hidden", SURFACE)}>
-        <div
-          className={cn(
-            "flex flex-wrap items-center gap-2 border-b px-4 py-3",
-            DIVIDER,
-          )}
-        >
-          <div className="relative w-full min-w-0 sm:w-56">
-            <HugeiconsIcon
-              icon={Search01Icon}
-              strokeWidth={1.75}
-              className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground"
-              aria-hidden={true}
-            />
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search requests"
-              aria-label="Search API requests"
-              title="Matches the model, endpoint, prompt, reply or error"
-              className="pl-8"
-            />
-          </div>
-          <nav
-            aria-label="Filter by status"
-            className="-my-2 flex max-w-full gap-1 overflow-x-auto px-1 py-2 [scrollbar-width:none]!"
-          >
-            {STATUS_FILTERS.map((option) => {
-              const active = statusFilter === option.value;
-              const count = statusCounts[option.value];
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-current={active ? "page" : undefined}
-                  onClick={() => setStatusFilter(option.value)}
-                  className={cn(
-                    "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 font-heading text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
-                    active &&
-                      "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
-                  )}
-                >
-                  {option.label}
-                  {option.value !== "all" && count > 0 ? (
-                    <span
-                      className={cn(
-                        "tabular-nums text-muted-foreground",
-                        option.value === "error" &&
-                          "text-red-600 dark:text-red-400",
-                      )}
-                    >
-                      {formatCount(count)}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </nav>
-          {loggedModels.length > 1 ? (
-            <Select value={effectiveModelFilter} onValueChange={setModelFilter}>
-              <SelectTrigger
-                aria-label="Filter by model"
-                className="h-9 max-w-64 rounded-full"
+            {reload.error ? (
+              <span
+                role="alert"
+                className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
               >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL_MODELS}>All models</SelectItem>
-                {loggedModels.map((model) => (
-                  <SelectItem key={model} value={model}>
-                    {model}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            {visible.length !== entries.length ? (
-              <span className="mr-1 text-ui-11 tabular-nums text-muted-foreground">
-                {formatCount(visible.length)} of {formatCount(entries.length)}
+                {reload.error}
               </span>
             ) : null}
-            <ToolbarTooltip
-              label={paused ? "Resume the live feed" : "Pause the live feed"}
-            >
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={
-                  paused ? "Resume the live feed" : "Pause the live feed"
-                }
-                aria-pressed={paused}
-                onClick={() => setPaused(!paused)}
-                className={cn(
-                  "rounded-full",
-                  paused &&
-                    "bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-500",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={paused ? PlayIcon : PauseIcon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-              </Button>
-            </ToolbarTooltip>
-            <ToolbarTooltip label="Refresh">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={refresh}
-                disabled={refreshing}
-                aria-label="Refresh"
-                className="rounded-full"
-              >
-                <HugeiconsIcon
-                  icon={Refresh01Icon}
-                  strokeWidth={1.75}
-                  className={cn("size-4", refreshing && "animate-spin")}
-                />
-              </Button>
-            </ToolbarTooltip>
-            <ToolbarTooltip label="Clear log">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                disabled={entries.length === 0}
-                onClick={() => {
-                  setSelectedId(null);
-                  void clear();
-                }}
-                aria-label="Clear log"
-                className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
-              >
-                <HugeiconsIcon
-                  icon={Delete02Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-              </Button>
-            </ToolbarTooltip>
           </div>
-        </div>
-
-        {!loading && entries.length === 0 ? (
-          <div data-tour="api-log">
-            {loggingDisabled ? (
-              <p className="mx-auto max-w-lg px-6 py-14 text-center text-sm text-muted-foreground">
-                Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set.
-                Requests and model loads still run normally, they are just not
-                listed here. Unset the variable and restart Unsloth to
-                re-enable.
+          <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>
+            {served.length === 0 ? (
+              <p className="text-ui-12 text-muted-foreground">
+                No models loaded
               </p>
             ) : (
-              <QuickStart
-                baseUrl={baseUrl}
-                model={
-                  (served.find((m) => m.active) ?? served[0])?.name ?? null
-                }
-              />
-            )}
-          </div>
-        ) : (
-          <div
-            data-tour="api-log"
-            className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 4xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)]"
-          >
-            <div
-              ref={listRef}
-              onKeyDown={onListKeyDown}
-              className={cn(
-                PANE_HEIGHT,
-                DIVIDER,
-                "flex flex-col gap-0.5 border-b p-1.5 lg:border-b-0 lg:border-r",
-              )}
-            >
-              {loading ? (
-                <div className="flex flex-col gap-2 p-1.5">
-                  {[0, 1, 2].map((i) => (
-                    <Skeleton key={i} className="h-16 w-full rounded-md" />
+              <div className="@container/served flex flex-col gap-2">
+                <p className="text-ui-12 text-muted-foreground">
+                  {served.length === 1
+                    ? "1 model answering requests"
+                    : `${served.length} models answering requests`}
+                </p>
+                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-6 @3xl/served:gap-y-1.5">
+                  {served.map((model) => (
+                    // A subgrid, not `contents`: the row needs a box (gaps included) to hover.
+                    <div
+                      key={model.checkpoint}
+                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-6"
+                    >
+                      <span className="order-1 flex min-w-0 flex-1 items-center gap-1 text-ui-12 @max-3xl/served:basis-full @max-3xl/served:items-start @3xl/served:order-none">
+                        <span
+                          className="size-1.5 shrink-0 rounded-full bg-emerald-500 @max-3xl/served:mt-1.5"
+                          aria-hidden={true}
+                        />
+                        <span className="ml-1 min-w-0 truncate font-mono text-foreground @max-3xl/served:whitespace-normal @max-3xl/served:[overflow-wrap:anywhere]">
+                          {model.name}
+                        </span>
+                        {exampleButton(model)}
+                      </span>
+                      {rowFacts(model)}
+                      <span className="order-3 ml-auto flex shrink-0 items-center gap-0.5 justify-self-end @3xl/served:order-none @3xl/served:ml-0">
+                        {settingsButton(model)}
+                        {reloadButton(model)}
+                        {ejectButton(model)}
+                      </span>
+                    </div>
                   ))}
                 </div>
-              ) : visible.length === 0 ? (
-                <div className="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-muted-foreground">
-                  No requests match this filter.
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setQuery("");
-                      setStatusFilter("all");
-                      setModelFilter(ALL_MODELS);
-                    }}
-                    className="rounded-full"
-                  >
-                    Clear filters
-                  </Button>
-                </div>
-              ) : (
-                visible.map((entry) => (
-                  <RequestRow
-                    key={entry.id}
-                    entry={entry}
-                    selected={entry.id === selectedId}
-                    onSelect={setSelectedId}
-                    now={now}
-                  />
-                ))
-              )}
-            </div>
+              </div>
+            )}
+          </div>
+        </section>
 
-            <div className={PANE_HEIGHT}>
-              {selected ? (
-                <RequestDetail
-                  entry={selected}
-                  detail={details[selected.id]}
-                  loading={loadingDetails.has(selected.id)}
-                />
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
-                  <span
+        {error ? <Banner>{error}</Banner> : null}
+        {unloadError ? (
+          <Banner onDismiss={() => setUnloadError(null)}>{unloadError}</Banner>
+        ) : null}
+
+        <section
+          aria-label="Traffic summary"
+          className="elevated-card grid grid-cols-2 gap-px overflow-hidden bg-border/60 @xl/page:grid-cols-3 @5xl/page:grid-cols-6 dark:bg-background"
+        >
+          <Stat
+            label="In flight"
+            value={formatCount(modelStats.active)}
+            tone={modelStats.active > 0 ? "active" : "default"}
+            hint={queued > 0 ? `${formatCount(queued)} queued` : undefined}
+          />
+          <Stat
+            label="Requests"
+            value={formatCount(modelStats.total)}
+            hint={loggingDisabled ? "recording off" : "in the recent log"}
+          />
+          <Stat
+            label="Errors"
+            value={formatCount(modelStats.errors)}
+            tone={modelStats.errors > 0 ? "error" : "default"}
+            hint={
+              modelStats.errorRate != null
+                ? `${Math.round(modelStats.errorRate * 100)}% of finished`
+                : undefined
+            }
+          />
+          <Stat
+            label="Avg latency"
+            value={formatDuration(modelStats.avgDurationMs)}
+            hint={
+              modelStats.maxDurationMs != null
+                ? `max ${formatDuration(modelStats.maxDurationMs)}`
+                : undefined
+            }
+          />
+          <Stat
+            label="Generation speed"
+            value={
+              modelStats.tokensPerSecond == null
+                ? "–"
+                : `${modelStats.tokensPerSecond.toFixed(1)} tok/s`
+            }
+            hint="while decoding"
+          />
+          <Stat
+            label="Tokens"
+            value={formatCount(modelStats.totalTokens)}
+            hint={`${formatCount(modelStats.inputTokens)} in · ${formatCount(modelStats.outputTokens)} out`}
+          />
+        </section>
+
+        <section
+          className={cn("flex min-h-0 flex-col overflow-hidden", SURFACE)}
+        >
+          <div
+            className={cn(
+              "flex flex-wrap items-center gap-2 border-b px-4 py-3",
+              DIVIDER,
+            )}
+          >
+            <div className="relative w-full min-w-0 sm:w-56">
+              <HugeiconsIcon
+                icon={Search01Icon}
+                strokeWidth={1.75}
+                className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden={true}
+              />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search requests"
+                aria-label="Search API requests"
+                title="Matches the model, endpoint, prompt, reply or error"
+                className="pl-8"
+              />
+            </div>
+            <nav
+              aria-label="Filter by status"
+              className="-my-2 flex max-w-full gap-1 overflow-x-auto px-1 py-2 [scrollbar-width:none]!"
+            >
+              {STATUS_FILTERS.map((option) => {
+                const active = statusFilter === option.value;
+                const count = statusCounts[option.value];
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => setStatusFilter(option.value)}
                     className={cn(
-                      "flex size-10 items-center justify-center rounded-md text-muted-foreground",
-                      INSET,
+                      "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 font-heading text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
+                      active &&
+                        "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
                     )}
                   >
-                    <HugeiconsIcon
-                      icon={FileSearchIcon}
-                      strokeWidth={1.75}
-                      className="size-5"
-                    />
-                  </span>
-                  <p className="max-w-xs text-sm text-muted-foreground">
-                    Select a request to see its details. Arrow keys move
-                    through the list.
-                  </p>
-                </div>
-              )}
+                    {option.label}
+                    {option.value !== "all" && count > 0 ? (
+                      <span
+                        className={cn(
+                          "tabular-nums text-muted-foreground",
+                          option.value === "error" &&
+                            "text-red-600 dark:text-red-400",
+                        )}
+                      >
+                        {formatCount(count)}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </nav>
+            {loggedModels.length > 1 ? (
+              <Select
+                value={effectiveModelFilter}
+                onValueChange={setModelFilter}
+              >
+                <SelectTrigger
+                  aria-label="Filter by model"
+                  className="h-9 max-w-64 rounded-full"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_MODELS}>All models</SelectItem>
+                  {loggedModels.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              {visible.length !== entries.length ? (
+                <span className="mr-1 text-ui-11 tabular-nums text-muted-foreground">
+                  {formatCount(visible.length)} of {formatCount(entries.length)}
+                </span>
+              ) : null}
+              <ToolbarTooltip
+                label={paused ? "Resume the live feed" : "Pause the live feed"}
+              >
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={
+                    paused ? "Resume the live feed" : "Pause the live feed"
+                  }
+                  aria-pressed={paused}
+                  onClick={() => setPaused(!paused)}
+                  className={cn(
+                    "rounded-full",
+                    paused &&
+                      "bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-500",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={paused ? PlayIcon : PauseIcon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </Button>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Refresh">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={refresh}
+                  disabled={refreshing}
+                  aria-label="Refresh"
+                  className="rounded-full"
+                >
+                  <HugeiconsIcon
+                    icon={Refresh01Icon}
+                    strokeWidth={1.75}
+                    className={cn("size-4", refreshing && "animate-spin")}
+                  />
+                </Button>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Clear log">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  disabled={entries.length === 0}
+                  onClick={() => {
+                    setSelectedId(null);
+                    void clear();
+                  }}
+                  aria-label="Clear log"
+                  className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </Button>
+              </ToolbarTooltip>
             </div>
           </div>
-        )}
-      </section>
 
-      <SavedModelSettingsPanel />
-      <ApiExampleDialog
-        open={exampleModel != null}
-        onOpenChange={(open) => {
-          if (!open) setExampleModel(null);
-        }}
-        baseUrl={baseUrl}
-        model={exampleModel?.name ?? ""}
-        samplingModelId={exampleModel?.checkpoint ?? ""}
-      />
-    </main>
+          {!loading && entries.length === 0 ? (
+            <div data-tour="api-log">
+              {loggingDisabled ? (
+                <p className="mx-auto max-w-lg px-6 py-14 text-center text-sm text-muted-foreground">
+                  Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set.
+                  Requests and model loads still run normally, they are just not
+                  listed here. Unset the variable and restart Unsloth to
+                  re-enable.
+                </p>
+              ) : (
+                <QuickStart
+                  baseUrl={baseUrl}
+                  model={
+                    (served.find((m) => m.active) ?? served[0])?.name ?? null
+                  }
+                />
+              )}
+            </div>
+          ) : (
+            <div
+              data-tour="api-log"
+              className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 4xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)]"
+            >
+              <div
+                ref={listRef}
+                onKeyDown={onListKeyDown}
+                className={cn(
+                  PANE_HEIGHT,
+                  DIVIDER,
+                  "flex flex-col gap-0.5 border-b p-1.5 lg:border-b-0 lg:border-r",
+                )}
+              >
+                {loading ? (
+                  <div className="flex flex-col gap-2 p-1.5">
+                    {[0, 1, 2].map((i) => (
+                      <Skeleton key={i} className="h-16 w-full rounded-md" />
+                    ))}
+                  </div>
+                ) : visible.length === 0 ? (
+                  <div className="flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-muted-foreground">
+                    No requests match this filter.
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setQuery("");
+                        setStatusFilter("all");
+                        setModelFilter(ALL_MODELS);
+                      }}
+                      className="rounded-full"
+                    >
+                      Clear filters
+                    </Button>
+                  </div>
+                ) : (
+                  visible.map((entry) => (
+                    <RequestRow
+                      key={entry.id}
+                      entry={entry}
+                      selected={entry.id === selectedId}
+                      onSelect={setSelectedId}
+                      now={now}
+                    />
+                  ))
+                )}
+              </div>
+
+              <div className={PANE_HEIGHT}>
+                {selected ? (
+                  <RequestDetail
+                    entry={selected}
+                    detail={details[selected.id]}
+                    loading={loadingDetails.has(selected.id)}
+                  />
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+                    <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
+                      <HugeiconsIcon
+                        icon={FileSearchIcon}
+                        strokeWidth={1.75}
+                        className="size-5"
+                      />
+                    </span>
+                    <p className="max-w-xs text-sm text-muted-foreground">
+                      Select a request to see its details. Arrow keys move
+                      through the list.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <SavedModelSettingsPanel />
+        <ApiExampleDialog
+          open={exampleModel != null}
+          onOpenChange={(open) => {
+            if (!open) setExampleModel(null);
+          }}
+          baseUrl={baseUrl}
+          model={exampleModel?.name ?? ""}
+          samplingModelId={exampleModel?.checkpoint ?? ""}
+        />
+      </main>
+    </>
   );
 }

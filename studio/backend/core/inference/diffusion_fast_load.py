@@ -33,10 +33,11 @@ _UPLOAD_BUFFERS = 16
 _UPLOAD_MIN_TENSOR_BYTES = 1 << 20
 _UPLOAD_MIN_TOTAL_BYTES = 256 << 20
 
-# variant=None: from_pretrained never opens *.fp16.safetensors-style twins.
+# variant=None: from_pretrained never opens *.fp16.safetensors-style twins; variant="fp16" opens only those.
 _DEFAULT_WEIGHT_RE = re.compile(
     r"^(?:diffusion_pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
 )
+_FP16_WEIGHT_RE = re.compile(r"^(?:diffusion_pytorch_model|model)\.fp16\.safetensors$")
 _DENOISER_COMPONENTS = ("transformer", "unet")
 
 
@@ -237,9 +238,11 @@ def pipeline_component_files(
     *,
     skip_denoiser: bool,
     skip_components: Iterable[str] = (),
+    variant: Optional[str] = None,
 ) -> list[str]:
     """The weight files ``from_pretrained`` reads from a local diffusers snapshot: every component
-    ``model_index.json`` names, text encoders first, then the VAE, then the denoiser. Cache only."""
+    ``model_index.json`` names, text encoders first, then the VAE, then the denoiser. Cache only.
+    ``variant="fp16"`` names the ``.fp16`` twins instead."""
     if not snapshot:
         return []
     try:
@@ -277,8 +280,9 @@ def pipeline_component_files(
             entries = sorted(os.listdir(folder))
         except OSError:
             continue
+        pattern = _FP16_WEIGHT_RE if variant == "fp16" else _DEFAULT_WEIGHT_RE
         for entry in entries:
-            if _DEFAULT_WEIGHT_RE.match(entry):
+            if pattern.match(entry):
                 path = os.path.join(folder, entry)
                 if os.path.isfile(path):
                     files.append(path)
@@ -307,6 +311,7 @@ def start_load_prefetch(
     text_encoders_replaced: Iterable[str] = (),
     cache_dir: Optional[str] = None,
     logger: Any = None,
+    variant: Optional[str] = None,
 ) -> Optional[LoadPrefetch]:
     """Prefetch what a diffusers pipeline load of ``base`` will read. Never raises."""
     if not prefetch_enabled():
@@ -339,6 +344,7 @@ def start_load_prefetch(
             _snapshot_dir(base, base_local_dir, cache_dir),
             skip_denoiser = seeded,
             skip_components = text_encoders_replaced,
+            variant = variant,
         )
         return start_prefetch(paths, logger = logger)
     except Exception as exc:  # noqa: BLE001 - a prefetch is only a hint

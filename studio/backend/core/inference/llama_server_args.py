@@ -1354,12 +1354,11 @@ def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
     return disabled
 
 
-def extra_args_image_max_tokens(
-    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+def _extra_args_positive_int(
+    args: Optional[Iterable[str]], flag: str, env_name: str, env: Optional[Mapping[str, str]]
 ) -> Optional[int]:
-    """Return the effective positive ``--image-max-tokens`` value."""
     found: Optional[int] = None
-    raw_env = (os.environ if env is None else env).get("LLAMA_ARG_IMAGE_MAX_TOKENS")
+    raw_env = (os.environ if env is None else env).get(env_name)
     if raw_env:
         try:
             parsed_env = int(str(raw_env).strip())
@@ -1369,9 +1368,9 @@ def extra_args_image_max_tokens(
             found = parsed_env
     tokens = [str(a) for a in (args or ())]
     for index, raw in enumerate(tokens):
-        if raw.startswith("--image-max-tokens="):
+        if raw.startswith(flag + "="):
             value = raw.partition("=")[2]
-        elif raw == "--image-max-tokens" and index + 1 < len(tokens):
+        elif raw == flag and index + 1 < len(tokens):
             value = tokens[index + 1]
         else:
             continue
@@ -1382,6 +1381,20 @@ def extra_args_image_max_tokens(
         if parsed > 0:
             found = parsed
     return found
+
+
+def extra_args_image_max_tokens(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the effective positive ``--image-max-tokens`` value."""
+    return _extra_args_positive_int(args, "--image-max-tokens", "LLAMA_ARG_IMAGE_MAX_TOKENS", env)
+
+
+def extra_args_image_min_tokens(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the effective positive ``--image-min-tokens`` value."""
+    return _extra_args_positive_int(args, "--image-min-tokens", "LLAMA_ARG_IMAGE_MIN_TOKENS", env)
 
 
 def extra_args_mmproj_auto(
