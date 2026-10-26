@@ -687,6 +687,171 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
         dest.unlink(missing_ok = True)
 
 
+class UnrunnableBuildError(RuntimeError):
+    """The OS loader refused the new bundle in a scratch dir; raised before the managed tree is touched."""
+
+    def __init__(self, message: str, *, accelerator: str, asset: str, tag: Optional[str]) -> None:
+        super().__init__(message)
+        self.accelerator = accelerator
+        self.asset = asset
+        self.tag = tag
+
+
+# Windows NTSTATUS exits of a process the loader killed before main(): it prints nothing.
+_WINDOWS_LOADER_FAILURES = {
+    0xC0000135: "a DLL it imports was not found",  # STATUS_DLL_NOT_FOUND
+    0xC0000139: "a DLL it imports is the wrong build",  # STATUS_ENTRYPOINT_NOT_FOUND
+    0xC0000142: "a DLL it imports failed to initialise",  # STATUS_DLL_INIT_FAILED
+}
+_POSIX_LOADER_MARKERS = ("error while loading shared libraries", "Library not loaded")
+
+
+def verify_install_enabled() -> bool:
+    """``UNSLOTH_SD_CPP_VERIFY_INSTALL=0`` skips probing the new bundle before install."""
+    raw = (os.environ.get("UNSLOTH_SD_CPP_VERIFY_INSTALL", "1") or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def loader_refusal(returncode: Optional[int], output: str = "") -> Optional[str]:
+    """Loader refusal reason, else None. Any exit after reaching ``main`` (sd-cli may exit 1 on ``--help``) counts as starting."""
+    if returncode is None:
+        return None
+    code = returncode + (1 << 32) if returncode < 0 else returncode
+    if code in _WINDOWS_LOADER_FAILURES:
+        return f"{_WINDOWS_LOADER_FAILURES[code]} (exit 0x{code:08X})"
+    text = output or ""
+    if any(marker in text for marker in _POSIX_LOADER_MARKERS):
+        line = next(
+            (ln.strip() for ln in text.splitlines() if any(m in ln for m in _POSIX_LOADER_MARKERS)),
+            "",
+        )
+        return f"the dynamic loader refused it: {line}"[:400]
+    return None
+
+
+def _probe_env(binary: Path) -> dict:
+    env = dict(os.environ)
+    if sys.platform == "win32":
+        var = "PATH"
+    elif sys.platform == "darwin":
+        var = "DYLD_LIBRARY_PATH"
+    else:
+        var = "LD_LIBRARY_PATH"
+    existing = env.get(var, "")
+    env[var] = str(binary.parent) + (os.pathsep + existing if existing else "")
+    return env
+
+
+def _windows_error_mode_suppressed():
+    """On Windows, suppress the missing-DLL dialog so a refusal returns an exit status."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        if sys.platform != "win32":
+            yield
+            return
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+            previous = kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+        except Exception:  # noqa: BLE001 -- best effort; the probe still runs
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                kernel32.SetErrorMode(previous)
+            except Exception:  # noqa: BLE001
+                pass
+
+    return _cm()
+
+
+def probe_binary_starts(binary: Path, *, timeout: float = 30.0) -> Optional[str]:
+    """Run ``binary --help``; return the loader's refusal, or None (started, or no verdict)."""
+    import subprocess
+
+    kwargs: dict = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        with _windows_error_mode_suppressed():
+            proc = subprocess.run(
+                [str(binary), "--help"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = timeout,
+                env = _probe_env(binary),
+                stdin = subprocess.DEVNULL,
+                **kwargs,
+            )
+    except Exception:  # noqa: BLE001 -- not exec-able / timeout: no verdict either way
+        return None
+    return loader_refusal(proc.returncode, (proc.stdout or "") + (proc.stderr or ""))
+
+
+def _should_verify(chosen: str) -> bool:
+    """Skip CUDA: its runtime is added at spawn, so a bare probe would refuse a working build."""
+    return verify_install_enabled() and "cuda" not in chosen.lower()
+
+
+def _verify_bundle_starts(
+    archive: Path, target: Path, *, accelerator: str, chosen: str, tag: Optional[str]
+) -> None:
+    """Start the archive's executables in a scratch dir; raise ``UnrunnableBuildError`` on a loader refusal."""
+    import tempfile
+
+    names = _binary_names()
+    refusal: Optional[tuple[str, str]] = None
+    scratch: Optional[Path] = None
+    try:
+        try:
+            # Beside, never inside, the managed tree: the finders rglob it.
+            scratch = Path(tempfile.mkdtemp(prefix = ".sd-cpp-verify-", dir = str(target.parent)))
+            with zipfile.ZipFile(archive) as zf:
+                _safe_extractall(zf, scratch)
+        except Exception as exc:  # noqa: BLE001
+            print(f"sd-cli: could not verify {chosen} before installing it ({exc})", flush = True)
+            return
+        for name in names:
+            for found in sorted(scratch.rglob(name)):
+                if not found.is_file():
+                    continue
+                if sys.platform != "win32":
+                    try:
+                        _make_executable(found)
+                    except OSError:
+                        continue
+                why = probe_binary_starts(found)
+                if why:
+                    refusal = (name, why)
+                    break
+            if refusal:
+                break
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors = True)
+    if refusal:
+        name, why = refusal
+        hint = ""
+        if sys.platform == "win32" and accelerator_class(accelerator) == "rocm":
+            hint = (
+                " The ROCm build needs the AMD HIP SDK runtime (hipblas.dll, rocblas.dll) on PATH."
+            )
+        raise UnrunnableBuildError(
+            f"{chosen}: {name} cannot start on this host: {why}. Kept the existing install.{hint}",
+            accelerator = accelerator,
+            asset = chosen,
+            tag = tag,
+        )
+    print(f"verified {chosen} starts on this host", flush = True)
+
+
 def _resolve_repo_asset(
     repo: str,
     tag: Optional[str],
@@ -823,6 +988,15 @@ def install(
     try:
         _download(url, archive)
         _verify_sha256(archive, asset.get("digest"))
+        # Probe before touching the tree so a refused bundle never sweeps a working one.
+        if _should_verify(chosen):
+            _verify_bundle_starts(
+                archive,
+                target,
+                accelerator = accelerator,
+                chosen = chosen,
+                tag = release.get("tag_name"),
+            )
         print("extracting ...", flush = True)
         with zipfile.ZipFile(archive) as zf:
             supplied = _archive_binary_paths(zf, target)
