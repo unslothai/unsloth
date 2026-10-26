@@ -149,8 +149,7 @@ export function lifeBlock(mind: NpcMind, clock: number): PlanBlock | null {
   const o = activeOption(mind);
   if (o) {
     const start = mind.optionSince ?? clock;
-    const end =
-      o.until.type === "time" ? o.until.at : start + OPTION_MAX_MIN;
+    const end = o.until.type === "time" ? o.until.at : start + OPTION_MAX_MIN;
     return {
       start,
       minutes: Math.max(10, end - start),
@@ -172,8 +171,7 @@ export function planDue(
     return false;
   if (mind.replan) return true;
   return (
-    (mind.optionAt ?? 0) >= mind.options.length &&
-    clock % 1440 < LATE_REPLAN
+    (mind.optionAt ?? 0) >= mind.options.length && clock % 1440 < LATE_REPLAN
   );
 }
 
@@ -498,7 +496,9 @@ export function lifeJobs(
           const mind = st.npc[id];
           if (!mind) return st;
           const next = remember(mind, insights, st.clock, "reflection");
-          return { ...st, npc: { ...st.npc, [id]: { ...next, since: 0 } } };
+          // Only what this reflection saw is spent; notes added while it ran wait for the next one.
+          const since = Math.max(0, (mind.since ?? 0) - (m.since ?? 0));
+          return { ...st, npc: { ...st.npc, [id]: { ...next, since } } };
         });
       },
     });
@@ -537,7 +537,6 @@ export function applyRatings(
   });
   return { ...st, npc };
 }
-
 
 export function pairOf(mind: NpcMind | undefined, other: string): PairMemory {
   return mind?.rel?.[other] ?? { affinity: 0, facts: [] };
@@ -703,7 +702,6 @@ export function smallTalk(opts: {
   });
   return true;
 }
-
 
 export function lifeMindOf(raw: unknown, fresh: NpcMind): Partial<NpcMind> {
   const r = (raw ?? {}) as Partial<NpcMind>;

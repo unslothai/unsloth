@@ -106,6 +106,8 @@ export function RivalsPanel({
   );
   const run = useRef<AbortController | null>(null);
   const from = useRef<RivalsState | null>(null);
+  // A cancelled turn may leave its jobs queued: each attempt gets its own keys so a retry is not dropped.
+  const attempts = useRef(0);
   useEffect(() => () => run.current?.abort(), []);
   useEffect(() => {
     // Worlds without a simulation have no tick to pump the queue once its minute budget frees up.
@@ -145,11 +147,12 @@ export function RivalsPanel({
     const ctl = new AbortController();
     run.current = ctl;
     from.current = s;
+    const attempt = ++attempts.current;
     const ask = entry
       ? (fid: string, request: unknown) =>
           queuedCall(
             queue,
-            `rivals:${s.turn}:${fid}`,
+            `rivals:${s.turn}:${attempt}:${fid}`,
             async (signal) => {
               const res = await api.invoke(
                 flowId,
