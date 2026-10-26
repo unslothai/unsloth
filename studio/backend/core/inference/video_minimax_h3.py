@@ -2101,3 +2101,58 @@ def inspect_video(path: Path) -> tuple[int, int, int, bool]:
         if frames <= 0:
             frames = sum(1 for _ in container.decode(video = 0))
     return width, height, frames, has_audio
+
+
+def _full_scale_constant(samples: Any) -> Optional[float]:
+    """The one value every sample of ``samples`` holds when it is a full-scale (+-1) DC level, else None."""
+    import numpy as np
+
+    if samples.size == 0:
+        return None
+    lo, hi = samples.min(), samples.max()
+    if lo != hi:
+        return None
+    level = float(lo)
+    if np.issubdtype(samples.dtype, np.integer):
+        level /= float(np.iinfo(samples.dtype).max)
+    return level if abs(level) >= 0.999 else None
+
+
+def h3_native_clip_is_nan_render(path: Path) -> bool:
+    """True when an sd.cpp MiniMax-H3 clip carries the fingerprint of a NaN render, which sd.cpp writes and exits 0 on.
+
+    sd.cpp has no NaN check of its own. The VAE tails clamp on the device (video to [0, 1], audio to [-1, 1]), and
+    ggml's clamp maps NaN to the lower bound on CUDA (fminf / fmaxf) and to the upper one on the CPU backend (MIN /
+    MAX macros); a NaN that reaches the uint8 cast unclamped becomes 0. The joint DiT attends text, video and audio
+    tokens together, so a NaN there reaches every token: every frame is one flat 0 or 255 and the PCM soundtrack is
+    one constant full-scale level (-32767 / 32767). A flat frame alone is not enough (a near-black clip comes back
+    flat after the lossy MJPEG / VP8 encode), so both are required: no generated soundtrack holds a single
+    full-scale DC level. The soundtrack is read first and the frames only then, so a normal clip costs an audio
+    decode. A clip without audio, or one that cannot be read, is never flagged."""
+    import av
+
+    with av.open(str(path)) as container:
+        if not container.streams.audio:
+            return False
+        level = None
+        for frame in container.decode(audio = 0):
+            value = _full_scale_constant(frame.to_ndarray())
+            if value is None or (level is not None and value != level):
+                return False
+            level = value
+        if level is None:
+            return False
+    seen = False
+    with av.open(str(path)) as container:
+        if not container.streams.video:
+            return False
+        for frame in container.decode(video = 0):
+            pixels = frame.to_ndarray(format = "rgb24")
+            if pixels.size == 0:
+                return False
+            lo, hi = int(pixels.min()), int(pixels.max())
+            # Black must be exact: a near-black scene decodes to 1-2. A white JPEG can come back at 253-255.
+            if not (hi == 0 or lo >= 250):
+                return False
+            seen = True
+    return seen
