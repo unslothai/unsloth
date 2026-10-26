@@ -3361,16 +3361,15 @@ def _child_parking_stand_down_reason(server_supports: Optional[bool] = None) -> 
 
 
 def _silent_parking_left_off(server_caps: Mapping[str, Any], args, env: Mapping[str, str]) -> bool:
-    """Whether a Windows launch leaves a parking build's parking off rather than naming a budget.
+    """Whether a launch leaves a parking build's parking off rather than naming a budget.
 
     A build predating the stream park notices (no ``--preempt-async``, which came with them in
-    unslothai/llama.cpp#269) is silent for a park during prompt processing, headers included. The
-    sync header wait asks the park probe from a watchdog that shuts the socket down, and a Winsock
-    recv before headers cannot be woken that way, so on Windows such a park ends at the first-token
-    timeout. Studio does not turn that parking on there: the child runs as upstream does and any
-    pausing is Studio's. A budget somebody named is kept, as everywhere else."""
-    if sys.platform != "win32":
-        return False
+    unslothai/llama.cpp#269) is silent for a park, headers included, so every reader with a
+    deadline has to tell that silence from a stall on its own: the Windows header wait cannot (a
+    Winsock recv before headers is not woken), and Deep Research and other consumers that act on
+    the notices would end a healthy park as a timeout. Studio does not turn that parking on: the
+    child runs as upstream does and the pausing is Studio's, which needs no notices. A budget
+    somebody named is kept, as everywhere else, for whoever wants such a build to park anyway."""
     if not server_caps.get("supports_preempt_ram") or server_caps.get("supports_preempt_async"):
         return False
     return _named_preempt_ram_mib(args, env) is None
@@ -34546,7 +34545,7 @@ class LlamaCppBackend:
                     cmd.extend(["--preempt-ram", "0"])
                     logger.info(
                         "Server-side preemption left off: this llama-server parks without the "
-                        "stream notices, which a Windows header wait needs."
+                        "stream notices, so Studio pauses chats itself."
                     )
                 _exact_kv_bytes, _exact_draft_bytes = 0, 0
                 _exact_budget = None
