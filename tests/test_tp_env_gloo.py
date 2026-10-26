@@ -30,6 +30,13 @@ from test_tp_native_gloo import (  # noqa: E402
     _trainer_args,
 )
 
+# These arms start the adapters at init_lora_weights = False and compare 3 whole Trainer steps. At AdamW's
+# default eps 1e-8, m / (sqrt(v) + eps) turns the fp32 reduction-order noise between tp = 2 and one process
+# into 1e-5 grad-norm and 1e-4 weight drift by step 3 while the losses still match exactly; at 1e-4 it stays
+# below 1e-6, and a real tp error (a missed all-reduce) still lands at 3.5e-4. Only these runs take it: the
+# native Trainer tests (B = 0 adapters) pass at the default eps on the CI runners and fail at 1e-4 there.
+_ADAM_EPS = 1e-4
+
 _ENV_KEYS = (
     "UNSLOTH_TP_SIZE",
     "UNSLOTH_PP_SIZE",
@@ -208,7 +215,9 @@ def _case_env(
 
     def run(out_dir, **overrides):
         model, sharded = fresh()
-        args = _trainer_args(out_dir, bs, optim = optim, max_steps = steps, **overrides)
+        args = _trainer_args(
+            out_dir, bs, optim = optim, max_steps = steps, adam_epsilon = _ADAM_EPS, **overrides
+        )
         trainer = SequentialTrainer(model = model, args = args, train_dataset = data)
         return trainer, sharded
 
