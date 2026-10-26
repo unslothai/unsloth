@@ -278,7 +278,12 @@ from .video_families import (
     video_family_uses_i2v_pipeline,
     video_i2v_call_kwargs,
 )
-from .video_frames import uint8_video_frames
+from .video_frames import (
+    NON_FINITE_FRAMES_MSG,
+    NonFiniteFramesError,
+    require_finite_frames,
+    uint8_video_frames,
+)
 from .video_minimax_h3 import (
     H3_ANCHOR_FIRST,
     H3_ANCHOR_LAST,
@@ -4347,6 +4352,8 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
 
         if isinstance(exc, H3NativeMemoryRefusal):
             return f"{VIDEO_GENERATION_FAILED_MSG} {exc}"
+        if isinstance(exc, NonFiniteFramesError):
+            return f"{VIDEO_GENERATION_FAILED_MSG} {NON_FINITE_FRAMES_MSG}"
         native_memory = _native_memory_failure(exc)
         if native_memory:
             return f"{VIDEO_GENERATION_FAILED_MSG} {native_memory}"
@@ -9617,6 +9624,7 @@ class VideoBackend:
                 is_gguf = gguf_transformer,
                 offload_active = speed_offload,
                 audit = load_audit,
+                logger = logger,
                 apply = lambda family, log, view = view: apply_speed_optims(
                     view,
                     target,
@@ -13132,6 +13140,7 @@ class VideoBackend:
             streamed = claim_stream(video_frames, fps, audio, int(audio_sample_rate))
             if streamed is not None:
                 return streamed
+        require_finite_frames(video_frames)
         from diffusers.utils.export_utils import encode_video
 
         tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)

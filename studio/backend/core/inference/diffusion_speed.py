@@ -907,6 +907,17 @@ def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
 
 
 VIDEO_VAE_HALF_ENV = "UNSLOTH_VIDEO_VAE_HALF"
+# Kill switch: "0" reruns a non-finite fp16 decode in fp32 even when its latents are already non-finite (as before).
+VIDEO_VAE_NONFINITE_INPUT_ENV = "UNSLOTH_VIDEO_VAE_NONFINITE_INPUT_KEEP_FP16"
+
+
+def _vae_input_nonfinite_skips_fp32() -> bool:
+    return os.environ.get(VIDEO_VAE_NONFINITE_INPUT_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
@@ -951,6 +962,13 @@ def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> 
             out = original(z.to(torch.float16), *args, **kwargs)
             sample = out[0] if isinstance(out, tuple) else getattr(out, "sample", out)
             if not torch.is_tensor(sample) or bool(torch.isfinite(sample).all()):
+                return out
+            # Non-finite latents stay non-finite in fp32; the rerun only doubles memory (T4 OOM).
+            if _vae_input_nonfinite_skips_fp32() and not bool(torch.isfinite(z).all()):
+                if logger is not None:
+                    logger.warning(
+                        "diffusion.speed: the latents reaching the VAE are not finite; fp16 decode kept"
+                    )
                 return out
             if logger is not None:
                 logger.warning(
