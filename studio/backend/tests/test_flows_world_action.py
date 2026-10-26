@@ -71,7 +71,6 @@ def test_doors_chests_and_levers_keep_valid_links_only():
     assert by["pull"]["targets"] == ["gate"] and by["pull"]["solid"] is False
     assert set(by["junk"]) == {"id", "kind", "x", "y", "rot", "scale", "solid"}
     WorldSpec.model_validate(world)
-    # The player node's edited props are cleaned against the world's items the same way.
     played = apply_play_view(dict(world), _doc(props3d = DOORS))
     assert {p["id"]: p.get("contents") for p in played["props3d"]}["box"] == ["key"]
 
@@ -119,7 +118,6 @@ def test_new_action_and_prop_fields_round_trip_through_normalize_save_and_the_pl
     again = normalize_world(json.loads(json.dumps(world)), seed = 1)
     assert again["action"] == world["action"] == {"movement": True, "shooter": True, "verbs": True}
     assert again["props3d"] == world["props3d"]
-    # The scene editor saves props on the player node; they come back with their links intact.
     played = apply_play_view(dict(world), _doc(props3d = json.loads(json.dumps(world["props3d"]))))
     assert played["props3d"] == world["props3d"]
 

@@ -188,7 +188,6 @@ test("after a reload a looted chest gives nothing and a pulled lever is not appl
   let s = W.initialWorldState(spec);
   s = W.applyUse(s, V.interactProp(box, PROPS, s.props ?? {}, s.inventory));
   s = W.applyUse(s, V.interactProp(pull, PROPS, s.props ?? {}, s.inventory));
-  // The key is spent elsewhere (handed to a villager), then the game is reloaded.
   s = { ...s, inventory: s.inventory.filter((i) => i !== "key") };
   s = reload(s);
   assert.equal(V.isOpen(gate, s.props ?? {}), true);
