@@ -28,6 +28,7 @@ import {
   loadCacheInventory,
   purgeCaches,
 } from "../api/caches";
+import { TitleLineStrut } from "./settings-row";
 import { SettingsCardRow } from "./storage-overview";
 
 /** Decimal units, matching the disk readings the Storage section already shows. */
@@ -290,7 +291,7 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
             entries.map((entry) => (
               <div
                 key={entry.key}
-                className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 py-2.5"
+                className="flex flex-wrap items-start justify-between gap-2 border-t border-border/60 py-2.5"
               >
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <span className="text-sm text-foreground">
@@ -316,6 +317,7 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
                   ) : null}
                 </div>
                 <div className="flex items-center gap-3">
+                  <TitleLineStrut className="-mr-3" />
                   <span className="text-xs tabular-nums text-muted-foreground">
                     {formatCacheSize(entry.sizeBytes)}
                   </span>

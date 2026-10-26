@@ -2108,7 +2108,12 @@ function ConfirmToolCallsToggle() {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
-    <div className="flex min-h-8 items-center justify-between gap-3">
+    <div
+      className={cn(
+        "flex min-h-8 justify-between gap-3",
+        permissionMode === "full" ? "items-start" : "items-center",
+      )}
+    >
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">

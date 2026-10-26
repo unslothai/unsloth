@@ -2056,7 +2056,7 @@ export function ExportPage() {
                         onChange={setQuantLevels}
                         sizes={quantSizeLabels}
                       />
-                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                      <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
                         <div className="space-y-0.5">
                           <div className="text-sm font-medium">
                             Importance matrix (imatrix)
@@ -2107,7 +2107,7 @@ export function ExportPage() {
                           </p>
                         </div>
                       )}
-                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                      <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
                         <div className="space-y-0.5">
                           <div className="text-sm font-medium">
                             Also convert to Q4NX (AMD NPU)

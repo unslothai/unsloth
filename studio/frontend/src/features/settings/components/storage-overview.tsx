@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
+import { TitleLineStrut } from "./settings-row";
 
 export const STORAGE_COLORS = {
   yellow: "bg-amber-400 dark:bg-[#f7d35f]",
@@ -125,7 +126,12 @@ export function SettingsCardRow({
       data-settings-label={label}
       className="flex flex-col border-border/60 py-3.5 not-first:border-t"
     >
-      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+      <div
+        className={cn(
+          "flex flex-wrap justify-between gap-x-6 gap-y-2",
+          description ? "items-start" : "items-center",
+        )}
+      >
         <div className="flex min-w-0 flex-1 basis-60 flex-col gap-1">
           <span className="text-sm font-medium text-foreground">
             {label}
@@ -156,7 +162,10 @@ export function SettingsCardRow({
           ) : null}
         </div>
         {children ? (
-          <div className="flex shrink-0 items-center gap-2">{children}</div>
+          <div className="flex shrink-0 items-center gap-2">
+            {description ? <TitleLineStrut className="-mr-2" /> : null}
+            {children}
+          </div>
         ) : null}
       </div>
     </div>

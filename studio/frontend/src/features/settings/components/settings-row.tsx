@@ -11,6 +11,18 @@ import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 
+/** Zero-width, one label line tall: a shorter control beside it centres on the title, a taller one starts at the text's top. */
+export function TitleLineStrut({ className }: { className?: string }) {
+  return (
+    <span
+      aria-hidden={true}
+      className={cn("w-0 select-none text-sm", className)}
+    >
+      {"\u200b"}
+    </span>
+  );
+}
+
 export function SettingsRow({
   label,
   description,
@@ -32,7 +44,7 @@ export function SettingsRow({
   children?: ReactNode;
   destructive?: boolean;
   className?: string;
-  /** Right-aligned line under the control, kept out of its box so the control stays centred. */
+  /** Right-aligned line under the control, kept out of its box so the control keeps its alignment. */
   below?: ReactNode;
 }) {
   return (
@@ -41,7 +53,9 @@ export function SettingsRow({
       className={cn(
         // Controls are fixed-width and shrink-0, so an unwrapped row starves the label. justify-end
         // right-aligns a wrapped control without breaking items-stretch for flex-col callers.
-        "flex flex-wrap items-center justify-end gap-x-6 gap-y-2 py-3",
+        "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
+        // With a description the control stays by the title, not the middle of the text block.
+        description ? "items-start" : "items-center",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,
       )}
@@ -93,10 +107,15 @@ export function SettingsRow({
         </div>
       </div>
       {children ? (
-        <div className="flex max-w-full shrink-0 items-center">{children}</div>
+        <div className="flex max-w-full shrink-0 items-center">
+          {description ? <TitleLineStrut /> : null}
+          {children}
+        </div>
       ) : null}
       {/* A line of its own, so it wraps under the control without moving it. */}
-      {below ? <div className="flex basis-full justify-end">{below}</div> : null}
+      {below ? (
+        <div className="flex basis-full justify-end">{below}</div>
+      ) : null}
     </div>
   );
 }
