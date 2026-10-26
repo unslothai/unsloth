@@ -155,6 +155,9 @@ const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
   "image-text-to-video",
 ]);
 
+// Video page repos whose Hub card names no pipeline task. Not Cosmos3-Nano: its guardrail package is not installed.
+const VIDEO_PAGE_REPOS: ReadonlySet<string> = new Set(["nvidia/cosmos3-edge"]);
+
 /** Which Unsloth page runs this pipeline task, if any. */
 export function studioPageForTask(
   pipelineTag?: string | null,
@@ -284,11 +287,16 @@ export function classifyUnslothSupport({
       supportedIn: studioPageForTask(pipeline),
     };
   }
+  const videoPage =
+    modelId && VIDEO_PAGE_REPOS.has(modelId.trim().toLowerCase())
+      ? { supportedIn: "video" as const }
+      : {};
   for (const tag of lowerTags) {
     if (UNSUPPORTED_LIBRARY_TAGS.has(tag)) {
       return {
         status: "unsupported",
         reason: `Library: ${tag}.`,
+        ...videoPage,
       };
     }
   }
@@ -296,6 +304,7 @@ export function classifyUnslothSupport({
     return {
       status: "unsupported",
       reason: `Library: ${library}.`,
+      ...videoPage,
     };
   }
   const formatKey = detectUnsupportedFormatKey(modelId, lowerTags, formatTags);

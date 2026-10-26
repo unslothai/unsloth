@@ -45,6 +45,11 @@ _preview_swap_generation = 0
 # entry and rejects if a swap was in progress.
 _preview_swap_inflight = 0
 _last_active = time.monotonic()
+# _last_active minus scheduled runs and their swaps: one run must not make the next look attended.
+_last_attended = _last_active
+_unattended: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "keepwarm_unattended", default = False
+)
 # The (id, quant) idle-unload last freed, so an alias/unknown request that would otherwise 503 against an empty backend
 # can reload it (set on unload, cleared on reload). The quant lets the reload restore the exact freed variant.
 _last_unloaded_model = None
@@ -162,11 +167,18 @@ def _note_start(is_preview: bool = False) -> None:
             _preview_inflight += 1
 
 
+def _stamp_active() -> None:
+    global _last_active, _last_attended
+    _last_active = time.monotonic()
+    if not _unattended.get():
+        _last_attended = _last_active
+
+
 def _note_end(is_preview: bool = False) -> None:
-    global _inflight, _last_active, _preview_inflight
+    global _inflight, _preview_inflight
     with _lock:
         _inflight = max(0, _inflight - 1)
-        _last_active = time.monotonic()
+        _stamp_active()
         if is_preview:
             _preview_inflight = max(0, _preview_inflight - 1)
 
@@ -198,13 +210,15 @@ class InferenceActivityReservation:
                 _note_start()
                 self._state = "started"
 
-    def finish(self) -> None:
-        """Balance a pending or started reservation. Idempotent."""
+    def finish(self, scope = None) -> None:
+        """Balance a pending or started reservation. Idempotent. A ``scope`` the producer already
+        untracked (an external-provider request) dropped the started count itself."""
         with self._state_lock:
             if self._state == "pending":
                 _note_unpending()
             elif self._state == "started":
-                _note_end()
+                if not (isinstance(scope, dict) and scope.get(_UNTRACKED_SCOPE_KEY)):
+                    _note_end()
             else:
                 return
             self._state = "finished"
@@ -225,16 +239,41 @@ def _is_idle(ttl_seconds: float) -> bool:
         return _inflight == 0 and _pending == 0 and (time.monotonic() - _last_active) >= ttl_seconds
 
 
+def idle_for(seconds: float) -> bool:
+    """No in-flight, pending or attended (non-scheduled) activity for ``seconds``."""
+    with _lock:
+        return _inflight == 0 and _pending == 0 and (time.monotonic() - _last_attended) >= seconds
+
+
+def attended_stamp() -> float:
+    """Changes whenever someone's inference request ends or their model load lands."""
+    with _lock:
+        return _last_attended
+
+
 def inference_in_flight() -> bool:
     with _lock:
         return _inflight > 0 or _pending > 0
 
 
-def _note_activity() -> None:
+@contextlib.contextmanager
+def unattended_activity():
+    """Mark inference and loads inside as Unsloth's own for idle_for(); follows into to_thread() and child tasks."""
+    token = _unattended.set(True)
+    try:
+        yield
+    finally:
+        _unattended.reset(token)
+
+
+def _note_activity(attended: bool = True) -> None:
     """Stamp activity, e.g. on a (re)load, so the model survives at least one TTL."""
     global _last_active
     with _lock:
-        _last_active = time.monotonic()
+        if attended:
+            _stamp_active()
+        else:
+            _last_active = time.monotonic()
 
 
 def other_inference_request_count(
@@ -848,6 +887,17 @@ def _loaded_identity(backend):
     return (*identity, companion_roots) if companion_roots else identity
 
 
+def loaded_identity():
+    """The loaded GGUF's reload identity (path, quant, advertised id), or None when none is loaded."""
+    from routes.inference import get_llama_cpp_backend
+    return _loaded_identity(get_llama_cpp_backend())
+
+
+def stash_for_reload(identity) -> None:
+    """Let the next reload-only request bring ``identity`` back, as after an idle unload."""
+    _set_last_unloaded(identity)
+
+
 def _note_idle_unload_event(freed, reason: str = "idle") -> None:
     """Monitor row for an idle auto-unload (or a swap, via ``reason``). Best-effort; uses the
     stash's advertised repo id so the row never shows the on-disk load path."""
@@ -908,7 +958,8 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                 if current != seen_model:
                     seen_model = current
                     if current is not None:
-                        _note_activity()
+                        # The loop's own context: whoever loaded it already stamped whether it was attended.
+                        _note_activity(attended = False)
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
                 if backend.is_loaded and await asyncio.to_thread(_user_pinned, backend):
                     # loaded from the UI, so the user wants it resident; only models the API loaded are freed

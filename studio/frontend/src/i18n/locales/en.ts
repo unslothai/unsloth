@@ -4425,6 +4425,21 @@ export const en = {
       archiveSuccessful: "Archive successful runs",
       project: "Project",
       projectNone: "None",
+      model: "Model",
+      modelLoaded: "Whichever model is loaded",
+      modelOnDevice: "On this device",
+      modelNote: "If this model isn't loaded when the task runs, Unsloth asks first.",
+      modelNoteAllowed: "Loads this model only while you're away from Unsloth, then puts back what you had.",
+      modelEmpty: "Download a model in Model hub or add a connection to choose another.",
+      modelMissing: "{model} (not on this device)",
+      allowLoad: "Switch automatically when I'm away",
+      allowLoadHint:
+        "When this task is due and you haven't used Unsloth for 5 minutes, it loads this model without asking, runs the task, then switches back to the model you had. If you're using Unsloth or training at that time, the run is skipped and your model is left alone. Off, Unsloth asks before loading.",
+      reasoning: "Thinking effort",
+      reasoningDefault: "Default",
+      reasoningOff: "Off",
+      reasoningLowest: "Lowest",
+      reasoningHighest: "Highest",
       create: "Create",
     },
     deleteDialog: {
@@ -4433,6 +4448,10 @@ export const en = {
     },
     errors: {
       noModel: "No model was loaded. Load a model in Chat, then run the task again.",
+      modelNotLoaded: "The task's model wasn't loaded. Load it in Chat, then run the task again.",
+      modelLoadFailed: "Couldn't load the task's model. Make sure it's still downloaded in Model hub.",
+      modelBusy: "Skipped while you were using Unsloth, so your model was left alone.",
+      connectionUnavailable: "The task's connection is missing or turned off. Check it in Connections.",
       timeout: "The model took too long to answer.",
       cancelled: "The run was stopped before it finished.",
       interrupted: "Unsloth closed before the run finished.",
@@ -4442,6 +4461,14 @@ export const en = {
       updateFailed: "Could not update the task",
       deleteFailed: "Could not delete the task",
       runFailed: "Could not start the task",
+    },
+    // Asked when a task's model is not loaded: loading it replaces the model in Chat.
+    loadPrompt: {
+      title: "Load {model}?",
+      description: "“{title}” runs on {model}, which isn't loaded. Running it loads {model} until it finishes, then puts back what you had.",
+      always: "Don't ask again. Switch only while I'm away from Unsloth.",
+      notNow: "Not now",
+      load: "Load and run",
     },
     toast: {
       finished: "“{title}” is ready",

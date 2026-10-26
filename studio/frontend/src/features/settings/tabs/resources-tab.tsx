@@ -644,7 +644,7 @@ export function ResourcesTab() {
 
   return (
     <div className="settings-page">
-      <header className="flex flex-wrap items-start justify-between gap-3">
+      <header className="flex flex-wrap items-start justify-between gap-3 pe-10">
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.resources.title")}
@@ -653,7 +653,7 @@ export function ResourcesTab() {
             {t("settings.resources.description")}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Button
             variant={isOpen ? "secondary" : "outline"}
             size="sm"
@@ -666,7 +666,7 @@ export function ResourcesTab() {
               : t("settings.resources.floatingWindow")}
           </Button>
 
-          <div className="flex shrink-0 items-center gap-2 rounded-full border border-border/60 px-2.5 py-1.5 text-xs font-medium text-foreground">
+          <div className="flex h-8 shrink-0 items-center gap-2 rounded-full border border-border/60 px-2.5 text-xs font-medium text-foreground">
             <span>{t("settings.resources.liveUpdates")}</span>
             <Switch
               aria-label={t("settings.resources.liveUpdates")}

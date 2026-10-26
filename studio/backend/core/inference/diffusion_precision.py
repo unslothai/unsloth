@@ -452,7 +452,12 @@ def _quantize_text_encoders(
             # the fallback only over a dense encoder and with torchao present; otherwise fp8.
             skip = None
         if skip is None:
-            _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
+            _note(
+                logger,
+                f"the hosted int8 ConvRot text encoder for '{family}' did not load; using fp8"
+                if _family_hosts_te_int8(family)
+                else f"int8 has no keep-bf16 schedule for family '{family}'; using fp8",
+            )
             mode = TE_QUANT_FP8
             downgrade_reason = (
                 f"int8 has no measured keep-bf16 schedule for family '{family}' "

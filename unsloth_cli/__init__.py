@@ -54,7 +54,7 @@ if _is_entry_point:
     _reconfigure_entry_point_streams()
 
 # Before typer and the command imports: notebooks run this right after `pip install --no-deps unsloth`.
-# `-m` alone could be a host package that imports us, so name the module it runs.
+# `-m` alone could be a host package importing us.
 _orig_argv = getattr(_sys, "orig_argv", [])
 _runs_unsloth_cli = "-munsloth_cli" in _orig_argv or any(
     a == "-m" and b == "unsloth_cli" for a, b in zip(_orig_argv, _orig_argv[1:])
@@ -71,9 +71,7 @@ if (_is_entry_point or (_entry_base == "-m" and _runs_unsloth_cli)) and _sys.arg
 
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
-# Running from System32 or a subdir breaks commands; move out before the command imports, since
-# commands.studio resolves STUDIO_HOME at import time (issue #8510).
-# A relative UNSLOTH_STUDIO_HOME would otherwise resolve against System32.
+# Move out of System32 before command imports: STUDIO_HOME resolves at import, and a relative UNSLOTH_STUDIO_HOME would hit System32.
 _startup_guard = (
     _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform) if _is_entry_point else None
 )
@@ -82,8 +80,7 @@ from unsloth_cli._ssl_keylog import (
     drop_unwritable_ssl_keylog_file as _drop_unwritable_ssl_keylog_file,
 )
 
-# After the move out of System32, so a relative path is judged where ssl will open it, and
-# before any command module builds an HTTPS client; the Studio backend's workers inherit it.
+# After the move, so a relative path is judged where ssl opens it; before any HTTPS client, since backend workers inherit it.
 if _is_entry_point:
     _drop_unwritable_ssl_keylog_file()
 

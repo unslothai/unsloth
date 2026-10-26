@@ -1079,14 +1079,18 @@ def _fast_norm(norm: Any, act: bool) -> Any:
     return fast
 
 
-def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
+def install_group_norm_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     """Patch every eligible ResnetBlock2D / GroupNorm of a 2-D (AutoencoderKL-family) VAE. Returns patch count."""
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
     fused_act_norms = set()
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -1377,13 +1381,17 @@ def _fast_wan_residual_up(block: Any) -> Any:
     return fast
 
 
-def install_wan_vae(vae: Any, logger: Any = None) -> int:
+def install_wan_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     """Patch the residual blocks, causal convs and output heads of a Wan-lineage VAE. Returns patch count."""
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -1815,12 +1823,16 @@ def _hv_causal_mask(
     return mask
 
 
-def install_hv15_vae(vae: Any, logger: Any = None) -> int:
+def install_hv15_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -2119,16 +2131,20 @@ def install(
     vae: Any,
     logger: Any = None,
     level: str = "fused",
+    encoder: bool = True,
 ) -> int:
-    """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules."""
+    """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules.
+
+    ``encoder=False`` patches the decoder only, for a family whose denoising attends to the encoded conditioning clip at
+    every step, which amplifies the fused passes' rounding into a different sample (video_families.vae_fused_encoder)."""
     if vae is None or not will_install(vae):
         return 0
     done = getattr(vae, "_unsloth_vae_fused_installed", 0)
     if done:
         return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
-    n = _install(vae, logger)
+    n = _install(vae, logger, encoder)
     if not n and type(vae).__name__ not in SUPPORTED_VAES:
-        n = install_structural(vae, logger)
+        n = install_structural(vae, logger)  # decoder only, so it honours encoder=False as is
         if n:
             vae._unsloth_vae_fused_structural = True
     # Only where measured faster, and only when a fused pass feeds a conv (relaid weights alone slow LTX-2's decode).
@@ -2147,16 +2163,20 @@ def install(
     return n
 
 
-def _install(vae: Any, logger: Any = None) -> int:
+def _install(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     name = type(vae).__name__
     if name in ("AutoencoderKL", "AutoencoderKLFlux2"):
-        n = install_group_norm_vae(vae, logger)
+        n = install_group_norm_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name in _WAN_VAES:
-        n = install_wan_vae(vae, logger)
+        n = install_wan_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLHunyuanVideo15":
-        n = install_hv15_vae(vae, logger)
+        n = install_hv15_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLLTX2Video":
         if not _ltx2_convs_fusable(vae):

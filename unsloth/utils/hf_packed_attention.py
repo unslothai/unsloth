@@ -20,7 +20,14 @@ _ORIG_SDPA = [None]
 # True inside _block_compile's own compiled blocks (not a user's outer compile); see _leaves_block.
 IN_COMPILED_BLOCK = [False]
 # efficient: the subset of fast calls that ran SDPA's memory-efficient kernel over cu_seqlens.
-HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0, "mask_checks": 0, "efficient": 0}
+HF_PACKED_ATTENTION_STATS = {
+    "fast": 0,
+    "fallback": 0,
+    "mask_checks": 0,
+    "efficient": 0,
+    "compiled": 0,
+}
+BLOCK_VARLEN_KWARG = "_unsloth_block_varlen"
 # Layers of one window share a mask object: window -> [weakref, (cu_seqlens, versions), verdict].
 _MASK_CHECK = {}
 _MASK_CHECK_ROWS = 1024
@@ -290,6 +297,13 @@ _SDPA_MATH = []
 def _sdpa_requested(query, key) -> bool:
     """Deterministic mode, a disabled flash SDPA backend or a math-first sdpa_kernel priority asks for
     SDPA itself, so no varlen kernel (torch's, xformers or flash-attn) may replace it."""
+    return _sdpa_policy_requested(
+        query.device, query.dtype, query.shape[-1], query.shape[1], key.shape[1]
+    )
+
+
+def _sdpa_policy_requested(device, dtype, head_dim, n_heads, n_kv_heads) -> bool:
+    """_sdpa_requested from shapes; reads process state, so never while tracing."""
     if torch.are_deterministic_algorithms_enabled():
         return True
     if not _SDPA_MATH:
@@ -297,17 +311,96 @@ def _sdpa_requested(query, key) -> bool:
         from .attention_dispatch import _sdpa_backend_state
         _SDPA_MATH[:] = [int(SDPBackend.MATH), _sdpa_backend_state]
     math, backend_state = _SDPA_MATH
-    n_heads, n_kv_heads = query.shape[1], key.shape[1]
     flash, choice = backend_state(
-        str(query.device),
-        query.dtype,
-        query.shape[-1],
+        str(device),
+        dtype,
+        head_dim,
         n_heads,
         n_kv_heads,
         True,
         n_heads != n_kv_heads,
     )
     return not flash or choice == math
+
+
+def _static_window(module, query, key, value, dropout, is_causal, kwargs):
+    """The window for a call a varlen kernel can take (shapes, dtypes, masking), else _NO_WINDOW.
+    Only shapes, dtypes and attributes: also safe while tracing."""
+    bsz, n_heads, q_len, head_dim = query.shape
+    window = _sliding_window(module, kwargs)
+    if (
+        bsz == 1
+        and q_len > 0
+        and query.is_cuda
+        and query.device == key.device == value.device
+        and key.shape[0] == value.shape[0] == 1
+        and key.shape[1] == value.shape[1]
+        and key.shape[2] == value.shape[2] == q_len
+        # Not MLA (192 / 128).
+        and key.shape[-1] == value.shape[-1] == head_dim
+        and head_dim % 8 == 0
+        and query.dtype in (torch.float16, torch.bfloat16)
+        and query.dtype == key.dtype == value.dtype
+        and not _autocast_dtype_differs(query)
+        and not dropout
+        and is_causal is not False
+        and getattr(module, "is_causal", True)
+        and kwargs.get("position_bias") is None
+        and kwargs.get("cache") is None
+        and kwargs.get("past_key_values") is None
+        and n_heads % key.shape[1] == 0
+        and not _softcapped(module, kwargs)
+    ):
+        return window
+    return _NO_WINDOW
+
+
+def _call_torch_varlen(torch_varlen, query, key, value, cu_seqlens, max_seqlen, scale, window):
+    n_heads, n_kv_heads = query.shape[1], key.shape[1]
+    gqa, k_in, v_in = {}, key, value
+    if n_kv_heads != n_heads:
+        if not _TORCH_VARLEN_GQA or _TORCH_VARLEN_GQA[0]:
+            gqa = {"enable_gqa": True}
+        else:
+            # torch 2.11: no enable_gqa, so repeat the K/V heads as transformers' sdpa path does.
+            k_in = key.repeat_interleave(n_heads // n_kv_heads, dim = 1)
+            v_in = value.repeat_interleave(n_heads // n_kv_heads, dim = 1)
+    out = torch_varlen(
+        query[0].transpose(0, 1),
+        k_in[0].transpose(0, 1),
+        v_in[0].transpose(0, 1),
+        cu_seqlens,
+        cu_seqlens,
+        max_seqlen,
+        max_seqlen,
+        scale = scale,
+        window_size = (-1, 0) if window is None else (window - 1, 0),
+        **gqa,
+    )
+    return out.unsqueeze(0)
+
+
+def _flash_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
+    """aten's flash varlen, what torch's varlen_attn runs for these rows, called directly: a native op
+    with a C++ backward (varlen_attn's Python custom op cost ~37 us of host time per call in a
+    compiled step) that takes grouped K / V heads as they are."""
+    out = torch.ops.aten._flash_attention_forward(
+        query[0].transpose(0, 1),
+        key[0].transpose(0, 1),
+        value[0].transpose(0, 1),
+        cu_seqlens,
+        cu_seqlens,
+        max_seqlen,
+        max_seqlen,
+        0.0,
+        False,
+        False,
+        scale = scale,
+        # Causal through the window: right 0, left unbounded or window - 1 (transformers' overlay).
+        window_size_left = -1 if window is None else window - 1,
+        window_size_right = 0,
+    )[0]
+    return out.unsqueeze(0)
 
 
 def _sdpa_packed_varlen(
@@ -331,7 +424,25 @@ def _sdpa_packed_varlen(
         if kwargs.get("packed_seq_lengths") is not None and not torch.compiler.is_compiling():
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(module, query, key, value, attention_mask, *args, **named, **kwargs)
+    block_varlen = kwargs.pop(BLOCK_VARLEN_KWARG, None)
     # Before any counter while tracing: Dynamo would guard on it and recompile every forward.
+    if block_varlen is not None and torch.compiler.is_compiling() and not _disabled():
+        window = _static_window(module, query, key, value, dropout, is_causal, kwargs)
+        if (
+            window is not _NO_WINDOW
+            and query.shape[-1] <= 256
+            and _varlen_in_graph(
+                query.device.index,
+                query.dtype,
+                int(query.shape[-1]),
+                int(query.shape[1]),
+                int(key.shape[1]),
+                window,
+            )
+        ):
+            # Host inputs were prepared eagerly (block_varlen_kwargs); the kernel call traces.
+            scale = query.shape[-1] ** -0.5 if scaling is None else scaling
+            return _flash_varlen(query, key, value, *block_varlen, scale, window), None
     if (
         IN_COMPILED_BLOCK[0]
         and torch.compiler.is_compiling()
@@ -382,31 +493,8 @@ def _sdpa_packed_varlen(
     bsz, n_heads, q_len, head_dim = query.shape
     seq_info = torch_varlen = backend = None
     efficient = False
-    window = _sliding_window(module, kwargs)
-    if (
-        bsz == 1
-        and q_len > 0
-        and query.is_cuda
-        and query.device == key.device == value.device
-        and key.shape[0] == value.shape[0] == 1
-        and key.shape[1] == value.shape[1]
-        and key.shape[2] == value.shape[2] == q_len
-        # Not MLA (192 / 128).
-        and key.shape[-1] == value.shape[-1] == head_dim
-        and head_dim % 8 == 0
-        and query.dtype in (torch.float16, torch.bfloat16)
-        and query.dtype == key.dtype == value.dtype
-        and not _autocast_dtype_differs(query)
-        and not dropout
-        and is_causal is not False
-        and getattr(module, "is_causal", True)
-        and kwargs.get("position_bias") is None
-        and kwargs.get("cache") is None
-        and kwargs.get("past_key_values") is None
-        and n_heads % key.shape[1] == 0
-        and window is not _NO_WINDOW
-        and not _softcapped(module, kwargs)
-    ):
+    window = _static_window(module, query, key, value, dropout, is_causal, kwargs)
+    if window is not _NO_WINDOW:
         if head_dim > 256:
             # Past every flash kernel (Gemma-4 global layers are 512): the efficient kernel, per segment.
             efficient = _efficient_varlen_takes(query, window)
@@ -483,26 +571,9 @@ def _sdpa_packed_varlen(
         HF_PACKED_ATTENTION_STATS["efficient"] += 1
         return out, None
     if torch_varlen is not None:
-        gqa, k_in, v_in = {}, key, value
-        if n_kv_heads != n_heads:
-            if not _TORCH_VARLEN_GQA or _TORCH_VARLEN_GQA[0]:
-                gqa = {"enable_gqa": True}
-            else:
-                # torch 2.11: no enable_gqa, so repeat the K/V heads as transformers' sdpa path does.
-                k_in = key.repeat_interleave(n_heads // n_kv_heads, dim = 1)
-                v_in = value.repeat_interleave(n_heads // n_kv_heads, dim = 1)
         try:
-            out = torch_varlen(
-                query[0].transpose(0, 1),
-                k_in[0].transpose(0, 1),
-                v_in[0].transpose(0, 1),
-                cu_seqlens,
-                cu_seqlens,
-                max_seqlen,
-                max_seqlen,
-                scale = scale,
-                window_size = (-1, 0) if window is None else (window - 1, 0),
-                **gqa,
+            out = _call_torch_varlen(
+                torch_varlen, query, key, value, cu_seqlens, max_seqlen, scale, window
             )
         except torch.OutOfMemoryError:
             raise
@@ -526,7 +597,7 @@ def _sdpa_packed_varlen(
                 is_causal = is_causal,
                 **kwargs,
             )
-        return out.unsqueeze(0), None
+        return out, None
     from .attention_dispatch import AttentionConfig, AttentionContext, run_attention
 
     config = AttentionConfig(
@@ -609,6 +680,129 @@ def _leaves_block_probe(device_type, device_index, dtype, head_dim, window):
 
 # Baked into the graph at trace time. Not an lru_cache: Dynamo traces those via __wrapped__ (fake tensors).
 _leaves_block = torch._dynamo.assume_constant_result(_leaves_block_eager)
+
+_VARLEN_IN_GRAPH = {}
+
+
+def _varlen_in_graph_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
+    key = (device_index, dtype, head_dim, n_heads, n_kv_heads, window)
+    if key not in _VARLEN_IN_GRAPH:
+        _VARLEN_IN_GRAPH[key] = _varlen_in_graph_probe(*key)
+    return _VARLEN_IN_GRAPH[key]
+
+
+def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
+    """aten's flash varlen takes this shape on this device: one real forward and backward (a build
+    that refuses at run time would otherwise fail inside the compiled graph)."""
+    try:
+        from .flash_impl import flash_impl_allows
+
+        device = torch.device("cuda", device_index)
+        query = torch.zeros(1, n_heads, 16, head_dim, device = device, dtype = dtype)
+        key = torch.zeros(1, n_kv_heads, 16, head_dim, device = device, dtype = dtype)
+        torch_varlen = _torch_varlen(device)
+        # Hardware and build only: the sdpa policy can change, block_varlen_kwargs checks it each step.
+        if torch_varlen is None or not flash_impl_allows(head_dim, window, device):
+            return False
+        query.requires_grad_()
+        cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
+        out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
+        out.float().sum().backward()
+        return True
+    except Exception:
+        return False
+
+
+_varlen_in_graph = torch._dynamo.assume_constant_result(_varlen_in_graph_eager)
+
+
+def block_varlen_kwargs(layer, hidden_states, kwargs):
+    """Eager, before _block_compile runs a compiled decoder block: (cu_seqlens, max_seqlen) for its
+    packed row, so attention runs torch's varlen op inside the graph. Building them there needs a host
+    read of the longest segment and the mask check a host sync, which is why the traced wrapper used to
+    fall back to SDPA over the dense mask. None keeps that path."""
+    seq_lengths, mask = kwargs.get("packed_seq_lengths"), kwargs.get("attention_mask")
+    attention = getattr(layer, "self_attn", None)
+    # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
+    window = _sliding_window(attention, kwargs) if attention is not None else None
+    entry = _BLOCK_PREP.get(window)
+    if (
+        entry is not None
+        # Live tensors only: a dead weakref is None, and so is a missing mask.
+        and isinstance(seq_lengths, torch.Tensor)
+        and isinstance(mask, torch.Tensor)
+        and entry[0]() is seq_lengths
+        and entry[1]() is mask
+        and entry[2] == (hidden_states.device, seq_lengths._version, mask._version)
+    ):
+        if entry[3] is not None:
+            HF_PACKED_ATTENTION_STATS["compiled"] += 1
+        return entry[3]
+    result = _block_varlen_prepare(layer, attention, hidden_states, kwargs)
+    if (
+        isinstance(seq_lengths, torch.Tensor)
+        and isinstance(mask, torch.Tensor)
+        # Versions catch in-place edits; inference tensors have none, so are always rechecked.
+        and not (torch.is_inference(seq_lengths) or torch.is_inference(mask))
+        and not _disabled()
+    ):
+        # Weak: the T x T mask must not outlive its step.
+        _BLOCK_PREP[window] = (
+            weakref.ref(seq_lengths),
+            weakref.ref(mask),
+            (hidden_states.device, seq_lengths._version, mask._version),
+            result,
+        )
+    return result
+
+
+_BLOCK_PREP = {}
+
+
+def _block_varlen_prepare(layer, attention, hidden_states, kwargs):
+    if (
+        _disabled()
+        or _ORIG_SDPA[0] is None
+        or kwargs.get("packed_seq_lengths") is None
+        or not isinstance(hidden_states, torch.Tensor)
+        or not hidden_states.is_cuda
+        or hidden_states.dim() != 3
+        or hidden_states.shape[0] != 1
+    ):
+        return None
+    config = getattr(attention, "config", None)
+    if getattr(config, "_attn_implementation", None) != "sdpa":
+        return None
+    window = _sliding_window(attention, kwargs)
+    if window is _NO_WINDOW or _torch_varlen(hidden_states.device) is None:
+        return None
+    from .attention_dispatch import _VARLEN_INT32_GUARD_DISABLED, _varlen_backward_overflows_int32
+    from .packing import get_packed_info_from_kwargs
+
+    total = hidden_states.shape[1]
+    head_dim = getattr(attention, "head_dim", None)
+    n_heads = getattr(config, "num_attention_heads", None)
+    n_kv_heads = getattr(config, "num_key_value_heads", None) or n_heads
+    if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
+        return None
+    if _sdpa_policy_requested(
+        hidden_states.device, hidden_states.dtype, head_dim, n_heads, n_kv_heads
+    ):
+        return None
+    if not _VARLEN_INT32_GUARD_DISABLED and _varlen_backward_overflows_int32(
+        kwargs["packed_seq_lengths"].numel(), total, n_heads, head_dim
+    ):
+        return None
+    seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
+    if seq_info is None or not _mask_is_block_causal(
+        kwargs.get("attention_mask"), seq_info[1], total, window
+    ):
+        return None
+    _, cu_seqlens, max_seqlen = seq_info
+    # The segment count changes every step: one graph for all of them.
+    torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+    HF_PACKED_ATTENTION_STATS["compiled"] += 1
+    return cu_seqlens, int(max_seqlen)
 
 
 def enable_hf_packed_attention() -> bool:

@@ -1545,7 +1545,9 @@ export function ModelsPage() {
         // A new search starts on every uploader (Unsloth's still listed first), whatever was picked.
         setUploaderPick(null);
       }
-      if (urlModel || urlSection) {
+      // Clearing the split view's auto-picked preview only re-picks it: 2 navigations per key (#15221).
+      const openedModel = !!urlModel && urlModel !== autoPreviewIdRef.current;
+      if (openedModel || urlSection) {
         void navigate({
           to: "/hub",
           search: (prev) => ({
