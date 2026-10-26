@@ -447,7 +447,9 @@ def test_no_pool_copies_outside_checkpointing(monkeypatch, trainable_input):
     assert (x.grad is not None) is trainable_input
 
 
-@pytest.mark.parametrize("through", ["view", "view_add", "cat", "addmm_input", "addmm_bias", "embedding"])
+@pytest.mark.parametrize(
+    "through", ["view", "view_add", "cat", "addmm_input", "addmm_bias", "embedding"]
+)
 def test_input_viewing_a_trainable_param_copies_its_gradient(monkeypatch, through):
     """inputs_embeds = param.view(...): the view's backward passes the pool gradient straight to
     AccumulateGrad, so the parameter's first .grad would alias the pool. An embedding lookup writes
