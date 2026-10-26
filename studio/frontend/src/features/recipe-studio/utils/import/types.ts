@@ -14,6 +14,8 @@ export type RecipeSnapshot = {
   nodes: RecipeNode[];
   edges: Edge[];
   auxNodePositions: Record<string, XYPosition>;
+  /** Reroute waypoints by id; edges list the ones they pass through in `data.via`. */
+  reroutes?: Record<string, XYPosition>;
   processors: RecipeProcessorConfig[];
   layoutDirection: LayoutDirection;
   nextId: number;

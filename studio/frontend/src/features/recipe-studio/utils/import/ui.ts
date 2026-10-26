@@ -4,15 +4,13 @@
 import type { RecipeNode, NodeConfig } from "../../types";
 import { DEFAULT_NODE_WIDTH } from "../../constants";
 import { nodeDataFromConfig } from "../index";
-import { normalizeRecipeHandleId } from "../handles";
 import { isRecord, readString } from "./helpers";
 
 type UiInput = {
   nodes?: unknown;
   edges?: unknown;
   aux_nodes?: unknown;
-  layout_direction?: unknown;
-  layoutDirection?: unknown;
+  reroutes?: unknown;
 };
 
 type ParsedAuxNode = {
@@ -31,10 +29,9 @@ export function parseUi(
     from: string;
     to: string;
     type?: string;
-    sourceHandle?: string;
-    targetHandle?: string;
+    via?: string[];
   }> | null;
-  layoutDirection: "LR" | "TB" | null;
+  reroutes: Record<string, { x: number; y: number }>;
 } {
   const layouts = new Map<string, { x: number; y: number; width?: number }>();
   const auxNodes: ParsedAuxNode[] = [];
@@ -42,9 +39,19 @@ export function parseUi(
     from: string;
     to: string;
     type?: string;
-    sourceHandle?: string;
-    targetHandle?: string;
+    via?: string[];
   }> = [];
+  const reroutes: Record<string, { x: number; y: number }> = {};
+  if (ui && Array.isArray(ui.reroutes)) {
+    for (const node of ui.reroutes) {
+      if (isRecord(node)) {
+        const id = readString(node.id);
+        if (id && typeof node.x === "number" && typeof node.y === "number") {
+          reroutes[id] = { x: node.x, y: node.y };
+        }
+      }
+    }
+  }
   if (ui && Array.isArray(ui.nodes)) {
     for (const node of ui.nodes) {
       if (isRecord(node)) {
@@ -68,18 +75,14 @@ export function parseUi(
         const from = readString(edge.from);
         const to = readString(edge.to);
         if (from && to) {
-          const sourceHandle = normalizeRecipeHandleId(
-            readString(edge.source_handle) ?? readString(edge.sourceHandle),
-          );
-          const targetHandle = normalizeRecipeHandleId(
-            readString(edge.target_handle) ?? readString(edge.targetHandle),
-          );
+          const via = Array.isArray(edge.via)
+            ? edge.via.filter((id): id is string => typeof id === "string")
+            : [];
           edges.push({
             from,
             to,
             type: readString(edge.type) ?? undefined,
-            sourceHandle: sourceHandle ?? undefined,
-            targetHandle: targetHandle ?? undefined,
+            ...(via.length > 0 ? { via } : {}),
           });
         }
       }
@@ -100,20 +103,11 @@ export function parseUi(
       auxNodes.push({ llm, key, x, y });
     }
   }
-  const layoutDirectionRaw =
-    readString(ui?.layout_direction) ?? readString(ui?.layoutDirection);
-  const layoutDirection =
-    layoutDirectionRaw === "TB"
-      ? "TB"
-      : layoutDirectionRaw === "LR"
-        ? "LR"
-        : null;
-
   return {
     layouts,
     auxNodes,
     edges: edges.length > 0 ? edges : null,
-    layoutDirection,
+    reroutes,
   };
 }
 

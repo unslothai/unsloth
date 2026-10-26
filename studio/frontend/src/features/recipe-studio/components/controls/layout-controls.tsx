@@ -9,18 +9,13 @@ import {
 } from "@xyflow/react";
 import { Button } from "@/components/ui/button";
 import { buildFitViewOptions } from "../../utils/graph/fit-view";
+import { PortLegend } from "../graph/node-ports";
 
 type LayoutControlsProps = {
-  direction: "LR" | "TB";
   onLayout: () => void;
-  onToggleDirection: () => void;
 };
 
-export function LayoutControls({
-  direction,
-  onLayout,
-  onToggleDirection,
-}: LayoutControlsProps): ReactElement {
+export function LayoutControls({ onLayout }: LayoutControlsProps): ReactElement {
   const { fitView, getNodes } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
 
@@ -41,27 +36,12 @@ export function LayoutControls({
     });
   }, [fitView, getNodes, onLayout, refreshNodeInternals]);
 
-  const handleToggleDirection = useCallback(() => {
-    onToggleDirection();
-    requestAnimationFrame(() => {
-      onLayout();
-      requestAnimationFrame(() => {
-        refreshNodeInternals();
-        requestAnimationFrame(() => {
-          fitView(buildFitViewOptions(getNodes()));
-        });
-      });
-    });
-  }, [fitView, getNodes, onLayout, onToggleDirection, refreshNodeInternals]);
-
   return (
     <Panel position="top-left" className="m-3 flex items-center gap-2">
       <Button size="sm" className="corner-squircle" variant="secondary" onClick={handleLayout}>
         Auto layout
       </Button>
-      <Button size="sm" className="corner-squircle" variant="outline" onClick={handleToggleDirection}>
-        {direction}
-      </Button>
+      <PortLegend />
     </Panel>
   );
 }

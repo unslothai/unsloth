@@ -3,6 +3,7 @@
 
 import type { RecipeExecutionKind } from "../execution-types";
 import type { RecipeRunSettings } from "../stores/recipe-executions";
+import { withoutReroutes } from "../utils/payload/build-payload";
 import type { RecipePayload } from "../utils/payload/types";
 
 function toPositiveInt(
@@ -163,10 +164,11 @@ export function buildExecutionPayload(input: {
     input.payload,
     normalizedSettings.llmParallelRequests,
   );
+  const backendPayload = withoutReroutes(payloadWithParallelism);
   return {
-    ...payloadWithParallelism,
+    ...backendPayload,
     run: {
-      ...payloadWithParallelism.run,
+      ...backendPayload.run,
       rows: input.rows,
       // biome-ignore lint/style/useNamingConvention: backend schema
       execution_type: input.kind,

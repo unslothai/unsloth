@@ -31,17 +31,18 @@ import type {
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import {
-  HANDLE_IDS,
-  normalizeRecipeHandleId,
-  remapRecipeEdgeHandlesForLayout,
-} from "../utils/handles";
+  findRerouteUpstream,
+  insertRerouteIntoEdge,
+  isRerouteId,
+  isRerouteInUse,
+  logicalEdgeId,
+  removeReroutesFromEdges,
+  withEdgeVia,
+} from "../utils/graph/reroutes";
+import { HANDLE_IDS, migrateRecipeEdgeHandles } from "../utils/handles";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
 import { makeUnstructuredUploadUid } from "../utils/config-factories";
-import {
-  centerModelInfraNodes,
-  optimizeModelInfraEdgeHandles,
-} from "./helpers/model-infra-layout";
 import { applyEdgeRemovals, applyNodeRemovals } from "./helpers/removals";
 import {
   applyLayoutDirectionToNodes,
@@ -67,6 +68,7 @@ type RecipeStudioState = {
   nodes: RecipeNode[];
   edges: Edge[];
   auxNodePositions: Record<string, XYPosition>;
+  reroutes: Record<string, XYPosition>;
   llmAuxVisibility: Record<string, boolean>;
   configs: Record<string, NodeConfig>;
   processors: RecipeProcessorConfig[];
@@ -92,7 +94,6 @@ type RecipeStudioState = {
   resetRecipe: () => void;
   selectConfig: (id: string) => void;
   openConfig: (id: string) => void;
-  setLayoutDirection: (direction: LayoutDirection) => void;
   applyLayout: () => void;
   setLlmAuxVisibility: (id: string, visible: boolean) => void;
   addSamplerNode: (
@@ -123,6 +124,12 @@ type RecipeStudioState = {
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   setAuxNodePosition: (id: string, position: XYPosition) => void;
+  /** Adds a reroute, threaded into the drawn wire `wireId` when one is given. */
+  addReroute: (position: XYPosition, wireId?: string | null) => void;
+  setReroutePosition: (id: string, position: XYPosition) => void;
+  /** Threads a free reroute into a drawn wire; one already in use is left alone. */
+  dropRerouteOnWire: (id: string, wireId: string) => void;
+  removeReroutes: (ids: string[]) => void;
   onNodesChange: (changes: NodeChange<RecipeNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<Edge>[]) => void;
   onConnect: (connection: Connection) => void;
@@ -133,6 +140,7 @@ const INITIAL_STATE = {
   nodes: [],
   edges: [],
   auxNodePositions: {},
+  reroutes: {},
   llmAuxVisibility: {},
   configs: {},
   processors: [],
@@ -151,6 +159,7 @@ const INITIAL_STATE = {
   | "nodes"
   | "edges"
   | "auxNodePositions"
+  | "reroutes"
   | "llmAuxVisibility"
   | "configs"
   | "processors"
@@ -245,7 +254,6 @@ function connectSemantic(
   configs: Record<string, NodeConfig>,
   sourceId: string,
   targetId: string,
-  layoutDirection: LayoutDirection,
 ): { edges: Edge[]; configs: Record<string, NodeConfig> } {
   const result = applyRecipeConnection(
     {
@@ -256,27 +264,11 @@ function connectSemantic(
     },
     configs,
     edges,
-    layoutDirection,
   );
   return {
     edges: result.edges,
     configs: result.configs ?? configs,
   };
-}
-
-function isModelSemanticEdge(
-  edge: Edge,
-  configs: Record<string, NodeConfig>,
-): boolean {
-  const source = configs[edge.source];
-  const target = configs[edge.target];
-  return Boolean(
-    source &&
-      target &&
-      ((source.kind === "model_provider" && target.kind === "model_config") ||
-        (source.kind === "model_config" && target.kind === "llm") ||
-        (source.kind === "tool_config" && target.kind === "llm")),
-  );
 }
 
 // Upload uid of a seed block whose server-side directory becomes orphaned
@@ -310,45 +302,15 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     ),
   selectConfig: (id) => set({ activeConfigId: id, dialogOpen: false }),
   openConfig: (id) => set({ activeConfigId: id, dialogOpen: true }),
-  setLayoutDirection: (direction) =>
-    set((state) => {
-      if (state.executionLocked) {
-        return state;
-      }
-      return {
-        layoutDirection: direction,
-        edges: state.edges.map((edge) => {
-          if (isModelSemanticEdge(edge, state.configs)) {
-            return {
-              ...edge,
-              sourceHandle: normalizeRecipeHandleId(edge.sourceHandle),
-              targetHandle: normalizeRecipeHandleId(edge.targetHandle),
-            };
-          }
-          return {
-            ...edge,
-            ...remapRecipeEdgeHandlesForLayout(edge, direction),
-          };
-        }),
-        nodes: applyLayoutDirectionToNodes(
-          state.nodes,
-          state.configs,
-          direction,
-        ),
-      };
-    }),
   applyLayout: () =>
     set((state) => {
       if (state.executionLocked) {
         return state;
       }
-      const isTopBottom = state.layoutDirection === "TB";
-
       const displayGraph = deriveDisplayGraph({
         nodes: state.nodes,
         edges: state.edges,
         configs: state.configs,
-        layoutDirection: state.layoutDirection,
         auxNodePositions: {},
         llmAuxVisibility: state.llmAuxVisibility,
       });
@@ -356,9 +318,10 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         displayGraph.nodes,
         displayGraph.edges,
         {
-          direction: state.layoutDirection,
-          nodesep: isTopBottom ? 120 : 80,
-          ranksep: isTopBottom ? 140 : 80,
+          direction: "LR",
+          // Wide enough gaps for the router to run a bus and its taps between columns.
+          nodesep: 88,
+          ranksep: 140,
           configs: state.configs,
         },
       );
@@ -367,31 +330,14 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       );
       const nextNodes = state.nodes.map((node) => {
         const position = layoutedPositions.get(node.id);
-        if (!position) {
-          return node;
-        }
-        return { ...node, position };
+        return position ? { ...node, position } : node;
       });
-      const centeredNodes = centerModelInfraNodes(
-        nextNodes,
-        state.edges,
-        state.configs,
-        state.layoutDirection,
-      );
-      const optimizedEdges = optimizeModelInfraEdgeHandles(
-        state.edges,
-        centeredNodes,
-        state.configs,
-        state.layoutDirection,
-      );
+      // Reroutes were placed for the old layout; the wires go straight again.
       return {
         auxNodePositions: {},
-        edges: optimizedEdges,
-        nodes: applyLayoutDirectionToNodes(
-          centeredNodes,
-          state.configs,
-          state.layoutDirection,
-        ),
+        reroutes: {},
+        edges: removeReroutesFromEdges(state.edges, new Set(Object.keys(state.reroutes))),
+        nodes: applyLayoutDirectionToNodes(nextNodes, state.configs, "LR"),
       };
     }),
   setLlmAuxVisibility: (id, visible) =>
@@ -528,7 +474,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           configs,
           modelConfigs[0].id,
           context.newNodeId,
-          state.layoutDirection,
         );
         edges = next.edges;
         configs = next.configs;
@@ -571,7 +516,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           configs,
           context.newNodeId,
           unboundModelConfigs[0].id,
-          state.layoutDirection,
         );
         edges = next.edges;
         configs = next.configs;
@@ -625,7 +569,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           configs,
           providers[0].id,
           context.newNodeId,
-          state.layoutDirection,
         );
         edges = next.edges;
         configs = next.configs;
@@ -636,7 +579,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           configs,
           context.newNodeId,
           unboundLlms[0].id,
-          state.layoutDirection,
         );
         edges = next.edges;
         configs = next.configs;
@@ -679,7 +621,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           configs,
           context.newNodeId,
           unboundLlms[0].id,
-          state.layoutDirection,
         );
         edges = next.edges;
         configs = next.configs;
@@ -728,14 +669,11 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   loadRecipe: (snapshot) =>
     set((state) => ({
       configs: snapshot.configs,
-      nodes: applyLayoutDirectionToNodes(
-        snapshot.nodes,
-        snapshot.configs,
-        snapshot.layoutDirection,
-      ),
-      edges: snapshot.edges,
+      nodes: applyLayoutDirectionToNodes(snapshot.nodes, snapshot.configs, "LR"),
+      edges: snapshot.edges.map(migrateRecipeEdgeHandles),
       processors: snapshot.processors,
-      layoutDirection: snapshot.layoutDirection,
+      layoutDirection: "LR",
+      reroutes: snapshot.reroutes ?? {},
       nextId: snapshot.nextId,
       nextY: snapshot.nextY,
       auxNodePositions: snapshot.auxNodePositions ?? {},
@@ -759,6 +697,50 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           ...state.auxNodePositions,
           [id]: position,
         },
+      };
+    }),
+  addReroute: (position, wireId) =>
+    set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
+      const id = `r${state.nextId}`;
+      return {
+        nextId: state.nextId + 1,
+        reroutes: { ...state.reroutes, [id]: position },
+        edges: wireId ? insertRerouteIntoEdge(state.edges, wireId, id) : state.edges,
+      };
+    }),
+  setReroutePosition: (id, position) =>
+    set((state) => {
+      const current = state.reroutes[id];
+      if (!current || (current.x === position.x && current.y === position.y)) {
+        return state;
+      }
+      return { reroutes: { ...state.reroutes, [id]: position } };
+    }),
+  dropRerouteOnWire: (id, wireId) =>
+    set((state) => {
+      if (
+        state.executionLocked ||
+        !isRerouteId(id, state.reroutes) ||
+        isRerouteInUse(state.edges, id)
+      ) {
+        return state;
+      }
+      return { edges: insertRerouteIntoEdge(state.edges, wireId, id) };
+    }),
+  removeReroutes: (ids) =>
+    set((state) => {
+      const removed = new Set(ids.filter((id) => isRerouteId(id, state.reroutes)));
+      if (state.executionLocked || removed.size === 0) {
+        return state;
+      }
+      return {
+        reroutes: Object.fromEntries(
+          Object.entries(state.reroutes).filter(([id]) => !removed.has(id)),
+        ),
+        edges: removeReroutesFromEdges(state.edges, removed),
       };
     }),
   updateConfig: (id, patch) => {
@@ -789,7 +771,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         patch,
         configs,
         state.edges,
-        state.layoutDirection,
       );
       configs = syncSubcategoryConfigsForCategoryUpdate(
         current,
@@ -880,14 +861,18 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       if (state.executionLocked) {
         return state;
       }
-      const removedEdges = changes
+      // A wire through reroutes is drawn as segments; removing any of them removes the edge.
+      const logicalChanges = changes.map((change) =>
+        "id" in change ? { ...change, id: logicalEdgeId(change.id) } : change,
+      ) as EdgeChange<Edge>[];
+      const removedEdges = logicalChanges
         .filter((change) => change.type === "remove")
         .map((change) => state.edges.find((edge) => edge.id === change.id))
         .filter((edge): edge is Edge => Boolean(edge));
 
       const configs = applyEdgeRemovals(state.configs, removedEdges);
 
-      const edges = applyEdgeChanges(changes, state.edges);
+      const edges = applyEdgeChanges(logicalChanges, state.edges);
       return configs === state.configs ? { edges } : { edges, configs };
     });
   },
@@ -896,25 +881,63 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       if (state.executionLocked) {
         return state;
       }
+      const upstream = connection.source
+        ? findRerouteUpstream(state.edges, connection.source)
+        : null;
+      if (upstream) {
+        // A new output from a reroute: the recipe edge runs from the reroute's own source.
+        const result = applyRecipeConnection(
+          {
+            ...connection,
+            source: upstream.edge.source,
+            sourceHandle: upstream.edge.sourceHandle ?? null,
+          },
+          state.configs,
+          state.edges,
+        );
+        const edges = result.edges.map((edge) =>
+          edge.source === upstream.edge.source &&
+          edge.target === connection.target &&
+          !state.edges.includes(edge)
+            ? withEdgeVia(edge, upstream.via)
+            : edge,
+        );
+        return result.configs ? { edges, configs: result.configs } : { edges };
+      }
       const result = applyRecipeConnection(
         connection,
         state.configs,
         state.edges,
-        state.layoutDirection,
       );
       return result.configs
         ? { edges: result.edges, configs: result.configs }
         : { edges: result.edges };
     });
   },
-  isValidConnection: (connection) =>
-    isValidRecipeConnection(
+  isValidConnection: (connection) => {
+    const state = get();
+    let source = connection.source ?? null;
+    let sourceHandle = connection.sourceHandle ?? null;
+    if (connection.target && isRerouteId(connection.target, state.reroutes)) {
+      // Wires get into a reroute by dropping it on them, not by dragging onto it.
+      return false;
+    }
+    if (source && isRerouteId(source, state.reroutes)) {
+      const upstream = findRerouteUpstream(state.edges, source);
+      if (!upstream) {
+        return false;
+      }
+      source = upstream.edge.source;
+      sourceHandle = upstream.edge.sourceHandle ?? null;
+    }
+    return isValidRecipeConnection(
       {
-        source: connection.source ?? null,
+        source,
         target: connection.target ?? null,
-        sourceHandle: connection.sourceHandle ?? null,
+        sourceHandle,
         targetHandle: connection.targetHandle ?? null,
       },
-      get().configs,
-    ),
+      state.configs,
+    );
+  },
 }));
