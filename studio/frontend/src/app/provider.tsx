@@ -26,12 +26,13 @@ import {
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
-import { receiveSharedRunConfigUrls } from "@/features/model-picker";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
 } from "@/features/hub/download-manager";
 import { LoadedModelsIndicator } from "@/features/loaded-models";
+import { MicrophonePermissionDialog } from "@/features/microphone";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
@@ -55,7 +56,6 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
 import { useDocumentFlag } from "@/lib/document-flag";
-import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
   COMPOSER_CLEARANCE_VAR,
@@ -63,14 +63,9 @@ import {
   getToastOffsets,
   insetPastChatSettings,
 } from "@/lib/toast-offset";
+import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
-import { setDesktopShellReady } from "./desktop-shell-ready";
-import {
-  measureThinScrollbar,
-  watchLowDeviceScale,
-  watchThreadScrollbarGutter,
-} from "./low-device-scale";
 import { MotionConfig } from "motion/react";
 import {
   type CSSProperties,
@@ -81,6 +76,12 @@ import {
   useRef,
   useState,
 } from "react";
+import { setDesktopShellReady } from "./desktop-shell-ready";
+import {
+  measureThinScrollbar,
+  watchLowDeviceScale,
+  watchThreadScrollbarGutter,
+} from "./low-device-scale";
 import {
   type LogicalWindowSize,
   PREFERRED_SETUP_WINDOW_SIZE,
@@ -1214,6 +1215,7 @@ export function AppProvider({ children }: AppProviderProps) {
         <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />
         <TauriWrapper>{children}</TauriWrapper>
         <SttDownloadPrompt />
+        <MicrophonePermissionDialog />
         <Toaster
           position="top-right"
           visibleToasts={2}

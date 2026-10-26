@@ -444,8 +444,13 @@ export const BUDGET = {
   // dictation path, so they cannot be split without delaying the first recording (6,957,551 -> 6,991,346 B raw,
   // 2,097,723 -> 2,107,954 B transfer against 6f7e26e0, one machine and build, Node 24, 96 chunks). Raised by
   // that growth plus about 300 B raw / 200 B transfer, as for #14568.
-  transferBytes: 2_108_154,
-  rawBytes: 6_991_646,
+  // The voice-typing polish adds 4,468 B raw / 1,090 B transfer (6,996,114 B raw, 2,109,244 B transfer,
+  // Node 24, 96 chunks): the shared microphone consent store and dialog are mounted by the eager app
+  // provider, and the feedback-tone table sits beside the controller the composer dictation path already
+  // loads. Both are needed before the first recording, so they stay in the startup set. Raised to that
+  // build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_109_433,
+  rawBytes: 6_996_274,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

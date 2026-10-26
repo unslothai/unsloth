@@ -3,8 +3,8 @@
 
 // Mounts exactly one voice-typing controller for the lifetime of the desktop app.
 
-import { useEffect } from "react";
 import { isTauri } from "@/lib/api-base";
+import { useEffect } from "react";
 import { VoiceTypingController } from "./voice-typing-controller";
 
 export function useVoiceTyping(): void {

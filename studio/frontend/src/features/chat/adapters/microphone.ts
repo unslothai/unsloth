@@ -6,6 +6,7 @@
 // when that device was unplugged, and the same explanation when the OS refuses
 // access.
 
+import { ensureMicrophonePermission } from "@/features/microphone";
 import { isMissingDeviceError } from "./studio-web-speech-dictation-adapter";
 
 const BASE_CONSTRAINTS: MediaTrackConstraints = {
@@ -26,6 +27,14 @@ export function stopMediaStream(stream: MediaStream | null): void {
 export async function openMicrophone(deviceId: string): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("Microphone capture is not available in this browser.");
+  }
+  // The desktop app asks with its own dialog first; the native gate then answers
+  // WebView2 from that choice, so the browser bubble never appears.
+  if (!(await ensureMicrophonePermission("dictation"))) {
+    throw new DOMException(
+      "Microphone access was not granted.",
+      "NotAllowedError",
+    );
   }
   const wanted = deviceId.trim();
   if (wanted && wanted !== "default") {

@@ -13,13 +13,9 @@ import {
 } from "@/features/chat";
 import {
   requestSttDownload,
-  resetMicrophonePermission,
   sttModelVariant,
   useVoiceSettingsStore,
 } from "@/features/settings";
-import { translate } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
-import { toast } from "@/lib/toast";
 import type { VoiceTypingReadiness } from "./voice-typing-store";
 
 export interface VoiceTypingModelState {
@@ -36,12 +32,20 @@ export async function checkVoiceTypingModel(
   if (settings.dictationEngine === "custom") {
     return { readiness: "custom", model };
   }
+  // A pinned quant is only resident when that quant is the one loaded; the same
+  // rule the dictation card applies, so the two surfaces cannot disagree.
+  const variant = sttModelVariant(model, settings.sttGgufVariant);
   const status = await fetchSttStatus(undefined, model, signal);
   const engine = sttEngineStatusFor(status, model);
   if (!engine) return { readiness: "unknown", model };
   if (!engine.available) return { readiness: "engine-missing", model };
   if (engine.loading) return { readiness: "loading", model };
-  if (engine.loaded_model === model) return { readiness: "ready", model };
+  if (
+    engine.loaded_model === model &&
+    (!variant || engine.loaded_variant === variant)
+  ) {
+    return { readiness: "ready", model };
+  }
   if (engine.downloaded_models.includes(model)) {
     return { readiness: "will-load", model };
   }
@@ -67,46 +71,4 @@ export function requestVoiceTypingModelDownload(): void {
     selectLocalEngine: true,
     ggufVariant: sttModelVariant(sttModel, sttGgufVariant),
   });
-}
-
-export type MicrophonePermission = "granted" | "denied" | "prompt" | "unknown";
-
-/** What the webview currently thinks of microphone access. */
-export async function queryMicrophonePermission(): Promise<MicrophonePermission> {
-  try {
-    const status = await navigator.permissions?.query({
-      name: "microphone" as PermissionName,
-    });
-    return (status?.state as MicrophonePermission) ?? "unknown";
-  } catch {
-    // The API or the name is unsupported; callers must not guess.
-    return "unknown";
-  }
-}
-
-/** The grant flow the Voice tab uses: forget a saved deny first, then ask. */
-export async function requestVoiceTypingMicrophoneAccess(): Promise<boolean> {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    toast.error(translate("settings.voice.dictation.micAccessUnsupported"));
-    return false;
-  }
-  // WebView2 keeps a saved "Don't allow" with no settings UI of its own (#9001),
-  // so clear it first: this request is the only way back from one.
-  await resetMicrophonePermission();
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    for (const track of stream.getTracks()) track.stop();
-    return true;
-  } catch {
-    // A browser keeps its own saved deny that the reset cannot touch, so only
-    // the desktop build can promise another prompt.
-    toast.error(
-      translate(
-        isTauri
-          ? "settings.voice.dictation.micAccessBlockedDesktop"
-          : "settings.voice.dictation.micAccessBlocked",
-      ),
-    );
-    return false;
-  }
 }

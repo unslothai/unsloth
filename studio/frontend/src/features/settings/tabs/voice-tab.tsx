@@ -25,7 +25,6 @@ import {
 } from "@/features/audio/audio-cpp-catalog";
 import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
 import { useIsAccountOwner } from "@/features/auth";
-import { audioModelLabel } from "../../audio/audio-workspace-utils";
 import {
   type SttDownloadStatus,
   StudioModelDictationAdapter,
@@ -37,11 +36,11 @@ import {
   generateStudioTtsAudio,
   isDecisionConnection,
   loadSttModel,
-  syncKeepModelsLoaded,
   releaseTtsAudioUrl,
   startSttDownload,
   sttEngineFor,
   sttEngineStatusFor,
+  syncKeepModelsLoaded,
   unloadSttModel,
   useExternalProvidersStore,
   validateSttModel,
@@ -55,22 +54,23 @@ import {
   useHfTokenStore,
   useHubModelSearch,
 } from "@/features/hub";
+import {
+  ensureMicrophonePermission,
+  readMicrophonePermission,
+} from "@/features/microphone";
 import { useDebouncedValue, useWheelScrollRef } from "@/hooks";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
-import {
-  Search01Icon,
-  StopIcon,
-} from "@hugeicons/core-free-icons";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Volume02Icon } from "@/lib/volume-icons";
+import { Search01Icon, StopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { resetMicrophonePermission } from "../api/microphone-permission";
+import { audioModelLabel } from "../../audio/audio-workspace-utils";
 import {
   type MultiModelMode,
   loadMultiModelMode,
@@ -99,16 +99,16 @@ import {
   RECOMMENDED_STT_MODELS,
   STT_PICKER_MODELS,
   type SttModel,
+  type TtsEngine,
   getSttModelRepo,
   isCuratedSttModel,
   isSttModelId,
   isSttModelLanguageCompatible,
+  sttListedQuantDownloaded,
   sttModelName,
   sttModelSize,
-  sttListedQuantDownloaded,
   sttModelVariant,
   sttShownVariant,
-  type TtsEngine,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
@@ -330,8 +330,7 @@ function SttModelPicker({
           data-testid="stt-model-results"
           className="max-h-64 overflow-y-auto p-1"
         >
-          {(isLoading && debouncedQuery && items.length === 0) ||
-          validating ? (
+          {(isLoading && debouncedQuery && items.length === 0) || validating ? (
             <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
               {validating
@@ -448,9 +447,15 @@ function useAudioInputDevices() {
       toast.error(t("settings.voice.dictation.micAccessUnsupported"));
       return;
     }
-    // Clear a saved deny first: this button is the only way back from one, and WebView2
-    // would otherwise reject the request without ever prompting (#9001).
-    await resetMicrophonePermission();
+    // The desktop app asks with its own dialog. A saved deny is only retried
+    // here because this button is an explicit request to ask again.
+    const permission = await readMicrophonePermission();
+    if (permission !== "granted") {
+      const allowed = await ensureMicrophonePermission("settings", {
+        askAgain: permission === "denied",
+      });
+      if (!allowed) return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -460,8 +465,8 @@ function useAudioInputDevices() {
       }
       await refresh();
     } catch {
-      // A browser keeps its own saved deny and resetMicrophonePermission cannot
-      // touch it, so only the desktop build can promise another prompt.
+      // A browser keeps its own saved deny and the app reset cannot touch it,
+      // so only the desktop build can promise another prompt.
       toast.error(
         t(
           isTauri
@@ -542,8 +547,7 @@ export function VoiceTab() {
   );
   const connections = useExternalProvidersStore((s) => s.providers);
   const ttsConnections = useMemo(
-    () =>
-      connections.filter((connection) => !isDecisionConnection(connection)),
+    () => connections.filter((connection) => !isDecisionConnection(connection)),
     [connections],
   );
   const hasSelectedTtsConnection = ttsConnections.some(
@@ -680,7 +684,10 @@ export function VoiceTab() {
     | "ready"
     | "error";
   type SttDownloadAvailability =
-    "checking" | "missing" | "downloaded" | "error";
+    | "checking"
+    | "missing"
+    | "downloaded"
+    | "error";
   const [sttPhase, setSttPhase] = useState<SttPhase>("idle");
   const [sttDevice, setSttDevice] = useState<string | null>(null);
   const [statusNonce, setStatusNonce] = useState(0);
@@ -1935,7 +1942,10 @@ export function VoiceTab() {
                   </>
                 ) : previewing ? (
                   <>
-                    <HugeiconsIcon icon={StopIcon} className="mr-1.5 size-3 animate-pulse fill-current text-destructive" />
+                    <HugeiconsIcon
+                      icon={StopIcon}
+                      className="mr-1.5 size-3 animate-pulse fill-current text-destructive"
+                    />
                     {t("settings.voice.readAloud.stopAction")}
                   </>
                 ) : (

@@ -83,8 +83,6 @@ struct Config {
     enabled: bool,
     shortcut: String,
     mode: ActivationMode,
-    /// Whether the overlay window may be shown; off keeps everything headless.
-    hud: bool,
 }
 
 /// Starts disabled: the frontend pushes the persisted settings right after boot.
@@ -92,13 +90,7 @@ static CONFIG: Mutex<Config> = Mutex::new(Config {
     enabled: false,
     shortcut: String::new(),
     mode: ActivationMode::Hybrid,
-    hud: true,
 });
-
-fn hud_enabled() -> bool {
-    let config = CONFIG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    config.hud
-}
 
 #[derive(Clone, Serialize)]
 struct SignalPayload {
@@ -150,7 +142,6 @@ pub fn voice_typing_configure(
     enabled: bool,
     shortcut: String,
     mode: String,
-    hud: bool,
 ) -> Result<(), String> {
     let mode = match mode.as_str() {
         "hold" => ActivationMode::Hold,
@@ -168,16 +159,13 @@ pub fn voice_typing_configure(
         config.enabled = enabled;
         config.shortcut = chord.canonical();
         config.mode = mode;
-        config.hud = hud;
-    }
-    if !enabled || !hud {
-        hud::hide(&app);
     }
     if !enabled {
+        hud::hide(&app);
         SESSION_ACTIVE.store(false, Ordering::SeqCst);
     }
     log::info!(
-        "Voice typing configured: enabled={enabled} shortcut={} mode={mode:?} hud={hud}",
+        "Voice typing configured: enabled={enabled} shortcut={} mode={mode:?}",
         chord.canonical()
     );
     Ok(())
@@ -204,9 +192,7 @@ pub async fn voice_typing_hud_state(app: AppHandle, state: String) {
         // Escape during any of those must reach the frontend as stop/cancel.
         "preparing" | "recording" | "transcribing" => {
             SESSION_ACTIVE.store(true, Ordering::SeqCst);
-            if hud_enabled() {
-                hud::show(&app);
-            }
+            hud::show(&app);
         }
         // The transcript is already inserted; the next press starts a new session.
         "done" => SESSION_ACTIVE.store(false, Ordering::SeqCst),
@@ -217,9 +203,7 @@ pub async fn voice_typing_hud_state(app: AppHandle, state: String) {
         }
         _ => return,
     }
-    if hud_enabled() {
-        hud::emit_state(&app, &state);
-    }
+    hud::emit_state(&app, &state);
 }
 
 /// Async for the same reason as [`voice_typing_hud_state`]: these updates arrive
@@ -227,12 +211,6 @@ pub async fn voice_typing_hud_state(app: AppHandle, state: String) {
 #[tauri::command]
 pub async fn voice_typing_hud_level(app: AppHandle, level: f32) {
     hud::emit_level(&app, level.clamp(0.0, 1.0));
-}
-
-/// Live transcript for the overlay. Never logged: the words are the user's.
-#[tauri::command]
-pub async fn voice_typing_hud_text(app: AppHandle, text: String) {
-    hud::emit_text(&app, &text);
 }
 
 // ---------------------------------------------------------------------------
@@ -374,8 +352,6 @@ mod shortcut_poller {
     };
 
     const POLL_INTERVAL: Duration = Duration::from_millis(16);
-    /// At most one "voice typing is off" notice per interval.
-    const DISABLED_NOTICE_INTERVAL: Duration = Duration::from_secs(15);
 
     /// The high bit means "currently down". The low bit ("pressed since the last
     /// call") belongs to the foreground thread and is useless in a background loop.
@@ -415,7 +391,6 @@ mod shortcut_poller {
         let mut pressed_at: Option<Instant> = None;
         let mut press_started_session = false;
         let mut escape_held = false;
-        let mut disabled_notice_at: Option<Instant> = None;
 
         loop {
             std::thread::sleep(POLL_INTERVAL);
@@ -424,6 +399,16 @@ mod shortcut_poller {
                 let config = CONFIG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 (config.enabled, config.mode, config.shortcut.clone())
             };
+            if !enabled {
+                // Off means off: do not watch the chord at all. A shortcut that is
+                // never armed cannot fire a notice or consume a key.
+                chord = None;
+                chord_source.clear();
+                chord_held = false;
+                pressed_at = None;
+                watch_escape(&app, &mut escape_held);
+                continue;
+            }
             if source != chord_source {
                 chord_source = source;
                 chord = if chord_source.is_empty() {
@@ -462,25 +447,6 @@ mod shortcut_poller {
                 chord_held = true;
                 pressed_at = Some(now);
                 press_started_session = !SESSION_ACTIVE.load(Ordering::SeqCst);
-            }
-
-            if !enabled {
-                // The chord still tells the user why nothing happens: the frontend
-                // turns this into a "voice typing is off" notice with a way back in.
-                if press_edge {
-                    let due = disabled_notice_at
-                        .map(|last| now.saturating_duration_since(last) >= DISABLED_NOTICE_INTERVAL)
-                        .unwrap_or(true);
-                    if due {
-                        disabled_notice_at = Some(now);
-                        emit_signal(&app, "disabled");
-                    }
-                } else if release_edge {
-                    chord_held = false;
-                    pressed_at = None;
-                }
-                watch_escape(&app, &mut escape_held);
-                continue;
             }
 
             if press_edge {

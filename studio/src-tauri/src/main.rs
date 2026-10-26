@@ -2528,6 +2528,8 @@ fn main() {
             native_intents::reveal_path_token,
             native_intents::open_path_token,
             webview_permissions::reset_microphone_permission,
+            webview_permissions::microphone_permission_state,
+            webview_permissions::set_microphone_permission,
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,
@@ -2544,7 +2546,6 @@ fn main() {
             voice_typing::voice_typing_configure,
             voice_typing::voice_typing_hud_state,
             voice_typing::voice_typing_hud_level,
-            voice_typing::voice_typing_hud_text,
             voice_typing::paste::voice_typing_insert,
             ];
             handler(invoke)
@@ -2593,6 +2594,9 @@ fn main() {
                 setup_terminate_interception(app);
             }
             setup_tray(app)?;
+            // The in-app microphone dialog is the only consent prompt; the WebView2
+            // gate answers every engine request from the stored answer.
+            webview_permissions::init(app.handle());
             // Resident global-shortcut poll for system-wide voice typing; the
             // overlay window is created on first use.
             voice_typing::init(app.handle());

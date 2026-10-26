@@ -4,14 +4,18 @@
 export { chordFromEvent, formatShortcut, isModifierCode } from "./shortcut";
 export { useVoiceTyping } from "./use-voice-typing";
 export {
+  MIC_WARM_ALWAYS,
   useVoiceTypingStore,
   type VoiceTypingMode,
   type VoiceTypingReadiness,
 } from "./voice-typing-store";
 export {
-  queryMicrophonePermission,
-  requestVoiceTypingMicrophoneAccess,
+  previewVoiceTypingSound,
+  VOICE_TYPING_SOUND_THEMES,
+  type VoiceTypingCue,
+  type VoiceTypingSoundTheme,
+} from "./voice-typing-sounds";
+export {
   requestVoiceTypingModelDownload,
-  type MicrophonePermission,
   type VoiceTypingModelState,
 } from "./voice-typing-preflight";

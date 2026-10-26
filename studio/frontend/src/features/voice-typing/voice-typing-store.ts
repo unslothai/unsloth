@@ -7,6 +7,10 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { DEFAULT_VOICE_TYPING_SHORTCUT } from "./shortcut";
+import {
+  VOICE_TYPING_SOUND_THEMES,
+  type VoiceTypingSoundTheme,
+} from "./voice-typing-sounds";
 
 export type VoiceTypingMode = "hold" | "toggle" | "hybrid";
 
@@ -20,21 +24,59 @@ export type VoiceTypingReadiness =
   | "engine-missing"
   | "custom";
 
+/** `-1` keeps the microphone open until voice typing is switched off. */
+export const MIC_WARM_ALWAYS = -1;
+
+/** A stored payload can be old, hand-edited or truncated; repair the fields whose
+ *  ranges matter before the UI or the controller ever sees them. */
+function repair(
+  saved: Partial<VoiceTypingSettings> & Record<string, unknown>,
+): Partial<VoiceTypingSettings> {
+  if (
+    saved.micWarmSeconds !== MIC_WARM_ALWAYS &&
+    (typeof saved.micWarmSeconds !== "number" ||
+      !Number.isFinite(saved.micWarmSeconds) ||
+      saved.micWarmSeconds < 0)
+  ) {
+    saved.micWarmSeconds = 15;
+  }
+  if (
+    typeof saved.soundVolume !== "number" ||
+    !Number.isFinite(saved.soundVolume)
+  ) {
+    saved.soundVolume = 0.55;
+  } else {
+    saved.soundVolume = Math.min(1, Math.max(0, saved.soundVolume));
+  }
+  if (
+    typeof saved.soundTheme !== "string" ||
+    !VOICE_TYPING_SOUND_THEMES.includes(
+      saved.soundTheme as VoiceTypingSoundTheme,
+    )
+  ) {
+    saved.soundTheme = "chime";
+  }
+  if (typeof saved.copyLastTranscript !== "boolean") {
+    saved.copyLastTranscript = false;
+  }
+  return saved;
+}
+
 interface VoiceTypingSettings {
-  /** Master switch; when off, pressing the shortcut explains how to turn it on. */
+  /** Master switch. Off by default: a global shortcut is a strong default. */
   enabled: boolean;
   shortcut: string;
   mode: VoiceTypingMode;
-  /** Show the floating recording indicator on screen. */
-  hudEnabled: boolean;
-  /** Show the words as they are recognised inside the indicator. */
-  hudShowTranscript: boolean;
   /** Short tones when recording starts and stops. */
   soundEnabled: boolean;
+  /** Which tone family the feedback sounds use. */
+  soundTheme: VoiceTypingSoundTheme;
+  /** Feedback volume, 0 to 1. */
+  soundVolume: number;
   /** Append a space so consecutive dictations do not run together. */
   appendTrailingSpace: boolean;
-  /** Off: the previous clipboard content is restored right after pasting. */
-  keepOnClipboard: boolean;
+  /** Copy the finished transcript once, in addition to pasting it. */
+  copyLastTranscript: boolean;
   /** Load the dictation model as soon as voice typing is switched on. */
   preloadModel: boolean;
   /** End a dictation by itself when the speaker pauses for long enough. */
@@ -56,11 +98,11 @@ interface VoiceTypingSettings {
   setEnabled: (enabled: boolean) => void;
   setShortcut: (shortcut: string) => void;
   setMode: (mode: VoiceTypingMode) => void;
-  setHudEnabled: (enabled: boolean) => void;
-  setHudShowTranscript: (enabled: boolean) => void;
   setSoundEnabled: (enabled: boolean) => void;
+  setSoundTheme: (theme: VoiceTypingSoundTheme) => void;
+  setSoundVolume: (volume: number) => void;
   setAppendTrailingSpace: (enabled: boolean) => void;
-  setKeepOnClipboard: (enabled: boolean) => void;
+  setCopyLastTranscript: (enabled: boolean) => void;
   setPreloadModel: (enabled: boolean) => void;
   setAutoStopSilence: (enabled: boolean) => void;
   setAutoStopDelayMs: (delayMs: number) => void;
@@ -75,16 +117,14 @@ interface VoiceTypingSettings {
 export const useVoiceTypingStore = create<VoiceTypingSettings>()(
   persist(
     (set) => ({
-      // Ships armed: pressing the shortcut is the only thing that ever happens,
-      // and every off or failed path now explains itself. Off reads as "broken".
-      enabled: true,
+      enabled: false,
       shortcut: DEFAULT_VOICE_TYPING_SHORTCUT,
       mode: "hybrid",
-      hudEnabled: true,
-      hudShowTranscript: true,
       soundEnabled: true,
+      soundTheme: "chime",
+      soundVolume: 0.55,
       appendTrailingSpace: true,
-      keepOnClipboard: false,
+      copyLastTranscript: false,
       preloadModel: true,
       autoStopSilence: true,
       autoStopDelayMs: 2500,
@@ -97,12 +137,14 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       setEnabled: (enabled) => set({ enabled }),
       setShortcut: (shortcut) => set({ shortcut }),
       setMode: (mode) => set({ mode }),
-      setHudEnabled: (hudEnabled) => set({ hudEnabled }),
-      setHudShowTranscript: (hudShowTranscript) => set({ hudShowTranscript }),
       setSoundEnabled: (soundEnabled) => set({ soundEnabled }),
+      setSoundTheme: (soundTheme) => set({ soundTheme }),
+      setSoundVolume: (soundVolume) =>
+        set({ soundVolume: Math.min(1, Math.max(0, soundVolume)) }),
       setAppendTrailingSpace: (appendTrailingSpace) =>
         set({ appendTrailingSpace }),
-      setKeepOnClipboard: (keepOnClipboard) => set({ keepOnClipboard }),
+      setCopyLastTranscript: (copyLastTranscript) =>
+        set({ copyLastTranscript }),
       setPreloadModel: (preloadModel) => set({ preloadModel }),
       setAutoStopSilence: (autoStopSilence) => set({ autoStopSilence }),
       setAutoStopDelayMs: (autoStopDelayMs) => set({ autoStopDelayMs }),
@@ -116,18 +158,18 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
     }),
     {
       name: "unsloth_voice_typing",
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => localStorage),
       // Readiness is live state; restoring a stale value would mislabel the model.
       partialize: (state) => ({
         enabled: state.enabled,
         shortcut: state.shortcut,
         mode: state.mode,
-        hudEnabled: state.hudEnabled,
-        hudShowTranscript: state.hudShowTranscript,
         soundEnabled: state.soundEnabled,
+        soundTheme: state.soundTheme,
+        soundVolume: state.soundVolume,
         appendTrailingSpace: state.appendTrailingSpace,
-        keepOnClipboard: state.keepOnClipboard,
+        copyLastTranscript: state.copyLastTranscript,
         preloadModel: state.preloadModel,
         autoStopSilence: state.autoStopSilence,
         autoStopDelayMs: state.autoStopDelayMs,
@@ -137,13 +179,36 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
         submitAfterInsert: state.submitAfterInsert,
         pasteAutomatically: state.pasteAutomatically,
       }),
-      // Version 2 turns the shortcut on for stores written before the feature made
-      // itself visible; an off shortcut that does nothing reads as broken.
+      // Version 3 makes the master switch opt-in. Earlier builds armed the global
+      // shortcut by default, which is too strong a default for an app-wide hook.
+      // The old "keep transcript on clipboard" flag becomes the explicit copy-once
+      // preference so nobody loses a workflow they had switched on.
       migrate: (persisted, version) => {
-        const saved = (persisted ?? {}) as Partial<VoiceTypingSettings>;
-        if (version < 2) return { ...saved, enabled: true };
-        return saved;
+        const source = (persisted ?? {}) as Record<string, unknown>;
+        const saved = Object.fromEntries(
+          Object.entries(source).filter(
+            ([key]) =>
+              key !== "hudEnabled" &&
+              key !== "hudShowTranscript" &&
+              key !== "keepOnClipboard",
+          ),
+        ) as Partial<VoiceTypingSettings>;
+        if (version < 3) {
+          saved.copyLastTranscript = source.keepOnClipboard === true;
+          saved.enabled = false;
+        }
+        return repair(saved);
       },
+      // The same repairs apply to a current-version payload: a corrupt or truncated
+      // write must not put an out-of-range value in front of the user.
+      merge: (persisted, current) =>
+        ({
+          ...current,
+          ...repair(
+            (persisted ?? {}) as Partial<VoiceTypingSettings> &
+              Record<string, unknown>,
+          ),
+        }) as VoiceTypingSettings,
     },
   ),
 );

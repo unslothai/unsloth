@@ -3,49 +3,56 @@
 
 // The overlay that sits at the bottom of the screen while dictating from another
 // app. It renders in its own tiny window (voice-hud.html) and is styled inline so
-// it stays independent of the main app's theme.
+// it stays independent of the main app's theme. The pill is deliberately compact:
+// state dot, waveform, elapsed time and the Esc hint, with no transcript text.
 
-import { listen } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
 import { useT } from "@/i18n";
+import { listen } from "@tauri-apps/api/event";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 
-const BAR_COUNT = 9;
+const BAR_COUNT = 7;
+const BAR_IDS = ["b1", "b2", "b3", "b4", "b5", "b6", "b7"] as const;
 
 interface HudPayload {
   state?: string;
   level?: number;
-  text?: string;
 }
 
-const DOT_COLORS: Record<string, string> = {
-  preparing: "#60a5fa",
-  recording: "#f87171",
-  transcribing: "#fbbf24",
-  done: "#34d399",
-};
-
-const BAR_COLORS: Record<string, string> = {
+const ACCENTS: Record<string, string> = {
   preparing: "#93c5fd",
-  recording: "#fca5a5",
+  recording: "#f87171",
   transcribing: "#fcd34d",
   done: "#6ee7b7",
 };
 
 /** Center-weighted bars so the meter reads like a small waveform. */
-function barHeights(level: number): number[] {
+function barHeights(level: number, state: string): number[] {
+  if (state === "done") return Array.from({ length: BAR_COUNT }, () => 5);
+  if (state !== "recording") {
+    return Array.from({ length: BAR_COUNT }, (_, index) =>
+      index % 2 === 0 ? 14 : 8,
+    );
+  }
   const clamped = Math.max(0.03, Math.min(1, level));
   return Array.from({ length: BAR_COUNT }, (_, index) => {
     const center =
       1 - Math.abs(index - (BAR_COUNT - 1) / 2) / ((BAR_COUNT - 1) / 2);
-    return 4 + clamped * (0.45 + 0.55 * center) * 22;
+    return 4 + clamped * (0.45 + 0.55 * center) * 20;
   });
+}
+
+function formatElapsed(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 export function VoiceTypingHud() {
   const t = useT();
   const [state, setState] = useState("");
   const [level, setLevel] = useState(0);
-  const [text, setText] = useState("");
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const startedAt = useRef<number | null>(null);
+  const frozenMs = useRef(0);
 
   useEffect(() => {
     const subscribing = listen<HudPayload>("voice-typing:hud", (event) => {
@@ -53,17 +60,41 @@ export function VoiceTypingHud() {
       if (payload.state) {
         setState(payload.state);
         if (payload.state !== "recording") setLevel(0);
-        if (payload.state === "preparing" || payload.state === "idle") {
-          setText("");
-        }
       }
       if (typeof payload.level === "number") setLevel(payload.level);
-      if (typeof payload.text === "string") setText(payload.text);
     });
     return () => {
       void subscribing.then((unlisten) => unlisten());
     };
   }, []);
+
+  useEffect(() => {
+    if (state === "recording") {
+      startedAt.current ??= performance.now();
+      const tick = () => {
+        if (startedAt.current !== null) {
+          setElapsedMs(performance.now() - startedAt.current);
+        }
+      };
+      tick();
+      const timer = window.setInterval(tick, 200);
+      return () => window.clearInterval(timer);
+    }
+    if (state === "transcribing") {
+      if (startedAt.current !== null) {
+        frozenMs.current = performance.now() - startedAt.current;
+        setElapsedMs(frozenMs.current);
+      }
+      return;
+    }
+    if (state === "done") {
+      setElapsedMs(frozenMs.current);
+      return;
+    }
+    startedAt.current = null;
+    frozenMs.current = 0;
+    setElapsedMs(0);
+  }, [state]);
 
   const label =
     state === "preparing"
@@ -81,90 +112,56 @@ export function VoiceTypingHud() {
     return null;
   }
 
-  const heights = barHeights(state === "recording" ? level : 0);
-  const barColor = BAR_COLORS[state] ?? "#8b93a1";
+  const accent = ACCENTS[state] ?? "#8b93a1";
+  const heights = barHeights(level, state);
+  const active = state === "preparing" || state === "recording";
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontFamily:
-          "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-        pointerEvents: "none",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: text ? 6 : 0,
-          padding: "10px 16px",
-          borderRadius: text ? 18 : 999,
-          background: "rgba(15, 17, 21, 0.88)",
-          boxShadow:
-            "0 10px 30px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08)",
-          color: "#e8eaee",
-          fontSize: 12.5,
-          fontWeight: 500,
-          letterSpacing: 0.1,
-          maxWidth: 348,
-        }}
+    <div className="vt-stage">
+      <output
+        className={`vt-pill vt-${state}`}
+        style={{ "--vt-accent": accent } as CSSProperties}
+        aria-label={label}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span
-            className={state === "recording" ? "vt-pulse" : undefined}
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 999,
-              background: DOT_COLORS[state] ?? "#8b93a1",
-              flexShrink: 0,
-            }}
-          />
-          <span>{label}</span>
-          <span
-            style={{
-              display: "flex",
-              alignItems: "flex-end",
-              gap: 3,
-              height: 24,
-              color: barColor,
-              marginLeft: "auto",
-            }}
-          >
-            {heights.map((height, index) => (
-              <span
-                key={index}
-                className="vt-bar"
-                style={{ width: 3, height: `${height}px` }}
+        <span className="vt-dot" aria-hidden="true" />
+        <span className="vt-wave" aria-hidden="true">
+          {BAR_IDS.map((id, index) => (
+            <span
+              key={id}
+              className="vt-bar"
+              style={{
+                height: `${heights[index]}px`,
+                animationDelay: `${index * 70}ms`,
+              }}
+            />
+          ))}
+        </span>
+        <span className="vt-time" aria-hidden="true">
+          {state === "done" ? (
+            <svg
+              viewBox="0 0 16 16"
+              className="vt-check"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M3.5 8.5 6.5 11.5 12.5 4.5"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
               />
-            ))}
+            </svg>
+          ) : (
+            formatElapsed(elapsedMs)
+          )}
+        </span>
+        {active ? (
+          <span className="vt-esc" aria-hidden="true">
+            <kbd>Esc</kbd>
           </span>
-        </div>
-        {text ? (
-          <div
-            dir="auto"
-            style={{
-              maxWidth: 316,
-              fontSize: 11.5,
-              lineHeight: "15px",
-              fontWeight: 400,
-              color: "#c7ccd4",
-              overflow: "hidden",
-              display: "-webkit-box",
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical",
-              wordBreak: "break-word",
-            }}
-          >
-            {text}
-          </div>
         ) : null}
-      </div>
+      </output>
     </div>
   );
 }

@@ -13,33 +13,35 @@
 // failure either arrives from the adapter with its own toast or becomes one here.
 // A chord that does nothing must never be unexplainable.
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
+  type StudioDictationSession,
+  StudioModelDictationAdapter,
   isStudioDictationAvailable,
   joinTranscriptParts,
   notifyStudioDictationUnavailable,
   openMicrophone,
   stopMediaStream,
-  StudioModelDictationAdapter,
   subscribeDictationLevel,
-  type StudioDictationSession,
 } from "@/features/chat";
+import {
+  ensureMicrophonePermission,
+  readMicrophonePermission,
+} from "@/features/microphone";
 import {
   useSettingsDialogStore,
   useVoiceSettingsStore,
 } from "@/features/settings";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { invoke } from "@tauri-apps/api/core";
+import { type UnlistenFn, listen } from "@tauri-apps/api/event";
 import {
+  type VoiceTypingModelState,
   checkVoiceTypingModel,
-  queryMicrophonePermission,
-  requestVoiceTypingMicrophoneAccess,
   requestVoiceTypingModelDownload,
   warmVoiceTypingModel,
-  type MicrophonePermission,
-  type VoiceTypingModelState,
 } from "./voice-typing-preflight";
+import { type VoiceTypingCue, playVoiceTypingCue } from "./voice-typing-sounds";
 import { useVoiceTypingStore } from "./voice-typing-store";
 
 interface VoiceTypingInfo {
@@ -49,9 +51,9 @@ interface VoiceTypingInfo {
   pasteSupported: boolean;
 }
 
-type SignalAction = "start" | "stop" | "cancel" | "disabled";
+type SignalAction = "start" | "stop" | "cancel";
 type HudPhase = "idle" | "preparing" | "recording" | "transcribing" | "done";
-type Cue = "start" | "stop" | "cancel";
+type Cue = VoiceTypingCue;
 
 /** Safety net so a forgotten toggle cannot record forever. */
 const MAX_RECORDING_MS = 5 * 60 * 1000;
@@ -63,14 +65,6 @@ const NO_SPEECH_NOTICE_MIN_MS = 2000;
 const DONE_VISIBLE_MS = 900;
 /** Mic-level frames are throttled on their way to the overlay window. */
 const LEVEL_THROTTLE_MS = 55;
-/** Live transcript updates are throttled more than the level: text is heavier. */
-const HUD_TEXT_THROTTLE_MS = 120;
-/** The native side throttles too; this keeps double notices out of the queue. */
-const DISABLED_NOTICE_COOLDOWN_MS = 15_000;
-/** "Waiting for the microphone prompt" hints go out at most this often. */
-const MIC_NOTICE_COOLDOWN_MS = 30_000;
-/** Recheck the microphone permission this long into a stuck "preparing". */
-const MIC_PERMISSION_WATCHDOG_MS = 2_500;
 
 export class VoiceTypingController {
   private info: VoiceTypingInfo | null = null;
@@ -86,17 +80,12 @@ export class VoiceTypingController {
   private unsubscribeVoiceSettings: (() => void) | null = null;
   private timers = new Set<number>();
   private lastLevelSentAt = 0;
-  private audioContext: AudioContext | null = null;
   private recordingStartedAt = 0;
   private speechHeard = false;
   private lastVoiceAt = 0;
   /** Bumped by cancel; an in-flight delivery from an older session is discarded. */
   private cancelToken = 0;
-  private lastDisabledNoticeAt = 0;
-  private lastMicNoticeAt = 0;
   private deniedMicNoticeShown = false;
-  /** Last permission answer; a grant is reused to skip a query on the hot path. */
-  private micPermission: MicrophonePermission | null = null;
   /** Microphone kept open between sessions so the next press records at once. */
   private warmStream: MediaStream | null = null;
   private warmTimer: number | null = null;
@@ -105,9 +94,6 @@ export class VoiceTypingController {
   private warmToken = 0;
   /** The warm stream a running session borrowed, reclaimed when it ends. */
   private sessionStream: MediaStream | null = null;
-  private hudText = "";
-  private hudTextSentAt = 0;
-  private partialText = "";
   private pressStartedAt = 0;
   private micLiveAt = 0;
   private firstFinalAt = 0;
@@ -195,8 +181,7 @@ export class VoiceTypingController {
     const configChanged =
       state.enabled !== previous.enabled ||
       state.shortcut !== previous.shortcut ||
-      state.mode !== previous.mode ||
-      state.hudEnabled !== previous.hudEnabled;
+      state.mode !== previous.mode;
     if (configChanged) await this.pushConfig();
     if (!state.enabled && previous.enabled) {
       // Turning voice typing off should also close a microphone that was kept
@@ -212,32 +197,25 @@ export class VoiceTypingController {
     if (state.enabled && state.preloadModel && !previous.preloadModel) {
       void this.activate(false);
     }
-    if (state.hudShowTranscript !== previous.hudShowTranscript) {
-      if (!state.hudShowTranscript) this.clearHudText();
-      else this.sendHudText(this.composeHudText(), true);
-    }
     if (state.micWarmSeconds !== previous.micWarmSeconds) {
-      if (state.micWarmSeconds <= 0) this.releaseWarmMicrophone();
+      if (state.micWarmSeconds === 0) this.releaseWarmMicrophone();
       else if (this.warmStream) this.armWarmTimer();
     }
   }
 
   private async pushConfig(): Promise<void> {
     if (!this.ready || this.disposed) return;
-    const { enabled, shortcut, mode, hudEnabled } =
-      useVoiceTypingStore.getState();
+    const { enabled, shortcut, mode } = useVoiceTypingStore.getState();
     console.info("[voice typing] pushing config", {
       enabled,
       shortcut,
       mode,
-      hud: hudEnabled,
     });
     try {
       await invoke("voice_typing_configure", {
         enabled,
         shortcut,
         mode,
-        hud: hudEnabled,
       });
     } catch (error) {
       const message =
@@ -257,21 +235,22 @@ export class VoiceTypingController {
     this.activating = true;
     try {
       if (explicit) {
-        // A user gesture: the only moment the microphone prompt may be raised.
-        if (await requestVoiceTypingMicrophoneAccess()) {
-          this.micPermission = "granted";
+        // A user gesture: the only moment the consent dialog may be raised.
+        if (!(await ensureMicrophonePermission("voice-typing"))) {
+          this.notifyMicBlocked();
+          return;
         }
       }
       const { readiness, model } = await this.refreshModelStatus();
       if (this.disposed) return;
       // A saved deny cannot resolve on its own, so it is worth saying out loud at
-      // boot; a fresh "ask" resolves on first use and stays quiet here.
+      // boot; an unknown answer waits for the first press instead.
       const modelUsable =
         readiness === "ready" ||
         readiness === "will-load" ||
         readiness === "loading";
       if (!explicit && modelUsable && !this.deniedMicNoticeShown) {
-        if ((await queryMicrophonePermission()) === "denied") {
+        if ((await readMicrophonePermission()) === "denied") {
           this.deniedMicNoticeShown = true;
           this.notifyMicBlocked();
         }
@@ -335,7 +314,8 @@ export class VoiceTypingController {
       return state;
     } catch (error) {
       console.warn("[voice typing] model status check failed:", error);
-      if (!this.disposed) useVoiceTypingStore.getState().setReadiness("unknown");
+      if (!this.disposed)
+        useVoiceTypingStore.getState().setReadiness("unknown");
       return { readiness: "unknown", model: "" };
     }
   }
@@ -343,9 +323,6 @@ export class VoiceTypingController {
   private async onSignal(action: SignalAction): Promise<void> {
     console.info("[voice typing] signal:", action, "phase:", this.phase);
     switch (action) {
-      case "disabled":
-        this.notifyDisabled();
-        return;
       case "start":
         // "done" lingers briefly after an insert; a new press may start already.
         if (this.phase === "idle" || this.phase === "done") await this.begin();
@@ -362,57 +339,13 @@ export class VoiceTypingController {
     }
   }
 
-  private notifyDisabled(): void {
-    const now = Date.now();
-    if (now - this.lastDisabledNoticeAt < DISABLED_NOTICE_COOLDOWN_MS) return;
-    this.lastDisabledNoticeAt = now;
-    toast.info(translate("settings.voice.voiceTyping.disabledNotice"), {
+  private notifyMicBlocked(): void {
+    toast.error(translate("settings.voice.dictation.micAccessBlockedDesktop"), {
       action: {
         label: translate("settings.voice.voiceTyping.openSettingsAction"),
         onClick: openVoiceSettings,
       },
     });
-  }
-
-  /** Rechecks the permission when a session is still waiting to start. */
-  private async assistMicPermission(
-    session: StudioDictationSession,
-  ): Promise<void> {
-    if (this.session !== session || this.phase !== "preparing") return;
-    const permission = await queryMicrophonePermission();
-    if (permission !== "prompt") return;
-    if (this.session !== session || this.phase !== "preparing") return;
-    void this.focusMainWindow();
-    this.notifyMicPermissionWaiting();
-  }
-
-  private notifyMicPermissionWaiting(): void {
-    const now = Date.now();
-    if (now - this.lastMicNoticeAt < MIC_NOTICE_COOLDOWN_MS) return;
-    this.lastMicNoticeAt = now;
-    toast.info(translate("settings.voice.voiceTyping.micPermissionWaiting"));
-  }
-
-  private notifyMicBlocked(): void {
-    toast.error(translate("settings.voice.dictation.micAccessBlockedDesktop"), {
-      action: {
-        label: translate("settings.voice.dictation.allowMicrophone"),
-        onClick: () => {
-          void requestVoiceTypingMicrophoneAccess();
-        },
-      },
-    });
-  }
-
-  private async focusMainWindow(): Promise<void> {
-    try {
-      // Dynamic import: the window module is also lazily loaded elsewhere, and a
-      // second static edge makes the bundler keep it in the main chunk.
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().setFocus();
-    } catch {
-      // Focus is best effort; the toast still explains what to do.
-    }
   }
 
   private async begin(): Promise<void> {
@@ -423,39 +356,27 @@ export class VoiceTypingController {
       notifyStudioDictationUnavailable();
       return;
     }
-    this.pressStartedAt = performance.now();
-    this.micLiveAt = 0;
-    this.firstFinalAt = 0;
-    this.stopRequestedAt = 0;
-    this.clearHudText();
-    this.setPhase("preparing");
-    this.transcript = "";
-    this.partialText = "";
-    this.speechHeard = false;
-    this.lastVoiceAt = 0;
-    this.recordingStartedAt = 0;
-    // The permission prompt can only be answered on this window, and a background
-    // press would otherwise wait on an invisible dialog: bring the window forward
-    // and explain what is happening. A saved deny does not open the mic at all.
     const pressToken = this.cancelToken;
-    // A granted permission cannot be revoked from inside the app, so the hot path
-    // skips the query; getUserMedia reports a revocation from the OS itself.
-    const permission =
-      this.micPermission === "granted"
-        ? "granted"
-        : await queryMicrophonePermission();
-    this.micPermission = permission;
+    // The consent dialog belongs to the settings gesture that switched voice
+    // typing on, where the app is already focused. Opening it from a global
+    // shortcut would steal focus from the app being dictated into, so a missing
+    // grant is reported with a way back to Voice settings instead.
+    const permission = await readMicrophonePermission();
     if (this.disposed || pressToken !== this.cancelToken) return;
-    if (permission === "denied") {
-      void this.focusMainWindow();
+    if (permission !== "granted") {
       this.notifyMicBlocked();
       this.setPhase("idle");
       return;
     }
-    if (permission === "prompt") {
-      void this.focusMainWindow();
-      this.notifyMicPermissionWaiting();
-    }
+    this.pressStartedAt = performance.now();
+    this.micLiveAt = 0;
+    this.firstFinalAt = 0;
+    this.stopRequestedAt = 0;
+    this.setPhase("preparing");
+    this.transcript = "";
+    this.speechHeard = false;
+    this.lastVoiceAt = 0;
+    this.recordingStartedAt = 0;
     const { removeFillerWords, spokenPunctuation } =
       useVoiceTypingStore.getState();
     const warm = this.takeWarmStream();
@@ -495,14 +416,8 @@ export class VoiceTypingController {
     });
     // The adapter applies the dictionary and records the session for history.
     session.onSpeech((result) => {
+      if (result.isFinal === false) return;
       const text = result.transcript ?? "";
-      if (result.isFinal === false) {
-        // A segment's live text; the HUD shows it after the finished ones.
-        this.partialText = text.trim();
-        this.sendHudText(this.composeHudText());
-        return;
-      }
-      this.partialText = "";
       if (text) {
         // Keep a segment that is only a spoken "new paragraph": it is a break,
         // not empty text.
@@ -512,13 +427,11 @@ export class VoiceTypingController {
           if (!this.firstFinalAt) this.firstFinalAt = performance.now();
         }
       }
-      this.sendHudText(this.composeHudText(), true);
     });
     session.onEnd?.(() => {
       if (this.session !== session) return;
       this.session = null;
       this.releaseLevel();
-      this.partialText = "";
       const status = session.status;
       const reason = status.type === "ended" ? status.reason : "unknown";
       // A normal stop keeps the borrowed microphone warm for the next press; an
@@ -536,11 +449,6 @@ export class VoiceTypingController {
       }
     });
     this.watchLevels(session);
-    // A press-time permission answer can go stale, so recheck once while the
-    // session still waits for the microphone to go live.
-    this.setTimer(MIC_PERMISSION_WATCHDOG_MS, () => {
-      void this.assistMicPermission(session);
-    });
     this.setTimer(MAX_RECORDING_MS, () => {
       if (this.phase === "recording") this.finish();
     });
@@ -552,10 +460,7 @@ export class VoiceTypingController {
     this.unsubscribeLevel = subscribeDictationLevel((level) => {
       if (this.session !== session || this.phase !== "recording") return;
       const now = Date.now();
-      if (
-        useVoiceTypingStore.getState().hudEnabled &&
-        now - this.lastLevelSentAt >= LEVEL_THROTTLE_MS
-      ) {
+      if (now - this.lastLevelSentAt >= LEVEL_THROTTLE_MS) {
         this.lastLevelSentAt = now;
         void this.invokeQuietly("voice_typing_hud_level", { level });
       }
@@ -605,7 +510,6 @@ export class VoiceTypingController {
     if (this.session === session) this.session = null;
     const text = this.transcript.trim();
     this.transcript = "";
-    this.partialText = "";
     if (this.disposed || token !== this.cancelToken) return;
     if (!text) {
       // Genuine silence (or an aborted session): nothing to insert.
@@ -618,18 +522,20 @@ export class VoiceTypingController {
     this.playCue("stop");
     const {
       appendTrailingSpace,
-      keepOnClipboard,
+      copyLastTranscript,
       pasteAutomatically,
       submitAfterInsert,
     } = useVoiceTypingStore.getState();
     try {
       const outcome = await invoke<string>("voice_typing_insert", {
-        text: appendTrailingSpace ? `${text} ` : text,
-        // A transcript the user still has to paste by hand must not be restored away.
-        keepOnClipboard: pasteAutomatically ? keepOnClipboard : true,
+        text,
+        // A manual paste needs the transcript to stay put. The explicit copy
+        // preference keeps it after an automatic paste too, without a second copy.
+        copyLastTranscript: copyLastTranscript || !pasteAutomatically,
         paste: pasteAutomatically,
         // Enter only makes sense once the text was actually pasted.
         submit: pasteAutomatically && submitAfterInsert,
+        trailingSpace: appendTrailingSpace,
       });
       // A cancel during the insert cannot undo the paste, but it must not
       // overwrite the phase of a session the user already started next.
@@ -673,7 +579,6 @@ export class VoiceTypingController {
     const session = this.session;
     this.session = null;
     this.transcript = "";
-    this.partialText = "";
     this.clearTimers();
     this.releaseLevel();
     try {
@@ -691,31 +596,7 @@ export class VoiceTypingController {
 
   private setPhase(phase: HudPhase): void {
     this.phase = phase;
-    if (phase === "idle") this.clearHudText();
     void this.invokeQuietly("voice_typing_hud_state", { state: phase });
-  }
-
-  private composeHudText(): string {
-    return joinTranscriptParts([this.transcript, this.partialText]);
-  }
-
-  private sendHudText(text: string, force = false): void {
-    if (this.disposed) return;
-    const { hudEnabled, hudShowTranscript } = useVoiceTypingStore.getState();
-    if (!hudEnabled || !hudShowTranscript) return;
-    const now = Date.now();
-    if (!force && now - this.hudTextSentAt < HUD_TEXT_THROTTLE_MS) return;
-    if (text === this.hudText) return;
-    this.hudText = text;
-    this.hudTextSentAt = now;
-    void this.invokeQuietly("voice_typing_hud_text", { text });
-  }
-
-  private clearHudText(): void {
-    this.hudText = "";
-    this.partialText = "";
-    if (this.disposed) return;
-    void this.invokeQuietly("voice_typing_hud_text", { text: "" });
   }
 
   /** A stream opened for a different saved device would record from the wrong
@@ -751,7 +632,7 @@ export class VoiceTypingController {
     this.sessionStream = null;
     if (!stream) return;
     if (
-      useVoiceTypingStore.getState().micWarmSeconds <= 0 ||
+      useVoiceTypingStore.getState().micWarmSeconds === 0 ||
       this.disposed ||
       !this.streamMatchesSavedDevice(stream)
     ) {
@@ -778,7 +659,7 @@ export class VoiceTypingController {
   /** Open the microphone after a dictation so the next press records at once. */
   private warmMicrophone(): void {
     const { enabled, micWarmSeconds: seconds } = useVoiceTypingStore.getState();
-    if (!enabled || this.disposed || seconds <= 0) return;
+    if (!enabled || this.disposed || seconds === 0) return;
     if (this.warmStream) {
       // A session gives its borrowed stream back before the insert completes.
       // Restart the hold window here so the time spent inserting is not taken
@@ -795,7 +676,7 @@ export class VoiceTypingController {
           token !== this.warmToken ||
           this.session ||
           !useVoiceTypingStore.getState().enabled ||
-          useVoiceTypingStore.getState().micWarmSeconds <= 0 ||
+          useVoiceTypingStore.getState().micWarmSeconds === 0 ||
           this.warmStream ||
           !this.streamMatchesSavedDevice(stream)
         ) {
@@ -864,38 +745,12 @@ export class VoiceTypingController {
     this.timers.clear();
   }
 
-  /** Tiny Web Audio blips; a nicety that must never break dictation. */
+  /** Short feedback tones; a nicety that must never break dictation. */
   private playCue(kind: Cue): void {
-    if (!useVoiceTypingStore.getState().soundEnabled) return;
-    try {
-      this.audioContext ??= new AudioContext();
-      const context = this.audioContext;
-      if (context.state === "suspended") void context.resume();
-      const [frequency, duration] =
-        kind === "start"
-          ? [880, 0.07]
-          : kind === "stop"
-            ? [660, 0.09]
-            : [320, 0.1];
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      oscillator.type = "sine";
-      oscillator.frequency.value = frequency;
-      gain.gain.setValueAtTime(0.0001, context.currentTime);
-      gain.gain.exponentialRampToValueAtTime(
-        0.06,
-        context.currentTime + 0.012,
-      );
-      gain.gain.exponentialRampToValueAtTime(
-        0.0001,
-        context.currentTime + duration,
-      );
-      oscillator.connect(gain).connect(context.destination);
-      oscillator.start();
-      oscillator.stop(context.currentTime + duration + 0.02);
-    } catch {
-      // No audio output available.
-    }
+    const { soundEnabled, soundTheme, soundVolume } =
+      useVoiceTypingStore.getState();
+    if (!soundEnabled) return;
+    playVoiceTypingCue(kind, soundTheme, soundVolume);
   }
 }
 
