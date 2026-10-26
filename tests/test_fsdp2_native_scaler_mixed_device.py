@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Native FSDP2 float16 scaler with one fused AdamW over CPU and CUDA parameters (cpu_offload shards next
+to replicated ignored_params). GradScaler.step hands a fused optimizer the SUM of the per-device found_inf
+flags and the kernels skip only on found_inf == 1: both devices overflowing gave 2, and the step wrote
+non-finite weights and stepped the counts to -1."""
+
+import os
+import sys
+import types
+
+import pytest
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_fsdp2_native_units import _load_native  # noqa: E402
+from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+
+
+class _Handler:
+    def to_kwargs(self):
+        return {"device": "cuda", "init_scale": 2.0**8}
+
+
+@pytest.fixture(scope = "module")
+def world_of_one():
+    # Once per module: ShardedGradScaler's default process_group argument is bound to the first WORLD.
+    import torch.distributed as dist
+
+    os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(_free_port()))
+    dist.init_process_group("cpu:gloo,cuda:nccl", rank = 0, world_size = 1)
+    torch.cuda.set_device(0)
+    try:
+        yield
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("explicit_unscale", [True, False], ids = ["clipping", "no_clipping"])
+@pytest.mark.parametrize("overflow", ["cpu", "cuda", "both"])
+def test_mixed_device_fused_adamw_skips_an_overflow_step(world_of_one, explicit_unscale, overflow):
+    native = _load_native()
+    old = torch.amp.GradScaler("cuda", init_scale = 2.0**8)
+    trainer = types.SimpleNamespace(accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _Handler()))
+    assert native._scaler_for_native(trainer) is True
+    scaler = trainer.accelerator.scaler
+    torch.manual_seed(0)
+    on_cpu = torch.nn.Parameter(torch.randn(8, 8))
+    on_cuda = torch.nn.Parameter(torch.randn(8, 8, device = "cuda"))
+    opt = torch.optim.AdamW([on_cpu, on_cuda], lr = 1e-2, fused = True)
+    before = [on_cpu.detach().clone(), on_cuda.detach().clone()]
+    loss = on_cpu.sum().cuda() + on_cuda.sum()
+    scaler.scale(loss).backward()
+    if overflow in ("cpu", "both"):
+        on_cpu.grad[0, 0] = float("inf")
+    if overflow in ("cuda", "both"):
+        on_cuda.grad[0, 0] = float("inf")
+    if explicit_unscale:
+        scaler.unscale_(opt)
+    scaler.step(opt)
+    scaler.update()
+    for p, b in zip((on_cpu, on_cuda), before):
+        assert torch.equal(p.detach().cpu(), b.cpu()), (overflow, "the overflow step changed weights")
+        assert float(opt.state[p]["step"]) == 0.0, (overflow, float(opt.state[p]["step"]))
+    assert scaler.get_scale() == 2.0**7

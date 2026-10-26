@@ -3337,6 +3337,7 @@ def _scaler_for_native(trainer):
     if scaler is None:
         return False
     try:
+        import torch.distributed as dist
         from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
     except ImportError:
         return False
@@ -3350,12 +3351,44 @@ def _scaler_for_native(trainer):
             super().unscale_(optimizer)
             if not self.is_enabled():
                 return
-            # The all-reduce SUMS found_inf: it is the number of ranks that overflowed. Fused
-            # optimizers skip the step only on found_inf == 1 (and subtract it from their step
-            # counts), so 2+ ranks overflowing stepped on inf / NaN gradients. Clamp to 0 / 1.
+            self._one_flag(optimizer)
+
+        def _check_inf_per_device(self, optimizer):
+            # GradScaler.step() on a fused optimizer (its own unscaling) calls this instead of
+            # unscale_ when unscale_ was not called (no gradient clipping), and ShardedGradScaler
+            # does not all-reduce here: one rank skipped an overflow step the others took, and the
+            # loss scales diverged. Agree over ranks as unscale_ does.
+            super()._check_inf_per_device(optimizer)
             state = self._per_optimizer_states[id(optimizer)]
+            works, copies = [], []
+            for found_inf in state["found_inf_per_device"].values():
+                if self._device != "cpu" and found_inf.device.type == "cpu":
+                    on_device = found_inf.to(self._device)
+                    copies.append((found_inf, on_device))
+                    found_inf = on_device
+                works.append(dist.all_reduce(found_inf, async_op = True, group = self.process_group))
+            for work in works:
+                work.wait()
+            for found_inf, on_device in copies:
+                found_inf.copy_(on_device)
+            self._one_flag(optimizer)
+            return state["found_inf_per_device"]
+
+        def _one_flag(self, optimizer):
+            # The all-reduce SUMS found_inf (the number of ranks that overflowed), and GradScaler.step
+            # hands a fused optimizer the SUM over devices; fused kernels skip only on found_inf == 1
+            # (and subtract it from their step counts), so 2+ ranks, or CPU-offloaded and replicated
+            # parameters both overflowing, stepped on inf / NaN gradients. One 0 / 1 flag in total:
+            # on the first device, zeros on the others (every consumer sums them).
+            state = self._per_optimizer_states[id(optimizer)]
+            found = state["found_inf_per_device"]
+            if not found:
+                return
+            first = next(iter(found.values()))
+            total = sum(t.reshape(()).to(first.device) for t in found.values()).clamp(max = 1.0)
             state["found_inf_per_device"] = {
-                d: t.clamp(max = 1.0).reshape(()) for d, t in state["found_inf_per_device"].items()
+                d: total if i == 0 else torch.zeros((), dtype = t.dtype, device = t.device)
+                for i, (d, t) in enumerate(found.items())
             }
 
     kwargs = {}
