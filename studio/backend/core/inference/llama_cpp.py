@@ -12128,11 +12128,19 @@ class LlamaCppBackend:
         """Whether the child gets no model device: a CPU-only build, a CPU ``--device``
         selection, or a launch Studio forces onto the CPU (``cpu_forced``, a paravirtual
         Metal). Its lookup tables keep llama.cpp's lazy default."""
-        return bool(
+        if (
             cpu_forced
             or self._binary_ships_no_gpu_backend(binary, env)
             or _device_selection_is_cpu(extra_args, env)
-        )
+        ):
+            return True
+        # Split mode none with a negative main GPU clears the model's devices (src/llama.cpp).
+        if not _effective_tensor_parallel(extra_args, False, env) and (
+            _split_mode_confines_to_one_device(extra_args, env)
+        ):
+            main = self._effective_main_gpu(extra_args, env)
+            return main is not None and main < 0
+        return False
 
     @staticmethod
     def _metal_placement_unset(

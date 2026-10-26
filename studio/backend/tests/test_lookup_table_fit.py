@@ -1071,3 +1071,38 @@ def test_an_empty_inventory_beside_a_gpu_prices_the_table_resident_at_launch(
     )
     assert seen, "no load-mode fit ran"
     assert seen[-1]["lazy_read_bytes"] == (0 if node else FLASH_NEXT_PLE), seen[-1]
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, cpu",
+    [
+        (["--split-mode", "none", "--main-gpu", "-1"], {}, True),
+        (["-sm", "none", "-mg", "-1"], {}, True),
+        ([], {"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "-1"}, True),
+        (["-sm", "none", "-mg", "0"], {}, False),
+        (["--main-gpu", "-1"], {}, False),
+        (["-sm", "layer", "-mg", "-1"], {}, False),
+    ],
+)
+def test_split_mode_none_with_a_negative_main_gpu_is_a_cpu_child(extra_args, env, cpu):
+    """llama.cpp clears the model's devices for it (src/llama.cpp, b11734-mix-c208e5f)."""
+    backend = LlamaCppBackend()
+    backend._binary_ships_no_gpu_backend = lambda *a, **k: False
+    assert backend._child_runs_on_cpu(None, extra_args, env) is cpu
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, resident",
+    [
+        (["-sm", "none", "-mg", "0"], {}, True),
+        (["--split-mode", "none", "--main-gpu", "-1"], {}, False),
+        ([], {"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "-1"}, False),
+    ],
+)
+def test_a_main_gpu_of_minus_one_keeps_llama_cpps_lazy_default(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env, resident
+):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128, extra_args = extra_args)
+    assert (_lazy_values(cmd) == ["off"]) is resident, cmd
