@@ -32,10 +32,11 @@ from test_tp_native_gloo import (  # noqa: E402
 from test_tp_native_oracle import ARCHS, LLAMA, _batch, build, skip_unsupported  # noqa: E402
 
 
-def _mesh(world):
+def _mesh(world, tp = None):
     from torch.distributed.device_mesh import init_device_mesh
 
-    return init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))["tp"]
+    tp = tp or world
+    return init_device_mesh("cpu", (world // tp, tp), mesh_dim_names = ("dp", "tp"))["tp"]
 
 
 def _generate(model, prompt, **kwargs):
@@ -50,7 +51,7 @@ def _all_plain(model):
     return not any(isinstance(p, DTensor) for p in model.parameters())
 
 
-def _case_generate(rank, world, tmp, arch):
+def _case_generate(rank, world, tmp, arch, tp = None):
     """Train 2 steps under tp, then for_inference + greedy / sampled generate on the replica vs one process with
     the same (gathered) weights; for_training (and a training forward) puts the shards back."""
     error = _import_checkout_unsloth()
@@ -62,7 +63,7 @@ def _case_generate(rank, world, tmp, arch):
     repo, overrides = ARCHS[arch]
     model, ref = build(repo, overrides), build(repo, overrides)
     ids = _batch(model)
-    tp_native.apply_tensor_parallel(model, _mesh(world))
+    tp_native.apply_tensor_parallel(model, _mesh(world, tp))
     _train(model, ids, 2, tp_native.tp_clip_grad_norm_)
     sharded = dict(model.named_parameters())
     with torch.no_grad():
@@ -83,7 +84,8 @@ def _case_generate(rank, world, tmp, arch):
     out["greedy_batch_ref"] = _generate(ref, ids[:, :4], do_sample = False, max_new_tokens = 8)
     torch.manual_seed(100 + rank)  # different on every rank: generate copies tp rank 0's RNG state
     out["sample_tp"] = _generate(model, prompt, do_sample = True, top_k = 0, temperature = 1.5)
-    torch.manual_seed(100)
+    tp_rank0 = rank - rank % (tp or world)  # this tp group's first global rank
+    torch.manual_seed(100 + tp_rank0)
     out["sample_ref"] = _generate(ref, prompt, do_sample = True, top_k = 0, temperature = 1.5)
     FastLanguageModel.for_training(model)
     out["restored"] = all(p is sharded[n] for n, p in model.named_parameters())
@@ -391,6 +393,36 @@ def test_tp2_generate_on_replica_equals_one_process(arch):
         assert res["restored"] and res["is_tp"] and res["loss_err"] == 0.0, res
         assert res["replica_after_generate"] and res["released_by_forward"] and res["restored_2"], res
         assert res["loss_err_2"] == 0.0 and res["dtensor_grads"], res
+
+
+def test_tp2_x_dp2_generate_and_save_per_tp_group():
+    """dp 2 x tp 2 (DDP-style dp): each tp group gathers its replica and copies its own tp rank 0's RNG."""
+    results = _spawn("generate", 4, arch = "llama", tp = 2)
+    for rank, res in enumerate(results):
+        assert res["logits_err"] == 0.0 and res["greedy_tp"] == res["greedy_ref"], rank
+        assert res["sample_tp"] == res["sample_ref"], rank
+        assert res["restored"] and res["restored_2"] and res["loss_err_2"] == 0.0, res
+    assert results[0]["sample_tp"] == results[1]["sample_tp"] != results[2]["sample_tp"]
+    assert results[2]["sample_tp"] == results[3]["sample_tp"]
+
+
+def test_env_reload_of_an_adapter_directory_loads_in_full(tmp_path):
+    """tp_env: a reload cell (adapter directory) is not sharded-loaded; a base checkpoint still is."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        pytest.skip(error)
+    from unsloth.models import tp_env
+
+    adapter, base = tmp_path / "lora_model", tmp_path / "base"
+    adapter.mkdir()
+    base.mkdir()
+    (adapter / "adapter_config.json").write_text("{}")
+    (base / "config.json").write_text("{}")
+    assert tp_env._is_adapter({"model_name": str(adapter)})
+    assert not tp_env._is_adapter({"model_name": str(base)})
+    assert not tp_env._is_adapter({"model_name": None})
+    out = tp_env._mark_world_save((object(), type("Tok", (), {})()))
+    assert out[1].__dict__.get("_unsloth_tp_world_save") is True
 
 
 @pytest.mark.parametrize("nested", [False, True])
