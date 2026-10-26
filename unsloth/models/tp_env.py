@@ -349,7 +349,11 @@ def _broadcast_trainable(model, dp_mesh):
     with torch.no_grad():
         for p in model.parameters():
             if p.requires_grad:
-                dist.broadcast(getattr(p, "_local_tensor", p.data), src = src, group = group)
+                local = getattr(p, "_local_tensor", p.data)
+                work = local if local.is_contiguous() else local.contiguous()  # NCCL takes dense tensors
+                dist.broadcast(work, src = src, group = group)
+                if work is not local:
+                    local.copy_(work)
 
 
 def fsdp2_dp_mesh(model):

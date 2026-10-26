@@ -30,7 +30,13 @@ from test_tp_native_gloo import (  # noqa: E402
     _trainer_args,
 )
 
-_ENV_KEYS = ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_FSDP2", "UNSLOTH_FSDP2_BACKEND")
+_ENV_KEYS = (
+    "UNSLOTH_TP_SIZE",
+    "UNSLOTH_PP_SIZE",
+    "UNSLOTH_FSDP2",
+    "UNSLOTH_FSDP2_BACKEND",
+    "ACCELERATE_USE_FSDP",
+)
 
 
 def _checkpoint(tmp):
@@ -289,7 +295,58 @@ def _case_env(
     return res
 
 
-CASES = {"units": _case_units, "env": _case_env}
+def _case_dp_average(rank, world, tmp):
+    """DDP-style dp averaging: a gradient on one replica only is averaged with zeros (DDP's behaviour), one on
+    none stays None, and both replicas end equal."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models import tp_native
+
+    dist.init_process_group("gloo")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("dp",))
+    one, both, none, frozen = (torch.nn.Parameter(torch.zeros(3)) for _ in range(4))
+    frozen.requires_grad_(False)
+    one.grad = torch.full((3,), 4.0) if rank == 0 else None
+    both.grad = torch.full((3,), float(rank + 1))
+    tp_native._dp_average([one, both, none, frozen], mesh["dp"])
+    return {"one": one.grad.tolist(), "both": both.grad.tolist(), "none": none.grad, "frozen": frozen.grad}
+
+
+def _case_accelerate_fsdp(rank, world, tmp, ckpt):
+    """UNSLOTH_FSDP2=1 that resolves to accelerate's FSDP: the dp dimension would be left unsynced."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    from unsloth.models import tp_env
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    model = tp_env.tensor_parallel_env_load(
+        lambda name, load_in_4bit = True: AutoModelForCausalLM.from_pretrained(name, torch_dtype = torch.float32)
+    )(ckpt, load_in_4bit = False)
+    model = get_peft_model(model, LoraConfig(r = 4, target_modules = "all-linear"))
+    data = _Rows([torch.arange(9)] * 8)
+    return {
+        "refused": _raised(
+            lambda: transformers.Trainer(model = model, args = _trainer_args(tmp, 2), train_dataset = data)
+        )
+    }
+
+
+CASES = {
+    "units": _case_units,
+    "env": _case_env,
+    "dp_average": _case_dp_average,
+    "accelerate_fsdp": _case_accelerate_fsdp,
+}
 
 
 def _worker(rank, world, port, case, tmp, env, kwargs):
@@ -319,7 +376,7 @@ def _spawn(case, world = 1, env = None, **kwargs):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        if case == "env":
+        if case in ("env", "accelerate_fsdp"):
             kwargs["ckpt"] = _checkpoint(tmp)
         procs = [
             ctx.Process(target = _worker, args = (r, world, port, case, tmp, env or {}, kwargs))
@@ -489,3 +546,15 @@ def test_env_tp_checkpoint_resume_equals_uninterrupted(world, env, optim):
         for key, value in a["state"].items():
             assert torch.equal(b["state"][key], value), key
         assert "written on another layout" in (res["bad_layout"] or ""), res["bad_layout"]
+
+
+def test_dp_average_matches_ddp_for_gradients_on_some_replicas():
+    for res in _spawn("dp_average", 2):
+        assert res["one"] == [2.0] * 3 and res["both"] == [1.5] * 3, res
+        assert res["none"] is None and res["frozen"] is None, res
+
+
+def test_env_tp_x_accelerate_fsdp_is_refused():
+    env = {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_FSDP2": "1", "ACCELERATE_USE_FSDP": "true"}
+    for res in _spawn("accelerate_fsdp", 4, env):
+        assert "needs Unsloth's native FSDP2" in (res["refused"] or ""), res

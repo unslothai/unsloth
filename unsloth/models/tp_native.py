@@ -2351,6 +2351,10 @@ def tp_trainer_setup(
         return optimizer
 
     trainer.__dict__["create_optimizer"] = create_optimizer_tp
+    # transformers 5.x clips mixed DTensor / plain gradients (modules_to_save next to the LoRA DTensors) in its
+    # own _mixed_mesh_grad_norm, which sums every DTensor's local square over its mesh and skips the dp
+    # average: keep them on Accelerator.clip_grad_norm_ (tp_clip_grad_norm_ counts each element once).
+    trainer.__dict__["_has_mixed_mesh_grads"] = lambda model: False
     return True
 
 
@@ -2369,18 +2373,32 @@ def _tp_localize_bnb(optimizer):
 
 
 def _dp_average(params, mesh):
-    """Average the gradients over the dp mesh (DDP's all-reduce, one per dtype / device bucket)."""
+    """Average the gradients over the dp mesh (DDP's all-reduce, one per dtype / device bucket). A trainable
+    with a gradient on some dp replicas only (an unrouted expert, an unused tower) gets zeros on the others
+    first, as DDP does, so every replica reduces the same buckets; one with no gradient anywhere stays None."""
     import torch.distributed as dist
     from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
+    params = [p for p in params if p.requires_grad]
+    if not params:
+        return
+    group, n = mesh.get_group(), mesh.size()
+    device = (
+        torch.device("cuda", torch.cuda.current_device())
+        if mesh.device_type == "cuda"
+        else torch.device(mesh.device_type)
+    )
+    has = torch.tensor([p.grad is not None for p in params], dtype = torch.int32, device = device)
+    dist.all_reduce(has, op = dist.ReduceOp.MAX, group = group)
     buckets = {}
-    for p in params:
-        g = p.grad
-        if g is None:
+    for p, any_grad in zip(params, has.tolist()):
+        if not any_grad:
             continue
+        if p.grad is None:
+            p.grad = torch.zeros_like(p)
+        g = p.grad
         local = g._local_tensor if _is_dtensor(g) else g
         buckets.setdefault((local.device, local.dtype), []).append(local)
-    group, n = mesh.get_group(), mesh.size()
     with torch.no_grad():
         for tensors in buckets.values():
             flat = _flatten_dense_tensors(tensors)
@@ -2522,7 +2540,8 @@ def _tp_resume_payload(self, checkpoint):
     if not os.path.isfile(path):
         raise RuntimeError(
             f"Unsloth: tensor parallel resume needs the per-rank state {path}, which this checkpoint does not "
-            "have (it was not written by a tensor parallel Trainer)." + _env_hint()
+            "have (it was not written by a tensor parallel Trainer, or with save_only_model = True, which saves "
+            "no optimizer state to resume from)." + _env_hint()
         )
     payload = torch.load(path, map_location = "cpu", weights_only = True)
     want, got = _tp_layout(self), payload["layout"]

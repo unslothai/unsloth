@@ -6008,6 +6008,14 @@ def patch_gradient_accumulation_fix(Trainer):
                 )
             if native_fsdp2 and tp_env is not None and tp_env.dp == 1:
                 native_fsdp2 = False  # UNSLOTH_TP_SIZE = world size: no data parallel dimension to shard
+            if tp_env is not None and tp_env.dp > 1 and tp_env.fsdp2 and not native_fsdp2:
+                # The dp dimension would be neither FSDP2-sharded nor gradient-averaged: replicas would drift.
+                raise RuntimeError(
+                    f"Unsloth: UNSLOTH_TP_SIZE={tp_env.tp} with UNSLOTH_FSDP2=1 needs Unsloth's native FSDP2 for "
+                    f"the data parallel dimension (dp {tp_env.dp}), but this launch selects accelerate's FSDP "
+                    "(ACCELERATE_USE_FSDP / an accelerate FSDP config, or a non-CUDA install). Launch with "
+                    "torchrun and UNSLOTH_FSDP2_BACKEND unset, or unset UNSLOTH_FSDP2 for DDP-style data parallel."
+                )
             if native_fsdp2:
                 from .fsdp2_native import (
                     native_fsdp2_trainer_init_arguments,
