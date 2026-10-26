@@ -548,7 +548,6 @@ def test_torchao_qat_fallback_converts_module_by_module_and_equals_one_process(r
     _assert_same_files(runs["single_dir"] / "qat_fallback", runs["sharded_dir"] / "qat_fallback")
 
 
-
 def test_host_ram_check_honours_the_cgroup_limit(runs):
     _no_raise(runs, "cgroup")
     limit, available = runs["ranks"][0]["cgroup_bytes"]

@@ -529,6 +529,7 @@ def _cgroup_available_bytes():
     """Bytes left under this process's cgroup memory limits (v2 memory.max - memory.current over the
     cgroup and its parents, v1 memory.limit_in_bytes - memory.usage_in_bytes), or None without one.
     A container (Docker, Kubernetes, Kaggle, Colab) is killed at its limit, not at host RAM."""
+
     def read(path):
         try:
             with open(path, encoding = "utf-8") as f:
@@ -549,7 +550,10 @@ def _cgroup_available_bytes():
             parts = [p for p in path.split("/") if p]
             for depth in range(len(parts), -1, -1):
                 base = os.path.join("/sys/fs/cgroup", *parts[:depth])
-                limit, used = read(os.path.join(base, "memory.max")), read(os.path.join(base, "memory.current"))
+                limit, used = (
+                    read(os.path.join(base, "memory.max")),
+                    read(os.path.join(base, "memory.current")),
+                )
                 if limit is not None and used is not None:
                     left.append(limit - used)
         elif "memory" in controllers.split(","):
