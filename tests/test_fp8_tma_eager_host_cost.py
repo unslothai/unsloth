@@ -15,7 +15,12 @@ if F8._TensorDescriptor is None:
 
 class _Fake:
     # Just what _fp8_tma_gemm_ok reads from A, B and C.
-    def __init__(self, shape, dtype, ptr = 1 << 20):
+    def __init__(
+        self,
+        shape,
+        dtype,
+        ptr = 1 << 20,
+    ):
         self.shape = torch.Size(shape)
         self.dtype = dtype
         self.device = torch.device("cuda", 0)
@@ -44,7 +49,13 @@ def tma_device(monkeypatch):
     return calls, capturing
 
 
-def _ok(M, N = 4096, K = 4096, dtype = torch.bfloat16, batch = None):
+def _ok(
+    M,
+    N = 4096,
+    K = 4096,
+    dtype = torch.bfloat16,
+    batch = None,
+):
     lead = (M,) if batch is None else (batch, M // batch)
     A = _Fake(lead + (K,), torch.float8_e4m3fn)
     B = _Fake((N, K), torch.float8_e4m3fn)
@@ -137,7 +148,7 @@ def _launch(monkeypatch, A, B, C, M, N, K):
     As = torch.ones(M, K // 128)
     Bs = torch.ones(N // 128, K // 128)
     F8._launch_fp8_tma_gemm(A, B, C, As, Bs, M, N, K, 128, 128)
-    (grid, args, kwargs), = seen
+    ((grid, args, kwargs),) = seen
     return args[:3]
 
 
@@ -150,7 +161,9 @@ def test_launch_skips_per_call_validation(monkeypatch):
     built = []
     real = F8._TensorDescriptor.from_tensor
     monkeypatch.setattr(
-        F8._TensorDescriptor, "from_tensor", staticmethod(lambda *a, **k: built.append(1) or real(*a, **k))
+        F8._TensorDescriptor,
+        "from_tensor",
+        staticmethod(lambda *a, **k: built.append(1) or real(*a, **k)),
     )
     for _ in range(5):
         a, b, c = _launch(monkeypatch, A, B, C, M, N, K)
