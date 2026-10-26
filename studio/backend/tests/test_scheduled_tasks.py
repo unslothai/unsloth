@@ -1451,9 +1451,7 @@ def test_a_scheduled_switch_rechecks_under_its_gate_for_a_user_request(monkeypat
     # A chat that starts after admission is caught where the switch would replace the model.
     world = SwapWorld(monkeypatch)
     others = [0]
-    monkeypatch.setattr(
-        llama_keepwarm, "other_inference_request_count", lambda *a, **k: others[0]
-    )
+    monkeypatch.setattr(llama_keepwarm, "other_inference_request_count", lambda *a, **k: others[0])
 
     class SwitchesAfterAUserRequestStarts(FakeProducer):
         async def __call__(self, payload, request, current_subject, *, cancel_on_disconnect):

@@ -383,7 +383,6 @@ def _require_still_away(swap: _Swap) -> None:
     """Raise model_busy once someone came back since the swap was planned: an inference request ended,
     a model load landed, or a request is running beside this run."""
     from core.inference.llama_keepwarm import attended_stamp, other_inference_request_count
-
     if attended_stamp() != swap.attended or other_inference_request_count(
         current_request_counted = True
     ):
