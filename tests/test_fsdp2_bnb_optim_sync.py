@@ -93,3 +93,30 @@ def test_paged_local_shard_step_keeps_bitsandbytes_fences(sync_calls):
         assert len(calls) == expected, (step, calls)
     for a, b in zip(local, ref):
         assert torch.equal(a, b)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA side stream")
+def test_local_shard_step_on_a_side_stream_keeps_every_fence(monkeypatch):
+    """bitsandbytes' kernels launch on the legacy default stream: a step taken under another stream
+    keeps the per-parameter fences, on the default stream none are taken."""
+    bnb = pytest.importorskip("bitsandbytes")
+    _load_native()
+    import bitsandbytes.optim.optimizer as bnb_optimizer
+    import bitsandbytes.utils as bnb_utils
+    from unsloth.models.fsdp2_bnb_optim import localize_bnb_optimizer
+
+    calls = []
+    for module in (bnb_optimizer, bnb_utils):
+        if hasattr(module, "sync_gpu"):
+            monkeypatch.setattr(module, "sync_gpu", lambda t: calls.append(t.device.type))
+    params = [torch.nn.Parameter(p.detach().cuda()) for p in _params(2)]
+    opt = bnb.optim.AdamW8bit(params, lr = 1e-2, min_8bit_size = 0)
+    assert localize_bnb_optimizer(opt)
+    for p in params:
+        p.grad = torch.full_like(p, 1e-2)
+    opt.step()
+    assert calls == []
+    side = torch.cuda.Stream()
+    with torch.cuda.stream(side):
+        opt.step()
+    assert len(calls) == len(_SHAPES) + 1, calls

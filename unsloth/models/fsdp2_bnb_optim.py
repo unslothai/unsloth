@@ -306,9 +306,10 @@ class _LocalShardMixin:
     @torch.no_grad()
     def step(self, closure = None):
         """bitsandbytes' Optimizer8bit.step loop, but the device synchronize after every parameter only
-        runs for paged optimizers (their page prefetches are asynchronous and need the fences). Non-paged
-        state lives on the device and every update is queued on the current stream, so nothing needs the
-        host to wait; torch's AdamW, which native FSDP2 used before, does not wait either."""
+        runs for paged optimizers (their page prefetches are asynchronous and need the fences) and off
+        the default stream. Non-paged state lives on the device and every update is queued on the
+        default stream the caller is on, so nothing needs the host to wait; torch's AdamW, which native
+        FSDP2 used before, does not wait either."""
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -318,6 +319,8 @@ class _LocalShardMixin:
             self.to_gpu()  # as bitsandbytes (fairseq pure fp16 training)
             self.initialized = True
         paged = bool(getattr(self, "is_paged", False))
+        # bitsandbytes' kernels run on the legacy default stream: off it the fences are the only ordering.
+        fence = paged or _off_default_stream(self)
         p = None
         for gindex, group in enumerate(self.param_groups):
             for pindex, p in enumerate(group["params"]):
@@ -327,9 +330,9 @@ class _LocalShardMixin:
                     self.init_state(group, p, gindex, pindex)
                 self.prefetch_state(p)
                 self.update_step(group, p, gindex, pindex)
-                if paged:
+                if fence:
                     _sync_device(p)
-        if paged and p is not None:
+        if fence and p is not None:
             _sync_device(p)
         return loss
 
@@ -524,6 +527,20 @@ def full_cpu_state_export(optimizer):
         yield
     finally:
         optimizer._unsloth_full_cpu_export = False
+
+
+def _off_default_stream(optimizer):
+    """True when a parameter's device is not on its default stream (or is not CUDA / CPU, where
+    the fences stay as bitsandbytes has them)."""
+    devices = {p.device for group in optimizer.param_groups for p in group["params"]}
+    for device in devices:
+        if device.type == "cpu":
+            continue
+        if device.type != "cuda":
+            return True
+        if torch.cuda.current_stream(device) != torch.cuda.default_stream(device):
+            return True
+    return False
 
 
 def _sync_device(p):
