@@ -17,7 +17,6 @@ from test_fp8_16bit_text_loader_dequant import _write_tiny_block_fp8_llama
 
 try:
     from transformers import FineGrainedFP8Config
-
     _HAS_DEQUANTIZE = "dequantize" in inspect.signature(FineGrainedFP8Config).parameters
 except Exception:
     _HAS_DEQUANTIZE = False
@@ -57,7 +56,11 @@ except RuntimeError as e:
 """
 
 
-def _run(tmp_path, kwargs, old_transformers = False):
+def _run(
+    tmp_path,
+    kwargs,
+    old_transformers = False,
+):
     _write_tiny_block_fp8_llama(str(tmp_path))
     code = _CAPTURE.format(
         tests_dir = os.path.dirname(os.path.abspath(__file__)),
@@ -79,7 +82,9 @@ def _run(tmp_path, kwargs, old_transformers = False):
     "kwargs",
     [
         dict(full_finetuning = True, load_in_4bit = False),
-        dict(full_finetuning = True),  # load_in_4bit defaults on and is turned off for full finetuning
+        dict(
+            full_finetuning = True
+        ),  # load_in_4bit defaults on and is turned off for full finetuning
         dict(full_finetuning = True, load_in_4bit = False, load_in_16bit = True),
     ],
 )
@@ -96,7 +101,9 @@ def test_lora_load_keeps_fp8(tmp_path):
 
 
 def test_full_finetuning_refused_without_dequantize_flag(tmp_path):
-    kind, got = _run(tmp_path, dict(full_finetuning = True, load_in_4bit = False), old_transformers = True)
+    kind, got = _run(
+        tmp_path, dict(full_finetuning = True, load_in_4bit = False), old_transformers = True
+    )
     assert kind == "refused" and "full finetuning an FP8 checkpoint" in got, got
 
 
