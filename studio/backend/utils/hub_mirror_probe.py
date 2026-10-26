@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Warn in the server log when a custom Hugging Face endpoint hands traffic back to huggingface.co.
-
-huggingface_hub follows a mirror's redirects silently, so an owner who set e.g. hf-mirror.com
-(which answers every path with a redirect to huggingface.co outside mainland China) never learns
-that downloads skip the mirror. One anonymous API GET and one LFS HEAD, never following a
-redirect and never sending a token, run once per endpoint per process on a daemon thread.
-"""
+"""Log a warning when a custom Hub endpoint redirects to huggingface.co (hf-mirror.com does outside
+mainland China), which huggingface_hub otherwise follows silently. No token, no redirect followed."""
 
 from __future__ import annotations
 
