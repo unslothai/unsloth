@@ -211,7 +211,6 @@ import {
   artifactForRepoId,
   classifyGgufFit,
   classifyMediaGgufFit,
-  curatedArtifactFit,
   curatedCapabilitiesFor,
   curatedRowLabelFor,
   curatedSizeBytesFor,
@@ -219,6 +218,11 @@ import {
   groupForRepoId,
   recommendedQuantForDevice,
 } from "./model-catalog";
+import {
+  curatedPickerFit,
+  mediaGgufPickerStatus,
+  type PickerFitStatus,
+} from "./media-picker-fit";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -796,13 +800,18 @@ const WONT_FIT: FitVerdict = {
   label: "Does not fit",
   tone: ORANGE,
   // "memory", not "VRAM": this also covers diffusion refusals on a shared pool.
-  hint: "Needs more memory than this device has. This model will not load.",
+  hint: "Estimated memory exceeds this device's usable capacity. Try a smaller model or free memory.",
 };
 
 /** Fit verdict marks keyed by the Hub's classes; `tight`/`exceeds` come only from torch or
  *  QLoRA estimates, which never offload. */
-const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
+const VRAM_VERDICT: Record<PickerFitStatus, FitVerdict | null> = {
   fits: null,
+  offload: {
+    label: "RAM offloading",
+    tone: AMBER,
+    hint: "Might be slower with RAM offloading.",
+  },
   marginal: MIGHT_FIT,
   tight: DEVICE_TIGHT,
   partial: OFFLOADS,
@@ -815,23 +824,13 @@ const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
   exceeds: WONT_FIT,
 };
 
-/** On a shared pool a diffusion `oom` is a refusal (MPS high-watermark disabled, OS kills the
- *  process). `hostPooled` folds in unified_memory since shared_memory is set only on Windows. */
-function diffusionRefuses(
-  fit: GgufFitClass,
-  diffusionLoad: boolean,
-  hostPooled: boolean,
-): boolean {
-  return fit === "oom" && diffusionLoad && hostPooled;
-}
-
 /** Zero on a host pool, where offload frees nothing. llama.cpp differs: GGUFs spill to host RAM. */
 function mediaRamBudgetGb(systemRamGb: number, hostPooled: boolean): number {
   return hostPooled ? 0 : systemRamGb;
 }
 
 /** `marginal` is not over budget: it is a full GPU load with little room to spare. */
-function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
+function isOverBudget(status?: PickerFitStatus | null): boolean {
   return (
     status === "partial" ||
     status === "ram" ||
@@ -859,7 +858,7 @@ function VramBadge({
   /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
   revealOnHover = false,
 }: {
-  status?: GgufFitClass | VramFitStatus | null;
+  status?: PickerFitStatus | null;
   revealOnHover?: boolean;
 }) {
   const t = useT();
@@ -1023,8 +1022,10 @@ function artifactBudget(gpu: {
   denseQuantSchemes?: readonly string[];
   quantisedStreaming?: boolean;
   extraOffloadFitTiers?: DeviceBudget["extraOffloadFitTiers"];
-}): DeviceBudget {
+  loadDeviceSharesHostMemory?: boolean;
+}): DeviceBudget & { hostPooledMemory?: boolean } {
   return {
+    hostPooledMemory: gpu.loadDeviceSharesHostMemory,
     gpuGb: gpu.memoryTotalGb,
     systemRamGb: gpu.systemRamAvailableGb,
     // Judges a pre-quantised row by that checkpoint's size, not the bf16 shards it replaces.
@@ -1187,7 +1188,7 @@ function ModelRow({
   /** Override badge state when authoritative runtime state is available. */
   loaded?: boolean;
   onClick: () => void;
-  vramStatus?: GgufFitClass | VramFitStatus | null;
+  vramStatus?: PickerFitStatus | null;
   vramEst?: number;
   vramBudget?: CuratedBudget;
   gpuGb?: number;
@@ -1228,9 +1229,11 @@ function ModelRow({
         ? vramBudget
           ? curatedBudgetText(vramEst, gpuGb, vramBudget)
           : `Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`
-        : vramStatus === "tight" || vramStatus === "marginal"
-          ? `~${formatGiB(vramEst)} VRAM (tight fit on ${formatGiB(gpuGb)})`
-          : `~${formatGiB(vramEst)} VRAM`
+        : vramStatus === "offload"
+          ? `~${formatGiB(vramEst)} memory. Might be slower with RAM offloading.`
+          : vramStatus === "tight" || vramStatus === "marginal"
+            ? `~${formatGiB(vramEst)} VRAM (tight fit on ${formatGiB(gpuGb)})`
+            : `~${formatGiB(vramEst)} VRAM`
       : null;
 
   const { owner, name } = splitRepoLabel(label);
@@ -2414,9 +2417,7 @@ function GgufVariantExpander({
             <span className="flex items-center gap-1.5 shrink-0">
               <VramBadge
                 status={
-                  diffusionRefuses(fit, diffusionLoad, hostPooledMemory)
-                    ? "exceeds"
-                    : fit
+                  diffusionLoad ? mediaGgufPickerStatus(fit) : fit
                 }
               />
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
@@ -3826,8 +3827,8 @@ export function HubModelPicker({
 
   /** Every list judging a row against the device goes through this, so badges and filters agree. */
   const catalogFit = useCallback(
-    (id: string, budget: DeviceBudget) =>
-      catalog ? curatedArtifactFit(id, catalog, budget) : undefined,
+    (id: string, budget: DeviceBudget & { hostPooledMemory?: boolean }) =>
+      catalog ? curatedPickerFit(id, catalog, budget) : undefined,
     [catalog],
   );
 
@@ -4022,7 +4023,7 @@ export function HubModelPicker({
       string,
       {
         meta: string | null;
-        status: GgufFitClass | VramFitStatus | null;
+        status: PickerFitStatus | null;
         est: number;
         budget?: CuratedBudget;
       }
@@ -4032,7 +4033,7 @@ export function HubModelPicker({
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
       repoId: string,
-    ): GgufFitClass | VramFitStatus | null => {
+    ): PickerFitStatus | null => {
       const anyBudget =
         budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
       if (!budget.budgetKnown && !anyBudget) return null;
@@ -4061,11 +4062,9 @@ export function HubModelPicker({
                 : budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
-      return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
-        ? "exceeds"
-        : fit;
+      return diffusionLoad ? mediaGgufPickerStatus(fit) : fit;
     };
-    // A task load puts the whole pipeline on one device; inferenceGpu is the GGUF backend's inventory.
+    // A curated pipeline uses one GPU, offloading to host RAM when needed; inferenceGpu is the GGUF backend's inventory.
     const rowGpu = loadScopedGpu(gpu, Boolean(task));
     const pipelineBudget = artifactBudget(rowGpu);
     // Use the inventory of the runtime that places the row: Vulkan may see cards torch cannot.
@@ -4128,7 +4127,7 @@ export function HubModelPicker({
       if (curatedFit !== undefined) {
         map.set(r.id, {
           meta,
-          status: curatedFit.fits ? null : "exceeds",
+          status: curatedFit.status,
           est: curatedFit.sizeGb ? Math.round(curatedFit.sizeGb) : 0,
           budget: curatedBudget(curatedFit),
         });
@@ -5697,7 +5696,7 @@ export function HubModelPicker({
       string,
       {
         est: number;
-        status: VramFitStatus | null;
+        status: PickerFitStatus | null;
         detail: string | null;
         budget?: CuratedBudget;
       }
@@ -5712,7 +5711,7 @@ export function HubModelPicker({
         const params = totalParams ?? curatedTotalParamsFor(id, catalog);
         map.set(id, {
           est: curatedFit.sizeGb ? Math.round(curatedFit.sizeGb) : 0,
-          status: curatedFit.fits ? null : "exceeds",
+          status: curatedFit.status,
           detail: params ? formatCompact(params) : null,
           budget: curatedBudget(curatedFit),
         });
