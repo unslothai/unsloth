@@ -3575,19 +3575,25 @@ def _prompt_kv_tokens(prompt) -> int:
     return len(str(prompt or "").encode("utf-8", "surrogatepass"))
 
 
+def _openai_llama_direct_holder_applies(llama_backend) -> bool:
+    return preemption_enabled() and _openai_llama_preemption_will_apply(
+        llama_backend, _openai_llama_admission_budget(llama_backend)
+    )
+
+
 def _openai_llama_count_direct_holder(
     llama_backend,
     tokens: int,
     prefix: str,
     cancel_event = None,
+    *,
+    refresh: bool = True,
 ) -> Optional[str]:
     """Count a request that reaches llama-server outside admission as a holder the controller
     cannot pause, and plan room for it. Returns the id to release, or None when not counted. A set
     ``cancel_event`` ends a worker thread's wait for the victims with ``LlamaAdmissionCancelled``."""
     try:
-        if not preemption_enabled() or not _openai_llama_preemption_will_apply(
-            llama_backend, _openai_llama_admission_budget(llama_backend)
-        ):
+        if not _openai_llama_direct_holder_applies(llama_backend):
             return None
         gen_id = f"{prefix}-{uuid.uuid4().hex}"
         controller = register_preemption_participant(
@@ -3597,7 +3603,9 @@ def _openai_llama_count_direct_holder(
             state = ParticipantState.STREAMING_RAW,
         )
         try:
-            _plan_for_unpausable_holder(controller, gen_id, cancel_event = cancel_event)
+            _plan_for_unpausable_holder(
+                controller, gen_id, refresh = refresh, cancel_event = cancel_event
+            )
         except (LlamaAdmissionTimeout, LlamaAdmissionCancelled):
             controller.unregister(gen_id)
             raise
@@ -3607,6 +3615,23 @@ def _openai_llama_count_direct_holder(
     except Exception:
         logger.debug("could not count the direct holder", exc_info = True)
         return None
+
+
+async def _openai_llama_count_direct_holder_async(
+    llama_backend, tokens: int, prefix: str
+) -> Optional[str]:
+    """``_openai_llama_count_direct_holder`` for a caller on the event loop. The cache is read
+    first, awaited in a worker as the raw relays do: on the loop the plan would otherwise start the
+    read and plan on the reading already held, missing the cells a running holder took since, and
+    send this request upstream with no room made for it."""
+    try:
+        if _openai_llama_direct_holder_applies(llama_backend):
+            await _refresh_residency_before_planning_async(
+                get_preemption_controller(_preempt_key(llama_backend))
+            )
+    except Exception:
+        logger.debug("could not read the cache before counting a direct holder", exc_info = True)
+    return _openai_llama_count_direct_holder(llama_backend, tokens, prefix, refresh = False)
 
 
 def _openai_llama_count_completions_holder(llama_backend, prompt_text) -> Optional[str]:
@@ -3619,6 +3644,20 @@ def _openai_llama_count_completions_holder(llama_backend, prompt_text) -> Option
 def _openai_llama_count_embeddings_holder(llama_backend, inputs) -> Optional[str]:
     """Count a /v1/embeddings request: its prefill takes cells from the same unified cache."""
     return _openai_llama_count_direct_holder(
+        llama_backend, _prompt_kv_tokens(inputs), "embd-holder"
+    )
+
+
+async def _openai_llama_count_completions_holder_async(llama_backend, prompt_text) -> Optional[str]:
+    """``_openai_llama_count_completions_holder`` for a route on the event loop."""
+    return await _openai_llama_count_direct_holder_async(
+        llama_backend, _prompt_kv_tokens(prompt_text), "cmpl-holder"
+    )
+
+
+async def _openai_llama_count_embeddings_holder_async(llama_backend, inputs) -> Optional[str]:
+    """``_openai_llama_count_embeddings_holder`` for a route on the event loop."""
+    return await _openai_llama_count_direct_holder_async(
         llama_backend, _prompt_kv_tokens(inputs), "embd-holder"
     )
 
@@ -43303,7 +43342,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _cmpl_holder = None
             _direct_llama_request_started()
             try:
-                _cmpl_holder = _openai_llama_count_completions_holder(
+                _cmpl_holder = await _openai_llama_count_completions_holder_async(
                     llama_backend, body.get("prompt", "")
                 )
                 # No watcher runs before the upstream response, so the disconnect is checked
@@ -43508,7 +43547,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         _cmpl_holder = None
         _direct_llama_request_started()
         try:
-            _cmpl_holder = _openai_llama_count_completions_holder(
+            _cmpl_holder = await _openai_llama_count_completions_holder_async(
                 llama_backend, body.get("prompt", "")
             )
             # _cancel_watcher sets _cancel_event on a disconnect, so either ends the wait.
@@ -44236,7 +44275,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     _direct_llama_request_started()
     try:
         try:
-            _embd_holder = _openai_llama_count_embeddings_holder(
+            _embd_holder = await _openai_llama_count_embeddings_holder_async(
                 llama_backend, body.get("input", "")
             )
             # _cancel_watcher sets _cancel_event on a disconnect, so either ends the wait.

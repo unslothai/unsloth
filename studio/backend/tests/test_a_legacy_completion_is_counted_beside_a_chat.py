@@ -19,7 +19,7 @@ def backend(monkeypatch):
     monkeypatch.setenv(preemption.PREEMPT_ENV, "1")
     monkeypatch.setattr(inference, "_openai_llama_preemption_will_apply", lambda *a, **k: True)
     monkeypatch.setattr(inference, "_openai_llama_admission_budget", lambda *a, **k: 16384)
-    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", _admission_key = "cmpl-holder-test")
+    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", admission_key = "cmpl-holder-test")
     controller = get_preemption_controller(inference._preempt_key(fake))
     controller.configure(budget = 16384, kv_unified = True)
     yield fake, controller
@@ -50,7 +50,7 @@ def test_nothing_is_counted_with_preemption_off(backend, monkeypatch):
 
 def test_both_completions_branches_count_and_release():
     source = "".join(inspect.getsource(inference.openai_completions).split())
-    count = '_openai_llama_count_completions_holder(llama_backend,body.get("prompt",""))'
+    count = 'await_openai_llama_count_completions_holder_async(llama_backend,body.get("prompt",""))'
     assert source.count(count) == 2
     assert source.count("_openai_llama_release_completions_holder(llama_backend,_cmpl_holder)") == 2
 
@@ -76,10 +76,9 @@ def test_both_unpausable_registrations_plan():
         inference._openai_llama_count_raw_holder,
         inference._openai_llama_count_direct_holder,
     ):
-        assert (
-            "_plan_for_unpausable_holder(controller, gen_id, cancel_event = cancel_event)"
-            in inspect.getsource(helper)
-        )
+        source = "".join(inspect.getsource(helper).split())
+        assert "_plan_for_unpausable_holder(controller,gen_id," in source
+        assert "cancel_event=cancel_event" in source
     assert "_openai_llama_count_direct_holder(" in inspect.getsource(
         inference._openai_llama_count_completions_holder
     )
@@ -114,15 +113,20 @@ def test_the_captioner_states_its_footprint():
 
 
 def test_an_embedding_beside_a_chat_is_counted_and_the_chat_is_the_victim(backend):
-    # Preemption on via the fixture, and a controller of its own: residency noted by an earlier test would make this one wait.
-    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", _admission_key = "embd-holder-test")
+    # Preemption on via the fixture, and a controller of its own (``admission_key``, which the
+    # route reads; a fake's ``_admission_key`` alone fell back to the shared base_url controller,
+    # so this passed only on residency an earlier test left there). The full cache is noted here.
+    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", admission_key = "embd-holder-test")
     controller = get_preemption_controller(inference._preempt_key(fake))
     controller.configure(budget = 16384, kv_unified = True)
     controller.register("chat", tokens = 4000)
+    controller.note_resident(16384, started_at_seq = controller.residency_epoch())
 
     async def route():
         # On the loop, as the route runs: planning arms the victims and never blocks.
-        return inference._openai_llama_count_embeddings_holder(fake, ["x" * 2000, "y" * 2000])
+        return await inference._openai_llama_count_embeddings_holder_async(
+            fake, ["x" * 2000, "y" * 2000]
+        )
 
     holder = asyncio.run(route())
     assert holder is not None
@@ -140,7 +144,7 @@ def test_an_embedding_beside_a_chat_is_counted_and_the_chat_is_the_victim(backen
 def test_the_embeddings_route_counts_waits_and_releases():
     source = "".join(inspect.getsource(inference.openai_embeddings).split())
     count = source.index(
-        '_openai_llama_count_embeddings_holder(llama_backend,body.get("input",""))'
+        'await_openai_llama_count_embeddings_holder_async(llama_backend,body.get("input",""))'
     )
     wait = source.index(
         "await_openai_llama_let_victims_go(llama_backend,_embd_holder,_cancel_event)"
@@ -153,7 +157,7 @@ def test_the_embeddings_route_counts_waits_and_releases():
 
 def test_a_completion_that_has_produced_is_not_counted_above_the_cells(backend):
     # A controller of its own, as above, so no earlier residency makes the count wait.
-    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", _admission_key = "cmpl-measured-test")
+    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", admission_key = "cmpl-measured-test")
     controller = get_preemption_controller(inference._preempt_key(fake))
     controller.configure(budget = 16384, kv_unified = True)
     controller.register("chat", tokens = 4000)
@@ -187,7 +191,7 @@ def test_the_streaming_completion_is_measured_at_its_first_output():
 def test_a_respawn_at_a_smaller_cache_is_read_into_the_controller(monkeypatch):
     """The respawn keeps the admission key, so the streams it carries retry on this controller."""
     monkeypatch.setenv(preemption.PREEMPT_ENV, "1")
-    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", _admission_key = "respawn-test")
+    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", admission_key = "respawn-test")
     controller = get_preemption_controller(inference._preempt_key(fake))
     controller.configure(budget = 8192, kv_unified = True, slots = 4)
     controller.register("a", tokens = 2500, prompt_tokens = 2500)
@@ -227,7 +231,7 @@ def test_a_numeric_prompt_is_not_undercounted_before_planning(monkeypatch):
         assert inference._prompt_kv_tokens(text) >= len(text.encode("utf-8")), text
 
     monkeypatch.setenv(preemption.PREEMPT_ENV, "1")
-    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", _admission_key = "cmpl-numeric-test")
+    fake = SimpleNamespace(base_url = "http://127.0.0.1:9", admission_key = "cmpl-numeric-test")
     controller = get_preemption_controller(inference._preempt_key(fake))
     controller.configure(budget = 32768, kv_unified = True)
     controller.register("chat", tokens = 15000, prompt_tokens = 15000)
