@@ -10,8 +10,9 @@ test("a right-click on an Images strip tile opens the tile's actions menu", () =
   const page = readSrc("features/images/images-page.tsx");
   const tile = page.slice(page.indexOf("data-image-id={image.id}"));
   const handler = /onContextMenu=\{\(event\) => \{([^}]*)\}\}/.exec(tile)?.[1] ?? "";
-  // The webview's own image menu cannot open or copy a blob: thumbnail, so it must not show.
-  assert.match(handler, /event\.preventDefault\(\)/);
+  // The desktop webview's own image menu cannot open or copy a blob: thumbnail, so it must not show there.
+  // A browser's menu works on them, so browsers keep it.
+  assert.match(handler, /^\s*if \(!isTauri\) return;\s*event\.preventDefault\(\)/);
   assert.match(handler, /setTileMenuId\(image\.id\)/);
   assert.match(tile, /open=\{tileMenuId === image\.id\}/);
   assert.match(tile, /onOpenChange=\{\(open\) => setTileMenuId\(open \? image\.id : null\)\}/);

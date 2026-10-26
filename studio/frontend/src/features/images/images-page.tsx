@@ -7642,7 +7642,9 @@ export function ImagesPage({
                   key={image.id}
                   data-image-id={image.id}
                   {...stripReorder.tileProps(image.id)}
+                  // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
                   onContextMenu={(event) => {
+                    if (!isTauri) return;
                     event.preventDefault();
                     setTileMenuId(image.id);
                   }}
