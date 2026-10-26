@@ -2786,6 +2786,7 @@ export const ptBR = {
       showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
       showReplyTimesKeywords:
         "carimbo de data hora data quando terminou resposta mensagem timestamp time clock date reply",
+      use24HourTime: "Formato de 24 horas",
       showGenerationDetails: "Detalhes da geração",
       showGenerationDetailsDescription:
         "Mostrar ao vivo a velocidade do prompt e da resposta com a contagem de tokens, e onde as camadas de um modelo foram carregadas.",

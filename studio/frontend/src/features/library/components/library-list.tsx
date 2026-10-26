@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { useChatPreferencesStore } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
@@ -134,6 +135,7 @@ function Row({
 }) {
   const t = useT();
   const locale = useLocale();
+  const use24HourTime = useChatPreferencesStore((s) => s.use24HourTime);
   return (
     <div
       className={cn(
@@ -168,7 +170,7 @@ function Row({
           </span>
         ) : (
           <>
-            <span className={cn(MODIFIED_COLUMN, CELL, "ml-auto")}>{formatCardTime(modified, locale)}</span>
+            <span className={cn(MODIFIED_COLUMN, CELL, "ml-auto")}>{formatCardTime(modified, locale, undefined, use24HourTime)}</span>
             <span className={cn(SIZE_COLUMN, CELL)}>{formatSize(size ?? null, locale, t)}</span>
           </>
         )}

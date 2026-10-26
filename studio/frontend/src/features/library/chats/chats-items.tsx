@@ -29,6 +29,7 @@ import {
   useChatRuntimeStore,
   useForkInFlight,
   compareModelDisplayName,
+  useChatPreferencesStore,
 } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import {
@@ -135,6 +136,7 @@ export interface ChatsActions {
   sectionOf: ReadonlyMap<string, string>;
   projectSectionOf: ReadonlyMap<string, string>;
   dateField: DateField;
+  use24HourTime: boolean | undefined;
   chatContents: ReadonlyMap<string, ChatContents>;
   selection: ReadonlySet<string>;
   /** `range`: shift-click, from the last toggled row. */
@@ -756,10 +758,11 @@ export type CollectionRowLayout = "own" | "files" | { showLocation: boolean };
 
 function FileColumns({ modified }: { modified: number }) {
   const locale = useLocale();
+  const use24HourTime = useChatPreferencesStore((s) => s.use24HourTime);
   return (
     <>
       <span className={cn(FILE_LIST_COLUMNS.modified, FILE_LIST_COLUMNS.cell)}>
-        {modified ? formatCardTime(modified, locale) : ""}
+        {modified ? formatCardTime(modified, locale, undefined, use24HourTime) : ""}
       </span>
       <span className={cn(FILE_LIST_COLUMNS.size, FILE_LIST_COLUMNS.cell)} />
     </>
@@ -779,12 +782,14 @@ function groupedTime(
   ts: number,
   bucket: DateBucket["kind"],
   locale: string,
+  use24HourTime: boolean | undefined,
 ): string {
   const date = new Date(ts);
   if (bucket === "today" || bucket === "yesterday") {
     return date.toLocaleTimeString(locale, {
       hour: "numeric",
       minute: "2-digit",
+      hour12: use24HourTime === undefined ? undefined : !use24HourTime,
     });
   }
   if (bucket === "week") {
@@ -808,11 +813,12 @@ function formatDate(
   times: RowTimes,
   locale: ReturnType<typeof useLocale>,
   t: ReturnType<typeof useT>,
+  use24HourTime: boolean | undefined,
 ): string {
   if (!ts) return "";
-  if (times.bucket) return groupedTime(ts, times.bucket, locale);
+  if (times.bucket) return groupedTime(ts, times.bucket, locale, use24HourTime);
   return field === "created"
-    ? formatCardTime(ts, locale)
+    ? formatCardTime(ts, locale, undefined, use24HourTime)
     : formatActivityTime(ts, locale, t);
 }
 
@@ -1157,6 +1163,7 @@ export function ChatRow({
               times,
               locale,
               t,
+              actions.use24HourTime,
             )}
           </span>
         </>
@@ -1217,7 +1224,7 @@ export function ChatCard({
       </button>
       <CardFooter
         meta={location}
-        date={formatDate(chatTime(chat, actions.dateField), actions.dateField, times, locale, t)}
+        date={formatDate(chatTime(chat, actions.dateField), actions.dateField, times, locale, t, actions.use24HourTime)}
         className={selecting ? "pe-7" : undefined}
       />
     </div>
@@ -1446,7 +1453,7 @@ export function ProjectCard({
       </button>
       <CardFooter
         meta={chatCount(stats?.chats ?? 0, t)}
-        date={formatDate(projectTime(project, stats, actions.dateField), actions.dateField, {}, locale, t)}
+        date={formatDate(projectTime(project, stats, actions.dateField), actions.dateField, {}, locale, t, actions.use24HourTime)}
       />
     </div>
   );
@@ -1540,6 +1547,7 @@ export function ProjectRow({
               {},
               locale,
               t,
+              actions.use24HourTime,
             )}
           </span>
         </>
@@ -1691,7 +1699,7 @@ export function SectionCard({
       </button>
       <CardFooter
         meta={sectionCountLabel(stats, t)}
-        date={formatDate(sectionTime(section, stats, actions.dateField), actions.dateField, {}, locale, t)}
+        date={formatDate(sectionTime(section, stats, actions.dateField), actions.dateField, {}, locale, t, actions.use24HourTime)}
       />
     </div>
   );
@@ -1754,6 +1762,7 @@ export function SectionRow({
               {},
               locale,
               t,
+              actions.use24HourTime,
             )}
           </span>
         </>
@@ -1798,6 +1807,7 @@ function FavoriteTile({
 }) {
   const locale = useLocale();
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
+  const use24HourTime = useChatPreferencesStore((s) => s.use24HourTime);
   return (
     <div className="group/library-card group/chat relative">
       <button
@@ -1818,7 +1828,7 @@ function FavoriteTile({
             {icon}
           </div>
           <p className="truncate pr-6 text-ui-12 text-muted-foreground">
-            {showTime && time ? formatCardTime(time, locale) : ""}
+            {showTime && time ? formatCardTime(time, locale, undefined, use24HourTime) : ""}
           </p>
         </div>
       </button>

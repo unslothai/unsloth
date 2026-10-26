@@ -29,7 +29,7 @@ import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useIsAccountOwner } from "@/features/auth";
 import { useUserProfileStore } from "@/features/profile";
-import { type TranslationKey, useT } from "@/i18n";
+import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -368,6 +368,11 @@ export function ChatTab() {
   );
   const setShowReplyTimes = useChatPreferencesStore(
     (state) => state.setShowReplyTimes,
+  );
+  const locale = useLocale();
+  const use24HourTime = useChatPreferencesStore((state) => state.use24HourTime);
+  const setUse24HourTime = useChatPreferencesStore(
+    (state) => state.setUse24HourTime,
   );
   const showGenerationDetails = useChatPreferencesStore(
     (state) => state.showGenerationDetails,
@@ -799,6 +804,19 @@ export function ChatTab() {
             aria-label={t("settings.chat.showReplyTimes")}
             checked={showReplyTimes}
             onCheckedChange={setShowReplyTimes}
+          />
+        </SettingsRow>
+        <SettingsRow label={t("settings.chat.use24HourTime")}>
+          <Switch
+            aria-label={t("settings.chat.use24HourTime")}
+            checked={
+              // Until chosen, show the clock the app language already uses: the browser picks
+              // 12 or 24 hours for the locale every time formatter gets, and Studio keeps no
+              // value of its own, so ask it with the same locale.
+              use24HourTime ??
+              !new Intl.DateTimeFormat(locale, { hour: "numeric" }).resolvedOptions().hour12
+            }
+            onCheckedChange={setUse24HourTime}
           />
         </SettingsRow>
         <SettingsRow

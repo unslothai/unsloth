@@ -2724,6 +2724,7 @@ export const zhCN = {
       showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
       showReplyTimesKeywords:
         "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
+      use24HourTime: "24 小时制",
       showGenerationDetails: "生成详情",
       showGenerationDetailsDescription:
         "在回复生成时实时显示速度和 token 数，并显示本地模型各层的放置位置。",

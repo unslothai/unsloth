@@ -2805,6 +2805,7 @@ export const fr = {
       showReplyTimesDescription: "Afficher sous chaque réponse l'heure à laquelle elle s'est terminée.",
       showReplyTimesKeywords:
         "horodatage heure date quand terminé réponse message timestamp time clock date reply",
+      use24HourTime: "Format 24 heures",
       showGenerationDetails: "Détails de génération",
       showGenerationDetailsDescription:
         "Affiche la vitesse et le nombre de jetons en direct pendant une réponse, et où se trouvent les couches d'un modèle local.",

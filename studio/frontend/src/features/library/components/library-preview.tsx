@@ -12,7 +12,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { audioModelLabel } from "@/features/audio/audio-workspace-utils";
 import { Waveform } from "@/features/audio/components/waveform";
 import { formatSeconds } from "@/features/audio/components/waveform-peaks";
-import { ArtifactHtmlFrame } from "@/features/chat";
+import { ArtifactHtmlFrame, useChatPreferencesStore } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
@@ -514,6 +514,7 @@ export function LibraryPreview({
 }) {
   const t = useT();
   const locale = useLocale();
+  const use24HourTime = useChatPreferencesStore((s) => s.use24HourTime);
   const [codeFor, setCodeFor] = useState<string | null>(null);
   const showCode = item !== null && codeFor === item.id;
   const body = item ? bodyFor(item) : "none";
@@ -650,7 +651,7 @@ export function LibraryPreview({
             ]
           : []),
         formatSize(item.sizeBytes, locale, t),
-        formatCardTime(item.updatedAt, locale),
+        formatCardTime(item.updatedAt, locale, undefined, use24HourTime),
       ].filter(Boolean)
     : [];
   const download = item && isFileItem(item) ? () => void saveThen(() => onDownload(item)) : undefined;

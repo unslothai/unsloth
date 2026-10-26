@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { useChatPreferencesStore } from "@/features/chat";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon, PauseIcon } from "@hugeicons/core-free-icons";
@@ -217,11 +218,12 @@ export function ItemCard({ item }: { item: LibraryItem }) {
   const locale = useLocale();
   const actions = useLibraryActions();
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
+  const use24HourTime = useChatPreferencesStore((s) => s.use24HourTime);
   const square = useLibrarySettingsStore((s) => s.imageLayout === "square");
   const thumb = hasThumbnail(item);
   const playable = fileKind(item) === "audio" && streamsPreview(item.id, "audio");
   const summary = audioSummary(item).join(" · ");
-  const caption = [summary, showTime ? formatCardTime(item.updatedAt, locale) : ""].filter(Boolean);
+  const caption = [summary, showTime ? formatCardTime(item.updatedAt, locale, undefined, use24HourTime) : ""].filter(Boolean);
   return (
     <CardFrame
       selectKey={`item:${item.id}`}
@@ -248,7 +250,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
                 "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
               )}
             >
-              {formatCardTime(item.updatedAt, locale)}
+              {formatCardTime(item.updatedAt, locale, undefined, use24HourTime)}
             </span>
           )}
         </>

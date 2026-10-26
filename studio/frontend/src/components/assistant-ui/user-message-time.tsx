@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useChatPreferencesStore } from "@/features/chat";
 import { useLocale, useT } from "@/i18n";
 import { formatMessageDate } from "@/lib/format-message-date";
 import { messageTimestamp } from "@/lib/message-timestamp";
@@ -16,6 +17,7 @@ import type { FC } from "react";
 export const UserMessageTime: FC = () => {
   const t = useT();
   const locale = useLocale();
+  const use24HourTime = useChatPreferencesStore((state) => state.use24HourTime);
   const createdAt = useAuiState(({ message }) => messageTimestamp(message));
   if (createdAt === undefined) {
     return null;
@@ -24,6 +26,7 @@ export const UserMessageTime: FC = () => {
   const fullDate = date.toLocaleString(locale, {
     dateStyle: "full",
     timeStyle: "short",
+    hour12: use24HourTime === undefined ? undefined : !use24HourTime,
   });
   // A button only so the keyboard reaches the tooltip. Clicking does nothing, so the
   // cursor stays an arrow, even with pointer cursors on.
@@ -41,11 +44,17 @@ export const UserMessageTime: FC = () => {
               dateTime={date.toISOString()}
               className="aui-user-message-time block truncate select-none"
             >
-              {formatMessageDate(createdAt, Date.now(), locale, {
-                // Today reads as just the time.
-                today: (time) => time,
-                yesterday: (time) => t("common.yesterdayAt", { time }),
-              })}
+              {formatMessageDate(
+                createdAt,
+                Date.now(),
+                locale,
+                {
+                  // Today reads as just the time.
+                  today: (time) => time,
+                  yesterday: (time) => t("common.yesterdayAt", { time }),
+                },
+                use24HourTime,
+              )}
             </time>
           </button>
         </TooltipTrigger>

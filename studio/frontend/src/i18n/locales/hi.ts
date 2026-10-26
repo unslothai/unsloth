@@ -2776,6 +2776,7 @@ export const hi = {
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:
         "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
+      use24HourTime: "24-घंटे का समय",
       showGenerationDetails: "जनरेशन विवरण",
       showGenerationDetailsDescription:
         "जवाब बनते समय लाइव गति और टोकन गिनती दिखाएँ, और लोकल मॉडल की परतें कहाँ रखी गईं।",

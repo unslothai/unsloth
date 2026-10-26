@@ -9,6 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useChatPreferencesStore } from "@/features/chat";
 import { useLocale, useT } from "@/i18n";
 import { formatMessageDate } from "@/lib/format-message-date";
 import { messageTimestamp } from "@/lib/message-timestamp";
@@ -21,6 +22,7 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
 }) => {
   const t = useT();
   const locale = useLocale();
+  const use24HourTime = useChatPreferencesStore((state) => state.use24HourTime);
   const createdAt = useAuiState(({ message }) => messageTimestamp(message));
   const date =
     createdAt !== undefined && Number.isFinite(createdAt)
@@ -44,7 +46,7 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
               {formatMessageDate(date.getTime(), Date.now(), locale, {
                 today: (time) => t("common.todayAt", { time }),
                 yesterday: (time) => t("common.yesterdayAt", { time }),
-              })}
+              }, use24HourTime)}
             </time>
           )}
           {/* Right after the time. Shown while this row is hovered, or when reached by keyboard.
@@ -58,7 +60,7 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
       {/* Above, so it never covers the time. The full date leads, where the time's title gave it. */}
       <TooltipContent side="top" className="tooltip-compact">
         {date
-          ? `${date.toLocaleString(locale, { dateStyle: "full", timeStyle: "short" })} · See response details`
+          ? `${date.toLocaleString(locale, { dateStyle: "full", timeStyle: "short", hour12: use24HourTime === undefined ? undefined : !use24HourTime })} · See response details`
           : "See response details"}
       </TooltipContent>
     </Tooltip>

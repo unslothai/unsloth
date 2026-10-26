@@ -29,6 +29,8 @@ import {
 // showInlineEditResponse: on keeps Edit response in each response's action bar instead of its
 // More menu. notifyWhenReplyFinishes: on sends a system notification when a reply ends while the
 // window is hidden or unfocused. showReplyTimes: on shows when each reply finished under it.
+// use24HourTime: unset follows the language's clock; on shows message and library times as
+// 17:00, off as 5:00 PM.
 // showGenerationDetails: on shows live prefill / decode figures while a reply streams and where
 // a local model's layers ended up after it loads.
 // filesPanelCollapsed: on shrinks Chat with files to a header and
@@ -52,6 +54,8 @@ export interface ChatPreferencesState {
   setShowResponseModel: (value: boolean) => void;
   showReplyTimes: boolean;
   setShowReplyTimes: (value: boolean) => void;
+  use24HourTime: boolean | undefined;
+  setUse24HourTime: (value: boolean) => void;
   showGenerationDetails: boolean;
   setShowGenerationDetails: (value: boolean) => void;
   showInlineEditResponse: boolean;
@@ -107,6 +111,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       // Off by default: it adds text under every reply, so it stays opt in.
       showReplyTimes: false,
       setShowReplyTimes: (showReplyTimes) => set({ showReplyTimes }),
+      use24HourTime: undefined,
+      setUse24HourTime: (use24HourTime) => set({ use24HourTime }),
       // Off by default: it adds a line of numbers under streaming replies, so it stays opt in.
       showGenerationDetails: false,
       setShowGenerationDetails: (showGenerationDetails) =>
@@ -165,6 +171,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
           showReplyTimes: saved?.showReplyTimes === true,
+          use24HourTime:
+            typeof saved?.use24HourTime === "boolean"
+              ? saved.use24HourTime
+              : undefined,
           showGenerationDetails: saved?.showGenerationDetails === true,
           showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(

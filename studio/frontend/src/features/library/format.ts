@@ -23,14 +23,19 @@ function startOfDay(date: Date): number {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 }
 
-export function formatCardTime(ts: number, locale: Locale, now: number = Date.now()): string {
+export function formatCardTime(
+  ts: number,
+  locale: Locale,
+  now: number = Date.now(),
+  use24HourTime?: boolean,
+): string {
   if (!Number.isFinite(ts)) return "";
   const then = new Date(ts);
   const today = new Date(now);
   // Rounded: a day with a daylight-saving change is 23 or 25 hours long.
   const days = Math.round((startOfDay(today) - startOfDay(then)) / DAY_MS);
   if (days === 0) {
-    return then.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+    return then.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", hour12: use24HourTime === undefined ? undefined : !use24HourTime });
   }
   if (days === 1) {
     const word = yesterday(locale);

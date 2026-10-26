@@ -2767,6 +2767,7 @@ export const ar = {
       showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
       showReplyTimesKeywords:
         "طابع زمني وقت ساعة تاريخ متى انتهى رد رسالة timestamp time clock date reply",
+      use24HourTime: "تنسيق 24 ساعة",
       showGenerationDetails: "تفاصيل التوليد",
       showGenerationDetailsDescription:
         "عرض السرعة وعدد الرموز مباشرةً أثناء بث الرد، ومكان وضع طبقات النموذج المحلي.",

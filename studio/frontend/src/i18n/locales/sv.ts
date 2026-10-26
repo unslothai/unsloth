@@ -2966,6 +2966,7 @@ export const sv = {
       showReplyTimesDescription: "Visa under varje svar när det blev klart.",
       showReplyTimesKeywords:
         "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
+      use24HourTime: "24-timmarsformat",
       showGenerationDetails: "Genereringsdetaljer",
       showGenerationDetailsDescription:
         "Visa hastighet och antal token live medan ett svar strömmas, och var en lokal modells lager placerades.",

@@ -2711,6 +2711,7 @@ export const it = {
       showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
       showReplyTimesKeywords:
         "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
+      use24HourTime: "Formato 24 ore",
       showGenerationDetails: "Dettagli generazione",
       showGenerationDetailsDescription:
         "Mostra velocità e token in tempo reale mentre una risposta viene generata, e dove sono stati collocati i livelli di un modello locale.",
