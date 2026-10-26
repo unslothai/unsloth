@@ -37166,6 +37166,39 @@ async def produce_openai_chat_completions(
                             _gguf_decode["erased"] = True
                         return True
 
+                async def _reclaim_approval_cache_unowned(lease):
+                    """The reclamation as it ran before preemption, for an install with it off.
+
+                    No ``/slots`` reads: the ownership checks below exist for slots preemption
+                    hands between chats, and a server launched with ``--no-slots`` answers no
+                    read, so requiring one left a queued chat waiting on room never freed."""
+                    try:
+                        while not lease.reclaim_would_admit():
+                            try:
+                                await asyncio.wait_for(
+                                    _reclaim_stop.wait(), _APPROVAL_CACHE_RECLAIM_POLL_S
+                                )
+                            except asyncio.TimeoutError:
+                                continue
+                            return
+                        with _gguf_decode_lock:
+                            target = _gguf_decode["slot"]
+                            erased = _gguf_decode["erased"]
+                        if target is None or _reclaim_stop.is_set():
+                            return
+                        if not erased:
+                            if not await asyncio.to_thread(
+                                llama_backend.release_idle_chat_slot, *target
+                            ):
+                                return
+                            with _gguf_decode_lock:
+                                _gguf_decode["erased"] = True
+                        lease.release_parked_cache()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("Approval cache reclamation failed", exc_info = True)
+
                 async def _reclaim_approval_cache(lease):
                     """Erase this round's cached context once a queued chat needs its room.
 
@@ -37173,6 +37206,9 @@ async def produce_openai_chat_completions(
                     so this costs the approved chat a full reprocess. Stopping is honoured
                     only before the erase is sent; past that the cells are going regardless.
                     """
+                    if not preemption_eligible():
+                        await _reclaim_approval_cache_unowned(lease)
+                        return
                     try:
                         with _gguf_decode_lock:
                             watched = _gguf_decode["slot"]

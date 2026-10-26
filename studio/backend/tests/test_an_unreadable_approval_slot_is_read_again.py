@@ -70,7 +70,7 @@ def _controller() -> PreemptionController:
 
 def _lift(namespace: dict):
     source = textwrap.dedent(inspect.getsource(inference.produce_openai_chat_completions))
-    wanted = {"_erase_and_record", "_reclaim_approval_cache"}
+    wanted = {"_erase_and_record", "_reclaim_approval_cache", "_reclaim_approval_cache_unowned"}
     nodes = [
         node
         for node in ast.walk(ast.parse(source))
@@ -174,3 +174,27 @@ def test_a_busy_slot_is_still_refused_after_a_failed_read(monkeypatch):
     assert reads["n"] == 2
     assert backend.erased == []
     assert lease.released == 0
+
+
+def test_with_preemption_off_the_cache_is_reclaimed_without_reading_the_slot(monkeypatch):
+    # UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 runs as before preemption: no `/slots` read, which a
+    # server launched with --no-slots never answers, so requiring one left the waiter stuck.
+    controller = _controller()
+    backend = _Backend()
+    lease = _ApprovalLease()
+    reads = {"n": 0}
+
+    def _slots():
+        reads["n"] += 1
+        return None
+
+    worker, namespace = _worker(monkeypatch, controller, backend, _slots)
+    namespace["_APPROVAL_CACHE_RECLAIM_POLL_S"] = 0.01
+    namespace["preemption_eligible"] = lambda: False
+
+    asyncio.run(asyncio.wait_for(worker(lease), 5))
+
+    assert reads["n"] == 0, "the opted-out path read /slots"
+    assert backend.erased == [(BASE, SLOT)]
+    assert lease.released == 1
+    assert namespace["_gguf_decode"]["erased"] is True
