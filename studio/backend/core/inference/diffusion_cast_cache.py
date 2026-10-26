@@ -31,7 +31,9 @@ CAST_CACHE_ENV = "UNSLOTH_DIFFUSION_CAST_CACHE"
 CAST_CACHE_IMAGE_ENV = "UNSLOTH_DIFFUSION_CAST_CACHE_IMAGE"
 _OFF = ("0", "off", "false", "no", "none")
 _HALF = {"float16": "float16", "fp16": "float16", "bfloat16": "bfloat16", "bf16": "bfloat16"}
-CAST_LAYOUT_VERSION = 1
+# 2: a write during a render reads streamed tensors from their offload group's host copy; a layout-1 entry written
+# under block streaming may hold a tensor read off the device before its upload landed, so it is never read.
+CAST_LAYOUT_VERSION = 2
 CAST_META_KEY = "unsloth_cast_component"
 _LIBRARIES = ("diffusers", "transformers")
 _STEMS = {"diffusers": "diffusion_pytorch_model", "transformers": "model"}
@@ -465,7 +467,8 @@ def _tied_keys(module: Any) -> set:
     return keys
 
 
-def _resolve(module: Any, name: str) -> Any:
+def _resolve_ref(module: Any, name: str) -> Any:
+    """The Parameter / buffer object itself (offload groups key their host copies by it)."""
     parent_name, _, leaf = name.rpartition(".")
     parent = module.get_submodule(parent_name) if parent_name else module
     tensor = (
@@ -473,7 +476,30 @@ def _resolve(module: Any, name: str) -> Any:
     )
     if tensor is None:
         raise KeyError(name)
+    return tensor
+
+
+def _resolve(module: Any, name: str) -> Any:
+    tensor = _resolve_ref(module, name)
     return tensor.data if hasattr(tensor, "data") else tensor
+
+
+def _offload_groups(module: Any) -> list:
+    """diffusers offload groups under ``module`` that keep a host copy per tensor (``cpu_param_dict``)."""
+    out: list = []
+    seen: set = set()
+    for m in module.modules():
+        hooks = getattr(getattr(m, "_diffusers_hook", None), "hooks", None)
+        if not isinstance(hooks, dict):
+            continue
+        for hook in list(hooks.values()):
+            group = getattr(hook, "group", None)
+            if group is None or id(group) in seen:
+                continue
+            seen.add(id(group))
+            if isinstance(getattr(group, "cpu_param_dict", None), dict):
+                out.append(group)
+    return out
 
 
 def _state_names(module: Any) -> Optional[list]:
@@ -525,19 +551,42 @@ def _hooked(module: Any) -> bool:
 
 
 class _Reader:
-    """Host copies of one component's live tensors; device copies are read on a side stream after one device
-    synchronise (an upload may be queued on another stream), never behind the render on the default stream."""
+    """Host copies of one component's live tensors, read while the published pipeline may be rendering.
+
+    A tensor an offload group streams is read from that group's host copy: its device ``.data`` is re-pointed at a
+    fresh destination (or a reused window slot) as soon as a prefetch is queued, before the copy lands, so reading
+    it races the copy stream (uninitialised or another block's bytes, written into the entry; NaN on the next load).
+    Any other device tensor is read on a side stream after a device synchronise per read, which drains every queued
+    upload into it; never behind the render on the default stream."""
 
     def __init__(self, module: Any, check: Any) -> None:
         self.module = module
         self.check = check
+        self.groups = _offload_groups(module)
         self.wait = _ONLOAD_WAIT_SECONDS if _hooked(module) else 0.0
-        self.synced = False
         self.stream = None
+
+    def _host_copy(self, ref: Any) -> Any:
+        for group in self.groups:
+            try:
+                src = group.cpu_param_dict.get(ref)
+            except Exception:  # noqa: BLE001
+                src = None
+            if (
+                src is not None
+                and getattr(src, "device", None) is not None
+                and src.device.type == "cpu"
+            ):
+                return src
+        return None
 
     def tensor(self, name: str) -> Any:
         while True:
-            tensor = _resolve(self.module, name)
+            ref = _resolve_ref(self.module, name)
+            host = self._host_copy(ref)
+            if host is not None:
+                return host.data if hasattr(host, "data") else host
+            tensor = ref.data if hasattr(ref, "data") else ref
             if tensor.device.type == "cpu":
                 return tensor
             if self.wait <= 0:
@@ -549,9 +598,8 @@ class _Reader:
 
         if tensor.device.type != "cuda":
             return tensor.to("cpu")
-        if not self.synced:
-            torch.cuda.synchronize(tensor.device)
-            self.synced = True
+        torch.cuda.synchronize(tensor.device)
+        if self.stream is None:
             self.stream = torch.cuda.Stream(device = tensor.device)
         with torch.cuda.stream(self.stream):
             host = tensor.to("cpu", non_blocking = False)
