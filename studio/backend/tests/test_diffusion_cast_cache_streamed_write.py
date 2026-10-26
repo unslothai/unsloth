@@ -148,7 +148,7 @@ def test_layout_version_retires_entries_written_by_the_racy_reader(pipe_dir):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
 def test_block_streamed_write_during_a_refill_is_bit_identical(pipe_dir, monkeypatch):
-    """Mid-write, every group is refilled in place on its copy stream behind a delay: device bytes are stale."""
+    """Before every read each group is re-pointed to fresh NaN device tensors whose upload has not landed."""
     from diffusers.hooks import apply_group_offloading
 
     monkeypatch.setattr(CC, "_ONLOAD_WAIT_SECONDS", 0.0)
@@ -169,8 +169,9 @@ def test_block_streamed_write_during_a_refill_is_bit_identical(pipe_dir, monkeyp
             g = getattr(hook, "group", None)
             if g is not None and all(g is not x for x in groups):
                 groups.append(g)
-    assert groups and all(g.cpu_param_dict for g in groups)
-    state = {"calls": 0}
+    # a group holding no tensors (e.g. the unmatched-modules group) keeps an empty host copy
+    groups = [g for g in groups if g.cpu_param_dict]
+    assert groups
 
     def onload():
         for g in groups:
@@ -179,21 +180,27 @@ def test_block_streamed_write_during_a_refill_is_bit_identical(pipe_dir, monkeyp
                     t.data = src.to("cuda", non_blocking = True)
         torch.cuda.synchronize()
 
-    def refill():
+    names = {n: d for n, d, _s in cand.names}
+    sampled = sum(len(CC._sample_keys(CC._shard_header(sh) or {}, names)) for sh in cand.shards)
+    state = {"calls": 0}
+
+    def prefetch():
+        # After the sampled reads (so the write itself is what goes wrong), as the prefetcher does: `.data`
+        # re-pointed now, its upload queued behind work that has not finished.
+        state["calls"] += 1
+        if state["calls"] <= sampled:
+            return
+        moved = {t: torch.full_like(t.data, float("nan")) for g in groups for t in g.cpu_param_dict}
+        torch.cuda.synchronize()
         for g in groups:
+            for t in g.cpu_param_dict:
+                t.data = moved[t]
             with torch.cuda.stream(g.stream):
-                for t in g.cpu_param_dict:
-                    t.data.fill_(float("nan"))
-                torch.cuda._sleep(200_000_000)
+                torch.cuda._sleep(50_000_000)
                 for t, src in g.cpu_param_dict.items():
                     t.data.copy_(src, non_blocking = True)
 
-    def check():
-        state["calls"] += 1
-        if state["calls"] == 3:
-            refill()
-
     onload()
-    assert CC.save(cand, dense, check = check) is not None
+    assert CC.save(cand, dense, check = prefetch) is not None
     torch.cuda.synchronize()
     _assert_hit_equals(cand, reference)
