@@ -170,14 +170,12 @@ def _other_torchao_llama(kind):
         w = mod.weight.detach().clone()
         if kind == "nf4":
             from torchao.quantization.quantize_.workflows.nf4.nf4_tensor import to_nf4
-
             mod.weight = torch.nn.Parameter(to_nf4(w), requires_grad = False)
         else:
             from torchao.prototype.quantized_training.int8_mixed_precision import (
                 Int8MixedPrecisionTrainingConfig,
                 Int8MixedPrecisionTrainingLinearWeight,
             )
-
             mod.weight = torch.nn.Parameter(
                 Int8MixedPrecisionTrainingLinearWeight(w, Int8MixedPrecisionTrainingConfig()),
                 requires_grad = True,
@@ -209,7 +207,10 @@ def _fsdp_other_case(native, rank, kind):
         "dtensor": sum(isinstance(w, DTensor) for w in weights),
         "local_bytes": nbytes,
         "grads": len(grads),
-        "finite": all(torch.isfinite(g.full_tensor() if isinstance(g, DTensor) else g).all().item() for g in grads),
+        "finite": all(
+            torch.isfinite(g.full_tensor() if isinstance(g, DTensor) else g).all().item()
+            for g in grads
+        ),
     }
 
 
@@ -388,14 +389,18 @@ def test_ddp_keeps_trainable_non_float8_torchao_weights():
     nf4 = pytest.importorskip("torchao.quantization.quantize_.workflows.nf4.nf4_tensor")
     int8 = pytest.importorskip("torchao.prototype.quantized_training.int8_mixed_precision")
     lu, _ = _ddp_helpers()
-    model = torch.nn.Sequential(torch.nn.Linear(256, 256, bias = False), torch.nn.Linear(256, 256, bias = False))
+    model = torch.nn.Sequential(
+        torch.nn.Linear(256, 256, bias = False), torch.nn.Linear(256, 256, bias = False)
+    )
     model[0].weight = torch.nn.Parameter(
         int8.Int8MixedPrecisionTrainingLinearWeight(
             model[0].weight.detach().clone(), int8.Int8MixedPrecisionTrainingConfig()
         ),
         requires_grad = True,
     )
-    model[1].weight = torch.nn.Parameter(nf4.to_nf4(model[1].weight.detach().clone()), requires_grad = False)
+    model[1].weight = torch.nn.Parameter(
+        nf4.to_nf4(model[1].weight.detach().clone()), requires_grad = False
+    )
     assert lu._frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = True) == ["1.weight"]
     native = _load_native()
     assert native._float8_params(model) == set()
