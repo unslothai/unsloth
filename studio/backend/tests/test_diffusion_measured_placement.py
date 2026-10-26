@@ -959,7 +959,10 @@ def _token_encoder_pipe(monkeypatch, available_mib):
 
     tok = TokenEncoder()
     pipe.components["text_encoder"] = tok
-    monkeypatch.setattr(dm, "encode_available_mib", lambda device = None: available_mib)
+    # raising=False: on a tree without the shortfall the test still runs (and shows the whole surplus streaming)
+    monkeypatch.setattr(
+        dm, "encode_available_mib", lambda device = None: available_mib, raising = False
+    )
     ids = torch.zeros(1, 4, dtype = torch.long, device = "cuda")
     return torch, net, tok, pipe, x, ref, on_device, ids
 
