@@ -454,3 +454,416 @@ def load(
         except Exception:  # noqa: BLE001
             pass
         return None
+
+
+STREAM_BUILD_ENV = "UNSLOTH_DIFFUSION_NATIVE_STREAM_BUILD"
+# Dtypes a bf16 load never casts; any other floating dtype falls back to the dense load.
+_STREAM_DTYPES = {
+    "BF16": "bfloat16",
+    "I64": "int64",
+    "I32": "int32",
+    "I16": "int16",
+    "I8": "int8",
+    "U8": "uint8",
+    "BOOL": "bool",
+}
+
+
+def stream_build_enabled() -> bool:
+    value = (os.environ.get(STREAM_BUILD_ENV) or "").strip().lower()
+    return value not in ("0", "off", "false", "no")
+
+
+def _dense_shards(source: Any, component: str, cache_dir: Optional[str]) -> Optional[list[str]]:
+    """The shard files ``from_pretrained(source, subfolder = component)`` reads (index first, as diffusers), or None."""
+    stem = f"{component}/diffusion_pytorch_model"
+    index = _cache._local_file(str(source), f"{stem}.safetensors.index.json", cache_dir)
+    if index is not None:
+        with open(index, "r", encoding = "utf-8") as fh:
+            weight_map = (json.load(fh) or {}).get("weight_map") or {}
+        names = sorted(set(str(v) for v in weight_map.values()))
+        paths = [_cache._local_file(str(source), f"{component}/{n}", cache_dir) for n in names]
+        return [str(p) for p in paths] if names and all(paths) else None
+    single = _cache._local_file(str(source), f"{stem}.safetensors", cache_dir)
+    return [str(single)] if single else None
+
+
+def _shard_entries(path: str) -> Optional[tuple[int, dict]]:
+    """(data start, ``{key: header entry}``) of a shard holding only dtypes in ``_STREAM_DTYPES``, else None."""
+    raw = _cache.read_header_bytes(path)
+    if raw is None:
+        return None
+    header = json.loads(raw[8:].decode("utf-8"))
+    header.pop("__metadata__", None)
+    if any(entry.get("dtype") not in _STREAM_DTYPES for entry in header.values()):
+        return None
+    return len(raw), header
+
+
+def _map_tensor(fd: int, start: int, entry: dict) -> Any:
+    """One tensor over its own private mapping, unmapped when freed (a whole-shard mapping stays resident while any
+    tensor survives)."""
+    import mmap
+
+    import torch
+
+    begin, end = (int(v) for v in entry["data_offsets"])
+    dtype = getattr(torch, _STREAM_DTYPES[entry["dtype"]])
+    shape = [int(d) for d in entry["shape"]]
+    count = 1
+    for d in shape:
+        count *= d
+    if end - begin != count * torch.empty((), dtype = dtype).element_size():
+        raise ValueError("shard entry size does not match its shape")
+    if end == begin:
+        return torch.empty(shape, dtype = dtype)
+    offset = start + begin
+    aligned = offset - offset % mmap.ALLOCATIONGRANULARITY
+    # Copy-on-write: writable, nothing reaches the file.
+    window = mmap.mmap(
+        fd, offset + (end - begin) - aligned, offset = aligned, access = mmap.ACCESS_COPY
+    )
+    flat = torch.frombuffer(window, dtype = torch.uint8, count = end - begin, offset = offset - aligned)
+    return flat.view(dtype).reshape(shape)
+
+
+def build_from_shards(
+    transformer_cls: Any,
+    config_source: str,
+    spec: dict,
+    *,
+    family: Optional[str],
+    dtype: Any,
+    component: str = "transformer",
+    config_kwargs: Optional[dict] = None,
+    logger: Any = None,
+    cancel_check: Optional[Any] = None,
+) -> Any:
+    """Build the native ``component`` per tensor, bit-identical to the in-place build, or None for the dense load
+    (also on cancel, which the caller re-checks). Never raises."""
+    cancelled = [False]
+
+    def _check() -> None:
+        if cancel_check is None:
+            return
+        try:
+            cancel_check()
+        except BaseException:
+            cancelled[0] = True
+            raise
+
+    t0 = time.perf_counter()
+    try:
+        import torch
+
+        from .diffusion_native_quant import NATIVE_INT8, native_linear_class
+        from .diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
+
+        def skip(why: str) -> None:
+            _cache._log(logger, "info", f"native {component}: per-tensor build skipped ({why})")
+
+        if not stream_build_enabled() or transformer_cls is None:
+            return None
+        if dtype is not torch.bfloat16:
+            return skip(f"loads at {str(dtype).replace('torch.', '')}, not bfloat16")
+        if getattr(transformer_cls, "_keep_in_fp32_modules", None):
+            return skip("the class keeps fp32 modules")
+        scheme = spec["scheme"]
+        cache_dir = (config_kwargs or {}).get("cache_dir")
+        shards = _dense_shards(config_source, component, cache_dir)
+        if not shards:
+            return skip("dense shards not found locally")
+        if _cache._hub_source_stale(shards, logger):
+            return None
+        entries = []
+        for shard in shards:
+            found = _shard_entries(shard)
+            if found is None:
+                return skip("a shard holds a dtype other than bf16")
+            entries.append((shard, *found))
+        stored = {key: entry for _shard, _start, header in entries for key, entry in header.items()}
+        _check()
+        config = transformer_cls.load_config(
+            config_source, subfolder = component, **(config_kwargs or {})
+        )
+        try:
+            from accelerate import init_empty_weights
+        except Exception:  # noqa: BLE001
+            return skip("accelerate is missing")
+        # Buffers stay real: non-persistent ones (rope tables) are built by __init__ as a dense load builds them.
+        with init_empty_weights(include_buffers = False):
+            model = transformer_cls.from_config(config)
+        # The in-place build filters the loaded module, whose weights carry the stored dtype.
+        for name, mod in model.named_modules():
+            entry = stored.get(f"{name}.weight") if name else None
+            if (
+                isinstance(mod, torch.nn.Linear)
+                and entry is not None
+                and mod.weight.device.type == "meta"
+            ):
+                mod.weight = torch.nn.Parameter(
+                    torch.empty(
+                        mod.weight.shape,
+                        dtype = getattr(torch, _STREAM_DTYPES[entry["dtype"]]),
+                        device = "meta",
+                    ),
+                    requires_grad = mod.weight.requires_grad,
+                )
+        filter_fn = make_filter_fn(
+            int(spec["min_features"]),
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),
+            require_bf16 = True,
+        )
+        quant = {name for name, mod in model.named_modules() if name and filter_fn(mod, name)}
+        act_int8 = scheme == NATIVE_INT8 and bool(spec["act_int8"])
+        rot_group = int(spec["rot_group"]) if act_int8 else 0
+        cls = native_linear_class()
+        state: dict = {}
+        built = 0
+        for shard, start, header in entries:
+            fd = os.open(shard, os.O_RDONLY)
+            try:
+                for key, entry in sorted(
+                    header.items(), key = lambda kv: int(kv[1]["data_offsets"][0])
+                ):
+                    _check()
+                    tensor = _map_tensor(fd, start, entry)
+                    fqn, _, leaf = key.rpartition(".")
+                    if leaf != "weight" or fqn not in quant:
+                        state[key] = tensor
+                        continue
+                    parent_name, _, attr = fqn.rpartition(".")
+                    parent = model.get_submodule(parent_name) if parent_name else model
+                    dense = getattr(parent, attr)
+                    stand_in = torch.nn.Linear(
+                        int(dense.in_features),
+                        int(dense.out_features),
+                        bias = dense.bias is not None,
+                        device = "meta",
+                        dtype = tensor.dtype,
+                    )
+                    stand_in.weight = torch.nn.Parameter(tensor, requires_grad = False)
+                    del tensor
+                    layer = cls(stand_in, scheme, act_int8 = act_int8, rot_group = rot_group)
+                    del stand_in
+                    setattr(parent, attr, layer)
+                    state[f"{fqn}.weight_q"] = layer.weight_q
+                    state[f"{fqn}.weight_scale"] = layer.weight_scale
+                    built += 1
+            finally:
+                # The mappings outlive the descriptor; each closes with its tensor.
+                os.close(fd)
+        if built != len(quant):
+            return skip(f"{len(quant) - built} quantizable weights missing from the shards")
+        model.load_state_dict(state, strict = True, assign = True)
+        del state
+        if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
+            return skip("tensors left on meta")
+        model.eval()
+        try:
+            model._unsloth_runtime_quant = scheme
+            model._unsloth_runtime_quant_info = {"scheme": scheme, "native": True}
+        except Exception:  # noqa: BLE001
+            pass
+        _cache._log(
+            logger,
+            "info",
+            f"native {component}: {scheme} "
+            + (
+                ("W8A8 torch._int_mm" + (f" ConvRot g{rot_group}" if rot_group else ""))
+                if act_int8
+                else "weight-only"
+            )
+            + f" built per tensor from {len(shards)} dense shard(s) on {built} linears "
+            f"in {time.perf_counter() - t0:.1f} s",
+        )
+        return model
+    except Exception as exc:  # noqa: BLE001 - the caller loads the dense module whole instead
+        if cancelled[0]:
+            return None
+        _cache._log(
+            logger,
+            "warning",
+            f"native {component}: per-tensor build failed: {type(exc).__name__}: {str(exc)[:200]}",
+        )
+        return None
+
+
+def build_spec(transformer: Any, family: Optional[str]) -> Optional[dict]:
+    """``native_spec`` of an in-memory native build, read from its layers, or None (no native layers, or a mix)."""
+    try:
+        from .diffusion_native_quant import is_native_linear
+
+        schemes, acts = set(), set()
+        for mod in transformer.modules():
+            if is_native_linear(mod):
+                schemes.add(mod.scheme)
+                acts.add(bool(mod.act_int8))
+        if len(schemes) != 1 or len(acts) != 1:
+            return None
+        return native_spec(next(iter(schemes)), family, act_int8 = next(iter(acts)))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class NativePendingWrite:
+    """Background ``save``, awaited by ``finish_background_writes``; writes live host tensors (no snapshot copy)."""
+
+    def __init__(
+        self,
+        run: Any,
+        key: str,
+        logger: Any = None,
+    ) -> None:
+        import threading
+
+        self._run_fn = run
+        self.key = key
+        self._logger = logger
+        self._cancel = threading.Event()
+        self._finished = threading.Event()
+        self._thread: Optional[Any] = None
+        self.result: Optional[str] = None
+        with _cache._lock:
+            _cache._BACKGROUND.add(self)
+
+    def _check(self) -> None:
+        if self._cancel.is_set():
+            raise RuntimeError("native cache write cancelled")
+
+    def start(self) -> bool:
+        import threading
+
+        with _cache._lock:
+            if self._thread is not None or self._run_fn is None or self._cancel.is_set():
+                return False
+            self._thread = threading.Thread(
+                target = self._run, name = f"native-cache-write-{self.key[:8]}", daemon = True
+            )
+        try:
+            self._thread.start()
+        except Exception:  # noqa: BLE001 - no writer: the next load re-quantizes
+            with _cache._lock:
+                self._thread = None
+            self._close()
+            return False
+        return True
+
+    def _run(self) -> None:
+        try:
+            if self._run_fn is not None:
+                self.result = self._run_fn(self._check)
+        except Exception as exc:  # noqa: BLE001 - a background cache write never surfaces
+            _cache._log(self._logger, "warning", f"native: background save failed: {exc}")
+        finally:
+            self._close()
+
+    def _close(self) -> None:
+        self._run_fn = None
+        with _cache._lock:
+            _cache._BACKGROUND.discard(self)
+        self._finished.set()
+
+    def discard(self) -> None:
+        with _cache._lock:
+            started = self._thread is not None
+            self._cancel.set()
+        if not started:
+            self._close()
+
+    def cancel(self) -> None:
+        self.discard()
+
+    def done(self) -> bool:
+        return self._finished.is_set()
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        return self._finished.wait(timeout)
+
+
+def save_deferred(
+    transformer: Any,
+    fam: Any,
+    *,
+    base_repo: Optional[str],
+    source_base: Optional[str] = None,
+    component: str = "transformer",
+    logger: Any = None,
+    cancel_check: Optional[Any] = None,
+) -> Any:
+    """A ``NativePendingWrite`` (start after publish), the sync ``save`` result, or None. Never raises."""
+    try:
+        if not _cache.enabled():
+            return None
+        spec = build_spec(transformer, getattr(fam, "name", None))
+        if spec is None:
+            _cache._log(logger, "info", f"native {component}: skipped (no single native recipe)")
+            return None
+        recorded_base = str(base_repo or getattr(fam, "base_repo", "") or "")
+        keyed = _key_for(fam, spec, source_base or base_repo, component, base_id = recorded_base)
+        if keyed is None:
+            _cache._log(
+                logger,
+                "info",
+                f"native {component}: skipped (dense source shards not found locally)",
+            )
+            return None
+
+        def run(check: Optional[Any] = None) -> Optional[str]:
+            def both() -> None:
+                if check is not None:
+                    check()
+                if cancel_check is not None and check is None:
+                    cancel_check()
+
+            return save(
+                transformer,
+                fam,
+                spec,
+                base_repo = base_repo,
+                source_base = source_base,
+                component = component,
+                logger = logger,
+                cancel_check = both,
+            )
+
+        if not _cache.async_enabled():
+            return run()
+        return NativePendingWrite(run, keyed[0], logger)
+    except Exception as exc:  # noqa: BLE001
+        _cache._log(
+            logger, "warning", f"native {component}: save skipped ({type(exc).__name__}: {exc})"
+        )
+        return None
+
+
+def read_for_load(
+    fam: Any,
+    spec: Optional[dict],
+    transformer_cls: Any,
+    *,
+    base_repo: Optional[str],
+    source_base: Optional[str],
+    component: str = "transformer",
+    config_kwargs: Optional[dict] = None,
+    logger: Any = None,
+    cancel_check: Optional[Any] = None,
+) -> Any:
+    """``lookup`` + ``load`` of the cached native ``component``, or None (a miss). Never raises."""
+    if spec is None or transformer_cls is None:
+        return None
+    path = lookup(
+        fam, spec, base_repo = base_repo, source_base = source_base, component = component, logger = logger
+    )
+    if path is None:
+        return None
+    return load(
+        path,
+        transformer_cls,
+        str(source_base or base_repo),
+        component = component,
+        spec = spec,
+        config_kwargs = config_kwargs,
+        logger = logger,
+        cancel_check = cancel_check,
+    )

@@ -349,7 +349,8 @@ def _is_block_list(container, no_split):
     """A ModuleList whose children are all blocks (modules with submodules and parameters). Classes may mix
     (Jamba, Zamba / Zamba2, OlmoHybrid, Mllama text); lists of bare Linear / norm modules (Gemma3n altup
     projections, also after PEFT wraps them) are not blocks."""
-    children = list(container.children())
+    # Pipeline parallel pass-throughs (layers another stage owns, no parameters) are not blocks.
+    children = [c for c in container.children() if "_pp_index" not in c.__dict__]
     if not children:
         return False
     for child in children:
@@ -379,7 +380,7 @@ def find_shard_units(model, ignored_params = ()) -> list:
             continue
         if isinstance(module, nn.ModuleList) and _is_block_list(module, no_split):
             for child in module.children():
-                if id(child) not in inside:
+                if id(child) not in inside and "_pp_index" not in child.__dict__:
                     _take(child)
     if no_split and not units:
         # Fallback only when no block list exists: the existing `_no_split_modules` classes (transformers 5.x
@@ -1006,6 +1007,75 @@ def _fully_shard(fully_shard, module, **kwargs):
         fully_shard_module.FSDPModule = original
 
 
+def _block_cudagraphs_requested():
+    block_compile = sys.modules.get(f"{__package__}._block_compile") if __package__ else None
+    options = getattr(block_compile, "_COMPILE_OPTIONS", None)
+    if isinstance(options, dict):
+        return bool(options.get("triton.cudagraphs"))
+    return os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1"
+
+
+def _skip_free_unsharded_param():
+    return None
+
+
+def _compiled_block_modules(model):
+    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)."""
+    inside = set()
+    for module in model.modules():
+        if id(module) in inside or not getattr(
+            type(module).forward, "_unsloth_block_compiled", False
+        ):
+            continue
+        if module.__dict__.get("_unsloth_block_mode", 1) == 0:
+            continue
+        inside.update(id(m) for m in module.modules())
+    return inside
+
+
+def _keep_unsharded_for_block_cudagraphs(model):
+    """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
+    step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
+    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph."""
+    if not _block_cudagraphs_requested():
+        return 0
+    blocks = _compiled_block_modules(model)
+    if not blocks:
+        return 0
+    FSDPModule = _fsdp_module_class()
+    kept, nbytes = 0, 0
+    for module in model.modules():
+        if not isinstance(module, FSDPModule):
+            continue
+        try:
+            group = getattr(module._get_fsdp_state(), "_fsdp_param_group", None)
+        except Exception:
+            group = None
+        for fsdp_param in getattr(group, "fsdp_params", None) or ():
+            if getattr(fsdp_param, "_unsloth_keep_unsharded", False):
+                continue
+            info = getattr(fsdp_param, "_module_info", None)
+            if id(getattr(info, "module", None)) not in blocks:
+                continue
+            if not callable(getattr(type(fsdp_param), "free_unsharded_param", None)):
+                return kept  # a torch without this FSDP2 internal: graphs re-record as before
+            fsdp_param.free_unsharded_param = _skip_free_unsharded_param
+            fsdp_param._unsloth_keep_unsharded = True
+            kept += 1
+            try:
+                dtype = getattr(fsdp_param, "param_dtype", None) or fsdp_param.orig_dtype
+                nbytes += fsdp_param._orig_size.numel() * dtype.itemsize
+            except Exception:
+                pass
+    if kept:
+        _print_rank0(
+            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
+            f"{kept} parameters allocated ({nbytes / 2**30:.2f} GiB per rank) so the block CUDA graphs "
+            "replay instead of re-recording every step."
+        )
+    return kept
+
+
 def _post_shard(
     model,
     units,
@@ -1036,6 +1106,7 @@ def _post_shard(
         _print_rank0(
             f"Unsloth: native FSDP2 post-shard step skipped ({type(exc).__name__}: {exc})."
         )
+    _keep_unsharded_for_block_cudagraphs(model)
     try:
         from .fsdp2_save import reduce_unsharded_trainable_grads
         replicated = reduce_unsharded_trainable_grads(model)
@@ -1439,6 +1510,23 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if config.units is not None:
         # Sharing is checked once the replicated set is known (ignored and, if replicated, frozen params).
         check_shard_units(model, list(config.units), ignored_params = None)
+    pp_stage = None
+    if any(m.__dict__.get("_unsloth_pp") for m in model.modules()):
+        # Unsloth pipeline parallel x FSDP2 data parallel (torchtitan order: split, then shard each stage over
+        # the dp dimension of the same mesh). Checked before any change.
+        from .pp_native import check_pp_dp_composition
+
+        pp_stage = check_pp_dp_composition(model, config.mesh)
+        if config.cpu_offload:
+            # The stage's device (token counts, pipeline send / recv buffers) would follow the offloaded params.
+            raise RuntimeError(
+                "Unsloth: native FSDP2 cpu_offload is not supported on a pipeline parallel model yet; shard it "
+                "without cpu_offload."
+            )
+        if config.reshard_after_forward is None:
+            # torchtitan's PP default (distributed/fsdp.py get_fsdp_reshard_after_forward_policy): keep units
+            # gathered after forward, else every micro-batch all-gathers them again.
+            config = dataclasses.replace(config, reshard_after_forward = False)
     if _refuse_tensor_parallel_model(model, config.mesh, compose = True):
         # Unsloth tensor parallel x FSDP2 data parallel: the frozen weights are this rank's tp slices,
         # replicated over the data parallel mesh; FSDP2 shards only the trainable (LoRA) DTensors over it.
@@ -1606,7 +1694,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     model._unsloth_fsdp2_units = wrapped
     model._unsloth_fsdp2_extra_units = [u for u in extra_units if isinstance(u, FSDPModule)]
     model._unsloth_fsdp2_root_only = layout.root_only
-    if config.wrap_generate:
+    if config.wrap_generate and pp_stage is None:  # a pipeline stage refuses generate itself
         _wrap_generate(model)
     model._unsloth_fsdp2_mp_policy = mp_policy
     model._unsloth_fsdp2_replicated = sum(1 for p in model.parameters() if p in replicated)
@@ -1622,6 +1710,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         from .fsdp2_save import install_dcp_bnb_state_dict
         install_dcp_bnb_state_dict()
     install_native_fsdp2_hooks()
+    if pp_stage is not None:
+        # The pipeline stage module becomes the outer FSDP2 root: one gradient reduce-scatter per step.
+        pp_stage._attach_data_parallel(mesh, mp_policy)
     global _SHARDED_ANY
     _SHARDED_ANY = True  # fsdp2_launch then leaves a custom loop's Accelerator alone
     classes = sorted({type(u).__name__.removeprefix("FSDP") for u in wrapped})
@@ -3624,10 +3715,12 @@ def _refuse_tensor_parallel_model(
             "apply_tensor_parallel(model, mesh['tp']) over the same 2-D (dp, tp) mesh."
         )
     if any(m.__dict__.get("_unsloth_pp") for m in model.modules()):
+        if compose and mesh is not None:
+            return False  # shard_model checked the pp x dp composition (pp_native.check_pp_dp_composition)
         raise RuntimeError(
-            "Unsloth: native FSDP2 does not compose with Unsloth pipeline parallelism "
-            "(apply_pipeline_parallel) yet; train a pipeline parallel model with PipelineParallel.step "
-            "over the pp ranks only (data parallel size 1)."
+            "Unsloth: native FSDP2 does not compose with Unsloth pipeline parallelism (apply_pipeline_parallel) "
+            "here; for pipeline x data parallel call shard_model(model, FSDP2Config(mesh = mesh['dp'])) on the "
+            "split model and train it with PipelineParallel.step (not the Trainer)."
         )
     if (tp_size or 1) > 1 or dtensor:
         raise RuntimeError(
