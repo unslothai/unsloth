@@ -5609,6 +5609,27 @@ def _extra_args_mtp_draft_path(
 _HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
 _LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
 
+# Vulkan TOP_K cannot bind a misaligned view, and backend draft sampling reads logits row r at
+# r * n_vocab * 4 bytes (#14987). n_vocab % 64 == 0 keeps rows 256-byte aligned, the spec maximum.
+_VULKAN_ALIGNED_VOCAB_MULTIPLE = 64
+_NO_DRAFT_BACKEND_SAMPLING_FLAG = "--no-spec-draft-backend-sampling"
+
+
+def _draft_backend_sampling_off(
+    spec_flags: list[str], caps: Mapping[str, object], vocab_size: Optional[int], vulkan: bool
+) -> list[str]:
+    if not vulkan or "--spec-type" not in spec_flags:
+        return []
+    i = spec_flags.index("--spec-type")
+    spec_types = str(spec_flags[i + 1]).split(",") if i + 1 < len(spec_flags) else []
+    if all(t == "none" or t.startswith("ngram") for t in spec_types):
+        return []
+    if vocab_size and vocab_size % _VULKAN_ALIGNED_VOCAB_MULTIPLE == 0:
+        return []
+    if _NO_DRAFT_BACKEND_SAMPLING_FLAG not in (caps.get("flags") or {}):
+        return []
+    return [_NO_DRAFT_BACKEND_SAMPLING_FLAG]
+
 
 def _extra_args_mtp_draft_source(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
@@ -26508,7 +26529,18 @@ class LlamaCppBackend:
                             "llama-server has no draft KV cache flags; skipping the requested %s.",
                             _draft_cache_type,
                         )
-                # Extras owning --spec-type keep LLAMA_ARG_SPEC_DRAFT_*; a drafter named only there loads unpinned.
+                _no_backend_draft = _draft_backend_sampling_off(
+                    spec_flags, server_caps, self._vocab_size, self._is_vulkan_backend(binary)
+                )
+                if _no_backend_draft:
+                    logger.info(
+                        "Vulkan: sampling drafts on the CPU, the %s-token vocab misaligns "
+                        "the logits rows the backend sampler reads.",
+                        self._vocab_size or "unknown",
+                    )
+                    spec_flags.extend(_no_backend_draft)
+                # Remember where the spec block sits so a drafter-load failure
+                # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
                 cmd.extend(spec_flags)
 

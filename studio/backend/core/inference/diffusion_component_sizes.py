@@ -886,11 +886,21 @@ def video_loaded_roles(
     return tuple(dict.fromkeys(roles))
 
 
+def video_family_has_no_text_encoder(fam: Any) -> bool:
+    """A family whose bf16 table prices the text encoder at 0.0 has none: its denoiser is its own text model
+    (Cosmos3's omni transformer; the pipeline only tokenizes)."""
+    table = getattr(fam, "bf16_components_gb", None)
+    try:
+        return table is not None and float(table[1]) == 0.0
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
 def video_required_roles(fam: Any) -> tuple[str, ...]:
     """Connectors, vocoder, upsampler, a second text encoder are optional: never a reason to go to the Hub."""
     denoiser = getattr(fam, "denoiser_attr", None) or "transformer"
     roles = [denoiser]
-    roles += ["text_encoder", "vae"]
+    roles += ["vae"] if video_family_has_no_text_encoder(fam) else ["text_encoder", "vae"]
     if bool(getattr(fam, "has_audio", False)):
         roles.append("audio_vae")
     return tuple(dict.fromkeys(roles))
@@ -932,7 +942,9 @@ def video_header_parts(
     vae_itemsize = 4 if bool(getattr(fam, "vae_force_fp32", False)) else 2
     return (
         _part((primary, "transformer_2"), lambda n: 2),
-        _part(VIDEO_ROLE_TEXT, lambda n: 2),
+        (0.0, True)
+        if video_family_has_no_text_encoder(fam)
+        else _part(VIDEO_ROLE_TEXT, lambda n: 2),
         _part(
             VIDEO_ROLE_VAE + attached_extras(fam, dev), lambda n: vae_itemsize if n == "vae" else 2
         ),
