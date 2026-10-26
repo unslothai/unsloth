@@ -87,7 +87,6 @@ def cache_root(tmp_path, monkeypatch):
 
 @pytest.fixture
 def image_dir(tmp_path):
-    """A Z-Image-style fp32 snapshot: fp32 DiT (sharded) + fp32 VAE + fp32 transformers encoder."""
     root = tmp_path / "Z-Image-tiny"
     _tiny_zimage().save_pretrained(root / "transformer", max_shard_size = "40KB")
     _tiny_vae().save_pretrained(root / "vae")
@@ -197,7 +196,6 @@ def test_compiled_wrapper_and_added_tensors_still_write_the_load(image_dir):
     pipe = _Pipe()
     pipe.transformer = dense
     writes = CC.defer_writes(pipe, [cand])
-    # what fuse_qkv / torch.compile do after the load: a new tensor, an OptimizedModule wrapper
     dense.register_parameter("extra_fused", torch.nn.Parameter(torch.zeros(3, dtype = BF16)))
     pipe.transformer = torch.compile(dense)
     assert writes.start() and writes.wait(60)
@@ -257,7 +255,6 @@ def test_video_reader_serves_bf16(image_dir):
     assert _write(pipe, [cand])["text_encoder"] is not None
     pipe_kwargs = {"torch_dtype": {"vae": torch.float32, "default": BF16}, "local_files_only": True}
     missed = V._read_cast_cache(pipe_kwargs, source = str(image_dir), revision = None, base = None)
-    # the fp32-pinned VAE is never a candidate; the DiT misses; the encoder is served at bf16
     assert sorted(c.component for c in missed) == ["transformer"]
     _identical(pipe_kwargs["text_encoder"], pipe.text_encoder)
 

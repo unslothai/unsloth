@@ -4042,8 +4042,7 @@ def _image_cast_candidates(
     base: Optional[str],
     skip: tuple = (),
 ) -> list:
-    """Cast-cache candidates of a generic diffusers pipeline assembly (the per-component assemblers are not wired).
-    Never raises."""
+    """Generic diffusers assembly only (per-component assemblers are not wired). Never raises."""
     try:
         from .diffusion_cast_cache import candidates, image_enabled
 
@@ -4069,11 +4068,9 @@ def _image_cast_candidates(
 
 
 def _image_cast_cached(cands: list, variant: Optional[str]) -> list:
-    """Components a cast-cache hit will serve, so the prefetch leaves their shards alone (not when twins are read)."""
     if not cands or variant is not None:
         return []
     from .diffusion_cast_cache import cached_components
-
     return cached_components(cands)
 
 
@@ -9611,8 +9608,6 @@ class DiffusionBackend:
                                     if _fp16_variant_eligible
                                     else None
                                 )
-                                # fp32-shard components loaded at 16 bits, served from the local cast cache (the
-                                # generic assembly below only); a cached one is left out of the prefetch.
                                 _cast_cands = _image_cast_candidates(
                                     fam,
                                     _base_local_dir or fetch_base,

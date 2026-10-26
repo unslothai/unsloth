@@ -60,7 +60,6 @@ def _target_dtypes() -> tuple:
 
 
 def _is_half(dtype: Any) -> bool:
-    """A 16-bit float load dtype this cache serves (fp32 targets read the shards as stored: nothing to save)."""
     return str(dtype).replace("torch.", "") in _target_dtypes()
 
 
@@ -138,8 +137,7 @@ def _shard_header(path: str) -> Optional[dict]:
 
 
 def _cast_bytes(shards: list) -> Optional[int]:
-    """Bytes of the 16-bit cast when every floating tensor of every shard is fp32 / fp64 (the only case the cast
-    halves), else None. fp32-kept modules are counted at 16 bits: a budget estimate, not the entry size."""
+    """16-bit bytes if every floating tensor is fp32 / fp64, else None. An estimate: fp32-kept modules count at 16 bits."""
     seen = False
     total = 0
     for shard in shards:
@@ -169,9 +167,7 @@ def _all_wide(shards: list) -> bool:
 
 
 def _fit_budget(cands: list, logger: Any = None) -> list:
-    """The candidates one load can keep cached together: a set over the LRU budget would evict its own entries on every
-    load (Wan2.2-A14B's two experts are 57 GB at 16 bits). Greedy, largest first (the biggest read saved), so every
-    load picks the same set; the result keeps component order."""
+    """A set over the LRU budget would evict its own entries every load. Greedy largest-first, so it is deterministic."""
     budget = _cache.max_cache_bytes()
     if budget is None:
         return cands
@@ -289,7 +285,6 @@ def candidates(
 
 
 def cached_components(cands: list) -> list:
-    """Components with an entry on disk (a cheap pre-check, e.g. to keep a prefetch off shards a hit will not read)."""
     try:
         root = _cache.cache_root()
         return [c.component for c in cands or () if (root / c.key / _cache.MANIFEST_NAME).is_file()]
@@ -305,8 +300,7 @@ def inject(
     cancel_check: Optional[Any] = None,
     label: str = "diffusion",
 ) -> list:
-    """Put every cached candidate into ``pipe_kwargs``; returns the misses (to ``defer_writes`` after the load).
-    Components already supplied are left alone. Never raises (a cancel from ``cancel_check`` propagates)."""
+    """Returns the misses. Never raises, except a cancel from ``cancel_check``."""
     try:
         cands = [c for c in cands or () if c.component not in pipe_kwargs]
         if not cands:
