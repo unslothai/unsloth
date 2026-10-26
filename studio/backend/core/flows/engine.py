@@ -195,7 +195,6 @@ class RunState:
     status: str = "queued"
     seq: int = 0
     events: deque = field(default_factory = lambda: deque(maxlen = MEMORY_EVENTS))
-    # Written in one transaction per flush instead of one per event, node result or cache entry.
     _unsaved_events: list[tuple[int, dict]] = field(default_factory = list, repr = False)
     _unsaved_results: dict[str, tuple] = field(default_factory = dict, repr = False)
     _unsaved_cache: dict[str, tuple[str, dict]] = field(default_factory = dict, repr = False)
