@@ -66,6 +66,7 @@ from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
     fp8_storage_wanted,
+    fp8_widen_chosen,
     pipe_fp8_stored_layers,
     comfy_resident_mib,
     load_comfy_quant_transformer,
@@ -367,7 +368,7 @@ def video_te_quant_request(
     that cannot run it (fp8 below cc 8.9, a hosted file that is not there) gets the dense encoder, never a refusal.
 
     Two limits on the automatic pick, never on an explicit scheme: Speed="off" is bit-exact, so it keeps the released
-    encoder (LTX-2.5's raw unset included, which would otherwise take int8); and only an exactly identified official
+    encoder (LTX-2.5's raw unset included, which takes int8 under UNSLOTH_LTX25_TE_INT8=1); and only an exactly identified official
     ``base`` takes the hosted file, so a custom pack that merely shares the folder name keeps its own weights."""
     unset = text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto")
     auto_scheme = getattr(fam, "te_quant_auto", None)
@@ -508,13 +509,21 @@ def _video_comfy_backends(
     DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
     ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
     if not keep:
-        return {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
+        return {
+            "int8_backend": None,
+            "fp8_backend": None,
+            "fp8_storage": False,
+            "fp8_widen_chosen": False,
+        }
     offload = priced_offload or not _video_comfy_resident(plan, bf16_plan)
     name = getattr(fam, "name", None)
+    storage = _video_fp8_storage(fam, target, offload, widened_mib = widened_mib)
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
-        "fp8_storage": _video_fp8_storage(fam, target, offload, widened_mib = widened_mib),
+        "fp8_storage": storage,
+        "fp8_widen_chosen": not storage
+        and _video_fp8_storage(fam, target, offload, widened_mib = widened_mib, widen_chosen = True),
     }
 
 
@@ -538,18 +547,19 @@ def _video_fp8_storage(
     offload: bool,
     *,
     widened_mib: Optional[int] = None,
+    widen_chosen: bool = False,
 ) -> bool:
     """``fp8_storage_wanted`` for a video DiT, with the host RAM the load would widen into when ``widened_mib`` is
-    known. H3 is excluded: its pin / stream / residency path is built on torchao weights."""
+    known. H3 is excluded: its pin / stream / residency path is built on torchao weights. ``widen_chosen``: answer
+    ``fp8_widen_chosen`` instead (the rule had the choice and widened)."""
     if getattr(fam, "name", None) == "minimax-h3":
         return False
     available = None
     if widened_mib is not None and not offload:
         from .diffusion_small_host import host_ram_mib
         available = host_ram_mib()[1]
-    return fp8_storage_wanted(
-        target, offload = offload, widened_mib = widened_mib, host_available_mib = available
-    )
+    rule = fp8_widen_chosen if widen_chosen else fp8_storage_wanted
+    return rule(target, offload = offload, widened_mib = widened_mib, host_available_mib = available)
 
 
 def _video_comfy_resident_mib(
@@ -2684,7 +2694,7 @@ def _h3_card_memory_bytes(
     *,
     allow_context: bool = True,
 ) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) VRAM of the H3 render card, or (None, None). No pin = ordinal 0. nvidia-smi / amd-smi / sysfs
+    """(free, total) VRAM of the H3 render card, or (None, None). No pin = ordinal 0. nvidia-smi / ROCm KFD + sysfs
     first (no CUDA context); torch only when none answers and ``allow_context``, as the residency and pressure reads
     always did. The pre-spawn budget passes False: it never pays for a context. Free is less the user's VRAM Budget
     reserve (raw at the default), so the sd.cpp resident-vs-offload pick, its ``--max-vram`` probe and the
@@ -11123,24 +11133,47 @@ class VideoBackend:
                                 pin_streamed_top_level_group(denoiser, logger = logger)
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_top_group: %s", exc)
+                            block_pinner = None
                             if denoiser_streamed == "stream_lazy":
-                                from .video_minimax_h3_residency import pin_streamed_block_groups
+                                from .video_minimax_h3_residency import (
+                                    defer_streamed_block_pins,
+                                    pin_streamed_block_groups,
+                                )
                                 try:
-                                    done, total = pin_streamed_block_groups(denoiser, logger = logger)
-                                except Exception as exc:  # noqa: BLE001 -- a speed-up only
-                                    done, total = 0, 0
+                                    # the 9-12 s slab copy, off the load path
+                                    block_pinner = defer_streamed_block_pins(
+                                        pipe, denoiser, device, logger = logger
+                                    )
+                                except Exception as exc:  # noqa: BLE001 -- pin up front instead
                                     logger.warning("video.h3_block_pin: %s", exc)
-                                if total and done == total:
-                                    # every group now holds one pinned copy: the prefetch below engages
+                                if block_pinner is not None:
                                     denoiser_streamed = "stream"
                                     denoiser_single_host_copy = True
+                                else:
+                                    try:
+                                        done, total = pin_streamed_block_groups(
+                                            denoiser, logger = logger
+                                        )
+                                    except Exception as exc:  # noqa: BLE001 -- a speed-up only
+                                        done, total = 0, 0
+                                        logger.warning("video.h3_block_pin: %s", exc)
+                                    if total and done == total:
+                                        # every group now holds one pinned copy: the prefetch below engages
+                                        denoiser_streamed = "stream"
+                                        denoiser_single_host_copy = True
                             # after the top-level pin (it becomes one of the prefetched groups), before the residency fit
                             from .video_minimax_h3_residency import install_h3_stream_prefetch
 
+                            covered = 0
                             try:
-                                install_h3_stream_prefetch(denoiser, device, logger = logger)
+                                covered = install_h3_stream_prefetch(
+                                    denoiser, device, logger = logger
+                                )
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_stream_prefetch: %s", exc)
+                            if block_pinner is not None and not covered:
+                                # Only the prefetcher's onload is sure to wait for a group's pin: finish it now.
+                                block_pinner.join()
                         if h3_dit_resident_enabled() and denoiser_streamed in (
                             "stream",
                             "stream_lazy",
@@ -11567,6 +11600,7 @@ class VideoBackend:
         )
         with self._lock:
             if _load_token is not None and _load_token != self._load_token:
+                stop_background_pins(pipe)
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")

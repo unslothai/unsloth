@@ -10,7 +10,10 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { useChatRuntimeStore } from "@/features/chat";
+import {
+  resyncInferenceStatusAfterKeptModelsUnload,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -139,10 +142,14 @@ export function ModelMemorySection({
         next,
         t("settings.resources.modelMemory.saveError"),
       );
+      const wasKeeping = keepsModelsLoaded(mode);
       setMode(saved);
       useChatRuntimeStore
         .getState()
         .setKeepModelsLoaded(keepsModelsLoaded(saved));
+      if (wasKeeping && !keepsModelsLoaded(saved)) {
+        void resyncInferenceStatusAfterKeptModelsUnload();
+      }
     } catch (saveError) {
       setError(
         saveError instanceof Error

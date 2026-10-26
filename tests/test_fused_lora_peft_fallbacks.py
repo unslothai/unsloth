@@ -385,3 +385,33 @@ def test_unloaded_plain_linear_projections_run_the_fused_paths(
         fused if isinstance(fused, tuple) else (fused,), ref if isinstance(ref, tuple) else (ref,)
     ):
         torch.testing.assert_close(a, b, **tol)
+
+
+@pytest.mark.parametrize("device,dtype,path", [c for c in CASES if c[2] != "o"])
+@pytest.mark.parametrize("dropout", [0.0, 0.3])
+def test_partially_merged_block_with_frozen_input_matches_peft(
+    monkeypatch, device, dtype, path, dropout
+):
+    # X needs no grad, but the block's other active adapters train, so the fused backward would run with
+    # no LoRA weights for the merged projection ('NoneType' object has no attribute 'to').
+    model, block = _peft_block(device, dtype, dropout)
+    block.k_proj.merge()
+    block.gate_proj.merge()
+    model.eval()  # dropout off, so the fused and PEFT passes are deterministic
+    X = torch.randn(2, 5, H, device = device, dtype = dtype)
+    spy = _Spy(monkeypatch)
+    results = []
+    for fn in (PATHS[path][0](block), PATHS[path][1](block)):
+        out = fn(X)
+        outs = out if isinstance(out, tuple) else (out,)
+        sum(o.double().square().sum() for o in outs).backward()
+        grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+        model.zero_grad(set_to_none = True)
+        results.append(([o.detach() for o in outs], grads))
+    assert spy.calls == [], "a fused LoRA Function ran"
+    (fused, fused_grads), (ref, ref_grads) = results
+    for a, b in zip(fused, ref):
+        torch.testing.assert_close(a, b, rtol = 0, atol = 0)
+    assert fused_grads.keys() == ref_grads.keys() and fused_grads
+    for name in ref_grads:
+        torch.testing.assert_close(fused_grads[name], ref_grads[name], rtol = 0, atol = 0)

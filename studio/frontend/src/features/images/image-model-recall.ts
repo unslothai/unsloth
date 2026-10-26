@@ -32,6 +32,34 @@ function retiredSnapshotRepo(path: string): string {
   return match ? `unsloth/${match[1].toLowerCase()}` : "";
 }
 
+/** A retired copy pick (its id or a snapshot): the backend loads it from disk when complete, else through its base. */
+export function isRetiredCopySnapshot(pick: { repoId: string; displayRepoId?: string }): boolean {
+  return Boolean(retiredCopyOf(pick));
+}
+
+function retiredCopyOf(pick: { repoId: string; displayRepoId?: string }): string {
+  const id = pick.repoId.trim().toLowerCase();
+  const display = (pick.displayRepoId ?? "").trim().toLowerCase();
+  if (RETIRED_FULL_COPIES[id]) return id;
+  return RETIRED_FULL_COPIES[display] ? display : retiredSnapshotRepo(pick.repoId);
+}
+
+/** A retired snapshot that loaded through its base, as that base (else the pick), so Reapply and recall match the status. */
+export function retiredSnapshotAsLoaded<T extends RememberedImageModel & { displayRepoId?: string; baseRepo?: string }>(
+  pick: T,
+  status: Parameters<typeof matchesRememberedModel>[1],
+): T {
+  if (!isRetiredCopySnapshot(pick) || matchesRememberedModel(pick, status)) return pick;
+  // A complete snapshot's root model.safetensors pick loads as the snapshot's own pipeline.
+  const { filename: _filename, baseRepo: _base, ...asPipeline } = { ...pick, kind: "pipeline" as const };
+  if (matchesRememberedModel(asPipeline as T, status)) return asPipeline as T;
+  const copy = retiredCopyOf(pick);
+  // A redirect loads another checkpoint, whose base the backend infers (handleLoad drops it the same way).
+  const { baseRepo: _baseRepo, ...rest } = pick;
+  const asBase = redirectRetiredImagePick({ ...rest, repoId: copy } as T);
+  return asBase.repoId !== copy && matchesRememberedModel(asBase, status) ? asBase : pick;
+}
+
 export function redirectRetiredImagePick<
   T extends {
     repoId: string;
@@ -42,12 +70,7 @@ export function redirectRetiredImagePick<
     vaeFile?: string;
   },
 >(pick: T): T {
-  // A downloaded copy arrives as its snapshot path with the retired id as the display id; a model remembered by an
-  // older build is that snapshot path alone.
-  const base =
-    RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()] ??
-    RETIRED_FULL_COPIES[(pick.displayRepoId ?? "").trim().toLowerCase()] ??
-    RETIRED_FULL_COPIES[retiredSnapshotRepo(pick.repoId)];
+  const base = RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()];
   if (!base) return pick;
   const { displayRepoId: _display, ...rest } = pick;
   if (pick.kind === "pipeline") return { ...rest, repoId: base } as T;
@@ -77,7 +100,7 @@ export function readImageModel(): RememberedImageModel | null {
           (f: unknown): f is string => typeof f === "string" && f.length > 0,
         )
       : [];
-    return redirectRetiredImagePick({
+    return {
       repoId: value.repoId,
       kind: value.kind,
       ...(typeof value.filename === "string"
@@ -88,7 +111,7 @@ export function readImageModel(): RememberedImageModel | null {
       ...(typeof value.vaeFile === "string" && value.vaeFile
         ? { vaeFile: value.vaeFile }
         : {}),
-    } as RememberedImageModel);
+    } as RememberedImageModel;
   } catch {
     return null;
   }
@@ -401,9 +424,11 @@ export function finishedLoadTarget<T extends ImageModelKey & { fieldFiles?: Imag
   current: T | null,
   status: Parameters<typeof matchesRememberedModel>[1] & Parameters<typeof forgetStaleImageComponents>[1],
 ): T | PendingImageLoad | null {
-  const pending = readPendingImageLoad();
+  const stored = readPendingImageLoad();
   clearPendingImageLoad();
   if (current?.fieldFiles) return current;
+  // A retired snapshot is published as what it loaded as (its base, or its own pipeline for a root pick).
+  const pending = stored ? retiredSnapshotAsLoaded(stored, status) : stored;
   if (
     pending &&
     matchesRememberedModel(pending, status) &&

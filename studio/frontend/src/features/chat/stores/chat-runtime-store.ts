@@ -29,7 +29,9 @@ import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
 import { getChatSettings } from "../api/chat-settings-api";
 import {
+  type CpuFallbackReason,
   GPU_LAYERS_AUTO,
+  isCpuFallbackReason,
   recoverDroppedDiffusionSplit,
   shouldHydrateGpuPlacementControls,
 } from "../lib/gpu-placement";
@@ -2360,7 +2362,7 @@ export function loadedGpuMemoryFields(resp: {
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
-  cpu_fallback_reason?: "vulkan_startup_crash" | null;
+  cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -2379,7 +2381,11 @@ export function loadedGpuMemoryFields(resp: {
     const gpuIds = managed
       ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])
       : null;
-    const indexKind = managed ? ("physical" as const) : null;
+    const indexKind = managed
+      ? cachedPinnableGpuIndexKind() === "cuda_device"
+        ? ("cuda_device" as const)
+        : ("physical" as const)
+      : null;
     return {
       selectedGpuIds: gpuIds,
       selectedGpuIndexKind: indexKind,
@@ -2461,7 +2467,7 @@ export function loadedGpuMemoryFields(resp: {
         : { gpuMemoryMode: mode }
       : {}),
     loadedGpuMemoryMode: mode,
-    loadedCpuFallback: resp.cpu_fallback_reason === "vulkan_startup_crash",
+    loadedCpuFallback: isCpuFallbackReason(resp.cpu_fallback_reason),
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
