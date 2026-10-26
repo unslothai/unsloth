@@ -275,11 +275,68 @@ def _run_cases(rank, world_size, base, out):
             loss.backward()
             result["qat_loss_after"] = float(loss)
 
+    def qat_fallback():
+        # Too big for rank 0's GPU: gathered to the CPU and converted one module at a time on the
+        # accelerator (the CPU stands in here), which must equal the whole-model convert.
+        from unsloth.models import _utils
+
+        calls = []
+        real_convert = _utils._convert_module_by_module
+        real_options = fsdp2_save.gather_on_accelerator_if_it_fits
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return real_convert(*args, **kwargs)
+
+        _utils._convert_module_by_module = counted
+        if sharded:
+            fsdp2_save.gather_on_accelerator_if_it_fits = lambda model: dict(
+                offload_to_cpu = True, offload_4bit = True, convert_on = torch.device("cpu")
+            )
+        try:
+            model, tokenizer = load(lora = False, qat = "phone-deployment")
+            model.save_pretrained_torchao(mine("qat_fallback"), tokenizer)
+        finally:
+            _utils._convert_module_by_module = real_convert
+            fsdp2_save.gather_on_accelerator_if_it_fits = real_options
+        result["qat_fallback_wrote"] = os.path.isdir(mine("qat_fallback"))
+        result["qat_fallback_calls"] = len(calls)
+
+    def cgroup():
+        # A container is killed at its cgroup limit, not at host RAM: the check takes the smaller.
+        import builtins
+
+        root = os.path.join(out, f"cgroup_{tag}")
+        os.makedirs(os.path.join(root, "job"), exist_ok = True)
+        for name, value in (("memory.max", 4 * 1024**3), ("memory.current", 1024**3)):
+            with open(os.path.join(root, "job", name), "w") as f:
+                f.write(str(value))
+        with open(os.path.join(root, "self"), "w") as f:
+            f.write("0::/job\n")
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            path = str(path)
+            if path == "/proc/self/cgroup":
+                path = os.path.join(root, "self")
+            elif path.startswith("/sys/fs/cgroup"):
+                path = root + path[len("/sys/fs/cgroup") :]
+            return real_open(path, *args, **kwargs)
+
+        builtins.open = fake_open
+        try:
+            result["cgroup_bytes"] = (
+                fsdp2_save._cgroup_available_bytes(),
+                fsdp2_save._host_available_bytes(),
+            )
+        finally:
+            builtins.open = real_open
+
     cases = [merged, gguf, push_gguf]
     if sharded:
-        cases += [fail, ram, estimate]
+        cases += [fail, ram, estimate, cgroup]
     if HAS_TORCHAO:
-        cases += [ptq, qat]
+        cases += [ptq, qat, qat_fallback]
     for case in cases:
         try:
             case()
@@ -479,3 +536,20 @@ def test_torchao_qat_full_model_equals_one_process_and_keeps_training(runs):
     assert r0["qat_all_dtensor_after"] and r1["qat_all_dtensor_after"]
     assert r0["qat_loss_after"] == r0["qat_loss_after"]  # finite, not NaN
     _assert_same_files(runs["single_dir"] / "qat", runs["sharded_dir"] / "qat")
+
+
+@pytest.mark.skipif(not HAS_TORCHAO, reason = "torchao not installed")
+def test_torchao_qat_fallback_converts_module_by_module_and_equals_one_process(runs):
+    _no_raise(runs, "qat_fallback")
+    r0, r1 = runs["ranks"][0], runs["ranks"][1]
+    assert r0["qat_fallback_wrote"] and not r1["qat_fallback_wrote"]
+    assert r0["qat_fallback_calls"] > 0 and r1["qat_fallback_calls"] == 0
+    assert runs["single"]["qat_fallback_calls"] == 0
+    _assert_same_files(runs["single_dir"] / "qat_fallback", runs["sharded_dir"] / "qat_fallback")
+
+
+
+def test_host_ram_check_honours_the_cgroup_limit(runs):
+    _no_raise(runs, "cgroup")
+    limit, available = runs["ranks"][0]["cgroup_bytes"]
+    assert limit == 3 * 1024**3 and available <= limit, runs["ranks"][0]["cgroup_bytes"]

@@ -525,21 +525,65 @@ def _gathered_host_bytes(
     return total
 
 
+def _cgroup_available_bytes():
+    """Bytes left under this process's cgroup memory limits (v2 memory.max - memory.current over the
+    cgroup and its parents, v1 memory.limit_in_bytes - memory.usage_in_bytes), or None without one.
+    A container (Docker, Kubernetes, Kaggle, Colab) is killed at its limit, not at host RAM."""
+    def read(path):
+        try:
+            with open(path, encoding = "utf-8") as f:
+                value = f.read().strip()
+            return None if value == "max" else int(value)
+        except Exception:
+            return None
+
+    left = []
+    try:
+        with open("/proc/self/cgroup", encoding = "utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception:
+        return None
+    for line in lines:
+        hierarchy, controllers, path = (line.split(":", 2) + ["", ""])[:3]
+        if hierarchy == "0" and controllers == "":
+            parts = [p for p in path.split("/") if p]
+            for depth in range(len(parts), -1, -1):
+                base = os.path.join("/sys/fs/cgroup", *parts[:depth])
+                limit, used = read(os.path.join(base, "memory.max")), read(os.path.join(base, "memory.current"))
+                if limit is not None and used is not None:
+                    left.append(limit - used)
+        elif "memory" in controllers.split(","):
+            base = os.path.join("/sys/fs/cgroup/memory", path.lstrip("/"))
+            for root in (base, "/sys/fs/cgroup/memory"):
+                limit = read(os.path.join(root, "memory.limit_in_bytes"))
+                used = read(os.path.join(root, "memory.usage_in_bytes"))
+                if limit is not None and used is not None and limit < (1 << 60):
+                    left.append(limit - used)
+                    break
+    return max(0, min(left)) if left else None
+
+
 def _host_available_bytes():
     """Host RAM this process could still allocate, or None when it cannot be read."""
+    available = None
     try:
         import psutil
-        return int(psutil.virtual_memory().available)
+        available = int(psutil.virtual_memory().available)
     except Exception:
         pass
-    try:
-        with open("/proc/meminfo", encoding = "utf-8") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
-    except Exception:
-        pass
-    return None
+    if available is None:
+        try:
+            with open("/proc/meminfo", encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        available = int(line.split()[1]) * 1024
+                        break
+        except Exception:
+            pass
+    cgroup = _cgroup_available_bytes()
+    if cgroup is not None:
+        available = cgroup if available is None else min(available, cgroup)
+    return available
 
 
 def gather_on_accelerator_if_it_fits(model):
@@ -552,15 +596,21 @@ def gather_on_accelerator_if_it_fits(model):
         return on_cpu
     DTensor = _dtensor_class()
     _reshard_units(fsdp2_units(model))
-    device = next(
-        (
-            p.to_local().device
-            for p in model.parameters()
-            if DTensor is not None and isinstance(p, DTensor)
-        ),
+    param = next(
+        (p for p in model.parameters() if DTensor is not None and isinstance(p, DTensor)),
         None,
     )
-    if device is None or device.type == "cpu":
+    if param is None:
+        return on_cpu
+    device = param.to_local().device
+    mesh_type = param.device_mesh.device_type
+    if device.type == "cpu" and mesh_type != "cpu":
+        # CPUOffloadPolicy keeps the shards on the host; the model still computes on the mesh device.
+        try:
+            device = torch.device(mesh_type, getattr(torch, mesh_type).current_device())
+        except Exception:
+            return on_cpu
+    if device.type == "cpu":
         return on_cpu
     try:
         free, total = getattr(torch, device.type).mem_get_info(device)
@@ -571,10 +621,12 @@ def gather_on_accelerator_if_it_fits(model):
         if mesh_writer_rank(model) == (_dist().get_rank() if _dist() is not None else 0):
             print(
                 f"Unsloth: FSDP2 export: the gathered model ({need / _GIB:.1f} GiB) does not fit the "
-                f"{free / _GIB:.1f} GiB free on {device}, so it is converted on the CPU, not where a "
-                "single GPU converts it."
+                f"{free / _GIB:.1f} GiB free on {device}, so it is gathered to the CPU and converted "
+                f"one module at a time on {device}."
             )
-        return on_cpu
+        # Not on the CPU: CUDA computes torchao's `scale = max / 7.5` as max * (1 / 7.5), the CPU
+        # divides, and for fp32 weights the two differ in the last bit of most scales.
+        return dict(on_cpu, convert_on = device)
     return dict(offload_to_cpu = False, offload_4bit = False)
 
 
@@ -658,6 +710,22 @@ def _module_tree_kept(model):
                 config.__dict__["quantization_config"] = quantization_config
 
 
+@contextlib.contextmanager
+def _torchao_convert_device(device):
+    """While set, unsloth's in-place torchao QAT convert moves each module it converts to `device`,
+    converts it there and moves it back (`_convert_torchao_model`)."""
+    if device is None:
+        yield
+        return
+    from . import _utils
+
+    _utils._TORCHAO_CONVERT_DEVICE.append(device)
+    try:
+        yield
+    finally:
+        _utils._TORCHAO_CONVERT_DEVICE.pop()
+
+
 def fsdp2_export_on_writer(
     model,
     run,
@@ -666,6 +734,7 @@ def fsdp2_export_on_writer(
     include = None,
     offload_to_cpu = True,
     offload_4bit = False,
+    convert_on = None,
 ):
     """An export that rebuilds or quantizes the whole model in one process (GGUF, torchao, OpenVINO),
     on a model FSDP2 shards. Every rank must call it. The writer (global rank 0, or the lowest rank
@@ -703,7 +772,7 @@ def fsdp2_export_on_writer(
         ) as gathered_writer:
             if gathered_writer is not False:
                 try:
-                    with _module_tree_kept(model):
+                    with _module_tree_kept(model), _torchao_convert_device(convert_on):
                         outcome = ("ok", run())
                 except BaseException as e:
                     error = e
