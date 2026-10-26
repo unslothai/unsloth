@@ -28,7 +28,14 @@ _SILENT_PARKING_BUILD = {"found": True, "supports_preempt_ram": True, "supports_
 _NOTICE_BUILD = dict(_SILENT_PARKING_BUILD, supports_preempt_async = True)
 
 
-def _launch(monkeypatch, tmp_path, caps, *, platform, extra_args = None):
+def _launch(
+    monkeypatch,
+    tmp_path,
+    caps,
+    *,
+    platform,
+    extra_args = None,
+):
     load_model = LlamaCppBackend.load_model
 
     def _load(self, intent, *args, **kwargs):

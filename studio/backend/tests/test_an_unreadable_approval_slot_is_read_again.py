@@ -116,9 +116,9 @@ def test_one_failed_slot_read_does_not_end_the_worker(monkeypatch):
 
     asyncio.run(asyncio.wait_for(worker(lease), 5))
 
-    assert backend.erased == [(BASE, SLOT)], (
-        "the worker gave up after one failed read; the queued chat waits on room never freed"
-    )
+    assert backend.erased == [
+        (BASE, SLOT)
+    ], "the worker gave up after one failed read; the queued chat waits on room never freed"
     assert lease.released == 1
     assert namespace["_gguf_decode"]["erased"] is True
 
