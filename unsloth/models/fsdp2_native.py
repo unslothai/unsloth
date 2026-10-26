@@ -2355,8 +2355,6 @@ def native_save_optimizer(
     writer_rank = mesh_writer_rank(model)
     export = contextlib.nullcontext()
     if writer_rank == 0:
-        # A local-shard bitsandbytes optimizer offloads each parameter's float32 state as it exports
-        # it, instead of holding every moment on the device until torch's gather runs.
         from .fsdp2_bnb_optim import full_cpu_state_export
         export = full_cpu_state_export(optimizer)
     with export:

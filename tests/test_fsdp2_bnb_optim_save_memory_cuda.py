@@ -1,16 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GPU memory of the native FSDP2 optimizer.pt export (native_save_optimizer: get_optimizer_state_dict
-with full_state_dict and cpu_offload) for the local-shard bitsandbytes AdamW8bit, one NCCL rank.
-
-torch calls optimizer.state_dict() before it gathers and offloads, and the local-shard optimizer
-exports float32 moments (8 bytes per element against 2 for the 8-bit state). Holding all of them
-until the state dict was complete made the save peak grow with the whole optimizer. They are now
-gathered and moved to the CPU one parameter at a time: the peak above the training footprint must
-stay about one parameter, the exported tensors must equal torch's unbounded export, and a resume
-from them must restore the 8-bit state bitwise.
-`python tests/test_fsdp2_bnb_optim_save_memory_cuda.py --out result.json [--arm torch]` runs a worker."""
+"""GPU memory of the native FSDP2 optimizer.pt export with a local-shard bitsandbytes optimizer:
+the peak stays about one parameter, tensors equal torch's export, and a resume restores the 8-bit
+state bitwise. `python tests/test_fsdp2_bnb_optim_save_memory_cuda.py --out result.json [--arm torch]`
+runs a worker."""
 
 import argparse
 import json
@@ -86,7 +80,6 @@ def _worker(out, arm, rdzv):
         for v in s.values()
         if torch.is_tensor(v)
     )
-    # torch's own unbounded export of the same optimizer, for equality.
     ref = get_optimizer_state_dict(
         model, opt, options = StateDictOptions(full_state_dict = True, cpu_offload = True)
     )
@@ -153,8 +146,7 @@ def _run(tmp_path, arm = "bnb"):
 def test_local_shard_bnb_save_keeps_one_parameter_on_the_gpu(tmp_path):
     r = _run(tmp_path)
     assert r["state_on_cpu"] and r["equal_to_torch_export"] and r["resume_bitwise"], r
-    # Holding every moment was 8 bytes per element plus scratch (144 MiB here, 18 parameters' worth);
-    # one parameter's float32 moments are 8 MiB, its export with dequantization scratch about 32 MiB.
+    # Unbounded export peaked at 144 MiB here; one parameter with scratch is about 32 MiB.
     assert r["save_extra_peak_bytes"] <= 5 * r["one_param_fp32_moments_bytes"], r
     assert r["save_extra_retained_bytes"] <= 1 << 20, r
 

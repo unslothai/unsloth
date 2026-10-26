@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The local-shard bitsandbytes optimizer (native FSDP2) does not synchronize the device after every
-parameter update: bitsandbytes' own step calls sync_gpu(p) per parameter, which on CUDA is a
-torch.cuda.synchronize() each time. Only paged optimizers keep bitsandbytes' fences. Runs on the CPU
-(bitsandbytes' CPU kernels): sync_gpu is counted, not executed."""
+"""The local-shard bitsandbytes optimizer skips bitsandbytes' per-parameter sync_gpu unless paged.
+Runs on the CPU: sync_gpu is counted, not executed."""
 
 import os
 import sys
@@ -67,7 +65,6 @@ def test_local_shard_step_does_not_sync_per_parameter(sync_calls, name):
         calls.clear()
         opt.step()
         assert calls == [], (name, step, calls)
-    # The same update as bitsandbytes' own step, and step hooks still run once per step.
     for a, b in zip(local, ref):
         assert torch.equal(a, b)
     assert len(hooks) == 3
@@ -89,7 +86,6 @@ def test_paged_local_shard_step_keeps_bitsandbytes_fences(sync_calls):
         expected = len(calls)
         calls.clear()
         opt.step()
-        # bitsandbytes: one fence per parameter plus a final one.
         assert expected == len(_SHAPES) + 1
         assert len(calls) == expected, (step, calls)
     for a, b in zip(local, ref):
@@ -98,8 +94,7 @@ def test_paged_local_shard_step_keeps_bitsandbytes_fences(sync_calls):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA side stream")
 def test_local_shard_step_on_a_side_stream_keeps_every_fence(monkeypatch):
-    """bitsandbytes' kernels launch on the legacy default stream: a step taken under another stream
-    keeps the per-parameter fences, on the default stream none are taken."""
+    """Off the default stream the per-parameter fences stay; on it none are taken."""
     bnb = pytest.importorskip("bitsandbytes")
     _load_native()
     import bitsandbytes.optim.optimizer as bnb_optimizer

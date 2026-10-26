@@ -305,21 +305,17 @@ class _LocalShardMixin:
 
     @torch.no_grad()
     def step(self, closure = None):
-        """bitsandbytes' Optimizer8bit.step loop, but the device synchronize after every parameter only
-        runs for paged optimizers (their page prefetches are asynchronous and need the fences) and off
-        the default stream. Non-paged state lives on the device and every update is queued on the
-        default stream the caller is on, so nothing needs the host to wait; torch's AdamW, which native
-        FSDP2 used before, does not wait either."""
+        """bitsandbytes' Optimizer8bit.step, but per-parameter device syncs only for paged optimizers
+        (async prefetches) or off the default stream."""
         loss = None
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
         if not self.initialized:
             self.check_overrides()
-            self.to_gpu()  # as bitsandbytes (fairseq pure fp16 training)
+            self.to_gpu()
             self.initialized = True
         paged = bool(getattr(self, "is_paged", False))
-        # bitsandbytes' kernels run on the legacy default stream: off it the fences are the only ordering.
         fence = paged or _off_default_stream(self)
         p = None
         for gindex, group in enumerate(self.param_groups):
@@ -425,8 +421,6 @@ class _LocalShardMixin:
         exported = {}
         for index, raw in state_dict["state"].items():
             out = self._export_state(slots[index][0], raw, slots[index][1])
-            # Gathered and moved to the CPU one parameter at a time, so the float32 copies of every
-            # moment are never all on the device together (see full_cpu_state_export).
             exported[index] = _gather_to_cpu(out) if to_cpu else out
         state_dict["state"] = exported
         return state_dict
@@ -480,10 +474,7 @@ class _LocalShardMixin:
 
 
 def _gather_to_cpu(entry):
-    """One parameter's exported state as torch's full_state_dict + cpu_offload export makes it
-    (torch.distributed._state_dict_utils._gather_state_dict): each DTensor redistributed to Replicate
-    and its local tensor copied to the CPU on global rank 0; other ranks keep None (torch gives them an
-    empty state dict). Plain tensors are copied to the CPU on rank 0 too."""
+    """Mirrors torch _gather_state_dict + cpu_offload for one parameter: CPU on rank 0, None elsewhere."""
     DTensor = _dtensor_class()
     dist = torch.distributed
     keep = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
@@ -503,7 +494,7 @@ def _gather_to_cpu(entry):
             except ImportError:
                 AsyncCollectiveTensor = None
             if AsyncCollectiveTensor is not None and isinstance(value, AsyncCollectiveTensor):
-                value = value.wait()  # as torch: synchronous with the main stream
+                value = value.wait()
         if torch.is_tensor(value):
             value = value.to("cpu") if keep else None
         out[key] = value
@@ -512,13 +503,8 @@ def _gather_to_cpu(entry):
 
 @contextlib.contextmanager
 def full_cpu_state_export(optimizer):
-    """For get_optimizer_state_dict(full_state_dict = True, cpu_offload = True): torch calls
-    optimizer.state_dict() first and gathers / offloads after, so the dequantized float32 moments of
-    every parameter (8 bytes per element, against the 2 bytes the 8-bit state takes) would all sit on
-    the device until the whole state dict exists. Inside this block a local-shard bitsandbytes
-    optimizer gathers and offloads each parameter's state as it is exported instead; the result is
-    the tensors torch would have produced. Every rank must enter it (the gathers are collective).
-    Other optimizers are unchanged."""
+    """Gather + offload each parameter's dequantized state as it is exported, instead of holding all
+    float32 moments on the device until torch gathers. Every rank must enter it (collectives)."""
     if not is_local_shard_bnb_optimizer(optimizer):
         yield
         return
@@ -530,8 +516,6 @@ def full_cpu_state_export(optimizer):
 
 
 def _off_default_stream(optimizer):
-    """True when a parameter's device is not on its default stream (or is not CUDA / CPU, where
-    the fences stay as bitsandbytes has them)."""
     devices = {p.device for group in optimizer.param_groups for p in group["params"]}
     for device in devices:
         if device.type == "cpu":
@@ -544,7 +528,6 @@ def _off_default_stream(optimizer):
 
 
 def _sync_device(p):
-    """bitsandbytes' sync_gpu (CUDA / XPU synchronize, nothing on the CPU)."""
     try:
         from bitsandbytes.utils import sync_gpu
     except ImportError:
@@ -562,8 +545,7 @@ def _local_shard_class(cls):
     namespace = {"__module__": cls.__module__}
     hook_step = getattr(torch.optim.Optimizer, "profile_hook_step", None)
     if hook_step is not None:
-        # The mixin's step shadows the base class step torch wrapped when the optimizer was built:
-        # wrap it the same way, so step pre / post hooks (and the profiler label) still run once.
+        # The mixin's step shadows torch's hooked step: re-wrap so step hooks still run once.
         step = hook_step(_LocalShardMixin.step)
         step.hooked = True
         namespace["step"] = step
@@ -588,10 +570,7 @@ def localize_bnb_optimizer(optimizer):
 
 
 def _rebind_scheduler_step(optimizer):
-    """An LR scheduler built before localization (Trainer(optimizers = (opt, scheduler))) wrapped the
-    old class's step on the instance (torch.optim.lr_scheduler patch_track_step_called), so the
-    local-shard step would never run. Point that wrapper at the new class step, keeping the
-    scheduler's step-called tracking."""
+    """A scheduler built before localization wrapped the old class step on the instance; repoint it."""
     wrapped = vars(optimizer).get("step")
     if wrapped is None or not getattr(wrapped, "_wrapped_by_lr_sched", False):
         return
