@@ -180,10 +180,28 @@ export function readInRecents(
   return threads.filter((id) => before.has(id) && !now.has(id));
 }
 
+/** A run that stopped because its model was not loaded and awaits a yes (not `model_busy`, which reports as skipped). */
+export function asksToLoadModel(run: { errorCode: string | null; taskModel?: string | null }): boolean {
+  return run.errorCode === "model_not_loaded" && Boolean(run.taskModel);
+}
+
+/** Runs asking to load their task's model, newest per task, regardless of the task's Notifications. */
+export function runsAskingToLoad<
+  T extends { taskId: string; errorCode: string | null; taskModel?: string | null },
+>(runs: readonly T[]): T[] {
+  const byTask = new Map<string, T>();
+  for (const run of runs) if (asksToLoadModel(run)) byTask.set(run.taskId, run);
+  return [...byTask.values()];
+}
+
 type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
 
 const ERROR_KEYS: Record<string, TranslationKey> = {
   no_model: "scheduledTasks.errors.noModel",
+  model_not_loaded: "scheduledTasks.errors.modelNotLoaded",
+  model_load_failed: "scheduledTasks.errors.modelLoadFailed",
+  model_busy: "scheduledTasks.errors.modelBusy",
+  connection_unavailable: "scheduledTasks.errors.connectionUnavailable",
   timeout: "scheduledTasks.errors.timeout",
   cancelled: "scheduledTasks.errors.cancelled",
   interrupted: "scheduledTasks.errors.interrupted",

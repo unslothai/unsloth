@@ -345,6 +345,12 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export type { ExternalProviderConfig } from "./external-providers";
+export {
+  externalReasoningTakesEffort,
+  getExternalReasoningCapabilities,
+} from "./provider-capabilities";
+// A provider catalogue lands async, so capability reads need to re-run when it does.
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 export {
   noteEffortDisplacedByPin,
