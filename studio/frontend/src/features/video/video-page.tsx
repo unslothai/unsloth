@@ -101,6 +101,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -4076,7 +4077,7 @@ function VideoGenerator({
           </div>
 
           <Field label="Prompt" hint={status?.prompt_hint || undefined}>
-            <Textarea
+            <DeferredTextarea
               data-type-to-activate="prompt"
               rows={4}
               className={cn(PROMPT_BOX_CLASS, "min-h-32")}
@@ -4087,7 +4088,7 @@ function VideoGenerator({
                 dismissExample("video");
                 setExampleDismissed(true);
               }}
-              onChange={(e) => setPrompt(e.target.value)}
+              onValueChange={setPrompt}
             />
           </Field>
           {status?.supports_cfg !== false && (

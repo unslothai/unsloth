@@ -33,14 +33,16 @@ test("every full-size media element with a shadow on Images and Video opts in", 
   }
 });
 
-test("the Images prompt box hands keystrokes to the page as a transition", () => {
-  const src = readSrc("features/images/images-page.tsx");
-  const box = src.slice(
-    src.indexOf('data-type-to-activate="prompt"') - 40,
-    src.indexOf('data-type-to-activate="prompt"'),
-  );
-  assert.match(box, /<DeferredTextarea\s*$/);
-  assert.match(src, /onValueChange=\{setPrompt\}/);
+test("the Images and Video prompt boxes hand keystrokes to the page as a transition", () => {
+  for (const file of [
+    "features/images/images-page.tsx",
+    "features/video/video-page.tsx",
+  ]) {
+    const src = readSrc(file);
+    const at = src.indexOf('data-type-to-activate="prompt"');
+    assert.match(src.slice(at - 40, at), /<DeferredTextarea\s*$/, file);
+    assert.match(src, /onValueChange=\{setPrompt\}/, file);
+  }
   const component = readSrc("components/deferred-textarea.tsx");
   assert.match(component, /startTransition\(\(\) => onValueChange\(next\)\)/);
 });
