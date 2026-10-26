@@ -9215,7 +9215,6 @@ class LlamaCppBackend:
         self._ple_layers: Optional[list[int]] = None
         self._ple_ngram_size: Optional[int] = None
         self._ple_conv_kernel: Optional[int] = None
-        self._feed_forward_length_by_layer: Optional[list[int]] = None
         self._kv_lora_rank: Optional[int] = None
         self._key_length_mla: Optional[int] = None
         self._value_length_mla: Optional[int] = None
@@ -14826,12 +14825,17 @@ class LlamaCppBackend:
         """
 
         def _default_runner():
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            # Bounded like the other nvidia-smi probes (a wedged driver can outlive the timeout),
+            # and never cached: the paging watch samples free memory as it changes.
+            result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",
                     "--query-gpu=index,memory.free,memory.total",
                     "--format=csv,noheader,nounits",
                 ],
+                cache = False,
                 capture_output = True,
                 text = True,
                 encoding = "utf-8",
@@ -14971,7 +14975,9 @@ class LlamaCppBackend:
         an idle card sits at gen 1 x1 and this runs before the load), or None when the tool
         is absent or fails."""
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",
                     "--query-gpu=index,pcie.link.gen.max,pcie.link.width.max",
@@ -21653,7 +21659,6 @@ class LlamaCppBackend:
         self._ple_layers = None
         self._ple_ngram_size = None
         self._ple_conv_kernel = None
-        self._feed_forward_length_by_layer = None
         self._kv_lora_rank = None
         self._key_length_mla = None
         self._value_length_mla = None

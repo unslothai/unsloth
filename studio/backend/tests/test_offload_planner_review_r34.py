@@ -394,3 +394,47 @@ def test_both_no_flash_retries_mark_flash_attention_off_before_revoking():
         at = src.index(revoke, at + 1)
         before = src[:at].rstrip().splitlines()[-1].strip()
         assert before == "_flash_attn_known_off = True", before
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [
+        lambda cls: cls._nvidia_link_query(),
+        lambda cls: cls._nvidia_smi_free_total_mib(),
+    ],
+    ids = ["link", "free_vram"],
+)
+def test_a_wedged_nvidia_smi_cannot_hold_the_planner_probes(monkeypatch, probe):
+    """r37: both probes called subprocess.run directly, whose kill-and-wait on timeout blocks for as
+    long as a driver-wedged child refuses to die. Through the bounded helper they give up."""
+    import subprocess
+    import threading
+    import time
+
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.hardware import gpu_query
+
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "1")
+    gpu_query.reset()
+    release = threading.Event()
+
+    def wedged(*_a, **_kw):
+        release.wait(60)
+        raise subprocess.TimeoutExpired("nvidia-smi", 10)
+
+    monkeypatch.setattr(subprocess, "run", wedged)
+    answer = {}
+    worker = threading.Thread(
+        target = lambda: answer.setdefault("out", probe(LlamaCppBackend)), daemon = True
+    )
+    started = time.monotonic()
+    try:
+        worker.start()
+        worker.join(20)
+        assert not worker.is_alive(), "the probe is still blocked on the wedged nvidia-smi"
+        assert time.monotonic() - started < 20
+        assert answer["out"] in (None, [])
+    finally:
+        release.set()
+        worker.join(5)
+        gpu_query.reset()
