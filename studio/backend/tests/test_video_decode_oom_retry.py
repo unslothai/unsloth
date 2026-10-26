@@ -101,9 +101,7 @@ def test_streamed_render_untiled_oom_is_handled_by_the_gate(monkeypatch):
     assert stats["oom_fallback"] == 1
     assert ladder["tiled_retry"] == 0
     fired.clear()
-    fired.append(
-        True
-    )
+    fired.append(True)
     _render(pipe, Z)
     assert stats["tiled"] == 1 and stats["untiled"] == 0
 
