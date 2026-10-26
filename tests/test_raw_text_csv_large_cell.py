@@ -18,6 +18,7 @@
 
 import csv
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -57,4 +58,46 @@ def test_csv_field_limit_is_restored(tmp_path):
     _write_csv(path, ["hello"])
     before = csv.field_size_limit()
     loader._read_file_by_format(str(path), "csv_text_column")
+    assert csv.field_size_limit() == before
+
+
+def test_overlapping_reads_keep_the_raised_limit(tmp_path):
+    module = _load_raw_text()
+    a_started, b_started, a_done = threading.Event(), threading.Event(), threading.Event()
+
+    class Loader(module.RawTextDataLoader):
+        def _extract_text_from_csv_row(self, row):
+            name = threading.current_thread().name
+            if name == "A" and not a_started.is_set():
+                a_started.set()
+                b_started.wait(1)
+            if name == "B" and not b_started.is_set():
+                b_started.set()
+                a_done.wait(1)
+            return super()._extract_text_from_csv_row(row)
+
+    paths = {"A": tmp_path / "a.csv", "B": tmp_path / "b.csv"}
+    for path in paths.values():
+        _write_csv(path, ["short", "word " * 40_000])
+    before = csv.field_size_limit()
+    results = {}
+
+    def read():
+        name = threading.current_thread().name
+        try:
+            Loader(tokenizer = object())._read_file_by_format(str(paths[name]), "csv_text_column")
+            results[name] = "ok"
+        except Exception as error:
+            results[name] = repr(error)
+        if name == "A":
+            a_done.set()
+
+    thread_a = threading.Thread(target = read, name = "A")
+    thread_a.start()
+    a_started.wait(2)
+    thread_b = threading.Thread(target = read, name = "B")
+    thread_b.start()
+    thread_a.join()
+    thread_b.join()
+    assert results == {"A": "ok", "B": "ok"}
     assert csv.field_size_limit() == before
