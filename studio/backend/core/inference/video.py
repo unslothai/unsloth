@@ -3307,6 +3307,126 @@ def _save_native_quant_to_cache(
         logger.warning("diffusion.prequant_cache: native skipped (%s)", exc)
 
 
+# "0": the offloaded native build is written to the local prequant cache inside the load, as before.
+VIDEO_NATIVE_CACHE_BACKGROUND_ENV = "UNSLOTH_VIDEO_NATIVE_CACHE_BACKGROUND"
+_NATIVE_WRITES_ATTR = "_unsloth_native_writes"
+
+
+def _native_cache_background() -> bool:
+    raw = (os.environ.get(VIDEO_NATIVE_CACHE_BACKGROUND_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return False
+    try:
+        from .diffusion_prequant_cache import async_enabled
+        return bool(async_enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+class _NativeCacheWrites:
+    """Offloaded native build's cache writes, run after the load is published.
+
+    Waits for the background pins so the writer reads the pinned copies, not pageable tensors it would keep alive."""
+
+    def __init__(
+        self,
+        pipe: Any,
+        fam: Any,
+        views: Any,
+        spec: dict,
+        *,
+        base: Optional[str],
+        source: Optional[str],
+    ):
+        import threading
+
+        self._pipe = pipe
+        self._args = (fam, list(views or ()), spec, base, source)
+        self._lock = threading.Lock()
+        self._closed = False
+        self._writes: list = []
+        self._thread: Optional[Any] = None
+
+    def start(self) -> None:
+        import threading
+        self._thread = threading.Thread(
+            target = self._run, name = "video-native-cache-write", daemon = True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            finish_background_pins(self._pipe)
+            fam, views, spec, base, source = self._args
+            from .diffusion_native_cache import save_deferred
+            from .video_denoiser_prequant import denoiser_components
+
+            components = denoiser_components(fam)
+            if len(components) != len(views):
+                logger.info(
+                    "diffusion.prequant_cache: native skipped (denoiser views != components)"
+                )
+                return
+            logger.info(
+                "diffusion.prequant_cache: writing the native %s build of %s in the background, after the load",
+                spec.get("scheme"),
+                ", ".join(components),
+            )
+            for component, view in zip(components, views):
+                with self._lock:
+                    if self._closed:
+                        return
+                    write = save_deferred(
+                        getattr(view, "transformer", None),
+                        fam,
+                        base_repo = base,
+                        source_base = source,
+                        component = component,
+                        logger = logger,
+                    )
+                    if write is None or not hasattr(write, "start"):
+                        continue
+                    self._writes.append(write)
+                    write.start()
+                write.wait()
+        except Exception as exc:  # noqa: BLE001 - a cache write never surfaces
+            logger.warning("diffusion.prequant_cache: native background write skipped (%s)", exc)
+        finally:
+            self._args = None
+            self._pipe = None
+
+    def finish(self, timeout: Optional[float] = None) -> None:
+        """Teardown: let a running write finish (bounded), then cancel; a write not yet begun never begins."""
+        try:
+            from .diffusion_prequant_cache import FINISH_TIMEOUT_SECONDS
+            timeout = FINISH_TIMEOUT_SECONDS if timeout is None else timeout
+        except Exception:  # noqa: BLE001
+            timeout = 600.0 if timeout is None else timeout
+        with self._lock:
+            self._closed = True
+            writes = list(self._writes)
+        for write in writes:
+            try:
+                if not write.wait(timeout):
+                    write.cancel()
+                    write.wait(30.0)
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
+        if self._thread is not None:
+            self._thread.join(30.0)
+
+
+def _finish_native_writes(pipe: Any) -> None:
+    writes = getattr(pipe, _NATIVE_WRITES_ATTR, None)
+    if writes is None:
+        return
+    try:
+        writes.finish()
+        setattr(pipe, _NATIVE_WRITES_ATTR, None)
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def _read_native_quant_from_cache(
     fam: Any,
     spec: Optional[dict],
@@ -9214,6 +9334,7 @@ class VideoBackend:
             # The encoder runs in the worker; the enhancer, processor and duration head are never used.
             pipe_kwargs.update({name: None for name in LTX25_NONE_COMPONENTS})
         cast_writes = None
+        native_writes = None
         if kind == "pipeline":
             cast_missed = _read_cast_cache(
                 pipe_kwargs,
@@ -9782,14 +9903,24 @@ class VideoBackend:
                     == _native_spec_for(native_scheme, fam, native_kwargs.get("act_int8"))
                 ):
                     # The native build is read back under auto too: the cache replays the pick, never makes it.
-                    _save_native_quant_to_cache(
-                        fam,
-                        views,
-                        native_cache_spec,
-                        base = base,
-                        source = _base_local_dir or fetch_base,
-                        cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
-                    )
+                    if _native_cache_background():
+                        native_writes = _NativeCacheWrites(
+                            pipe,
+                            fam,
+                            views,
+                            native_cache_spec,
+                            base = base,
+                            source = _base_local_dir or fetch_base,
+                        )
+                    else:
+                        _save_native_quant_to_cache(
+                            fam,
+                            views,
+                            native_cache_spec,
+                            base = base,
+                            source = _base_local_dir or fetch_base,
+                            cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+                        )
                     self._raise_if_video_load_superseded(_load_token)
                 # Only explicit schemes read the cache back, so an auto save would be a write nothing opens.
                 elif transformer_quant_pinned is not None:
@@ -10475,6 +10606,9 @@ class VideoBackend:
         if cast_writes is not None:
             pipe._unsloth_cast_writes = cast_writes
             cast_writes.start()
+        if native_writes is not None:
+            setattr(pipe, _NATIVE_WRITES_ATTR, native_writes)
+            native_writes.start()
         return self.status()
 
     @staticmethod
@@ -14026,6 +14160,7 @@ class VideoBackend:
             stop_background_pins(getattr(state, "pipe", None))
             # A cast cache write still reads the components the teardown frees.
             _finish_cast_writes(getattr(state, "pipe", None))
+            _finish_native_writes(getattr(state, "pipe", None))
             uninstall_cfg_parallel(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(
