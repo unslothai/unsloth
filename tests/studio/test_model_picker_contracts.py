@@ -1450,7 +1450,7 @@ def test_save_settings_is_not_rendered_when_it_could_do_nothing():
     gate = " ".join(_save_button_gate().split())
     assert "!canSave" in gate, gate
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "? !atDefault || savedRemember" in page
+    assert "? !atDefault || (savedRemember && !loadsOnce)" in page
 
 
 def test_save_settings_reflects_the_context_it_pinned():
@@ -3193,10 +3193,11 @@ def test_run_settings_page_keeps_its_identifying_controls():
     assert 'aria-label="Back to model list"' in page
     assert 'ariaLabel="Context Length"' in page
     assert 'aria-label="Context Length"' in page
-    # The button element, not the word: "Reset" also appears in comments. Reset picks Default
-    # settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
+    # The button element, not the word: "Reset" also appears in comments. Reset picks the pinned set,
+    # else Default settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
     reset = any(
-        "onClick={() => pickSet(null)}" in el.group(0) and re.search(r">\s*Reset\s*<", el.group(0))
+        "onClick={() => pickSet(pinnedSet)}" in el.group(0)
+        and re.search(r">\s*Reset\s*<", el.group(0))
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )
     assert reset, "the Reset button's JSX is gone or no longer named Reset"

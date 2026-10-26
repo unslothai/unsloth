@@ -19,6 +19,8 @@ export const SAVED_RUN_SETTINGS_STORAGE_KEY =
   "unsloth_model_saved_run_settings";
 export const SELECTED_RUN_SETTINGS_STORAGE_KEY =
   "unsloth_model_selected_run_settings";
+export const PINNED_RUN_SETTINGS_STORAGE_KEY =
+  "unsloth_model_pinned_run_settings";
 export const SAVED_RUN_SETTINGS_UPDATED_EVENT =
   "unsloth-saved-run-settings-updated";
 export const SAVED_RUN_SETTINGS_NAME_MAX = 80;
@@ -112,6 +114,11 @@ const SELECTED_VARIANTS_STORAGE_KEY =
   "unsloth_model_selected_run_settings_variants";
 const readSelectedVariants = () =>
   readJson<Record<string, string>>(SELECTED_VARIANTS_STORAGE_KEY);
+/** model + quant key -> the set every load uses, whatever was picked since. */
+const readPins = () =>
+  readJson<Record<string, string>>(PINNED_RUN_SETTINGS_STORAGE_KEY);
+const writePins = (map: Record<string, string>) =>
+  writeJson(PINNED_RUN_SETTINGS_STORAGE_KEY, map);
 
 function decode(entries: unknown): SavedRunSettings[] {
   if (!Array.isArray(entries)) {
@@ -235,6 +242,14 @@ export function renameSavedRunSettings(
   if (!writeMap(map)) {
     return false;
   }
+  const pins = readPins();
+  const renamedPins = selectionsNaming(pins, modelId, from);
+  for (const pinned of renamedPins) {
+    pins[pinned] = cleanName;
+  }
+  if (renamedPins.length > 0) {
+    writePins(pins);
+  }
   const selections = readSelections();
   const renamed = selectionsNaming(selections, modelId, from);
   for (const selected of renamed) {
@@ -258,6 +273,14 @@ export function deleteSavedRunSettings(modelId: string, name: string): boolean {
     if (!writeMap(map)) {
       return false;
     }
+  }
+  const pins = readPins();
+  const unpinned = selectionsNaming(pins, modelId, name);
+  for (const pinned of unpinned) {
+    delete pins[pinned];
+  }
+  if (unpinned.length > 0) {
+    writePins(pins);
   }
   const selections = readSelections();
   const dropped = selectionsNaming(selections, modelId, name);
@@ -332,18 +355,65 @@ export function forgetPerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
 ): boolean {
   const selections = readSelections();
+  const pins = readPins();
   let changed = false;
+  let unpinned = false;
   for (const { modelId, ggufVariant } of modelOverrideKeyOwners(overrideKeys)) {
     const key = selectionKey(modelId, ggufVariant);
     if (typeof selections[key] === "string") {
       selections[key] = null;
       changed = true;
     }
+    if (key in pins) {
+      delete pins[key];
+      unpinned = true;
+    }
+  }
+  if (unpinned) {
+    writePins(pins);
   }
   if (changed) {
     writeSelections(selections);
   }
   return deletePerModelConfigsForOverrideKeys(overrideKeys);
+}
+
+/** The set this model + quant always loads with, or null when it loads the last one picked. */
+export function getPinnedRunSettings(
+  modelId: string,
+  ggufVariant: string | null | undefined,
+): string | null {
+  const value = readPins()[selectionKey(modelId, ggufVariant)];
+  return typeof value === "string" ? value : null;
+}
+
+export function setPinnedRunSettings(
+  modelId: string,
+  ggufVariant: string | null | undefined,
+  name: string | null,
+): boolean {
+  const pins = readPins();
+  const key = selectionKey(modelId, ggufVariant);
+  if ((pins[key] ?? null) === name) {
+    return true;
+  }
+  if (name === null) {
+    delete pins[key];
+  } else {
+    pins[key] = name;
+  }
+  return writePins(pins);
+}
+
+export function usePinnedRunSettings(
+  modelId: string,
+  ggufVariant: string | null | undefined,
+): string | null {
+  return useSyncExternalStore(
+    subscribeSavedRunSettings,
+    () => getPinnedRunSettings(modelId, ggufVariant),
+    () => null,
+  );
 }
 
 /** "<model> custom settings", numbered past the names already taken. */
@@ -394,7 +464,8 @@ export function subscribeSavedRunSettings(onChange: () => void): () => void {
     if (
       event.key === null ||
       event.key === SAVED_RUN_SETTINGS_STORAGE_KEY ||
-      event.key === SELECTED_RUN_SETTINGS_STORAGE_KEY
+      event.key === SELECTED_RUN_SETTINGS_STORAGE_KEY ||
+      event.key === PINNED_RUN_SETTINGS_STORAGE_KEY
     ) {
       cache.clear();
       onChange();

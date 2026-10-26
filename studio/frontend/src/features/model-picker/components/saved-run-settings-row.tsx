@@ -41,6 +41,8 @@ interface RunSettingsPickerProps {
   sets: readonly SavedRunSettings[];
   /** The set the model loads with, or null for the default (recommended) settings. */
   selected: string | null;
+  /** The set every load uses ("Always load with these settings"), if any. */
+  pinned?: string | null;
   /** Default with edits: the name they will be saved under. */
   customName: string | null;
   /** Null on Default settings, which cannot be renamed. */
@@ -83,6 +85,7 @@ export function RunSettingsPicker({
   modelName,
   sets,
   selected,
+  pinned = null,
   customName,
   onEditName,
   compact = false,
@@ -242,6 +245,11 @@ export function RunSettingsPicker({
             >
               <Check on={entry.name === selected} />
               <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+              {entry.name === pinned && (
+                <span className="shrink-0 text-ui-11 font-normal text-muted-foreground">
+                  Always
+                </span>
+              )}
               <button
                 type="button"
                 aria-label={`Rename ${entry.name}`}

@@ -9,6 +9,7 @@ import {
   adoptRememberedRunSettings,
   deleteSavedRunSettings,
   findSavedRunSettings,
+  getPinnedRunSettings,
   isRunSettingsLimitReached,
   newRunSettingsName,
   normalizeSavedRunSettingsName,
@@ -16,7 +17,9 @@ import {
   renameSavedRunSettings,
   SAVED_RUN_SETTINGS_PER_MODEL_MAX,
   saveRunSettings,
+  setPinnedRunSettings,
   setSelectedRunSettings,
+  usePinnedRunSettings,
   useSavedRunSettings,
   useSelectedRunSettings,
 } from "../model-config/saved-run-settings";
@@ -33,6 +36,7 @@ import {
 import { useLlamaCppBackend } from "@/hooks/use-llama-backend";
 import { useSliderDraft } from "@/hooks/use-slider-draft";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { InfoHint } from "@/components/ui/info-hint";
 import {
   Select,
@@ -2565,6 +2569,7 @@ export function ModelConfigPage({
   focusField,
 }: ModelConfigPageProps) {
   const saveStatusId = useId();
+  const alwaysLoadId = useId();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Apple Silicon specifically, and used ONLY for wording: "Unified" is what Apple calls its
   // pool, where an AMD APU's is "Shared". NOT the signal for capacity - see hasUnifiedMemory.
@@ -3133,13 +3138,17 @@ export function ModelConfigPage({
           if (perModelConfigStorageChanged(storedAtStart, storedConfig)) {
             return;
           }
-          setExtraArgsLoadable(hydratedIsLoadable);
-          replaceModelConfigDraft(draftKey, serverConfig, {
-            remember: true,
-            savedRemember: true,
-          });
-          if (hasNonDefaultAdvanced(serverConfig)) {
-            setAutoOpenAdvanced(true);
+          // With a set pinned, the row is the pinned set while the resident model may have loaded another
+          // once: the panel keeps showing what is running, and the row still lands in the local record.
+          if (!(loadedConfig && getPinnedRunSettings(configId, target.ggufVariant) !== null)) {
+            setExtraArgsLoadable(hydratedIsLoadable);
+            replaceModelConfigDraft(draftKey, serverConfig, {
+              remember: true,
+              savedRemember: true,
+            });
+            if (hasNonDefaultAdvanced(serverConfig)) {
+              setAutoOpenAdvanced(true);
+            }
           }
           // Unconditionally, because savePerModelConfig says "no settings" by DELETING the entry: a merge
           // that comes out default is a clear that has to travel. Skipping it stranded the old flag
@@ -3699,18 +3708,43 @@ export function ModelConfigPage({
   useEffect(() => {
     if (selectionStale) {
       setSelectedRunSettings(configId, target.ggufVariant, null);
+      setPinnedRunSettings(configId, target.ggufVariant, null);
     }
   }, [selectionStale, configId, target.ggufVariant]);
+  // "Always load with these settings": the pinned set is what every load uses, and a pick of another
+  // only loads once. Unpinned, the last set picked is what loads.
+  const pinnedName = usePinnedRunSettings(configId, target.ggufVariant);
+  const pinnedEntry =
+    pinnedName === null ? null : findSavedRunSettings(savedSets, pinnedName);
+  const pinnedSet = pinnedEntry?.name ?? null;
+  // A model loaded once with another set: name that set rather than show the pinned one as edited.
+  const loadedOnce =
+    pinnedEntry !== null &&
+    pickedSet === undefined &&
+    loadedConfig != null &&
+    atBaseline &&
+    !perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(pinnedEntry.config))
+      ? (savedSets.find((entry) =>
+          perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(entry.config)),
+        )?.name ?? (isDefaultConfig(forSetStore(loadedConfig)) ? null : undefined))
+      : undefined;
   const wantedSet =
-    pickedSet !== undefined ? pickedSet : selectionStale ? null : (persistedSet ?? null);
+    pickedSet !== undefined
+      ? pickedSet
+      : loadedOnce !== undefined
+        ? loadedOnce
+        : selectionStale
+          ? null
+          : (persistedSet ?? null);
   const selectedEntry =
     wantedSet === null ? null : findSavedRunSettings(savedSets, wantedSet);
   const selectedSet = selectedEntry?.name ?? null;
+  const loadsOnce = pinnedSet !== null && selectedSet !== pinnedSet;
   const setUnsaved =
     selectedEntry !== null &&
     (!perModelConfigsEqual(forSetStore(runtimeConfig), forSetStore(selectedEntry.config)) ||
-      (persistedSet ?? null) !== selectedSet ||
-      (!matchesStored && !atDefault));
+      (!loadsOnce &&
+        ((persistedSet ?? null) !== selectedSet || (!matchesStored && !atDefault))));
   // Arguments a load would refuse, or not read yet: saving them would store what cannot load.
   const extraArgsBlocked =
     (!extraArgsLoadable && !sharedExtraArgsCleared) ||
@@ -3722,20 +3756,25 @@ export function ModelConfigPage({
   const canSave = naming
     ? normalizeSavedRunSettingsName(naming.name) !== ""
     : selectedSet === null
-      ? !atDefault || savedRemember
+      ? !atDefault || (savedRemember && !loadsOnce)
       : setUnsaved;
+  const pickEdited = selectedSet === null ? !atDefault : setUnsaved;
   // Always mounted: a status appearing on save would move Load.
   const saveStatus = naming
     ? ""
-    : selectedSet === null
-      ? !atDefault
-        ? "Unsaved changes"
-        : savedRemember
-          ? "Saved settings will be forgotten"
-          : "Using the default settings"
-      : setUnsaved
-        ? "Unsaved changes"
-        : "Saved for this model";
+    : loadsOnce && !pickEdited
+      ? `Loads once. Next loads use ${pinnedSet}.`
+      : selectedSet === null
+        ? !atDefault
+          ? "Unsaved changes"
+          : savedRemember
+            ? "Saved settings will be forgotten"
+            : "Using the default settings"
+        : setUnsaved
+          ? "Unsaved changes"
+          : pinnedSet !== null
+            ? "Loads every time"
+            : "Saved for this model";
   const primaryActionLabel = isActiveModel ? "Reload model" : "Load model";
 
   const [engineReady, setEngineReady] = useState(true);
@@ -3936,7 +3975,11 @@ export function ModelConfigPage({
     isDefaultConfig(forSetStore(committed)) ? null : newRunSettingsName(savedSets, modelName);
 
   /** Saves without loading; ``into`` null saves an edited Default as its custom set, else forgets. */
-  const handleSave = (into: string | null = selectedSet, message?: string): boolean => {
+  const handleSave = (
+    into: string | null = selectedSet,
+    message?: string,
+    pinned = pinnedSet,
+  ): boolean => {
     if (sharedVariantUnresolved) {
       return false;
     }
@@ -3947,6 +3990,10 @@ export function ModelConfigPage({
     const { effectiveRuntimeConfig } = commitDraft();
     const target = into ?? committedCustomName(effectiveRuntimeConfig);
     const keep = target !== null;
+    // Never a forget while pinned: the pinned set is what loads.
+    if (!keep && pinned !== null) {
+      return false;
+    }
     if (keep && extraArgsBlocked) {
       toast.error("Fix the extra arguments before saving.");
       return false;
@@ -3954,6 +4001,12 @@ export function ModelConfigPage({
     if (keep && !saveSharedSet(target, effectiveRuntimeConfig)) {
       toast.error(saveSetError(target));
       return false;
+    }
+    if (pinned !== null && target !== pinned) {
+      // Only the set is saved: the pinned one still loads next.
+      setPickedSet(target);
+      toast.success(message ?? `Saved "${target}".`);
+      return true;
     }
     const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig, keep);
     if (!saved) {
@@ -3994,8 +4047,9 @@ export function ModelConfigPage({
     return applied;
   };
 
-  // The model loads with whatever was picked last: picking takes effect without a Save.
-  const pickSet = (name: string | null) => {
+  // The model loads with whatever was picked last: picking takes effect without a Save. While another set is
+  // pinned, a pick only fills the panel, for a load that uses it once.
+  const pickSet = (name: string | null, pinned = pinnedSet) => {
     // A load settling its budget already captured its config; a pick now would disagree with it.
     if (budgetSettling) {
       return;
@@ -4003,6 +4057,11 @@ export function ModelConfigPage({
     setNaming(null);
     const entry = name === null ? null : findSavedRunSettings(savedSets, name);
     const next = entry?.config ?? DEFAULT_PER_MODEL_CONFIG;
+    if (pinned !== null && entry?.name !== pinned) {
+      applyToPanel(next);
+      setPickedSet(entry?.name ?? null);
+      return;
+    }
     // What the panel shows, explicit argument clear included: an omitted field keeps the server's old flags.
     const { saved, defaultConfig } = persistConfig(applyToPanel(next), entry !== null);
     if (!saved) {
@@ -4023,10 +4082,33 @@ export function ModelConfigPage({
       return;
     }
     syncOtherQuants(otherQuants, null);
-    if (wasSelected) {
-      pickSet(null);
+    if (name === pinnedSet) {
+      // Unpinned with it, so what the panel shows becomes what loads.
+      pickSet(wasSelected ? null : selectedSet, null);
+    } else if (wasSelected) {
+      pickSet(pinnedSet);
     }
     toast.success(`Deleted "${name}".`);
+  };
+
+  const setAlwaysLoad = (on: boolean) => {
+    if (!on) {
+      setPinnedRunSettings(configId, target.ggufVariant, null);
+      return;
+    }
+    if (selectedSet === null || !setPinnedRunSettings(configId, target.ggufVariant, selectedSet)) {
+      return;
+    }
+    const message = `"${selectedSet}" now loads every time.`;
+    // Edits go into the set first; either way it becomes what loads, as a pick would make it.
+    if (setUnsaved) {
+      if (!handleSave(selectedSet, message, selectedSet)) {
+        setPinnedRunSettings(configId, target.ggufVariant, pinnedSet);
+      }
+      return;
+    }
+    pickSet(selectedSet, selectedSet);
+    toast.success(message);
   };
 
   // Renames the selected set; an edited Default not saved yet gets named before it is created.
@@ -4092,8 +4174,14 @@ export function ModelConfigPage({
         loadSet = null;
       }
     }
-    const { saved } = persistConfig(effectiveRuntimeConfig, loadSet !== null);
-    if (saved) {
+    // Loading another set than the pinned one uses it this once: the pinned record and override stay.
+    const onceOnly = pinnedSet !== null && loadSet !== pinnedSet;
+    const { saved } = onceOnly
+      ? { saved: true }
+      : persistConfig(effectiveRuntimeConfig, loadSet !== null);
+    if (onceOnly) {
+      setPickedSet(loadSet);
+    } else if (saved) {
       keepSelection(loadSet);
     }
     if (!saved) {
@@ -4387,13 +4475,14 @@ export function ModelConfigPage({
           modelName={modelName}
           sets={savedSets}
           selected={selectedSet}
+          pinned={pinnedSet}
           customName={naming ? null : customName}
           onEditName={editName}
           compact={variant === "sidebar"}
           naming={naming}
           // Until the server copy is read: a pick before then could not forget a row it has not seen.
           disabled={sharedVariantUnresolved || extraArgsHydrating || budgetSettling}
-          onPick={pickSet}
+          onPick={(name) => pickSet(name)}
           onNamingChange={setNaming}
           onNamingSubmit={submitNaming}
           onDelete={setPendingDelete}
@@ -4408,9 +4497,37 @@ export function ModelConfigPage({
             "-mt-2 -mb-1.5 min-h-[calc(1.375em+0.25rem)] min-w-0 truncate pl-3.5 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400",
             naming && variant === "sidebar" && "hidden",
           )}
+          title={saveStatus || undefined}
         >
           {saveStatus}
         </p>
+        {!naming && (
+          // Always rendered, so picking Default never moves the buttons; Default itself is never pinned.
+          <div className="-mt-1.5 flex min-w-0 items-center gap-2 pl-3.5">
+            <Checkbox
+              id={alwaysLoadId}
+              checked={selectedSet !== null && selectedSet === pinnedSet}
+              disabled={
+                selectedSet === null ||
+                sharedVariantUnresolved ||
+                extraArgsHydrating ||
+                budgetSettling
+              }
+              onCheckedChange={(checked) => setAlwaysLoad(checked === true)}
+            />
+            <label
+              htmlFor={alwaysLoadId}
+              title={
+                selectedSet === null
+                  ? "Pick or save a setting to always load it"
+                  : "Every load of this model uses these settings, even after you load it once with others"
+              }
+              className="min-w-0 cursor-pointer select-none truncate text-ui-12 text-muted-foreground peer-disabled:cursor-default peer-disabled:opacity-60"
+            >
+              Always load with these settings
+            </label>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
@@ -4454,8 +4571,15 @@ export function ModelConfigPage({
             variant="outline"
             size="sm"
             className="text-muted-foreground"
-            disabled={(atDefault && selectedSet === null) || extraArgsHydrating || budgetSettling}
-            onClick={() => pickSet(null)}
+            // Back to what loads every time: the pinned set, else Default settings.
+            disabled={
+              (pinnedSet !== null
+                ? selectedSet === pinnedSet && !setUnsaved
+                : atDefault && selectedSet === null) ||
+              extraArgsHydrating ||
+              budgetSettling
+            }
+            onClick={() => pickSet(pinnedSet)}
           >
             Reset
           </Button>

@@ -301,10 +301,10 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
     /selectedSet === null && !atDefault \? newRunSettingsName\(savedSets, modelName\)/,
   );
   assert.match(page, /\} else \{\s*handleSave\(customName\);/);
-  // Reset goes back to Default settings at once, not just the panel values.
+  // Reset goes back at once to what loads every time (the pinned set, else Default), not just the panel values.
   assert.match(
     page,
-    /disabled=\{\(atDefault && selectedSet === null\) \|\| extraArgsHydrating \|\| budgetSettling\}[\s\S]{0,160}onClick=\{\(\) => pickSet\(null\)\}/,
+    /\(pinnedSet !== null\s*\? selectedSet === pinnedSet && !setUnsaved\s*: atDefault && selectedSet === null\) \|\|\s*extraArgsHydrating \|\|\s*budgetSettling\s*\}\s*onClick=\{\(\) => pickSet\(pinnedSet\)\}/,
   );
   // A number the Save or Load click itself committed is not in customName yet, so both name the
   // new set from the committed config.
@@ -386,7 +386,7 @@ test("a set whose record was forgotten is not offered, and deleting one asks fir
     page,
     /if \(selectionStale\) \{\s*setSelectedRunSettings\(configId, target\.ggufVariant, null\);/,
   );
-  assert.match(page, /selectionStale \? null : \(persistedSet \?\? null\)/);
+  assert.match(page, /selectionStale\s*\? null\s*: \(persistedSet \?\? null\)/);
   // The trash icon opens a confirmation; only its Delete removes the set.
   assert.match(page, /onDelete=\{setPendingDelete\}/);
   assert.match(
@@ -410,7 +410,78 @@ test("rows can be renamed and deleted from the keyboard", () => {
   // Escape in the name box must reach only the box: Radix overlays dismiss from a document capture listener
   // unless the event is already prevented, so the guard sits on window capture.
   assert.match(row, /window\.addEventListener\("keydown", keepPanel, true\)/);
-  assert.match(row, /closest\("\[data-run-settings-name\]"\)[\s\S]{0,40}event\.preventDefault\(\)/);
+  assert.match(
+    row,
+    /closest\("\[data-run-settings-name\]"\)[\s\S]{0,40}event\.preventDefault\(\)/,
+  );
   assert.match(row, /event\.key === "F2"[\s\S]{0,80}rename\(entry\.name\)/);
   assert.match(row, /event\.key === "Delete"[\s\S]{0,80}remove\(entry\.name\)/);
+});
+
+test("a pinned set follows renames and goes with its set or a forget", () => {
+  saved.saveRunSettings(MODEL, "Mine", config(4096));
+  saved.saveRunSettings(MODEL, "Trial", config(2048));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), null);
+  assert.ok(saved.setPinnedRunSettings(MODEL, "q4_k_m", "Mine"));
+  // Keyed like the selection: quant case folds, other quants are separate.
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Mine");
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q8_0"), null);
+  assert.ok(saved.renameSavedRunSettings(MODEL, "Mine", "Long context"));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Long context");
+  // Deleting another set leaves the pin alone; deleting the pinned one unpins.
+  assert.ok(saved.deleteSavedRunSettings(MODEL, "Trial"));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Long context");
+  assert.ok(saved.deleteSavedRunSettings(MODEL, "Long context"));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), null);
+
+  saved.saveRunSettings(MODEL, "Mine", config(4096));
+  saved.setPinnedRunSettings(MODEL, "Q4_K_M", "Mine");
+  assert.ok(perModel.savePerModelConfig(MODEL, "Q4_K_M", config(4096)));
+  saved.forgetPerModelConfigsForOverrideKeys([`${MODEL}:Q4_K_M`]);
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), null);
+  assert.ok(saved.setPinnedRunSettings(MODEL, "Q4_K_M", "Mine"));
+  assert.ok(saved.setPinnedRunSettings(MODEL, "Q4_K_M", null));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), null);
+});
+
+test("while a set is pinned, picking or loading another uses it once", () => {
+  const page = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // A pick of another set only fills the panel: no record, override or selection is written.
+  assert.match(
+    page,
+    /const pickSet = \(name: string \| null, pinned = pinnedSet\) => \{[\s\S]{0,400}if \(pinned !== null && entry\?\.name !== pinned\) \{\s*applyToPanel\(next\);\s*setPickedSet\(entry\?\.name \?\? null\);\s*return;/,
+  );
+  // Load saves into the set it shows, but leaves the pinned record and override for the next load.
+  assert.match(
+    page,
+    /const onceOnly = pinnedSet !== null && loadSet !== pinnedSet;\s*const \{ saved \} = onceOnly\s*\? \{ saved: true \}\s*: persistConfig\(effectiveRuntimeConfig, loadSet !== null\);/,
+  );
+  // Save into another set does the same, and never forgets while pinned.
+  assert.match(page, /if \(!keep && pinned !== null\) \{\s*return false;/);
+  assert.match(
+    page,
+    /if \(pinned !== null && target !== pinned\) \{[\s\S]{0,120}setPickedSet\(target\);/,
+  );
+  // Ticking the box pins what is shown and makes it what loads, saving its edits first.
+  assert.match(
+    page,
+    /const setAlwaysLoad = [\s\S]*?setPinnedRunSettings\(configId, target\.ggufVariant, selectedSet\)[\s\S]*?if \(setUnsaved\) \{\s*if \(!handleSave\(selectedSet, message, selectedSet\)\)[\s\S]*?pickSet\(selectedSet, selectedSet\);/,
+  );
+  assert.match(page, /Always load with these settings/);
+  // The server row is the pinned set, so it must not replace what a resident model loaded once.
+  assert.match(
+    page,
+    /if \(!\(loadedConfig && getPinnedRunSettings\(configId, target\.ggufVariant\) !== null\)\) \{\s*setExtraArgsLoadable\(hydratedIsLoadable\);\s*replaceModelConfigDraft\(/,
+  );
+  // Deleting the pinned set unpins it, and what the panel shows becomes what loads.
+  assert.match(
+    page,
+    /if \(name === pinnedSet\) \{[\s\S]{0,120}pickSet\(wasSelected \? null : selectedSet, null\);/,
+  );
 });
