@@ -4487,6 +4487,18 @@ class DiffusionBackend:
             )
         elif te_effective is not None and not te_quant_supported(target, te_effective):
             te_reason = te_quant_unsupported_reason(te_effective)
+            if normalize_te_quant(te_mode) == "int8":
+                # Apple Silicon runs int8 only from the hosted file: name the missing file, not just the fp8 fallback.
+                from .diffusion_te_prequant import explicit_int8_unavailable_reason
+                missing = explicit_int8_unavailable_reason(
+                    fam,
+                    base_repo,
+                    target,
+                    supplied = supplied_text_encoders or _active_supplied_text_encoders(),
+                    local_files_only = local_files_only,
+                )
+                if missing:
+                    te_reason = f"{missing}, and the fp8 fallback cannot run here ({te_reason})"
         elif te_quant_needs_resident_weights(te_effective) and _memory_request_forces_offload(
             memory_mode, cpu_offload
         ):

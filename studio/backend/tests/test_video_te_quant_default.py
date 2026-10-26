@@ -409,9 +409,13 @@ def test_hunyuanvideo_default_fp8_leaves_the_byt5_encoder_dense(name, monkeypatc
 MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
 
 
-def test_an_explicit_wan_int8_on_mps_reaches_the_hosted_convrot_file():
+def test_an_explicit_wan_int8_on_mps_reaches_the_hosted_convrot_file(monkeypatch):
     # MPS runs the hosted int8 ConvRot encoder without fp8, so the gate must not rewrite int8 to fp8 and refuse it.
+    # Once the file is there: the gate now refuses an unpublished one up front (test_diffusion_te_int8_missing_file).
+    import core.inference.diffusion_te_prequant as tpq
     import core.inference.video as v
+
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources, **k: True)
     v._assert_video_precision_for_target(
         _family("wan2.2-ti2v-5b"), MPS_BF16, model_kind = "pipeline", text_encoder_quant = "int8"
     )
