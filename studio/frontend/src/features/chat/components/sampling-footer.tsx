@@ -224,12 +224,12 @@ export default function SamplingFooter({
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {(remember || saved !== null) && (
+        {(remember ? !unchanged : saved !== null) && (
           <Button
             type="button"
             variant={remember ? "dark" : "outline"}
             size="sm"
-            disabled={!loaded || busy || (remember && unchanged)}
+            disabled={!loaded || busy}
             onClick={remember ? save : forget}
           >
             {remember ? "Save settings" : "Forget settings"}
