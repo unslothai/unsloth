@@ -104,7 +104,9 @@ def test_fp16_dequant_keeps_autograd_for_trainable_inputs(F, layout, trainable):
         q = q.to(torch.float32).requires_grad_()
     y = F.weight_dequant(q, s, torch.float16)
     assert y.dtype == torch.float16
-    assert torch.equal(y.detach(), _oracle(q.detach().to(torch.float8_e4m3fn), s.detach(), torch.float16))
+    assert torch.equal(
+        y.detach(), _oracle(q.detach().to(torch.float8_e4m3fn), s.detach(), torch.float16)
+    )
     y.float().sum().backward()
     grad = s.grad if trainable == "scale" else q.grad
     assert grad is not None and torch.isfinite(grad).all()
