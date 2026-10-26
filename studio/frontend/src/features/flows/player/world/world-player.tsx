@@ -308,10 +308,12 @@ export function WorldPlayer({
     api,
     view === "3d" ? spec.view3d?.ambient : null,
   );
+  const [envoyTalking, setEnvoyTalking] = useState(false);
   const lockedRef = useRef(true);
   lockedRef.current =
     !started ||
     talking !== null ||
+    envoyTalking ||
     panel === "save" ||
     !!ws.auto?.encounter ||
     editor !== null;
@@ -788,7 +790,7 @@ export function WorldPlayer({
   useEffect(() => {
     queue.setPaused(!ready || lockedRef.current);
     queue.pump();
-  }, [queue, ready, started, talking, panel]);
+  }, [queue, ready, started, talking, panel, envoyTalking]);
 
   const planDay = useCallback(
     async (npcId: string, day: number, signal: AbortSignal) => {
@@ -1668,6 +1670,7 @@ export function WorldPlayer({
           state={ws.rivals}
           onChange={(r) => setWs((st) => ({ ...st, rivals: r }))}
           queue={queue}
+          onTalking={setEnvoyTalking}
         />
       ) : null}
       {editor && edState ? (

@@ -69,6 +69,8 @@ export interface RivalsPanelProps {
   onChange: (next: RivalsState) => void;
   /** The world's background queue: strategist calls share its budget and wait while the player talks. */
   queue: BackgroundQueue;
+  /** A leader conversation is waiting on the model: the world pauses its background calls meanwhile. */
+  onTalking?: (talking: boolean) => void;
 }
 
 export function RivalsPanel({
@@ -80,6 +82,7 @@ export function RivalsPanel({
   state,
   onChange,
   queue,
+  onTalking,
 }: RivalsPanelProps) {
   const board = useMemo(() => boardOf(spec, map), [spec, map]);
   const s = useMemo(
@@ -183,6 +186,7 @@ export function RivalsPanel({
       [envoy]: [...history, { role: "player", text }],
     }));
     setBusy(true);
+    onTalking?.(true);
     try {
       const res = await api.invoke(flowId, entry, {
         state: diplomacyRequest(spec, board, s, envoy, text, history),
@@ -203,6 +207,7 @@ export function RivalsPanel({
       setNote("The envoy did not come back.");
     } finally {
       setBusy(false);
+      onTalking?.(false);
     }
   };
 
