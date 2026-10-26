@@ -268,7 +268,6 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
 
 
 def _quantization_config_restores(path, cls_name):
-    """Guards around each `model.config.update({"quantization_config": quantization_config...})`."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls_name)
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
@@ -302,9 +301,7 @@ def _quantization_config_restores(path, cls_name):
 
 @pytest.mark.parametrize("cls_name", ["FastLanguageModel", "FastModel"])
 def test_caller_fp8_config_is_not_restored_over_dequantized_weights(cls_name):
-    # FineGrainedFP8Config(dequantize = True) with the default load_in_4bit: transformers drops the fp8
-    # config and the weights are 16bit. Writing the caller's config back saved bf16 weights under
-    # quant_method fp8 with no scales, which transformers 4.57.6 cannot reload.
+    # Restoring an fp8 config over dequantized weights saves bf16 as fp8 with no scales (unloadable).
     found = _quantization_config_restores(ROOT / "unsloth/models/loader.py", cls_name)
     assert found, "quantization_config restore missing"
     for guards in found:

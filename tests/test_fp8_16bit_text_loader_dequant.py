@@ -330,7 +330,6 @@ def _write_tiny_tokenizer(path):
 @pytest.mark.skipif(not has_real_cuda(), reason = "fp8 checkpoints load on CUDA")
 @pytest.mark.parametrize("cls_name", ["FastLanguageModel", "FastModel"])
 def test_explicit_dequantize_config_saves_without_fp8_config(tmp_path, cls_name):
-    """Subprocess: a caller's FineGrainedFP8Config(dequantize = True), load_in_4bit left at its default."""
     src, dst = tmp_path / "src", tmp_path / "saved"
     src.mkdir()
     _write_tiny_block_fp8_llama(str(src))
@@ -371,5 +370,5 @@ print("RELOAD", int(same and set(before) <= set(after)))
     assert "RELOAD" in lines, (out.stdout[-2000:], out.stderr[-2000:])
     assert lines["MARKED"] == "1", lines
     assert lines["QUANT"] == "null", lines
-    assert lines["DTYPES"] in ("BF16", "F16"), lines  # 16bit weights, no fp8 tensors or scales
+    assert lines["DTYPES"] in ("BF16", "F16"), lines
     assert lines["RELOAD"] == "1", lines

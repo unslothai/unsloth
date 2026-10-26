@@ -2023,8 +2023,7 @@ class FastLanguageModel(FastLlamaModel):
                     }
                     model.config.update({"quantization_config": quantization_config})
             elif not getattr(model, "_unsloth_fp8_dequantized", False):
-                # A dequantizing fp8 config (FineGrainedFP8Config(dequantize = True)) left 16bit weights and no
-                # quantization_config: restoring it would save bf16 weights under quant_method fp8.
+                # Weights are 16bit after fp8 dequantize: restoring the config would save them as fp8.
                 if hasattr(quantization_config, "to_dict"):
                     model.config.update({"quantization_config": quantization_config.to_dict()})
                 elif isinstance(quantization_config, dict):
@@ -3450,8 +3449,7 @@ class FastModel(FastBaseModel):
                     }
                     model.config.update({"quantization_config": quantization_config})
             elif not getattr(model, "_unsloth_fp8_dequantized", False):
-                # A dequantizing fp8 config (FineGrainedFP8Config(dequantize = True)) left 16bit weights and no
-                # quantization_config: restoring it would save bf16 weights under quant_method fp8.
+                # Weights are 16bit after fp8 dequantize: restoring the config would save them as fp8.
                 if hasattr(quantization_config, "to_dict"):
                     model.config.update({"quantization_config": quantization_config.to_dict()})
                 elif isinstance(quantization_config, dict):
