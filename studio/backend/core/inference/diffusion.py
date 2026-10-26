@@ -11105,6 +11105,7 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_static_seed", True),
                                 plan.estimates.get("measured_learned_cfg_off", False),
                                 plan.estimates.get("measured_dense_bf16", False),
+                                plan.estimates.get("measured_small_host_int8", False),
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
