@@ -29,7 +29,7 @@ export function KeyRevealCard({
   const [copied, setCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Preselected so Ctrl+C works even where the copy button cannot.
+  // Preselected so Ctrl+C works where the copy button cannot.
   useEffect(() => {
     selectToken(inputRef.current);
   }, []);

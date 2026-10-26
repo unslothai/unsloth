@@ -94,8 +94,7 @@ def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outsi
     name = Path(selected_executable).name.casefold()
     read_capture = workdir / "outside-read.txt"
     if _is_cmd(selected_executable):
-        # The quoted redirect is the positive control for quoting: a command line that mangles quotes
-        # also fails the denied read and write below, which would otherwise pass without isolation.
+        # Quoted redirect is the quoting positive control, else denied read/write pass vacuously
         command = (
             "echo ok>inside.txt"
             ' & echo ok>"inside quoted.txt"'

@@ -45,8 +45,7 @@ UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF:-main}"
 if [[ $ROCM -eq 1 ]]; then
     IMAGE_NAME="${IMAGE_NAME:-unsloth-rocm}"
-    # 7.2 is the floor: rocm6.4 tops out at torch 2.9.1, below what unsloth-zoo
-    # wants, and RDNA4 (gfx1200/1201) has no kernels before 7.x.
+    # 7.2 is the floor: rocm6.4 tops out below what unsloth-zoo needs, and RDNA4 needs 7.x.
     ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
     # the index follows the base unless named (7.2.4 -> rocm7.2)
     TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm${ROCM_VERSION%.*}}"
@@ -56,18 +55,13 @@ else
     UBUNTU_VERSION="${UBUNTU_VERSION:-24.04}"
 fi
 
-# Frozen to a commit here, for the same reason LLAMA_PREBUILT_TAG is resolved below and
-# the publish workflow freezes both refs with git ls-remote: docker matches a RUN layer
-# on the COMMAND STRING alone, so with the default "main" the pip-install layer is a
-# cache HIT on every rebuild and the image keeps the commits of the first build while
-# reporting success. A sha changes the build arg exactly when the branch moves.
+# Resolve refs to a commit: docker caches RUN layers by command string, so "main" would
+# never rebuild.
 resolve_git_ref() {
     local repo="$1" ref="$2" ls_out sha
     printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$' && { printf '%s' "$ref"; return 0; }
     command -v git >/dev/null 2>&1 || { printf '%s' "$ref"; return 0; }
-    # ls-remote exits 0 whether or not a ref matched, so a non-zero exit means the
-    # remote was never reached; an offline build cannot install from git anyway, so
-    # warn and pass the name through rather than fail before docker has even started.
+    # ls-remote fails only when the remote is unreachable; warn and pass the name through.
     if ! ls_out="$(git ls-remote "$repo" "$ref" 2>/dev/null)"; then
         echo "warning: ${repo} unreachable; passing mutable ref '${ref}' (docker may reuse a cached layer)" >&2
         printf '%s' "$ref"
@@ -79,17 +73,12 @@ resolve_git_ref() {
 }
 UNSLOTH_REF="$(resolve_git_ref https://github.com/unslothai/unsloth "$UNSLOTH_REF")"
 UNSLOTH_ZOO_REF="$(resolve_git_ref https://github.com/unslothai/unsloth-zoo "$UNSLOTH_ZOO_REF")"
-# The baked notebooks are one more RUN layer keyed on a mutable ref, and the publish
-# workflow already freezes this one; leaving it out here meant a rebuild after
-# unslothai/notebooks moved silently kept the old set, and stamped the old commit
-# into .unsloth_template_commit so the image misreported which set it carried.
-# Dockerfile.rocm carries neither the notebooks nor the llama.cpp prebuilt, so the
-# ROCm build skips both lookups rather than printing a tag it never passes.
+# Freeze the notebooks ref for the same layer-cache reason. Dockerfile.rocm carries neither
+# the notebooks nor the llama.cpp prebuilt.
 if [[ $ROCM -eq 0 ]]; then
 UNSLOTH_NOTEBOOKS_REF="$(resolve_git_ref https://github.com/unslothai/notebooks "$UNSLOTH_NOTEBOOKS_REF")"
 
-# Resolved to a concrete tag here, so the build-arg changes only on a new release and
-# layer caching stays correct. Pin with LLAMA_PREBUILT_TAG=... for a frozen build.
+# Resolved to a concrete tag so layer caching is correct; pin with LLAMA_PREBUILT_TAG.
 resolve_latest_llama_tag() {
     curl -fsSL -o /dev/null -w '%{url_effective}' \
         "https://github.com/unslothai/llama.cpp/releases/latest" 2>/dev/null \
@@ -146,8 +135,7 @@ echo "  unsloth        @${UNSLOTH_REF}"
 echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
 echo "  llama.cpp      ${LLAMA_PREBUILT_TAG}"
 echo "  notebooks      @${UNSLOTH_NOTEBOOKS_REF}"
-# Read the arch list out of the Dockerfile rather than repeating it: the hand-copied
-# banner had already drifted. Bare filename because the script cd'd to its own dir.
+# Read the arch list from the Dockerfile rather than repeating it.
 ARCH_LIST="$(sed -n 's/^[[:space:]]*TORCH_CUDA_ARCH_LIST="\([^"]*\)".*/\1/p' \
              Dockerfile | head -n1)"
 echo "  arch list      ${ARCH_LIST:-unknown}"
@@ -168,7 +156,7 @@ DOCKER_BUILDKIT=1 docker build \
 echo
 echo "Built ${IMAGE_NAME}:${TAG}"
 echo
-# name the GPU only from a successful query: a failing nvidia-smi prints its error on stdout
+# A failing nvidia-smi prints its error on stdout.
 HOST_GPU=""
 if HOST_GPU_QUERY="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)"; then
     HOST_GPU="$(printf '%s\n' "$HOST_GPU_QUERY" | head -1)"

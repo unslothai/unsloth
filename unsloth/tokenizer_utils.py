@@ -64,9 +64,8 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
-# gemma-4 base mirrors do not prepend <bos> (post_processor.single = [A], google's is [<bos>, A]).
-# Not keyed on add_bos_token (google omits it on E4B/31B/26B-A4B and still prepends) nor on repo
-# name. -it is skipped: its chat_template emits BOS. unslothai/unsloth#7903
+# gemma-4 base mirrors do not prepend <bos>. Not keyed on add_bos_token or repo name; -it is
+# skipped since its chat_template emits BOS. unslothai/unsloth#7903
 _GEMMA4_INSTRUCT_EOS = "<turn|>"
 
 # Anchored: a future gemma-4.5 / gemma_45 has its own BOS policy, and DiffusionGemma4... is not gemma 4.
@@ -1351,8 +1350,8 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
     dash_r = "-" if end["dash_right"] else ""
     open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
 
-    # Case 1: the template ends with a single trailing {{ expr }} that is the generation prefix, so wrap it in an {% if add_generation_prompt %} block.
-    # Surrounding whitespace allowed (ERNIE-4.5: `{%- endfor %}\n {{- "..." }}`); it moves inside the block.
+    # Case 1: a single trailing {{ expr }} is the generation prefix; wrap it in an agp block.
+    # Surrounding whitespace allowed (ERNIE-4.5).
     trailing = after_endfor.strip()
     if (
         "{%" + dash_l + " if" not in after_endfor
