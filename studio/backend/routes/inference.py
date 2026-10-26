@@ -12861,19 +12861,28 @@ def reap_dead_managed_engine(backend) -> None:
         account_access.clear_resident("chat")
 
 
-def _release_after_terminal_retirement(backend) -> None:
+def _release_after_terminal_retirement(backend, epoch) -> None:
     """A llama-server stopped for good by a second Metal out-of-memory strike unloads itself
-    (llama_cpp._retire_device_lost_server); finish it as a manual unload would, outside every
-    backend lock. A kept slot is dropped at once (dead, it holds nothing a request could still
-    use, so its refs do not keep it) and leaves the primary's residency alone; the primary
-    clears its own sharers. CHAT goes once nothing else holds it."""
-    for slot in [s for s in list(model_slots.slots) if s.llama is backend]:
-        try:
-            model_slots.drop(slot)
-        except Exception as exc:  # noqa: BLE001 -- drop() keeps a stuck slot for retry
-            logger.warning("Could not drop a kept model after its Metal out-of-memory: %s", exc)
-    if backend is _llama_cpp_backend:
-        account_access.clear_resident("chat")
+    (llama_cpp._retire_device_lost_server); finish it as a manual unload would. A kept slot is
+    dropped at once (dead, it holds nothing a request could still use, so its refs do not keep
+    it) and leaves the primary's residency alone; the primary clears its own sharers. CHAT goes
+    once nothing else holds it. A reload that landed since the strike owns the slot and the
+    residency now, so nothing is touched then (checked under the lock every load takes)."""
+    primary = backend is _llama_cpp_backend
+    with backend._while_still_retired(epoch) as retired:
+        filling = model_slots.loading[0] if model_slots.loading else None
+        if not retired or (filling is not None and filling.llama is backend):
+            return
+        for slot in [s for s in list(model_slots.slots) if s.llama is backend]:
+            try:
+                model_slots.drop(slot)
+            except Exception as exc:  # noqa: BLE001 -- drop() keeps a stuck slot for retry
+                logger.warning("Could not drop a kept model after its Metal out-of-memory: %s", exc)
+        if primary:
+            account_access.clear_resident("chat")
+    # The arbiter lock comes before the backend's: released outside it, and release_if
+    # re-checks that nothing is resident.
+    if primary:
         release_chat_gpu_claim()
     else:
         release_chat_after_kept_models()

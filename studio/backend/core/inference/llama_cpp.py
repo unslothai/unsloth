@@ -5329,21 +5329,36 @@ _LLAMA_SERVER_IMPL_LIB_NAMES = (
 )
 
 
+# (path, mtime_ns, size) -> the library names that file embeds, per group. A warm capability
+# probe re-reads the borrowed-draft marker on every load, and the server binary is ~100 MB.
+_LINKED_LIB_NAMES_CACHE: dict = {}
+
+
 def _linked_llama_libs(binary: Path, lib_dir: Path) -> list:
     """The server-impl and common libraries in ``lib_dir`` that ``binary`` names as a
     dependency (DT_NEEDED, LC_LOAD_DYLIB and the PE import table all store the file
-    name), so a sibling file from another build is not taken for the linked one."""
+    name), so a sibling file from another build is not taken for the linked one. The names
+    are read once per file version; whether each library exists is checked every call."""
     try:
-        data = binary.read_bytes()
+        st = binary.stat()
+        key = (str(binary), st.st_mtime_ns, st.st_size)
     except OSError:
         return []
-    linked = []
-    for names in (_LLAMA_SERVER_IMPL_LIB_NAMES, _LLAMA_COMMON_LIB_NAMES):
-        # The first name is the most specific (the soname before the dev symlink).
-        hit = next(
-            (n for n in names if n.encode() in data and (lib_dir / n).exists()),
-            None,
+    embedded = _LINKED_LIB_NAMES_CACHE.get(key)
+    if embedded is None:
+        try:
+            data = binary.read_bytes()
+        except OSError:
+            return []
+        embedded = tuple(
+            tuple(n for n in names if n.encode() in data)
+            for names in (_LLAMA_SERVER_IMPL_LIB_NAMES, _LLAMA_COMMON_LIB_NAMES)
         )
+        _LINKED_LIB_NAMES_CACHE[key] = embedded
+    linked = []
+    for names in embedded:
+        # The first name is the most specific (the soname before the dev symlink).
+        hit = next((n for n in names if (lib_dir / n).exists()), None)
         if hit is not None:
             linked.append(lib_dir / hit)
     return linked
@@ -41505,12 +41520,15 @@ class LlamaCppBackend:
                 # the next load is the user's. Still under _serial_load_lock, so no
                 # explicit load can land between the strike and the teardown.
                 self.unload_model()
+                # What the cleanup checks it still holds: a reload queued on
+                # _serial_load_lock may land before the hooks below run.
+                retired_epoch = self._unload_epoch
         if metal_poison is not None:
             # Outside every backend lock (gpu_arbiter._lock comes before them): the routes
             # drop its kept slot and the CHAT claim it held, as for a crashed worker.
             for hook in list(_TERMINAL_RETIREMENT_HOOKS):
                 try:
-                    hook(self)
+                    hook(self, retired_epoch)
                 except Exception as exc:  # noqa: BLE001 -- best effort, as a reap
                     logger.debug("Terminal retirement cleanup failed: %s", exc)
             return
@@ -41601,6 +41619,14 @@ class LlamaCppBackend:
         return (
             terminal is not None and intent is not None and self._metal_oom_key(intent) == terminal
         )
+
+    @contextlib.contextmanager
+    def _while_still_retired(self, epoch):
+        """Hold _serial_load_lock, which every load takes, and yield whether this backend is
+        still the one a terminal Metal strike unloaded at ``epoch``: nothing spawned since and
+        no other unload. A cleanup acting on a replacement would kill it."""
+        with self._serial_load_lock:
+            yield self._process is None and getattr(self, "_unload_epoch", None) == epoch
 
     def _after_metal_poisoned_server(self, draft_failed: bool) -> bool:
         """Choose the recovery after a Metal-poisoned server was retired.

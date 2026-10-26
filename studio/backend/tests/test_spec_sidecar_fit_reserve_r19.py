@@ -76,9 +76,11 @@ def test_a_first_strike_still_respawns_with_the_same_settings(harness, monkeypat
 def test_the_terminal_strike_runs_the_cleanup_hooks_once(harness, monkeypatch):
     backend, first, _loads = harness(_OFF, "none")
     seen = []
-    monkeypatch.setattr(_lc, "_TERMINAL_RETIREMENT_HOOKS", [seen.append], raising = False)
+    monkeypatch.setattr(
+        _lc, "_TERMINAL_RETIREMENT_HOOKS", [lambda *args: seen.append(args)], raising = False
+    )
     _two_strikes(backend, first, monkeypatch, [])
-    assert seen == [backend]
+    assert seen == [(backend, backend._unload_epoch)]
 
 
 class _Orchestrator:
@@ -115,7 +117,7 @@ def test_a_retired_kept_slot_is_dropped_and_keeps_the_primarys_residency(monkeyp
     retired, other = _kept_slot(refs = 1), _kept_slot(refs = 0)
     monkeypatch.setattr(model_slots, "slots", [retired, other])
     monkeypatch.setattr(model_slots, "stuck", [])
-    inf._release_after_terminal_retirement(retired.llama)
+    inf._release_after_terminal_retirement(retired.llama, retired.llama._unload_epoch)
     assert model_slots.slots == [other]
     assert calls == ["kept"]
     # Nothing dead is left for a later teardown to count as an unload.
@@ -127,6 +129,42 @@ def test_a_retired_primary_clears_its_own_residency(monkeypatch):
     inf, calls = _routes(monkeypatch)
     kept = _kept_slot(refs = 0)
     monkeypatch.setattr(model_slots, "slots", [kept])
-    inf._release_after_terminal_retirement(inf._llama_cpp_backend)
+    inf._release_after_terminal_retirement(
+        inf._llama_cpp_backend, inf._llama_cpp_backend._unload_epoch
+    )
     assert model_slots.slots == [kept]
     assert calls == ["clear:chat", "claim"]
+
+
+def _reload_lands_first(monkeypatch, inf, backend):
+    """The routes cleanup, run after a reload queued on _serial_load_lock already landed."""
+
+    def hook(*args):
+        backend.load_model(_OFF)
+        inf._release_after_terminal_retirement(*args)
+
+    monkeypatch.setattr(_lc, "_TERMINAL_RETIREMENT_HOOKS", [hook])
+
+
+def test_a_reload_before_the_cleanup_keeps_its_kept_slot(harness, monkeypatch):
+    inf, calls = _routes(monkeypatch)
+    backend, first, _loads = harness(_OFF, "none")
+    slot = model_slots.ExtraSlot(llama = backend, orchestrator = _Orchestrator(), account = "a")
+    monkeypatch.setattr(model_slots, "slots", [slot])
+    monkeypatch.setattr(model_slots, "stuck", [])
+    _reload_lands_first(monkeypatch, inf, backend)
+    _two_strikes(backend, first, monkeypatch, [])
+    assert model_slots.slots == [slot]
+    assert backend._process is not None and backend._process.poll() is None
+    assert calls == []
+
+
+def test_a_reload_before_the_cleanup_keeps_the_primarys_residency(harness, monkeypatch):
+    inf, calls = _routes(monkeypatch)
+    backend, first, _loads = harness(_OFF, "none")
+    monkeypatch.setattr(inf, "_llama_cpp_backend", backend)
+    monkeypatch.setattr(model_slots, "slots", [])
+    _reload_lands_first(monkeypatch, inf, backend)
+    _two_strikes(backend, first, monkeypatch, [])
+    assert backend._process is not None and backend._process.poll() is None
+    assert calls == []
