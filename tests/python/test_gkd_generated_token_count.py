@@ -97,18 +97,26 @@ class _NoGen:
 
 def _build(source, lmbda, seq_kd):
     rewritten = rl.gkd_trainer_generate_before_counting("training_step", source)
-    namespace = {"random": random, "unwrap_model_for_generation": _NoGen, "_Parent": _Parent}
+    namespace = {
+        "random": random,
+        "torch": torch,
+        "unwrap_model_for_generation": _NoGen,
+        "_Parent": _Parent,
+    }
     exec("class Trainer(_Parent):\n" + rewritten, namespace)
     trainer = namespace["Trainer"]()
     trainer.lmbda, trainer.seq_kd, trainer.seen, trainer.generated = lmbda, seq_kd, [], []
     trainer.teacher_model = trainer.accelerator = trainer.generation_config = None
     trainer.processing_class = type("P", (), {"pad_token_id": 0})()
+    trainer.generated_len, trainer.mask_generated = GENERATED_LEN, False
 
     def generate(model, inputs, *args):
         trainer.generated.append(id(inputs))
-        ids = torch.ones(1, inputs["prompts"].shape[1] + GENERATED_LEN, dtype = torch.long)
+        ids = torch.ones(1, inputs["prompts"].shape[1] + trainer.generated_len, dtype = torch.long)
         labels = ids.clone()
         labels[:, : inputs["prompts"].shape[1]] = -100
+        if trainer.mask_generated:
+            labels[:] = -100
         return ids, torch.ones_like(ids), labels
 
     trainer.generate_on_policy_outputs = generate
@@ -209,3 +217,24 @@ def test_installed_trl_training_step_is_rewritten():
                         ast.parse(textwrap.dedent("class T:\n" + rewritten))
                         return
     pytest.skip("installed trl has no GKDTrainer")
+
+
+@pytest.mark.parametrize("tensor_count", [False, True])
+def test_all_masked_generations_count_one_not_zero(tensor_count):
+    # TRL 1.7-1.8 mask a pad == eos completion entirely; a zero count would make the JSD sum / 0 NaN.
+    _, trainer = _build(LMBDA_FIRST, 1.0, False)
+    trainer.mask_generated = True
+    if tensor_count:
+        parent = _Parent.get_batch_samples
+
+        def tensor_counts(self, *args, **kwargs):
+            batches, count = parent(self, *args, **kwargs)
+            return batches, torch.tensor(count)
+
+        type(trainer).__bases__[0].get_batch_samples = tensor_counts
+    try:
+        _train_window(trainer, [40, 7])
+    finally:
+        if tensor_count:
+            type(trainer).__bases__[0].get_batch_samples = parent
+    assert [int(n) for n, _ in trainer.seen] == [1, 1]
