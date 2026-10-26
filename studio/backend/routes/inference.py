@@ -70,7 +70,14 @@ import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager, nullcontext
+from contextlib import (
+    AsyncExitStack,
+    ExitStack,
+    aclosing,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+)
 from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
@@ -3043,6 +3050,24 @@ def _discard_task_outcome(task: asyncio.Task) -> None:
         closing.add_done_callback(_LATE_CLOSE_TASKS.discard)
 
 
+async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    # Bound cancellation swallowed by Request.is_disconnected(); close late responses too. #7617
+    done, _pending = await asyncio.wait({task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
+    if not done:
+        task.add_done_callback(_discard_task_outcome)
+        return
+    try:
+        task_resp = task.result()
+        if task_resp is not None:
+            await task_resp.aclose()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 def _release_admission(admission_lease = None, tracker = None) -> None:
     """Release only after the upstream response closes, or llama-server admits a request past --parallel."""
     try:
@@ -3561,7 +3586,6 @@ from state.tool_approvals import (
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.image_orientation import exif_upright
-from core.inference.llama_http import nonstreaming_client
 from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
     count_probably_decodable as _mcp_count_probably_decodable,
@@ -5151,6 +5175,15 @@ def _cancelable_nonstreaming_client() -> httpx.AsyncClient:
     )
 
 
+def _llama_stream_client() -> httpx.AsyncClient:
+    return gated_async_client(
+        timeout = _llama_streaming_generation_timeout(),
+        limits = httpx.Limits(max_keepalive_connections = 0),
+        trust_env = False,
+        verify = _local_ssl_context(),
+    )
+
+
 class _NonStreamingRequestCancelled(Exception):
     """Internal signal for an expected non-streaming cancel/disconnect."""
 
@@ -5205,6 +5238,221 @@ async def _stop_local_disconnect_cancel_watcher(
         watcher.result()
     except (asyncio.CancelledError, Exception):
         pass
+
+
+def _is_lost_upstream_connection(exc) -> bool:
+    # Timeouts can leave a healthy server decoding; retrying would duplicate that work.
+    return isinstance(exc, (httpx.NetworkError, httpx.RemoteProtocolError))
+
+
+async def _passthrough_retry_url(
+    llama_backend,
+    exc,
+    path: str = "/v1/chat/completions",
+):
+    recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
+    if recover is not None and recover(exc):
+        return None
+    # Other callers must also defer to the MTP fallback already reloading without MTP.
+    if getattr(llama_backend, "_mtp_runtime_fallback_in_progress", False):
+        return None
+    respawn = getattr(llama_backend, "_respawn_if_dead", None)
+    if respawn is None or not await asyncio.to_thread(respawn):
+        return None
+    logger.warning("llama-server was unreachable; respawned it and retrying %s", path)
+    return f"{llama_backend.base_url}{path}"
+
+
+# Retain recovery tasks after their requests leave; asyncio holds only weak references.
+_LLAMA_RESPAWN_TASKS: set = set()
+
+
+class _LlamaUpstream:
+    """Per-request transport: one respawn, with URL and key refreshed together."""
+
+    def __init__(
+        self,
+        llama_backend,
+        path: str,
+        *,
+        cancel_event = None,
+        request: Optional[Request] = None,
+    ):
+        self._backend = llama_backend
+        self._path = path
+        self._request = request
+        if cancel_event is None and request is not None:
+            cancel_event = threading.Event()
+        self.cancel_event = cancel_event
+        self._base_url = llama_backend.base_url
+        self.url = f"{self._base_url}{path}"
+        self.headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
+        self.first_token_deadline = None
+        self.client = None
+        self._watcher = None
+        self._respawn_spent = False
+
+    def may_respawn(self, exc) -> bool:
+        return not self._respawn_spent and _is_lost_upstream_connection(exc)
+
+    async def retarget_after_respawn(
+        self,
+        exc,
+        cancel_event = None,
+        request = None,
+    ) -> Optional[bool]:
+        """Relaunch and retarget; False when ``exc`` stands, None when the caller cancels."""
+        if not self.may_respawn(exc):
+            return False
+        if cancel_event is None:
+            cancel_event = self.cancel_event
+        if request is None:
+            request = self._request
+        if await _preheader_cancelled(cancel_event, request):
+            return None
+        self._respawn_spent = True
+        recovery = asyncio.create_task(_passthrough_retry_url(self._backend, exc, self._path))
+        _LLAMA_RESPAWN_TASKS.add(recovery)
+        recovery.add_done_callback(_LLAMA_RESPAWN_TASKS.discard)
+        recovery.add_done_callback(_discard_task_outcome)
+        # Cancellation releases this request without cancelling or waiting for the reload.
+        while True:
+            if await _preheader_cancelled(cancel_event, request):
+                return None
+            if recovery.done():
+                break
+            await asyncio.wait({recovery}, timeout = _STREAM_DISCONNECT_POLL_TIMEOUT_S)
+        url = recovery.result()
+        if url is None:
+            return False
+        self._base_url = url.removesuffix(self._path)
+        self.url = url
+        self.headers = _openai_passthrough_upstream_headers(llama_backend = self._backend)
+        return True
+
+    def build_request(self, client: httpx.AsyncClient, body) -> httpx.Request:
+        return client.build_request("POST", self.url, json = body, headers = self.headers)
+
+    def dispatch_stream(self, client: httpx.AsyncClient, body, cancel_event, request, **kwargs):
+        return asyncio.create_task(self.send_stream(client, body, cancel_event, request, **kwargs))
+
+    async def stream_response(self, client: httpx.AsyncClient, body, cancel_event, request):
+        """Yield recovery heartbeats, then the caller-owned response; close before the client."""
+        send_task = self.dispatch_stream(client, body, cancel_event, request)
+        try:
+            while not send_task.done():
+                done, _ = await asyncio.wait(
+                    {send_task}, timeout = _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S
+                )
+                if not done and self._respawn_spent:
+                    yield _LLAMA_STREAM_KEEPALIVE
+            resp = send_task.result()
+            send_task = None  # The route now owns the response and closes it.
+            yield resp
+        finally:
+            await _aclose_send_task(send_task)
+
+    async def send_stream(
+        self, client: httpx.AsyncClient, body, cancel_event, request, **kwargs
+    ) -> Optional[httpx.Response]:
+        while True:
+            self.first_token_deadline = start_first_token_wait(_first_token_timeout_s())
+            try:
+                return await _send_stream_with_preheader_cancel(
+                    client,
+                    self.build_request(client, body),
+                    cancel_event,
+                    request = request,
+                    **kwargs,
+                )
+            except httpx.RequestError as exc:
+                recovered = await self.retarget_after_respawn(exc, cancel_event, request)
+                if recovered is None:
+                    from core.inference.llama_keepwarm import mark_response_failed
+                    mark_response_failed(getattr(request, "scope", None))
+                    return None
+                if not recovered:
+                    raise
+
+    async def __aenter__(self):
+        self.client = _cancelable_nonstreaming_client()
+        if self.cancel_event is not None:
+            self._watcher = asyncio.create_task(
+                _await_cancel_or_disconnect_then_close_client(
+                    cancel_event = self.cancel_event,
+                    request = self._request,
+                    client = self.client,
+                )
+            )
+        return self
+
+    async def __aexit__(self, *_exc_info) -> bool:
+        # Re-enterable: a later ``async with`` gets a fresh client but keeps the spent respawn.
+        client, watcher, self.client, self._watcher = self.client, self._watcher, None, None
+        try:
+            if watcher is not None:
+                try:
+                    await _stop_local_disconnect_cancel_watcher(watcher)
+                except Exception:
+                    pass
+        finally:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+        return False
+
+    async def post(
+        self,
+        body,
+        *,
+        timeout,
+        path: Optional[str] = None,
+    ) -> httpx.Response:
+        while True:
+            _raise_if_nonstreaming_request_cancelled(self.cancel_event)
+            url = self.url if path is None else f"{self._base_url}{path}"
+            try:
+                resp = await self.client.post(url, json = body, headers = self.headers, timeout = timeout)
+            # RuntimeError: a POST sent after the watcher already closed the client.
+            except (httpx.RequestError, RuntimeError) as exc:
+                _raise_if_nonstreaming_request_cancelled(self.cancel_event)
+                if isinstance(exc, httpx.RequestError):
+                    recovered = await self.retarget_after_respawn(exc)
+                    if recovered is None:
+                        raise _NonStreamingRequestCancelled("Request cancelled.") from exc
+                    if recovered:
+                        continue
+                raise
+            _raise_if_nonstreaming_request_cancelled(self.cancel_event)
+            return resp
+
+
+@asynccontextmanager
+async def _monitored_llama_call(llama_backend, path: str, *, request, monitor_id, model, kind):
+    upstream = _LlamaUpstream(llama_backend, path, cancel_event = threading.Event(), request = request)
+    tracker = _TrackedCancel(upstream.cancel_event, model = model, kind = kind)
+    tracker.__enter__()
+    # Must stay the last statement before the try that decrements it.
+    _direct_llama_request_started()
+    try:
+        async with upstream:
+            yield upstream
+    except _NonStreamingRequestCancelled as exc:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise _openai_admission_http_exception(exc, status_code = 499)
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise
+    finally:
+        # Nested so a close-time failure still unregisters; a phantom entry 409s swaps.
+        try:
+            _direct_llama_request_finished()
+        finally:
+            tracker.__exit__(None, None, None)
 
 
 async def _drain_pending_worker(worker, cancel_event) -> None:
@@ -36150,7 +36398,6 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     )
     # Apply recommended sampling and any UNSLOTH_SAMPLING_* operator pin so /v1/completions honors the same pins as chat; otherwise it is a verbatim proxy
     _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
-    target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
     monitor_model = _monitor_active_model() or str(
@@ -36183,11 +36430,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             from core.inference.llama_cpp import LlamaCppBackend
             from core.inference.llama_keepwarm import mark_response_failed
 
-            client = gated_async_client(
-                timeout = _llama_streaming_generation_timeout(),
-                trust_env = False,
-                verify = _local_ssl_context(),
-            )
+            client = _llama_stream_client()
             resp = None
             bytes_iter = None
             items_iter = None
@@ -36200,18 +36443,18 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # Must stay the last statement before the try: a raise in between leaks a permanent +1.
             _direct_llama_request_started()
             try:
-                req = client.build_request(
-                    "POST",
-                    target_url,
-                    json = upstream_body,
-                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-                )
-                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
                 # Same event the relay loop polls, so a forced swap ends the request during prefill
                 # instead of only once headers arrive.
-                resp = await _send_stream_with_preheader_cancel(
-                    client, req, disconnect_event, request = request
-                )
+                upstream = _LlamaUpstream(llama_backend, "/v1/completions")
+                async with aclosing(
+                    upstream.stream_response(client, upstream_body, disconnect_event, request)
+                ) as opening:
+                    async for opened in opening:
+                        if opened is _LLAMA_STREAM_KEEPALIVE:
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
+                        else:
+                            resp = opened
+                first_token_deadline = upstream.first_token_deadline
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
                     return
@@ -36326,53 +36569,15 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         return _sse_streaming_response(_stream(), monitor_id = monitor_id)
     else:
-        # Register non-streaming too, or a non-forced /unload kills llama-server mid-request.
-        # Unpooled client so a cancel-close hits this call only.
-        _cancel_event = threading.Event()
-        _client = _cancelable_nonstreaming_client()
-        _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
-        _tracker.__enter__()
-        _cancel_watcher = asyncio.create_task(
-            _await_cancel_or_disconnect_then_close_client(
-                cancel_event = _cancel_event,
-                request = request,
-                client = _client,
-            )
-        )
-        _direct_llama_request_started()
-        try:
-            try:
-                resp = await _client.post(
-                    target_url,
-                    json = body,
-                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-                    timeout = _llama_non_streaming_generation_timeout(),
-                )
-            except httpx.RequestError:
-                # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-                _raise_if_nonstreaming_request_cancelled(_cancel_event)
-                raise
-            _raise_if_nonstreaming_request_cancelled(_cancel_event)
-        except _NonStreamingRequestCancelled as exc:
-            api_monitor.finish(monitor_id, "cancelled")
-            raise _openai_admission_http_exception(exc, status_code = 499)
-        except asyncio.CancelledError:
-            api_monitor.finish(monitor_id, "cancelled")
-            raise
-        except Exception as e:
-            api_monitor.fail(monitor_id, _friendly_error(e))
-            raise
-        finally:
-            # Nested so a close-time failure still unregisters; a phantom entry 409s swaps.
-            try:
-                await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
-                try:
-                    await _client.aclose()
-                except Exception:
-                    pass
-            finally:
-                _direct_llama_request_finished()
-                _tracker.__exit__(None, None, None)
+        async with _monitored_llama_call(
+            llama_backend,
+            "/v1/completions",
+            request = request,
+            monitor_id = monitor_id,
+            model = monitor_model,
+            kind = "completions",
+        ) as upstream:
+            resp = await upstream.post(body, timeout = _llama_non_streaming_generation_timeout())
 
         if resp.status_code != 200:
             api_monitor.fail(monitor_id, resp.text[:500])
@@ -36821,7 +37026,7 @@ def _llama_embedding_overflow_limit(resp) -> Optional[int]:
 
 
 async def _truncated_llama_embedding_inputs(
-    client, base_url, headers, value, limit, cache: dict
+    upstream: _LlamaUpstream, value, limit, cache: dict
 ) -> Optional[list]:
     """Strings past ``limit`` cut to their first tokens, keeping the special tokens llama-server
     adds around a string. None when nothing was cut. ``cache`` spans the retries."""
@@ -36831,11 +37036,10 @@ async def _truncated_llama_embedding_inputs(
         return None
 
     async def tokenize(text: str, add_special: bool) -> Optional[list]:
-        r = await client.post(
-            f"{base_url}/tokenize",
-            json = {"content": text, "add_special": add_special},
-            headers = headers,
+        r = await upstream.post(
+            {"content": text, "add_special": add_special},
             timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+            path = "/tokenize",
         )
         try:
             tokens = r.json()["tokens"] if r.status_code == 200 else None
@@ -36964,7 +37168,6 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     dimensions = body.pop("dimensions", None)
     truncate = _embeddings_truncate(body)
     body.pop("truncate", None)
-    target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
     monitor_id = None
     monitor_model = _monitor_active_model() or str(
@@ -36981,78 +37184,28 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             subject = current_subject,
         )
 
-    # Register with the swap gate like completions: unregistered, a non-forced /unload kills llama-server mid-embedding; unpooled client so cancel hits only this
-    _cancel_event = threading.Event()
-    _client = _cancelable_nonstreaming_client()
-    _tracker = _TrackedCancel(
-        _cancel_event,
+    async with _monitored_llama_call(
+        llama_backend,
+        "/v1/embeddings",
+        request = request,
+        monitor_id = monitor_id,
         model = monitor_model,
         kind = "embeddings",
-    )
-    _tracker.__enter__()
-    _cancel_watcher = asyncio.create_task(
-        _await_cancel_or_disconnect_then_close_client(
-            cancel_event = _cancel_event,
-            request = request,
-            client = _client,
-        )
-    )
-    _direct_llama_request_started()
-    try:
-        try:
-            upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
-            resp = await _client.post(
-                target_url,
-                json = body,
-                headers = upstream_headers,
-                timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-            )
-            original, cache, limit = body.get("input"), {}, None
-            for _ in range(2):
-                reported = _llama_embedding_overflow_limit(resp) if truncate else None
-                if not reported:
-                    break
-                # Cut the client's inputs, not the token arrays the first retry sent.
-                limit = min(limit or reported, reported)
-                inputs = await _truncated_llama_embedding_inputs(
-                    _client, llama_backend.base_url, upstream_headers, original, limit, cache
-                )
-                if not inputs:
-                    break
-                logger.warning("Embedding input over the %d-token limit truncated to fit", limit)
-                body["input"] = inputs
-                resp = await _client.post(
-                    target_url,
-                    json = body,
-                    headers = upstream_headers,
-                    timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-                )
-        # RuntimeError: a retry or /tokenize call sent after the watcher already closed the client.
-        except (httpx.RequestError, RuntimeError):
-            # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-            _raise_if_nonstreaming_request_cancelled(_cancel_event)
-            raise
-        _raise_if_nonstreaming_request_cancelled(_cancel_event)
-    except _NonStreamingRequestCancelled as exc:
-        api_monitor.finish(monitor_id, "cancelled")
-        raise _openai_admission_http_exception(exc, status_code = 499)
-    except asyncio.CancelledError:
-        api_monitor.finish(monitor_id, "cancelled")
-        raise
-    except Exception as exc:
-        api_monitor.fail(monitor_id, _friendly_error(exc))
-        raise
-    finally:
-        # Nested so a close-time failure still unregisters; a phantom entry 409s swaps.
-        try:
-            await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
-            try:
-                await _client.aclose()
-            except Exception:
-                pass
-        finally:
-            _direct_llama_request_finished()
-            _tracker.__exit__(None, None, None)
+    ) as upstream:
+        resp = await upstream.post(body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+        original, cache, limit = body.get("input"), {}, None
+        for _ in range(2):
+            reported = _llama_embedding_overflow_limit(resp) if truncate else None
+            if not reported:
+                break
+            # Cut the client's inputs, not the token arrays the first retry sent.
+            limit = min(limit or reported, reported)
+            inputs = await _truncated_llama_embedding_inputs(upstream, original, limit, cache)
+            if not inputs:
+                break
+            logger.warning("Embedding input over the %d-token limit truncated to fit", limit)
+            body["input"] = inputs
+            resp = await upstream.post(body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
     if resp.status_code == 200 and dimensions is not None and dimensions != _embedding_width(resp):
         detail = f"'dimensions' is not supported by {_llama_public_model_id(llama_backend)}."
         api_monitor.fail(monitor_id, detail)
@@ -39112,7 +39265,6 @@ async def _responses_stream(
             chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
         )
         body["stream_options"] = {"include_usage": True}
-        target_url = f"{llama_backend.base_url}/v1/chat/completions"
         # The stream's own disconnect event, shared with the cancel/active-generation registries:
         # this path decodes on llama-server, so a non-forced /unload must see it and refuse instead
         # of tearing the server down mid-response. Entered inside the body generator below, so a
@@ -39233,24 +39385,20 @@ async def _responses_stream(
                     _relay_recording_tool_extras(upstream.body_iterator, current_subject)
                 )
             else:
-                client = gated_async_client(
-                    timeout = _llama_streaming_generation_timeout(),
-                    trust_env = False,
-                    verify = _local_ssl_context(),
-                )
-                req = client.build_request(
-                    "POST",
-                    target_url,
-                    json = body,
-                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-                )
-                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
+                client = _llama_stream_client()
+                llama_upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
                 try:
                     # Same event the loop below polls: prefill can run for the whole first-token window,
                     # and only the send watcher can end it early.
-                    resp = await _send_stream_with_preheader_cancel(
-                        client, req, disconnect_event, request = request
-                    )
+                    async with aclosing(
+                        llama_upstream.stream_response(client, body, disconnect_event, request)
+                    ) as opening:
+                        async for opened in opening:
+                            if opened is _LLAMA_STREAM_KEEPALIVE:
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            else:
+                                resp = opened
+                    first_token_deadline = llama_upstream.first_token_deadline
                     if resp is None:
                         api_monitor.finish(monitor_id, "cancelled")
                         return
@@ -43853,35 +44001,6 @@ def _nudge_retry_messages(
     )
 
 
-def _is_lost_upstream_connection(exc) -> bool:
-    """Only NetworkError and RemoteProtocolError (siblings, both named); timeouts excluded: no resubmit."""
-    return isinstance(exc, (httpx.NetworkError, httpx.RemoteProtocolError))
-
-
-async def _passthrough_retry_url(llama_backend, exc):
-    """Fresh upstream URL after respawning a dead llama-server, else None.
-
-    A crashed server relaunches on a NEW ephemeral port, so a passthrough still
-    holding the old base_url keeps failing until the next load. Mirrors the
-    respawn-and-retry in generate_chat_completion. None when an MTP crash
-    already scheduled its own recovery, or when nothing needed respawning.
-
-    Shared by both passthrough surfaces: /v1/messages and /v1/chat/completions post
-    to the same upstream route, and a crash strands whichever one is in use.
-    """
-    recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
-    if recover is not None and recover(exc):
-        return None
-    # Only the first caller gets True; others must not respawn MTP under the running fallback.
-    if getattr(llama_backend, "_mtp_runtime_fallback_in_progress", False):
-        return None
-    respawn = getattr(llama_backend, "_respawn_if_dead", None)
-    if respawn is None or not await asyncio.to_thread(respawn):
-        return None
-    logger.warning("llama-server was unreachable; respawned it and retrying the passthrough")
-    return f"{llama_backend.base_url}/v1/chat/completions"
-
-
 def _anthropic_passthrough_chunk_lines(
     emitter, chunk, request, disable_parallel_tool_use: bool
 ) -> tuple[list[str], bool]:
@@ -43936,7 +44055,6 @@ async def _anthropic_passthrough_stream(
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its stream to Anthropic SSE without executing anything."""
-    target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_passthrough_payload(
         openai_messages,
         openai_tools,
@@ -44055,45 +44173,23 @@ async def _anthropic_passthrough_stream(
         # finalizer has anything orphaned to finalize. Each aclose is wrapped in
         # `try: ... except Exception: pass` so nested anyio cleanup noise can't
         # bubble out.
-        client = gated_async_client(
-            timeout = _llama_streaming_generation_timeout(),
-            limits = httpx.Limits(max_keepalive_connections = 0),
-            trust_env = False,
-            verify = _local_ssl_context(),
-        )
+        client = _llama_stream_client()
         resp = None
         lines_iter = None
         items_iter = None
         cancel_watcher = None
         disconnect_watcher = None
         try:
-            url = target_url
-            try:
-                req = client.build_request(
-                    "POST",
-                    url,
-                    json = body,
-                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-                )
-                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
-                resp = await _send_stream_with_preheader_cancel(
-                    client, req, cancel_event, request = request
-                )
-            except httpx.ConnectError as exc:
-                # Nothing has streamed yet, so a respawned server can be retried once on its new port.
-                url = await _passthrough_retry_url(llama_backend, exc)
-                if url is None:
-                    raise
-                req = client.build_request(
-                    "POST",
-                    url,
-                    json = body,
-                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-                )
-                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
-                resp = await _send_stream_with_preheader_cancel(
-                    client, req, cancel_event, request = request
-                )
+            upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
+            async with aclosing(
+                upstream.stream_response(client, body, cancel_event, request)
+            ) as opening:
+                async for opened in opening:
+                    if opened is _LLAMA_STREAM_KEEPALIVE:
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    else:
+                        resp = opened
+            first_token_deadline = upstream.first_token_deadline
             if resp is None:
                 return
 
@@ -44339,8 +44435,6 @@ async def _anthropic_passthrough_non_streaming(
     parse_think = True,
     thinking_budget_tokens = None,
 ):
-    """Uses a per-request client so a Stop or forced swap can close it, unlike the shared pool."""
-    target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_passthrough_payload(
         openai_messages,
         openai_tools,
@@ -44363,49 +44457,12 @@ async def _anthropic_passthrough_non_streaming(
         backend_ctx = llama_backend.context_length,
         markup = getattr(llama_backend, "markup_profile", None),
     )
+    _timeout = _llama_non_streaming_generation_timeout()
 
-    _client = _cancelable_nonstreaming_client()
-    _cancel_watcher = asyncio.create_task(
-        _await_cancel_or_disconnect_then_close_client(
-            cancel_event = cancel_event,
-            request = request,
-            client = _client,
-        )
-    )
-
-    async def _post_once(payload_body):
-        try:
-            response = await _client.post(
-                target_url,
-                json = payload_body,
-                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
-        except httpx.RequestError:
-            # The watcher closes the client to break a blocked POST, so this error with the event set is the cancel.
-            _raise_if_nonstreaming_request_cancelled(cancel_event)
-            raise
-        _raise_if_nonstreaming_request_cancelled(cancel_event)
-        return response
-
-    async def _post(payload_body):
-        nonlocal target_url
-        try:
-            return await _post_once(payload_body)
-        except httpx.RequestError as exc:
-            # Nothing returned yet, so retry once on the respawned server's new port; the nudge reuses that URL.
-            retry_url = (
-                await _passthrough_retry_url(llama_backend, exc)
-                if isinstance(exc, httpx.ConnectError)
-                else None
-            )
-            if retry_url is None:
-                raise
-            target_url = retry_url
-            return await _post_once(payload_body)
-
-    try:
-        resp = await _post(body)
+    async with _LlamaUpstream(
+        llama_backend, "/v1/chat/completions", cancel_event = cancel_event, request = request
+    ) as upstream:
+        resp = await upstream.post(body, timeout = _timeout)
 
         if resp.status_code != 200:
             _err_text = resp.text[:500]
@@ -44444,7 +44501,7 @@ async def _anthropic_passthrough_non_streaming(
                 ),
             }
             try:
-                retry_resp = await _post(retry_body)
+                retry_resp = await upstream.post(retry_body, timeout = _timeout)
                 if retry_resp.status_code == 200:
                     retry_data = retry_resp.json()
                     if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
@@ -44464,12 +44521,6 @@ async def _anthropic_passthrough_non_streaming(
             response_format = response_format,
             parse_think = parse_think,
         )
-    finally:
-        await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
-        try:
-            await _client.aclose()
-        except Exception:
-            pass
 
 
 # =====================================================================
@@ -45185,34 +45236,13 @@ async def _openai_passthrough_stream_admitted(
 ):
     """Reasoning and tool-call splitting stay with llama-server, so delta.content is not re-parsed."""
     _tracker = tracker
-    target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
+    upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
     # A mid-stream error keeps HTTP 200, so flag the scope or the middleware claims a preview model.
     from core.inference.llama_keepwarm import mark_response_failed
 
     client = None
     resp = None
     send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
-
-    async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
-        if task is None:
-            return
-        if not task.done():
-            task.cancel()
-        # Bounded: is_disconnected() polling can swallow cancel(); the caller closes the client after.
-        done, _pending = await asyncio.wait({task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
-        if not done:
-            task.add_done_callback(_discard_task_outcome)
-            return
-        try:
-            task_resp = task.result()
-            if task_resp is not None:
-                try:
-                    await task_resp.aclose()
-                except Exception:
-                    pass
-        except (asyncio.CancelledError, Exception):
-            pass
 
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
@@ -45238,12 +45268,7 @@ async def _openai_passthrough_stream_admitted(
 
         # Keep the pre-header window short so accepted SSE clients receive
         # immediate headers in the common timeout-reduced stall.
-        client = gated_async_client(
-            timeout = _llama_streaming_generation_timeout(),
-            limits = httpx.Limits(max_keepalive_connections = 0),
-            trust_env = False,
-            verify = _local_ssl_context(),
-        )
+        client = _llama_stream_client()
         _truncate_policy = _overflow_truncation_policy(payload)
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
         _uncut_messages = list(body.get("messages") or [])
@@ -45257,9 +45282,11 @@ async def _openai_passthrough_stream_admitted(
             _cut_scope,
         )
         _context_was_truncated = _truncated_messages > 0
-        # One respawn per request: a second unreachable upstream after a successful
-        # relaunch is a real failure, not a stale port.
-        _respawn_retried = False
+
+        def _dispatch():
+            return upstream.dispatch_stream(
+                client, body, cancel_event, request, mark_cancel_on_cancel = False
+            )
 
         def _apply_passthrough_truncation(err_text: str) -> bool:
             nonlocal _context_was_truncated, _truncated_messages
@@ -45275,17 +45302,7 @@ async def _openai_passthrough_stream_admitted(
 
         while True:
             try:
-                req = client.build_request("POST", target_url, json = body, headers = upstream_headers)
-                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
-                send_task = asyncio.create_task(
-                    _send_stream_with_preheader_cancel(
-                        client,
-                        req,
-                        cancel_event,
-                        request = request,
-                        mark_cancel_on_cancel = False,
-                    )
-                )
+                send_task = _dispatch()
                 done, _ = await asyncio.wait(
                     {send_task},
                     timeout = _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S,
@@ -45298,26 +45315,6 @@ async def _openai_passthrough_stream_admitted(
                 resp = await send_task
                 send_task = None
             except httpx.RequestError as e:
-                # Lost upstream before anything streamed: retry once on the respawned server's new port.
-                if not _respawn_retried and _is_lost_upstream_connection(e):
-                    _respawn_retried = True
-                    retry_url = await _passthrough_retry_url(llama_backend, e)
-                    if retry_url is not None:
-                        closed = False
-                        try:
-                            await _aclose_send_task(send_task)
-                            closed = True
-                        finally:
-                            # Only a retry that is actually going upstream keeps the slot.
-                            if not closed:
-                                _release_admission(admission_lease, _tracker)
-                        send_task = None
-                        target_url = retry_url
-                        # The relaunch minted a fresh --api-key, so the old Authorization header would 401.
-                        upstream_headers = _openai_passthrough_upstream_headers(
-                            llama_backend = llama_backend
-                        )
-                        continue
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Nested so a cancel inside _aclose_send_task's wait cannot skip the closes.
@@ -45397,8 +45394,7 @@ async def _openai_passthrough_stream_admitted(
             cancel_watcher = None
             disconnect_watcher = None
 
-            nonlocal resp, send_task, first_token_deadline, _truncate_budget
-            nonlocal client, target_url, upstream_headers, _respawn_retried
+            nonlocal resp, send_task, _truncate_budget, client
             monitor_done = False
             saw_finish_reason = False
             saw_done = False
@@ -45565,65 +45561,6 @@ async def _openai_passthrough_stream_admitted(
                             try:
                                 resp = send_task.result()
                             except httpx.RequestError as e:
-                                # Queue/prefill crash lands here; only SSE comments sent, so retry once, on connection failure only.
-                                if not _respawn_retried and _is_lost_upstream_connection(e):
-                                    _respawn_retried = True
-                                    # The respawn can take minutes; pump the keepalive loop, don't await it inline.
-                                    retry_task = asyncio.create_task(
-                                        _passthrough_retry_url(llama_backend, e)
-                                    )
-                                    respawn_cancelled = False
-                                    last_keepalive_at = time.monotonic()
-                                    while not retry_task.done():
-                                        done, _ = await asyncio.wait(
-                                            {retry_task},
-                                            timeout = min(
-                                                _STREAM_DISCONNECT_POLL_TIMEOUT_S,
-                                                _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S,
-                                            ),
-                                            return_when = asyncio.FIRST_COMPLETED,
-                                        )
-                                        if retry_task in done:
-                                            break
-                                        if await _preheader_cancelled(cancel_event, request):
-                                            respawn_cancelled = True
-                                            break
-                                        now = time.monotonic()
-                                        if (
-                                            now - last_keepalive_at
-                                            >= _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S
-                                        ):
-                                            last_keepalive_at = now
-                                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                                    if respawn_cancelled:
-                                        # cancel() can't stop the threaded, idempotent reload: let it finish.
-                                        retry_task.add_done_callback(_discard_task_outcome)
-                                        api_monitor.finish(monitor_id, "cancelled")
-                                        return
-                                    retry_url = retry_task.result()
-                                    if retry_url is not None:
-                                        target_url = retry_url
-                                        upstream_headers = _openai_passthrough_upstream_headers(
-                                            llama_backend = llama_backend
-                                        )
-                                        send_task = asyncio.create_task(
-                                            _send_stream_with_preheader_cancel(
-                                                client,
-                                                client.build_request(
-                                                    "POST",
-                                                    target_url,
-                                                    json = body,
-                                                    headers = upstream_headers,
-                                                ),
-                                                cancel_event,
-                                                request = request,
-                                                mark_cancel_on_cancel = False,
-                                            )
-                                        )
-                                        first_token_deadline = start_first_token_wait(
-                                            _first_token_timeout_s()
-                                        )
-                                        continue
                                 logger.error(
                                     "openai passthrough stream: upstream unreachable: %s", e
                                 )
@@ -45657,19 +45594,7 @@ async def _openai_passthrough_stream_admitted(
                         and _apply_passthrough_truncation(err_text)
                     ):
                         _truncate_budget -= 1
-                        req = client.build_request(
-                            "POST", target_url, json = body, headers = upstream_headers
-                        )
-                        first_token_deadline = start_first_token_wait(_first_token_timeout_s())
-                        send_task = asyncio.create_task(
-                            _send_stream_with_preheader_cancel(
-                                client,
-                                req,
-                                cancel_event,
-                                request = request,
-                                mark_cancel_on_cancel = False,
-                            )
-                        )
+                        send_task = _dispatch()
                         continue
 
                     upstream_error = _openai_passthrough_error(upstream_status, err_text)
@@ -45704,7 +45629,7 @@ async def _openai_passthrough_stream_admitted(
                     lines_iter,
                     cancel_event = cancel_event,
                     request = request,
-                    first_token_deadline = first_token_deadline,
+                    first_token_deadline = upstream.first_token_deadline,
                     response = resp,
                     track_prefill_progress = True,
                     post_first_item_read_timeout_s = _terminal_read_timeout_s,
@@ -46105,8 +46030,6 @@ async def _openai_passthrough_non_streaming_upstream(
     prepared_body = None,
 ):
     """Returns llama-server's JSON verbatim, so the native id, finish_reason and usage reach the client."""
-    target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
     body = prepared_body
     if body is None:
         body = await _build_openai_passthrough_body_async(
@@ -46128,8 +46051,6 @@ async def _openai_passthrough_non_streaming_upstream(
         _cut_scope,
     )
     _context_was_truncated = _truncated_messages > 0
-    # One respawn per request, as on the streaming twin.
-    _respawn_retried = False
 
     def _apply_nonstream_truncation(err_text: str) -> bool:
         nonlocal _context_was_truncated, _truncated_messages
@@ -46143,90 +46064,39 @@ async def _openai_passthrough_non_streaming_upstream(
         )
         return True
 
-    async def _post(body_to_send):
-        if cancel_event is None and request is None:
-            return await nonstreaming_client().post(
-                target_url,
-                json = body_to_send,
-                headers = upstream_headers,
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
-
-        if cancel_event is None:
-            cancel = threading.Event()
-        else:
-            cancel = cancel_event
-        client = _cancelable_nonstreaming_client()
-        watcher = asyncio.create_task(
-            _await_cancel_or_disconnect_then_close_client(
-                cancel_event = cancel,
-                request = request,
-                client = client,
-            )
-        )
-        try:
+    upstream = _LlamaUpstream(
+        llama_backend, "/v1/chat/completions", cancel_event = cancel_event, request = request
+    )
+    async with upstream:
+        while True:
             try:
-                response = await client.post(
-                    target_url,
-                    json = body_to_send,
-                    headers = upstream_headers,
-                    timeout = _llama_non_streaming_generation_timeout(),
-                )
-            except httpx.RequestError:
-                _raise_if_nonstreaming_request_cancelled(cancel)
+                resp = await upstream.post(body, timeout = _llama_non_streaming_generation_timeout())
+            except asyncio.CancelledError:
+                api_monitor.finish(monitor_id, "cancelled")
                 raise
-            _raise_if_nonstreaming_request_cancelled(cancel)
-            return response
-        finally:
-            # Bounded: is_disconnected() polling can swallow cancel(); the owned client closes below anyway.
-            try:
-                await _stop_local_disconnect_cancel_watcher(watcher)
-            except (asyncio.CancelledError, Exception):
-                pass
-            try:
-                await client.aclose()
-            except Exception:
-                pass
+            except httpx.RequestError as e:
+                # Still unreachable after the one respawn post() allows. The MTP recovery
+                # stays for the errors that respawn declines.
+                logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
+                api_monitor.fail(monitor_id, _friendly_error(e))
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                raise HTTPException(
+                    status_code = 502,
+                    detail = _friendly_error(e),
+                )
 
-    while True:
-        try:
-            resp = await _post(body)
-        except asyncio.CancelledError:
-            api_monitor.finish(monitor_id, "cancelled")
-            raise
-        except httpx.RequestError as e:
-            # Nothing sent yet, so retry once on a respawned server; helper defers to an in-flight MTP fallback.
-            if not _respawn_retried and _is_lost_upstream_connection(e):
-                _respawn_retried = True
-                retry_url = await _passthrough_retry_url(llama_backend, e)
-                if retry_url is not None:
-                    target_url = retry_url
-                    # The relaunch minted a fresh --api-key; the pre-crash header 401s.
-                    upstream_headers = _openai_passthrough_upstream_headers(
-                        llama_backend = llama_backend
-                    )
-                    continue
-            # Surface the same friendly message as the sync chat path, so operators do not see a bare 500.
-            logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
-            api_monitor.fail(monitor_id, _friendly_error(e))
-            get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
-            raise HTTPException(
-                status_code = 502,
-                detail = _friendly_error(e),
-            )
-
-        if resp.status_code == 200:
-            break
-        # Opt-in overflow policy: shrink and retry instead of a fatal 400.
-        if (
-            _truncate_budget > 0
-            and _classify_llama_generation_error(Exception(resp.text))
-            and _apply_nonstream_truncation(resp.text)
-        ):
-            _truncate_budget -= 1
-            continue
-        api_monitor.fail(monitor_id, resp.text[:500])
-        raise _openai_passthrough_error(resp.status_code, resp.text)
+            if resp.status_code == 200:
+                break
+            # Opt-in overflow policy: shrink and retry instead of a fatal 400.
+            if (
+                _truncate_budget > 0
+                and _classify_llama_generation_error(Exception(resp.text))
+                and _apply_nonstream_truncation(resp.text)
+            ):
+                _truncate_budget -= 1
+                continue
+            api_monitor.fail(monitor_id, resp.text[:500])
+            raise _openai_passthrough_error(resp.status_code, resp.text)
 
     # The ```json fence is opt-in for the internal data-recipe path; it breaks json.loads for others.
     _guided_fence = bool((payload.model_extra or {}).get("_unsloth_guided_fence"))
@@ -46266,7 +46136,10 @@ async def _openai_passthrough_non_streaming_upstream(
             ),
         }
         try:
-            retry_resp = await _post(retry_body)
+            async with upstream:
+                retry_resp = await upstream.post(
+                    retry_body, timeout = _llama_non_streaming_generation_timeout()
+                )
             if retry_resp.status_code == 200:
                 retry_data = retry_resp.json()
                 if response_has_promotable_calls(retry_data, _allowed_tools, body.get("tools")):
