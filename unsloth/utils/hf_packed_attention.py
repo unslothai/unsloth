@@ -844,7 +844,9 @@ def _in_graph_kernel_probe(device_type, device_index, dtype, head_dim, n_heads, 
 _in_graph_kernel = torch._dynamo.assume_constant_result(_in_graph_kernel_eager)
 
 
-def _in_graph_varlen(module, query, key, value, attention_mask, dropout, scaling, is_causal, kwargs):
+def _in_graph_varlen(
+    module, query, key, value, attention_mask, dropout, scaling, is_causal, kwargs
+):
     """Packed row inside a compiled block: torch varlen_attn traced into the block's graph (no graph
     break) with the plan's cu_seqlens and longest segment (a SymInt). None when the eager wrapper
     would not have used torch's varlen for this call."""
