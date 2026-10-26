@@ -131,8 +131,7 @@ def _get_cached_block_mask(
 
     device = torch.device(device)
     window_key = _window_cache_key(sliding_window)
-    # Outlives the batch: a mask built under inference_mode must not reach a training step, but a
-    # normally built one serves inference_mode too.
+    # Outlives the batch: inference_mode-built masks must never reach a training step.
     inference = _inference_mode()
     for cache_key in ((device, lengths, window_key, is_causal, False),) + (
         ((device, lengths, window_key, is_causal, True),) if inference else ()
@@ -1703,8 +1702,7 @@ def _is_compiling() -> bool:
 
 
 def _inference_mode() -> bool:
-    """Built under torch.inference_mode: such tensors raise once autograd saves them for backward.
-    A traced build counts as normal; torch.is_inference_mode_enabled graph-breaks dynamo."""
+    """Traced builds count as normal: torch.is_inference_mode_enabled graph-breaks dynamo."""
     return not _is_compiling() and torch.is_inference_mode_enabled()
 
 

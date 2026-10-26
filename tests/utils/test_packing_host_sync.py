@@ -337,7 +337,6 @@ def test_inference_mode_metadata_is_not_served_to_a_training_step(dtype):
     assert not torch.is_inference(train_mask)
     torch.testing.assert_close(train_mask, mask.clone())
     _survives_backward(train_mask)
-    # Training calls keep hitting the cache (one build per batch, not one per layer).
     assert packing.get_packed_info_from_kwargs(kwargs, cpu) is train
     assert packing.cover_padded_cu_seqlens(train, 10) is train_padded
     assert (
@@ -377,7 +376,6 @@ def test_training_metadata_is_reused_under_inference_mode():
     train = packing.get_packed_info_from_kwargs(kwargs, cpu)
     with torch.inference_mode():
         assert packing.get_packed_info_from_kwargs(kwargs, cpu) is train
-        # Repeated inference-mode builds are cached as well.
         other = {"packed_seq_lengths": torch.tensor([2, 2], dtype = torch.int32)}
         info = packing.get_packed_info_from_kwargs(other, cpu)
         assert packing.get_packed_info_from_kwargs(other, cpu) is info

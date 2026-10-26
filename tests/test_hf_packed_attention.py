@@ -1362,7 +1362,6 @@ def test_block_varlen_kwargs_does_not_serve_inference_metadata_to_training(monke
     assert torch.is_inference(cu)
     train, _ = hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)
     assert not torch.is_inference(train) and train.tolist() == [0, 3, 8]
-    # Later layers of the training forward reuse it.
     assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)[0] is train
     with torch.inference_mode():
         assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)[0] is train
