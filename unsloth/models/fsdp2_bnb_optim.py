@@ -301,6 +301,36 @@ class _LocalShardMixin:
             if work is not local:
                 local.copy_(work)
 
+    @torch.no_grad()
+    def step(self, closure = None):
+        """bitsandbytes' Optimizer8bit.step loop, but the device synchronize after every parameter only
+        runs for paged optimizers (their page prefetches are asynchronous and need the fences). Non-paged
+        state lives on the device and every update is queued on the current stream, so nothing needs the
+        host to wait; torch's AdamW, which native FSDP2 used before, does not wait either."""
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        if not self.initialized:
+            self.check_overrides()
+            self.to_gpu()  # as bitsandbytes (fairseq pure fp16 training)
+            self.initialized = True
+        paged = bool(getattr(self, "is_paged", False))
+        p = None
+        for gindex, group in enumerate(self.param_groups):
+            for pindex, p in enumerate(group["params"]):
+                if p.grad is None:
+                    continue
+                if len(self.state[p]) == 0:
+                    self.init_state(group, p, gindex, pindex)
+                self.prefetch_state(p)
+                self.update_step(group, p, gindex, pindex)
+                if paged:
+                    _sync_device(p)
+        if paged and p is not None:
+            _sync_device(p)
+        return loss
+
     def init_state(self, group, p, gindex, pindex):
         return self._shard_call("init_state", group, p, gindex, pindex, with_grad = False)
 
@@ -440,9 +470,31 @@ class _LocalShardMixin:
                     self._import_state(*slot_of[saved_id], saved)
 
 
+def _sync_device(p):
+    """bitsandbytes' sync_gpu (CUDA / XPU synchronize, nothing on the CPU)."""
+    try:
+        from bitsandbytes.utils import sync_gpu
+    except ImportError:
+        sync_gpu = None
+    if sync_gpu is not None:
+        return sync_gpu(p)
+    if p.device.type == "cuda":
+        torch.cuda.synchronize()
+    elif p.device.type == "xpu":
+        torch.xpu.synchronize()
+
+
 @functools.lru_cache(maxsize = None)
 def _local_shard_class(cls):
-    return type(cls.__name__, (_LocalShardMixin, cls), {"__module__": cls.__module__})
+    namespace = {"__module__": cls.__module__}
+    hook_step = getattr(torch.optim.Optimizer, "profile_hook_step", None)
+    if hook_step is not None:
+        # The mixin's step shadows the base class step torch wrapped when the optimizer was built:
+        # wrap it the same way, so step pre / post hooks (and the profiler label) still run once.
+        step = hook_step(_LocalShardMixin.step)
+        step.hooked = True
+        namespace["step"] = step
+    return type(cls.__name__, (_LocalShardMixin, cls), namespace)
 
 
 def localize_bnb_optimizer(optimizer):
