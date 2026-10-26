@@ -3486,7 +3486,9 @@ class InferenceOrchestrator:
             except EngineHTTPError:
                 raise
             except Exception as exc:
-                yield GenStreamError(str(exc), public = True)
+                yield GenStreamError(
+                    str(exc), public = True, openai_param = getattr(exc, "openai_param", None)
+                )
             return
         if not self._ensure_subprocess_alive():
             yield GenStreamError("Error: Inference subprocess is not running", public = True)

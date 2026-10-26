@@ -211,6 +211,7 @@ import {
 } from "@/features/chat/stores/research-run-store";
 import { researchReplyOwnsRun } from "@/features/chat/utils/research-run-binding";
 import {
+  isExternalModelId,
   parseExternalModelId,
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
@@ -226,6 +227,7 @@ import {
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   type ContinuationRequest,
+  carriedThought,
   incompleteLabel,
   incompleteRemedy,
   isContinuableContent,
@@ -7649,6 +7651,9 @@ function useContinuation() {
       checkpoint: s.params.checkpoint,
     }),
   );
+  const managedEngine = useChatRuntimeStore(
+    (s) => !isExternalModelId(s.params.checkpoint) && s.loadedEngine !== "auto",
+  );
   const partial = useAuiState(
     ({ message }) => readContinuationSource(message.content).partial,
   );
@@ -7714,7 +7719,10 @@ function useContinuation() {
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
-  const carriedReasoning = thoughtResumable ? reasoning : "";
+  const carriedReasoning = carriedThought(
+    { partial, reasoning },
+    { resumesThought: thoughtResumable, managedEngine },
+  );
 
   const canResume =
     isLast &&

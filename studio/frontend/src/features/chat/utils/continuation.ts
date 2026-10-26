@@ -275,6 +275,19 @@ export function readContinuationSource(
   return { partial, reasoning: ordered ? thoughts.join("\n") : "" };
 }
 
+/** A managed engine keeps a finished thought but cannot reopen one. */
+export function carriedThought(
+  continuation: { partial: string; reasoning?: string },
+  {
+    resumesThought,
+    managedEngine,
+  }: { resumesThought: boolean; managedEngine: boolean },
+): string {
+  return resumesThought || (managedEngine && continuation.partial)
+    ? (continuation.reasoning ?? "")
+    : "";
+}
+
 export function continuationSeed(partial: string, thought: string): string {
   if (!thought) {
     return partial;

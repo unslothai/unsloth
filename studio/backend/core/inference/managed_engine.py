@@ -543,6 +543,17 @@ def _token_file_token(env) -> str | None:
     return token or None
 
 
+CONTINUATION_FIELDS = {"continue_final_message": True, "add_generation_prompt": False}
+
+
+# The prompt closed the thought, but a forcing parser (deepseek_r1) files the rest as one.
+def fold_reasoning_into_answer(part: dict) -> None:
+    reasoning = part.pop("reasoning", None)
+    reasoning = part.pop("reasoning_content", None) or reasoning
+    if reasoning:
+        part["content"] = reasoning + (part.get("content") or "")
+
+
 class ManagedEngine:
     def __init__(self, engine: str):
         self.engine = engine
@@ -1153,13 +1164,10 @@ class ManagedEngine:
                         )
                         message["content"] = parts
                         break
-        if params.get("continue_final_message") or (
-            not self.reasoning_parser
-            and (params.get("enable_thinking") or params.get("preserve_thinking"))
+        if not self.reasoning_parser and (
+            params.get("enable_thinking") or params.get("preserve_thinking")
         ):
-            raise ValueError(
-                "Continuation and reasoning controls are unavailable for this engine profile."
-            )
+            raise ValueError("Reasoning controls are unavailable for this engine profile.")
         from .engine_transport import engine_messages
 
         messages = self.replay_reasoning(engine_messages(messages), params.get("preserve_thinking"))
@@ -1182,6 +1190,7 @@ class ManagedEngine:
             "seed",
             "stop",
             "logit_bias",
+            "response_format",
         ):
             if params.get(key) is not None:
                 payload[key] = params[key]
@@ -1196,6 +1205,9 @@ class ManagedEngine:
                 params.get("preserve_thinking"),
             )
         )
+        continuing = bool(params.get("continue_final_message"))
+        if continuing:
+            payload.update(CONTINUATION_FIELDS)
         from .engine_transport import stream_chat_events
 
         def cancelled():
@@ -1206,11 +1218,21 @@ class ManagedEngine:
             if event.get("usage") and stats_holder is not None:
                 stats_holder.setdefault("stats", {})["usage"] = event["usage"]
             if event.get("error"):
+                error = event["error"] if isinstance(event["error"], dict) else {}
+                constrained = payload.get("response_format", {"type": "text"}) != {"type": "text"}
+                # vLLM: "Grammar error: ...", SGLang: "Failed to compile json grammar: ...".
+                rejected = re.search(r"grammar|schema", str(error.get("message")), re.IGNORECASE)
+                if constrained and rejected and str(error.get("code")).startswith("4"):
+                    from .grammar_constraint import ResponseFormatError
+
+                    raise ResponseFormatError(error.get("message") or "Invalid response_format.")
                 raise RuntimeError("Engine generation failed.")
             for choice in event.get("choices", []):
                 if choice.get("finish_reason") and stats_holder is not None:
                     stats_holder.setdefault("stats", {})["finish_reason"] = choice["finish_reason"]
                 delta = choice.get("delta", {})
+                if continuing:
+                    fold_reasoning_into_answer(delta)
                 # The parser splits thinking out; <think> markup is what the route's extractor reads.
                 reasoning = delta.get("reasoning") or delta.get("reasoning_content")
                 if reasoning:

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  carriedThought,
   continuationSeed,
   isContinuableContent,
   readContinuationRequest,
@@ -229,6 +230,18 @@ test("a continued answer keeps the thought it followed", () => {
     { type: "text", text: "2, 3 and 5." },
   ]);
   assert.equal(continuationSeed("2, 3 ", ""), "2, 3 ");
+});
+
+test("a managed engine keeps a finished thought but never reopens one", () => {
+  const answer = { partial: "2, 3", reasoning: "Easy." };
+  const thoughtOnly = { partial: "", reasoning: THOUGHT };
+  const managed = { resumesThought: false, managedEngine: true };
+  assert.equal(carriedThought(answer, managed), "Easy.");
+  assert.equal(carriedThought(thoughtOnly, managed), "");
+  const llama = { resumesThought: true, managedEngine: false };
+  assert.equal(carriedThought(thoughtOnly, llama), THOUGHT);
+  const transformers = { resumesThought: false, managedEngine: false };
+  assert.equal(carriedThought(answer, transformers), "");
 });
 
 function clock(start = 1_000_000) {
