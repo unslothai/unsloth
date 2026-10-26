@@ -21,8 +21,11 @@ export function curatedPickerFit(
 ) {
   const fit = curatedArtifactFit(repoId, catalog, budget);
   if (!fit) return undefined;
-  const group = artifactForRepoId(repoId, catalog)?.group;
+  const hit = artifactForRepoId(repoId, catalog);
+  const group = hit?.group;
   const media = group?.scope === "image" || group?.scope === "video";
+  // Measured tiers carry a minimum resident GPU footprint that host RAM cannot replace.
+  const tiered = Boolean(hit?.artifact.offloadFitTiers?.length);
   // No GPU: the load runs from RAM, there is nothing to offload from.
   if (!media || fit.sizeGb == null || budget.gpuGb <= 0) {
     return { ...fit, status: fit.fits ? null : ("exceeds" as const) };
@@ -31,15 +34,20 @@ export function curatedPickerFit(
   const deviceGb = Math.max(0, budget.gpuGb) + ramGb;
   // Reserve working memory using the catalog's existing 70% allowance.
   const allowanceGb = deviceGb * 0.7;
-  const fits = (!budget.hostPooledMemory && fit.fits) || fit.sizeGb <= allowanceGb;
+  const withinPool = fit.sizeGb <= allowanceGb;
+  const fits = tiered
+    ? fit.fits && (!budget.hostPooledMemory || withinPool)
+    : (!budget.hostPooledMemory && fit.fits) || withinPool;
   const offloads = fits && ramGb > 0 && fit.sizeGb > budget.gpuGb * 0.7;
+  const status = !fits ? ("exceeds" as const) : offloads ? ("offload" as const) : null;
+  if (tiered) return { ...fit, fits, status };
   return {
     ...fit,
     fits,
     allowanceGb,
     deviceGb,
     device: ramGb > 0 ? ("GPU + RAM" as const) : ("GPU" as const),
-    status: !fits ? ("exceeds" as const) : offloads ? ("offload" as const) : null,
+    status,
   };
 }
 

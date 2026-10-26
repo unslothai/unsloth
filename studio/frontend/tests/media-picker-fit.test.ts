@@ -62,6 +62,16 @@ test("audio and Auto artifact routing retain their existing fit policies", () =>
   assert.equal(pickDefaultArtifact(group, { gpuGb: 8, systemRamGb: 32, isDownloaded: () => false }).format, "gguf");
 });
 
+test("host RAM cannot stand in for a measured tier's GPU floor", () => {
+  const H3 = "MiniMaxAI/MiniMax-H3";
+  for (const gpuGb of [4, 24]) {
+    const fit = curatedPickerFit(H3, VIDEO_CATALOG, { gpuGb, systemRamGb: 256 });
+    assert.equal(fit?.fits, false, `${gpuGb} GB GPU`);
+    assert.equal(fit?.status, "exceeds", `${gpuGb} GB GPU`);
+  }
+  assert.equal(curatedPickerFit(H3, VIDEO_CATALOG, { gpuGb: 80, systemRamGb: 256 })?.status, "offload");
+});
+
 test("measured discrete offload tiers cannot invent a second pool on shared hosts", () => {
   const fit = curatedPickerFit("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, { gpuGb: 4, systemRamGb: 64, hostPooledMemory: true });
   assert.equal(fit?.fits, false);
