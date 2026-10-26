@@ -4,7 +4,8 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
@@ -31,6 +32,7 @@ import {
 } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
+import { PlayIcon } from "lucide-react";
 
 export const CARD_SURFACE = cn(
   RAISED_SURFACE,
@@ -49,7 +51,6 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   );
 }
 
-// Audio and code glyphs are thin line art, so they get a larger size.
 export const CARD_ICON_CLASS = "size-7";
 const LARGE_CARD_ICON_CLASS = "size-8.5";
 
@@ -112,7 +113,7 @@ function ImageThumb({
       )}
       {loaded && fileKind(item) === "video" && (
         <span className="pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full bg-white/30 text-white backdrop-blur-md dark:bg-black/40">
-          <HugeiconsIcon icon={PlayIcon} strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
+          <PlayIcon strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
         </span>
       )}
     </div>
@@ -199,11 +200,15 @@ function PlayButton({ item }: { item: LibraryItem }) {
         "absolute bottom-3 left-4 flex size-7 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-neutral-600",
       )}
     >
-      <HugeiconsIcon
-        icon={playing ? PauseIcon : PlayIcon}
-        strokeWidth={2}
-        className="size-3.5 [&_path]:fill-current"
-      />
+      {playing ? (
+        <HugeiconsIcon
+          icon={PauseIcon}
+          strokeWidth={2}
+          className="size-3.5 [&_path]:fill-current"
+        />
+      ) : (
+        <PlayIcon strokeWidth={2} className="size-3.5 [&_path]:fill-current" />
+      )}
     </button>
   );
 }
@@ -248,7 +253,6 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           )}
         </>
       ) : (
-        // Two-line name slot keeps the icon in one place on every card. A 5:7 space split lifts it without growing small cards.
         <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
           <p className="line-clamp-2 min-h-[2.75em] break-all font-medium text-ui-13p5 leading-snug text-foreground">
             {item.name}
@@ -316,7 +320,6 @@ function FolderCard({
   );
 }
 
-// Extra row spacing only; card width is unchanged.
 const CARD_ROW_GAP = "gap-y-6";
 
 function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
@@ -355,7 +358,6 @@ export function CardGrid({
   equalRows = false,
 }: {
   children: ReactNode;
-  /** Size every row to the tallest card, so all cards match. */
   equalRows?: boolean;
 }) {
   const container = useRef<HTMLDivElement>(null);

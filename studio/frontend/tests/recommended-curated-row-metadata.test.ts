@@ -293,7 +293,7 @@ test("every list that judges a row against the device asks the same helper", () 
   // One verdict for all readers, or a filter calls a row a fit while the badge says OOM.
   assert.match(
     declarationText("catalogFit"),
-    /curatedArtifactFit\(id, catalog, budget\)/,
+    /curatedPickerFit\(id, catalog, budget\)/,
   );
   for (const declaration of ["recommendedRows", "searchRowFits"]) {
     assert.match(

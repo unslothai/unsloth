@@ -458,12 +458,7 @@ def _apply_data_designer_sql_inline_config_patch() -> None:
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
-    """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
-    transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
-    may rebind to loopback or the LAN after this public-address check.
-
-    With the switch on, the HTTPS and public-address rules stand down so a saved connection is one
-    a recipe can run on. The metadata rule does not: this path has no validator behind it."""
+    """Managed endpoints need HTTPS unless private switch is on; the metadata block holds even then."""
     if not managed_account():
         return
     from urllib.parse import urlsplit
@@ -478,8 +473,7 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     url = str(endpoint or "")
     if get_managed_private_provider_urls_allowed():
         try:
-            # The switch lifts HTTPS-only and public-only, not http(s)-only: everywhere else a
-            # provider URL is one of those two schemes, and this gate has no validator behind it.
+            # The switch lifts HTTPS-only and public-only, not http(s)-only.
             if urlsplit(url).scheme not in ("http", "https"):
                 raise ValueError("Provider endpoints must use http or https.")
             provider_address_excluding_metadata(url)
@@ -503,12 +497,8 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
 
 
 def install_public_egress_guard() -> None:
-    """Managed recipe workers: the engine dials providers itself, so every name resolves through this
-    guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
-    time rather than dialled. Process-wide, so it is installed only in the job subprocess.
-
-    With the switch on the guard narrows to the metadata services rather than standing down: a
-    worker whose engine dials for itself has nothing else between it and that address."""
+    """Job subprocess only: refuses rebinding hosts at connect; with the private switch on, metadata
+    only."""
     if not managed_account():
         return
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
@@ -675,8 +665,7 @@ def _require_confinable_mcp_transport(provider_type: str) -> None:
 def build_mcp_providers(recipe: dict[str, Any]) -> list:
     from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
-    # Same gate as the chat MCP path: stdio providers spawn a local subprocess, so build
-    # them only when this host allows it (desktop loopback default / explicit opt-in).
+    # stdio providers spawn a local subprocess; same gate as chat MCP.
     from core.inference.mcp_client import stdio_mcp_enabled
 
     stdio_allowed = stdio_mcp_enabled()
@@ -821,8 +810,7 @@ def build_config_builder(recipe: dict[str, Any]):
         specs = text_format_specs,
     )
 
-    # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
-    # survive the API payload.
+    # from_config skips processors; re-attach them.
     for processor in recipe_core.get("processors") or []:
         if not isinstance(processor, dict):
             continue
@@ -851,8 +839,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
-        # DataDesigner defaults to cwd/artifacts and packaged Unsloth can run with cwd=/, so pin the
-        # writable recipe artifact root.
+        # Packaged Unsloth can run with cwd=/, so pin the artifact root.
         artifact_path = str(recipe_datasets_root())
 
     recipe = _strip_frontend_model_config_metadata(recipe)

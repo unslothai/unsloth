@@ -28,17 +28,21 @@ import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
   BotIcon,
-  Copy01Icon,
+  Image01Icon,
   InformationCircleIcon,
-  SourceCodeIcon,
+  McpServerIcon,
+  TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -52,6 +56,7 @@ import type {
 } from "../api/keyless-api-access";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
+import { scrollIntoPane } from "../lib/scroll-into-pane";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
@@ -151,7 +156,6 @@ const JAVASCRIPT_TYPES = new Set<ExampleType>([
 ]);
 
 const PROMPT = "What is Unsloth?";
-// web_search + python + terminal are the reliable built-in tools.
 const TOOLS = ["web_search", "python", "terminal"];
 const ADV = {
   temperature: 0.7,
@@ -175,9 +179,6 @@ const DEFAULT_AGENTS = [
   "pi",
   "vibe",
 ];
-// The agent selection resets to this whenever an auto-pick is no longer
-// trustworthy (leaving loopback, or the only compatible detected agent
-// stops being compatible) rather than lingering on a stale choice.
 const DEFAULT_AGENT = "claude";
 
 const j = (s: string): string => JSON.stringify(s);
@@ -197,8 +198,7 @@ function bodyExtraLines(variant: Variant, indent: string): string[] {
   if (variant !== "plain") {
     lines.push(`${indent}"enable_tools": true,`);
     lines.push(`${indent}"enabled_tools": [${toolsJson}],`);
-    // The gate only asks over the X-Unsloth-Events frames these snippets deliberately do not take,
-    // so say the tools run unprompted rather than hand out a request the server refuses.
+    // The permission gate only asks over X-Unsloth-Events frames these snippets do not take.
     lines.push(`${indent}"permission_mode": "off",`);
   }
   return lines;
@@ -330,8 +330,7 @@ function javascriptSnippet(
     options.push(`  max_tokens: ${ADV.max_tokens},`);
   }
 
-  // The JS SDK forwards unknown options into the request body, so these go at the
-  // top level (the Python SDK needs them under extra_body instead).
+  // The JS SDK forwards unknown options into the body (Python needs extra_body).
   if (variant === "advanced") {
     options.push(`  top_k: ${ADV.top_k},`);
     options.push(`  min_p: ${ADV.min_p},`);
@@ -367,7 +366,6 @@ for await (const chunk of response) {
 }`;
 }
 
-// every variant but "plain" asks for the server-side tools, so it needs its own key
 function buildSnippets(
   base: string,
   key: string,
@@ -424,25 +422,21 @@ function looksLikePath(id: string): boolean {
 function useExampleModelName(keylessOnly: boolean): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  // null until /v1/models answers: "not asked yet" must not read as "holds nothing".
+  // null until /v1/models answers: "not asked" must not read as "holds nothing".
   const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
-  // A downloaded but unloaded model is only runnable when switching is on.
   const [autoSwitch, setAutoSwitch] = useState(false);
   const usableCheckpoint =
     !!checkpoint &&
     !checkpoint.startsWith("external::") &&
     !looksLikePath(checkpoint);
 
-  // Always: a stored checkpoint can stop being servable without the store changing.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | null = null;
 
     const update = () => {
-      // null on failure, never [] or false: a transient error is no evidence that the
-      // server holds nothing, and those negatives blanked every example while the
-      // model was still servable. Keep the last answer and retry.
+      // null on failure: a transient error is no evidence the server holds nothing.
       void Promise.all([
         listOpenAIModels().catch(() => null),
         loadOpenAIAutoSwitchSettings()
@@ -455,7 +449,6 @@ function useExampleModelName(keylessOnly: boolean): string | null {
           if (settings !== null) {
             setAutoSwitch(settings);
           }
-          // Resident only slows the polling; it never stops it.
           // biome-ignore lint/complexity/useOptionalChain: keep the explicit failed-refresh branch
           return models !== null && models.some((m) => m.loaded);
         })
@@ -476,7 +469,6 @@ function useExampleModelName(keylessOnly: boolean): string | null {
   }, [checkpoint, ggufVariant]);
 
   return useMemo(() => {
-    // Name something held here, with its quant to pin the file on disk.
     const fromCatalog = (): string | null => {
       const pick =
         catalog?.find((m) => m.loaded) ??
@@ -488,10 +480,7 @@ function useExampleModelName(keylessOnly: boolean): string | null {
         ? `${pick.id}:${pick.quant}`
         : pick.id;
     };
-    // The store keeps a checkpoint across an idle unload and across the model being
-    // deleted, so it only names a runnable model while the catalog still lists it:
-    // resident, or downloaded with switching able to reload it. A null catalog means
-    // /v1/models has not answered, which is not evidence against it.
+    // The store keeps a checkpoint across unload and delete, so require the catalog to list it.
     const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
     const backed =
       (!keylessOnly && catalog === null) ||
@@ -500,9 +489,7 @@ function useExampleModelName(keylessOnly: boolean): string | null {
       if (checkpoint.includes(":")) {
         return checkpoint;
       }
-      // Pin the quant the catalog advertises, not the stored one: membership proves the
-      // repo, and the saved quant can name a file deleted while another quant remains.
-      // Fall back to the store only before /v1/models answers.
+      // Pin the catalog's quant: the saved one may name a deleted file.
       const quant = catalog === null ? ggufVariant : entry?.quant;
       return quant ? `${checkpoint}:${quant}` : checkpoint;
     }
@@ -517,8 +504,7 @@ function useExampleModelName(keylessOnly: boolean): string | null {
   ]);
 }
 
-// Backend PATH detection is only safe in the desktop app, where the UI owns
-// the local backend. A browser loopback URL may be an SSH/local port forward.
+// Only safe in the desktop app; a browser loopback URL may be a port forward.
 function canUseLocalAgentDetection(base: string): boolean {
   if (!isTauri) return false;
   try {
@@ -535,19 +521,50 @@ export function UsageExamples({
   keylessScope = "off",
   keylessTools = false,
   keylessExposure = null,
+  agentsExtra = null,
+  agentsOnly = false,
 }: {
   apiKey?: string | null;
+  agentsOnly?: boolean;
+  agentsExtra?: ReactNode;
   useTunnel: boolean;
   onUseTunnelChange: (next: boolean) => void;
   /** which routes keyless api access serves, so a placeholder is only used where it works */
   keylessScope?: KeylessApiAccessScope;
-  /** whether a keyless caller may drive the server-side tool loop */
   keylessTools?: boolean;
   /** public tunnels and Colab never accept the dummy bearer */
   keylessExposure?: KeylessApiAccessExposure | null;
 }) {
   const t = useT();
   const isOwner = useIsAccountOwner();
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  // Refs, not ids: the API page can mount a second copy, and an id lookup found that one.
+  const agentsRef = useRef<HTMLDivElement | null>(null);
+  const mcpRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (agentsOnly) return;
+    if (scrollTarget !== "api-keys-agents" && scrollTarget !== "api-keys-mcp") return;
+    const target = scrollTarget;
+    const section = (target === "api-keys-agents" ? agentsRef : mcpRef).current;
+    if (!section) return;
+    const pin = () => scrollIntoPane(section);
+    const observer = new ResizeObserver(pin);
+    observer.observe(section.parentElement ?? section);
+    const release = () => {
+      observer.disconnect();
+      useSettingsDialogStore.getState().consumeScrollTarget(target);
+    };
+    const timer = window.setTimeout(release, 1500);
+    const events = ["wheel", "touchmove", "keydown"] as const;
+    for (const name of events) {
+      window.addEventListener(name, release, { passive: true });
+    }
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(timer);
+      for (const name of events) window.removeEventListener(name, release);
+    };
+  }, [scrollTarget, agentsOnly]);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const secure = usePlatformStore((s) => s.secure);
@@ -574,10 +591,8 @@ export function UsageExamples({
   const [detectedAgents, setDetectedAgents] = useState<string[]>([]);
   // set on answer, so a restored agent never validates against the defaults.
   const [agentsLoaded, setAgentsLoaded] = useState(false);
-  // True once the user has picked an agent themselves; guards the detection
-  // effect below from clobbering that choice if it resolves afterward.
+  // Guards the detection effect from clobbering a pick the user made first.
   const agentPickedByUserRef = useRef(storedPrefs.apiExampleAgent != null);
-  // isGguf at the moment of a hand-made pick, null if there has been none this session.
   // A manual pick is kept only until the model's GGUF-ness changes under it.
   const clickedUnderGgufRef = useRef<boolean | null>(null);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -598,9 +613,8 @@ export function UsageExamples({
     (s) => s.activeNativePathToken,
   );
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
-  // null when these fields do not describe the model the snippet names: before status
-  // lands they all read like a non-GGUF model, and under an external selection
-  // use-chat-model-runtime stops updating them while the snippet still follows /v1/models.
+  // null when these fields do not describe the model the snippet names (before status, or under an
+  // external selection).
   const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const storeIsGguf: boolean | null =
     !activeCheckpoint || isExternalModelId(activeCheckpoint)
@@ -612,20 +626,18 @@ export function UsageExamples({
           checkpoint: activeCheckpoint,
         });
 
-  // Only the chat and hub pages mount useChatModelRuntime, and local checkpoints are not
-  // persisted, so off those routes the store never answers and the server has to. Tags the
-  // answer below, so a switch made here invalidates it. JSON because each part can be a
-  // path or a repo id, leaving no separator safe to assume absent.
+  // Off the chat and hub pages the store never answers, so the server must; JSON because each part
+  // can be a path or a repo id.
   const storeModelKey = JSON.stringify([
     activeCheckpoint,
     activeGgufVariant,
     activeNativePathToken,
   ]);
-  // Above the derivation below, which checks the verdict against the model named here.
+  // Above the derivation that checks the verdict against this model.
   const keylessBase =
     !(useTunnel && cloudflareUrl) &&
     keylessBaseEligible(base, keylessScope, keylessExposure);
-  // Only the inference scope keeps a keyless caller on the loaded model; full can switch.
+  // Only the inference scope pins a keyless caller to the loaded model; full can switch.
   const model = useExampleModelName(
     keylessBase && !apiKey && keylessScope === "inference",
   );
@@ -635,8 +647,7 @@ export function UsageExamples({
     resident: string | null;
     isGguf: boolean | null;
   } | null>(null);
-  // useChatModelRuntime re-reads status on mount, on model-list changes and on focus,
-  // never on a timer, so only this poll notices a swap made while the tab stays focused.
+  // useChatModelRuntime never polls, so only this notices a swap while the tab stays focused.
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | null = null;
@@ -645,8 +656,7 @@ export function UsageExamples({
       void getInferenceStatus()
         .then((status) => {
           if (cancelled) return false;
-          // Two silences, both unknown, as the CLI gate reads them: a server that does
-          // not report the field, and is_gguf's False default with no model named.
+          // Both unknown, as the CLI gate reads them: no field, or is_gguf False with no model.
           const resident =
             status.active_model ?? status.model_identifier ?? null;
           const answer = statusGgufVerdict(resident, status.is_gguf);
@@ -673,9 +683,8 @@ export function UsageExamples({
     };
   }, [storeModelKey]);
 
-  // status reports active_model_name raw while /v1/models publishes public_model_id(...),
-  // so collapse it the same way or a path-loaded model never matches and the verdict is
-  // dropped for good. A stale key means the switch was made here, and the store is fresher.
+  // status reports active_model_name raw while /v1/models uses public_model_id(), so collapse it
+  // the same way or a path-loaded model never matches.
   const isGguf: boolean | null = compatibilityFromSources(
     storeIsGguf,
     statusAnswer !== null && statusAnswer.key === storeModelKey
@@ -694,19 +703,14 @@ export function UsageExamples({
     void fetchDeviceType({ force: true });
   }, []);
 
-  // Fetching is the only job of this effect: populate availableAgents/ detectedAgents (or clear
-  // them). Which agent gets auto-picked from that list is derived separately below, so it can react
-  // to the loaded model changing too, not just a fresh fetch.
+  // Fetch only; the auto-pick is derived below so it also reacts to model changes.
   useEffect(() => {
-    // Browser loopback URLs can be SSH/local forwards, so only the desktop app
-    // may use backend PATH checks to mark or auto-pick local agents.
+    // Browser loopback URLs can be port forwards, so only the desktop app uses PATH checks.
     if (!localAgentDetection) {
       setDetectedAgents([]);
-      // A previously auto-picked agent was only ever verified against the Unsloth backend's PATH,
-      // which is meaningless now that this panel no longer targets a loopback base -- don't leave
-      // it selected, but never touch a choice the user made by hand.
+      // An auto-pick was only verified against the backend PATH; never touch a manual pick.
       if (!agentPickedByUserRef.current) {
-        // The effect below corrects this; isGguf read here would be a stale closure.
+        // The effect below corrects this; isGguf here would be a stale closure.
         setAgent(DEFAULT_AGENT);
       }
       return;
@@ -730,7 +734,7 @@ export function UsageExamples({
     };
   }, [localAgentDetection]);
 
-  // Drop a restored preference this build no longer offers, or that cannot run the model.
+  // Drop a restored preference this build no longer offers or that cannot run the model.
   useEffect(() => {
     if (!agentPickedByUserRef.current) return;
     if (isGguf === null) return;
@@ -743,7 +747,7 @@ export function UsageExamples({
       return;
     }
     const reset = fallbackAgent(isGguf, availableAgents);
-    if (reset === null) return; // nothing offered runs; moving would not help
+    if (reset === null) return;
     agentPickedByUserRef.current = false;
     setStoredAgent(null);
     setAgent(reset);
@@ -756,8 +760,7 @@ export function UsageExamples({
     setStoredAgent,
   ]);
 
-  // The guard is "detection has not answered", not "the list is empty": empty is a valid
-  // answer, and acting on an unresolved list flips the command between paints.
+  // Gate on detection having answered: an empty list is a valid answer.
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
     if (isGguf === null) return;
@@ -780,14 +783,13 @@ export function UsageExamples({
     localAgentDetection,
   ]);
 
-  // The approved SDK dummy is printed only for a transport the backend can admit.
+  // The SDK dummy key is printed only for a transport the backend can admit.
   const key =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
-  // a keyless caller gets no tools until the admin grants them, so this names a real key
+  // a keyless caller gets no tools until the admin grants them
   const toolsKey =
     apiKey ||
     (keylessBase && keylessTools ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
-  // agent tools are client-side schemas sent through the admitted inference routes.
   const agentKey =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
@@ -797,7 +799,7 @@ export function UsageExamples({
     () => buildSnippets(base, key, toolsKey, model ?? MODEL_PLACEHOLDER, os),
     [base, key, toolsKey, model, os],
   );
-  // Agent command must target the server the panel shows, not the :8888 default.
+  // Target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
     () => buildAgentCommand(base, agentKey, os, agent),
     [base, agentKey, os, agent],
@@ -834,106 +836,114 @@ export function UsageExamples({
 
   return (
     <section className="flex min-w-0 max-w-full flex-col gap-4">
-      <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-        <HugeiconsIcon icon={SourceCodeIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-        {t("settings.apiKeys.usageExamples")}
-      </h2>
-      {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
-      {cloudflareUrl ? (
-        <div className="flex min-w-0 items-center justify-between gap-2 rounded-full border border-border px-4 py-2">
-          <div className="flex shrink-0 items-center gap-1.5">
-            <Switch
-              size="sm"
-              checked={useTunnel}
-              onCheckedChange={onUseTunnelChange}
-              aria-label={t("settings.apiKeys.secureHttps")}
-            />
-            <span className="text-ui-11 font-medium text-foreground">
-              {t("settings.apiKeys.secureHttps")}
-              {/* Only for a network bind not launched with --secure: its raw port stays
-                  reachable. A loopback bind (the default, and Desktop) exposes nothing. */}
-              {secure || loopbackBind ? null : (
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    {/* Inline on the baseline, like a glyph after the label. */}
-                    <button
-                      type="button"
-                      className="ml-1.5 inline-flex align-baseline rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      aria-label={t("settings.apiKeys.secureHttpsHint")}
-                    >
-                      {/* Follows the UI font size, like the SettingsRow hint
-                          this matches. */}
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-[var(--ui-icon-size-hint)]"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
-                    {t("settings.apiKeys.secureHttpsHint")}
-                  </TooltipContent>
-                </Tooltip>
-              )}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={handleCopyUrl}
-            className={cn(
-              "flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              !useTunnel && "opacity-50",
-            )}
-            title={cloudflareUrl}
-            aria-label={t("settings.apiKeys.copyTunnelUrl")}
-          >
-            <span className="truncate font-mono">{cloudflareUrl}</span>
-            <HugeiconsIcon
-              icon={copiedUrl ? Tick02Icon : Copy01Icon}
-              className={cn(
-                "size-3.5 shrink-0",
-                copiedUrl && "text-emerald-600",
-              )}
-            />
-          </button>
-        </div>
-      ) : null}
-      <ExampleToggle
-        label={t("settings.apiKeys.exampleRequest")}
-        variant="toggle"
-        value={variant}
-        options={VARIANTS.map((option) => ({
-          id: option.id,
-          label: t(option.labelKey),
-        }))}
-        onChange={(next) => pickExample(exampleType(language, next))}
-      />
-      {model ? null : (
-        <p className="text-ui-11 leading-relaxed text-muted-foreground">
-          {t("settings.apiKeys.usageNoModel")}
-        </p>
-      )}
-      <ExampleCodeBox
-        code={snippets[lang]}
-        language={shikiLang}
-        label={t("settings.apiKeys.usageExamples")}
-        redactFromReload={Boolean(apiKey)}
-        pills={
-          <ExampleToggle
-            label={t("settings.apiKeys.exampleLanguage")}
-            value={language}
-            options={LANGUAGES}
-            onChange={(next) => pickExample(exampleType(next, variant))}
-          />
-        }
-        os={os}
-        onOsChange={setOs}
-      />
-      <div className="flex min-w-0 flex-col gap-2.5 pt-2">
-        <div className="flex items-center justify-between gap-3">
+      {agentsOnly ? null : (
+        <>
           <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-            <HugeiconsIcon icon={BotIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-            {t("settings.apiKeys.codingAgents")}
+            <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+            {t("settings.apiKeys.usageExamples")}
           </h2>
+          {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
+          {cloudflareUrl ? (
+            <div className="flex min-w-0 items-center justify-between gap-2 rounded-full border border-border px-4 py-2">
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Switch
+                  size="sm"
+                  checked={useTunnel}
+                  onCheckedChange={onUseTunnelChange}
+                  aria-label={t("settings.apiKeys.secureHttps")}
+                />
+                <span className="text-ui-11 font-medium text-foreground">
+                  {t("settings.apiKeys.secureHttps")}
+                  {/* Only for a network bind not launched with --secure: its raw port stays
+                      reachable. A loopback bind (the default, and Desktop) exposes nothing. */}
+                  {secure || loopbackBind ? null : (
+                    <Tooltip>
+                      <TooltipTrigger asChild={true}>
+                        {/* Inline on the baseline, like a glyph after the label. */}
+                        <button
+                          type="button"
+                          className="ml-1.5 inline-flex align-baseline rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          aria-label={t("settings.apiKeys.secureHttpsHint")}
+                        >
+                          {/* Follows the UI font size, like the SettingsRow hint
+                              this matches. */}
+                          <HugeiconsIcon
+                            icon={InformationCircleIcon}
+                            className="size-[var(--ui-icon-size-hint)]"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+                        {t("settings.apiKeys.secureHttpsHint")}
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopyUrl}
+                className={cn(
+                  "flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  !useTunnel && "opacity-50",
+                )}
+                title={cloudflareUrl}
+                aria-label={t("settings.apiKeys.copyTunnelUrl")}
+              >
+                <span className="truncate font-mono">{cloudflareUrl}</span>
+                <HugeiconsIcon
+                  icon={copiedUrl ? Tick02Icon : Copy01Icon}
+                  className={cn(
+                    "size-3.5 shrink-0",
+                    copiedUrl && "text-emerald-600",
+                  )}
+                />
+              </button>
+            </div>
+          ) : null}
+          <ExampleToggle
+            label={t("settings.apiKeys.exampleRequest")}
+            variant="toggle"
+            value={variant}
+            options={VARIANTS.map((option) => ({
+              id: option.id,
+              label: t(option.labelKey),
+            }))}
+            onChange={(next) => pickExample(exampleType(language, next))}
+          />
+          {model ? null : (
+            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+              {t("settings.apiKeys.usageNoModel")}
+            </p>
+          )}
+          <ExampleCodeBox
+            code={snippets[lang]}
+            language={shikiLang}
+            label={t("settings.apiKeys.usageExamples")}
+            redactFromReload={Boolean(apiKey)}
+            pills={
+              <ExampleToggle
+                label={t("settings.apiKeys.exampleLanguage")}
+                value={language}
+                options={LANGUAGES}
+                onChange={(next) => pickExample(exampleType(next, variant))}
+              />
+            }
+            os={os}
+            onOsChange={setOs}
+          />
+        </>
+      )}
+      <div ref={agentsRef} className="flex min-w-0 scroll-mt-6 flex-col gap-2.5 pt-2">
+        <div className="flex items-center justify-between gap-3">
+          {agentsOnly ? (
+            <span />
+          ) : (
+            <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+              <HugeiconsIcon icon={BotIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+              {t("settings.tabs.agents")}
+            </h2>
+          )}
           {/* Agents is owner-only (settings-tab-visibility.ts): other accounts would land
               on General, so they get the agent's docs instead. The tab restores its agent
               from this pref when it mounts. */}
@@ -942,7 +952,9 @@ export function UsageExamples({
               type="button"
               onClick={() => {
                 setAgentsTabAgent(agent);
-                useSettingsDialogStore.getState().setActiveTab("agents");
+                // Off the API page there is no dialog to switch tabs in.
+                if (agentsOnly) useSettingsDialogStore.getState().openDialog("agents");
+                else useSettingsDialogStore.getState().setActiveTab("agents");
               }}
               className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
@@ -1040,6 +1052,7 @@ export function UsageExamples({
             {t("settings.agents.vscodeNote")}
           </p>
         )}
+        {agentsExtra ? <div ref={mcpRef}>{agentsExtra}</div> : null}
       </div>
     </section>
   );

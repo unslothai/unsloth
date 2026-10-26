@@ -35,8 +35,7 @@ fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
 }
 
-/// Whether the managed install is somewhere repair cannot reach: a profile or
-/// path setting it needs, or an environment another install already holds.
+/// Whether repair cannot reach the managed install (missing profile/path, or env held elsewhere).
 fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
     match managed {
         ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
@@ -46,14 +45,11 @@ fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
     }
 }
 
-/// Repair reinstalls through the managed CLI, which needs the profile the probe
-/// just failed to reach, and stops a backend that still answers to do it.
 fn stale_auto_repair(managed: &ManagedProbe) -> bool {
     release_auto_repair() && !managed_profile_unreachable(managed)
 }
 
-/// What to tell the user about a stale backend: the unreachable profile wins,
-/// since the frontend answers every other reason with "update", which needs it.
+/// The unreachable profile wins: the frontend answers every other reason with "update".
 fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
     if managed_profile_unreachable(managed) {
         info!("Desktop preflight: stale backend ({reason}) reported as an unusable managed context");
@@ -67,9 +63,8 @@ fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
     reason.to_string()
 }
 
-/// While this app's own install, update or repair runs, the probe reads a half-written
-/// environment: acting on it as missing, ready or broken would install, start or
-/// repair over the running mutation.
+/// While our own install/update/repair runs, the probe reads a half-written environment, so
+/// acting on it would mutate over the running operation.
 pub fn busy_managed_environment(result: DesktopPreflightResult) -> DesktopPreflightResult {
     let disposition = match result.disposition {
         DesktopPreflightDisposition::AttachedReady
@@ -121,7 +116,6 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             },
             ManagedProbe::Stale { bin, reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
-                // A busy gate or unreachable context would refuse the repair too.
                 can_auto_repair: release_auto_repair() && !managed::blocks_auto_repair(&reason),
                 reason: Some(reason),
                 port: None,
@@ -235,12 +229,8 @@ fn mutation_blocker_from_probe(
         BackendProbe::ExternalConflict { port, reason } => {
             Some(ExternalBackendConflict { port, reason })
         }
-        // An id-less backend may be this install serving from a terminal, in
-        // which case rewriting the venv underneath it would break it. It may
-        // equally be a remote Unsloth behind a port forward, and refusing on
-        // that leaves a stale install with no way to repair itself, since
-        // repair is what the app runs automatically. The local per-port record
-        // is what tells the two apart, so it, not the port, decides.
+        // An id-less backend may be this install from a terminal or a remote one over a port forward;
+        // the local per-port record, not the port, tells them apart.
         BackendProbe::Unrelated { port, reason } => match live_local_backend(port) {
             Some(pid) => {
                 info!("Desktop preflight: mutation blocked by local backend {pid} on port {port}");
@@ -286,8 +276,7 @@ pub async fn desktop_preflight_result_with_state(
 
     if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
         let Some(owner) = snapshot.owner.clone() else {
-            // Defensive fallback for legacy ownerless handles. Wait for full
-            // health so auth and bootstrap are ready.
+            // Fallback for legacy ownerless handles: wait for full health so auth is ready.
 
             let probe = match snapshot.port {
                 Some(port) => backend::probe_ownerless_spawned_backend(port).await,
@@ -341,12 +330,8 @@ pub async fn desktop_preflight_result_with_state(
                     );
                     return Ok((choose_preflight(managed, backend), None));
                 }
-                // The spawned arm self-heals too, but only for a child that has actually
-                // exited: a handle with no validated port is usually a cold start still
-                // importing torch, and clearing that would abandon a healthy launch. A
-                // child that died without its stdout reaching EOF is invisible to the
-                // crash detector, and the handle it leaves behind makes every later
-                // launch answer "Backend is already running." (#9756).
+                // Clear only a child that actually exited: a portless handle is usually a cold start,
+                // but a dead child whose stdout never hit EOF would otherwise block every launch.
                 if crate::process::clear_spawned_backend_if_exited(
                     state,
                     snapshot.generation,
@@ -486,7 +471,6 @@ mod tests {
                 false,
                 None,
             ),
-            // An unreachable profile is not a missing install.
             (
                 ManagedProbe::Unavailable {
                     reason: managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
@@ -583,7 +567,6 @@ mod tests {
             assert_eq!(busy.managed_bin, Some(PathBuf::from("/managed/unsloth")));
         }
 
-        // A backend that answers is not waiting on anything.
         for disposition in [D::AttachedReady, D::OwnedReady, D::ExternalConflict] {
             let untouched = probed(disposition);
             assert_eq!(busy_managed_environment(untouched.clone()), untouched);
@@ -639,13 +622,10 @@ mod tests {
         for managed in &unreachable {
             assert!(managed_profile_unreachable(managed), "{managed:?}");
             assert!(!stale_auto_repair(managed), "{managed:?}");
-            // Repair would stop a working backend for an install that cannot run.
             for result in [owned(managed), ownerless(managed)] {
                 assert_eq!(result.disposition, DesktopPreflightDisposition::OwnedStale);
                 assert_eq!(result.port, Some(8000));
                 assert!(!result.can_auto_repair, "{managed:?}");
-                // The frontend answers "backend_outdated" with "update", which needs
-                // the profile.
                 assert_eq!(
                     result.reason.as_deref(),
                     Some(managed::WORKING_DIRECTORY_UNAVAILABLE),
@@ -738,8 +718,6 @@ mod tests {
 
     #[test]
     fn managed_venv_behind_the_shipped_backend_is_outdated() {
-        // Above the floor but below what this build shipped: the exact case the
-        // standalone installer leaves behind in the shared venv.
         assert_eq!(
             backend_version_outdated_reason(Some("2026.8.4"), "2026.8.5").as_deref(),
             Some("desktop_backend_version_outdated")
@@ -751,7 +729,6 @@ mod tests {
                 "{version}"
             );
         }
-        // The floor still speaks first, so its reasons keep reaching the UI.
         for (version, reason) in [
             (None, "desktop_backend_version_missing"),
             (Some("not-a-version"), "desktop_backend_version_invalid"),
@@ -762,8 +739,6 @@ mod tests {
                 Some(reason)
             );
         }
-        // Unstamped builds fall back to the floor, so the managed gate reduces
-        // to the shared one for dev and CI.
         assert_eq!(expected_backend_version(), MIN_DESKTOP_BACKEND_VERSION);
         assert_eq!(
             managed_backend_version_stale_reason(Some(MIN_DESKTOP_BACKEND_VERSION)),
@@ -819,15 +794,8 @@ mod tests {
     struct ManagedCapabilityCacheHome {
         path: PathBuf,
         previous: Option<std::ffi::OsString>,
-        /// Held for as long as the override is installed.
-        ///
-        /// The tokio mutex above only keeps these two tests off each other. `set_var` is
-        /// process-wide, and other test modules read the environment through `dirs` under
-        /// `PROCESS_ENV_LOCK` -- `main.rs`'s `with_xdg_data_home` above all. Writing the
-        /// environment outside that lock lets glibc free the old entry under a concurrent
-        /// reader, so `webview_profile_root` resolves the real `~/.local/share` instead of
-        /// the tempdir the caller set, and the three webview-profile tests then collide on
-        /// one lock file. Declared last so it outlives the restore in `Drop` below.
+        /// Held while the override is installed: env writes must happen under `PROCESS_ENV_LOCK`.
+        /// Declared last so it outlives the restore in `Drop`.
         _env: std::sync::MutexGuard<'static, ()>,
     }
 
@@ -956,10 +924,8 @@ exit 1
         let _cache_home = ManagedCapabilityCacheHome::new("cache-hit");
 
         remove_managed_capability_cache();
-        // `-h` always succeeds unless `modeh` exists; the desktop-capabilities
-        // probe always succeeds unless `modecap` exists. Toggling those lets us
-        // prove the ordering: -h runs on every probe (even a cache hit), while
-        // the heavier capability probe is skipped once the cache is warm.
+        // `modeh`/`modecap` break -h and the capability probe: -h runs every time, the capability
+        // probe only on a cold cache.
         let fake = fake_cli(
             "cap-cache-hit",
             r#"#!/bin/sh
@@ -984,7 +950,6 @@ exit 1
         let modeh = bin.with_extension("modeh");
         let modecap = bin.with_extension("modecap");
 
-        // Cold probe: runs -h and the capability probe, then caches the result.
         assert!(matches!(
             probe_managed_bin(bin.clone()).await,
             ManagedProbe::Ready { .. }
@@ -993,8 +958,6 @@ exit 1
         assert!(first_calls.contains("-h"));
         assert!(first_calls.contains("studio desktop-capabilities --json"));
 
-        // Cache hit: -h still runs, but the capability probe is skipped (breaking
-        // it via `modecap` proves it is not invoked).
         fs::write(&modecap, "broken").unwrap();
         fs::write(&calls, "").unwrap();
         assert!(matches!(
@@ -1003,8 +966,6 @@ exit 1
         ));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
 
-        // A non-launchable CLI is caught by the -h probe even with a warm cache:
-        // preflight reports Stale (for repair) and never trusts the cache.
         fs::write(&modeh, "broken").unwrap();
         fs::write(&calls, "").unwrap();
         assert!(matches!(
@@ -1042,9 +1003,7 @@ exit 1
 
     fn desktop_ready_health_with_owner(root_id: &str, include_owner: bool) -> String {
         let owner = desktop_owner_json(include_owner);
-        // Tied to the owner on purpose: the secret comes from the desktop spawn,
-        // so an ownerless (terminal-started) backend can never report it. Both at
-        // once describes a backend that cannot exist.
+        // Only the desktop spawn sets the secret, so an ownerless backend never reports it.
         let leases = if include_owner {
             r#""native_path_leases_supported":true,"#
         } else {
@@ -1131,10 +1090,7 @@ exit 1
 
     #[tokio::test]
     async fn legacy_manageability_same_root_backend_is_still_ready() {
-        // Same migration window as the owned-backend case: a server from the
-        // release before the CLI gained studio_install_ok reports manageability
-        // 1. That capability is CLI-side, so it must not turn a live,
-        // protocol-compatible backend into a conflict the user has to kill.
+        // studio_install_ok is CLI-side, so an older server reporting manageability 1 is not a conflict.
         let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
@@ -1177,10 +1133,7 @@ exit 1
 
     #[tokio::test]
     async fn terminal_started_backend_without_native_path_leases_stays_adoptable() {
-        // What EVERY terminal-started server looks like, not an edge case.
-        // Refusing it would drop the attach use-tauri-backend.ts supports on
-        // purpose, to grey out one button that use-linked-folders.ts already
-        // greys out from the same capability.
+        // Every terminal-started server looks like this; refusing it would break attach.
         let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
@@ -1194,8 +1147,7 @@ exit 1
 
     #[tokio::test]
     async fn backend_predating_the_lease_capability_field_stays_adoptable() {
-        // Absent, not false: a backend predating the field reports nothing, and
-        // Option<bool> makes that indistinguishable from `false` untested.
+        // Absent, not false: a backend predating the field reports nothing.
         let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
@@ -1209,8 +1161,6 @@ exit 1
 
     #[tokio::test]
     async fn owned_backend_without_native_path_leases_is_stale_not_a_conflict() {
-        // A defect in our own spawn, and ours to restart, so Stale (repairable)
-        // rather than a conflict the user has to resolve by hand.
         let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
@@ -1228,8 +1178,6 @@ exit 1
 
     #[tokio::test]
     async fn a_stale_version_is_still_reported_as_a_version_problem() {
-        // Ordering guard: the lease check used to run first, so a backend that
-        // really needed an update reported the wrong cause to diagnostics.
         let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
@@ -1311,8 +1259,6 @@ exit 1
         ));
     }
 
-    /// The report this came from: an id-less Unsloth answered on a candidate
-    /// port, and a perfectly healthy install refused to launch at all.
     #[test]
     fn an_unrelated_backend_does_not_block_a_launch() {
         let result = choose_preflight(
@@ -1332,8 +1278,6 @@ exit 1
         assert_eq!(result.port, None);
     }
 
-    /// ...and a venv rewrite is still refused while a local backend of this
-    /// install is recorded on the port, because it would break that backend.
     #[test]
     fn an_unrelated_backend_blocks_mutations_when_it_is_recorded_locally() {
         assert_eq!(
@@ -1351,9 +1295,6 @@ exit 1
         );
     }
 
-    /// The follow-up report: a stale install auto-runs a repair, and an id-less
-    /// backend reached over a port forward left it erroring on every attempt
-    /// with nothing the user could stop locally.
     #[test]
     fn an_unrecorded_unrelated_backend_does_not_block_a_repair() {
         assert_eq!(
@@ -1368,8 +1309,6 @@ exit 1
         );
     }
 
-    /// A local record is only consulted for the unattributable case: a backend
-    /// that identified itself as a conflict blocks either way.
     #[test]
     fn an_external_conflict_blocks_mutations_without_a_local_record() {
         assert_eq!(

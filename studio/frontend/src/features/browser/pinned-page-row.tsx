@@ -170,7 +170,6 @@ export function PinnedPageRow({
   );
 }
 
-/** The name edited in place, as a chat row's: Enter or leaving keeps it, Escape doesn't. */
 function RenameField({
   id,
   title,
