@@ -71,7 +71,6 @@ def _read(key: str, fallback: Any = None) -> Any:
 def _write(values: dict[str, Any]) -> None:
     from storage.studio_db import upsert_app_settings
     from utils.account_context import OWNER, run_as
-
     run_as(OWNER, upsert_app_settings, values)
 
 
@@ -224,9 +223,7 @@ def _write_docs(directory: Path, name: str, text: str) -> Path:
 
 
 def refresh_offline_docs(
-    *,
-    fetch: Callable[[], str] = fetch_docs_text,
-    today: Callable[[], date] = date.today,
+    *, fetch: Callable[[], str] = fetch_docs_text, today: Callable[[], date] = date.today
 ) -> dict[str, Any]:
     """Download the docs into the configured folder now and return the new status."""
     if not _refresh_lock.acquire(blocking = False):

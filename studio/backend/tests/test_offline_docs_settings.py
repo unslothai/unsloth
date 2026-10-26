@@ -251,9 +251,7 @@ def test_refresh_route_maps_errors(settings_store, tmp_path, monkeypatch):
     from routes import settings as settings_route
 
     with pytest.raises(HTTPException) as exc_info:
-        settings_route.refresh_offline_docs_now(
-            current_subject = "studio-user", via_api_key = False
-        )
+        settings_route.refresh_offline_docs_now(current_subject = "studio-user", via_api_key = False)
     assert exc_info.value.status_code == 400
 
     docs.set_offline_docs_settings(path = str(tmp_path))
@@ -265,8 +263,6 @@ def test_refresh_route_maps_errors(settings_store, tmp_path, monkeypatch):
         settings_route, "refresh_offline_docs", lambda: docs.refresh_offline_docs(fetch = offline)
     )
     with pytest.raises(HTTPException) as exc_info:
-        settings_route.refresh_offline_docs_now(
-            current_subject = "studio-user", via_api_key = False
-        )
+        settings_route.refresh_offline_docs_now(current_subject = "studio-user", via_api_key = False)
     assert exc_info.value.status_code == 502
     assert exc_info.value.detail == "Could not reach unsloth.ai to download the docs."
