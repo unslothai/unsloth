@@ -222,6 +222,19 @@ def test_each_member_reports_and_exports_on_its_own(batched_run):
     assert len(dirs) == len(MEMBERS)
 
 
+def test_each_step_reports_the_rate_it_trained_with(batched_run):
+    events, _model, _pristine = batched_run
+    for m in MEMBERS:
+        total = EXPECTED_STEPS[m["run_id"]]
+        reported = [
+            e["learning_rate"]
+            for e in _member_events(events, m["run_id"])
+            if e["type"] == "progress" and e["step"] > 0
+        ]
+        # Linear decay without warmup, read before each step: lr, then lr * (1 - 1/total), ...
+        assert reported == pytest.approx([m["lr"] * (1 - k / total) for k in range(total)])
+
+
 def test_exported_adapter_reloads_with_peft_and_matches(batched_run):
     from peft import PeftModel
 

@@ -760,7 +760,7 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
     )
     for member in live:
         if not member.done:
-            sft.progress(member, None, None, 0.0)
+            sft.progress(member, None, None, 0.0, sft.step_lrs[member.slot])
     _send_status(event_queue, f'Training {U} jobs together on "{model_name}"')
     sft.train()
     if not sft.stopped:
@@ -850,6 +850,7 @@ def _build_sft_trainer(
             self.round = []
             self.round_losses = torch.zeros(U)
             self.member_norms = torch.zeros(U)
+            self.step_lrs = [float(m.config.get("learning_rate", 2e-4)) for m in live]
             self.start = time.time()
 
         def get_train_dataloader(self):
@@ -949,6 +950,8 @@ def _build_sft_trainer(
             return loss
 
         def _clip_grad_norm(self, model):
+            # The rate this step uses, as a lone job reports it (read before the scheduler moves).
+            self.step_lrs = [group["lr"] for group in self.optimizer.param_groups]
             drop_absent_adapter_grads_(self.model)
             self.accelerator.unscale_gradients()
             self.member_norms = (
@@ -961,12 +964,7 @@ def _build_sft_trainer(
             for member in self.round:
                 export(member, os.path.join(member.output_dir, name))
 
-        def progress(self, member, loss, grad_norm, elapsed) -> None:
-            lr = (
-                self.lr_scheduler.get_last_lr()[member.slot]
-                if self.lr_scheduler
-                else (float(member.config.get("learning_rate", 2e-4)))
-            )
+        def progress(self, member, loss, grad_norm, elapsed, lr) -> None:
             _send(
                 event_queue,
                 "progress",
@@ -994,6 +992,7 @@ def _build_sft_trainer(
                     float(self.round_losses[member.slot]),
                     float(self.member_norms[member.slot]),
                     elapsed,
+                    self.step_lrs[member.slot],
                 )
                 if member.step >= member.total_steps and not member.done:
                     export(member)
