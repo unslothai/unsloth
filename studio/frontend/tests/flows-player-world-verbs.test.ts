@@ -156,6 +156,60 @@ test("door, chest and lever states survive a save and old saves load without the
   assert.ok(old && !("props" in old));
 });
 
+test("after a reload a looted chest gives nothing and a pulled lever is not applied twice", () => {
+  const spec = {
+    title: "Keep",
+    seed: 1,
+    width: 20,
+    height: 20,
+    tile_size: 32,
+    biome: "town",
+    tileset: {},
+    player: { name: "Pip" },
+    npcs: [],
+    items: [
+      { id: "key", name: "Brass key", description: "" },
+      { id: "map", name: "Old map", description: "" },
+    ],
+    quests: [],
+    regions: [],
+    vars: {},
+    intro_text: "",
+    props3d: PROPS,
+  } as Spec;
+  const reload = (st: ReturnType<typeof W.initialWorldState>) => {
+    const back = W.deserialize(
+      spec,
+      JSON.parse(JSON.stringify(W.serialize(st))),
+    );
+    assert.ok(back);
+    return back;
+  };
+  let s = W.initialWorldState(spec);
+  s = W.applyUse(s, V.interactProp(box, PROPS, s.props ?? {}, s.inventory));
+  s = W.applyUse(s, V.interactProp(pull, PROPS, s.props ?? {}, s.inventory));
+  // The key is spent elsewhere (handed to a villager), then the game is reloaded.
+  s = { ...s, inventory: s.inventory.filter((i) => i !== "key") };
+  s = reload(s);
+  assert.equal(V.isOpen(gate, s.props ?? {}), true);
+  assert.equal(V.isOpen(pull, s.props ?? {}), true);
+  const again = V.interactProp(box, PROPS, s.props ?? {}, s.inventory);
+  assert.deepEqual(again.gained, []);
+  assert.equal(again.text, "The chest is empty");
+  s = W.applyUse(s, again);
+  assert.deepEqual(s.inventory, ["map"]);
+  s = reload(
+    W.applyUse(s, V.interactProp(pull, PROPS, s.props ?? {}, s.inventory)),
+  );
+  assert.equal(
+    V.isOpen(gate, s.props ?? {}),
+    false,
+    "one pull after the reload, one toggle",
+  );
+  assert.equal(V.isOpen(pull, s.props ?? {}), false);
+  assert.equal(s.props?.gate.unlocked, true);
+});
+
 const still = { dx: 0, dy: 0, sprint: false, crouch: false, jump: false };
 
 function dashAt(fps: number, w = world()) {
@@ -176,6 +230,35 @@ test("a dash covers the same distance at 30, 60 and 144 frames a second", () => 
   const ends = [30, 60, 144].map((fps) => dashAt(fps).x - 2.5);
   for (const d of ends)
     assert.ok(Math.abs(d - V.DASH_DISTANCE) < 1e-6, `${ends}`);
+});
+
+test("a dash into a wall still ends on time, and dashing gives no invulnerability", () => {
+  const w = world([], (x, y) => edge(x, y) || x === 4);
+  const b = A.newBody(w, 3.5, 5.5);
+  const v = V.newVerbs();
+  const c = A.newCombat();
+  assert.ok(V.startDash(v, b, 1, 0));
+  let frames = 0;
+  let hurtWhileDashing = false;
+  while (V.dashing(v) && frames < 100) {
+    V.verbsTick(v, 1 / 60);
+    A.tick(c, 1 / 60);
+    V.dashAdvance(w, b, v, 1 / 60);
+    const before = c.health;
+    A.enemiesAct(
+      w,
+      c,
+      { x: b.x, y: b.y, z: b.z },
+      [{ id: "h", x: 2.5, y: 5.5, z: 0, hostile: true }],
+      () => false,
+    );
+    hurtWhileDashing ||= c.health < before;
+    frames++;
+  }
+  assert.ok(frames <= Math.ceil(V.DASH_S * 60) + 1, `${frames} frames`);
+  assert.ok(b.x < 4 - A.RADIUS + 1e-6);
+  assert.ok(hurtWhileDashing, "a dash must not dodge damage");
+  assert.equal(V.startDash(v, b, -1, 0), false, "still cooling down");
 });
 
 test("a dash cools down, needs a direction, is refused while crouched and stops at a thin prop", () => {
