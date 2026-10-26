@@ -480,7 +480,10 @@ export const BUDGET = {
   // Merged with main at 6c3dcdd4b0 (limits 2,100,497 B transfer / 6,971,572 B raw): measured 6,791.6 KB raw /
   // 2,050.3 KB transfer (104 chunks). Raw kept at main's limit, which is above it; transfer set to the
   // measured build plus about 1.2 KB, as main's limit sat below it.
-  transferBytes: 2_100_700,
+  // Merged with main at 4f18eb4326 (the scheduled task model picker among its frontend changes): measured
+  // 6,794.7 KB raw / 2,051.7 KB transfer (105 chunks). Raw still under main's limit; transfer set to that
+  // plus about 1.2 KB.
+  transferBytes: 2_102_200,
   rawBytes: 6_971_572,
 };
 

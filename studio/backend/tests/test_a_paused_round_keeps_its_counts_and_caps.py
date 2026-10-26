@@ -124,6 +124,12 @@ class TestTheMessagesLoopPublishesItsCount:
             cancel_event = None,
             message_id = "msg",
             _anthropic_observe_tokens = lambda generated: None,
+            # The route's own builder reads its closure; this is its tool-loop shape.
+            _anthropic_admission_body = lambda conversation, tool_loop = False: {
+                "messages": conversation,
+                "tools": tools if tool_loop else None,
+                "chat_template_kwargs": None,
+            },
         )
         recost = _anthropic_recost(namespace)
         recost([{"role": "tool", "content": "0.123 4.56 " * 300}], copy.deepcopy(tools))
