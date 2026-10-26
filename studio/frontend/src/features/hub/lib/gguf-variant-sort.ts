@@ -48,6 +48,7 @@ export function ggufVariantFitRank(
       return 1;
     case "partial":
     case "ram":
+    case "streamed":
       return 2;
     default:
       return 3;
@@ -129,4 +130,20 @@ export function resolveLocalGgufVariant<T extends { quant: string }>(
     }
   }
   return variants[0] ?? null;
+}
+
+// The memory bar loads the cached file, so an update's merged row (published
+// lookup table, cached size) would mix two revisions; read the cached row.
+export function localGgufMemoryBarVariant<T extends { quant: string }>(
+  selected: (T & { update_available?: boolean }) | null,
+  localVariants: readonly T[] | null | undefined,
+): T | null {
+  if (!selected?.update_available) {
+    return selected;
+  }
+  return (
+    localVariants?.find((variant) =>
+      ggufVariantsMatch(variant.quant, selected.quant),
+    ) ?? selected
+  );
 }

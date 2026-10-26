@@ -21,6 +21,12 @@ function withHubState<V extends GgufVariantDetail>(
           download_size_bytes: published.download_size_bytes,
         }
       : {}),
+    // A newer revision's reading wins, even 0; else local, with the Hub filling an unread 0.
+    lookup_table_bytes: published?.update_available
+      ? (published.lookup_table_bytes ?? 0)
+      : published
+        ? local.lookup_table_bytes || published.lookup_table_bytes
+        : local.lookup_table_bytes,
   };
 }
 

@@ -115,7 +115,7 @@ export function ModelRunActionButton({
         </>
       ) : (
         <>
-          <PlayIcon strokeWidth={1.75} />
+          <PlayIcon strokeWidth={2} className="[&_path]:fill-current" />
           Run
         </>
       )}
