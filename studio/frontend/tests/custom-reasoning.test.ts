@@ -313,7 +313,7 @@ test("an effort ladder drives the menu and the wire, and malformed ladders fail 
 
 test("the opt-in rungs are Studio's effort scale without the Off row", () => {
   assert.deepEqual(
-    [...reasoning.CUSTOM_REASONING_EFFORT_LEVELS],
+    [...reasoning.customReasoningEffortScale()],
     ["minimal", "low", "medium", "high", "xhigh", "max"],
   );
 });

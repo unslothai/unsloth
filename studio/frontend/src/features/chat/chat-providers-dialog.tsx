@@ -60,10 +60,10 @@ import {
 } from "./api/providers-api";
 
 import {
-  CUSTOM_REASONING_EFFORT_LEVELS,
   type CustomReasoningConfig,
   customReasoningConfigForSave,
   customReasoningEffortLevels,
+  customReasoningEffortScale,
   customReasoningStyleTakesEffort,
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning";
@@ -1930,7 +1930,7 @@ export function ChatProvidersSettings({
                         aria-describedby="provider-reasoning-levels-help"
                         className="grid grid-cols-3 gap-x-4 gap-y-2"
                       >
-                        {CUSTOM_REASONING_EFFORT_LEVELS.map((level) => {
+                        {customReasoningEffortScale().map((level) => {
                           const selected = customReasoningEffortLevels(reasoningConfig);
                           const checked = selected.includes(level);
                           return (
@@ -1946,7 +1946,7 @@ export function ChatProvidersSettings({
                                 disabled={checked && selected.length === 1}
                                 onCheckedChange={(next) => setReasoningConfig({
                                   ...reasoningConfig,
-                                  effort_levels: CUSTOM_REASONING_EFFORT_LEVELS.filter(
+                                  effort_levels: customReasoningEffortScale().filter(
                                     (candidate) => candidate === level
                                       ? next === true
                                       : selected.includes(candidate),

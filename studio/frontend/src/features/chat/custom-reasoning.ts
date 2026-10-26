@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { REASONING_EFFORT_SCALE, type ReasoningEffortLevel } from "./model-catalog";
+// Spelled with its extension: plain-node tests load this module through external-providers.ts.
+import { REASONING_EFFORT_SCALE, type ReasoningEffortLevel } from "./model-catalog.ts";
 
 /** Explicit connection contract, never inferred from a URL or a model name. */
 export const CUSTOM_REASONING_STYLES = [
@@ -18,11 +19,12 @@ export type CustomReasoningEffortLevel = Exclude<ReasoningEffortLevel, "none">;
 /** Weakest -> strongest rungs a Custom endpoint may opt into: Studio's effort scale, which is the set
  *  OpenAI documents for reasoning_effort (each model taking a subset), without the Off row. Claude's
  *  effort takes low through max, no minimal. Matches CUSTOM_REASONING_EFFORT_LEVELS in backend
- *  models/providers.py. */
-export const CUSTOM_REASONING_EFFORT_LEVELS: readonly CustomReasoningEffortLevel[] =
-  REASONING_EFFORT_SCALE.filter(
+ *  models/providers.py. Read on call: model-catalog sits in the chat barrel's import cycle. */
+export function customReasoningEffortScale(): readonly CustomReasoningEffortLevel[] {
+  return REASONING_EFFORT_SCALE.filter(
     (level): level is CustomReasoningEffortLevel => level !== "none",
   );
+}
 /** The ladder a Custom connection offered before it could choose one. */
 export const DEFAULT_CUSTOM_REASONING_EFFORT_LEVELS: readonly CustomReasoningEffortLevel[] =
   ["low", "medium", "high"];
@@ -67,7 +69,7 @@ export function customReasoningConfigForSave(
 function canonicalEffortLevels(
   levels: readonly unknown[],
 ): CustomReasoningEffortLevel[] {
-  return CUSTOM_REASONING_EFFORT_LEVELS.filter((level) => levels.includes(level));
+  return customReasoningEffortScale().filter((level) => levels.includes(level));
 }
 
 /** Cached or legacy malformed contracts fail closed. */
@@ -95,7 +97,7 @@ export function normalizeCustomReasoningConfig(
     !customReasoningStyleTakesEffort(style) ||
     rawLevels.some(
       (level) =>
-        !CUSTOM_REASONING_EFFORT_LEVELS.includes(level as CustomReasoningEffortLevel),
+        !customReasoningEffortScale().includes(level as CustomReasoningEffortLevel),
     )
   ) {
     return undefined;
