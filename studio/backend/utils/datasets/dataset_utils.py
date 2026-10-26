@@ -289,7 +289,7 @@ def _apply_template_mapping(
         for i in range(num):
             convo = []
 
-            # The system prompt leads; a system column follows it, as the Alpaca path does.
+            # The system prompt leads, then system columns, so neither is dropped.
             system_parts = [
                 _extract_column_value(examples[col][i], col, label_mapping)
                 for col in role_groups["system"]
