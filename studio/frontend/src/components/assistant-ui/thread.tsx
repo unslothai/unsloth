@@ -7778,8 +7778,8 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              {/* Solid glyph, so it is smaller than the stroked send arrow. */}
-              <QueueResumeIcon className="size-4" />
+              {/* Solid glyph at about a third of the circle, like the Stop square. */}
+              <QueueResumeIcon className="size-4.5" />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
@@ -7790,7 +7790,7 @@ const ComposerRightControls: FC<{
               aria-label="Stop queued message"
               onClick={stop}
             >
-              <SquareIcon className="size-3 fill-current" />
+              <SquareIcon className="size-3.5 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton
@@ -7822,7 +7822,7 @@ const ComposerRightControls: FC<{
           {researchStopping ? (
             <Spinner className="size-3.5" />
           ) : (
-            <SquareIcon className="size-3 fill-current" />
+            <SquareIcon className="size-3.5 fill-current" />
           )}
         </Button>
       ) : (
@@ -7841,7 +7841,7 @@ const ComposerRightControls: FC<{
                 // dispatches the next queued prompt. stop() ends the run.
                 onClick={stop}
               >
-                <SquareIcon className="size-3 fill-current" />
+                <SquareIcon className="size-3.5 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
             {!queueDisabled ? (
