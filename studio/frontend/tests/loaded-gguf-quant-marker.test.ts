@@ -6,7 +6,9 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-const picker = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+const picker = readSrc(
+  "features/model-picker/components/model-selector/pickers.tsx",
+);
 
 test("every quant list and cached GGUF row marks the quant each loaded model runs", () => {
   const expanders = picker.match(/<GgufVariantExpander\b/g)?.length ?? 0;
@@ -15,23 +17,63 @@ test("every quant list and cached GGUF row marks the quant each loaded model run
     picker,
     /loadedQuants\?\.some\(\(q\) => ggufVariantsMatchForPicker\(q, v\.quant\)\) \? \(\s*<span[^>]*>\s*loaded\s*<\/span>/,
   );
-  assert.match(picker, /loadedModels\s*\.filter\(\(m\) => m\.quant && modelIdsMatchForPicker\(m\.id, repoId\)\)/);
+  assert.match(
+    picker,
+    /loadedModels\s*\.filter\(\(m\) => m\.quant && modelIdsMatchForPicker\(m\.id, repoId\)\)/,
+  );
   assert.match(
     picker,
     /if \(activeGgufVariant && modelIdsMatchForPicker\(loadedModelId, repoId\)\) \{\s*quants\.push\(activeGgufVariant\);/,
   );
-  assert.match(picker, /meta="GGUF"\s*quantChip=\{loadedQuants\.map\(ggufQuantChipLabel\)\.join\(", "\) \|\| undefined\}/);
+  assert.match(
+    picker,
+    /meta="GGUF"\s*quantChip=\{loadedQuants\.map\(ggufQuantChipLabel\)\.join\(", "\) \|\| undefined\}/,
+  );
 });
 
 test("a loaded row is selected, picked and ejected by its checkpoint, not its label", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(runtime, /const checkpoint = checkpoints\?\.\[i\] \|\| id;/);
   assert.match(runtime, /statusRes\.serving_checkpoints,\s*\);/);
-  assert.match(runtime, /\.loadedModels\.map\(\(m\) => m\.checkpoint \?\? m\.id\)/);
-  assert.match(picker, /const checkpoint = entry\.checkpoint \?\? entry\.id;\s*const optionKey = makeModelOptionKey\("loaded", checkpoint\);\s*const isSelected = modelIdsMatchForPicker\(value, checkpoint\);/);
-  assert.match(runtime, /const known = new Map\(current\.map\(\(m\) => \[m\.checkpoint \?\? m\.id, m\]\)\);/);
-  assert.match(picker, /onSelect\(checkpoint, \{/);
-  assert.match(picker, /onEject\?\.\(checkpoint\);/);
+  assert.match(
+    runtime,
+    /\.loadedModels\.map\(\(m\) => m\.checkpoint \?\? m\.id\)/,
+  );
+  assert.match(
+    picker,
+    /const checkpoint = entry\.checkpoint \?\? entry\.id;\s*const optionKey = makeModelOptionKey\("loaded", checkpoint\);\s*const isSelected = modelIdsMatchForPicker\(value, checkpoint\);/,
+  );
+  assert.match(
+    runtime,
+    /const known = new Map\(current\.map\(\(m\) => \[m\.checkpoint \?\? m\.id, m\]\)\);/,
+  );
+  assert.match(picker, /onSelect\(checkpoint, selectMeta\)/);
+  assert.match(picker, /onSelect: \(\) => onEject\?\.\(checkpoint\),/);
+});
+
+test("settings opened from a loaded row use the same key as other entry points", () => {
+  // A cached HF snapshot by its repo id, still loading the snapshot.
+  assert.match(
+    picker,
+    /const snapshotRepoId = cachedRepoConfigId\(checkpoint, quant\);[\s\S]*?\[snapshotRepoId, \{ \.\.\.selectMeta, source: "hub", loadId: checkpoint \}\]/,
+  );
+  // A standalone .gguf by its bare path.
+  assert.match(
+    picker,
+    /isStandaloneGgufPath\(checkpoint\)\s*\?\s*\{ \.\.\.selectMeta, ggufVariant: undefined, isGguf: true \}\s*:\s*selectMeta/,
+  );
+  assert.match(picker, /onConfigure\(\.\.\.configureArgs\)/);
+});
+
+test("a loaded LoRA adapter keeps its classification in the row's metadata", () => {
+  assert.match(
+    picker,
+    /const isLoraAdapter =\s*adapter !== undefined &&\s*adapter\.source !== "local" &&\s*adapter\.exportType !== "merged" &&\s*adapter\.exportType !== "gguf";/,
+  );
+  assert.match(
+    picker,
+    /source: isLocal \? "local" : "hub",\s*isLora: isLoraAdapter,/,
+  );
 });
 
 test("an On Device GGUF row with several quants shows a right/down chevron its gutter toggles", () => {

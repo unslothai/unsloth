@@ -263,6 +263,8 @@ import {
   modelIdsMatchForPicker,
   soleQuantRowState,
 } from "./row-identity";
+import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import { cachedRepoConfigId } from "../../model-config/model-identity";
 import {
   type FormatTone,
   isFeaturedOnDeviceRepoId,
@@ -1122,6 +1124,8 @@ const downloadedRowShellClassName = (
 // buttons show on hover or while their menu is open.
 const ROW_ACTIONS_CLASS =
   "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
+
+const ROW_ACTIONS_VISIBLE_CLASS = ROW_ACTIONS_CLASS.replace("opacity-0 ", "");
 
 // Drop line for a pinned-row drag. A border snaps to whole pixels, so every row matches.
 const PINNED_DROP_CUE_BASE =
@@ -6456,6 +6460,33 @@ export function HubModelPicker({
     const isSelected = modelIdsMatchForPicker(value, checkpoint);
     const quant = entry.quant ?? (isSelected ? activeGgufVariant : null);
     const isLocal = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(checkpoint);
+    // As the adapter rows classify it: a LoRA keeps its trained precision and API auto-switch skips it.
+    const adapter = quant
+      ? undefined
+      : loraModels.find((lora) => modelIdsMatchForPicker(lora.id, checkpoint));
+    const isLoraAdapter =
+      adapter !== undefined &&
+      adapter.source !== "local" &&
+      adapter.exportType !== "merged" &&
+      adapter.exportType !== "gguf";
+    const selectMeta: ModelSelectorChangeMeta = {
+      source: isLocal ? "local" : "hub",
+      isLora: isLoraAdapter,
+      ggufVariant: quant ?? undefined,
+      isDownloaded: true,
+      isGguf: Boolean(quant),
+    };
+    // As residentModelConfigTarget: a cached HF snapshot keys settings by its repo id (still loading
+    // the snapshot), a standalone .gguf by the bare path, its quant only a label from the filename.
+    const snapshotRepoId = cachedRepoConfigId(checkpoint, quant);
+    const configureArgs: [string, ModelSelectorChangeMeta] = snapshotRepoId
+      ? [snapshotRepoId, { ...selectMeta, source: "hub", loadId: checkpoint }]
+      : [
+          checkpoint,
+          isStandaloneGgufPath(checkpoint)
+            ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
+            : selectMeta,
+        ];
     // Its curated row is hidden while loaded, so this row must open the quant list instead.
     const expandable = Boolean(quant) && !isLocal && isKnownGgufRepo(entry.id);
     const expanded = expandable && expandedGguf === entry.id;
@@ -6478,13 +6509,7 @@ export function HubModelPicker({
                   ? setExpandedGguf((prev) =>
                       prev === entry.id ? null : entry.id,
                     )
-                  : onSelect(checkpoint, {
-                      source: isLocal ? "local" : "hub",
-                      isLora: false,
-                      ggufVariant: quant ?? undefined,
-                      isDownloaded: true,
-                      isGguf: Boolean(quant),
-                    })
+                  : onSelect(checkpoint, selectMeta)
               }
               onArrowDownIntoChildren={
                 expanded ? () => focusFirstChildOption(optionKey) : undefined
@@ -6493,31 +6518,48 @@ export function HubModelPicker({
               className={downloadedRowButtonClassName}
             />
           </div>
-          <span className={ROW_ACTIONS_CLASS}>
-            {ejectsKept ? (
-              <Tooltip delayDuration={0}>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onEject?.(checkpoint);
-                    }}
-                    aria-label={`Eject ${entry.id}`}
-                    className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-                  >
-                    <HugeiconsIcon
-                      icon={RemoveCircleIcon}
-                      strokeWidth={1.75}
-                      className="size-3.5"
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="tooltip-compact">
-                  Eject
-                </TooltipContent>
-              </Tooltip>
-            ) : null}
+          <span className={ROW_ACTIONS_VISIBLE_CLASS}>
+            {onConfigure && (
+              <ModelLoadSettingsAction
+                ariaLabel={`Inference settings for ${entry.id}`}
+                onConfigure={() => onConfigure(...configureArgs)}
+              />
+            )}
+            <ModelRowMenu
+              ariaLabel={`More options for ${entry.id}`}
+              cachePath={
+                isLocal ? undefined : { repoId: checkpoint, variant: quant ?? undefined }
+              }
+              // Every loaded row ejects while several are loaded, the active one included.
+              items={
+                ejectsKept
+                  ? [
+                      {
+                        key: "eject",
+                        label: "Eject",
+                        icon: (
+                          <HugeiconsIcon
+                            icon={RemoveCircleIcon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                        ),
+                        onSelect: () => onEject?.(checkpoint),
+                      },
+                    ]
+                  : undefined
+              }
+              pin={
+                isLocal
+                  ? undefined
+                  : {
+                      pinned: pinnedSet.has(pinKey(checkpoint, quant ?? undefined)),
+                      pinLabel: "Pin",
+                      unpinLabel: "Unpin",
+                      onToggle: () => togglePinned(checkpoint, quant ?? undefined),
+                    }
+              }
+            />
           </span>
         </div>
         {expanded && (
