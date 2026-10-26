@@ -1304,7 +1304,7 @@ def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, dec
             return SimpleNamespace(config = {}), SimpleNamespace()
 
     def resolve(model_dir, knobs, **kw):
-        plans.append((knobs, kw["vision"]))
+        plans.append((knobs, kw["vision"], kw["drafter"]))
         # A plan for the mlx-vlm route differs from the one mlx-lm needs, so a reused plan shows.
         return (None, 0.25, 4096) if kw["vision"] else (None, 1.0, 8192)
 
@@ -1327,7 +1327,10 @@ def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, dec
     config = SimpleNamespace(identifier = "org/moe", is_vision = False, is_lora = False)
 
     mi.MLXInferenceBackend().load_model(config, speculative_type = "dflash")
-    assert plans[-1] == (("auto", "auto"), None)
+    # The speculative mlx-vlm plan makes room for the drafter; the mlx-lm one, which does not speculate, does not.
+    assert plans == [(("auto", "auto"), True, ("/drafter", False))] * decided_on_mlx_vlm + [
+        (("auto", "auto"), None, None)
+    ]
     assert applied == [{"ple": None, "experts": 1.0}]
 
 

@@ -1075,12 +1075,13 @@ def mlx_resolve_offload(
     retains_history: bool,
     kv_bits = None,
     vision = None,
+    drafter = None,
 ) -> tuple:
     """The ``(ple, expert)`` fractions a load of *model_dir* reads from disk (None for off), from
     knobs as ``normalize_mlx_offload`` gives them: an ``"auto"`` knob decided by unsloth_zoo's 50/50
     rule on this load's pricing, and off where that cannot be planned; any other knob as given;
     then the planned prefill step for experts on disk, else None. ``vision=True`` prices the
-    mlx-vlm route a speculative text load takes."""
+    mlx-vlm route a speculative text load takes; ``drafter``, a ``(path, builtin)`` to make room for."""
     fixed = tuple(None if knob == "auto" else knob for knob in knobs) + (None,)
     if "auto" not in knobs or not model_dir:
         return fixed
@@ -1106,6 +1107,7 @@ def mlx_resolve_offload(
                 kv_bits = kv_bits,
                 load_in_4bit = load_in_4bit,
                 vision = vision,
+                drafter = drafter,
             )
         except Exception as exc:
             logger.info("MLX auto offload not planned for %s: %s", model_dir, exc)
@@ -5258,19 +5260,28 @@ class MLXInferenceBackend:
 
         # Auto is planned only where the load is priced: not distributed, an adapter or an explicit dtype.
         def offload_request():
-            return _mlx_offload_request(
-                knobs,
-                None
-                if is_distributed or is_lora or dtype is not None
-                else functools.partial(
-                    mlx_resolve_offload,
-                    pinned = _positive_int(max_seq_length),
-                    load_in_4bit = load_in_4bit,
-                    retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
-                    kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
-                    vision = True if speculates and not is_vision else None,
-                ),
+            if is_distributed or is_lora or dtype is not None:
+                return _mlx_offload_request(knobs, None)
+            planned = functools.partial(
+                mlx_resolve_offload,
+                pinned = _positive_int(max_seq_length),
+                load_in_4bit = load_in_4bit,
+                retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
+                kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
+                vision = True if speculates and not is_vision else None,
             )
+
+            def plan(model_dir, wanted):
+                drafter = speculates and mlx_speculative.offload_drafter(
+                    spec_mode,
+                    spec_draft_model,
+                    model_dir = model_dir,
+                    target_name = model_name,
+                    allowed = spec_drafters_allowed,
+                )
+                return planned(model_dir, wanted, drafter = drafter or None)
+
+            return _mlx_offload_request(knobs, plan)
 
         offload = offload_request()
         load_kwargs.update(offload["kwargs"])

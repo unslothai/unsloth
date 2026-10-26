@@ -16326,11 +16326,12 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
 
 
 def _mlx_estimate_offload(
-    request, config, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
+    request, config, model_identifier, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
 ) -> tuple[dict, tuple]:
     """``({"offload": (ple, experts)} or {}, offloadable parts)`` for an MLX load of *request*,
     "auto" decided as the load does, on its route; neither if the load quantizes, which unsloth_zoo
     refuses."""
+    from core.inference import mlx_speculative
     from core.inference.mlx_inference import (
         mlx_resolve_offload,
         mlx_vlm_snapshot_store_available,
@@ -16364,6 +16365,15 @@ def _mlx_estimate_offload(
         ),
         kv_bits = kv_bits,
         vision = vision,
+        drafter = vision
+        and mlx_speculative.offload_drafter(
+            request.speculative_type,
+            request.spec_draft_model,
+            model_dir = model_dir,
+            target_name = model_identifier,
+            allowed = _discoverable_drafters(model_identifier),
+        )
+        or None,
     )
     *offload, step = offload
     route = {"offload": tuple(offload)} if any(offload) else {}
@@ -23055,7 +23065,7 @@ async def estimate_memory(
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
             mlx_offload, mlx_offloadable = _mlx_estimate_offload(
-                request, config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+                request, config, model_identifier, model_dir, mlx_load_in_4bit, mlx_kv_bits
             )
             mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
                 request,
