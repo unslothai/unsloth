@@ -235,6 +235,25 @@ def _check_hardware(device, recipe):
         ) from e
 
 
+def _reattach_dispatch_hooks(model, names, dispatch_hooks):
+    """Put each swapped layer's Accelerate hook back so a device_map split model keeps moving activations."""
+    from accelerate.hooks import add_hook_to_module
+
+    modules = dict(model.named_modules())
+    for name in names:
+        hook = dispatch_hooks.get(name)
+        module = modules.get(name)
+        if hook is None or module is None or getattr(module, "_hf_hook", None) is not None:
+            continue
+        # The hook was initialised on the original layer, whose parameters the Float8Linear reuses. Skip
+        # init_hook so it does not re-place (and re-create) those parameters, which would untie shared ones.
+        hook.init_hook = lambda module: module
+        try:
+            add_hook_to_module(module, hook)
+        finally:
+            del hook.init_hook
+
+
 def convert_model_to_float8_training(
     model,
     float8_training = True,
@@ -275,8 +294,17 @@ def convert_model_to_float8_training(
         devices = _selected_devices(model, module_filter_fn)
         for device in devices or [next((p.device for p in model.parameters()), None)]:
             _check_hardware(device, recipe)
+    # Accelerate dispatch hooks (device_map splits, offload) live on the module object; torchao builds a new
+    # Float8Linear and drops them, so inputs are no longer moved to the layer's device. Re-attach them below.
+    dispatch_hooks = {
+        name: m._hf_hook
+        for name, m in model.named_modules()
+        if isinstance(m, torch.nn.Linear) and getattr(m, "_hf_hook", None) is not None
+    }
     convert_to_float8_training(model, module_filter_fn = module_filter_fn, config = config)
     converted = [name for name, m in model.named_modules() if isinstance(m, Float8Linear)]
+    if dispatch_hooks:
+        _reattach_dispatch_hooks(model, converted, dispatch_hooks)
     if not converted:
         import warnings
         warnings.warn(
