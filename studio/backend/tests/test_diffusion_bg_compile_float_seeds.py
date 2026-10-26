@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Background compile float seeds: a ``dynamic=True`` block compile restarts once to specialise the norm ``eps`` it
-cannot tensorify; the names are kept in the load's compile-cache dir and pre-seeded on the next load, which then
-traces once into the same graph. CPU only (``aot_eager``)."""
+"""Background compile float seeds (CPU, ``aot_eager``)."""
 
 from __future__ import annotations
 
@@ -57,7 +55,6 @@ def _net() -> Net:
 
 @pytest.fixture(autouse = True)
 def _fresh_dynamo(monkeypatch):
-    """Each case is a new process for dynamo: no cache entries, no learned specialisations."""
     monkeypatch.delenv(bg.FLOAT_SEEDS_ENV, raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
     torch._dynamo.reset()
@@ -80,7 +77,6 @@ def restarts(monkeypatch):
 
 
 def _background_compile(seed_dir, x):
-    """Record one eager call, compile it on the background thread, then run compiled; returns (bg, output)."""
     net = _net()
     job = bg.arm(net, seed_dir = seed_dir)
     assert job is not None
@@ -109,7 +105,6 @@ def test_second_load_traces_once_into_the_same_graph(tmp_path, restarts):
     assert second.float_seeds == len(saved["names"])
     assert second.describe()["float_seeds"] == len(saved["names"])
     assert torch.equal(out_first, out_second)
-    # nothing new learned: the file is not rewritten
     assert json.loads((tmp_path / bg.FLOAT_SEEDS_FILE).read_text(encoding = "utf-8")) == saved
 
 
@@ -150,7 +145,6 @@ def test_seeds_for_other_code_are_ignored(tmp_path, restarts):
     restarts["n"] = 0
     job, _ = _background_compile(tmp_path, x)
     assert job.float_seeds == 0 and restarts["n"] >= 1
-    # relearned under the live signature
     assert json.loads(path.read_text(encoding = "utf-8"))["signature"] == bg._code_signature(_net())
 
 

@@ -13,10 +13,8 @@ so offload hooks see one forward at a time (UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOAD
 profile (generation 3, already eager -> compiled) uses it; UNSLOTH_DIFFUSION_BG_COMPILE=1 also moves a load's
 first-render compile (render 1 then differs from render 2 for one seed), =0 disables it.
 
-A ``dynamic=True`` compile wraps every float a block reads (norm ``eps``, dropout ``p``) as a SymFloat; dynamo
-specialises the ones it cannot tensorify only after a failed first attempt, so each block type is traced twice.
-The names it specialises are saved beside the load's compile cache and pre-seeded on the next compile of the
-same key, which then traces once into the same graph (UNSLOTH_DIFFUSION_BG_COMPILE_FLOAT_SEEDS=0 opts out).
+``dynamic=True`` SymFloats dynamo cannot tensorify (norm ``eps``) cost a restart per block type; their names are
+saved in the load's compile-cache dir and pre-seeded next load (UNSLOTH_DIFFUSION_BG_COMPILE_FLOAT_SEEDS=0 opts out).
 """
 
 from __future__ import annotations
@@ -380,7 +378,6 @@ class BackgroundCompile:
     ) -> None:
         self.module = module
         self.logger = logger
-        # The load's compile-cache key dir; the float specialisations learned here are kept in it for the next load.
         self.seed_dir = Path(seed_dir) if seed_dir else None
         self.float_seeds = 0
         self.float_seeds_learned = 0
@@ -642,7 +639,6 @@ class BackgroundCompile:
             return None
 
     def _keep_floats(self, seeded: Optional[tuple]) -> None:
-        """Save the names this compile specialised (seeded or learned on a restart), when they changed."""
         if seeded is None:
             return
         state, path, signature, before, seeds = seeded
@@ -723,8 +719,7 @@ def arm(
     logger: Any = None,
     seed_dir: Any = None,
 ) -> Optional[BackgroundCompile]:
-    """A recording ``BackgroundCompile`` on ``module``, or None (disabled / no hook). ``seed_dir``: the load's
-    compile-cache key dir, where the compile's float specialisations persist for the next load."""
+    """A recording ``BackgroundCompile`` on ``module``, or None (disabled / no hook)."""
     if module is None or not enabled():
         return None
     bg = BackgroundCompile(module, logger = logger, seed_dir = seed_dir)
