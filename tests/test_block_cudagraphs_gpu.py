@@ -96,7 +96,7 @@ def _fresh(monkeypatch):
         monkeypatch.setattr(
             bc,
             "_CUDAGRAPH_STATE",
-            {"off": None, "release": None, "ours": set(), "devices": set(), "notes": set()},
+            getattr(bc, "_new_cudagraph_state", dict)(),
         )
     yield
     torch._dynamo.reset()

@@ -44,7 +44,7 @@ def _block_env(monkeypatch):
     monkeypatch.setattr(
         bc,
         "_CUDAGRAPH_STATE",
-        {"off": None, "release": None, "ours": set(), "devices": set(), "notes": set()},
+        getattr(bc, "_new_cudagraph_state", dict)(),
         raising = False,
     )
 
@@ -511,7 +511,7 @@ def test_release_resets_the_trees_only_when_every_function_is_ours(monkeypatch, 
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: reserved[0])
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: reserved.__setitem__(0, 2 * 2**30))
     bc._CUDAGRAPH_STATE["ours"].add("a")
-    bc._CUDAGRAPH_STATE["devices"].add(0)
+    bc._CUDAGRAPH_STATE["managers"][0] = manager
     bc._release_graph_pool()
     out = capsys.readouterr().out
     if ids == ["a", "a"]:
@@ -555,3 +555,30 @@ def test_block_marked_by_fsdp2_runs_without_graphs(monkeypatch):
     marked(kept(torch.randn(2, 4, 8, requires_grad = True))).sum().backward()
     assert calls == ["graphs", "plain"]
     assert bc._CUDAGRAPH_STATE["off"] is None
+
+
+def test_graphed_call_records_the_compile_ids_it_created(monkeypatch):
+    # The first call creates the tree (and its manager); later calls read the cached manager only.
+    manager = _FakeManager([])
+    lookups = []
+
+    def tree_manager(device):
+        lookups.append(device)
+        return manager
+
+    def compiled(n, cid):
+        for _ in range(n):
+            i = len(manager.ids_to_funcs)
+            manager.ids_to_funcs[i] = None
+            manager.id_to_compile_id[i] = cid
+        return n
+
+    monkeypatch.setattr(bc, "_tree_manager", tree_manager)
+    manager.ids_to_funcs[0], manager.id_to_compile_id[0] = None, "foreign"  # made before us
+    assert bc._graphed_call(compiled, 0, 0, "x") == 0
+    bc._graphed_call(compiled, 0, 2, "a")
+    bc._graphed_call(compiled, 0, 0, "y")
+    bc._graphed_call(compiled, 0, 1, "b")
+    assert lookups == [0]
+    assert bc._CUDAGRAPH_STATE["ours"] == {"a", "b"}
+    assert bc._pool_release_verdict([manager], bc._CUDAGRAPH_STATE["ours"]) == "foreign"

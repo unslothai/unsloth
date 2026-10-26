@@ -35,8 +35,12 @@ except ValueError:
     _CUDAGRAPH_MAX_SHAPES = 2
 # Process wide: every block class shares one cudagraph tree (one pool per device).
 # off: why graphs went off (None = on); release: None, "done" or "kept"; ours: compile ids of the
-# tree functions block calls created; devices: CUDA indices block graphs ran on.
-_CUDAGRAPH_STATE = {"off": None, "release": None, "ours": set(), "devices": set(), "notes": set()}
+# tree functions block calls created; managers: CUDA index -> the tree manager block graphs ran on.
+def _new_cudagraph_state():
+    return {"off": None, "release": None, "ours": set(), "managers": {}, "notes": set()}
+
+
+_CUDAGRAPH_STATE = _new_cudagraph_state()
 
 
 _PACKED_NOTE = (
@@ -84,17 +88,24 @@ def _tree_manager(device):
 def _graphed_call(compiled, device, *args, **kwargs):
     """Call the graphs-on region; note the compile ids of tree functions it created (forward here,
     the backward of the same compile later), so the release can tell its pool is only ours."""
-    manager = _tree_manager(device)
+    managers = _CUDAGRAPH_STATE["managers"]
+    manager = managers.get(device)
+    if manager is None:
+        # Cached once found: one tree manager per device until a reset. It may predate the
+        # first block call (another region made it), so look before the call too.
+        manager = _tree_manager(device)
+        if manager is not None:
+            managers[device] = manager
     before = len(manager.ids_to_funcs) if manager is not None else 0
     out = compiled(*args, **kwargs)
-    after = _tree_manager(device)
-    if after is not None:
-        _CUDAGRAPH_STATE["devices"].add(device)
-        if after is not manager:
-            before = 0
-        if len(after.ids_to_funcs) > before:
-            ids = list(after.ids_to_funcs)[before:]
-            _CUDAGRAPH_STATE["ours"].update(after.id_to_compile_id.get(i) for i in ids)
+    if manager is None:
+        manager = _tree_manager(device)
+        if manager is None:
+            return out
+        managers[device] = manager
+    if len(manager.ids_to_funcs) > before:
+        ids = list(manager.ids_to_funcs)[before:]
+        _CUDAGRAPH_STATE["ours"].update(manager.id_to_compile_id.get(i) for i in ids)
     return out
 
 
@@ -141,12 +152,13 @@ def _release_graph_pool():
             "compiled region records into the same CUDA graph tree.",
         )
         return
-    devices = sorted(state["devices"])
+    devices = sorted(state["managers"])
     before = sum(torch.cuda.memory_reserved(d) for d in devices)
     cudagraph_trees.reset_cudagraph_trees()
     torch.cuda.empty_cache()
     freed = before - sum(torch.cuda.memory_reserved(d) for d in devices)
     state["release"] = "done"
+    state["managers"].clear()
     _rank0_note(
         "released",
         f"Unsloth: released the block CUDA graph pool ({max(freed, 0) / 2**30:.2f} GiB reserved freed).",
@@ -154,9 +166,12 @@ def _release_graph_pool():
 
 
 def _packed_kwargs(kwargs):
-    return any(
-        kwargs.get(key) is not None
-        for key in ("packed_seq_lengths", "cu_seq_lens_q", "cu_seq_lens_k", "cu_seqlens")
+    get = kwargs.get
+    return (
+        get("packed_seq_lengths") is not None
+        or get("cu_seq_lens_q") is not None
+        or get("cu_seq_lens_k") is not None
+        or get("cu_seqlens") is not None
     )
 
 
