@@ -250,6 +250,24 @@ export function renameSavedRunSettings(
   if (renamedPins.length > 0) {
     writePins(pins);
   }
+  const loadedOnce = readJson<LoadedOnceMap>(
+    LOADED_ONCE_RUN_SETTINGS_STORAGE_KEY,
+  );
+  const prefix = selectionPrefix(modelId);
+  const renamedOnce = Object.keys(loadedOnce).filter((once) => {
+    const onceName = loadedOnce[once]?.name;
+    return (
+      once.startsWith(prefix) &&
+      typeof onceName === "string" &&
+      sameName(onceName, from)
+    );
+  });
+  for (const once of renamedOnce) {
+    loadedOnce[once] = { ...loadedOnce[once], name: cleanName };
+  }
+  if (renamedOnce.length > 0) {
+    writeJson(LOADED_ONCE_RUN_SETTINGS_STORAGE_KEY, loadedOnce);
+  }
   const selections = readSelections();
   const renamed = selectionsNaming(selections, modelId, from);
   for (const selected of renamed) {

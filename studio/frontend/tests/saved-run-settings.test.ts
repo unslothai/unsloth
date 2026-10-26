@@ -45,7 +45,10 @@ test("a one-time load is remembered per quant until a regular load clears it", (
 
 test("the editor names a one-time load by what it sent, before matching saved sets", () => {
   const page = readFileSync(
-    new URL("../src/features/model-picker/components/model-config-page.tsx", import.meta.url),
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
     "utf8",
   );
   assert.match(
@@ -57,7 +60,10 @@ test("the editor names a one-time load by what it sent, before matching saved se
     /perModelConfigsEqual\(forSetStore\(loaded\), forSetStore\(noted\.sent\)\)[\s\S]{0,200}findSavedRunSettings\(savedSets, noted\.name\)/,
   );
   // The record wins, a Default (null) one too, before the pin-equality shortcut.
-  assert.match(page, /const notedOnce = inferOnce \? loadedOnceNamed\(loadedConfig\) : undefined;/);
+  assert.match(
+    page,
+    /const notedOnce = inferOnce \? loadedOnceNamed\(loadedConfig\) : undefined;/,
+  );
   assert.match(
     page,
     /notedOnce !== undefined\s*\? notedOnce\s*: inferOnce &&\s*!perModelConfigsEqual\(forSetStore\(loadedConfig\), forSetStore\(pinnedEntry\.config\)\)/,
@@ -459,8 +465,17 @@ test("a pinned set follows renames and goes with its set or a forget", () => {
   assert.ok(saved.setPinnedRunSettings(MODEL, "q4_k_m", "Mine"));
   assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Mine");
   assert.equal(saved.getPinnedRunSettings(MODEL, "Q8_0"), null);
+  saved.noteRunSettingsLoadedOnce(MODEL, "Q8_0", {
+    name: "Mine",
+    sent: config(4096),
+  });
   assert.ok(saved.renameSavedRunSettings(MODEL, "Mine", "Long context"));
   assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Long context");
+  // A one-time load of the set keeps naming it.
+  assert.equal(
+    saved.getRunSettingsLoadedOnce(MODEL, "Q8_0")?.name,
+    "Long context",
+  );
   assert.ok(saved.deleteSavedRunSettings(MODEL, "Trial"));
   assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Long context");
   assert.ok(saved.deleteSavedRunSettings(MODEL, "Long context"));
