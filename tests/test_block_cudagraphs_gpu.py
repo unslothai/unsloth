@@ -127,7 +127,12 @@ def _step(layers, xs, opt, checkpoint):
     return losses
 
 
-def _train(lengths, checkpoint, micro = 2, steps = None):
+def _train(
+    lengths,
+    checkpoint,
+    micro = 2,
+    steps = None,
+):
     graphed, eager = _models()
     opts = [torch.optim.SGD(m.parameters(), lr = 0.1) for m in (graphed, eager)]
     out = {"graphed": [], "eager": []}
@@ -138,7 +143,9 @@ def _train(lengths, checkpoint, micro = 2, steps = None):
             for _ in range(micro)
         ]
         out["graphed"].append(_step(graphed, xs, opts[0], checkpoint))
-        out["eager"].append(_step(eager, [x.detach().requires_grad_(checkpoint) for x in xs], opts[1], checkpoint))
+        out["eager"].append(
+            _step(eager, [x.detach().requires_grad_(checkpoint) for x in xs], opts[1], checkpoint)
+        )
         if steps is not None:
             steps(step)
     return graphed, eager, out

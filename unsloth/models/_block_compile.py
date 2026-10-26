@@ -33,6 +33,8 @@ try:
     _CUDAGRAPH_MAX_SHAPES = max(0, int(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "2")))
 except ValueError:
     _CUDAGRAPH_MAX_SHAPES = 2
+
+
 # Process wide: every block class shares one cudagraph tree (one pool per device).
 # off: why graphs went off (None = on); release: None, "done" or "kept"; ours: compile ids of the
 # tree functions block calls created; managers: CUDA index -> the tree manager block graphs ran on.
@@ -110,7 +112,7 @@ def _graphed_call(compiled, device, *args, **kwargs):
 
 
 def _pool_release_verdict(managers, ours):
-    """"ok" when every tree function belongs to a block compile and nothing in the pool is alive
+    """ "ok" when every tree function belongs to a block compile and nothing in the pool is alive
     (no pending backward), "pending" to retry at a later call, "foreign" when another torch.compile
     region also records into this tree: resetting would break its next call."""
     for manager in managers:
@@ -1069,7 +1071,12 @@ def _wrap(
             # PrefixGrouper's int segment table would recompile at every new GRPO length.
             or (unsloth_forward and kwargs.get("prefix_seg_info") is not None)
         ):
-            if graphs and self.training and _CUDAGRAPH_STATE["off"] is None and _packed_kwargs(kwargs):
+            if (
+                graphs
+                and self.training
+                and _CUDAGRAPH_STATE["off"] is None
+                and _packed_kwargs(kwargs)
+            ):
                 _graphs_off("packed", _PACKED_NOTE)
             return original(self, hidden_states, *args, **kwargs)
         if tracing:

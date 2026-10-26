@@ -322,7 +322,9 @@ def test_past_the_cap_every_block_class_goes_off_and_the_pool_is_released(monkey
     _tagging_compile(monkeypatch, calls)
     monkeypatch.setattr(bc, "_CUDAGRAPH_MAX_SHAPES", 1)
     monkeypatch.setattr(
-        bc, "_release_graph_pool", lambda: released.append(1) or bc._CUDAGRAPH_STATE.update(release = "done")
+        bc,
+        "_release_graph_pool",
+        lambda: released.append(1) or bc._CUDAGRAPH_STATE.update(release = "done"),
     )
     A, B = _linear_layer_class("ADecoderLayer"), _linear_layer_class("BDecoderLayer")
     for cls in (A, B):
@@ -477,7 +479,12 @@ def test_frozen_block_without_grad_input_still_copies(monkeypatch):
 
 
 class _FakeManager:
-    def __init__(self, compile_ids, pending = False, live = ()):
+    def __init__(
+        self,
+        compile_ids,
+        pending = False,
+        live = (),
+    ):
         self.id_to_compile_id = dict(enumerate(compile_ids))
         self.ids_to_funcs = dict.fromkeys(self.id_to_compile_id)
         self.running_forwards_with_pending_backwards = pending
