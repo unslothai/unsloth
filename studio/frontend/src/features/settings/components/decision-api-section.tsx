@@ -380,7 +380,13 @@ export function DecisionApiSection({
       {settings ? (
         <Tooltip>
           <TooltipTrigger asChild={true}>
-            <span className="shrink-0">
+            <span
+              className={cn(
+                "shrink-0",
+                // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+                showHeading && "mt-[calc(var(--text-base)*0.372)]",
+              )}
+            >
               <Button
                 size="sm"
                 className="shrink-0 gap-1.5"

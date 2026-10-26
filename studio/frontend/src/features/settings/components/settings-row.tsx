@@ -36,14 +36,13 @@ export function SettingsRow({
       data-settings-label={label}
       className={cn(
         // Controls are fixed-width, so wrap to avoid starving the label.
-        "flex flex-wrap items-center justify-end gap-x-6 gap-y-2 py-3",
+        "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
+        description ? "items-start" : "items-center",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,
       )}
     >
-      <div
-        className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-center gap-2.5"
-      >
+      <div className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-center gap-2.5">
         {icon ? (
           <span className="flex shrink-0 items-center text-foreground">
             {icon}
@@ -87,9 +86,20 @@ export function SettingsRow({
         </div>
       </div>
       {children ? (
-        <div className="flex max-w-full shrink-0 items-center">{children}</div>
+        <div
+          // Aligned to the title line by index.css; an items-center here would override it.
+          data-title-line-control={description ? true : undefined}
+          className={cn(
+            "flex max-w-full shrink-0",
+            !description && "items-center",
+          )}
+        >
+          {children}
+        </div>
       ) : null}
-      {below ? <div className="flex basis-full justify-end">{below}</div> : null}
+      {below ? (
+        <div className="flex basis-full justify-end">{below}</div>
+      ) : null}
     </div>
   );
 }

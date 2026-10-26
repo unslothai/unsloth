@@ -3852,16 +3852,19 @@ function VideoGenerator({
               </p>
             </div>
 
-            <MediaGenerationPresetControl
-              kind="video"
-              presets={videoPresets.presets}
-              activePreset={videoPresets.activePreset}
-              ready={videoPresets.presetsReady}
-              hasUnsavedChanges={videoPresets.hasUnsavedChanges}
-              onSelect={videoPresets.selectPreset}
-              onSave={videoPresets.savePreset}
-              onDelete={videoPresets.deletePreset}
-            />
+            {/* Top edge on the heading's cap top (text-xl, leading-none; Hellix: 0.122em). */}
+            <div className="mt-[calc(var(--text-xl)*0.122)]">
+              <MediaGenerationPresetControl
+                kind="video"
+                presets={videoPresets.presets}
+                activePreset={videoPresets.activePreset}
+                ready={videoPresets.presetsReady}
+                hasUnsavedChanges={videoPresets.hasUnsavedChanges}
+                onSelect={videoPresets.selectPreset}
+                onSave={videoPresets.savePreset}
+                onDelete={videoPresets.deletePreset}
+              />
+            </div>
           </div>
 
           <Field label="Prompt" hint={status?.prompt_hint || undefined}>

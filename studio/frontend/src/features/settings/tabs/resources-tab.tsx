@@ -638,7 +638,8 @@ export function ResourcesTab() {
             {t("settings.resources.description")}
           </p>
         </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+        {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
+        <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
           <Button
             variant={isOpen ? "secondary" : "outline"}
             size="sm"

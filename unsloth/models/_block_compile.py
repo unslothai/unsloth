@@ -82,6 +82,37 @@ def _in_nonreentrant_checkpoint():
     return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
 
 
+def _ddp_optimizer_mode():
+    # optimize_ddp also takes "python_reducer" / "no_optimization" strings: only "ddp_optimizer"
+    # (or True) makes dynamo split graphs (convert_frame.py checks == "ddp_optimizer").
+    getter = getattr(torch._dynamo.utils, "get_optimize_ddp_mode", None) or getattr(
+        torch._dynamo.config, "_get_optimize_ddp_mode", None
+    )
+    if getter is not None:
+        return getter() == "ddp_optimizer"
+    return getattr(torch._dynamo.config, "optimize_ddp", False) is True
+
+
+try:
+    from torch.nn.parallel import DistributedDataParallel as _DDP
+except Exception:
+    _DDP = None
+
+
+def _no_ddp_graph_split():
+    """Inside DDP.forward dynamo hands a block's graph to DDPOptimizer, which splits it at gradient
+    bucket boundaries. A checkpoint recompute runs from backward, outside DDP.forward, so a block
+    graph compiled there is not split and saves a different number of tensors than the forward
+    (CheckpointError under DDP's non-reentrant checkpointing, DeepSeek-OCR). Each block is its own
+    region already, so its gradients still reach DDP's buckets block by block."""
+    try:
+        if _DDP is None or _DDP._get_active_ddp_module() is None or not _ddp_optimizer_mode():
+            return contextlib.nullcontext()
+    except Exception:
+        return contextlib.nullcontext()
+    return torch._dynamo.config.patch(optimize_ddp = False)
+
+
 def _isolate_supported():
     # torch 2.13+: per-call recompile_limit and isolate_recompiles (own cache bucket per region).
     try:
@@ -851,7 +882,7 @@ def _wrap(
                 if varlen is not None:
                     kwargs = {**kwargs, packed_module.BLOCK_VARLEN_KWARG: varlen}
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
-            with capture_scratch():
+            with capture_scratch(), _no_ddp_graph_split():
                 if graphs and not graphs_off[0]:
                     shape = tuple(hidden_states.shape)
                     if shape not in graph_shapes:
