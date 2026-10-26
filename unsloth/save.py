@@ -6723,7 +6723,11 @@ def _tp_collective_save(method):
                     return tp_collective(self, method, lambda: fn(self, *args, **kwargs), select)
             elif getattr(self, "__dict__", {}).get("_unsloth_tp_world_save"):
                 from .models.tp_replica import tp_world_save
-                return tp_world_save(method, lambda: fn(self, *args, **kwargs))
+                return tp_world_save(
+                    method,
+                    lambda: fn(self, *args, **kwargs),
+                    args[0] if args else kwargs.get("save_directory", kwargs.get("repo_id")),
+                )
             return fn(self, *args, **kwargs)
 
         return wrapper
@@ -8604,6 +8608,7 @@ def unsloth_tokenizer_save_pretrained(
             lambda: _unsloth_tokenizer_save_pretrained(
                 self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
             ),
+            save_directory,
         )
     return _unsloth_tokenizer_save_pretrained(
         self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs

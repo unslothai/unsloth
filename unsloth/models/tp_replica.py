@@ -543,7 +543,7 @@ def _publish(key, payload):
     try:
         data = pickle.dumps(payload)
     except Exception:
-        data = pickle.dumps((payload[0], None))
+        data = pickle.dumps((payload[0], None) + tuple(payload[2:]))
     store.set(key, data)
 
 
@@ -592,24 +592,29 @@ def _on_rank0(
     what,
     call,
     model = None,
+    where = None,
 ):
-    """Rank 0 runs `call`; the others wait for it on the store and return its result or raise its error."""
+    """Rank 0 runs `call`; the others wait for it on the store and return its result or raise its error.
+    `where` (host, directory) of a world save: a rank whose rank 0 wrote somewhere else (its own directory,
+    another node, or a save rank 0 made alone) writes its own copy, as without tensor parallel."""
     if _rank() == 0:
         _ACTIVE.append(what)
-        payload = ("error", "rank 0 did not finish")
+        payload = ("error", "rank 0 did not finish", where)
         kept = _keep_tree(model)
         try:
             result = call()
-            payload = ("ok", result)
+            payload = ("ok", result, where)
             return result
         except BaseException as exc:
-            payload = ("error", f"{type(exc).__name__}: {exc}")
+            payload = ("error", f"{type(exc).__name__}: {exc}", where)
             raise
         finally:
             _restore_tree(kept)
             _ACTIVE.pop()
             _publish(key, payload)
-    status, value = _wait(key)
+    status, value, *rest = _wait(key)
+    if where is not None and (not rest or rest[0] != where):
+        return call()
     if status != "ok":
         raise RuntimeError(f"Unsloth: tensor parallel `{what}` failed on rank 0: {value}")
     return value
@@ -660,7 +665,9 @@ def mark_world_save(obj):
 
         def save_pretrained(*args, **kwargs):
             return tp_world_save(
-                f"{type(obj).__name__}.save_pretrained", lambda: save(*args, **kwargs)
+                f"{type(obj).__name__}.save_pretrained",
+                lambda: save(*args, **kwargs),
+                args[0] if args else kwargs.get("save_directory"),
             )
 
         save_pretrained.__name__ = "unsloth_tp_world_save_pretrained"
@@ -671,9 +678,25 @@ def mark_world_save(obj):
     return obj
 
 
-def tp_world_save(what, call):
-    """A save of something every rank holds whole (a tokenizer): rank 0 writes, the others wait for it."""
+def _where(directory):
+    """(host, absolute directory) of a save, or a placeholder when the directory is not a path."""
+    import socket
+
+    try:
+        directory = os.path.abspath(os.fspath(directory))
+    except TypeError:
+        directory = None
+    return (socket.gethostname(), directory)
+
+
+def tp_world_save(
+    what,
+    call,
+    directory = None,
+):
+    """A save of something every rank holds whole (a tokenizer): rank 0 writes, the others wait for it. A rank
+    saving to another directory or host than rank 0 did writes its own copy."""
     dist = _dist()
     if _ACTIVE or dist is None or dist.get_world_size() == 1:
         return call()
-    return _on_rank0(_key("world"), what, call)
+    return _on_rank0(_key("world"), what, call, where = _where(directory))
