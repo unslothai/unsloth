@@ -29,6 +29,33 @@ const config = (customContextLength: number | null) => ({
 
 test.beforeEach(() => store.clear());
 
+test("a one-time load is remembered per quant until a regular load clears it", () => {
+  const sent = { ...config(4096), maxSeqLength: 8192 };
+  saved.noteRunSettingsLoadedOnce(MODEL, "Q4_K_M", { name: "Other", sent });
+  assert.deepEqual(saved.getRunSettingsLoadedOnce(MODEL, "q4_k_m"), { name: "Other", sent });
+  assert.equal(saved.getRunSettingsLoadedOnce(MODEL, "Q8_0"), null);
+  saved.noteRunSettingsLoadedOnce(MODEL, "Q4_K_M", null);
+  assert.equal(saved.getRunSettingsLoadedOnce(MODEL, "Q4_K_M"), null);
+});
+
+test("the editor names a one-time load by what it sent, before matching saved sets", () => {
+  const page = readFileSync(
+    new URL("../src/features/model-picker/components/model-config-page.tsx", import.meta.url),
+    "utf8",
+  );
+  // Recorded on every load: a one-time load notes its set and the resolved config, a regular one clears it.
+  assert.match(
+    page,
+    /noteRunSettingsLoadedOnce\(\s*configId,\s*target\.ggufVariant,\s*onceOnly \? \{ name: loadSet, sent: effectiveLoadConfig \} : null,\s*\);/,
+  );
+  // Matched against what was sent, and only while that set still exists.
+  assert.match(
+    page,
+    /perModelConfigsEqual\(forSetStore\(loaded\), forSetStore\(noted\.sent\)\)[\s\S]{0,200}findSavedRunSettings\(savedSets, noted\.name\)/,
+  );
+  assert.match(page, /\? \(loadedOnceNamed\(loadedConfig\) \?\?\s*savedSets\.find\(/);
+});
+
 test("one model keeps several named settings, listed by name", () => {
   assert.ok(saved.saveRunSettings(MODEL, "Long context", config(32768)));
   assert.ok(saved.saveRunSettings(MODEL, "  Fast  ", config(4096)));

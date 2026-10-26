@@ -10,9 +10,11 @@ import {
   deleteSavedRunSettings,
   findSavedRunSettings,
   getPinnedRunSettings,
+  getRunSettingsLoadedOnce,
   isRunSettingsLimitReached,
   newRunSettingsName,
   normalizeSavedRunSettingsName,
+  noteRunSettingsLoadedOnce,
   quantsSelectingRunSettings,
   renameSavedRunSettings,
   SAVED_RUN_SETTINGS_PER_MODEL_MAX,
@@ -3517,15 +3519,28 @@ export function ModelConfigPage({
     pinnedName === null ? null : findSavedRunSettings(savedSets, pinnedName);
   const pinnedSet = pinnedEntry?.name ?? null;
   // A model loaded once with another set: name that set rather than show the pinned one as edited.
+  // The set a one-time load named, when the model runs with exactly what that load sent: the runtime
+  // can resolve a field the set leaves to auto, which no saved set then equals.
+  const loadedOnceNamed = (loaded: PerModelConfig): string | null | undefined => {
+    const noted = getRunSettingsLoadedOnce(configId, target.ggufVariant);
+    if (!noted || !perModelConfigsEqual(forSetStore(loaded), forSetStore(noted.sent))) {
+      return undefined;
+    }
+    return noted.name === null || findSavedRunSettings(savedSets, noted.name)
+      ? noted.name
+      : undefined;
+  };
   const loadedOnce =
     pinnedEntry !== null &&
     pickedSet === undefined &&
     loadedConfig != null &&
     atBaseline &&
     !perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(pinnedEntry.config))
-      ? (savedSets.find((entry) =>
+      ? (loadedOnceNamed(loadedConfig) ??
+        savedSets.find((entry) =>
           perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(entry.config)),
-        )?.name ?? (isDefaultConfig(forSetStore(loadedConfig)) ? null : undefined))
+        )?.name ??
+        (isDefaultConfig(forSetStore(loadedConfig)) ? null : undefined))
       : undefined;
   // Held as a pick past the first edit, else the draft falls back to the pinned set and Save writes
   // into it. A new load re-seeds the draft, which drops it.
@@ -3991,6 +4006,11 @@ export function ModelConfigPage({
         : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
     // The budget row flushes on unmount, after onRun staged the load, so save it first. Locked
     // before the settle so no drag lands in between.
+    noteRunSettingsLoadedOnce(
+      configId,
+      target.ggufVariant,
+      onceOnly ? { name: loadSet, sent: effectiveLoadConfig } : null,
+    );
     setVramBudgetLocked(true);
     const stagedBudget = settleVramBudgetSave();
     if (stagedBudget) {

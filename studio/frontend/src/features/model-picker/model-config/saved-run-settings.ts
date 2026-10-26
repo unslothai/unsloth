@@ -379,6 +379,30 @@ export function forgetPerModelConfigsForOverrideKeys(
 }
 
 /** The set this model + quant always loads with, or null when it loads the last one picked. */
+// The set a one-time load used and the config it sent, for this page session. The runtime reports
+// resolved values (a Transformers max sequence length, say), so matching saved sets alone misses it.
+const loadedOnceByModel = new Map<
+  string,
+  { name: string | null; sent: PerModelConfig }
+>();
+
+export function noteRunSettingsLoadedOnce(
+  modelId: string,
+  ggufVariant: string | null | undefined,
+  entry: { name: string | null; sent: PerModelConfig } | null,
+): void {
+  const key = selectionKey(modelId, ggufVariant);
+  if (entry) loadedOnceByModel.set(key, entry);
+  else loadedOnceByModel.delete(key);
+}
+
+export function getRunSettingsLoadedOnce(
+  modelId: string,
+  ggufVariant: string | null | undefined,
+): { name: string | null; sent: PerModelConfig } | null {
+  return loadedOnceByModel.get(selectionKey(modelId, ggufVariant)) ?? null;
+}
+
 export function getPinnedRunSettings(
   modelId: string,
   ggufVariant: string | null | undefined,
