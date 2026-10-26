@@ -733,15 +733,22 @@ def block_packed_plan(layer, hidden_states, args, kwargs):
     and longest segment for _in_graph_varlen, and its dense masks tagged with the windows they are
     block causal for. None keeps #14808's path."""
     lengths = kwargs.get("packed_seq_lengths")
-    if lengths is None or _disabled() or _in_graph_disabled():
+    if lengths is None or not isinstance(hidden_states, torch.Tensor):
         return None
+    # Per layer, device and dtype: most GPUs never leave the graph, so this is one dict read.
+    wanted = layer.__dict__.setdefault("_unsloth_packed_plan_wanted", {})
+    key = (hidden_states.device, hidden_states.dtype)
+    ok = wanted.get(key)
+    if ok is None:
+        ok = _in_graph_device(hidden_states.device) and _layer_leaves(layer, hidden_states)
+        wanted[key] = ok
     if (
-        not isinstance(hidden_states, torch.Tensor)
+        not ok
         or hidden_states.dim() != 3
         or hidden_states.shape[0] != 1
         or hidden_states.shape[1] < 1
-        or not _in_graph_device(hidden_states.device)
-        or not _layer_leaves(layer, hidden_states)
+        or _disabled()
+        or _in_graph_disabled()
     ):
         return None
     device, total = hidden_states.device, hidden_states.shape[1]
