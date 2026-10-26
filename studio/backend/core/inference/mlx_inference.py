@@ -1588,6 +1588,43 @@ def _video_placeholder(processor):
     return None
 
 
+def _marks_video(target, processor) -> bool:
+    """Whether ``target`` renders a video part as a marker: a render that merely differs from the
+    text one can still be prose, as in the image probe."""
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    marked = apply_chat_template_for_generation(target, _VIDEO_PROBE_MESSAGES)
+    if not marked or marked == apply_chat_template_for_generation(target, _TEXT_PROBE_MESSAGES):
+        return False
+    if _vlm_prompt_issue(marked, _VIDEO_PROBE_MESSAGES):
+        return False
+    placeholder = _video_placeholder(processor)
+    return placeholder is None or placeholder in marked
+
+
+def _video_render_target(processor):
+    """What renders a turn with video. mlx-vlm's Gemma 4 processor rebuilds each message from media
+    counts and drops a video part it holds no clip for; its tokenizer carries the same template and
+    renders the part as written. A processor that keeps the marker keeps rendering, since some
+    deliberately differ from their tokenizer (MiniCPM-V's non-thinking prefix)."""
+    from core.inference.chat_template_helpers import chat_render_target
+
+    target = chat_render_target(processor)
+    tokenizer = getattr(processor, "tokenizer", None)
+    template = getattr(processor, "chat_template", None)
+    if (
+        target is not processor
+        or not template
+        or getattr(tokenizer, "chat_template", None) != template
+    ):
+        return target
+    try:
+        drops = not _marks_video(processor, processor)
+    except Exception:
+        drops = True
+    return tokenizer if drops else processor
+
+
 def _mlx_lm_reads_images(model) -> bool:
     """An image model unsloth-zoo loaded through mlx-lm, with an unsloth-zoo that prefills its images."""
     if getattr(model, "_unsloth_supports_images", None) is not True:
@@ -1600,26 +1637,13 @@ def _mlx_lm_reads_images(model) -> bool:
 
 
 def _mlx_reads_video(processor) -> bool:
-    """Processor carries a video component AND the template places a video marker: a render that
-    merely differs from the text one can still be prose, as in the image probe."""
+    """Processor carries a video component AND the template places a video marker."""
     if processor is None or getattr(processor, "video_processor", None) is None:
         return False
     if not _mlx_vlm_decodes_video():
         return False
-    from core.inference.chat_template_helpers import (
-        apply_chat_template_for_generation,
-        chat_render_target,
-    )
-
     try:
-        target = chat_render_target(processor)
-        marked = apply_chat_template_for_generation(target, _VIDEO_PROBE_MESSAGES)
-        if not marked or marked == apply_chat_template_for_generation(target, _TEXT_PROBE_MESSAGES):
-            return False
-        if _vlm_prompt_issue(marked, _VIDEO_PROBE_MESSAGES):
-            return False
-        placeholder = _video_placeholder(processor)
-        return placeholder is None or placeholder in marked
+        return _marks_video(_video_render_target(processor), processor)
     except BaseException:
         # A load must never fail on a probe, matching _image_marker_survives.
         return False
@@ -6839,7 +6863,9 @@ class MLXInferenceBackend:
         )
 
         # Same render target as the healing catalog the route builds (#7066)
-        chat_target = chat_render_target(self._processor)
+        chat_target = (
+            _video_render_target(self._processor) if videos else chat_render_target(self._processor)
+        )
 
         attached_images = 0 if images is None else len(images)
         structured_images = sum(

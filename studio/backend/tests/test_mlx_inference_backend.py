@@ -10729,6 +10729,61 @@ def test_mlx_reads_video_rejects_a_clip_rendered_as_prose(monkeypatch):
     assert _mlx_reads_video(unnamed) is True
 
 
+def _same_template_processor(template = "T", drops_video = True):
+    """A processor that would render, with its tokenizer holding ``template``. ``drops_video`` is
+    mlx-vlm's Gemma 4 processor, which loses a bare video part its tokenizer renders as written."""
+    return SimpleNamespace(
+        apply_chat_template = lambda *_a, **_k: "unused",
+        chat_template = "T",
+        video_processor = object(),
+        video_token = "<|video|>",
+        drops_video = drops_video,
+        tokenizer = SimpleNamespace(chat_template = template),
+    )
+
+
+def _render_by_target(monkeypatch):
+    def _render(target, messages, **_kwargs):
+        has_video = any(
+            isinstance(part, dict) and part.get("type") == "video"
+            for message in messages
+            for part in (message.get("content") or [])
+        )
+        marked = has_video and not getattr(target, "drops_video", False)
+        return "<|video|> hi" if marked else "hi"
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation", _render
+    )
+
+
+def test_a_video_turn_renders_through_the_tokenizer_only_when_the_processor_drops_it(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend, _mlx_reads_video
+
+    _require_video_stack()
+    _render_by_target(monkeypatch)
+    drops = _same_template_processor()
+    assert _mlx_reads_video(drops) is True
+    # A template of the processor's own is what it must render, as before.
+    assert _mlx_reads_video(_same_template_processor(template = "other")) is False
+
+    backend = MLXInferenceBackend()
+    video_turn = [{"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "hi"}]}]
+    image_turn = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "hi"}]}]
+    backend._processor = drops
+    prompt, target, _ = backend._render_vlm_prompt(video_turn, None, videos = ["clip.mp4"])
+    assert (prompt, target) == ("<|video|> hi", drops.tokenizer)
+    _, target, _ = backend._render_vlm_prompt(image_turn, [object()])
+    assert target is drops
+
+    # Some processors deliberately differ from their tokenizer, so one that keeps the marker renders.
+    keeps = _same_template_processor(drops_video = False)
+    backend._processor = keeps
+    prompt, target, _ = backend._render_vlm_prompt(video_turn, None, videos = ["clip.mp4"])
+    assert (prompt, target) == ("<|video|> hi", keeps)
+    assert _mlx_reads_video(keeps) is True
+
+
 def _sampling_release(monkeypatch, **utils_fields):
     """Stand mlx_vlm.utils up in one release's shape, so one processor can be read on each."""
     mlx_vlm = _require_video_stack_module()
