@@ -172,7 +172,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           showResponseModel: saved?.showResponseModel ?? false,
           showReplyTimes: saved?.showReplyTimes === true,
           use24HourTime:
-            typeof saved?.use24HourTime === "boolean" ? saved.use24HourTime : undefined,
+            typeof saved?.use24HourTime === "boolean"
+              ? saved.use24HourTime
+              : undefined,
           showGenerationDetails: saved?.showGenerationDetails === true,
           showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(

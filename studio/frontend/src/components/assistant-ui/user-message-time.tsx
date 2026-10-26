@@ -44,11 +44,17 @@ export const UserMessageTime: FC = () => {
               dateTime={date.toISOString()}
               className="aui-user-message-time block truncate select-none"
             >
-              {formatMessageDate(createdAt, Date.now(), locale, {
-                // Today reads as just the time.
-                today: (time) => time,
-                yesterday: (time) => t("common.yesterdayAt", { time }),
-              }, use24HourTime)}
+              {formatMessageDate(
+                createdAt,
+                Date.now(),
+                locale,
+                {
+                  // Today reads as just the time.
+                  today: (time) => time,
+                  yesterday: (time) => t("common.yesterdayAt", { time }),
+                },
+                use24HourTime,
+              )}
             </time>
           </button>
         </TooltipTrigger>
