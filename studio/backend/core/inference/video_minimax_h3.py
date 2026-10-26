@@ -2119,16 +2119,10 @@ def _full_scale_constant(samples: Any) -> Optional[float]:
 
 
 def h3_native_clip_is_nan_render(path: Path) -> bool:
-    """True when an sd.cpp MiniMax-H3 clip carries the fingerprint of a NaN render, which sd.cpp writes and exits 0 on.
+    """True when a clip is an sd.cpp NaN render: every frame one flat 0 or 255 AND a constant full-scale PCM soundtrack.
 
-    sd.cpp has no NaN check of its own. The VAE tails clamp on the device (video to [0, 1], audio to [-1, 1]), and
-    ggml's clamp maps NaN to the lower bound on CUDA (fminf / fmaxf) and to the upper one on the CPU backend (MIN /
-    MAX macros); a NaN that reaches the uint8 cast unclamped becomes 0. The joint DiT attends text, video and audio
-    tokens together, so a NaN there reaches every token: every frame is one flat 0 or 255 and the PCM soundtrack is
-    one constant full-scale level (-32767 / 32767). A flat frame alone is not enough (a near-black clip comes back
-    flat after the lossy MJPEG / VP8 encode), so both are required: no generated soundtrack holds a single
-    full-scale DC level. The soundtrack is read first and the frames only then, so a normal clip costs an audio
-    decode. A clip without audio, or one that cannot be read, is never flagged."""
+    ggml's clamp maps NaN to 0 on CUDA and to the max on CPU. A flat frame alone is not enough (lossy encode flattens
+    near-black clips). A clip without audio, or one that cannot be read, is never flagged."""
     import av
 
     with av.open(str(path)) as container:

@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MiniMax-H3 native (sd.cpp) route refuses a NaN render with NonFiniteFramesError instead of saving it.
+"""MiniMax-H3 native (sd.cpp) refuses a NaN render (flat black/white frames + constant full-scale PCM).
 
-sd.cpp has no NaN check and exits 0. Its VAE tails clamp on the device, and ggml's clamp maps NaN to the lower bound
-on CUDA and to the upper one on the CPU backend, so a NaN render comes back as flat black (or white) frames over a
-constant full-scale PCM soundtrack (-32767 / 32767). The clips here are written the way sd.cpp writes them: MJPEG +
-PCM s16 in AVI (sd-server vid_gen) and VP8 + PCM s16 in Matroska (sd-cli's WebM is Matroska with A_PCM)."""
+Clips mimic sd.cpp: MJPEG + PCM s16 in AVI (sd-server) and VP8 + PCM s16 in Matroska (sd-cli WebM)."""
 
 import sys
 from fractions import Fraction
@@ -33,7 +30,6 @@ _SIDE, _FRAMES, _FPS, _RATE = 32, 5, 8, 16_000
 
 
 def _probe(path):
-    """``h3_native_clip_is_nan_render``; absent before this change, where nothing is ever flagged."""
     probe = getattr(h3_mod, "h3_native_clip_is_nan_render", None)
     return False if probe is None else probe(path)
 
