@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in idle auto-unload (TTL keep-warm) for the local llama.cpp model.
+"""Opt-in idle auto-unload (TTL keep-warm) for the local llama.cpp or MLX chat model.
 
-Off by default (idle seconds = 0). A background loop unloads the GGUF after the TTL, and a
+Off by default (idle seconds = 0). A background loop unloads the model after the TTL, and a
 pure-ASGI middleware tracks in-flight requests so a long stream is never unloaded mid-response.
 The resident model is shared, so any account's activity resets the one global idle clock. The
 same loop and middleware drive media_keepwarm.
@@ -793,6 +793,21 @@ def _loaded_identity(backend):
     return (*identity, companion_roots) if companion_roots else identity
 
 
+def _resident_mlx(standard):
+    name = getattr(standard, "active_model_name", None)
+    entry = (getattr(standard, "models", None) or {}).get(name) if name else None
+    if not isinstance(entry, dict) or not entry.get("is_mlx"):
+        return None
+    # Speech models (TTS, STT) stay loaded: the reload-stash path skips their audio preflights.
+    return None if entry.get("is_audio") else standard
+
+
+def _mlx_identity(standard):
+    # The auto-switch reload stash shape: no quant, the advertised id keys the saved overrides.
+    name = standard.active_model_name
+    return (name, None, getattr(standard, "_openai_advertised_id", None) or name)
+
+
 def loaded_identity():
     """The loaded GGUF's reload identity (path, quant, advertised id), or None when none is loaded."""
     from routes.inference import get_llama_cpp_backend
@@ -821,7 +836,7 @@ def _note_idle_unload_event(freed, reason: str = "idle") -> None:
 
 
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
-    """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
+    """Unload the loaded GGUF or MLX model once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import (
         get_auto_unload_api_only,
         get_auto_unload_idle_seconds,
@@ -831,7 +846,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     def _user_pinned(b) -> bool:
         """Whether the setting spares this model. Re-read like the other
         settings: a KV save can outlive the user turning this on. getattr keeps
-        a foreign backend (tests, MLX) on the old unload-everything path."""
+        a foreign backend (tests) on the old unload-everything path."""
         return get_auto_unload_api_only() and getattr(b, "_loaded_by_user_action", False)
 
     seen_model = None
@@ -848,7 +863,11 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             if ttl <= 0:
                 continue
             from core.inference.model_slots import unload_extra_models
-            from routes.inference import get_llama_cpp_backend, release_chat_gpu_claim
+            from routes.inference import (
+                _peek_inference_backend,
+                get_llama_cpp_backend,
+                release_chat_gpu_claim,
+            )
 
             backend = get_llama_cpp_backend()
             # A (re)loaded model counts as activity so it survives one TTL before its first request.
@@ -857,21 +876,25 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     unload_extra_models, _user_pinned, True
                 ):
                     await asyncio.to_thread(release_chat_gpu_claim)
+                # An MLX primary lives on the orchestrator while the llama backend sits empty.
+                mlx = None if backend.is_loaded else _resident_mlx(_peek_inference_backend())
+                resident = backend if backend.is_loaded else mlx
                 # Purging the stash mid-reload would race the restore.
-                current = _loaded_identity(backend)
+                current = _loaded_identity(backend) if mlx is None else _mlx_identity(mlx)
                 if current != seen_model:
                     seen_model = current
                     if current is not None:
                         # The loop's own context: whoever loaded it already stamped whether it was attended.
                         _note_activity(attended = False)
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
-                if backend.is_loaded and await asyncio.to_thread(_user_pinned, backend):
+                if resident is not None and await asyncio.to_thread(_user_pinned, resident):
                     # loaded from the UI, so the user wants it resident; only models the API loaded are freed
                     continue
-                if backend.is_loaded and _is_idle(ttl):
-                    freed = _loaded_identity(backend)
+                if resident is not None and _is_idle(ttl):
+                    freed = current
                     manifest = None
-                    if await asyncio.to_thread(get_auto_unload_keep_kv):
+                    # Slot KV is a llama-server feature; the MLX prompt cache dies with its worker.
+                    if mlx is None and await asyncio.to_thread(get_auto_unload_keep_kv):
                         try:
                             manifest = await asyncio.to_thread(
                                 backend.save_slots_for_resume,
@@ -883,7 +906,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if (
                         ttl <= 0
                         or not _is_idle(ttl)
-                        or await asyncio.to_thread(_user_pinned, backend)
+                        or await asyncio.to_thread(_user_pinned, resident)
                     ):
                         if manifest:
                             _delete_resume_files(manifest)
@@ -897,7 +920,10 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                             _delete_resume_files(manifest)
                         continue
                     try:
-                        await asyncio.to_thread(backend.unload_model)
+                        if mlx is None:
+                            await asyncio.to_thread(backend.unload_model)
+                        else:
+                            await asyncio.to_thread(mlx.unload_model, freed[0])
                     except Exception:
                         if manifest:
                             _delete_resume_files(manifest)
@@ -917,7 +943,11 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         await asyncio.to_thread(release_chat_gpu_claim)
                     except Exception as exc:  # noqa: BLE001 - the unload already happened
                         logger.debug("Idle auto-unload: claim release failed: %s", exc)
-                    logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
+                    logger.info(
+                        "Idle auto-unload: freed %s after %ss idle",
+                        "GGUF" if mlx is None else "MLX model",
+                        ttl,
+                    )
                     # An idle unload stashes for reload and skips note_model_unloaded.
                     _note_idle_unload_event(freed)
                     seen_model = None

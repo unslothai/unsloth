@@ -17476,6 +17476,9 @@ async def load_model_gated(
                 _note_activity()
         # Record provenance once resident, here so the fast paths are covered; outside the gate. Preview keeps False: only an explicit UI load pins.
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
+        standard = _peek_inference_backend()
+        if getattr(standard, "active_model_name", None):
+            standard._loaded_by_user_action = user_initiated
         # Every other model this load unloaded is listed too, under its model id: idle kept models,
         # kept models a vLLM/SGLang load retired and media a chat load freed.
         evicted += [

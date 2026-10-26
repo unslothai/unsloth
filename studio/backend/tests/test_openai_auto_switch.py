@@ -9226,15 +9226,117 @@ def test_the_load_route_pins_and_other_load_surfaces_do_not(monkeypatch):
     monkeypatch.setattr(inference_route, "_load_model_impl", _already_loaded)
     request = LoadRequest(model_path = "unsloth/A-GGUF")
 
+    # An MLX primary is held by the orchestrator, which idle unload asks instead.
+    standard = SimpleNamespace(active_model_name = "/models/Qwen-MLX", _loaded_by_user_action = False)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: standard)
+
     asyncio.run(inference_route.load_model_gated(request, object(), "tester", user_initiated = True))
     assert backend._loaded_by_user_action is True
+    assert standard._loaded_by_user_action is True
 
     # Preview shares this helper and must not pin, so it keeps the default.
     asyncio.run(inference_route.load_model_gated(request, object(), "tester"))
     assert backend._loaded_by_user_action is False
+    assert standard._loaded_by_user_action is False
     import routes.preview as preview_route
 
     assert "user_initiated" not in inspect.getsource(preview_route._serve_chat)
+
+
+def test_every_orchestrator_load_publish_clears_the_ui_pin():
+    # Loads that bypass the /load route (preview, auto-switch) must not inherit an earlier UI pin.
+    from core.inference.orchestrator import InferenceOrchestrator
+    for publisher in (InferenceOrchestrator.load_model, InferenceOrchestrator._load_managed_engine):
+        assert "self._loaded_by_user_action = False" in inspect.getsource(publisher)
+    assert InferenceOrchestrator._loaded_by_user_action is False
+
+
+class _FakeMlxOrchestrator:
+    def __init__(
+        self,
+        name,
+        *,
+        entry = None,
+        user_loaded = False,
+    ):
+        self.active_model_name = name
+        self.models = {name: entry or {"is_mlx": True}}
+        self._openai_advertised_id = "org/Qwen-MLX-Alias"
+        self._loaded_by_user_action = user_loaded
+        self.unloads = []
+
+    def unload_model(self, name):
+        self.unloads.append(name)
+        self.models.pop(name, None)
+        self.active_model_name = None
+        return True
+
+
+def _idle_mlx(monkeypatch, **kwargs):
+    """A long-idle MLX primary on the orchestrator, with the llama backend empty."""
+    llama = _idle_backend(kw, monkeypatch, user_loaded = False)
+    llama.is_loaded = False
+    llama.model_identifier = None
+    saves = []
+    llama.save_slots_for_resume = lambda *_a, **_k: saves.append(1)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    orch = _FakeMlxOrchestrator("/models/Qwen-MLX", **kwargs)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orch)
+    return llama, orch, saves
+
+
+def test_idle_unload_frees_an_api_loaded_mlx_primary_and_the_next_request_reloads_it(monkeypatch):
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    llama, orch, saves = _idle_mlx(monkeypatch)
+
+    kw._inflight = 1
+    _drive_idle_loop(kw)
+    assert orch.unloads == [], "a running request lost its MLX model"
+
+    kw._inflight = 0
+    _drive_idle_loop(kw, until = lambda: orch.unloads)
+    assert orch.unloads == ["/models/Qwen-MLX"]
+    assert saves == [], "slot KV save is llama-server only"
+    assert kw.get_last_unloaded_model() == ("/models/Qwen-MLX", None, "org/Qwen-MLX-Alias")
+
+    # The reload is an auto-switch load, so the restored model stays idle-unloadable.
+    orch._loaded_by_user_action = True
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        orch.active_model_name = request.model_path
+        orch.models = {request.model_path: {"is_mlx": True}}
+
+    _wire_on(monkeypatch, resolves_to = None, backend = llama, recorder = _load)
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orch)
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _noop_reject)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    _run_hook(inference_route._RELOAD_ONLY_MODEL)
+
+    assert [c.model_path for c in calls] == ["/models/Qwen-MLX"]
+    assert orch._openai_advertised_id == "org/Qwen-MLX-Alias"
+    assert orch._loaded_by_user_action is False
+
+
+@pytest.mark.parametrize(
+    "user_loaded, entry",
+    [
+        (True, {"is_mlx": True}),
+        (False, {"is_mlx": False}),
+        (False, {"is_mlx": True, "is_audio": True}),
+    ],
+    ids = ["ui-pinned", "not-mlx", "mlx-speech"],
+)
+def test_idle_unload_leaves_a_ui_pinned_mlx_or_a_non_mlx_orchestrator_model(
+    monkeypatch, user_loaded, entry
+):
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    _llama, orch, _saves = _idle_mlx(monkeypatch, user_loaded = user_loaded, entry = entry)
+
+    _drive_idle_loop(kw)
+    assert orch.unloads == []
+    assert kw.get_last_unloaded_model() is None
 
 
 def test_api_only_turned_on_mid_save_still_spares_the_model(monkeypatch, tmp_path):
