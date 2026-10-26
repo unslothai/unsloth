@@ -8218,9 +8218,7 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
 def _call_with_fake_quantized_weight(module: torch.nn.Module, fn, *args, **kwargs):
     """Run fn with module.weight swapped for its fake quantized value, so a class forward that reads self.weight
     directly (unsloth_zoo's float32 Gemma forward) trains against the quantized weight.
-    Re-entrant: a call made inside the scope sees the already fake quantized weight and does not quantize it again.
-    The scope is tracked with a flag, not by the weight's type: FSDP1 and torch.func.functional_call install plain
-    tensors as module.weight for the forward, and those still have to be fake quantized."""
+    Re-entrant via a flag, not the weight's type: FSDP1 / functional_call install plain tensors that still need quantizing."""
     fake_quantizer = getattr(module, "weight_fake_quantizer", None)
     if fake_quantizer is None or vars(module).get("_unsloth_weight_fake_quantized", False):
         return fn(*args, **kwargs)
@@ -8231,8 +8229,7 @@ def _call_with_fake_quantized_weight(module: torch.nn.Module, fn, *args, **kwarg
     module._unsloth_weight_fake_quantized = True
     try:
         if "weight" in vars(module):
-            # FSDP1 puts its view in the instance dict, where it shadows a still registered weight Parameter
-            # (use_orig_params = True); swapping the Parameter alone would leave the view visible.
+            # FSDP1's view in the instance dict shadows the registered Parameter; swap the view itself.
             vars(module)["weight"] = fake_quantized
             try:
                 return fn(*args, **kwargs)

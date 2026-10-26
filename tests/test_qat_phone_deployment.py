@@ -357,7 +357,6 @@ def _expected_lookup_with(emb, weight, ids):
 
 
 def test_functional_call_plain_tensor_weight_is_fake_quantized():
-    # torch.func.functional_call installs a plain tensor as module.weight; it must still be fake quantized.
     emb = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4").get_input_embeddings()
     ids = torch.randint(0, 256, (2, 12))
     weight = emb.weight.detach().clone().requires_grad_()
@@ -389,7 +388,6 @@ def test_nested_fake_quantized_weight_call_quantizes_once():
 
 @pytest.mark.parametrize("use_orig_params", [False, True])
 def test_fsdp1_embedding_is_fake_quantized(use_orig_params, tmp_path):
-    # FSDP1 swaps module.weight for a plain tensor view of its flat parameter during forward.
     import torch.distributed as dist
 
     if not dist.is_available() or not dist.is_gloo_available():
@@ -417,7 +415,7 @@ def test_fsdp1_embedding_is_fake_quantized(use_orig_params, tmp_path):
         grads = [p.grad for p in wrapped.parameters() if p.requires_grad]
     finally:
         dist.destroy_process_group()
-    assert seen == [False]  # the scenario under test: a plain tensor view, not the Parameter
+    assert seen == [False]
     assert len(calls) == 1
     torch.testing.assert_close(out.detach(), expected)
     assert grads and all(g is not None and torch.isfinite(g).all() for g in grads)
