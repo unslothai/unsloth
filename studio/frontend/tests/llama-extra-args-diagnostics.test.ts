@@ -592,7 +592,7 @@ test("the panel's own Load goes through the runtime, which sends them too", () =
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
   assert.match(
     runtime,
-    /const loadLlamaExtraArgs = pendingLoadConfig\?\.llamaExtraArgs/,
+    /let loadLlamaExtraArgs = pendingLoadConfig\?\.llamaExtraArgs/,
   );
   assert.match(
     runtime,

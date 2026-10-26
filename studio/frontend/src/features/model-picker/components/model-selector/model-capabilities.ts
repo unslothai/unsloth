@@ -42,6 +42,13 @@ const VIDEO_GEN_TAGS = new Set([
   "image-text-to-video",
 ]);
 
+export function isDiffusionTask(task: string | null | undefined): boolean {
+  return (
+    task === "image-diffusion-unsupported" ||
+    (task != null && (IMAGE_GEN_TAGS.has(task) || VIDEO_GEN_TAGS.has(task)))
+  );
+}
+
 const SEP = "(?:^|[-_/. ])";
 const END = "(?=$|[-_/. ])";
 const VISION_NAME_RE = new RegExp(

@@ -420,7 +420,6 @@ import {
   AttachmentIcon,
   Bookmark02Icon,
   CodeIcon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -439,9 +438,10 @@ import {
   SlidersHorizontalIcon,
   MoreHorizontalIcon,
   PlusSignIcon,
-  StopIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";

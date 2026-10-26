@@ -1838,10 +1838,10 @@ export const en = {
         idleSecondsAriaLabel: "Idle auto-unload seconds",
         mediaEnable: "Switch image and video model by request",
         mediaEnableDescription:
-          "Load a downloaded image or video model named in an API request before generating. Its own setting: the one above covers the chat model only. Off by default.",
+          "Load a downloaded image or video model named in an API request before generating. Separate from the chat model switch. Off by default.",
         mediaIdleUnload: "Idle auto-unload for image and video",
         mediaIdleUnloadDescription:
-          "Free VRAM by unloading the image and video models after this many idle seconds. Its own setting: the one above covers the chat model only. 0 keeps them loaded, minimum 60.",
+          "Free VRAM by unloading the image and video models after this many idle seconds. Separate from the chat model switch. 0 keeps them loaded, minimum 60.",
         mediaIdleSecondsAriaLabel: "Image and video idle auto-unload seconds",
         mediaIdlePaused: "Paused while Keep model in GPU memory is on.",
         idleNeedsEnable: "Turn on Switch model by request first.",
@@ -2488,7 +2488,7 @@ export const en = {
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
         multiModel: "Keep multiple models loaded",
-        openSystemSettings: "System settings",
+        openSystemSettings: "Open in System",
         multiModelOff: "Off",
         multiModelFit: "When they fit",
         multiModelAlways: "Always",
@@ -3317,7 +3317,7 @@ export const en = {
       accessTokenCopied: "Access token copied",
       copyAccessToken: "Copy access token",
       copyNow: "Copy now - this won't be shown again.",
-      usageExamples: "Usage examples",
+      usageExamples: "Chat API",
       usageNoModel:
         "Load or download a model to see runnable examples. This server has no model to name yet.",
       usageTools: "Tools",
@@ -3380,7 +3380,7 @@ export const en = {
         useViaApi: "Use via API",
       },
       mediaApi: {
-        title: "Image and video API",
+        title: "Images / Video API",
         description: "Generate images and videos from your own code with the OpenAI-compatible endpoints.",
         images: "Images",
         video: "Video",
