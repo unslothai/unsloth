@@ -118,6 +118,14 @@ def test_descriptor_matches_from_tensor(dtype):
     _same(F8._fp8_tma_descriptor(t, 192, 256, (128, 128)), _reference(t, 192, 256, (128, 128)), t)
 
 
+def test_sliced_rows_fall_back_to_from_tensor():
+    # A weight sliced out of a wider buffer has a row pitch above its width: keep its real strides.
+    wide = torch.zeros(256, 384, dtype = torch.float8_e4m3fn)
+    t = wide[:, :256]
+    desc = F8._fp8_tma_descriptor(t, 256, 256, (128, 128))
+    assert list(desc.strides) == [384, 1]
+
+
 def _launch(monkeypatch, A, B, C, M, N, K):
     seen = []
 

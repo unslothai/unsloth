@@ -614,8 +614,10 @@ def _fp8_tma_descriptor(tensor, rows, cols, block_shape):
     if fields is None:
         proto = _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
         fields = _FP8_TMA_DESC_FIELDS[key] = dict(getattr(proto, "__dict__", None) or {})
-    if not fields or rows <= 0 or cols <= 0:
-        return _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
+    view = tensor.view(rows, cols)
+    # A sliced weight's row pitch is not its width: from_tensor reads the real strides.
+    if not fields or rows <= 0 or cols <= 0 or view.stride() != (cols, 1):
+        return _TensorDescriptor.from_tensor(view, list(block_shape))
     desc = _TensorDescriptor.__new__(_TensorDescriptor)
     desc.__dict__.update(fields)
     # Built per call from the live tensor: a replaced or in-place edited weight is never stale.
