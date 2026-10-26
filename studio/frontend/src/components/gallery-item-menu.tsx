@@ -44,6 +44,8 @@ export function GalleryItemMenu({
   variant = "toolbar",
   noun,
   active = true,
+  open: openProp,
+  onOpenChange,
   className,
 }: {
   pinned: boolean;
@@ -60,16 +62,24 @@ export function GalleryItemMenu({
   noun: MediaNoun;
   /** False while the page is off-tab; forces the menu shut so a portalled popup cannot outlive it. */
   active?: boolean;
+  /** Opens the menu from outside, e.g. a right-click on the tile it sits on. Uncontrolled when omitted. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   className?: string;
 }) {
   // Controlled: the menu portals to body, so the inert page wrapper cannot contain it.
   const t = useT();
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = openProp ?? ownOpen;
+  const setOpen = (next: boolean) => {
+    setOwnOpen(next);
+    onOpenChange?.(next);
+  };
   const project = useProjectSubmenu({ noun, onAddToProject });
   const closeProject = project.close;
   useEffect(() => {
     if (!active) {
-      setOpen(false);
+      setOwnOpen(false);
       closeProject();
     }
   }, [active, closeProject]);

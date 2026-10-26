@@ -2366,6 +2366,11 @@ export function ImagesPage({
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
   if (viewerId && (!active || !viewerImage)) setViewerId(null);
+  // The strip tile whose actions menu a right-click opened. A tile's <img> would otherwise get the
+  // webview's own image menu, whose Open in New Window and Copy Image cannot act on a blob: URL.
+  const [tileMenuId, setTileMenuId] = useState<string | null>(null);
+  if (tileMenuId && (!active || !images.some((image) => image.id === tileMenuId))) setTileMenuId(null);
+  // Pruning below must not revoke the image on screen.
   const viewerIdRef = useRef<string | null>(null);
   useEffect(() => {
     viewerIdRef.current = viewerId;
@@ -7205,6 +7210,13 @@ export function ImagesPage({
                   key={image.id}
                   data-image-id={image.id}
                   {...stripReorder.tileProps(image.id)}
+                  // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
+                  // Portalled children (the New project dialog) bubble here too: leave their menu alone.
+                  onContextMenu={(event) => {
+                    if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
+                    event.preventDefault();
+                    setTileMenuId(image.id);
+                  }}
                   className={cn(
                     "group relative size-16 shrink-0",
                     stripReorder.draggingId === image.id && "opacity-40",
@@ -7247,6 +7259,8 @@ export function ImagesPage({
                       variant="overlay"
                       noun="image"
                       active={active}
+                      open={tileMenuId === image.id}
+                      onOpenChange={(open) => setTileMenuId(open ? image.id : null)}
                       pinned={Boolean(image.pinned)}
                       archived={Boolean(image.archived)}
                       favorite={isFavorite(`image:${image.id}`)}
