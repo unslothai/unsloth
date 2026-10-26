@@ -873,8 +873,7 @@ def _merge_lora(
             dtype = dtype if isinstance(dtype, torch.dtype) else torch.bfloat16
         elif quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
-            # A tensor parallel export replica staged on the CPU (tp_replica.py): dequantize and merge this
-            # projection on its GPU, then hand the merged weight back on the CPU.
+            # CPU-staged tp export replica: merge on its GPU, return the result on the CPU.
             stage = getattr(W, "_unsloth_tp_stage_device", None)
             if stage is not None:
                 from .models.tp_native import quant_state_copy
@@ -6736,7 +6735,6 @@ def _tp_collective_save(method):
             elif getattr(self, "__dict__", {}).get("_unsloth_tp_world_save"):
                 from .models.tp_replica import tp_world_push
 
-                # A tokenizer / processor of a tensor parallel run: global rank 0 uploads.
                 return tp_world_push(method, lambda: fn(self, *args, **kwargs))
             return fn(self, *args, **kwargs)
 
@@ -8611,8 +8609,6 @@ def unsloth_tokenizer_save_pretrained(
     **kwargs,
 ):
     if self.__dict__.get("_unsloth_tp_world_save"):
-        # Tensor parallel run: every rank writes a private copy and moves the files in atomically (a reload
-        # cell never reads a half-written file); the Hub upload runs on global rank 0 only.
         from .models.tp_replica import tp_world_save
 
         push_kwargs = dict(kwargs)

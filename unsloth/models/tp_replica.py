@@ -1,18 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Post-training cells on a tensor parallel model (apply_tensor_parallel / UNSLOTH_TP_SIZE).
+"""Post-training cells on a tensor parallel model; every rank must make these calls.
 
-- for_inference / generate: every rank gathers a whole single-GPU replica of the trained model in place (the
-  sharded attention / MLP weights, 4-bit included, and the LoRA factors), when it fits the free memory, and runs
-  the normal generate path on it. The sharded parameters (the ones the optimizer holds) are kept and put back
-  by for_training or by the next training forward. Sampling RNG states are copied from tp rank 0 to its tp
-  group before each generate, so every tp rank prints the same text.
-- save_pretrained / push_to_hub (adapter) and the merged / GGUF / torchao / OpenVINO exports: the weights the
-  save needs are gathered to global rank 0, which runs the single-process save; the other ranks wait on the
-  rendezvous store (no collective timeout, no NCCL watchdog) and return what rank 0 returned.
-
-Every rank must make these calls, as in a one-process script run under torchrun.
+- for_inference / generate: every rank gathers a whole one-GPU replica in place; the sharded parameters come
+  back on for_training or the next training forward. tp rank 0's RNG is copied so all ranks sample alike.
+- saves / exports: weights are gathered to global rank 0, which runs the single-process save; the other ranks
+  wait on the rendezvous store (no collective timeout, no NCCL watchdog) and return rank 0's result.
 """
 
 from __future__ import annotations
@@ -121,7 +115,6 @@ def collective_applies(model):
     return _marked(model, tpn._TP_FLAG) and _refusal(tp_root(model), "save") is None
 
 
-# Gathering
 
 
 def _items(root, select):
@@ -159,15 +152,12 @@ def _bytes(param):
 
 
 def _workspace(items):
-    """Peak transient bytes one gather step allocates on the model's device, on every participating rank, kept
-    or not: the all-gather pieces, the concatenated whole tensor and the part reorder of the largest tensor
-    (each tensor is gathered, kept or dropped, before the next one)."""
+    """Peak transient gather bytes: pieces, concatenation and reorder of the largest tensor."""
     return 3 * max((_bytes(p) for p, _ in items), default = 0)
 
 
 def _merge_workspace(items):
-    """Peak bytes a merge of one CPU-staged 4-bit projection takes on the GPU: the packed weight, its 16-bit
-    dequant and the float32 merge (save.py _merge_lora), next to the gather workspace."""
+    """Peak GPU bytes to merge one CPU-staged 4-bit projection (save.py _merge_lora)."""
     peak = 0
     for p, _ in items:
         if not tpn._is_dtensor(p):
@@ -267,8 +257,7 @@ def _full_params4bit(weight, base, group, device, keep):
         bnb_quantized = True,
     )
     if device.type == "cpu" and weight.device.type != "cpu":
-        # An export replica staged on the CPU: a merge dequantizes this weight on the GPU it came from, one
-        # projection at a time (save.py _merge_lora), with the same kernels as a GPU replica.
+        # CPU-staged export replica: save.py _merge_lora dequantizes it on its original GPU.
         full._unsloth_tp_stage_device = weight.device
     return full
 
@@ -312,9 +301,7 @@ def _short(room):
 
 
 def _plan(root, select, keep, what, allow_cpu):
-    """(items, device) for the gather, after every rank agreed it fits; raises with the numbers otherwise.
-    Every participating rank needs the gather workspace (one tensor at a time) on the model's device; a rank
-    that keeps the replica also needs the replica, there or (allow_cpu) in host RAM."""
+    """(items, device) once every rank agreed the gather fits; raises with the numbers otherwise."""
     items = _items(root, select)
     kept = sum(_bytes(p) for p, _ in items) if keep else 0
     workspace = _workspace(items)
@@ -355,10 +342,8 @@ def gather_replica(
     what = "generate",
     allow_cpu = False,
 ):
-    """Collective (every rank of the tensor parallel world): replace the sharded parameters of `model` by whole
-    tensors. select "all" (everything sharded, plus the module state the shards changed: a one-GPU model) or
-    "adapters" (the trainable / LoRA tensors only, for an adapter save). keep = False takes part in the gather
-    without keeping anything (a rank that does not write). Idempotent; release_replica undoes it."""
+    """Collective: replace the sharded parameters by whole tensors. select "all" or "adapters"; keep = False
+    joins the gather without keeping anything. Idempotent; release_replica undoes it."""
     root = tp_root(model)
     current = root.__dict__.get(_REPLICA)
     if current is not None and (current.select == "all" or current.select == select):
@@ -432,8 +417,7 @@ def _switch_to_one_gpu(root, replica):
 
 
 def _release_before_training(module, args):
-    # A forward that records gradients (training, also in eval mode) runs on the sharded parameters the
-    # optimizer holds, never on the replica. generate runs under no_grad / inference_mode.
+    # A grad-recording forward (also in eval mode) must run on the optimizer's shards, never the replica.
     if torch.is_grad_enabled() and not torch.is_inference_mode_enabled():
         release_replica(module)
 
@@ -461,11 +445,9 @@ def release_replica(model):
     return True
 
 
-# Inference
 
 
 def tp_for_inference(model):
-    """for_inference: the whole replica on every rank (collective)."""
     if _marked(model, tpn._TP_FLAG):
         replica = gather_replica(model, "all", keep = True, what = "for_inference")
         if (
@@ -477,7 +459,6 @@ def tp_for_inference(model):
 
 
 def tp_for_training(model):
-    """for_training: the sharded parameters back (local)."""
     if _marked(model, tpn._TP_FLAG):
         release_replica(model)
 
@@ -503,9 +484,7 @@ def sync_generation_rng(model):
 
 
 def tp_generate(level, prior, args, kwargs):
-    """generate on a tensor parallel model: gather the replica (collective), sync sampling, generate. A replica
-    this call gathered (no for_inference before it) is released when it returns, so parameters() / an
-    optimizer built after a bare generate see the sharded parameters again."""
+    """Gather the replica (collective), sync sampling, generate; a replica gathered here is released after."""
     transient = False
     if _GENERATE_DEPTH[0] == 0:
         transient = not replica_active(level)
@@ -527,7 +506,6 @@ def tp_generate(level, prior, args, kwargs):
             release_replica(level)
 
 
-# Rank 0 writes, the others wait
 
 
 def _timeout():
@@ -665,10 +643,7 @@ def tp_collective(
 
 
 def mark_world_save(obj):
-    """Mark a tokenizer / processor of a tensor parallel run: every rank's save_pretrained writes into a private
-    directory next to the target and moves each file in with os.replace, so ranks saving to one directory (or
-    rank 0 saving alone) never see a half-written file; a Hub upload runs on global rank 0 only. A processor's
-    (or any unwrapped) save_pretrained is wrapped here; a nested tokenizer is marked too."""
+    """Route a tokenizer / processor's save_pretrained through tp_world_save (nested tokenizer included)."""
     d = getattr(obj, "__dict__", None)
     if not isinstance(d, dict) or d.get("_unsloth_tp_world_save"):
         return obj
@@ -723,10 +698,7 @@ def _relocated(value, private, target):
 
 
 def tp_world_save(what, write, directory):
-    """A save of something every rank holds whole (a tokenizer / processor): each rank runs `write` into its
-    own directory next to `directory`, then moves every file in with os.replace (atomic per file, the same
-    bytes from every rank). No rank waits for another, so a save rank 0 makes alone, or ranks saving to
-    different directories, cannot desync anything; every rank returns once its own files are in place."""
+    """Each rank writes a private copy and os.replace's every file in; no rank waits, so nothing can desync."""
     dist = _dist()
     try:
         target = os.fspath(directory)

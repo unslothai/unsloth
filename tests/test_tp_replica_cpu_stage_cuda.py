@@ -63,9 +63,7 @@ def test_cpu_staged_4bit_replica_merges_on_its_gpu(nested, triton_nf4, monkeypat
     from unsloth.kernels import utils as kernel_utils
     from unsloth.save import _merge_lora
 
-    # Unsloth's NF4 dequantizers are CUDA kernels. On hosts whose driver lets a GPU read pageable host memory
-    # (HMM) they can still return the right values for CPU tensors, so assert the device directly: every
-    # dequantize the merge runs gets CUDA tensors.
+    # HMM hosts can dequantize CPU tensors correctly, so assert the device directly.
     real = save.fast_dequantize
     devices = []
 
@@ -81,9 +79,7 @@ def test_cpu_staged_4bit_replica_merges_on_its_gpu(nested, triton_nf4, monkeypat
 
     monkeypatch.setattr(save, "fast_dequantize", cuda_only)
     if not triton_nf4:
-        # The bitsandbytes ctypes dequantizer (T4, or when the Triton NF4 kernels are unavailable): it asks for
-        # the CUDA stream of the weight's device. The Triton kernels can happen to read a pageable CPU buffer
-        # on hosts with HMM, so only the ctypes path fails deterministically without staging.
+        # Only the bitsandbytes ctypes path fails deterministically without staging (Triton may read via HMM).
         monkeypatch.setattr(kernel_utils, "_USE_NF4_KERNELS", False)
 
     if not dist.is_initialized():
@@ -96,7 +92,6 @@ def test_cpu_staged_4bit_replica_merges_on_its_gpu(nested, triton_nf4, monkeypat
     base = proj.base_layer
     want, _ = _merge_lora(proj, "proj")  # the GPU replica's merge
     want = want.cpu()
-    # The CPU export replica of this weight: its tp = 1 shard gathered back to the CPU, LoRA on the CPU.
     tp_native._shard_params4bit("proj", base, base.weight, tp_native.COLWISE, (192,), 0, 1)
     staged = tp_replica._full_params4bit(base.weight, base, group, torch.device("cpu"), True)
     base._parameters["weight"] = staged

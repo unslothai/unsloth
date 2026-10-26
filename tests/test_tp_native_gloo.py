@@ -116,8 +116,7 @@ def _case_parity(
     tpn.apply_tensor_parallel(model, mesh["tp"], plan = plan)
     assert tpn.is_tensor_parallel(model)
     assert tpn.apply_tensor_parallel(model, mesh["tp"]) is model  # idempotent
-    # generate runs on a gathered replica (tp_replica.py); the first training forward below puts the shards
-    # back, so the parity checks also cover that release.
+    # The training forward below releases the generate replica, so parity also covers that release.
     generated = model.generate(
         input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0
     )
@@ -220,7 +219,6 @@ def _case_guards(rank, world, tmp):
             res[f"fsdp2:{name}"] = _raised(
                 lambda: fsdp2_native._refuse_tensor_parallel_model(level)
             )
-            # for_inference / generate gather a whole replica (tp_replica.py); release it before the next.
             res[f"for_inference:{name}"] = _raised(lambda: FastLanguageModel.for_inference(level))
             res[f"replica_released:{name}"] = tp_replica.release_replica(level)
             res[f"FastModel.for_inference:{name}"] = _raised(lambda: FastModel.for_inference(level))
