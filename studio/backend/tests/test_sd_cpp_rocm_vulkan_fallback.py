@@ -2504,7 +2504,11 @@ class TestRocmRuntimePreflight:
     def _sonames_that(monkeypatch, fail: set) -> None:
         monkeypatch.setattr(sd_backend.os, "name", "posix")
         monkeypatch.setattr(sd_backend.sys, "platform", "linux")
-        monkeypatch.setattr(sd_backend, "_rocm_missing_memo", ([s for s in sd_backend._ROCM_RUNTIME_SONAMES if s in fail],))
+        monkeypatch.setattr(
+            sd_backend,
+            "_rocm_missing_memo",
+            ([s for s in sd_backend._ROCM_RUNTIME_SONAMES if s in fail],),
+        )
 
     def test_a_host_missing_hipblas_is_diverted_without_downloading(self, monkeypatch):
         self._sonames_that(monkeypatch, {"libhipblas.so.3"})
@@ -3037,13 +3041,17 @@ def test_trademark_marks_do_not_split_a_card_name():
     assert sd_cpp_backend._normalized_card_name("Radeon R9") == "radeonr9"
 
 
-def test_an_unlaunchable_rocm_build_without_its_runtime_is_proven_at_once(fake_settings, monkeypatch):
+def test_an_unlaunchable_rocm_build_without_its_runtime_is_proven_at_once(
+    fake_settings, monkeypatch
+):
     from core.inference import sd_cpp_backend
 
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
     sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/rocm/sd-server")
-    assert _noted_accelerators(fake_settings) == ["rocm"], "exit 127 with the runtime missing is not ambiguous"
+    assert _noted_accelerators(fake_settings) == [
+        "rocm"
+    ], "exit 127 with the runtime missing is not ambiguous"
 
 
 def test_the_rocm_runtime_is_probed_in_a_fresh_process(monkeypatch):
