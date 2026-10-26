@@ -94,7 +94,11 @@ async function performSave(force = false): Promise<boolean> {
     current.savedSignature = signature;
     if (session !== current) return true;
     current.failedSignature = null;
-    const latest = documentSignature(documentFromState(useDocStore.getState()));
+    const now = useDocStore.getState();
+    const latest =
+      now.graph === state.graph && now.meta === state.meta
+        ? signature
+        : documentSignature(documentFromState(now));
     useUiStore
       .getState()
       .setSaveState(latest === signature ? "saved" : "dirty");
