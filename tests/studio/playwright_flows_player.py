@@ -333,6 +333,47 @@ def edit_world_3d(page: Page) -> None:
 STAMP: dict[str, float] = {}
 
 
+def play_rivals(page: Page) -> None:
+    """Village Rivals: two days with a fake strategist, a build, a deal from diplomacy, and the panel in 3D."""
+    page.goto(f"{BASE}?flow=world&rivals=1")
+    page.wait_for_selector("[data-testid=world-start]", timeout = 120_000)
+    arm(page)
+    page.click("[data-testid=world-start]")
+    page.wait_for_selector("[data-testid=rivals-panel]")
+    assert "Day 1" in page.get_by_test_id("rivals-day").inner_text()
+    page.get_by_test_id("rivals-panel").get_by_role("button", name = "Build").click()
+    page.wait_for_function(
+        "document.querySelector('[data-testid=rivals-log]').innerText.includes('started a farm')"
+    )
+    page.get_by_placeholder("Message Rose Hold...").fill("Shall we trade?")
+    page.get_by_role("button", name = "Send").click()
+    page.wait_for_selector("[data-testid=rivals-deal]")
+    page.click("[data-testid=rivals-deal]")
+    page.wait_for_function(
+        "document.querySelector('[data-testid=rivals-log]').innerText.includes('traded 2 food')"
+    )
+    for day in (2, 3):
+        page.click("[data-testid=rivals-end-turn]")
+        page.wait_for_function(
+            f"document.querySelector('[data-testid=rivals-day]').innerText.includes('Day {day}')"
+        )
+    calls = page.evaluate(
+        "window.__flowsPlayerSmoke.calls.filter(c => c.inputs.state.task === 'rivals_strategist').length"
+    )
+    assert calls == 4, f"one strategist call per AI village per turn, got {calls}"
+    assert "arm the hold" in page.get_by_test_id("rivals-factions").inner_text()
+    page.evaluate("document.querySelector('[data-testid=rivals-body]').scrollTop = 0")
+    page.wait_for_timeout(300)
+    shot(page, "rivals_day3")
+    page.goto(f"{BASE}?flow=world&rivals=1&render=3d")
+    page.wait_for_selector("[data-testid=world-start]", timeout = 120_000)
+    arm(page)
+    page.click("[data-testid=world-start]")
+    page.wait_for_selector("[data-testid=rivals-panel]")
+    page.wait_for_timeout(1500)
+    shot(page, "rivals_3d")
+
+
 def arm(page: Page) -> None:
     STAMP["value"] = page.evaluate("window.__flowsStamp = Math.random()")
 
@@ -376,7 +417,7 @@ def main() -> int:
             page.wait_for_timeout(3_000)
             page.on("pageerror", lambda e: errors.append(str(e)))
             only = os.environ.get("FLOWS_SCENARIOS")
-            scenarios = (play_story, play_world, play_world_3d, edit_world_3d)
+            scenarios = (play_story, play_world, play_world_3d, edit_world_3d, play_rivals)
             for scenario in scenarios:
                 if only and scenario.__name__ not in only.split(","):
                     continue

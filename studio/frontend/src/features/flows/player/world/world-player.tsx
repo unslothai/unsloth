@@ -64,6 +64,7 @@ import {
   type WorldMap,
   generateMap,
 } from "./procgen";
+import { RivalsPanel } from "./rivals-panel";
 import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
   placeAreas,
@@ -1651,6 +1652,17 @@ export function WorldPlayer({
             ))}
           </div>
         </Panel>
+      ) : null}
+      {ready && started && !editor && spec.rivals ? (
+        <RivalsPanel
+          api={api}
+          flowId={flowId}
+          entry={replyEntry}
+          spec={baseSpec}
+          map={map}
+          state={ws.rivals}
+          onChange={(r) => setWs((st) => ({ ...st, rivals: r }))}
+        />
       ) : null}
       {editor && edState ? (
         <Suspense fallback={null}>

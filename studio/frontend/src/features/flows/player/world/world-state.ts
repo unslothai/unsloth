@@ -11,7 +11,8 @@ import {
   clampNeeds,
   parseDoing,
 } from "./needs";
-import type { Point } from "./procgen";
+import { type Point, generateMap } from "./procgen";
+import { type RivalsState, rivalsOf, rivalsOn } from "./rivals";
 import { autonomyOn } from "./roles";
 import {
   type WorldAdditions,
@@ -65,6 +66,7 @@ export interface WorldState {
   auto?: AutoState;
   npcAt?: Record<string, Point>;
   action?: { combat?: unknown; pose?: { z: number } };
+  rivals?: RivalsState;
 }
 
 export interface Errand {
@@ -414,6 +416,9 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
       : {}),
     ...(played.action?.movement && r.action && typeof r.action === "object"
       ? { action: r.action }
+      : {}),
+    ...(rivalsOn(spec) && r.rivals
+      ? { rivals: rivalsOf(r.rivals, spec, generateMap(spec)) }
       : {}),
   };
 }
