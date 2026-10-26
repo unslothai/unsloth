@@ -1047,6 +1047,11 @@ def _block_cudagraphs_keep_budget():
         return 0.5 * 2**30
 
 
+def _gib(nbytes):
+    # LoRA adapters are tens of MiB: "0.00 GiB" read as nothing kept.
+    return f"{nbytes / 2**30:.2f} GiB" if nbytes >= 2**30 / 10 else f"{nbytes / 2**20:.1f} MiB"
+
+
 def _keep_unsharded_for_block_cudagraphs(model):
     """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
     step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
@@ -1095,8 +1100,8 @@ def _keep_unsharded_for_block_cudagraphs(model):
         for block in layers.values():
             block.__dict__["_unsloth_block_graphs_off"] = True
         _print_rank0(
-            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 would keep {nbytes / 2**30:.2f} GiB "
-            f"per rank of gathered block weights allocated (budget {budget / 2**30:.2f} GiB, "
+            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 would keep {_gib(nbytes)} "
+            f"per rank of gathered block weights allocated (budget {_gib(budget)}, "
             f"UNSLOTH_BLOCK_CUDAGRAPHS_FSDP2_KEEP_GB); {len(layers)} blocks run without CUDA graphs."
         )
         return 0
@@ -1105,7 +1110,7 @@ def _keep_unsharded_for_block_cudagraphs(model):
         fsdp_param._unsloth_keep_unsharded = True
     _print_rank0(
         f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
-        f"{len(candidates)} parameters allocated ({nbytes / 2**30:.2f} GiB per rank) so the block CUDA graphs "
+        f"{len(candidates)} parameters allocated ({_gib(nbytes)} per rank) so the block CUDA graphs "
         "replay instead of re-recording every step."
     )
     return len(candidates)
