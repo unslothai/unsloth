@@ -75,8 +75,28 @@ export const BARKS: Record<BarkKind, readonly string[]> = {
 };
 
 /** The world's bark lines over the built-in ones, per kind; bad entries are ignored. */
+/** A raid's bark list ({event, text}, events spot / lost / hurt / flank / retreat) mapped onto our kinds. */
+const RAID_EVENTS: Record<string, BarkKind> = {
+  spot: "see",
+  lost: "lose",
+  hurt: "pain",
+  flank: "attack",
+  retreat: "flee",
+};
+
+/** The world's bark lines over the built-in ones, per kind (or a raid's tagged list); bad entries are ignored. */
 export function barkPool(raw: unknown): Record<BarkKind, readonly string[]> {
   const out = { ...BARKS };
+  if (Array.isArray(raw)) {
+    const by: Partial<Record<BarkKind, string[]>> = {};
+    for (const b of raw) {
+      const kind = RAID_EVENTS[(b as { event?: string })?.event ?? ""];
+      const text = (b as { text?: unknown })?.text;
+      if (kind && typeof text === "string" && text.trim())
+        (by[kind] ??= []).push(text);
+    }
+    raw = by;
+  }
   if (!raw || typeof raw !== "object") return out;
   for (const k of Object.keys(BARKS) as BarkKind[]) {
     const v = (raw as Record<string, unknown>)[k];
@@ -825,6 +845,21 @@ function move(b: Brain, a: Agent, p: PlayerSense, dt: number): void {
     }
     a.moving = true;
   }
+}
+
+/** True while combat owns the hostile (alerted, fighting, hurt, fleeing or walking back). */
+export const engaged = (a: Agent) => a.state !== "idle" && a.state !== "patrol";
+
+/**
+ * Who moves this NPC: when the hostile is calm, village life does and the agent just follows it (its post
+ * becomes where it stands); returns true while combat owns it.
+ */
+export function follow(a: Agent, x: number, y: number): boolean {
+  if (engaged(a) || a.down) return true;
+  a.x = a.homeX = x;
+  a.y = a.homeY = y;
+  a.pathLen = 0;
+  return false;
 }
 
 /** Decide at 10 Hz, move every frame. `noises` is the player's noise ring (shots, throws, doors, steps). */

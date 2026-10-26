@@ -82,10 +82,24 @@ def action_of(raw: Any) -> Optional[dict]:
 
 
 BARK_KINDS = ("see", "hear", "lose", "pain", "flee", "attack")
+RAID_BARK_EVENTS = {
+    "spot": "see",
+    "lost": "lose",
+    "hurt": "pain",
+    "flank": "attack",
+    "retreat": "flee",
+}
 
 
 def _barks(raw: Any) -> dict:
     """A world's own bark lines for hostile AI v2: known events only, up to 12 short lines each."""
+    if isinstance(raw, list):  # a raid's tagged lines: [{"event": "spot", "text": ...}]
+        by: dict = {}
+        for b in raw:
+            kind = RAID_BARK_EVENTS.get(b.get("event")) if isinstance(b, dict) else None
+            if kind:
+                by.setdefault(kind, []).append(b.get("text"))
+        raw = by
     if not isinstance(raw, dict):
         return {}
     out = {}

@@ -449,3 +449,76 @@ test("the world may bring its own barks; built-in lines fill the rest", () => {
   run(brain, A.newCombat(), player(8.5, 5.5), 0.2);
   assert.equal(a.bark, "Raider spotted!");
 });
+
+test("crouching lowers the body and quiets footsteps, so a nearby hostile hears a walk but not a crouch", () => {
+  const w = A.buildActionWorld(
+    N,
+    N,
+    () => 0,
+    () => false,
+    [],
+  );
+  const b = A.newBody(w, 5.5, 5.5);
+  A.advance(
+    w,
+    b,
+    { dx: 0, dy: 0, sprint: false, crouch: true, jump: false },
+    1 / 60,
+    3,
+  );
+  assert.equal(A.bodyHeight(b), A.CROUCH_H);
+  assert.ok(A.CROUCH_H < A.STAND_H);
+  assert.equal(
+    V.stepNoise(b, true),
+    V.NOISE.crouch,
+    "crouching beats sprinting",
+  );
+  assert.equal(V.stepNoise({ crouched: false }, true), V.NOISE.sprint);
+  assert.equal(V.stepNoise({ crouched: false }, false), V.NOISE.walk);
+  const heardAt = (crouched: boolean) => {
+    const v = V.newVerbs();
+    const a = E.addAgent(arena().brain, "h", 5.5, 5.5);
+    V.makeNoise(v, 7.5, 5.5, V.stepNoise({ crouched }, false));
+    return E.hear(a, v.noises);
+  };
+  assert.equal(heardAt(false), true);
+  assert.equal(heardAt(true), false);
+});
+
+test("a calm hostile follows village life; combat owns it while alerted and hands it back after returning", () => {
+  const { brain } = arena();
+  const c = A.newCombat();
+  const a = E.addAgent(brain, "h", 5.5, 5.5, true);
+  assert.equal(E.follow(a, 7.5, 5.5), false);
+  assert.deepEqual([a.x, a.homeX], [7.5, 7.5]);
+  a.fx = 1;
+  a.fy = 0;
+  const p = player(10.5, 5.5);
+  run(brain, c, p, 0.5);
+  assert.ok(E.engaged(a));
+  assert.equal(
+    E.follow(a, 1.5, 1.5),
+    true,
+    "village life cannot pull it away mid-fight",
+  );
+  assert.notEqual(a.x, 1.5);
+  p.hidden = true;
+  run(brain, c, p, 15);
+  assert.equal(a.state, "idle");
+  assert.deepEqual([a.x, a.y], [7.5, 5.5], "back where it was taken over");
+  assert.equal(E.follow(a, 8.5, 5.5), false);
+});
+
+test("a raid's tagged bark list feeds the pool", () => {
+  const pool = E.barkPool([
+    { event: "spot", text: "Over here, lads!" },
+    { event: "lost", text: "Keep looking." },
+    { event: "retreat", text: "Run!" },
+    { event: "dance", text: "no" },
+    { event: "hurt", text: 5 },
+  ]);
+  assert.deepEqual(pool.see, ["Over here, lads!"]);
+  assert.deepEqual(pool.lose, ["Keep looking."]);
+  assert.deepEqual(pool.flee, ["Run!"]);
+  assert.deepEqual(pool.pain, E.BARKS.pain);
+});

@@ -122,3 +122,21 @@ def test_new_action_and_prop_fields_round_trip_through_normalize_save_and_the_pl
     # The scene editor saves props on the player node; they come back with their links intact.
     played = apply_play_view(dict(world), _doc(props3d = json.loads(json.dumps(world["props3d"]))))
     assert played["props3d"] == world["props3d"]
+
+
+def test_hostile_ai_fields_round_trip_and_take_a_raids_bark_list():
+    import json
+
+    raid_barks = [
+        {"event": "spot", "text": "Over here, lads!"},
+        {"event": "lost", "text": "Keep looking."},
+        {"event": "dance", "text": "no"},
+        {"event": "hurt", "text": 5},
+    ]
+    world = normalize_world(
+        {**RAW, "action": {"shooter": True, "ai": "v2", "barks": raid_barks}}, seed = 1
+    )
+    assert world["action"]["barks"] == {"see": ["Over here, lads!"], "lose": ["Keep looking."]}
+    again = normalize_world(json.loads(json.dumps(world)), seed = 1)
+    assert again["action"] == world["action"]
+    WorldSpec.model_validate(again)

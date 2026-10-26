@@ -61,6 +61,7 @@ import {
   addAgent,
   brainStep,
   createBrain,
+  follow,
   gridOf,
   setGrid,
 } from "./enemy-ai";
@@ -79,6 +80,7 @@ import {
   newVerbs,
   splash,
   startDash,
+  stepNoise,
   stepProjectiles,
   throwRock,
   verbsTick,
@@ -821,7 +823,7 @@ export function createWorld3d(
   let footstep = 0;
   if (brain)
     for (const n of npcs)
-      if (hostile.has(n.id)) addAgent(brain, n.id, n.pos.x, n.pos.y, !n.wander);
+      if (hostile.has(n.id)) addAgent(brain, n.id, n.pos.x, n.pos.y, true);
   const pickups: Pickup[] = [];
   const pickupSprites = new Map<string, three.Sprite>();
   if (shooter) {
@@ -1444,11 +1446,7 @@ export function createWorld3d(
           vs,
           body.x,
           body.y,
-          body.crouched
-            ? NOISE.crouch
-            : keys.has("ShiftLeft") || keys.has("ShiftRight")
-              ? NOISE.sprint
-              : NOISE.walk,
+          stepNoise(body, keys.has("ShiftLeft") || keys.has("ShiftRight")),
         );
       }
       me.x = body.x;
@@ -1507,7 +1505,7 @@ export function createWorld3d(
       const close = Math.hypot(n.pos.x - me.x, n.pos.y - me.y) < 1.8;
       let walking = false;
       const agent = brain?.byId.get(n.id);
-      if (agent) {
+      if (agent && follow(agent, n.pos.x, n.pos.y)) {
         n.pos.x = agent.x;
         n.pos.y = agent.y;
         walking = agent.moving;
@@ -1746,7 +1744,7 @@ export function createWorld3d(
       if (npc.role === "hostile") hostile.add(npc.id);
       if (!npcs.some((n) => n.id === npc.id)) spawnNpc(npc, at);
       if (brain && npc.role === "hostile")
-        addAgent(brain, npc.id, at.x + 0.5, at.y + 0.5, npc.wander === false);
+        addAgent(brain, npc.id, at.x + 0.5, at.y + 0.5, true);
     },
     addItem(item: WorldItem, at: Point) {
       if (!items.has(item.id)) spawnItem(item, at);
