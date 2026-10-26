@@ -709,7 +709,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # gemma_3_12B_it_fp4_mixed; the hosted layerwise fp8 file is the nearest scheme we serve.
         te_quant_auto = "fp8",
         # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
-        prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
+        # Keyed on the 2.0 base so 2.3 never resolves it. fp8 only: LTX-2-INT8.safetensors predates
+        # _LTX2_INT8_EXCLUDES and quantizes Linears the runtime keeps bf16, so int8 keeps quantizing at load.
+        prequant_variant_repos = (
+            ("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),
+            ("lightricks/ltx-2", "fp8", "unsloth/LTX-2-FP8"),
+        ),
+        # No prequant_resident_gb_by_scheme row: it is per family and would reprice 2.3's quantize-at-load plan.
         # no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s)
         cudnn_benchmark = False,
         # Block RMSNorm (hidden 4096) R0_BLOCK 4096 vs 2048 tie on B200: 3 of 6 cold servers rendered another clip.
