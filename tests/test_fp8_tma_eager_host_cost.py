@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""TMA block FP8 GEMM host cost: small eager GEMMs keep the pointer kernel, graph capture still takes
-TMA, and descriptors are built per call from the live tensors without re-validation (no GPU needed)."""
+"""TMA block FP8 GEMM host cost: descriptors are built per call from the live tensors without
+re-validation, and routing is unchanged in eager and under graph capture (no GPU needed)."""
 
 import pytest
 import torch
@@ -64,16 +64,12 @@ def _ok(
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize("M", [128, 512])
-def test_small_eager_gemm_keeps_pointer_kernel(tma_device, M, dtype):
-    assert _ok(M, dtype = dtype) is False
-    assert _ok(M, dtype = dtype, batch = 2) is False
-
-
-@pytest.mark.parametrize("M", [1024, 2048, 8192])
-def test_large_eager_gemm_takes_tma(tma_device, M):
-    assert _ok(M) is True
-    assert _ok(M, batch = 4) is True
+@pytest.mark.parametrize("M", [128, 512, 1023, 2048])
+def test_eager_gemm_takes_tma_at_any_size(tma_device, M, dtype):
+    # On B200 the pointer kernel is 1.4-1.8x slower on the GPU at M * N * K below 2**34, so eager
+    # GEMMs keep TMA whenever it routes, as on main.
+    assert _ok(M, dtype = dtype) is True
+    assert _ok(M, dtype = dtype, batch = 1) is True
 
 
 @pytest.mark.parametrize("M", [128, 512, 2048])
@@ -84,29 +80,11 @@ def test_graph_capture_takes_tma_at_any_size(tma_device, M):
     assert _ok(M) is True
 
 
-def test_first_small_eager_call_still_runs_the_self_check(tma_device):
-    # Otherwise a model that only ran small eager GEMMs before capture would capture the pointer kernel.
-    calls, capturing = tma_device
-    assert _ok(128) is False
-    assert calls == [0]
-    capturing[0] = True
-    assert _ok(128) is True
-    assert calls == [0]
-
-
 def test_capture_before_any_eager_call_keeps_pointer_kernel(tma_device):
     calls, capturing = tma_device
     capturing[0] = True
     assert _ok(4096) is False
     assert calls == []
-
-
-def test_threshold_is_multiply_adds(tma_device, monkeypatch):
-    monkeypatch.setattr(F8, "_FP8_TMA_EAGER_MIN_MNK", 128 * 256 * 512)
-    assert _ok(128, N = 256, K = 512) is True
-    assert _ok(128, N = 128, K = 512) is False
-    monkeypatch.setattr(F8, "_FP8_TMA_EAGER_MIN_MNK", 0)
-    assert _ok(128) is True
 
 
 def _reference(tensor, rows, cols, block):
@@ -221,7 +199,3 @@ def test_empty_input_still_raises_like_from_tensor():
     with pytest.raises(AssertionError):
         F8._fp8_tma_descriptor(t, 0, 256, (128, 128))
 
-
-def test_empty_weight_does_not_divide_by_zero(tma_device):
-    _ok(128)  # run the self check
-    assert _ok(128, N = 0) is False

@@ -58,8 +58,6 @@ def test_tma_matches_pointer_kernel_bitwise(M, N, K, dtype, monkeypatch):
     _, Wq, Ws, qa, sa = _inputs(M, N, K)
     calls = []
     real = fp8_mod._launch_fp8_tma_gemm
-    # Small eager GEMMs keep the pointer kernel (host cost); force TMA to compare the kernels.
-    monkeypatch.setattr(fp8_mod, "_FP8_TMA_EAGER_MIN_MNK", 0, raising = False)
     monkeypatch.setattr(
         fp8_mod, "_launch_fp8_tma_gemm", lambda *a: (calls.append(a[5]), real(*a))[1]
     )

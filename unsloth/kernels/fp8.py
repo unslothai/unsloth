@@ -584,24 +584,13 @@ def _fp8_tma_gemm_ok(A, B, C, BLOCK_SIZE_M, block_n, block_k, long_idx):
     index = A.device.index if A.device.index is not None else torch.cuda.current_device()
     if not _fp8_tma_gemm_arch_at(index):
         return False
-    capturing = torch.cuda.is_current_stream_capturing()
     checked = _FP8_TMA_SELF_CHECKED.get(index)
     if checked is None:
-        if capturing:
+        if torch.cuda.is_current_stream_capturing():
             return False  # the self check allocates and syncs: run it outside graph capture
         checked = _FP8_TMA_SELF_CHECKED[index] = _fp8_tma_gemm_self_check(index)
-    # The self check above still runs on the first eager call, so a later graph capture picks TMA as before.
-    # C.numel() * K is M * N * K without dividing by N (an empty weight has N = 0).
-    if checked and not capturing and C.numel() * K < _FP8_TMA_EAGER_MIN_MNK:
-        return False
     return checked
 
-
-# Eager launches pay ~25 us of host work for the three descriptors (B200: M = 128, N = K = 4096 runs
-# 42 -> 67 us per call), more than the faster kernel saves below ~2**34 multiply-adds (M = 1024 at
-# N = K = 4096), so smaller eager GEMMs keep the pointer kernel. CUDA graph replays skip the host
-# work, so captured GEMMs take TMA at any size. Both kernels give bitwise identical outputs.
-_FP8_TMA_EAGER_MIN_MNK = 1 << 34
 
 # TensorDescriptor.from_tensor re-validates every field per call (~4 us each). The fields that do not
 # change per call (block shape, padding, ...) are validated once per (dtype, block shape) here;
