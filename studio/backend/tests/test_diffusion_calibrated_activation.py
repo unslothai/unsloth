@@ -638,7 +638,11 @@ def test_sdxl_controlnet_still_runs_after_the_t4_resident_promotion(monkeypatch,
     kw = dict(width = width, height = height, family = hint, tile_side = dm.DEFAULT_VAE_TILE_SIDE)
     before = _guard(14_807, 14_912, calibrated = False, controlnet = True, **kw)
     after = _guard(
-        resident_free, 14_912, calibrated = "calibrated_headroom_mib" in plan.estimates, controlnet = True, **kw
+        resident_free,
+        14_912,
+        calibrated = "calibrated_headroom_mib" in plan.estimates,
+        controlnet = True,
+        **kw,
     )
     assert before.action != dm.ACTIVATION_REFUSE
     assert after.action != dm.ACTIVATION_REFUSE, after
@@ -653,4 +657,7 @@ def test_controlnet_surcharge_still_applies_to_transformer_families_named_like_s
     assert not dm._resident_only_hint("")
     assert not dm._resident_only_hint(None)
     kw = dict(width = 1024, height = 1024, family = "flux.1 someone/flux-sdxl-style")
-    assert _guard(6 * GIB, 24 * GIB, calibrated = True, controlnet = True, **kw).action == dm.ACTIVATION_REFUSE
+    assert (
+        _guard(6 * GIB, 24 * GIB, calibrated = True, controlnet = True, **kw).action
+        == dm.ACTIVATION_REFUSE
+    )
