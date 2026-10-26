@@ -76,12 +76,12 @@ def run_rank(rank, port, checkpoint, out_dir, queue):
             model.save_pretrained(reference)
         dist.barrier()
         shard_model(model, FSDP2Config(device = "cpu", reshard_after_forward = True))
-        n_sharded = sum(
-            type(p).__name__ == "DTensor" for p in model.parameters()
-        )
+        n_sharded = sum(type(p).__name__ == "DTensor" for p in model.parameters())
         # A training-style forward / backward first (no optimizer step: the weights stay the reference's).
         ids = torch.randint(2, 64, (4, 8), generator = torch.Generator().manual_seed(rank))
-        emb = model({"input_ids": ids, "attention_mask": torch.ones_like(ids)})["sentence_embedding"]
+        emb = model({"input_ids": ids, "attention_mask": torch.ones_like(ids)})[
+            "sentence_embedding"
+        ]
         emb.float().pow(2).mean().backward()
         # The model card's usage snippet (a forward) must be computed again, collectively, by this save.
         model.model_card_data.similarities = None
@@ -124,7 +124,6 @@ def run_rank(rank, port, checkpoint, out_dir, queue):
         queue.put((rank, result))
     except BaseException:
         import traceback
-
         queue.put((rank, {"error": traceback.format_exc()}))
         raise
     if result.get("error") is None:

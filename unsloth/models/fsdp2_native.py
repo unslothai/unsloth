@@ -3030,7 +3030,6 @@ def _install_trainer_hooks():
             # and calls model.save_pretrained, so gather here; the collective save then just writes.
             from .fsdp2_save import fsdp2_gathered
             from .sentence_transformer import fsdp2_st_usage_snippet
-
             with fsdp2_st_usage_snippet(root), fsdp2_gathered(root) as writer:
                 if writer is not False and _trainer_save_writer(self, root)[0]:
                     _save_unwrapped(self, root, output_dir)

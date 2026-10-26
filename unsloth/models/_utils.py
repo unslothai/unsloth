@@ -6110,9 +6110,10 @@ def patch_gradient_accumulation_fix(Trainer):
             if model is not None:
                 try:
                     from ._ddp_defaults import unsloth_default_ddp_find_unused_parameters
-
                     unsloth_default_ddp_find_unused_parameters(
-                        kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None),
+                        kwargs["args"]
+                        if "args" in kwargs
+                        else (args[1] if len(args) > 1 else None),
                         model,
                     )
                 except Exception:

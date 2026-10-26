@@ -47,7 +47,9 @@ def run_rank(rank, port, cases, queue):
             )
             model = transformers.LlamaForCausalLM(config)
             # Reentrant checkpointing armed on the model (Unsloth's get_peft_model does this), not in the args.
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs = {"use_reentrant": True}
+            )
             model.enable_input_require_grads()
             model = peft.get_peft_model(
                 model,
@@ -59,7 +61,9 @@ def run_rank(rank, port, cases, queue):
             rows = []
             for _ in range(8):
                 ids = torch.randint(1, 64, (12,), generator = g)
-                rows.append({"input_ids": ids, "attention_mask": torch.ones_like(ids), "labels": ids})
+                rows.append(
+                    {"input_ids": ids, "attention_mask": torch.ones_like(ids), "labels": ids}
+                )
             extra = {} if user_value is None else {"ddp_find_unused_parameters": user_value}
             args_cls = (
                 transformers.Seq2SeqTrainingArguments
@@ -100,11 +104,9 @@ def run_rank(rank, port, cases, queue):
         queue.put((rank, out))
     except BaseException:
         import traceback
-
         queue.put((rank, {"error": traceback.format_exc()}))
         raise
     if not any(case.get("error") for case in out.values()):
         import torch.distributed as dist
-
         if dist.is_initialized():
             dist.destroy_process_group()
