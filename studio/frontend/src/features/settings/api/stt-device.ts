@@ -9,8 +9,11 @@ type SttDeviceState = { device: SttDevice | "gpu"; saved?: boolean };
 
 // Soft-fails: localStorage stays the UI's source of truth (#15280). Chained so the last choice lands last.
 let pending: Promise<unknown> = Promise.resolve();
+// Bumped per save, so a read that started before one is not applied after it.
+let revision = 0;
 
 export function syncSttDevicePreference(device: SttDevice): void {
+  revision += 1;
   pending = pending
     .then(() =>
       authFetch("/api/settings/stt-device", {
@@ -28,12 +31,17 @@ export async function reconcileSttDevicePreference(
   local: SttDevice,
   adopt: (device: SttDevice) => void,
 ): Promise<void> {
+  const started = revision;
   try {
+    await pending;
     const response = await authFetch("/api/settings/stt-device");
     if (!response.ok) {
       return;
     }
     const state = (await response.json()) as SttDeviceState;
+    if (revision !== started) {
+      return;
+    }
     if (state.saved) {
       adopt(state.device === "cpu" ? "cpu" : "auto");
     } else if (local !== "auto") {

@@ -89,3 +89,38 @@ test("quick changes reach the server in order", async () => {
   assert.deepEqual(calls.map((c) => c.device), ["auto", "cpu"]);
   assert.equal(state.device, "cpu");
 });
+
+test("a choice made while the sign-in read is in flight is not undone", async () => {
+  for (const saved of [true, false]) {
+    const state = { device: "auto", saved };
+    const calls: Call[] = [];
+    let release: () => void = () => {};
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET") {
+        const snapshot = JSON.stringify(state);
+        calls.push({ method });
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return new Response(snapshot, { status: 200 });
+      }
+      const { device } = JSON.parse(String(init?.body));
+      calls.push({ method, device });
+      Object.assign(state, { device, saved: true });
+      return new Response(JSON.stringify(state), { status: 200 });
+    }) as typeof fetch;
+    let adopted: string | null = null;
+    const done = reconcileSttDevicePreference("cpu", (d) => {
+      adopted = d;
+    });
+    await settle();
+    syncSttDevicePreference(saved ? "cpu" : "auto"); // the user picks while the read is out
+    await settle();
+    release();
+    await done;
+    await settle();
+    assert.equal(adopted, null);
+    assert.equal(state.device, saved ? "cpu" : "auto");
+  }
+});
