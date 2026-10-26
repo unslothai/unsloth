@@ -777,7 +777,12 @@ def block_packed_plan(layer, hidden_states, args, kwargs):
             torch._dynamo.maybe_mark_dynamic(lengths, 0)
         # One document: transformers may pass no mask (plain causal), which varlen computes exactly.
         one_document = cu_seqlens.shape[0] == 2 and max_seqlen == total
-        entry = (lengths, total, (cu_seqlens, _max_carrier(max_seqlen, device), one_document), inference)
+        entry = (
+            lengths,
+            total,
+            (cu_seqlens, _max_carrier(max_seqlen, device), one_document),
+            inference,
+        )
         _PLAN_CACHE[device] = entry
     plan = (*entry[2], policy)
     windows = _layer_windows(layer)
