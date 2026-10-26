@@ -411,7 +411,6 @@ def test_probe_scales_follow_each_cast_config(monkeypatch):
 
 def _counting_align_hook():
     from accelerate.hooks import AlignDevicesHook
-
     class CountingAlignDevicesHook(AlignDevicesHook):
         calls = []
 
