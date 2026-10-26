@@ -17,27 +17,24 @@ const pickers = await readSrcAsync(
 );
 
 const GIB = 1024 ** 3;
+const FLASH = { sizeBytes: 73.45 * GIB, lookupTableBytes: 26.82 * GIB };
 
 test("before the estimate, the listing's streamed table comes off the file size", () => {
   assert.equal(
-    memoryBarWeightsBytes(undefined, {
-      sizeBytes: 73.45 * GIB,
-      lookupTableBytes: 26.82 * GIB,
-    }),
-    73.45 * GIB - 26.82 * GIB,
+    memoryBarWeightsBytes(undefined, FLASH),
+    FLASH.sizeBytes - FLASH.lookupTableBytes,
   );
   assert.equal(memoryBarWeightsBytes(undefined, {}), undefined);
 });
 
 test("a streamed table the estimate already left out is not taken off twice", () => {
-  const weightsBytes = 73.45 * GIB - 26.82 * GIB;
-  assert.equal(
-    memoryBarWeightsBytes(
-      { weightsBytes, lookupTableBytes: 26.82 * GIB, lookupTableOnDisk: true },
-      { sizeBytes: 73.45 * GIB, lookupTableBytes: 26.82 * GIB },
-    ),
+  const weightsBytes = FLASH.sizeBytes - FLASH.lookupTableBytes;
+  const estimate = {
     weightsBytes,
-  );
+    lookupTableBytes: FLASH.lookupTableBytes,
+    lookupTableOnDisk: true,
+  };
+  assert.equal(memoryBarWeightsBytes(estimate, FLASH), weightsBytes);
 });
 
 test("a host-resident table inside the estimate's weights is not charted as VRAM", () => {
@@ -60,7 +57,6 @@ test("a pinned quant row hands the bar the same listing figures as the sole-quan
 });
 
 test("the on-device card takes an update's table reading, a zero included", async () => {
-  // The same rule as the picker's withHubState: the cached file is the old revision.
   const card = await readSrcAsync("features/hub/catalog/local-on-device-card.tsx");
   assert.match(
     card,

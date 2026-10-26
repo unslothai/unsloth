@@ -60,22 +60,11 @@ test("a table that would not change the verdict leaves it alone", () => {
 });
 
 test("a streamed quant runs but ranks below one that fits with everything resident", () => {
-  const smaller = {
-    quant: "UD-IQ1_S",
-    size_bytes: 30 * GIB,
-    lookup_table_bytes: 0,
-  };
   const fitOf = (bytes: number) => classifyGgufFit(bytes, HOST_24_64);
+  const comfortable = { quant: "Q2", size_bytes: 15 * GIB, lookup_table_bytes: 0 };
   assert.equal(recommendedQuantForDevice([flashNext], fitOf), flashNext);
-  const comfortable = {
-    quant: "Q2",
-    size_bytes: 15 * GIB,
-    lookup_table_bytes: 0,
-  };
-  assert.equal(
-    recommendedQuantForDevice([flashNext, comfortable], fitOf),
-    comfortable,
-  );
+  assert.equal(recommendedQuantForDevice([flashNext, comfortable], fitOf), comfortable);
+  const smaller = { quant: "UD-IQ1_S", size_bytes: 30 * GIB, lookup_table_bytes: 0 };
   assert.notEqual(classifyGgufVariantFit(smaller, HOST_24_64), "streamed");
 });
 
@@ -87,20 +76,10 @@ test("a resident fit the table only improves keeps its own verdict", () => {
 });
 
 test("a malformed table size is ignored", () => {
-  assert.equal(
-    ggufVariantLookupTableBytes({
-      size_bytes: GIB,
-      lookup_table_bytes: Number.NaN,
-    }),
-    0,
-  );
-  assert.equal(
-    ggufVariantLookupTableBytes({
-      size_bytes: GIB,
-      lookup_table_bytes: 5 * GIB,
-    }),
-    GIB,
-  );
+  const bytes = (lookup_table_bytes: number) =>
+    ggufVariantLookupTableBytes({ size_bytes: GIB, lookup_table_bytes });
+  assert.equal(bytes(Number.NaN), 0);
+  assert.equal(bytes(5 * GIB), GIB);
 });
 
 test("a bare repo click picks the streamed quant rather than the smallest fallback", () => {
