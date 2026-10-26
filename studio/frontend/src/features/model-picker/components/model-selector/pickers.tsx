@@ -268,7 +268,11 @@ import {
   modelIdsMatchForPicker,
   soleQuantRowState,
 } from "./row-identity";
-import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import {
+  isHfCacheSnapshotPath,
+  isStandaloneGgufPath,
+  publicModelId,
+} from "@/features/hub/lib/model-identity";
 import { cachedRepoConfigId } from "../../model-config/model-identity";
 import {
   type FormatTone,
@@ -6133,6 +6137,12 @@ export function HubModelPicker({
             ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
             : selectMeta,
         ];
+    // A path load keeps the menu: it reveals the file, and a cached download pins as its repo.
+    const pinRepoId = !isLocal
+      ? checkpoint
+      : isHfCacheSnapshotPath(checkpoint)
+        ? publicModelId(checkpoint)
+        : null;
     // Its curated row is hidden while loaded, so this row must open the quant list instead.
     const expandable = Boolean(quant) && !isLocal && isKnownGgufRepo(entry.id);
     const expanded = expandable && expandedGguf === entry.id;
@@ -6176,6 +6186,7 @@ export function HubModelPicker({
               cachePath={
                 isLocal ? undefined : { repoId: checkpoint, variant: quant ?? undefined }
               }
+              onReveal={isLocal ? () => revealLocalModel(checkpoint, entry.id) : undefined}
               // Every loaded row ejects while several are loaded, the active one included.
               items={
                 ejectsKept
@@ -6196,13 +6207,13 @@ export function HubModelPicker({
                   : undefined
               }
               pin={
-                isLocal
+                pinRepoId === null
                   ? undefined
                   : {
-                      pinned: pinnedSet.has(pinKey(checkpoint, quant ?? undefined)),
+                      pinned: pinnedSet.has(pinKey(pinRepoId, quant ?? undefined)),
                       pinLabel: "Pin",
                       unpinLabel: "Unpin",
-                      onToggle: () => togglePinned(checkpoint, quant ?? undefined),
+                      onToggle: () => togglePinned(pinRepoId, quant ?? undefined),
                     }
               }
             />

@@ -1264,7 +1264,8 @@ export function GgufDownloadCard({
             />
           )}
 
-        {(showUpdateAction || showDownloadAction || showRunAction) && (
+        {/* Run sets itself apart; the line only separates the download and update actions. */}
+        {(showUpdateAction || showDownloadAction) && !(showRunAction && onRun && selected) && (
           <CardDivider />
         )}
 

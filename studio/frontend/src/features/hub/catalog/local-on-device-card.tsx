@@ -62,7 +62,6 @@ import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
-  CardDivider,
   CardUpdateButton,
   DeleteConfirmDialog,
   ModelRunActionButton,
@@ -617,28 +616,25 @@ export function LocalOnDeviceCard({
             </div>
           </div>
           {showRunAction && onRun && (
-            <>
-              <CardDivider />
-              <ModelRunActionButton
-                label={`Configure and run ${displayName.trim() || "this model"}`}
-                loading={runPending}
-                onClick={() =>
-                  onRun(
-                    needsVariantSelection && selectedVariant
-                      ? {
-                          ggufVariant: selectedVariant.quant,
-                          ggufFilename: selectedVariant.filename,
-                          expectedBytes:
-                            selectedVariant.download_size_bytes &&
-                            selectedVariant.download_size_bytes > 0
-                              ? selectedVariant.download_size_bytes
-                              : selectedVariant.size_bytes,
-                        }
-                      : {},
-                  )
-                }
-              />
-            </>
+            <ModelRunActionButton
+              label={`Configure and run ${displayName.trim() || "this model"}`}
+              loading={runPending}
+              onClick={() =>
+                onRun(
+                  needsVariantSelection && selectedVariant
+                    ? {
+                        ggufVariant: selectedVariant.quant,
+                        ggufFilename: selectedVariant.filename,
+                        expectedBytes:
+                          selectedVariant.download_size_bytes &&
+                          selectedVariant.download_size_bytes > 0
+                            ? selectedVariant.download_size_bytes
+                            : selectedVariant.size_bytes,
+                      }
+                    : {},
+                )
+              }
+            />
           )}
         </div>
         {/* Render the full-width memory bar below the horizontal card row so it
