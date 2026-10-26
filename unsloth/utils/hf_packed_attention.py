@@ -375,6 +375,29 @@ def _call_torch_varlen(torch_varlen, query, key, value, cu_seqlens, max_seqlen, 
     return out.unsqueeze(0)
 
 
+def _flash_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
+    """aten's flash varlen, what torch's varlen_attn runs for these rows, called directly: a native op
+    with a C++ backward (varlen_attn's Python custom op cost ~37 us of host time per call in a
+    compiled step) that takes grouped K / V heads as they are."""
+    out = torch.ops.aten._flash_attention_forward(
+        query[0].transpose(0, 1),
+        key[0].transpose(0, 1),
+        value[0].transpose(0, 1),
+        cu_seqlens,
+        cu_seqlens,
+        max_seqlen,
+        max_seqlen,
+        0.0,
+        False,
+        False,
+        scale = scale,
+        # Causal through the window: right 0, left unbounded or window - 1 (transformers' overlay).
+        window_size_left = -1 if window is None else window - 1,
+        window_size_right = 0,
+    )[0]
+    return out.unsqueeze(0)
+
+
 def _sdpa_packed_varlen(
     module,
     query,
@@ -412,12 +435,9 @@ def _sdpa_packed_varlen(
                 window,
             )
         ):
-            # torch's varlen op traces (custom_op + fake); its host inputs were prepared eagerly.
+            # Host inputs were prepared eagerly (block_varlen_kwargs); the kernel call traces.
             scale = query.shape[-1] ** -0.5 if scaling is None else scaling
-            out = _call_torch_varlen(
-                _TORCH_VARLEN[0], query, key, value, *block_varlen, scale, window
-            )
-            return out, None
+            return _flash_varlen(query, key, value, *block_varlen, scale, window), None
     if (
         IN_COMPILED_BLOCK[0]
         and torch.compiler.is_compiling()
@@ -667,7 +687,7 @@ def _varlen_in_graph_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, w
 
 
 def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
-    """torch's varlen op takes this shape: same refusals as the eager path, then one real forward and
+    """aten's flash varlen takes this shape: the eager path's refusals, then one real forward and
     backward (a build that refuses at run time would otherwise fail inside the compiled graph)."""
     try:
         from .flash_impl import flash_impl_allows
@@ -684,7 +704,7 @@ def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, w
             return False
         query.requires_grad_()
         cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
-        out = _call_torch_varlen(torch_varlen, query, key, key, cu_seqlens, 9, 1.0, window)
+        out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
         out.float().sum().backward()
         return True
     except Exception:
@@ -699,6 +719,36 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
     packed row, so attention runs torch's varlen op inside the graph. Building them there needs a host
     read of the longest segment and the mask check a host sync, which is why the traced wrapper used to
     fall back to SDPA over the dense mask. None keeps that path."""
+    seq_lengths, mask = kwargs.get("packed_seq_lengths"), kwargs.get("attention_mask")
+    attention = getattr(layer, "self_attn", None)
+    # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
+    window = _sliding_window(attention, kwargs) if attention is not None else None
+    entry = _BLOCK_PREP.get(window)
+    if (
+        entry is not None
+        and entry[0]() is seq_lengths
+        and entry[1]() is mask
+        and entry[2] == hidden_states.device
+    ):
+        if entry[3] is not None:
+            HF_PACKED_ATTENTION_STATS["compiled"] += 1
+        return entry[3]
+    result = _block_varlen_prepare(layer, attention, hidden_states, kwargs)
+    if isinstance(seq_lengths, torch.Tensor) and isinstance(mask, torch.Tensor) and not _disabled():
+        # Weak: the T x T mask must not outlive its step.
+        _BLOCK_PREP[window] = (
+            weakref.ref(seq_lengths),
+            weakref.ref(mask),
+            hidden_states.device,
+            result,
+        )
+    return result
+
+
+_BLOCK_PREP = {}
+
+
+def _block_varlen_prepare(layer, attention, hidden_states, kwargs):
     if (
         _disabled()
         or _ORIG_SDPA[0] is None
@@ -709,7 +759,6 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
         or hidden_states.shape[0] != 1
     ):
         return None
-    attention = getattr(layer, "self_attn", None)
     config = getattr(attention, "config", None)
     if getattr(config, "_attn_implementation", None) != "sdpa":
         return None

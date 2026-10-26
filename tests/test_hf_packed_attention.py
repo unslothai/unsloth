@@ -1332,12 +1332,10 @@ def test_traced_block_varlen_call_stays_in_the_graph(monkeypatch, in_graph):
     # Fake tensors keep their real (CPU) device here; the GPU test below covers the real checks.
     monkeypatch.setattr(hpa, "_static_window", lambda *args: None)
     monkeypatch.setattr(hpa, "_varlen_in_graph", lambda *args: in_graph)
-    # The real verdict probes (and so loads) torch's op first; the stub below stands in for it.
-    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [object()])
     monkeypatch.setattr(
         hpa,
-        "_call_torch_varlen",
-        lambda fn, q, k, v, cu, m, scale, window: q.transpose(1, 2) * scale,
+        "_flash_varlen",
+        lambda q, k, v, cu, m, scale, window: q.transpose(1, 2) * scale,
     )
     lengths = [3, 3]
     module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = True)
