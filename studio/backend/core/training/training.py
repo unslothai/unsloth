@@ -964,13 +964,6 @@ class _MLXTrainerAdapter:
         if not self._dataset_config:
             self._update_progress(error = "Dataset not loaded")
             return False
-        if self.is_cpt:
-            self._update_progress(
-                error = "Continued Pretraining is not supported for MLX training yet.",
-                is_training = False,
-                is_completed = False,
-            )
-            return False
 
         config = self._build_worker_config(training_args)
         event_queue = queue.Queue()

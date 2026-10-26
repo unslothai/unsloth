@@ -204,13 +204,6 @@ test("training validation rejects Hub IDs that backend preflight rejects", () =>
 
 test("training validation rejects MLX-incompatible training modes", () => {
   assert.deepEqual(
-    validateTrainingConfig({ ...validConfig, trainingMethod: "cpt" }, "mac"),
-    {
-      ok: false,
-      errorKey: "studio.params.notSupportedAppleSilicon",
-    },
-  );
-  assert.deepEqual(
     validateTrainingConfig(
       { ...validConfig, modelType: "embeddings", isEmbeddingModel: true },
       "mac",
@@ -290,18 +283,18 @@ test("training validation accepts DoRA on MLX under an adapter method", () => {
         { ...validConfig, trainingMethod, loraVariant: "dora" },
         "mac",
       ),
-      trainingMethod === "cpt"
-        ? { ok: false, errorKey: "studio.params.notSupportedAppleSilicon" }
-        : { ok: true, errorKey: null },
+      { ok: true, errorKey: null },
     );
   }
 });
 
-test("training validation keeps CPT and embedding training available off MLX", () => {
-  assert.deepEqual(
-    validateTrainingConfig({ ...validConfig, trainingMethod: "cpt" }, "linux"),
-    { ok: true, errorKey: null },
-  );
+test("training validation keeps CPT on every device and embedding training off MLX", () => {
+  for (const deviceType of ["linux", "mac"]) {
+    assert.deepEqual(
+      validateTrainingConfig({ ...validConfig, trainingMethod: "cpt" }, deviceType),
+      { ok: true, errorKey: null },
+    );
+  }
   assert.deepEqual(
     validateTrainingConfig(
       { ...validConfig, modelType: "embeddings", isEmbeddingModel: true },
@@ -358,7 +351,7 @@ test("training validation lets LoRA and CPT continue from a saved adapter (#1314
       { ok: true, errorKey: null },
     );
   }
-  for (const trainingMethod of ["lora", "qlora"] as const) {
+  for (const trainingMethod of ["lora", "qlora", "cpt"] as const) {
     assert.deepEqual(
       validateTrainingConfig({ ...adapter, trainingMethod } as never, "mac"),
       { ok: true, errorKey: null },

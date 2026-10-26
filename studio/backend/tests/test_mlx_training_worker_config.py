@@ -648,7 +648,8 @@ def _run_adapter_setup(
             "config": config,
             "model": model,
             "training_type": training_type,
-            "use_lora": training_type in ("LoRA/QLoRA", "Continued Pretraining"),
+            "is_cpt": _run_mlx_assignment("is_cpt", training_type = training_type),
+            "use_lora": _run_mlx_assignment("use_lora", training_type = training_type),
             "is_vlm": False,
             "use_grad_checkpoint": "mlx",
             "lora_random_state": 3407,
@@ -662,8 +663,11 @@ def _run_adapter_setup(
     return events, wraps
 
 
-def test_mlx_continued_adapter_is_not_wrapped_again():
-    events, wraps = _run_adapter_setup([("layers.0.self_attn.q_proj", object())])
+@pytest.mark.parametrize("training_type", ["LoRA/QLoRA", "Continued Pretraining"])
+def test_mlx_continued_adapter_is_not_wrapped_again(training_type):
+    events, wraps = _run_adapter_setup(
+        [("layers.0.self_attn.q_proj", object())], training_type = training_type
+    )
 
     assert wraps == []
     assert any("Continuing from existing LoRA adapters" in kw["status_message"] for _, kw in events)
@@ -673,3 +677,75 @@ def test_mlx_base_model_gets_a_fresh_adapter():
     _, wraps = _run_adapter_setup([], lora_r = 8)
 
     assert [kwargs["r"] for kwargs in wraps] == [8]
+
+
+def test_mlx_cpt_trains_embedding_modules_in_full():
+    _, wraps = _run_adapter_setup(
+        [],
+        training_type = "Continued Pretraining",
+        target_modules = ["q_proj", "model.embed_tokens", "lm_head"],
+    )
+
+    assert len(wraps) == 1
+    assert wraps[0]["target_modules"] == ["q_proj"]
+    assert wraps[0]["modules_to_save"] == ["embed_tokens", "lm_head"]
+    assert not any(key.startswith("finetune_") for key in wraps[0])
+
+
+def test_mlx_cpt_without_embedding_targets_wraps_the_default_projections():
+    _, wraps = _run_adapter_setup([], training_type = "Continued Pretraining")
+
+    assert wraps[0]["target_modules"] == list(_worker._MLX_DEFAULT_LORA_TARGETS)
+    assert wraps[0]["modules_to_save"] is None
+
+
+def test_trains_embedding_modules_ignores_lora_on_the_head():
+    trains = _worker._trains_embedding_modules
+    assert trains(["model.layers.0.self_attn.q_proj.lora_a", "model.embed_tokens.weight"])
+    assert trains(["model.layers.0.mlp.up_proj.lora_b", "lm_head.weight"])
+    assert not trains(["lm_head.lora_a", "lm_head.lora_b", "model.layers.0.mlp.up_proj.lora_a"])
+
+
+def test_mlx_cpt_embedding_learning_rate_follows_the_cuda_rule(monkeypatch):
+    monkeypatch.setattr(_worker, "logger", types.SimpleNamespace(warning = lambda *_a: None))
+    rate = _worker._mlx_cpt_embedding_learning_rate
+    assert rate(None, 5e-5, trains_embeddings = True) == pytest.approx(5e-6)
+    assert rate(1e-6, 5e-5, trains_embeddings = True) == 1e-6
+    assert rate(1e-6, 5e-5, trains_embeddings = False) is None
+
+
+def _run_mlx_assignment(target, **names):
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    nodes = [n for n in body if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == target]
+    assert len(nodes) == 1
+    namespace = {**vars(_worker), **names}
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<assign>", "exec"), namespace)
+    return namespace[target]
+
+
+@pytest.mark.parametrize("is_cpt, expected", [(True, "raw"), (False, "alpaca")])
+def test_mlx_cpt_formats_raw_text_whatever_format_was_sent(is_cpt, expected):
+    config = {"format_type": "alpaca"}
+    assert _run_mlx_assignment("format_type", is_cpt = is_cpt, config = config) == expected
+
+
+@pytest.mark.parametrize("is_cpt", [True, False])
+def test_mlx_cpt_reads_an_image_dataset_as_text(is_cpt):
+    config = {"is_dataset_image": True}
+    assert _run_mlx_assignment("is_dataset_image", is_cpt = is_cpt, config = config) is not is_cpt
+
+
+def test_mlx_cpt_embedding_lr_reaches_heads_zoo_resolved():
+    model = types.SimpleNamespace(
+        trainable_parameters = lambda: {"model.tok_embeddings.weight": None},
+        _unsloth_cpt_full_module_weight_keys = {"model.tok_embeddings.weight"},
+    )
+    rate = _run_mlx_assignment(
+        "embedding_lr_value",
+        is_cpt = True,
+        config = {},
+        lr_value = 5e-5,
+        model = model,
+        tree_flatten = lambda tree: list(tree.items()),
+    )
+    assert rate == pytest.approx(5e-6)

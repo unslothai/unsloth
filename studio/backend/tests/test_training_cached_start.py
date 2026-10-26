@@ -1846,7 +1846,6 @@ def test_streaming_rejects_cached_dataset_hints(cache_overrides):
 @pytest.mark.parametrize(
     ("request_overrides", "expected"),
     [
-        ({"training_type": "Continued Pretraining"}, "Continued Pretraining"),
         ({"is_embedding": True}, "Embedding model training"),
         ({"is_dataset_audio": True}, "Audio dataset training"),
         ({"use_loftq": True}, "LoftQ"),
@@ -1869,7 +1868,7 @@ def test_mlx_start_rejects_unsupported_training_config(request_overrides, expect
     assert expected in exc_info.value.detail
 
 
-def test_mlx_start_accepts_dora():
+def test_mlx_start_accepts_dora_and_cpt():
     # LoftQ alongside DoRA so a gate that refuses nothing cannot pass.
     from utils.hardware import hardware
 
@@ -1878,6 +1877,7 @@ def test_mlx_start_accepts_dora():
     with patch.object(hardware, "DEVICE", hardware.DeviceType.MLX):
         route._validate_training_platform(_request(use_dora = True))
         route._validate_training_platform(_request(is_decision = True))
+        route._validate_training_platform(_request(training_type = "Continued Pretraining"))
         with pytest.raises(HTTPException) as exc_info:
             route._validate_training_platform(_request(use_loftq = True))
 
@@ -1888,7 +1888,7 @@ def test_mlx_start_detects_hardware_before_platform_validation():
     from utils.hardware import hardware
 
     route = _load_route_module("training_route_mlx_warm_platform_reject")
-    request = _request(training_type = "Continued Pretraining")
+    request = _request(use_loftq = True)
     detection_calls = 0
 
     def detect_mlx():
@@ -1907,7 +1907,7 @@ def test_mlx_start_detects_hardware_before_platform_validation():
 
     assert detection_calls == 1
     assert exc_info.value.status_code == 400
-    assert "Continued Pretraining" in exc_info.value.detail
+    assert "LoftQ" in exc_info.value.detail
 
 
 def test_route_forwards_cache_reference_fields():

@@ -1345,11 +1345,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
         )
     if hardware.DEVICE != hardware.DeviceType.MLX:
         return
-    if request.training_type == "Continued Pretraining":
-        raise HTTPException(
-            status_code = 400,
-            detail = "Continued Pretraining is not supported for MLX training yet.",
-        )
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,

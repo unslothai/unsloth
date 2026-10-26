@@ -933,6 +933,43 @@ def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
 
 # On CPT, MLX trains these regardless of the layer-family flags.
 _CPT_TARGET_NAMES = frozenset({"embed_tokens", "lm_head"})
+_MLX_DEFAULT_LORA_TARGETS = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
+
+
+def _trains_embedding_modules(trainable_names, full_module_keys = ()) -> bool:
+    """Whether the embedding or output head trains in full, from a fresh CPT wrap or a continued adapter.
+
+    ``full_module_keys`` are the weights zoo resolved for embed_tokens / lm_head, which cover heads named otherwise.
+    """
+    for name in trainable_names:
+        if name in full_module_keys:
+            return True
+        parts = set(name.split("."))
+        if parts & _CPT_TARGET_NAMES and not parts & {"lora_a", "lora_b"}:
+            return True
+    return False
+
+
+def _mlx_cpt_embedding_learning_rate(requested, lr_value, *, trains_embeddings):
+    """The CUDA CPT rule: lr/10 unless set, and dropped when no embedding module trains."""
+    if not trains_embeddings:
+        if requested is not None:
+            logger.warning(
+                "CPT: embedding_learning_rate was provided but neither embed_tokens "
+                "nor lm_head is being trained; ignoring the override."
+            )
+        return None
+    if requested is None:
+        return lr_value / 10.0
+    return float(requested)
 
 
 def _names_a_cpt_target(target_modules) -> bool:
@@ -3018,6 +3055,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _send("status", status_message = "Loading MLX libraries...")
 
     import mlx.core as mx
+    from mlx.utils import tree_flatten
 
     try:
         from unsloth_zoo.mlx.loader import FastMLXModel
@@ -3060,10 +3098,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
-    if config.get("training_type") == "Continued Pretraining":
-        message = "Continued Pretraining is not supported for MLX training yet."
-        _send("error", error = message)
-        raise NotImplementedError(message)
     # Decided before the model loads, so version skew does not cost a download.
     try:
         mlx_dora_kwargs = _mlx_dora_peft_kwargs(config, FastMLXModel.get_peft_model)
@@ -3078,12 +3112,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _send("status", status_message = f"Loading {model_name}...")
     # Forward resume_from_checkpoint to MLXTrainer.train(); else Resume silently restarts from step 0.
     resume_from_checkpoint = config.get("resume_from_checkpoint") or None
-    is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
-    use_lora = training_type == "LoRA/QLoRA"
+    is_cpt = training_type == "Continued Pretraining"
+    # As on CUDA, CPT trains on raw text, so an image dataset loads and formats as text.
+    is_dataset_image = bool(config.get("is_dataset_image", False)) and not is_cpt
+    use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
     # Before the download/load below: unlike the CUDA path, this needs none of the model.
-    # A continued adapter keeps its own targets, so the requested ones are not checked.
-    if use_lora and config.get("model_format") != "adapter":
+    # A continued adapter keeps its own targets, and CPT builds its adapter from target_modules alone.
+    if use_lora and not is_cpt and config.get("model_format") != "adapter":
         _check_mlx_finetune_targets(config)
     # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
@@ -3197,6 +3233,24 @@ def _run_mlx_training(event_queue, stop_queue, config):
             "status",
             status_message = "Continuing from existing LoRA adapters (kept the adapter's settings)",
         )
+    elif is_cpt:
+        _send("status", status_message = "Configuring LoRA for continued pretraining...")
+        # As on CUDA, embed_tokens / lm_head train as full modules rather than through LoRA.
+        user_modules = config.get("target_modules") or []
+        leaf = lambda module: str(module).rsplit(".", 1)[-1]  # noqa: E731
+        model = FastMLXModel.get_peft_model(
+            model,
+            r = config.get("lora_r", 128),
+            lora_alpha = config.get("lora_alpha", 32),
+            lora_dropout = config.get("lora_dropout", 0.0),
+            use_rslora = config.get("use_rslora", False),
+            random_state = lora_random_state,
+            target_modules = [m for m in user_modules if leaf(m) not in _CPT_TARGET_NAMES]
+            or list(_MLX_DEFAULT_LORA_TARGETS),
+            modules_to_save = sorted({leaf(m) for m in user_modules} & _CPT_TARGET_NAMES) or None,
+            use_gradient_checkpointing = use_grad_checkpoint,
+            **mlx_dora_kwargs,
+        )
     elif use_lora:
         _send("status", status_message = "Configuring LoRA adapters...")
         peft_kwargs = dict(
@@ -3206,16 +3260,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             use_rslora = config.get("use_rslora", False),
             init_lora_weights = config.get("init_lora_weights", True),
             random_state = lora_random_state,
-            target_modules = config.get("target_modules")
-            or [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
+            target_modules = config.get("target_modules") or list(_MLX_DEFAULT_LORA_TARGETS),
             use_gradient_checkpointing = use_grad_checkpoint,
         )
         peft_kwargs.update(mlx_dora_kwargs)
@@ -3360,7 +3405,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_dataset = _load_local(config["local_eval_datasets"])
 
     # Reuse the GPU format pipeline for VLM (OCR/caption/llava/sharegpt+images) and text.
-    format_type = config.get("format_type", "")
+    # As on CUDA, CPT always trains on raw text whatever format was requested.
+    format_type = "raw" if is_cpt else config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
     dataset_final_format = ""
     eval_final_format = ""
@@ -3521,7 +3567,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
     batch_size = config.get("batch_size", 4)
     grad_accum = config.get("gradient_accumulation_steps", 4)
 
-    lr_value = float(config.get("learning_rate", "2e-4"))
+    lr_value = float(config.get("learning_rate", "5e-5" if is_cpt else "2e-4"))
+    embedding_lr_value = (
+        _mlx_cpt_embedding_learning_rate(
+            config.get("embedding_learning_rate"),
+            lr_value,
+            trains_embeddings = _trains_embedding_modules(
+                (name for name, _ in tree_flatten(model.trainable_parameters())),
+                getattr(model, "_unsloth_cpt_full_module_weight_keys", None) or (),
+            ),
+        )
+        if is_cpt
+        else None
+    )
 
     # Warmup: prefer warmup_steps; fall back to warmup_ratio
     warmup_steps = config.get("warmup_steps")
@@ -3622,6 +3680,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if patience and eval_dataset is not None and eval_steps_value > 0:
             mlx_config_kwargs["early_stopping_patience"] = patience
             mlx_config_kwargs["load_best_model_at_end"] = True
+    if embedding_lr_value is not None:
+        mlx_config_kwargs["embedding_learning_rate"] = embedding_lr_value
     if "append_eos" in _supported_fields:
         # Unsloth SFT formatting owns rendered examples; raw/CPT text still needs MLX to append EOS.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)

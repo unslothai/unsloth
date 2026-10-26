@@ -14,7 +14,6 @@ import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
 import {
   isTrainingLoraVariantSupportedOnDevice,
-  isTrainingMethodSupportedOnDevice,
   isTrainingModelTypeSupportedOnDevice,
 } from "./training-methods";
 
@@ -26,9 +25,6 @@ function isTrainingConfigSupportedOnDevice(
   config: TrainingConfigState,
   deviceType?: string,
 ): boolean {
-  if (!isTrainingMethodSupportedOnDevice(config.trainingMethod, deviceType)) {
-    return false;
-  }
   if (!isTrainingModelTypeSupportedOnDevice(config.modelType, deviceType)) {
     return false;
   }

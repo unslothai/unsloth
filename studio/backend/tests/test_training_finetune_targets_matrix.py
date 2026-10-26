@@ -386,13 +386,17 @@ def test_mlx_worker_calls_the_guard_in_its_lora_branch():
     )
     code = compile(ast.Module(body = [guard], type_ignores = []), "<guard>", "exec")
 
-    def guarded_call(use_lora, model_format = None):
+    def guarded_call(
+        use_lora,
+        model_format = None,
+        is_cpt = False,
+    ):
         checked = []
         exec(
             code,
             {
                 "use_lora": use_lora,
-                "is_cpt": False,
+                "is_cpt": is_cpt,
                 "config": {"model_format": model_format},
                 "_check_mlx_finetune_targets": checked.append,
             },
@@ -403,6 +407,8 @@ def test_mlx_worker_calls_the_guard_in_its_lora_branch():
     assert not guarded_call(False)
     # A continued adapter keeps its own targets, so the requested ones are not checked.
     assert not guarded_call(True, model_format = "adapter")
+    # CPT builds its adapter from target_modules alone, as on CUDA.
+    assert not guarded_call(True, is_cpt = True)
 
     from_pretrained_lines = [
         node.lineno
@@ -575,4 +581,6 @@ def test_the_effective_check_runs_after_the_back_fill_at_the_mlx_call_site():
     assert (
         forced < backfill < call
     ), "the effective check must follow both the is_vlm narrowing and the back-fill"
-    assert call < source.index("FastMLXModel.get_peft_model("), "and precede the loader"
+    assert call < source.index(
+        "FastMLXModel.get_peft_model(model, **peft_kwargs)"
+    ), "and precede the loader"
