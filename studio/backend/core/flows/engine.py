@@ -1277,8 +1277,13 @@ class FlowEngine:
             batch = rs.take_unsaved()
             if batch is None:
                 return
+            write = asyncio.ensure_future(asyncio.to_thread(flows_db.write_batch, rs.id, *batch))
             try:
-                await asyncio.to_thread(flows_db.write_batch, rs.id, *batch)
+                await asyncio.shield(write)
+            except asyncio.CancelledError:
+                # A cancelled flusher keeps the lock until its batch is written, so the final persist waits for it.
+                await asyncio.gather(write, return_exceptions = True)
+                raise
             except Exception:
                 logger.warning("flows: could not store events of run %s", rs.id, exc_info = True)
 

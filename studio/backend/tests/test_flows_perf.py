@@ -163,3 +163,31 @@ async def test_overlapping_calls_keep_one_spare_key_per_account():
     assert len(eng._spare_keys) == 1
     await eng.release_spare_keys()
     assert sorted(revoked) == sorted(minted)
+
+
+@run_async
+async def test_a_cancelled_flusher_still_finishes_its_batch_before_the_next_persist(monkeypatch):
+    import threading
+
+    gate = threading.Event()
+    real = flows_db.write_batch
+
+    def slow(*args):
+        gate.wait(2)
+        return real(*args)
+
+    d = doc([node("a", "input.text")], id = "cancelwrite")
+    flows_db.save_flow(parse_document(d)[0])
+    eng = _engine(dict(BASE))
+    rs = await _run(eng, d)
+    monkeypatch.setattr(flows_db, "write_batch", slow)
+    rs.emit("node.log", "a", {"message": "mid-write"})
+    flusher = asyncio.create_task(eng.persist(rs))
+    await asyncio.sleep(0.05)
+    flusher.cancel()
+    final = asyncio.create_task(eng.persist(rs))
+    await asyncio.sleep(0.05)
+    assert not final.done()
+    gate.set()
+    await asyncio.gather(flusher, final, return_exceptions = True)
+    assert flows_db.events_after(rs.id, 0)[-1]["data"] == {"message": "mid-write"}
