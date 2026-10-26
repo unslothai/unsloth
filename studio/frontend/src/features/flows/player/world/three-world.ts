@@ -5,7 +5,7 @@
 import * as three from "three";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 
-import type { WorldItem, WorldNpc, WorldSpec } from "../../types";
+import type { WorldItem, WorldNpc, WorldProp3d, WorldSpec } from "../../types";
 import type {
   Area,
   Interactable,
@@ -22,8 +22,14 @@ import {
   isSolid,
   kindAt,
 } from "./procgen";
-import { createPropLayer } from "./props-scene3d";
-import { type WorldEditor, setMapProps } from "./props3d";
+import { createPropLayer, setOpenPose } from "./props-scene3d";
+import { createVerbFx } from "./verbs-scene3d";
+import {
+  PROP_LABELS,
+  type WorldEditor,
+  blockedCells,
+  setMapProps,
+} from "./props3d";
 import { canvas, fitImage, paintItem } from "./sprites";
 import {
   type ActionWorld,
@@ -48,6 +54,25 @@ import {
   takePickup,
   tick,
 } from "./action3d";
+import {
+  type Projectile,
+  type PropStates,
+  NOISE,
+  THROW_AMMO,
+  closedProps,
+  dashAdvance,
+  dashing,
+  isOpen,
+  isUsable,
+  makeNoise,
+  melee,
+  newVerbs,
+  splash,
+  startDash,
+  stepProjectiles,
+  throwRock,
+  verbsTick,
+} from "./action-verbs";
 import { hostilesOf } from "./roles";
 import type { WorldEditorRuntime } from "./world-editor3d";
 import {
@@ -691,6 +716,16 @@ export function createWorld3d(
 
   const action = spec.action?.movement === true;
   const shooter = action && spec.action?.shooter === true;
+  const verbs = action && spec.action?.verbs === true;
+  const vs = newVerbs();
+  let propState: PropStates = bridge.props ?? {};
+  let usable = (map.props ?? []).filter(isUsable);
+  const poses = new Map<string, number>();
+  const doorTiles = () => {
+    if (map.props?.length)
+      map.blocked = blockedCells(map, closedProps(map.props, propState));
+  };
+  if (usable.some((p) => isOpen(p, propState))) doorTiles();
   const wallTile = (x: number, y: number) =>
     x < 0 ||
     y < 0 ||
@@ -699,7 +734,7 @@ export function createWorld3d(
     SOLID.has(kindAt(map, x, y));
   const collide = (z: number): ActionWorld => {
     const ground = (x: number, y: number) => heightAt(terrain, x, y);
-    const all = map.props ?? [];
+    const all = closedProps(map.props ?? [], propState);
     const over = new Set(
       all
         .map((p) => propBox(p, ground))
@@ -759,6 +794,25 @@ export function createWorld3d(
       pickupSprites.set(p.id, s);
     }
   }
+  const verbFx = verbs && shooter ? createVerbFx(scene, vs.shots.length) : null;
+  let verbPressed: string | null = null;
+  const dashStep = (w: ActionWorld, b: Body, _input: unknown, dt: number) =>
+    dashAdvance(w, b, vs, dt);
+  const propTip = new three.Vector3();
+  const propTargets = new Map<string, Interactable>();
+  const propTarget = (p: WorldProp3d): Interactable => {
+    const label = p.name ?? PROP_LABELS[p.kind];
+    const name =
+      p.kind === "door" && p.locked_by && !propState[p.id]?.unlocked
+        ? `${label} (locked)`
+        : label;
+    let t = propTargets.get(p.id);
+    if (!t || t.name !== name || t.prop !== p) {
+      t = { kind: "prop", id: p.id, name, prop: p };
+      propTargets.set(p.id, t);
+    }
+    return t;
+  };
   const hud = document.createElement("div");
   hud.dataset.testid = "world3d-hud";
   Object.assign(hud.style, {
@@ -783,9 +837,12 @@ export function createWorld3d(
         pose?: unknown;
         combat?: unknown;
         shot?: unknown;
+        melee?: unknown;
+        verbs?: unknown;
       };
     }
   ).__flowsWorldPerf;
+  if (perf && verbs) perf.verbs = vs;
   {
     let best: Npc | null = null;
     for (const n of npcs)
@@ -807,10 +864,14 @@ export function createWorld3d(
   overlay.type = "button";
   overlay.dataset.testid = "world3d-lock";
   overlay.textContent = shooter
-    ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · Click or F to shoot · E to talk"
-    : action
-      ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · E to talk"
-      : "Click to look around · WASD to walk · E to talk · Esc for the mouse";
+    ? verbs
+      ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · Click or F to shoot · V or right-click to strike · G to throw · Q to dash · E to talk and use"
+      : "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · Click or F to shoot · E to talk"
+    : verbs
+      ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · Q to dash · E to talk and use"
+      : action
+        ? "Click to look around · WASD to move · Space to jump · Shift to sprint · C to crouch · E to talk"
+        : "Click to look around · WASD to walk · E to talk · Esc for the mouse";
   Object.assign(overlay.style, {
     position: "absolute",
     left: "50%",
@@ -906,6 +967,15 @@ export function createWorld3d(
       if (!e.repeat) firePressed = true;
       return;
     }
+    if (
+      verbs &&
+      (e.code === "KeyQ" ||
+        (shooter && (e.code === "KeyV" || e.code === "KeyG")))
+    ) {
+      if (!e.repeat) verbPressed = e.code;
+      e.preventDefault();
+      return;
+    }
     if (e.code === "KeyE" || e.code === "Space") {
       if (nearby) {
         e.preventDefault();
@@ -932,6 +1002,16 @@ export function createWorld3d(
   const onPointerDown = (e: PointerEvent) => {
     if (shooter && controls.isLocked && !bridge.locked() && e.button === 0) {
       firePressed = true;
+      return;
+    }
+    if (
+      verbs &&
+      shooter &&
+      controls.isLocked &&
+      !bridge.locked() &&
+      e.button === 2
+    ) {
+      verbPressed = "KeyV";
       return;
     }
     if (controls.isLocked || bridge.locked()) return;
@@ -1088,6 +1168,7 @@ export function createWorld3d(
         if (shot.downed) bridge.onEvent?.(`${n.name} is knocked out`);
       }
     }
+    if (verbs) strikeAndThrow(dt, safe);
     const fired = enemiesAct(
       aw,
       combat,
@@ -1121,6 +1202,75 @@ export function createWorld3d(
       hudText = text;
       hud.textContent = text;
     }
+  }
+
+  const rockHits = (x: number, y: number, z: number) => {
+    for (const n of npcs) {
+      if (!n.group.visible || !hostile.has(n.id)) continue;
+      const g = heightAt(terrain, n.pos.x, n.pos.y);
+      if (
+        Math.hypot(n.pos.x - x, n.pos.y - y) < 0.35 &&
+        z > g &&
+        z < g + ACTOR_H
+      )
+        return true;
+    }
+    return false;
+  };
+  const onBurst = (p: Projectile) => {
+    verbFx?.flash(p.x, p.y, p.z);
+    if (!aw) return;
+    for (const hit of splash(aw, combat, p, targets())) {
+      const n = npcs.find((x) => x.id === hit.id);
+      if (n) say(n, hit.downed ? "Ugh..." : "Argh!");
+      if (n && hit.downed) bridge.onEvent?.(`${n.name} is knocked out`);
+    }
+  };
+  function strikeAndThrow(dt: number, safe: (x: number, y: number) => boolean) {
+    if (!aw || !body) return;
+    const verb = verbPressed;
+    if (verb === "KeyV" || verb === "KeyG") {
+      verbPressed = null;
+      if (safe(body.x, body.y)) bridge.onEvent?.("No fighting in a safe place");
+      else if (verb === "KeyV") {
+        const yaw = camera.rotation.y;
+        const hit = melee(
+          aw,
+          combat,
+          vs,
+          { x: body.x, y: body.y, z: body.z + 1 },
+          -Math.sin(yaw),
+          -Math.cos(yaw),
+          targets().filter((t) => !safe(t.x, t.y)),
+        );
+        if (hit) {
+          cross.style.transform = "scale(1.6) rotate(45deg)";
+          window.setTimeout(() => {
+            cross.style.transform = "";
+          }, 120);
+        }
+        const n = hit?.hit ? npcs.find((x) => x.id === hit.hit) : null;
+        if (hit && n) {
+          [n.pos.x, n.pos.y] = slide(map, n.pos.x, n.pos.y, hit.kx, hit.ky);
+          n.path = [];
+          say(n, hit.downed ? "Ugh..." : "Oof!");
+          if (hit.downed) bridge.onEvent?.(`${n.name} is knocked out`);
+        }
+        if (perf) perf.melee = hit;
+      } else {
+        const dir = camera.getWorldDirection(propTip);
+        const thrown = throwRock(
+          combat,
+          vs,
+          { x: camera.position.x, y: camera.position.z, z: camera.position.y },
+          { x: dir.x, y: dir.z, z: dir.y },
+        );
+        if (!thrown && combat.ammo < THROW_AMMO)
+          bridge.onEvent?.("Not enough ammo to throw");
+      }
+    }
+    if (vs.live) stepProjectiles(aw, vs, dt, rockHits, onBurst);
+    verbFx?.sync(vs, dt);
   }
 
   let last = performance.now();
@@ -1183,7 +1333,15 @@ export function createWorld3d(
           limit = Math.hypot(ix, iy);
         }
       }
-      advance(
+      if (verbs) {
+        verbsTick(vs, dt);
+        if (verbPressed === "KeyQ") {
+          verbPressed = null;
+          const steer = Boolean(ix || iy);
+          if (!locked) startDash(vs, body, steer ? ix : fx, steer ? iy : fz);
+        }
+      }
+      (verbs && dashing(vs) ? dashStep : advance)(
         aw,
         body,
         {
@@ -1360,7 +1518,30 @@ export function createWorld3d(
         bp = it.sprite.position.clone().setY(it.base + 0.7);
       }
     }
-    if ((best?.id ?? null) !== (nearby?.id ?? null)) {
+    for (const p of usable) {
+      const d = Math.hypot(p.x - me.x, p.y - me.y);
+      if (d < bestD) {
+        bestD = d;
+        best = propTarget(p);
+        bp = propTip.set(p.x, heightAt(terrain, p.x, p.y) + 1.3, p.y);
+      }
+      const goal = isOpen(p, propState) ? 1 : 0;
+      const pose = poses.get(p.id);
+      if (pose !== goal) {
+        const next =
+          pose === undefined
+            ? goal
+            : pose +
+              Math.sign(goal - pose) * Math.min(Math.abs(goal - pose), dt * 3);
+        poses.set(p.id, next);
+        const obj = props.objectOf(p.id);
+        if (obj) setOpenPose(obj, next);
+      }
+    }
+    if (
+      (best?.id ?? null) !== (nearby?.id ?? null) ||
+      best?.name !== nearby?.name
+    ) {
       nearby = best;
       bridge.onNearby(best);
     }
@@ -1385,6 +1566,17 @@ export function createWorld3d(
 
   const npcById = (id: string) => npcs.find((n) => n.id === id);
   const handle: WorldGameHandle = {
+    setPropStates(states, changed, loud) {
+      const doors = changed.some((id) =>
+        usable.some((p) => p.id === id && p.kind === "door"),
+      );
+      propState = states;
+      if (doors) {
+        doorTiles();
+        if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
+      }
+      if (loud) makeNoise(vs, me.x, me.y, NOISE.door);
+    },
     actionState() {
       return action
         ? {
@@ -1398,6 +1590,7 @@ export function createWorld3d(
       editor?.close();
       editor = null;
       props.dispose();
+      verbFx?.dispose();
       cancelAnimationFrame(raf);
       ro.disconnect();
       window.removeEventListener("keydown", onKeyDown);
@@ -1436,6 +1629,8 @@ export function createWorld3d(
           openTile: (x, y) => !SOLID.has(kindAt(map, x, y)),
           onProps: (next) => {
             setMapProps(map, next, standTiles(me.x, me.y));
+            usable = next.filter(isUsable);
+            poses.clear();
             if (action) aw = collide(body?.z ?? heightAt(terrain, me.x, me.y));
           },
         });

@@ -330,6 +330,116 @@ def edit_world_3d(page: Page) -> None:
     page.click("[data-testid=world-editor-done]")
 
 
+def prop_at(page: Page, pid: str) -> dict:
+    return page.evaluate(f"window.__flowsPlayerSmoke.props.find((p) => p.id === {pid!r})")
+
+
+def walk_near(page: Page, x: float, y: float, label: str) -> None:
+    """Walk up to the tile (x, y) from two tiles away, so the view ends facing it, until the use prompt shows
+    `label`."""
+    prompt = page.locator("text=" + label).first
+    tx, ty = int(x), int(y)
+    here = "window.__flowsPlayerSmoke.world.playerTile()"
+    for _ in range(3):
+        for dx, dy in ((0, 1), (1, 0), (-1, 0), (0, -1)):
+            for k in (2, 1):
+                page.evaluate(
+                    f"window.__flowsPlayerSmoke.world.walkTo({{x: {tx + dx * k}, y: {ty + dy * k}}})"
+                )
+                try:
+                    page.wait_for_function(
+                        f"(() => {{ const t = {here}; return t.x === {tx + dx * k} && t.y === {ty + dy * k}; }})()",
+                        timeout = 8_000,
+                    )
+                except Exception:  # noqa: BLE001 - that side is blocked; try the next
+                    break
+                page.wait_for_timeout(400)
+            try:
+                prompt.wait_for(timeout = 1_500)
+                return
+            except Exception:  # noqa: BLE001 - try the next side
+                continue
+    prompt.wait_for(timeout = 1_000)
+
+
+def toast_seen(page: Page, text: str) -> None:
+    page.get_by_text(text, exact = False).first.wait_for(timeout = 10_000)
+
+
+def play_verbs_3d(page: Page) -> None:
+    """Action mode v2: a locked door refuses you, the chest gives its key, the door opens with it, a lever opens
+    a second door, and melee knocks out a hostile brute."""
+    page.goto(f"{BASE}?flow=world&render=3d&action=shooter&verbs=1&time=day&props=reset")
+    page.wait_for_selector("[data-testid=world-start]", timeout = 120_000)
+    arm(page)
+    page.wait_for_selector("[data-testid=world3d-canvas]")
+    page.click("[data-testid=world-start]")
+    page.wait_for_function("window.__flowsPlayerSmoke.world !== null")
+    page.wait_for_timeout(1200)
+    door = prop_at(page, "door-1")
+    chest = prop_at(page, "chest-1")
+    lever = prop_at(page, "lever-1")
+    assert door and chest and lever, "the smoke keep did not fit near the spawn"
+
+    walk_near(page, door["x"], door["y"], "Use Door (locked)")
+    page.keyboard.press("e")
+    toast_seen(page, "Locked. It needs the Brass key")
+    shot(page, "verbs_locked_door")
+
+    walk_near(page, chest["x"], chest["y"], "Use Chest")
+    page.keyboard.press("e")
+    toast_seen(page, "Found Brass key")
+
+    walk_near(page, door["x"], door["y"], "Use Door (locked)")
+    page.keyboard.press("e")
+    toast_seen(page, "Unlocked with the Brass key")
+    page.locator("text=Use Door").first.wait_for()
+    page.wait_for_timeout(900)
+    shot(page, "verbs_door_open")
+
+    walk_near(page, lever["x"], lever["y"], "Use Lever")
+    page.keyboard.press("e")
+    toast_seen(page, "The lever clicks and a door moves")
+
+    hits = []
+    for _ in range(4):
+        brute = page.evaluate("window.__flowsPlayerSmoke.world.npcTile('brute')")
+        # Step in from the south so the last stride faces the brute (a hit knocks it back a step).
+        for dy in (2, 1):
+            page.evaluate(
+                f"window.__flowsPlayerSmoke.world.walkTo({{x: {brute['x']}, y: {brute['y'] + dy}}})"
+            )
+            page.wait_for_function(
+                f"(() => {{ const t = window.__flowsPlayerSmoke.world.playerTile(); "
+                f"return t.x === {brute['x']} && t.y === {brute['y'] + dy}; }})()",
+                timeout = 20_000,
+            )
+            page.wait_for_timeout(600)
+        page.keyboard.press("v")
+        page.wait_for_timeout(300)
+        hits.append(
+            page.evaluate("window.__flowsWorldPerf.melee && window.__flowsWorldPerf.melee.hit")
+        )
+        if page.get_by_text("Brute is knocked out").count():
+            break
+    assert hits.count("brute") >= 2, hits
+    toast_seen(page, "Brute is knocked out")
+    shot(page, "verbs_melee")
+    enemies = page.evaluate("window.__flowsWorldPerf.combat.enemies")
+    assert enemies["brute"]["down"] > 0, enemies
+
+    # The same props on the 2D map: the lever is usable with E there too (melee, dash and throw are 3D only).
+    page.click("[data-testid=world-view-toggle]")
+    page.wait_for_function(
+        "window.__flowsPlayerSmoke.world && document.querySelector('[data-testid=world-canvas] canvas')"
+    )
+    page.wait_for_timeout(900)
+    walk_near(page, lever["x"], lever["y"], "Use Lever")
+    page.keyboard.press("e")
+    toast_seen(page, "The lever clicks and a door moves")
+    shot(page, "verbs_map_lever")
+
+
 STAMP: dict[str, float] = {}
 
 
@@ -376,7 +486,7 @@ def main() -> int:
             page.wait_for_timeout(3_000)
             page.on("pageerror", lambda e: errors.append(str(e)))
             only = os.environ.get("FLOWS_SCENARIOS")
-            scenarios = (play_story, play_world, play_world_3d, edit_world_3d)
+            scenarios = (play_story, play_world, play_world_3d, edit_world_3d, play_verbs_3d)
             for scenario in scenarios:
                 if only and scenario.__name__ not in only.split(","):
                     continue

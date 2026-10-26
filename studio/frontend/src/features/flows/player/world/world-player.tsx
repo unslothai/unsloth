@@ -56,6 +56,7 @@ import {
   isNoChatModelError,
   offlineLine,
 } from "./live-reply";
+import { heldInChests, interactProp } from "./action-verbs";
 import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import {
@@ -109,6 +110,7 @@ import {
   type WorldState,
   addTurn,
   applyReply,
+  applyUse,
   deserialize,
   foldSummary,
   initialWorldState,
@@ -261,6 +263,7 @@ export function WorldPlayer({
   const map = useMemo(() => generateMap(baseSpec), [baseSpec]);
   const host = useRef<HTMLDivElement>(null);
   const game = useRef<WorldGameHandle | null>(null);
+  const worldRef = useRef<WorldMap | null>(null);
   const [ws, setWs] = useState<WorldState>(() => initialWorldState(baseSpec));
   const wsRef = useRef(ws);
   wsRef.current = ws;
@@ -370,6 +373,34 @@ export function WorldPlayer({
 
   const onInteract = useCallback(
     (t: Interactable) => {
+      if (t.kind === "prop") {
+        const g = game.current;
+        if (!t.prop || !g) return;
+        const s = wsRef.current;
+        const at = (p: { x: number; y: number }) =>
+          `${Math.floor(p.x)},${Math.floor(p.y)}`;
+        const out = interactProp(
+          t.prop,
+          worldRef.current?.props ?? [],
+          s.props ?? {},
+          s.inventory,
+          {
+            name: (id) => itemById.get(id)?.name ?? id,
+            occupied: (p) =>
+              [g.playerTile(), ...Object.values(g.npcTiles())].some(
+                (q) => at(q) === at(p),
+              ),
+          },
+        );
+        if (out.changed.length || out.gained.length) {
+          const next = applyUse(s, out);
+          wsRef.current = next;
+          setWs(next);
+          g.setPropStates?.(out.states, out.changed, out.loud);
+        }
+        toast(out.text);
+        return;
+      }
       if (t.kind === "item") {
         setWs((s) => witness(pickUp(s, t.id), `picked up the ${t.name}`, 3));
         game.current?.removeItem(t.id);
@@ -401,7 +432,7 @@ export function WorldPlayer({
       game.current?.faceNpc(npc.id);
       setTalking(npc.id);
     },
-    [npcById, spec, toast, witness],
+    [itemById, npcById, spec, toast, witness],
   );
   const onInteractRef = useRef(onInteract);
   onInteractRef.current = onInteract;
@@ -453,12 +484,16 @@ export function WorldPlayer({
             ...Object.fromEntries(added.items.map((i) => [i.id, i])),
           },
         };
+        worldRef.current = world;
         handle = create(
           host.current,
           specRef.current,
           world,
           art,
-          wsRef.current.picked,
+          [
+            ...wsRef.current.picked,
+            ...heldInChests(world.props ?? [], wsRef.current.props ?? {}),
+          ],
           startAt,
           {
             onNearby: (t) => setNearby(t),
@@ -473,6 +508,7 @@ export function WorldPlayer({
             },
             locked: () => lockedRef.current,
             action: wsRef.current.action,
+            props: wsRef.current.props,
             onEvent: (text) => toast(text),
             safeAt: (p) => safeRef.current(p),
           },
@@ -518,6 +554,10 @@ export function WorldPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, baseSpec, map, mount, view]);
 
+  const dashKey =
+    view === "3d" &&
+    baseSpec.action?.movement === true &&
+    baseSpec.action?.verbs === true;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -538,12 +578,12 @@ export function WorldPlayer({
       } else if (editing) {
       } else if (e.key === "i" || e.key === "I")
         setPanel((p) => (p === "inventory" ? null : "inventory"));
-      else if (e.key === "q" || e.key === "Q")
+      else if ((e.key === "q" || e.key === "Q") && !dashKey)
         setPanel((p) => (p === "quests" ? null : "quests"));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editing]);
+  }, [editing, dashKey]);
 
   const edDirty = edState
     ? JSON.stringify(edState.props) !== savedProps
@@ -1564,7 +1604,9 @@ export function WorldPlayer({
               </kbd>
               {nearby.kind === "npc"
                 ? `Talk to ${nearby.name}`
-                : `Pick up ${nearby.name}`}
+                : nearby.kind === "prop"
+                  ? `Use ${nearby.name}`
+                  : `Pick up ${nearby.name}`}
             </div>
           ) : null}
         </>
