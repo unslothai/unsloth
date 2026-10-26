@@ -50,8 +50,14 @@ def test_unsloth_imports_without_triton():
         import unsloth_zoo.stubs.triton_stub  # noqa: F401
     except ImportError:
         pytest.skip("unsloth_zoo has no triton stub")
+    import unsloth_zoo
+
+    if getattr(unsloth_zoo, "DEVICE_TYPE", None) == "mlx":
+        pytest.skip("Apple Silicon / MLX stubs Triton for every importer by design")
     # UNSLOTH_ALLOW_CPU keeps the GPU import path (models, kernels) on a host without a GPU.
     env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", UNSLOTH_ALLOW_CPU = "1")
+    # That variable also installs zoo's global stub (download-only child), which this test must not see.
+    env.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
     out = subprocess.run(
         [sys.executable, "-c", _NO_TRITON + _CHECK],
         env = env,
