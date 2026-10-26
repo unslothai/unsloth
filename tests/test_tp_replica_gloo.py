@@ -94,7 +94,11 @@ def _case_generate(rank, world, tmp, arch, tp = None):
         out["loss_err"] = abs(
             float(model(input_ids = ids, labels = ids, use_cache = False).loss) - loss_before
         )
-    # generate with no for_inference, then a training forward: the replica is released before it runs.
+    # A bare generate (no for_inference) releases the replica it gathered when it returns.
+    _generate(model, prompt, do_sample = False, max_new_tokens = 2)
+    out["bare_generate_released"] = not tp_replica.replica_active(model)
+    # for_inference keeps it; a forward that records gradients releases it before it runs.
+    FastLanguageModel.for_inference(model)
     _generate(model, prompt, do_sample = False, max_new_tokens = 2)
     out["replica_after_generate"] = tp_replica.replica_active(model)
     model.train()
@@ -391,6 +395,7 @@ def test_tp2_generate_on_replica_equals_one_process(arch):
         # tp rank 0's RNG state on every tp rank: the sampled text is rank 0's, which is one process's.
         assert res["sample_tp"] == res["sample_ref"], (rank, res["sample_tp"], res["sample_ref"])
         assert res["restored"] and res["is_tp"] and res["loss_err"] == 0.0, res
+        assert res["bare_generate_released"], res
         assert res["replica_after_generate"] and res["released_by_forward"] and res["restored_2"], res
         assert res["loss_err_2"] == 0.0 and res["dtensor_grads"], res
 
@@ -408,10 +413,13 @@ def test_tp2_x_dp2_generate_and_save_per_tp_group():
 
 def test_env_reload_of_an_adapter_directory_loads_in_full(tmp_path):
     """tp_env: a reload cell (adapter directory) is not sharded-loaded; a base checkpoint still is."""
-    error = _import_checkout_unsloth()
-    if error is not None:
-        pytest.skip(error)
-    from unsloth.models import tp_env
+    import importlib.util
+
+    # By path, next to the tp_native the oracle loaded: no `import unsloth` in the pytest process.
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "models", "tp_env.py")
+    spec = importlib.util.spec_from_file_location("unsloth.models.tp_env", path)
+    tp_env = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tp_env)
 
     adapter, base = tmp_path / "lora_model", tmp_path / "base"
     adapter.mkdir()

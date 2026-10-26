@@ -289,7 +289,9 @@ def _case_env(
                 train_dataset = data,
             )
         )
-        res["generate"] = _raised(lambda: model.generate(input_ids = ids[:1, :3]))
+        res["generate"] = _raised(
+            lambda: model.generate(input_ids = ids[:1, :3], max_new_tokens = 2, pad_token_id = 0)
+        )
     if dist.is_initialized():
         dist.barrier()
     return res
@@ -453,7 +455,7 @@ def test_env_tp2_trainer_matches_one_process(four_bit):
         assert "evaluation during training" in res["eval"] and hint in res["eval"], res["eval"]
         assert "Trainer.evaluate is not supported" in res["evaluate"] and hint in res["evaluate"]
         assert "lion_8bit" in res["lion"], res["lion"]
-        assert "generation is not supported" in res["generate"], res["generate"]  # A3: still refused
+        assert res["generate"] is None, res["generate"]  # a whole replica per rank (tp_replica.py)
     assert results[0]["seen"] == results[1]["seen"]  # both tp ranks read the same batches
 
 

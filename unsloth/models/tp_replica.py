@@ -262,6 +262,7 @@ class _Replica:
     def __init__(self, select, device):
         self.select = select
         self.device = device
+        self.persistent = False  # for_inference: kept until for_training / a gradient forward
         self.swaps = []  # (module, name, sharded parameter)
         self.attrs = []  # (module __dict__, key, previous value or _MISSING)
         self.hooks = []
@@ -387,8 +388,9 @@ def _switch_to_one_gpu(root, replica):
 
 
 def _release_before_training(module, args):
-    # A training forward on the replica would train tensors the optimizer does not hold.
-    if torch.is_grad_enabled() and module.training:
+    # A forward that records gradients (training, also in eval mode) runs on the sharded parameters the
+    # optimizer holds, never on the replica. generate runs under no_grad / inference_mode.
+    if torch.is_grad_enabled() and not torch.is_inference_mode_enabled():
         release_replica(module)
 
 
@@ -421,7 +423,9 @@ def release_replica(model):
 def tp_for_inference(model):
     """for_inference: the whole replica on every rank (collective)."""
     if _marked(model, tpn._TP_FLAG):
-        gather_replica(model, "all", keep = True, what = "for_inference")
+        replica = gather_replica(model, "all", keep = True, what = "for_inference")
+        if _GENERATE_DEPTH[0] == 0:  # the user's call (generate's own for_inference does not keep it)
+            replica.persistent = True
     elif _marked(model, "_unsloth_pp"):
         raise RuntimeError(_refusal(model, "for_inference"))
 
@@ -453,8 +457,12 @@ def sync_generation_rng(model):
 
 
 def tp_generate(level, prior, args, kwargs):
-    """generate on a tensor parallel model: gather the replica (collective), sync sampling, generate."""
+    """generate on a tensor parallel model: gather the replica (collective), sync sampling, generate. A replica
+    this call gathered (no for_inference before it) is released when it returns, so parameters() / an
+    optimizer built after a bare generate see the sharded parameters again."""
+    transient = False
     if _GENERATE_DEPTH[0] == 0:
+        transient = not replica_active(level)
         gather_replica(level, "all", keep = True, what = "generate")
         sync_generation_rng(level)
     if prior is not None:
@@ -468,6 +476,9 @@ def tp_generate(level, prior, args, kwargs):
         return fn(*args, **kwargs)
     finally:
         _GENERATE_DEPTH[0] -= 1
+        replica = tp_root(level).__dict__.get(_REPLICA)
+        if transient and replica is not None and not replica.persistent:
+            release_replica(level)
 
 
 # Rank 0 writes, the others wait

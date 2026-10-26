@@ -116,8 +116,10 @@ def _case_parity(
     tpn.apply_tensor_parallel(model, mesh["tp"], plan = plan)
     assert tpn.is_tensor_parallel(model)
     assert tpn.apply_tensor_parallel(model, mesh["tp"]) is model  # idempotent
-    with pytest.raises(RuntimeError, match = "generation is not supported"):
-        model.generate(input_ids = torch.zeros(1, 2, dtype = torch.long))
+    # generate runs on a gathered replica (tp_replica.py); the first training forward below puts the shards
+    # back, so the parity checks also cover that release.
+    generated = model.generate(input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0)
+    assert generated.shape == (1, 4), generated.shape
     from test_fsdp2_native_units import _load_native
 
     try:
