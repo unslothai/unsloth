@@ -6737,7 +6737,7 @@ _HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draf
 _LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
 
 # Vulkan TOP_K cannot bind a misaligned view, and backend draft sampling reads logits row r at
-# r * n_vocab * 4 bytes: n_vocab % 64 != 0 aborts on the first draft (#14987, MiniCPM-V-4.7).
+# r * n_vocab * 4 bytes (#14987). n_vocab % 64 == 0 keeps rows 256-byte aligned, the spec maximum.
 _VULKAN_ALIGNED_VOCAB_MULTIPLE = 64
 _NO_DRAFT_BACKEND_SAMPLING_FLAG = "--no-spec-draft-backend-sampling"
 
