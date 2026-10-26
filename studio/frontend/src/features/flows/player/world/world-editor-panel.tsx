@@ -74,7 +74,13 @@ export default function WorldEditorPanel({
       const added = editor.addPlaced(
         await onDescribe(editor.placeRequest(place)),
       );
-      setPlaceNote(added ? `Added ${added} props` : "Nothing fit here");
+      setPlaceNote(
+        added < 0
+          ? "The scene changed while placing. Describe it again."
+          : added
+            ? `Added ${added} props`
+            : "Nothing fit here",
+      );
     } catch (e) {
       setPlaceNote(e instanceof Error ? e.message : String(e));
     } finally {

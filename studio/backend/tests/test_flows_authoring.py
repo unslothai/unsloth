@@ -213,6 +213,27 @@ def test_solver_places_everything_on_free_reachable_tiles():
     assert solve(spec, Grid(rows, (2, 2)), focus = (9, 8), seed = 3) == out, "deterministic"
 
 
+def test_a_facing_cycle_is_resolved_once_both_props_are_down():
+    import math
+
+    spec = _spec(
+        [
+            {"id": "left", "kind": "bench", "count": 1, "area": "main"},
+            {"id": "right", "kind": "bench", "count": 1, "area": "main"},
+        ],
+        [
+            {"type": "facing", "a": "left", "b": "right"},
+            {"type": "facing", "a": "right", "b": "left"},
+        ],
+    )
+    out = solve(spec, Grid(OPEN, (2, 2)), focus = (9, 8), seed = 0)
+    a, b = out["props3d"]
+    assert not out["relaxed"] and not out["dropped"]
+    for p, q in ((a, b), (b, a)):
+        want = math.degrees(math.atan2(int(q["x"]) - int(p["x"]), int(q["y"]) - int(p["y"]))) % 360
+        assert p["rot"] == round(want, 1), (p, q)
+
+
 def test_solid_props_never_cut_off_open_ground():
     spec = _spec([{"id": "rocks", "kind": "rock", "count": 6, "area": "main"}])
     out = solve(spec, Grid(CORRIDOR, (1, 1)), focus = (4, 3), seed = 0)

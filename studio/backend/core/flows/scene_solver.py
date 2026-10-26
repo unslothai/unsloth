@@ -280,6 +280,10 @@ def _cheb(a: tuple[int, int], b: tuple[int, int]) -> int:
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
 
+def _snap(kind: str, rot: float) -> float:
+    return round(rot / 90) * 90 % 360 if kind in ("house", "fence", "stall") else round(rot, 1)
+
+
 def _order(props: list[dict], relations: list[dict]) -> list[dict]:
     deps = {
         p["id"]: {
@@ -347,6 +351,8 @@ def solve(
     out: list[dict] = []
     relaxed: list[dict] = []
     dropped: list[str] = []
+    # Relations whose target was not placed yet (a cycle): checked again once everything is down.
+    deferred: list[tuple[dict, str, tuple[int, int], list[dict]]] = []
     ids = set(taken_ids or ())
 
     def wall_next(c: tuple[int, int]) -> Optional[tuple[int, int]]:
@@ -468,13 +474,34 @@ def solve(
                     "name": group["id"].replace("_", " ")[:60],
                     "x": spot[0] + 0.5,
                     "y": spot[1] + 0.5,
-                    "rot": round(rot / 90) * 90 % 360
-                    if group["kind"] in ("house", "fence", "stall")
-                    else round(rot, 1),
+                    "rot": _snap(group["kind"], rot),
                     "scale": 1,
                     "solid": solid,
                 }
             )
+            later = [
+                r for r in active if r["type"] in ("near", "facing") and not placed.get(r["b"])
+            ]
+            if later:
+                deferred.append((out[-1], f"{group['id']}#{n + 1}", spot, later))
+    for prop, label, spot, later in deferred:
+        lost: list[str] = []
+        for r in later:
+            others = placed.get(r["b"]) or []
+            if not others:
+                continue
+            t = min(others, key = lambda o: _cheb(spot, o))
+            if _cheb(spot, t) > (NEAR if r["type"] == "near" else FACING_RANGE):
+                lost.append(r["type"])
+            elif r["type"] == "facing":
+                rot = math.degrees(math.atan2(t[0] - spot[0], t[1] - spot[1])) % 360
+                prop["rot"] = _snap(prop["kind"], rot)
+        if lost:
+            entry = next((e for e in relaxed if e["prop"] == label), None)
+            if entry is None:
+                relaxed.append({"prop": label, "dropped": []})
+                entry = relaxed[-1]
+            entry["dropped"] = sorted(set(entry["dropped"]) | set(lost), key = RELAX_ORDER.index)
     final = grid.reach()
     final_locked = grid.reach(locked = True)
 
