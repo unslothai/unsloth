@@ -598,6 +598,21 @@ def _apple_wired_headroom_bytes() -> Optional[int]:
     return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
 
 
+def _apple_budget_beside_media_mib(held_mib: int, unallocated_mib: int) -> int:
+    """The unified-memory budget beside a resident image or video model: its price comes off the static working set,
+    and its unallocated part off available RAM, which already excludes the rest."""
+    from utils.hardware.hardware import _metal_recommended_working_set_bytes
+    import psutil
+
+    mib = 1024 * 1024
+    working_set = _metal_recommended_working_set_bytes() or int(psutil.virtual_memory().total)
+    available = int(psutil.virtual_memory().available)
+    left = working_set // mib - held_mib
+    if available > 0:
+        left = min(left, available // mib - unallocated_mib)
+    return max(0, int(left * _APPLE_UNIFIED_MEMORY_FRACTION))
+
+
 def _gpu_plan_mib(total_bytes: int, on: list[int], gpus) -> dict[int, int]:
     """MiB this load holds per GPU: an even share, capped at what each card had free, since
     --fit on offloads the rest to CPU."""
@@ -25515,6 +25530,27 @@ class LlamaCppBackend:
 
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
+                    _metal_media_mib, _metal_media_unallocated_mib = (
+                        self._metal_media_mib() if _apple_budget_mib > 0 else (0, 0)
+                    )
+                    if _metal_media_mib:
+                        # At least 1: 0 means "not Apple Silicon" below, and would skip every Metal check.
+                        _apple_budget_mib = max(
+                            1,
+                            min(
+                                _apple_budget_mib,
+                                _apple_budget_beside_media_mib(
+                                    _metal_media_mib, _metal_media_unallocated_mib
+                                ),
+                            ),
+                        )
+                    # The wired headroom is a live reading, so only the unallocated part comes off it.
+                    _metal_media_wired_mib = int(
+                        _metal_media_unallocated_mib * _APPLE_WIRED_CEILING_FRACTION
+                    )
+
+                    def _apple_wired_left_mib(wired_bytes: int) -> int:
+                        return max(0, wired_bytes // (1024 * 1024) - _metal_media_wired_mib)
 
                     if tensor_parallel and tp_gpus:
                         # The planner can shrink ctx/KV, not weights or the MTP reserve.
@@ -26358,8 +26394,7 @@ class LlamaCppBackend:
                                     )
                             # Past free memory macOS swaps; past the wired limit the machine panics.
                             _apple_wired_mib = int(
-                                self._apple_metal_wired_ceiling_bytes()
-                                // (1024 * 1024)
+                                _apple_wired_left_mib(self._apple_metal_wired_ceiling_bytes())
                                 * max(0.0, 1.0 - _flat_mtp_reserve)
                             )
                             if (
@@ -26413,8 +26448,7 @@ class LlamaCppBackend:
                         # Past the wired limit Metal refuses, so it is the harder ceiling when readable.
                         _fit_wired_mib = (
                             int(
-                                self._apple_metal_wired_ceiling_bytes()
-                                // (1024 * 1024)
+                                _apple_wired_left_mib(self._apple_metal_wired_ceiling_bytes())
                                 * max(0.0, 1.0 - _flat_mtp_reserve)
                             )
                             if _vram_fit_ctx
@@ -26463,6 +26497,8 @@ class LlamaCppBackend:
                         # them, so it must see the same wired limit the refusals do.
                         if not _caller_owns_budget and not _paravirtual_cpu_forced:
                             _metal_fit_target_floor_mib = self._metal_fit_target_floor_mib()
+                            if _metal_fit_target_floor_mib > 0:
+                                _metal_fit_target_floor_mib += _metal_media_wired_mib
 
                         if (
                             intent.refuse_partial_gpu_fit
@@ -26479,7 +26515,8 @@ class LlamaCppBackend:
                             wired_bytes = self._apple_metal_wired_headroom_bytes()
                             if wired_bytes is not None:
                                 wired_mib = int(
-                                    wired_bytes // (1024 * 1024) * max(0.0, 1.0 - _flat_mtp_reserve)
+                                    _apple_wired_left_mib(wired_bytes)
+                                    * max(0.0, 1.0 - _flat_mtp_reserve)
                                 )
                                 budget_mib = min(budget_mib, wired_mib)
                             need_mib = math.ceil(
@@ -33680,6 +33717,14 @@ class LlamaCppBackend:
         from core.inference.gpu_residency import media_unallocated_mib
 
         return media_unallocated_mib()
+
+    def _metal_media_mib(self) -> tuple[int, int]:
+        """(price, not yet allocated) MiB of the image/video models resident on Apple's one GPU (zeros under Off)."""
+        if self not in _serving_backends_snapshot():
+            return 0, 0
+        from core.inference.gpu_residency import media_held_mib, media_unallocated_mib
+
+        return media_held_mib().get(0, 0), media_unallocated_mib().get(0, 0)
 
     def _note_server_pid(self, pid: int) -> None:
         if getattr(self, "_owns_pidfile", True):

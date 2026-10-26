@@ -266,7 +266,7 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
             gr.can_load_alongside(arb.VIDEO, None), (False, {"reason": "estimate_unavailable"})
         )
         self.assertEqual(gr.can_load_alongside(arb.VIDEO, {})[1]["reason"], "estimate_unavailable")
-        for device in (DeviceType.MLX, DeviceType.CPU, DeviceType.XPU):
+        for device in (DeviceType.CPU, DeviceType.XPU):
             self.assertEqual(
                 self._check(need, device = device), (False, {"reason": "non_accelerator"})
             )
@@ -363,6 +363,27 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
             side_effect = AssertionError("planner"),
         ):
             self.assertTrue(self._check(_need({0: 1000}, kind = "video"))[0])
+
+    def _metal(self, need, wired, available):
+        with (
+            _cuda(DeviceType.MLX),
+            patch(
+                "core.inference.llama_cpp._apple_wired_headroom_bytes",
+                return_value = wired and wired * MIB,
+            ),
+            patch("psutil.virtual_memory", return_value = SimpleNamespace(available = available * MIB)),
+        ):
+            return gr.can_load_alongside(arb.VIDEO, need)
+
+    def test_metal_is_one_pool_at_the_smaller_reading_less_idle_headroom(self):
+        self._resident(arb.DIFFUSION, {0}, _need({0: 9000}, weights = 6000, headroom = 3000))
+        free = 12288 - 3000
+        # An image need, as the streaming planner would fail on a Metal row's missing total.
+        for w, a in ((20480, 12288), (12288, 20480)):
+            self.assertEqual(self._metal(_need({0: 1}, kind = "image"), w, a)[1]["free_mib"][0], free)
+        self.assertTrue(self._metal(_need({0: free - gr.FIT_MARGIN_MIB}), 20480, 12288)[0])
+        self.assertFalse(self._metal(_need({0: free - gr.FIT_MARGIN_MIB + 1}), 20480, 12288)[0])
+        self.assertEqual(self._metal(_need({0: 1}), None, 12288)[1], {"reason": "probe_error"})
 
 
 class TestPipelineNeed(_GpuCacheResetMixin, unittest.TestCase):

@@ -233,29 +233,31 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
         estimate_safetensors_dense_mib,
         file_size_mib,
     )
-    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX
 
     repo, name = request.model_path, request.gguf_filename
     if getattr(request, "text_encoder_file", None) or getattr(request, "vae_file", None):
         return None  # supplied companions are priced from their headers at load time only
     kind = resolve_model_kind(name, request.model_kind)
     fam = detect_family_for_pick(repo, name, request.family_override)
-    if (
-        fam is None
-        or predict_engine(
-            fam,
-            model_kind = kind,
-            gpu_ordinal = gpu_ordinal,
-            gguf_filename = name,
-            with_loras = has_active_loras(getattr(request, "loras", None)),
-            # An explicit precision keeps a default-routed Apple Silicon load on diffusers, as the load does.
-            mlx_blocker = mlx_load_blocker(
-                transformer_quant = getattr(request, "transformer_quant", None),
-                text_encoder_quant = getattr(request, "text_encoder_quant", None),
-            ),
-        )
-        != ENGINE_DIFFUSERS
-    ):
+    if fam is None:
+        return None
+    engine = predict_engine(
+        fam,
+        model_kind = kind,
+        gpu_ordinal = gpu_ordinal,
+        gguf_filename = name,
+        engine = getattr(request, "engine", None),
+        with_loras = has_active_loras(getattr(request, "loras", None)),
+        # An explicit precision keeps a default-routed Apple Silicon load on diffusers, as the load does.
+        mlx_blocker = mlx_load_blocker(
+            transformer_quant = getattr(request, "transformer_quant", None),
+            text_encoder_quant = getattr(request, "text_encoder_quant", None),
+        ),
+    )
+    if engine == ENGINE_MLX:
+        return _mlx_image_need(request, fam)
+    if engine != ENGINE_DIFFUSERS:
         return None
     mib = 1024 * 1024
     if kind == "pipeline":
@@ -310,6 +312,31 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     return weights, estimate_image_runtime_mib(width = None, height = None, family = hint)
 
 
+def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
+    """(weights MiB, decode headroom MiB) for an MLX image load: the quantization plan it will take, from headers."""
+    from core.inference.diffusion_families import resolve_base_repo
+    from core.inference.mlx_diffusion_backend import (
+        decode_headroom_bytes,
+        fetch_base_snapshot,
+        get_mlx_diffusion_backend,
+        plan_for_load,
+    )
+
+    gguf = _cached_pick(request.model_path, request.gguf_filename)
+    if gguf is None:
+        return None
+    # Offline only; raises when the text encoder and VAE are not downloaded yet.
+    base_dir = fetch_base_snapshot(
+        resolve_base_repo(fam, request.base_repo), None, local_files_only = True
+    )
+    headroom = decode_headroom_bytes(get_mlx_diffusion_backend()._rt())
+    plan = plan_for_load(gguf, base_dir, headroom_bytes = headroom)
+    if plan.source != "plan":
+        return None
+    mib = 1024 * 1024
+    return (plan.planned_bytes - headroom) // mib, -(-headroom // mib)
+
+
 def _video_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int, int]]:
     """(weights MiB, headroom MiB) for a video load: checkpoint file sizes plus the family's companion table."""
     from core.inference.diffusion import DiffusionBackend as DB
@@ -357,12 +384,39 @@ def _video_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     )
 
 
+def _on_metal() -> bool:
+    try:
+        from utils.hardware import DeviceType, get_device
+        return get_device() == DeviceType.MLX
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _metal_pool() -> tuple[Optional[dict[int, dict]], Optional[str]]:
+    """Apple Silicon's unified memory as GPU 0, by the readings llama.cpp's Metal fit uses: the wired headroom Metal
+    may still take, capped at the RAM macOS has available. Both already exclude every model loaded."""
+    try:
+        import psutil
+        from core.inference.llama_cpp import _apple_wired_headroom_bytes
+
+        wired = _apple_wired_headroom_bytes()
+        available = int(psutil.virtual_memory().available)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_residency: Metal memory probe failed: %s", exc)
+        return None, "probe_error"
+    if wired is None or available <= 0:
+        return None, "probe_error"
+    return {0: {"free_mib": min(wired, available) // (1024 * 1024), "metal": True}}, None
+
+
 def _free_mib_by_gpu() -> tuple[Optional[dict[int, dict]], Optional[str]]:
     """{physical id: {free_mib, total_mib}} or (None, reason) when the host can't be priced."""
     try:
         from utils.hardware import DeviceType, get_device, get_visible_gpu_utilization
+
+        if get_device() == DeviceType.MLX:
+            return _metal_pool()
         if get_device() != DeviceType.CUDA:
-            # MLX and other unified-memory hosts share the pool with the CPU: co-residency there is deferred.
             return None, "non_accelerator"
         util = get_visible_gpu_utilization() or {}
     except Exception as exc:  # noqa: BLE001
@@ -450,7 +504,8 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
     if info["short_mib"]:
         return False, info
     if getattr(need_mib, "kind", None) == "image":
-        for gpu in need_mib:
+        # On unified memory offload moves bytes within the same pool, so there is nothing to stream.
+        for gpu in [g for g in need_mib if not rows[g].get("metal")]:
             if not _keeps_transformer_resident(
                 need_mib, gpu, info["free_mib"][gpu], rows[gpu]["total_mib"]
             ):
@@ -472,6 +527,28 @@ def chat_load_in_flight() -> bool:
         )
     except Exception:  # noqa: BLE001
         return False
+
+
+def chat_growth_unpriced() -> bool:
+    """Whether a chat model may still grow past what live memory shows: on Metal, an MLX model allocates its KV
+    cache as it generates. A media load then treats chat as unpriced."""
+    return _on_metal() and _mlx_chat_loaded()
+
+
+def _mlx_chat_loaded() -> bool:
+    """Whether the primary or a kept chat orchestrator holds an MLX model; unreadable counts as yes."""
+    try:
+        from core.inference import model_slots, orchestrator
+        for orch in [
+            orchestrator._inference_backend,
+            *(s.orchestrator for s in model_slots.resident()),
+        ]:
+            for entry in list((getattr(orch, "models", None) or {}).values()):
+                if isinstance(entry, dict) and entry.get("is_mlx"):
+                    return True
+        return False
+    except Exception:  # noqa: BLE001
+        return True
 
 
 _CHAT_LOADING_MESSAGE = (
@@ -844,6 +921,8 @@ def coreside_locked(
         # Its size isn't known until it launches.
         if policy == "always":
             raise ChatLoadInFlightRefusal()
+        evict_or_refuse([arb.CHAT])
+    if owner in MEDIA_OWNERS and arb.CHAT in kept and chat_growth_unpriced():
         evict_or_refuse([arb.CHAT])
     if owner == arb.CHAT and not need_mib:
         if evict_first:

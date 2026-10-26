@@ -328,6 +328,9 @@ def test_chat_fit_kwargs(monkeypatch):
     # No target GPUs (or Vulkan ordinals) leaves every GPU in play.
     assert inf._chat_fit_kwargs(gguf, _placement(None)) == {"policy": "always"}
     assert inf._chat_fit_kwargs(gguf, _placement([0], vulkan = True)) == {"policy": "always"}
+    # Unified memory pages past the budget, so Always has no out-of-memory to refuse an unpriced load on.
+    monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
+    assert inf._chat_fit_kwargs(native, _placement(None)).get("evict_first") is True
 
 
 @pytest.mark.parametrize(

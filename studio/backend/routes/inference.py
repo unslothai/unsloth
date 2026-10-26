@@ -11785,9 +11785,18 @@ def _chat_fit_kwargs(
             int(g): int((placement.native_required_gb / len(gpus) - credit.get(int(g), 0.0)) * 1024)
             for g in gpus
         }
-    elif policy == "fit" and not (config.is_gguf and _primary_can_retry_fit.get()):
+    elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
+        policy == "fit" or (not config.is_gguf and _unified_metal_host())
+    ):
+        # On unified memory running past the budget pages instead of failing, so Always has no
+        # out-of-memory error to turn into its refusal.
         kwargs["evict_first"] = True
     return kwargs
+
+
+def _unified_metal_host() -> bool:
+    from core.inference.gpu_residency import _on_metal
+    return _on_metal()
 
 
 def _outgoing_chat_credit_gb(
@@ -46702,7 +46711,8 @@ def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
                     DIFFUSION,
                     policy = fit.get("policy", "off"),
                     gpu_ids = fit.get("gpu_ids"),
-                    need_mib = fit.get("need_mib"),
+                    # The price is the MLX load's; this diffusers load has none.
+                    need_mib = None,
                     cancel = cancel,
                 )
             except (HTTPException, ChatLoadInFlightRefusal, RuntimeError) as exc:

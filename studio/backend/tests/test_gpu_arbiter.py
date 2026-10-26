@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import types
+from contextlib import nullcontext
 
 import pytest
 
@@ -153,6 +154,24 @@ def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, ne
         ["evicted"] if evicts and policy != "off" else []
     )
     assert arb._media_needs.get(arb.DIFFUSION) == (need if policy != "off" else None)
+
+
+@pytest.mark.parametrize(
+    "policy, mlx_chat, outcome",
+    [("fit", False, "join"), ("fit", True, "evict"), ("always", True, "refuse")],
+)
+def test_image_load_beside_a_chat_model_on_metal(cores, monkeypatch, policy, mlx_chat, outcome):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "_on_metal", lambda: True)
+    monkeypatch.setattr(res, "_mlx_chat_loaded", lambda: mlx_chat)
+    cores.fits()
+    arb.acquire_for(arb.CHAT)
+    assert arb.would_evict(arb.DIFFUSION, policy = policy, need_mib = {0: 4096}) is (outcome == "evict")
+    with pytest.raises(arb.MultiModelAlwaysRefusal) if outcome == "refuse" else nullcontext():
+        arb.acquire_for(arb.DIFFUSION, lambda: None, policy = policy, need_mib = {0: 4096})
+    gone = {"join": set(), "evict": {arb.CHAT}, "refuse": {arb.DIFFUSION}}[outcome]
+    assert {arb.CHAT, arb.DIFFUSION} - set(arb.residents()) == gone
 
 
 @pytest.mark.parametrize("managed", [False, True])
