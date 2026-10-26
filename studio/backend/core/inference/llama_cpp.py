@@ -33719,12 +33719,20 @@ class LlamaCppBackend:
         return media_unallocated_mib()
 
     def _metal_media_mib(self) -> tuple[int, int]:
-        """(price, not yet allocated) MiB of the image/video models resident on Apple's one GPU (zeros under Off)."""
+        """(price, not yet allocated) MiB of the image/video models resident on Apple's one GPU (zeros under Off);
+        an MLX chat model kept beside them adds the caches it has yet to grow."""
         if self not in _serving_backends_snapshot():
             return 0, 0
-        from core.inference.gpu_residency import media_held_mib, media_unallocated_mib
+        from core.inference.gpu_residency import (
+            _mlx_chat_unallocated_mib,
+            media_held_mib,
+            media_unallocated_mib,
+        )
 
-        return media_held_mib().get(0, 0), media_unallocated_mib().get(0, 0)
+        held = media_held_mib().get(0, 0)
+        if not held:
+            return 0, 0
+        return held, media_unallocated_mib().get(0, 0) + (_mlx_chat_unallocated_mib() or 0)
 
     def _note_server_pid(self, pid: int) -> None:
         if getattr(self, "_owns_pidfile", True):

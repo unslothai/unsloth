@@ -364,9 +364,10 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
         ):
             self.assertTrue(self._check(_need({0: 1000}, kind = "video"))[0])
 
-    def _metal(self, need, wired, available):
+    def _metal(self, need, wired, available, *chat_growth):
         with (
             _cuda(DeviceType.MLX),
+            patch.object(gr, "_mlx_chat_unallocated_mib", return_value = sum(chat_growth)),
             patch(
                 "core.inference.llama_cpp._apple_wired_headroom_bytes",
                 return_value = wired and wired * MIB,
@@ -384,6 +385,35 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
         self.assertTrue(self._metal(_need({0: free - gr.FIT_MARGIN_MIB}), 20480, 12288)[0])
         self.assertFalse(self._metal(_need({0: free - gr.FIT_MARGIN_MIB + 1}), 20480, 12288)[0])
         self.assertEqual(self._metal(_need({0: 1}), None, 12288)[1], {"reason": "probe_error"})
+        self.assertEqual(self._metal(_need({0: 1}), w, a, 2500)[1]["free_mib"], {0: free - 2500})
+
+    def test_mlx_chat_growth_adds_a_kv_cache_per_row_less_what_each_worker_grew(self):
+        from core.inference import llama_cpp, model_slots, orchestrator
+
+        def orch(growth, rows, pid):
+            entry = {"is_mlx": True, "mlx_growth": growth} if growth else {"is_mlx": growth is None}
+            proc = SimpleNamespace(pid = pid)
+            return SimpleNamespace(models = {"m": entry}, effective_parallel_slots = rows, _proc = proc)
+
+        def total(grown, primary, *kept):
+            slots = [SimpleNamespace(orchestrator = o) for o in kept]
+            with (
+                patch.object(orchestrator, "_inference_backend", primary),
+                patch.object(model_slots, "resident", lambda: slots),
+                patch.object(gr, "mlx_worker_footprint_mib", lambda o: grown.get(o._proc.pid)),
+            ):
+                return gr._mlx_chat_unallocated_mib()
+
+        g = {"mib": 512, "row_kv_mib": 100, "footprint_mib": 2000}
+        self.assertEqual(total({}, orch(g, 4, 7), orch({**g, "mib": 256}, 1, 8)), 1068)
+        self.assertEqual(total({7: 2300}, orch(g, 4, 7), orch(False, 1, 9)), 512)
+        self.assertEqual(total({7: 1900}, orch(g, 4, 7)), 812)
+        self.assertEqual(total({7: 9000}, orch(g, 4, 7)), 0)
+        with patch.object(llama_cpp.LlamaCppBackend, "_darwin_rusage", return_value = (1, 3 * MIB)):
+            self.assertEqual(gr.mlx_worker_footprint_mib(orch(g, 1, 7)), 3)
+        with patch.object(model_slots, "resident", side_effect = RuntimeError):
+            self.assertIsNone(gr._mlx_chat_unallocated_mib())
+        self.assertIsNone(total({}, orch(g, 1, 7), orch(None, 1, 8)))
 
 
 class TestPipelineNeed(_GpuCacheResetMixin, unittest.TestCase):

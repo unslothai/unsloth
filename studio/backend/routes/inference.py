@@ -11757,13 +11757,15 @@ def _chat_fit_kwargs(
     placement,
     policy: Optional[str] = None,
     credit_gb: Optional[dict] = None,
+    mlx_need_mib: Optional[int] = None,
 ) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
-    audio.cpp and native audio are priced from the placement estimate. A GGUF launch prices itself (it refuses a
-    partial fit and load_model_gated makes room). Anything else has no estimate before launch: When they fit
-    evicts first, Always tries the load and turns an out-of-memory failure into its refusal. ``credit_gb`` is what
-    the outgoing primary frees per GPU when this load replaces it.
+    audio.cpp and native audio are priced from the placement estimate, an MLX load on Apple Silicon from
+    ``mlx_need_mib``. A GGUF launch prices itself (it refuses a partial fit and load_model_gated makes room).
+    Anything else has no estimate before launch: When they fit evicts first, Always tries the load and turns an
+    out-of-memory failure into its refusal. ``credit_gb`` is what the outgoing primary frees per GPU when this
+    load replaces it.
     """
     if policy is None:
         from core.inference.gpu_residency import current_policy
@@ -11785,6 +11787,8 @@ def _chat_fit_kwargs(
             int(g): int((placement.native_required_gb / len(gpus) - credit.get(int(g), 0.0)) * 1024)
             for g in gpus
         }
+    elif mlx_need_mib is not None:
+        kwargs["need_mib"] = {0: int(mlx_need_mib)}
     elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
         policy == "fit" or (not config.is_gguf and _unified_metal_host())
     ):
@@ -14659,6 +14663,112 @@ def _mlx_estimate_drafter(
         if attaches:
             return (source.path, source.builtin), fitted, True
     return None, None, True
+
+
+class _MlxLoadEstimate(NamedTuple):
+    breakdown: Any
+    fitted_ctx: Optional[int]
+    offloadable: tuple
+    retains_history: bool
+
+
+def _mlx_load_estimate(
+    request, config, model_identifier
+) -> tuple[Optional[str], Optional[_MlxLoadEstimate]]:
+    """``(refusal reason, None)`` or ``(None, estimate)`` of what an MLX load of *request* occupies."""
+    if not _mlx_estimate_available():
+        return "not_gguf", None
+    from core.inference.native_audio import is_native_audio_model
+
+    if getattr(config, "audio_cpp", None) is not None or is_native_audio_model(model_identifier):
+        return "not_gguf", None
+    if getattr(config, "is_lora", False):
+        return "unsizable", None
+    model_dir = _local_mlx_model_dir(config)
+    if not model_dir:
+        return "not_downloaded", None
+    from core.inference.mlx_inference import (
+        mlx_kv_quant_is_refused,
+        mlx_vlm_snapshot_store_available,
+    )
+    from core.inference.mlx_memory import mlx_memory_breakdown
+
+    load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
+    kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_quant, request.mlx_kv_bits)
+    # A width the cache takes applies under a pin or a fit alike: the window is then a budget.
+    if kv_bits is not None and mlx_kv_quant_is_refused(model_dir, kv_bits):
+        kv_bits = None
+    named_ctx = request.max_seq_length or 0
+    offload, offloadable, offload_baseline = _mlx_estimate_offload(
+        request, config, model_identifier, model_dir, load_in_4bit, kv_bits
+    )
+    drafter, fitted_ctx, speculates = _mlx_estimate_drafter(
+        request,
+        model_identifier,
+        model_dir,
+        _mlx_estimate_ceiling(model_dir),
+        load_in_4bit,
+        offload,
+        offload_baseline,
+    )
+    route = {**({"vision": True} if speculates else {}), **offload}
+    if not named_ctx and drafter is None:
+        fitted_ctx = _mlx_estimate_fitted_context(config, model_dir, load_in_4bit, kv_bits, **route)
+    priced_ctx = named_ctx or fitted_ctx or _mlx_estimate_ceiling(model_dir)
+    if not priced_ctx:
+        return "unsizable", None
+    breakdown = mlx_memory_breakdown(
+        model_dir,
+        n_ctx = priced_ctx,
+        kv_bits = kv_bits,
+        load_in_4bit = load_in_4bit,
+        **route,
+        **({} if drafter is None else {"drafter": drafter}),
+    )
+    if breakdown is None:
+        return "unsizable", None
+    retains_history = (
+        not (getattr(config, "is_vision", False) or speculates)
+        or mlx_vlm_snapshot_store_available()
+    )
+    return None, _MlxLoadEstimate(breakdown, fitted_ctx, offloadable, retains_history)
+
+
+def _mlx_chat_need(
+    request,
+    config,
+    model_identifier,
+    slots: int = 1,
+) -> Optional[tuple[int, dict]]:
+    """``(need MiB, growth)`` of an MLX chat load on Apple Silicon serving ``slots`` rows, or None where it cannot
+    be priced. Weights are wired at load; the KV cache (one per row) and the prompt cache grow. ``growth`` is
+    what one row grows by and what each further row adds."""
+    if getattr(config, "is_gguf", False) or not _unified_metal_host():
+        return None
+    try:
+        _, estimate = _mlx_load_estimate(request, config, model_identifier)
+        if estimate is None:
+            return None
+        from core.inference.mlx_inference import mlx_memory_budget
+
+        reserve = 0
+        if estimate.retains_history:
+            without, within = (
+                mlx_memory_budget(retains_history = False),
+                mlx_memory_budget(retains_history = True),
+            )
+            reserve = max(0, (without or 0) - (within or 0))
+    except Exception as exc:
+        logger.info("MLX load of %s left unpriced: %s", model_identifier, exc)
+        return None
+    mib = 1024 * 1024
+    one_row = -(-(int(estimate.breakdown.total_bytes) + reserve) // mib)
+    row_kv = -(-int(estimate.breakdown.kv_bytes) // mib)
+    growth = {
+        "mib": max(0, one_row - int(estimate.breakdown.weights_bytes) // mib),
+        "row_kv_mib": row_kv,
+    }
+    return one_row + (max(1, slots) - 1) * row_kv, growth
 
 
 def _mlx_estimate_available() -> bool:
@@ -18773,6 +18883,7 @@ async def _load_model_impl(
                 logger.warning("Loading an oversized GGUF: %s", _host_offload_warning)
 
         expected_native_owner = None
+        mlx_chat_need = None
         post_media_handoff_gpu = None
         post_media_handoff_needed_gb = None
         post_chat_handoff_expected_free_gb = None
@@ -18826,8 +18937,23 @@ async def _load_model_impl(
                 )
                 if post_chat_handoff_expected_free_gb is None:
                     post_chat_handoff_expected_free_gb = chat_wait_gb
+                from core.inference.llama_server_args import clamp_parallel_slots
+
+                mlx_chat_need = await asyncio.to_thread(
+                    _mlx_chat_need,
+                    request,
+                    config,
+                    model_identifier,
+                    clamp_parallel_slots(_n_parallel),
+                )
                 handoff_kwargs.update(
-                    _chat_fit_kwargs(config, placement, multi_model_mode, outgoing_chat_gb)
+                    _chat_fit_kwargs(
+                        config,
+                        placement,
+                        multi_model_mode,
+                        outgoing_chat_gb,
+                        mlx_need_mib = None if mlx_chat_need is None else mlx_chat_need[0],
+                    )
                 )
                 await asyncio.to_thread(
                     acquire_for_request,
@@ -19206,6 +19332,12 @@ async def _load_model_impl(
             _resident_entry["gpu_ids_requested"] = (
                 list(request.gpu_ids) if request.gpu_ids else None
             )
+            if mlx_chat_need is not None:
+                from core.inference.gpu_residency import mlx_worker_footprint_mib
+                _resident_entry["mlx_growth"] = {
+                    **mlx_chat_need[1],
+                    "footprint_mib": mlx_worker_footprint_mib(backend),
+                }
 
         if request._advertised_id:
             backend._openai_advertised_id = request._advertised_id
@@ -20569,64 +20701,15 @@ async def estimate_memory(
         if config is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
         if not getattr(config, "is_gguf", False):
-            if not _mlx_estimate_available():
-                return EstimateMemoryResponse(available = False, reason = "not_gguf")
-            from core.inference.native_audio import is_native_audio_model
-
-            if getattr(config, "audio_cpp", None) is not None or is_native_audio_model(
-                model_identifier
-            ):
-                return EstimateMemoryResponse(available = False, reason = "not_gguf")
-            if getattr(config, "is_lora", False):
-                return EstimateMemoryResponse(available = False, reason = "unsizable")
-            model_dir = _local_mlx_model_dir(config)
-            if not model_dir:
-                return EstimateMemoryResponse(available = False, reason = "not_downloaded")
-            from core.inference.mlx_inference import mlx_kv_quant_is_refused
-            from core.inference.mlx_memory import mlx_memory_breakdown
-
-            mlx_load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
-            mlx_kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_quant, request.mlx_kv_bits)
-            # A width the cache takes applies under a pin or a fit alike: the window is then a budget.
-            if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
-                mlx_kv_bits = None
-            mlx_named_ctx = request.max_seq_length or 0
-            mlx_offload, mlx_offloadable, mlx_offload_baseline = _mlx_estimate_offload(
-                request, config, model_identifier, model_dir, mlx_load_in_4bit, mlx_kv_bits
-            )
-            mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
-                request,
-                model_identifier,
-                model_dir,
-                _mlx_estimate_ceiling(model_dir),
-                mlx_load_in_4bit,
-                mlx_offload,
-                mlx_offload_baseline,
-            )
-            mlx_route = {**({"vision": True} if mlx_speculates else {}), **mlx_offload}
-            if not mlx_named_ctx and mlx_drafter is None:
-                mlx_fitted_ctx = _mlx_estimate_fitted_context(
-                    config, model_dir, mlx_load_in_4bit, mlx_kv_bits, **mlx_route
-                )
-            mlx_priced_ctx = mlx_named_ctx or mlx_fitted_ctx or _mlx_estimate_ceiling(model_dir)
-            if not mlx_priced_ctx:
-                return EstimateMemoryResponse(available = False, reason = "unsizable")
-            mlx_breakdown = mlx_memory_breakdown(
-                model_dir,
-                n_ctx = mlx_priced_ctx,
-                kv_bits = mlx_kv_bits,
-                load_in_4bit = mlx_load_in_4bit,
-                **mlx_route,
-                **({} if mlx_drafter is None else {"drafter": mlx_drafter}),
-            )
-            if mlx_breakdown is None:
-                return EstimateMemoryResponse(available = False, reason = "unsizable")
+            reason, mlx = _mlx_load_estimate(request, config, model_identifier)
+            if mlx is None:
+                return EstimateMemoryResponse(available = False, reason = reason)
             return EstimateMemoryResponse(
                 **project_estimate_memory_response(
                     build_memory_estimate(
-                        dataclasses.replace(mlx_breakdown, offloadable = mlx_offloadable),
+                        dataclasses.replace(mlx.breakdown, offloadable = mlx.offloadable),
                         quant_file_bytes = 0,
-                        context_fitted = mlx_fitted_ctx,
+                        context_fitted = mlx.fitted_ctx,
                     )
                 )
             )

@@ -1882,6 +1882,17 @@ class TestMetalAlongsideAdmission:
         with pytest.raises(llama_cpp.GpuMemoryShortError):
             _launch(tmp_path, monkeypatch, budget_bytes = 32 << 30, wired_bytes = 64 << 30, **args)
 
+    def test_an_mlx_chat_models_growth_comes_off_beside_media(self, monkeypatch):
+        import core.inference.gpu_residency as residency
+        import core.inference.llama_cpp as llama_cpp
+
+        backend = LlamaCppBackend()
+        monkeypatch.setattr(llama_cpp, "_serving_backends_snapshot", lambda: [backend])
+        monkeypatch.setattr(residency, "media_held_mib", lambda: {0: 6144})
+        monkeypatch.setattr(residency, "media_unallocated_mib", lambda: {0: 1024})
+        monkeypatch.setattr(residency, "_mlx_chat_unallocated_mib", lambda: 2048)
+        assert backend._metal_media_mib() == (6144, 3072)
+
     def test_retry_rechecks_memory_after_eviction(self, tmp_path, monkeypatch):
         from core.inference.llama_cpp import GpuMemoryShortError
 

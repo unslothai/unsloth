@@ -157,14 +157,14 @@ def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, ne
 
 
 @pytest.mark.parametrize(
-    "policy, mlx_chat, outcome",
-    [("fit", False, "join"), ("fit", True, "evict"), ("always", True, "refuse")],
+    "policy, growth, outcome",
+    [("always", 512, "join"), ("fit", None, "evict"), ("always", None, "refuse")],
 )
-def test_image_load_beside_a_chat_model_on_metal(cores, monkeypatch, policy, mlx_chat, outcome):
+def test_image_load_beside_a_chat_model_on_metal(cores, monkeypatch, policy, growth, outcome):
     import core.inference.gpu_residency as res
 
     monkeypatch.setattr(res, "_on_metal", lambda: True)
-    monkeypatch.setattr(res, "_mlx_chat_loaded", lambda: mlx_chat)
+    monkeypatch.setattr(res, "_mlx_chat_unallocated_mib", lambda: growth)
     cores.fits()
     arb.acquire_for(arb.CHAT)
     assert arb.would_evict(arb.DIFFUSION, policy = policy, need_mib = {0: 4096}) is (outcome == "evict")
@@ -172,6 +172,25 @@ def test_image_load_beside_a_chat_model_on_metal(cores, monkeypatch, policy, mlx
         arb.acquire_for(arb.DIFFUSION, lambda: None, policy = policy, need_mib = {0: 4096})
     gone = {"join": set(), "evict": {arb.CHAT}, "refuse": {arb.DIFFUSION}}[outcome]
     assert {arb.CHAT, arb.DIFFUSION} - set(arb.residents()) == gone
+
+
+@pytest.mark.parametrize("metal", [True, False])
+def test_a_short_chat_load_on_metal_frees_media_but_no_kept_chat_model(cores, monkeypatch, metal):
+    import core.inference.gpu_residency as res
+    from core.inference import model_slots
+
+    monkeypatch.setattr(res, "_on_metal", lambda: metal)
+    monkeypatch.setattr(res, "_mlx_chat_unallocated_mib", lambda: 0)
+    monkeypatch.setattr(res, "can_load_alongside", lambda *a: (False, {"short_mib": {0: 1}}))
+    asked = []
+    monkeypatch.setattr(model_slots, "eviction_victims", lambda *a, **k: asked.append(a) or [])
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    arb.acquire_for(arb.CHAT, policy = "fit", need_mib = {0: 9000})
+    assert arb.DIFFUSION not in arb.residents() and bool(asked) is not metal
+    # An image load beside it still makes room among kept chat models.
+    asked.clear()
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    assert asked
 
 
 @pytest.mark.parametrize("managed", [False, True])

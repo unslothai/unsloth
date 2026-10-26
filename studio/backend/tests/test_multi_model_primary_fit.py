@@ -12,7 +12,7 @@ from fastapi import HTTPException
 import core.inference.model_slots as model_slots
 import core.inference.orchestrator as orchestrator
 import routes.inference as inf
-from core.inference import gpu_arbiter, gpu_residency
+from core.inference import gpu_arbiter, gpu_residency, mlx_inference
 from core.inference.llama_cpp import GpuMemoryShortError
 from models.inference import LoadRequest, LoadResponse
 from utils import multi_model_settings
@@ -295,6 +295,21 @@ def _placement(
 def test_media_on_target_gpus(monkeypatch, held, placement, expected):
     monkeypatch.setattr(gpu_residency, "media_held_mib", lambda: held)
     assert inf._media_on_target_gpus(placement) is expected
+
+
+def test_mlx_chat_need_prices_one_row_the_prompt_cache_and_a_kv_cache_per_extra_row(monkeypatch):
+    gib = 1024**3
+    breakdown = SimpleNamespace(total_bytes = 3 * gib, weights_bytes = gib, kv_bytes = gib // 2)
+    estimate = inf._MlxLoadEstimate(breakdown, None, (), True)
+    monkeypatch.setattr(inf, "_mlx_load_estimate", lambda *a: (None, estimate))
+    monkeypatch.setattr(
+        mlx_inference, "mlx_memory_budget", lambda **k: (10 - k["retains_history"]) << 30
+    )
+    mlx = SimpleNamespace(is_gguf = False)
+    assert inf._mlx_chat_need(None, mlx, "m") is None  # not on Metal
+    monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
+    need, growth = inf._mlx_chat_need(None, mlx, "m", 4)
+    assert (need, growth) == (4096 + 3 * 512, {"mib": 3072, "row_kv_mib": 512})
 
 
 def test_chat_fit_kwargs(monkeypatch):

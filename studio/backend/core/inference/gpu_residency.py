@@ -494,6 +494,8 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
             for name, need in records.items()
             if name != owner and gpu in need
         )
+        if row.get("metal"):
+            free -= _mlx_chat_unallocated_mib() or 0
         if own is not None and gpu in own:
             # Reloading the same owner frees what it holds now.
             free += max(own[gpu] - getattr(own, "headroom_mib", 0), 0)
@@ -530,13 +532,16 @@ def chat_load_in_flight() -> bool:
 
 
 def chat_growth_unpriced() -> bool:
-    """Whether a chat model may still grow past what live memory shows: on Metal, an MLX model allocates its KV
-    cache as it generates. A media load then treats chat as unpriced."""
-    return _on_metal() and _mlx_chat_loaded()
+    """Whether a chat model may still grow past what live memory shows by an amount nobody priced: on Metal, an MLX
+    model allocates its KV and prompt cache as it generates. A media load then treats chat as unpriced."""
+    return _on_metal() and _mlx_chat_unallocated_mib() is None
 
 
-def _mlx_chat_loaded() -> bool:
-    """Whether the primary or a kept chat orchestrator holds an MLX model; unreadable counts as yes."""
+def _mlx_chat_unallocated_mib() -> Optional[int]:
+    """MiB the primary and kept MLX chat models priced at load but have not allocated yet: a KV cache per parallel
+    row and the prompt cache, less what each worker has grown by since. None when any of them recorded no price or
+    the orchestrators are unreadable."""
+    total = 0
     try:
         from core.inference import model_slots, orchestrator
         for orch in [
@@ -545,10 +550,28 @@ def _mlx_chat_loaded() -> bool:
         ]:
             for entry in list((getattr(orch, "models", None) or {}).values()):
                 if isinstance(entry, dict) and entry.get("is_mlx"):
-                    return True
-        return False
+                    growth = entry.get("mlx_growth")
+                    if growth is None:
+                        return None
+                    rows = max(1, int(orch.effective_parallel_slots))
+                    priced = growth["mib"] + (rows - 1) * growth["row_kv_mib"]
+                    at_load, now = growth.get("footprint_mib"), mlx_worker_footprint_mib(orch)
+                    grown = now - at_load if at_load is not None and now is not None else 0
+                    total += max(0, priced - max(0, grown))
+        return total
     except Exception:  # noqa: BLE001
-        return True
+        return None
+
+
+def mlx_worker_footprint_mib(orch) -> Optional[int]:
+    """MiB the MLX worker process holds now, Metal buffers included, or None when unreadable."""
+    proc = getattr(orch, "_proc", None)
+    if proc is None or proc.pid is None:
+        return None
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    usage = LlamaCppBackend._darwin_rusage(proc.pid)
+    return None if usage is None else usage[1] // (1024 * 1024)
 
 
 _CHAT_LOADING_MESSAGE = (
@@ -942,7 +965,16 @@ def coreside_locked(
         raise need_free_refusal(info, [slot for n in kept for slot in arb.resident_slots(n)])
     if not allow_evict:
         raise arb.GpuOwnerBusyError(kept[-1])
-    _free_steps(owner, target, f"GPU memory for {owner}", evicted, need_mib = need_mib, acting = acting)
+    _free_steps(
+        owner,
+        target,
+        f"GPU memory for {owner}",
+        evicted,
+        need_mib = need_mib,
+        acting = acting,
+        # On Metal the only priced chat load is MLX, which makes room among media models only, as it did unpriced.
+        media_only = owner == arb.CHAT and _on_metal(),
+    )
     if not can_load_alongside(owner, need_mib)[0]:
         # Still short: unload the rest on these GPUs, as Off does, and let the planner offload.
         for name in [
