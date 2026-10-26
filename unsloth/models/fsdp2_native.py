@@ -1999,10 +1999,11 @@ def native_fsdp2_unsharded(model):
     saved = {}
     try:
         _rebind_swapped_modules(root, units)
-        for unit in units:
-            saved[id(unit)] = _reshard_after_forward_off(unit)
+        # Unshard before clearing reshard_after_forward: FSDP2 all-gathers a post-forward sharded unit over that mesh.
         for unit in units:
             unit.unshard()
+        for unit in units:
+            saved[id(unit)] = _reshard_after_forward_off(unit)
         yield model
     finally:
         root.__dict__["_unsloth_unsharded_depth"] = 0
