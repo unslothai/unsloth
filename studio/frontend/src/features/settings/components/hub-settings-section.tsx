@@ -14,10 +14,16 @@ import {
   type HubEndpointSettings,
   type HubSettings,
   InvalidHubEndpointError,
+  checkHubEndpoint,
   loadHubSettings,
   updateHubSettings,
   updateHubSource,
 } from "../api/hub-settings";
+import {
+  type HubEndpointCheckVerdict,
+  hubEndpointCheckVerdict,
+  isOfficialHubEndpoint,
+} from "../lib/hub-endpoint-check";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
@@ -35,6 +41,11 @@ export function HubSettingsSection() {
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [check, setCheck] = useState<{
+    verdict: HubEndpointCheckVerdict;
+    detail: string | null;
+  } | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -121,6 +132,55 @@ export function HubSettingsSection() {
         settings.datasetsServerFollowsEndpoint && draftEndpoint.trim() !== "",
     });
 
+  const checkEndpoint = async () => {
+    const endpoint = draftEndpoint;
+    setChecking(true);
+    setError(null);
+    setCheck(null);
+    try {
+      const result = await checkHubEndpoint(endpoint);
+      setCheck({
+        verdict: hubEndpointCheckVerdict(result),
+        detail: result.detail,
+      });
+    } catch (err) {
+      setError(
+        err instanceof InvalidHubEndpointError
+          ? t("settings.general.hub.invalidEndpoint")
+          : t("settings.general.hub.checkError"),
+      );
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const checkMessages: Record<HubEndpointCheckVerdict, string> = {
+    ok: t("settings.general.hub.checkOk"),
+    redirected: t("settings.general.hub.checkRedirected"),
+    downloadsOfficial: t("settings.general.hub.checkDownloadsOfficial"),
+    xetOfficial: t("settings.general.hub.checkXetOfficial"),
+    failed: t("settings.general.hub.checkFailed"),
+  };
+  const checkNote = check ? (
+    <span
+      aria-live="polite"
+      className={cn(
+        "max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs",
+        check.verdict === "ok" ? "text-muted-foreground" : "text-destructive",
+      )}
+    >
+      {checkMessages[check.verdict]}
+      {check.verdict === "failed" && check.detail ? ` ${check.detail}` : null}
+    </span>
+  ) : null;
+  const endpointNotes =
+    errorNote || checkNote ? (
+      <div className="flex flex-col items-end gap-1">
+        {checkNote}
+        {errorNote}
+      </div>
+    ) : null;
+
   return (
     <SettingsSection ref={sectionRef} title={t("settings.general.hub.sectionTitle")}>
       <SettingsRow
@@ -176,7 +236,7 @@ export function HubSettingsSection() {
           <SettingsRow
             label={t("settings.general.hub.endpoint")}
             description={t("settings.general.hub.endpointDescription")}
-            below={errorNote}
+            below={endpointNotes}
           >
             <div className="flex items-center gap-2">
               <Input
@@ -185,7 +245,10 @@ export function HubSettingsSection() {
                 placeholder={DEFAULT_HF_ENDPOINT}
                 disabled={locked}
                 aria-label={t("settings.general.hub.endpoint")}
-                onChange={(event) => setDraftEndpoint(event.target.value)}
+                onChange={(event) => {
+                  setDraftEndpoint(event.target.value);
+                  setCheck(null);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && endpointChanged) {
                     saveEndpoint();
@@ -200,6 +263,19 @@ export function HubSettingsSection() {
                 onClick={saveEndpoint}
               >
                 {saving ? t("common.saving") : t("common.save")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  locked || checking || isOfficialHubEndpoint(draftEndpoint)
+                }
+                title={t("settings.general.hub.checkDescription")}
+                onClick={() => void checkEndpoint()}
+              >
+                {checking
+                  ? t("settings.general.hub.checking")
+                  : t("settings.general.hub.check")}
               </Button>
             </div>
           </SettingsRow>

@@ -81,6 +81,48 @@ export async function claimHubSourceNotice(): Promise<boolean> {
   }
 }
 
+export type HubEndpointCheck = {
+  hfEndpoint: string;
+  api: "ok" | "official" | "failed";
+  download: "mirror" | "official" | "failed";
+  xet: "none" | "mirror" | "official" | "failed";
+  detail: string | null;
+};
+
+/** Ask the backend whether a mirror serves metadata, downloads and Xet itself or hands them to
+ * huggingface.co. Nothing is saved. */
+export async function checkHubEndpoint(
+  hfEndpoint: string,
+): Promise<HubEndpointCheck> {
+  const res = await authFetch("/api/settings/hub/check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // biome-ignore lint/style/useNamingConvention: API schema
+    body: JSON.stringify({ hf_endpoint: hfEndpoint }),
+  });
+  if (!res.ok) {
+    const message = await readFastApiError(res, "Failed to check the endpoint");
+    throw res.status === 400 || res.status === 422
+      ? new InvalidHubEndpointError(message)
+      : new Error(message);
+  }
+  const body = (await res.json()) as {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    hf_endpoint: string;
+    api: HubEndpointCheck["api"];
+    download: HubEndpointCheck["download"];
+    xet: HubEndpointCheck["xet"];
+    detail?: string | null;
+  };
+  return {
+    hfEndpoint: body.hf_endpoint,
+    api: body.api,
+    download: body.download,
+    xet: body.xet,
+    detail: body.detail ?? null,
+  };
+}
+
 export type HubEndpointSettings = Pick<
   HubSettings,
   "hfEndpoint" | "datasetsServerFollowsEndpoint"

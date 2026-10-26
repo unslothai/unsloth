@@ -104,6 +104,7 @@ from utils.hub_settings import (
     set_hub_settings,
     set_hub_source,
 )
+from utils.hub_endpoint_check import check_hub_endpoint
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
@@ -812,6 +813,18 @@ class HubSettingsResponse(BaseModel):
 
 class HubSourceNoticeResponse(BaseModel):
     granted: bool
+
+
+class HubEndpointCheckPayload(BaseModel):
+    hf_endpoint: str = Field(max_length = 2048)
+
+
+class HubEndpointCheckResponse(BaseModel):
+    hf_endpoint: str
+    api: Literal["ok", "official", "failed"]
+    download: Literal["mirror", "official", "failed"]
+    xet: Literal["none", "mirror", "official", "failed"]
+    detail: Optional[str] = None
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -2014,6 +2027,34 @@ def update_hub_source(
 ) -> HubSettingsResponse:
     require_ui_session(via_api_key)
     return _hub_settings_response(set_hub_source(payload.source))
+
+
+@_owner_settings_router.post("/hub/check", response_model = HubEndpointCheckResponse)
+def check_hub(
+    payload: HubEndpointCheckPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubEndpointCheckResponse:
+    """Whether a mirror serves metadata, downloads and Xet itself or hands them to huggingface.co."""
+    # The server fetches an owner-typed URL, so like saving it this needs the owner's UI session.
+    require_ui_session(via_api_key)
+    try:
+        result = check_hub_endpoint(payload.hf_endpoint)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Hugging Face endpoint."),
+            event = "settings.check_hub_failed",
+            log = logger,
+        ) from exc
+    return HubEndpointCheckResponse(
+        hf_endpoint = result.endpoint,
+        api = result.api,
+        download = result.download,
+        xet = result.xet,
+        detail = result.detail,
+    )
 
 
 @_owner_settings_router.post("/hub/source-notice", response_model = HubSourceNoticeResponse)
