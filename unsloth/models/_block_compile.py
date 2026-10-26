@@ -265,7 +265,8 @@ def _input_grad_must_leave_pool(hidden_states):
     return False
 
 
-# Backward nodes that write their input gradient to new storage (a view, add or clone passes it on).
+# Backward nodes that write their input gradient to new storage (a view, add, clone or cat passes
+# on the incoming gradient or a narrowed view of it).
 _ALLOCATING_BACKWARD = (
     "MmBackward",
     "AddmmBackward",
@@ -280,7 +281,6 @@ _ALLOCATING_BACKWARD = (
     "SoftmaxBackward",
     "SiluBackward",
     "GeluBackward",
-    "CatBackward",
     "IndexBackward",
     "SliceBackward",
     "SelectBackward",
