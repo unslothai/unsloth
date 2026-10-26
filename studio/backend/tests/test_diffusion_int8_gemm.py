@@ -1279,6 +1279,98 @@ def test_swiglu_mlp_without_the_prologue_still_shares_the_gate_value_quant(h16_r
     g8.uninstall(torch.nn.Sequential(ff))
 
 
+def _host_swiglu_ff(monkeypatch):
+    """A SwiGLU MLP still on the host (a group-offloaded block before its onload), eligible for the fused forward."""
+    ff = torch.nn.Module()
+    ff.gate_layer, ff.proj, ff.out = (
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+    )
+    ff.activation_fn = torch.nn.SiLU()
+    monkeypatch.setattr(g8, "_swiglu_ff_eligible", lambda m: m is ff)
+    return ff
+
+
+@pytest.mark.parametrize("streamed, patched", [(False, False), (True, True)])
+def test_streamed_install_patches_the_host_swiglu_mlp(monkeypatch, streamed, patched):
+    """The block-streamed install (12 / 8 GB Qwen-Image-2.1) patches the MLPs whose weights the hook onloads later;
+    the resident install still keeps a MLP whose weights sit on no card stock."""
+    monkeypatch.delenv(g8.INT8_SWIGLU_STREAMED_ENV, raising = False)
+    ff = _host_swiglu_ff(monkeypatch)
+    assert g8._install_swiglu_ff(torch.nn.Sequential(ff), 0, streamed = streamed) == int(patched)
+    assert bool(ff.__dict__.get(g8._FF_MARK)) is patched
+
+
+def test_streamed_install_keeps_a_swiglu_mlp_on_another_card(monkeypatch):
+    ff = _host_swiglu_ff(monkeypatch)
+    monkeypatch.setattr(g8, "_weight_card", lambda m: 1)
+    assert g8._install_swiglu_ff(torch.nn.Sequential(ff), 0, streamed = True) == 0
+    assert g8._FF_MARK not in ff.__dict__
+
+
+def test_swap_passes_streamed_only_for_the_onload_device_install(monkeypatch):
+    seen = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0)
+    import core.inference.diffusion_int8_fused as fused
+
+    monkeypatch.setattr(fused, "resident_cuda_device", lambda t: torch.device("cuda", 0))
+    g8._swap(torch.nn.Linear(2, 2), device = "cuda:0")
+    g8._swap(torch.nn.Linear(2, 2))
+    assert seen == [(0, True), (0, False)]
+
+
+@needs_cuda
+def test_block_streamed_swiglu_mlp_runs_fused_after_the_onload(h16_rotq, monkeypatch):
+    """Group-offloaded block on the host, installed against the onload device: the SwiGLU MLP takes the fused path at
+    each call (as when it is resident) and matches the resident install bit for bit;
+    UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED=0 keeps it stock."""
+    hooks = pytest.importorskip("diffusers.hooks")
+    if not cq._SWIGLU_DEVICE.get(torch.cuda.current_device()):
+        pytest.skip("SwiGLU prologue probe refused this device")
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV, raising = False)
+
+    class Holder(torch.nn.Module):
+        def __init__(self, ff):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([torch.nn.Sequential(ff)])
+
+        def forward(self, x):
+            return self.blocks[0](x)
+
+    resident = _swiglu_ff(1024, 3072, 2)
+    assert g8.install(torch.nn.Sequential(resident)) == 3 and resident.__dict__.get(g8._FF_MARK)
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = resident(x)
+    for kill, fused in ((None, True), ("0", False)):
+        if kill is None:
+            monkeypatch.delenv(g8.INT8_SWIGLU_STREAMED_ENV, raising = False)
+        else:
+            monkeypatch.setenv(g8.INT8_SWIGLU_STREAMED_ENV, kill)
+        ff = _swiglu_ff(1024, 3072, 2)
+        holder = Holder(ff).requires_grad_(False).cpu()
+        hooks.apply_group_offloading(
+            holder,
+            onload_device = torch.device("cuda"),
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
+        )
+        assert ff.out.weight.device.type == "cpu"
+        assert g8.install(holder, device = "cuda") == 3
+        assert bool(ff.__dict__.get(g8._FF_MARK)) is fused
+        with torch.no_grad():
+            sw = cq.swiglu_call_count()
+            out = holder(x)
+            assert cq.swiglu_call_count() == sw + int(fused)
+        if fused:
+            assert torch.equal(out, ref)
+        assert ff.out.weight.device.type == "cpu"
+
+
 def test_hooked_linear_is_not_shared():
     """A forward hook or pre-hook (module-level or global) on a swapped Linear must see its call, so the shared QKV /
     SwiGLU paths, which run the GEMM without calling the module, decline it and the per-module call runs instead."""
