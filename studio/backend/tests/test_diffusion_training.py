@@ -345,6 +345,21 @@ def test_terminal_events_clear_preparation_counts(event):
     assert svc.status()["preparation"] is None
 
 
+def _dies_while_preparing(*, event_queue, stop_queue, config):
+    event_queue.put({"type": "model_load_started", "num_images": 60})
+    event_queue.put({"type": "preparing", "stage": "cache_latents", "done": 12, "total": 60})
+    # Returns with no terminal event, like a worker OOM-killed while caching latents.
+
+
+def test_worker_dying_mid_preparation_clears_preparation_counts():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _dies_while_preparing)
+    svc.start(dict(_CFG))
+    st = _wait_status(svc, "error")
+    assert st["status"] == "error"
+    assert st["preparation"] is None
+    assert st["in_model_load"] is False
+
+
 def test_the_joint_losses_reach_status_and_history():
     """video_loss and audio_loss must reach status and history, index-aligned with steps."""
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
@@ -2081,6 +2096,18 @@ def test_complete_event_records_family_and_catalog():
     assert st["family"] == "sdxl"
     assert st["base_model"] == "b"
     assert st["catalog_path"] == "/loras/w.safetensors"
+
+
+def test_status_route_returns_preparation_counts(client):
+    # The response model filters unknown keys, so the counts reach the UI only if it declares them.
+    client._fake.status_extra = {
+        "in_model_load": True,
+        "preparation": {"stage": "cache_latents", "done": 48, "total": 60},
+    }
+    body = client.get("/api/train/diffusion/status").json()
+    assert body["preparation"] == {"stage": "cache_latents", "done": 48, "total": 60}
+    client._fake.status_extra = {"preparation": None}
+    assert client.get("/api/train/diffusion/status").json()["preparation"] is None
 
 
 def test_status_route_nests_metric_history(client):

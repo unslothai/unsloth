@@ -1220,6 +1220,14 @@ class DiffusionSampleImage(BaseModel):
     seed: Optional[int] = None
 
 
+class DiffusionTrainingPreparation(BaseModel):
+    """Counts for a pre-training phase (e.g. the VAE latent cache), so the UI can fill a bar for it."""
+
+    stage: Optional[str] = None
+    done: Optional[int] = None
+    total: Optional[int] = None
+
+
 class DiffusionTrainingStatusResponse(BaseModel):
     """A snapshot of the current diffusion training job (or idle)."""
 
@@ -1239,6 +1247,8 @@ class DiffusionTrainingStatusResponse(BaseModel):
     audio_loss: Optional[float] = None
     num_images: Optional[int] = None
     in_model_load: bool = False
+    # Set only while a counted preparation phase runs; None once training (or a terminal state) begins.
+    preparation: Optional[DiffusionTrainingPreparation] = None
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
     # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.

@@ -897,6 +897,9 @@ class DiffusionTrainingService:
                             self._state.update(
                                 active = False,
                                 status = "error",
+                                # A worker killed mid-load / mid-preparation sends no terminal event to clear these.
+                                in_model_load = False,
+                                preparation = None,
                                 message = self._unexpected_exit_message(proc),
                                 updated_at = time.time(),
                             )

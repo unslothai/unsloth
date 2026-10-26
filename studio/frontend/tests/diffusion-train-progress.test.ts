@@ -103,3 +103,30 @@ test("resuming a positive-step run still shows its preparation stage", () => {
   assert.equal(progress.preparing, true);
   assert.equal(progress.percent, 50);
 });
+
+test("warnings and stop requests stay visible while preparing", () => {
+  const stopping =
+    "Cancel requested; finishing the current step (no adapter will be saved)...";
+  const prep = diffusionTrainingProgress({
+    ...running,
+    message: stopping,
+    preparation: { stage: "cache_latents", done: 12, total: 60 },
+  });
+  assert.equal(prep.detail, stopping);
+  assert.equal(prep.percent, 20);
+  const warning = "torch.compile disabled (eager fallback): boom";
+  const firstStep = diffusionTrainingProgress({
+    ...running,
+    in_model_load: false,
+    message: warning,
+  });
+  assert.equal(firstStep.detail, warning);
+  // The service's own phase captions keep the friendlier explanation.
+  assert.match(
+    diffusionTrainingProgress({
+      ...running,
+      message: "Preparing (cache latents 12/60)...",
+    }).detail!,
+    /Preparing images and captions/,
+  );
+});

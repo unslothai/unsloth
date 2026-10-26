@@ -14,16 +14,24 @@ type Status = Pick<
   | "preparation"
 >;
 
+// The service's own phase captions; anything else (a warning, a stop request, a resume) is news worth showing.
+const PHASE_MESSAGE =
+  /^(?:Loading base model\.\.\.|Training\.\.\.|Preparing \(.*\)\.\.\.)$/;
+// Older backends only carry the preparation counts in the status text.
+const LEGACY_PREPARING = /Preparing \(([^()]+?) (\d+)\/(\d+)\)/;
+
+function backendNote(message: string | null | undefined): string | null {
+  return message && !PHASE_MESSAGE.test(message) ? message : null;
+}
+
 /** Preparation and optimization have different units; each bar reports its own stage. */
 export function diffusionTrainingProgress(status: Status | null) {
   const running = status?.active === true || status?.status === "running";
   const preparing =
     running && (status?.in_model_load === true || (status?.step ?? 0) <= 0);
   if (preparing) {
-    // Older backends only carry these counts in the status text.
-    const legacy = status?.message.match(
-      /Preparing \(([^()]+?) (\d+)\/(\d+)\)/,
-    );
+    const note = backendNote(status?.message);
+    const legacy = status?.message?.match(LEGACY_PREPARING);
     const prep =
       status?.preparation ??
       (legacy
@@ -44,9 +52,11 @@ export function diffusionTrainingProgress(status: Status | null) {
       return {
         preparing: true,
         title: finished ? "Training data prepared" : "Preparing training data",
-        detail: finished
-          ? "Finishing model setup before training starts."
-          : "Preparing images and captions so the model can train on them.",
+        detail:
+          note ??
+          (finished
+            ? "Finishing model setup before training starts."
+            : "Preparing images and captions so the model can train on them."),
         count: known
           ? `${Math.min(done as number, total as number)} / ${total} prepared`
           : null,
@@ -60,9 +70,11 @@ export function diffusionTrainingProgress(status: Status | null) {
       title: status?.in_model_load
         ? "Loading training model"
         : "Starting training",
-      detail: status?.in_model_load
-        ? "Getting the model ready before training starts."
-        : "Preparing the first training step. Compilation can take longer on the first run.",
+      detail:
+        note ??
+        (status?.in_model_load
+          ? "Getting the model ready before training starts."
+          : "Preparing the first training step. Compilation can take longer on the first run."),
       count: null,
       percent: null,
     };
