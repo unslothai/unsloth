@@ -177,32 +177,39 @@ _MIN_OVERLAP_LATENTS = 4
 _MIN_EDGE_LATENTS = 8
 
 
-def seam_safe_stride(length: int, tile: int, stride: int) -> int:
-    """Largest stride <= ``stride`` (latents) whose last tile over ``length`` keeps >= 8 latents; stock if none."""
+def seam_safe_tile(length: int, tile: int, stride: int) -> tuple[int, int]:
+    """(tile, stride) latents over ``length`` whose last tile keeps >= 8 latents: stock when it does, else the smallest
+    tile (up to 8 past stock) with the largest stride that does; stock if none."""
     if length <= tile:
-        return stride
-    for s in range(stride, tile // 2 - 1, -1):
-        if tile - s >= _MIN_OVERLAP_LATENTS and length - (length - 1) // s * s >= _MIN_EDGE_LATENTS:
-            return s
-    return stride
+        return tile, stride
+    for t in range(tile, min(length - 1, tile + 8) + 1):
+        for s in range(min(stride + t - tile, t - _MIN_OVERLAP_LATENTS), t // 2 - 1, -1):
+            if length - (length - 1) // s * s >= _MIN_EDGE_LATENTS:
+                return t, s
+    return tile, stride
 
 
 @contextlib.contextmanager
 def seam_safe_tile_strides(pipe: Any, height: int, width: int):
-    """Tile strides for this canvas while tiling runs: stock Wan@16x tiles leave a 4-latent edge tile at 480 / 832 px."""
+    """Tiles for this canvas while tiling runs: stock Wan@16x tiles leave a 4-latent edge tile at 480 / 832 px."""
     vae = getattr(pipe, "vae", None)
-    keys = ("tile_sample_stride_height", "tile_sample_stride_width")
+    keys = (
+        ("tile_sample_min_height", "tile_sample_stride_height"),
+        ("tile_sample_min_width", "tile_sample_stride_width"),
+    )
     try:
         ratio = int(vae.spatial_compression_ratio)
-        old = tuple(int(getattr(vae, k)) for k in keys)
-        tiles = (int(vae.tile_sample_min_height) // ratio, int(vae.tile_sample_min_width) // ratio)
+        old = tuple((int(getattr(vae, t)), int(getattr(vae, s))) for t, s in keys)
     except (AttributeError, TypeError, ValueError):
         yield
         return
-    for key, side, tile, stride in zip(keys, (height, width), tiles, old):
-        setattr(vae, key, seam_safe_stride(int(side) // ratio, tile, stride // ratio) * ratio)
+    for (tile_key, stride_key), side, (tile, stride) in zip(keys, (height, width), old):
+        t, s = seam_safe_tile(int(side) // ratio, tile // ratio, stride // ratio)
+        setattr(vae, tile_key, t * ratio)
+        setattr(vae, stride_key, s * ratio)
     try:
         yield
     finally:
-        for key, value in zip(keys, old):
-            setattr(vae, key, value)
+        for (tile_key, stride_key), (tile, stride) in zip(keys, old):
+            setattr(vae, tile_key, tile)
+            setattr(vae, stride_key, stride)

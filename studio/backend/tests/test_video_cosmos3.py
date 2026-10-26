@@ -1084,18 +1084,51 @@ def test_cosmos3_decodes_untiled_when_it_fits_even_at_speed_off(policy, speed):
     assert gate("wan2.2-ti2v-5b", policy, "cuda", speed) is (placed and speed != "off")
 
 
+def _diffusers_tiles(length, tile, stride):
+    """AutoencoderKLWan.tiled_decode's slices along one axis, in latents."""
+    return [(a, min(a + tile, length)) for a in range(0, length, stride)]
+
+
 @pytest.mark.parametrize("family", sorted(vf.COSMOS3_FAMILIES))
-def test_seam_safe_strides_clear_the_wan_seam_floor_on_every_preset_side(family):
+def test_seam_safe_tiles_clear_the_wan_seam_floor(family):
     import test_vae_tile_geometry as G
 
     _, config = G._family_configs()[family]
     vae, _ = G.build_vae(config, None)
-    floor, stock = G.SMALLER_GEOMETRY_OK["AutoencoderKLWan@16x"], vae.tile_sample_stride_height
-    for side in G._sides(family):
+    floor = G.SMALLER_GEOMETRY_OK["AutoencoderKLWan@16x"]
+    stock = (vae.tile_sample_min_height, vae.tile_sample_stride_height)
+    # Every preset side through the stock tiled decoder; 400 px (25 latents) needs a wider tile.
+    for side in sorted({*G._sides(family), 400}):
         with vc3.seam_safe_tile_strides(SimpleNamespace(vae = vae), side, side):
             tiles = G.probe_axis(vae, config, side // 16, G.MIN_SIDE // 16, True)
         assert G.check_axis(tiles, floor) == [], (side, tiles)
-        assert vae.tile_sample_stride_height == stock
-    assert (
-        vc3.seam_safe_stride(45, 16, 12) == vc3.seam_safe_stride(80, 16, 12) == 12
-    )  # stock kept where it passes
+        assert (vae.tile_sample_min_height, vae.tile_sample_stride_height) == stock
+    for length in range(17, 161):
+        tile, stride = vc3.seam_safe_tile(length, 16, 12)
+        assert G.check_axis(_diffusers_tiles(length, tile, stride), floor) == [], length
+    assert vc3.seam_safe_tile(45, 16, 12) == vc3.seam_safe_tile(80, 16, 12) == (16, 12)
+    assert vc3.seam_safe_tile(25, 16, 12) == (17, 13)
+
+
+def test_wide_tiles_keep_the_seam_floor_for_cosmos3():
+    import test_vae_tile_geometry as G
+    from core.inference import video_vae_untiled as U
+
+    floor, planned = G.SMALLER_GEOMETRY_OK["AutoencoderKLWan@16x"], 0
+    for family in sorted(vf.COSMOS3_FAMILIES):
+        for width, height in ((640, 640), (832, 480), (480, 832), (1280, 720), (400, 640)):
+            for free_gib in (2, 4, 8, 16, 32):
+                shape = (1, 48, 31, height // 16, width // 16)
+                plan = U.wide_tile_plan(family, shape, 16, free_gib * 2**30)
+                if plan is None:
+                    continue
+                planned += 1
+                tile_h, stride_h, tile_w, stride_w = (v // 16 for v in plan)
+                for length, tile, stride in (
+                    (height // 16, tile_h, stride_h),
+                    (width // 16, tile_w, stride_w),
+                ):
+                    if tile < length:
+                        tiles = _diffusers_tiles(length, tile, stride)
+                        assert G.check_axis(tiles, floor) == [], (family, width, height, plan)
+    assert planned
