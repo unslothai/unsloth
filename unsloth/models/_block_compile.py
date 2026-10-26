@@ -842,7 +842,6 @@ def _wrap(
         packed_previous = packed[0]
         packed[0] = True
         try:
-            # Packed rows: host-side varlen metadata here, so attention runs the varlen op in the graph.
             if (
                 takes_kwargs
                 and packed_module is not None

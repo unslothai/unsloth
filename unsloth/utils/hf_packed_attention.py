@@ -27,7 +27,6 @@ HF_PACKED_ATTENTION_STATS = {
     "efficient": 0,
     "compiled": 0,
 }
-# _block_compile passes (cu_seqlens, max_seqlen) under this kwarg; see block_varlen_kwargs.
 BLOCK_VARLEN_KWARG = "_unsloth_block_varlen"
 # Layers of one window share a mask object: window -> [weakref, (cu_seqlens, versions), verdict].
 _MASK_CHECK = {}
