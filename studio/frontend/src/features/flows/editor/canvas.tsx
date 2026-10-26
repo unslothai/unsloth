@@ -60,6 +60,8 @@ const SNAP_GRID: [number, number] = [16, 16];
 const VISIBLE_ONLY_THRESHOLD = 300;
 const PRO_OPTIONS = { hideAttribution: true };
 const DELETE_KEYS = ["Delete", "Backspace"];
+const MULTI_SELECT_KEYS = ["Meta", "Control", "Shift"];
+const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1 };
 
 type Size = { width: number; height: number };
 type Positions = Record<string, { x: number; y: number }>;
@@ -133,6 +135,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   } | null>(null);
   const [sizes, setSizes] = useState<Map<string, Size>>(() => new Map());
   const connectStart = useRef<OnConnectStartParams | null>(null);
+  const sizesRef = useRef(sizes);
+  sizesRef.current = sizes;
+  const dragRef = useRef<Positions | null>(null);
+  dragRef.current = drag;
 
   const selectedSet = useMemo(
     () => new Set([...selectedNodes, ...selectedEdges]),
@@ -149,6 +155,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
 
   const onNodesChange = useCallback(
     (changes: NodeChange<RfNode>[]) => {
+      const drag = dragRef.current;
+      const sizes = sizesRef.current;
       let nextDrag: Positions | null = null;
       let nextSizes: Map<string, Size> | null = null;
       let selection: { add: Set<string>; remove: Set<string> } | null = null;
@@ -194,7 +202,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         ui.setSelection([...next], ui.selectedEdges);
       }
     },
-    [drag, sizes],
+    [],
   );
 
   const onEdgesChange = useCallback((changes: EdgeChange<RfEdge>[]) => {
@@ -222,7 +230,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       const group = doc.groups[node.id.slice(GROUP_PREFIX.length)];
       if (!group) return;
       const members = new Map<string, { x: number; y: number }>();
-      const currentSizes = sizes;
+      const currentSizes = sizesRef.current;
       for (const id of doc.nodeOrder) {
         const n = doc.nodes[id];
         const size = currentSizes.get(id) ?? { width: 260, height: 120 };
@@ -236,13 +244,9 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         members,
       };
     },
-    [sizes],
+    [],
   );
 
-  const sizesRef = useRef(sizes);
-  sizesRef.current = sizes;
-  const dragRef = useRef<Positions | null>(null);
-  dragRef.current = drag;
   const onNodeDragStop = useCallback(() => {
     dragMembers.current = null;
     const current = dragRef.current;
@@ -464,7 +468,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         onDrop={onDrop}
         connectionMode={ConnectionMode.Strict}
         deleteKeyCode={readOnly ? null : DELETE_KEYS}
-        multiSelectionKeyCode={["Meta", "Control", "Shift"]}
+        multiSelectionKeyCode={MULTI_SELECT_KEYS}
         selectionMode={SelectionMode.Partial}
         selectionOnDrag={false}
         panOnDrag={true}
@@ -480,7 +484,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         colorMode="dark"
         proOptions={PRO_OPTIONS}
         fitView={true}
-        fitViewOptions={{ padding: 0.2, maxZoom: 1.1 }}
+        fitViewOptions={FIT_VIEW_OPTIONS}
         className="flows-canvas bg-zinc-950"
       >
         <Background

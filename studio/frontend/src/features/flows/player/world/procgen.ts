@@ -345,6 +345,16 @@ export function reachable(map: WorldMap, from: Point): Uint8Array {
   return seen;
 }
 
+const DX = [1, -1, 0, 0];
+const DY = [0, 0, 1, -1];
+// Reused across calls; `seen[i] === gen` marks a node visited in the current search.
+const bfs = {
+  prev: new Int32Array(0),
+  seen: new Uint32Array(0),
+  queue: new Int32Array(0),
+  gen: 0,
+};
+
 export function findPath(
   map: WorldMap,
   from: Point,
@@ -368,33 +378,42 @@ export function findPath(
     if (!best) return [];
     goal = best;
   }
-  const prev = new Int32Array(map.width * map.height).fill(-1);
+  const n = W * map.height;
+  if (bfs.seen.length < n) {
+    bfs.prev = new Int32Array(n);
+    bfs.seen = new Uint32Array(n);
+    bfs.queue = new Int32Array(n + 1);
+    bfs.gen = 0;
+  }
+  if (++bfs.gen === 0xffffffff) {
+    bfs.seen.fill(0);
+    bfs.gen = 1;
+  }
+  const { prev, seen, queue, gen } = bfs;
   const start = from.y * W + from.x;
   const target = goal.y * W + goal.x;
   prev[start] = start;
-  const queue = [start];
+  seen[start] = gen;
+  queue[0] = start;
+  let tail = 1;
   let head = 0;
-  while (head < queue.length && head < maxNodes) {
+  while (head < tail && head < maxNodes) {
     const i = queue[head++];
     if (i === target) break;
     const x = i % W;
     const y = (i - x) / W;
-    for (const [dx, dy] of [
-      [1, 0],
-      [-1, 0],
-      [0, 1],
-      [0, -1],
-    ]) {
-      const nx = x + dx;
-      const ny = y + dy;
+    for (let d = 0; d < 4; d++) {
+      const nx = x + DX[d];
+      const ny = y + DY[d];
       const j = ny * W + nx;
-      if (!isSolid(map, nx, ny) && prev[j] === -1) {
+      if (!isSolid(map, nx, ny) && seen[j] !== gen) {
+        seen[j] = gen;
         prev[j] = i;
-        queue.push(j);
+        queue[tail++] = j;
       }
     }
   }
-  if (prev[target] === -1) return [];
+  if (seen[target] !== gen) return [];
   const out: Point[] = [];
   for (let i = target; i !== start; i = prev[i])
     out.push({ x: i % W, y: Math.floor(i / W) });

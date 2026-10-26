@@ -4,6 +4,7 @@
 
 import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
+import { type PropStates, type UseOutcome, propStatesOf } from "./action-verbs";
 import { type AutoState, autoOf, initialAuto } from "./autonomy";
 import {
   REPLY_ACTIONS,
@@ -74,6 +75,7 @@ export interface WorldState {
   npcAt?: Record<string, Point>;
   action?: { combat?: unknown; pose?: { z: number } };
   life?: LifeState;
+  props?: PropStates;
 }
 
 export interface Errand {
@@ -156,6 +158,16 @@ export function pickUp(s: WorldState, itemId: string): WorldState {
     ...s,
     picked: [...s.picked, itemId],
     inventory: [...s.inventory, itemId],
+  };
+}
+
+export function applyUse(s: WorldState, out: UseOutcome): WorldState {
+  const gained = out.gained.filter((id) => !s.inventory.includes(id));
+  return {
+    ...s,
+    props: out.states,
+    inventory: [...s.inventory, ...gained],
+    picked: [...s.picked, ...gained.filter((id) => !s.picked.includes(id))],
   };
 }
 
@@ -439,6 +451,9 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
       : {}),
     ...(lifeOf(played).cache
       ? { life: lifeStateOf(r.life, lifeOf(played)) }
+      : {}),
+    ...(r.props && Object.keys(propStatesOf(r.props, spec.props3d ?? [])).length
+      ? { props: propStatesOf(r.props, spec.props3d ?? []) }
       : {}),
   };
 }

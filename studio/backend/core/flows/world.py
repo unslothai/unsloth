@@ -58,17 +58,59 @@ ACTION_FLAGS = ("movement", "shooter")
 GAMEPLAY_LEVELS = {
     "explore": {},
     "action": {"movement": True},
-    "shooter": {"movement": True, "shooter": True},
+    "shooter": {"movement": True, "shooter": True, "verbs": True},
 }
 
 
 def action_of(raw: Any) -> Optional[dict]:
-    """The world's action flags, or None when none is on (a shooter always moves with physics)."""
+    """The world's action flags, or None when none is on (a shooter always moves with physics).
+    Opt-in extras (``verbs``) appear only when set, so older worlds keep their exact shape."""
     if not isinstance(raw, dict):
         return None
     flags = {k: raw.get(k) is True for k in ACTION_FLAGS}
-    flags["movement"] = flags["movement"] or flags["shooter"]
-    return flags if any(flags.values()) else None
+    flags["movement"] = flags["movement"] or flags["shooter"] or raw.get("verbs") is True
+    if raw.get("verbs") is True:
+        flags["verbs"] = True
+    if not any(flags.values()):
+        return None
+    if raw.get("ai") == "v2":
+        flags["ai"] = "v2"
+        barks = _barks(raw.get("barks"))
+        if barks:
+            flags["barks"] = barks
+    return flags
+
+
+BARK_KINDS = ("see", "hear", "lose", "pain", "flee", "attack")
+RAID_BARK_EVENTS = {
+    "spot": "see",
+    "lost": "lose",
+    "hurt": "pain",
+    "flank": "attack",
+    "retreat": "flee",
+}
+
+
+def _barks(raw: Any) -> dict:
+    """A world's own bark lines for hostile AI v2: known events only, up to 12 short lines each."""
+    if isinstance(raw, list):  # a raid's tagged lines: [{"event": "spot", "text": ...}]
+        by: dict = {}
+        for b in raw:
+            kind = RAID_BARK_EVENTS.get(b.get("event")) if isinstance(b, dict) else None
+            if kind:
+                by.setdefault(kind, []).append(b.get("text"))
+        raw = by
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for kind in BARK_KINDS:
+        lines = raw.get(kind)
+        if not isinstance(lines, list):
+            continue
+        kept = [str(s).strip()[:80] for s in lines if isinstance(s, str) and s.strip()][:12]
+        if kept:
+            out[kind] = kept
+    return out
 
 
 MAX_ADDED_ROLE = 2
@@ -253,7 +295,7 @@ def normalize_world(
     view = _view3d(raw.get("view3d"))
     if view:
         world["view3d"] = view
-    props = props3d(raw.get("props3d"), width, height)
+    props = props3d(raw.get("props3d"), width, height, {i["id"] for i in world["items"]})
     if props:
         world["props3d"] = props
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
@@ -285,15 +327,37 @@ def _view3d(raw: Any) -> dict:
     return out
 
 
-PROP_KINDS = ("house", "tree", "lamp", "fence", "well", "crate", "rock", "bench", "stall", "model")
-OPEN_PROPS = ("lamp", "bench")
+PROP_KINDS = (
+    "house",
+    "tree",
+    "lamp",
+    "fence",
+    "well",
+    "crate",
+    "rock",
+    "bench",
+    "stall",
+    "door",
+    "chest",
+    "lever",
+    "model",
+)
+OPEN_PROPS = ("lamp", "bench", "lever")
+MAX_PROP_LINKS = 8
+_ITEM_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 MAX_PROPS = 400
 _PROP_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 
 
-def props3d(raw: Any, width: int, height: int) -> list[dict]:
+def props3d(
+    raw: Any,
+    width: int,
+    height: int,
+    item_ids: Optional[set] = None,
+) -> list[dict]:
     """Clean the 3D editor's props: unknown kinds, duplicate ids and models without a flow asset are dropped,
-    positions are kept on the map and rotation / scale clamped."""
+    positions are kept on the map and rotation / scale clamped. Doors, chests and levers keep their links
+    (key and contents item ids, when ``item_ids`` is given only known ones; lever targets only real doors)."""
     out: list[dict] = []
     seen: set[str] = set()
     for p in raw if isinstance(raw, list) else []:
@@ -343,9 +407,42 @@ def props3d(raw: Any, width: int, height: int) -> list[dict]:
         prop["solid"] = (
             p["solid"] if isinstance(p.get("solid"), bool) else p["kind"] not in OPEN_PROPS
         )
+        _prop_links(prop, p, item_ids)
         seen.add(pid)
         out.append(prop)
+    doors = {p["id"] for p in out if p["kind"] == "door"}
+    for prop in out:
+        if "targets" in prop:
+            prop["targets"] = [t for t in prop["targets"] if t in doors]
+            if not prop["targets"]:
+                del prop["targets"]
     return out
+
+
+def _prop_links(prop: dict, raw: dict, item_ids: Optional[set]) -> None:
+    kind = prop["kind"]
+    if kind not in ("door", "chest", "lever"):
+        return
+
+    def item(v: Any) -> bool:
+        return (
+            isinstance(v, str) and bool(_ITEM_ID.match(v)) and (item_ids is None or v in item_ids)
+        )
+
+    if isinstance(raw.get("open"), bool):
+        prop["open"] = raw["open"]
+    if kind == "door" and item(raw.get("locked_by")):
+        prop["locked_by"] = raw["locked_by"]
+    if kind == "chest" and isinstance(raw.get("contents"), list):
+        contents = list(dict.fromkeys(v for v in raw["contents"] if item(v)))[:MAX_PROP_LINKS]
+        if contents:
+            prop["contents"] = contents
+    if kind == "lever" and isinstance(raw.get("targets"), list):
+        targets = list(
+            dict.fromkeys(v for v in raw["targets"] if isinstance(v, str) and _PROP_ID.match(v))
+        )[:MAX_PROP_LINKS]
+        if targets:
+            prop["targets"] = targets
 
 
 def apply_play_view(
@@ -374,13 +471,20 @@ def apply_play_view(
         if view:
             world["view3d"] = view
         if p.get("gameplay") in GAMEPLAY_LEVELS:
-            act = action_of(GAMEPLAY_LEVELS[p["gameplay"]])
+            # The world keeps its own hostile AI and barks under the player's gameplay level.
+            own = {k: v for k, v in (world.get("action") or {}).items() if k in ("ai", "barks")}
+            act = action_of({**GAMEPLAY_LEVELS[p["gameplay"]], **own})
             if act:
                 world["action"] = act
             else:
                 world.pop("action", None)
         if isinstance(p.get("props3d"), list):
-            world["props3d"] = props3d(p["props3d"], world["width"], world["height"])
+            world["props3d"] = props3d(
+                p["props3d"],
+                world["width"],
+                world["height"],
+                {i["id"] for i in world.get("items") or []},
+            )
         world["player_node"] = n["id"]
         break
     return world

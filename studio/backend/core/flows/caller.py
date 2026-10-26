@@ -87,6 +87,16 @@ def revoke_run_key(key_id: Optional[int]) -> None:
         pass
 
 
+def run_key_active(key_id: Optional[int]) -> bool:
+    if key_id is None:
+        return True
+    try:
+        from auth import storage
+        return storage.internal_api_key_active(key_id)
+    except Exception:
+        return False
+
+
 def make_caller(
     token: str,
     account: AccountContext,
