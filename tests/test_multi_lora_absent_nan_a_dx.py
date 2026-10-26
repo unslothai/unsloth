@@ -32,8 +32,7 @@ def test_absent_nan_lora_a_does_not_reach_earlier_layers(negative_control):
     try:
         grads = {}
         for poison in (False, True):
-            # Adapter 2 is absent from the batch; the negative control poisons present adapter 0,
-            # whose own NaN must reach its own earlier-layer gradients, so the check can fail.
+            # Negative control: poison present adapter 0 so the check can fail.
             m = _two_layer(poison, adapter = 0 if negative_control else 2)
             x = torch.randn(40, 16, dtype = torch.float64, generator = torch.Generator().manual_seed(1))
             ids = torch.randint(0, 2, (40,), generator = torch.Generator().manual_seed(2))
@@ -42,7 +41,7 @@ def test_absent_nan_lora_a_does_not_reach_earlier_layers(negative_control):
             grads[poison] = [p.grad for p in m[0].lora_A[:2]] + [p.grad for p in m[0].lora_B[:2]]
         finite = all(torch.isfinite(g).all() for g in grads[True])
         if negative_control:
-            assert not finite  # the check can fail
+            assert not finite
         else:
             assert finite
             for a, b in zip(grads[False], grads[True]):

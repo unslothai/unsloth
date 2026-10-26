@@ -4,12 +4,8 @@
 """
 Batched multi-LoRA training: many LoRA adapters on one frozen base model, trained in one batch.
 
-Each token belongs to one adapter (or none, id -1). Tokens are stable-sorted by adapter once per batch
-(``MultiLoraBatch``) and every kernel gathers rows through that order, like Punica's SGMV and vLLM's
-``lora_shrink`` / ``lora_expand``, which are inference only. Training adds dX and per-adapter dA / dB
-reduced over each adapter's own tokens (``_seg_wgrad_kernel``), so with ``per_adapter_loss``,
-``drop_absent_adapter_grads_``, ``clip_grad_norm_per_adapter_`` and an elementwise optimizer each adapter
-trains as it would alone.
+Each token belongs to one adapter (or none, id -1); tokens are stable-sorted by adapter once per batch
+and kernels gather rows through that order (like Punica SGMV, but with dX and per-adapter dA / dB).
 
 ``UNSLOTH_MULTI_LORA_TRITON=0`` (or no CUDA / XPU) uses a PyTorch loop. LoRA dropout is unsupported.
 """
@@ -74,11 +70,9 @@ def _use_triton(X: torch.Tensor) -> bool:
 
 @dataclass
 class MultiLoraBatch:
-    """Token order shared by every multi-LoRA layer for one batch.
+    """``sorted_idx[seg_start[u]:seg_start[u + 1]]`` are adapter u's rows; id -1 sorts last, in no segment.
 
-    ``sorted_idx[seg_start[u]:seg_start[u + 1]]`` are adapter u's token rows, in their original order.
-    Tokens with adapter id -1 sort last and belong to no segment. Shapes depend only on the token count,
-    so a new batch never changes a kernel grid or a compiled graph.
+    Shapes depend only on the token count, so a new batch never changes a kernel grid or compiled graph.
     """
 
     sorted_idx: torch.Tensor
@@ -531,25 +525,18 @@ class MultiLoRA_W(torch.autograd.Function):
 
 
 def multi_lora_delta(X, A, B, scales, batch: MultiLoraBatch):
-    """Reference LoRA delta in plain PyTorch (any device, any dtype, autograd through ordinary ops).
-
-    Every adapter runs on every token and a one-hot mask keeps each token's own: U times the LoRA FLOPs,
-    small next to the base matmul, with no host sync or data-dependent shape, so it compiles cleanly.
-    """
+    """Reference LoRA delta in plain PyTorch: every adapter on every token, masked; no host sync."""
     shape = X.shape
     X = X.reshape(-1, shape[-1])
     U = A.shape[0]
     ids = batch.token_ids
-    if ids is None:  # built by hand from a sorted order: recover each token's adapter
+    if ids is None:
         ids = torch.full((X.shape[0],), -1, dtype = torch.int64, device = X.device)
         seg = batch.seg_start.long()
         pos = torch.arange(X.shape[0], device = X.device)
         ids = ids.scatter(0, batch.sorted_idx.long(), torch.searchsorted(seg[1:], pos, right = True))
         ids = torch.where(ids >= U, torch.full_like(ids, -1), ids)
-    # Select with torch.where, not a 0 / 1 multiply: 0 * inf and 0 * nan are nan, so another adapter's
-    # overflowing (fp16) or non-finite weights would leak into every token. Each token has at most one
-    # adapter, so selecting per adapter equals summing the masked deltas. X is selected too, so the
-    # backward's dH @ A_u is masked to the adapter's own rows before it reaches dX.
+    # torch.where, not a 0/1 multiply (0 * inf = nan); X is masked too so dH @ A_u cannot leak into dX.
     scales = scales.to(X.dtype)
     out = X.new_zeros(X.shape[0], B.shape[1])
     for u in range(U):
@@ -576,11 +563,9 @@ def multi_lora_linear(X, W, W_quant, bias, A, B, scales, batch: Optional[MultiLo
 
 
 class MultiLoraLinear(nn.Module):
-    """A frozen base linear layer with ``num_adapters`` LoRA adapters, one (A, B) parameter pair each.
+    """Frozen base linear with ``num_adapters`` LoRA adapters, separate (A, B) params each (PEFT init).
 
-    Separate parameters per adapter keep optimizer state per adapter: an adapter absent from a batch gets
-    no gradient (``drop_absent_adapter_grads_``), so AdamW leaves it, its moments and its step count alone.
-    ``r`` / ``lora_alpha`` may differ per adapter. Initialisation matches PEFT (kaiming uniform A, zero B).
+    Separate params keep optimizer state per adapter, so an absent adapter's AdamW state is untouched.
     """
 
     def __init__(
@@ -722,13 +707,7 @@ def _distributed() -> bool:
 
 @torch.no_grad()
 def drop_absent_adapter_grads_(model: nn.Module, process_group = None) -> list[int]:
-    """Clear the gradients of adapters that did not train this step; call before ``optimizer.step()``.
-
-    An adapter trained if, in any batch since the previous call (gradient accumulation) on any rank of
-    ``process_group``, it had valid label tokens in ``per_adapter_loss(..., model = model)``, or, without
-    that, any routed token. PyTorch optimizers skip a parameter whose ``grad`` is None, so an absent adapter
-    keeps its weights, moments and step count, exactly as if it had not trained this step.
-    """
+    """Set grads to None for adapters with no valid tokens since the last call on any rank; call before ``step()``."""
     layers = _layers(model)
     first = layers[0][1] if layers else None
     present = (
@@ -781,13 +760,9 @@ def per_adapter_loss(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Causal LM loss averaged within each adapter, summed over adapters.
 
-    Each adapter's parameters only see its own rows, so the gradient of the sum is, per adapter, the
-    gradient of its own mean loss: the same as training it alone. ``row_adapter_ids`` is one id per row
-    (B,) or, for packed rows holding several adapters' sequences, one per token (B, T). Pass ``model`` so that
-    ``drop_absent_adapter_grads_`` knows which adapters had valid tokens. Under gradient accumulation
-    pass ``num_items_in_batch``, each adapter's valid tokens over the whole accumulation window on this
-    rank (``adapter_token_counts`` summed over the window), so microbatches are weighted by tokens like
-    transformers' ``num_items_in_batch``. Returns (total, this rank's per-adapter losses).
+    ``row_adapter_ids``: (B,) or per token (B, T). Pass ``model`` for ``drop_absent_adapter_grads_``, and under
+    gradient accumulation ``num_items_in_batch`` = per-adapter ``adapter_token_counts`` summed over the window.
+    Returns (total, this rank's per-adapter losses).
     """
     shift_logits = logits[:, :-1].float()
     shift_labels = labels[:, 1:]
