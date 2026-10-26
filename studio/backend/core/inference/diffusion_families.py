@@ -206,6 +206,8 @@ class DiffusionFamily:
     # diffusers; sd-cli also needs a (repo_id, filename) VAE + text encoder(s), each with a trailing SdCppModelFiles
     # field name.
     sd_cpp_vae: Optional[tuple[str, str]] = None
+    # (base_repo, repo_id, filename); read only by a bf16 pipeline load, every other dtype keeps vae/.
+    hosted_bf16_vae: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # VAE latent-format override for sd-cli (--vae-format): "flux2" for FLUX.2, None otherwise
     sd_cpp_vae_format: Optional[str] = None
     sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
@@ -1028,7 +1030,23 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # 2.1 has its own VAE class, so the qwen-image or Wan 2.2 file decodes to noise here
         # rather than failing.
         sd_cpp_vae = ("unsloth/Qwen-Image-2.1-FP8", "vae/qwen_image_2.1_vae_bf16.safetensors"),
-        # Supplied via --llm, not --qwen2vl (wrong vision preprocessing).
+        # Bit-identical to the fp32 vae/ cast to bf16, so a bf16 render cannot change. Turbo's vae/ is already bf16.
+        hosted_bf16_vae = (
+            (
+                "Qwen/Qwen-Image-2.1",
+                "unsloth/Qwen-Image-2.1-FP8",
+                "vae/qwen_image_2.1_vae_bf16.safetensors",
+            ),
+        ),
+        # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
+        # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
+        # UD-Q4_K_XL, the Dynamic 2.0 rung, rather than the uniform Q4_K_M: same 4-bit class and
+        # the same CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 5.1 against
+        # 5.0), with the per-tensor precision the dynamic recipe assigns. Measured on this host
+        # against the 2.1-capable build, one prompt at 1024 with 20 steps and a shared seed:
+        # LPIPS 0.02894 / SSIM 0.95908 between the two, 36.5 s against 39.0 s, both coherent.
+        # The vision projector (--llm_vision) is what native editing needs; text-to-image never reads it (a fixed-seed
+        # render is byte-identical with and without it). Listed here so download, readiness and delete guards see it.
         sd_cpp_text_encoders = (
             (
                 "unsloth/Qwen3-VL-8B-Instruct-GGUF",
@@ -1570,12 +1588,29 @@ def _family_from_content(
     vetoed = fam is None and any(
         _best_family_match(model_identity(n).lower()) is not None for n in needles
     )
+    if fam is None and not vetoed:
+        fam = _family_from_gguf_arch(path)
     name, _ = resolve_family_with_content(fam.name if fam else None, path, "image", vetoed)
     if name is None:
         return None
     if fam is not None and fam.name == name:
         return fam
     return detect_family("", override = name)
+
+
+def _family_from_gguf_arch(path: str) -> Optional[DiffusionFamily]:
+    """Family of a renamed local GGUF whose arch alone names it; the Images listing already offers it by arch."""
+    if not path.lower().endswith(".gguf"):
+        return None
+    try:
+        from utils.gguf_archs import FAMILY_NAMING_DIFFUSION_GGUF_ARCHS
+        from utils.models.gguf_metadata import read_gguf_architecture
+        arch = (read_gguf_architecture(path) or "").strip().lower()
+    except Exception:  # noqa: BLE001 -- an unreadable header leaves the name verdict alone
+        return None
+    if arch not in FAMILY_NAMING_DIFFUSION_GGUF_ARCHS:
+        return None
+    return detect_family("", override = arch)
 
 
 def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
