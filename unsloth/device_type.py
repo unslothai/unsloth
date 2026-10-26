@@ -83,6 +83,20 @@ def npu_is_available():
         return False
 
 
+def _zoo_cpu_backend(name):
+    """The CPU-fallback rules live in unsloth_zoo.device_type; an older zoo has none.
+
+    Only consulted once `import unsloth` has imported unsloth_zoo (as _gpu_init does before this
+    module). Importing it from here would pull the whole zoo package into anything that loads
+    unsloth.device_type on its own (Studio's hardware probes, the test harness's preload).
+    """
+    import sys
+
+    _zoo_device_type = sys.modules.get("unsloth_zoo.device_type")
+    check = getattr(_zoo_device_type, name, None)
+    return bool(check()) if callable(check) else False
+
+
 @functools.cache
 def get_device_type():
     # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here would NameError in
@@ -93,6 +107,8 @@ def get_device_type():
     # Read once per process (function is cached).
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return "cuda"
+    if _zoo_cpu_backend("cpu_backend_forced"):
+        return "cpu"
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
             return "hip"
@@ -105,6 +121,8 @@ def get_device_type():
     accelerator = None
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
+            if _zoo_cpu_backend("cpu_backend_allowed"):
+                return "cpu"
             raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
         # Listed, not returned: torch.npu is unusable here, so it only defers the AttributeError.
@@ -114,6 +132,8 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
+    if accelerator is None and _zoo_cpu_backend("cpu_backend_allowed"):
+        return "cpu"
     # torch.accelerator only exists from torch 2.6, so below that there is no name.
     raise NotImplementedError(
         f"Unsloth does not currently work on {accelerator}."
@@ -139,6 +159,8 @@ def get_device_count():
         return torch.xpu.device_count()
     elif DEVICE_TYPE == "npu":
         return torch.npu.device_count()
+    elif DEVICE_TYPE == "cpu":
+        return 0
     else:
         return 1
 
@@ -214,6 +236,48 @@ def cuda_gate_capabilities():
         return [tuple(torch.cuda.get_device_capability())]
     except Exception:
         return []
+
+
+def cuda_current_capability():
+    """(major, minor) of the current CUDA device, or None when it cannot be read. bf16 and the
+    compile switches answer for it, as torch does: an idle older card beside it changes nothing,
+    and a load that places layers on one is checked after loading."""
+    try:
+        return tuple(torch.cuda.get_device_capability())
+    except Exception:
+        return None
+
+
+def distributed_launch():
+    """True under a distributed launcher (WORLD_SIZE > 1): ranks import before set_device, so the
+    current device is not yet the rank's own card and process-wide gates keep the weakest one."""
+    try:
+        return int(os.environ.get("WORLD_SIZE", "1") or "1") > 1
+    except ValueError:
+        return False
+
+
+def cuda_bf16_capability():
+    """Capability the process-wide bf16 answer and the pre-Volta compile switch are judged on. One
+    process: the current device, as torch answers. A distributed launch: the weakest visible card,
+    as before, since every rank must pick the same dtype and a rank's own card is not current yet
+    at import (a rank later moved onto an older card would otherwise keep Dynamo on)."""
+    if distributed_launch():
+        caps = cuda_gate_capabilities()
+        return min(caps) if caps else None
+    return cuda_current_capability()
+
+
+def hip_current_arch():
+    """gcnArchName of the current HIP device, or "" when it cannot be read."""
+    try:
+        return str(
+            getattr(
+                torch.cuda.get_device_properties(torch.cuda.current_device()), "gcnArchName", ""
+            )
+        )
+    except Exception:
+        return ""
 
 
 def cuda_order_mismatch_names():
@@ -317,6 +381,20 @@ def xpu_supports_native_bf16(device = None):
     return not any(_xpu_device_lacks_native_bf16(index) for index in indices)
 
 
+def xpu_vllm_refuses_bf16():
+    """vLLM refuses bf16 on this XPU (Arc A770); an older unsloth_zoo without the check refuses nothing."""
+    if DEVICE_TYPE != "xpu":
+        return False
+    try:
+        from unsloth_zoo.device_type import _xpu_vllm_refuses_bf16
+    except Exception:
+        return False
+    try:
+        return bool(_xpu_vllm_refuses_bf16())
+    except Exception:
+        return False
+
+
 def xpu_keeps_explicit_bf16():
     """An explicit bf16 request on XPU stays bf16 (emulated if need be) only beside an unsloth_zoo
     that does the same for vLLM, so the engine and the HF weights it shares agree on one dtype."""
@@ -372,12 +450,18 @@ def apply_pre_volta_compile_workaround(
     return True
 
 
-# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
-# (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
-# Any visible gfx906 counts: compile is process-wide and layers may land on it. Same switch as
+# gfx906 (MI50 / Radeon VII, dropped after ROCm 6.3): compiled graphs crash or miscompile, eager
+# trains. Current device (every card when distributed); loads recheck placement. Same switch as
 # pre-Volta, so regions compiled while unsloth_zoo imported are turned off too.
+def arch_breaks_compile(arch):
+    return str(arch or "").split(":")[0].strip().lower() == "gfx906"
+
+
 if DEVICE_TYPE == "hip":
-    if any(arch.split(":")[0].strip().lower() == "gfx906" for arch in hip_visible_archs()):
+    if any(
+        arch_breaks_compile(arch)
+        for arch in (hip_visible_archs() if distributed_launch() else [hip_current_arch()])
+    ):
         os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
         os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
         os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
@@ -389,8 +473,8 @@ if DEVICE_TYPE == "hip":
 
 
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
-    # Weakest visible card: compile is process-wide and layers may land on any of them.
-    _cuda_major = min((cap[0] for cap in cuda_gate_capabilities()), default = None)
+    # Same rule as bf16; layers placed on an older card are caught by check_mixed_gpu_placement.
+    _cuda_major = (cuda_bf16_capability() or (None,))[0]
     if apply_pre_volta_compile_workaround(_cuda_major):
         print(
             "Unsloth: GPUs older than Volta (compute capability < 7.0) cannot run "

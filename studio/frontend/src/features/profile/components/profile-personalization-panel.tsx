@@ -294,7 +294,7 @@ export function ProfilePersonalizationPanel() {
                   type="button"
                   variant="outline"
                   onClick={() => fileInputRef.current?.click()}
-                  className="h-9 w-fit gap-2 rounded-full px-4 text-sm"
+                  className="w-fit gap-2 rounded-full text-sm"
                 >
                   <HugeiconsIcon
                     icon={Upload01Icon}

@@ -240,7 +240,10 @@ def select_weight_files(
             return [f"{stem}.safetensors"]
         if any(_SHARD_RE.match(n) and n.startswith(stem + "-") for n in names):
             return []
-    # Only these stems load (Studio passes no variant, so .fp16 twins are not read either).
+    # No default: an fp16 load reads the single-file .fp16 twin (sharded twins never read).
+    for stem in _stem_order(folder):
+        if f"{stem}.fp16.safetensors" in names:
+            return [f"{stem}.fp16.safetensors"]
     return []
 
 

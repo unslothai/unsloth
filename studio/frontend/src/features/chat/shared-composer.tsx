@@ -32,10 +32,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -109,7 +111,6 @@ import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
   Columns2Icon,
-  HeadphonesIcon,
   MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
@@ -2891,7 +2892,7 @@ export function SharedComposer({
               data-composer-attachment="audio"
               className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
             >
-              <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+              <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
               <span data-reload-snapshot-sensitive className="max-w-48 truncate">
                 {clip.name}
               </span>
@@ -2978,7 +2979,7 @@ export function SharedComposer({
                   <DropdownMenuItem
                     onSelect={() => audioInputRef.current?.click()}
                   >
-                    <HeadphonesIcon />
+                    <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={2} />
                     Upload audio
                   </DropdownMenuItem>
                 )}
@@ -3230,6 +3231,12 @@ export function SharedComposer({
                       event.currentTarget.value.length,
                   );
                 }}
+                onScroll={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onInputCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
                 onCompositionStart={() => {
                   imeSessionOpenRef.current = true;
                   setCompositionState(true);
@@ -3538,7 +3545,7 @@ export function SharedComposer({
                         : "Stop dictation"
                     }
                   >
-                    <SquareIcon className="size-3 animate-pulse fill-current" />
+                    <SquareIcon className="composer-glyph-snap size-3.5 animate-pulse fill-current" />
                   </TooltipIconButton>
                 )}
               </>
@@ -3570,7 +3577,7 @@ export function SharedComposer({
                 aria-label="Stop generating"
                 onClick={stop}
               >
-                <SquareIcon className="size-3 fill-current" />
+                <SquareIcon className="composer-glyph-snap size-3.5 fill-current" />
               </Button>
             ) : (
               <TooltipIconButton

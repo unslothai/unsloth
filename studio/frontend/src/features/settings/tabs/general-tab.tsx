@@ -74,7 +74,6 @@ import {
 import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
-import { DeveloperModeSection } from "../components/developer-mode-section";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
@@ -86,7 +85,6 @@ import {
   TRANSPORT_MODE_STORAGE_KEY,
 } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
-import { EngineVersionsSection } from "../components/engine-versions-section";
 import { HubSettingsSection } from "../components/hub-settings-section";
 import { NotificationFrequencySelect } from "../components/notification-frequency-select";
 import { SettingsRow } from "../components/settings-row";
@@ -575,7 +573,7 @@ export function GeneralTab() {
                 }}
                 onBlur={commitToken}
                 className={cn(
-                  "h-8 w-full font-mono text-xs",
+                  "h-control w-full font-mono text-xs",
                   tokenValidated ? "pr-14" : "pr-8",
                 )}
               />
@@ -611,7 +609,6 @@ export function GeneralTab() {
               type="button"
               variant="outline"
               size="sm"
-              className="h-8"
               disabled={!draftToken && !hfToken}
               onClick={clearHfToken}
             >
@@ -647,78 +644,8 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      {isTauri ? (
-        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
-          <SettingsRow
-            label={t("settings.general.startup.launchAtLogin")}
-            description={t("settings.general.startup.launchAtLoginDescription")}
-            below={
-              launchAtLoginSetting.error ? (
-                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                  {launchAtLoginSetting.error}
-                </span>
-              ) : null
-            }
-          >
-            <Switch
-              checked={launchAtLoginSetting.value ?? false}
-              disabled={
-                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
-              }
-              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
-            />
-          </SettingsRow>
-
-          {closeToTraySetting.supported ? (
-            <SettingsRow
-              label={t("settings.general.startup.closeToTray")}
-              description={t("settings.general.startup.closeToTrayDescription")}
-              below={
-                closeToTraySetting.error ? (
-                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                    {closeToTraySetting.error}
-                  </span>
-                ) : null
-              }
-            >
-              <Switch
-                checked={closeToTraySetting.value ?? false}
-                disabled={
-                  closeToTraySetting.value === null || closeToTraySetting.saving
-                }
-                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
-              />
-            </SettingsRow>
-          ) : null}
-
-          {trayIconSetting.supported ? (
-            <SettingsRow
-              label={t("settings.general.startup.menuBarIcon")}
-              description={t("settings.general.startup.menuBarIconDescription")}
-            >
-              <div className="flex flex-col items-end gap-1">
-                <Switch
-                  checked={trayIconSetting.value ?? false}
-                  disabled={
-                    trayIconSetting.value === null || trayIconSetting.saving
-                  }
-                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
-                />
-                {trayIconSetting.error ? (
-                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                    {trayIconSetting.error}
-                  </span>
-                ) : null}
-              </div>
-            </SettingsRow>
-          ) : null}
-        </SettingsSection>
-      ) : null}
-
       {/* Owner-only like the installation-wide block below: its routes are. */}
       {isOwner ? <DocumentsRagSection /> : null}
-
-      <EngineVersionsSection />
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
         <SettingsRow
@@ -834,7 +761,7 @@ export function GeneralTab() {
                 value={draftUploadLimit}
                 aria-label={t("settings.general.uploads.maxUploadSize")}
                 onChange={(event) => setDraftUploadLimit(event.target.value)}
-                className="h-8 w-24"
+                className="h-control w-24"
               />
               <span className="text-xs font-medium text-muted-foreground">
                 MB
@@ -883,15 +810,82 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <DeveloperModeSection />
         </>
       ) : null}
 
+      {isTauri ? (
+        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.startup.launchAtLogin")}
+            description={t("settings.general.startup.launchAtLoginDescription")}
+            below={
+              launchAtLoginSetting.error ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                  {launchAtLoginSetting.error}
+                </span>
+              ) : null
+            }
+          >
+            <Switch
+              checked={launchAtLoginSetting.value ?? false}
+              disabled={
+                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+              }
+              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
+            />
+          </SettingsRow>
+
+          {closeToTraySetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.closeToTray")}
+              description={t("settings.general.startup.closeToTrayDescription")}
+              below={
+                closeToTraySetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {closeToTraySetting.error}
+                  </span>
+                ) : null
+              }
+            >
+              <Switch
+                checked={closeToTraySetting.value ?? false}
+                disabled={
+                  closeToTraySetting.value === null || closeToTraySetting.saving
+                }
+                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+              />
+            </SettingsRow>
+          ) : null}
+
+          {trayIconSetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.menuBarIcon")}
+              description={t("settings.general.startup.menuBarIconDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={trayIconSetting.value ?? false}
+                  disabled={
+                    trayIconSetting.value === null || trayIconSetting.saving
+                  }
+                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
+                />
+                {trayIconSetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {trayIconSetting.error}
+                  </span>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : null}
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection
+        danger={true}
         title={t("settings.general.resetPreferences.sectionTitle")}
       >
         <SettingsRow
-          destructive={true}
           label={t("settings.general.resetPreferences.label")}
           description={t("settings.general.resetPreferences.description")}
         >

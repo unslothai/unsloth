@@ -409,8 +409,32 @@ export const BUDGET = {
   // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
   // 6,929,942 B raw / 2,087,788 B transfer merged with main at b3004af53 (Node 24, 99 chunks). Set to
   // that plus about 300 B raw / 100 B transfer, as for #14568.
-  transferBytes: 2_087_890,
-  rawBytes: 6_930_250,
+  // Skill ZIP import/export (#14181) adds 2,721 B raw / 758 B transfer to the eager Skills dialog
+  // and locale strings (6,929,934 -> 6,932,655 B raw, 2,087,782 -> 2,088,540 B transfer against
+  // fb104d2b57, one machine and build, Node 22.23.2, unchanged at 99 chunks). Raised by that growth.
+  // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
+  // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
+  // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
+  // Per-account chat preferences (#15025): +338 B raw / +93 B transfer over the line above (Node 22.23.2, 99 chunks).
+  // Live prefill progress, the Generation details setting and the loaded placement readout (#14582): the
+  // stream frame reader, live store slice, reply footer line and timing tooltip rows in the eager chat
+  // chunk, +8,585 B raw / +2,268 B transfer over main (6,932,829 -> 6,941,414 B raw, 2,088,586 ->
+  // 2,090,854 B transfer against 1492952a09, Node 22, 99 chunks). Raised by that on top of #15084 and #15025.
+  // The pinned Run settings footer adds 25 B raw / 49 B transfer to the eager model picker (6,932,829 -> 6,932,854 B
+  // raw, 2,088,616 -> 2,088,665 B transfer against 2c2e04474b, Node 26, unchanged at 99 chunks). Raised by that.
+  // Storage overview in Library and System settings (#15083) adds 360 B raw / 56 B transfer, its strings in the
+  // eager en locale plus 46 B in the settings chunk; the overview itself is a lazy chunk (6,932,829 -> 6,933,189 B
+  // raw, 2,088,616 -> 2,088,672 B transfer against cfc593f0bd, Node 26, unchanged at 99 chunks). Raised by that.
+  // Its "System and Engine" page title adds 11 B raw / 34 B transfer to the eager en locale (6,933,189 -> 6,933,200 B
+  // raw, 2,088,699 -> 2,088,733 B transfer merged with f49cbdf535, Node 26, 99 chunks). Raised by that.
+  // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
+  // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
+  // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
+  // The control heights and API page round (#15232) adds 2,639 B raw / 717 B transfer, mostly its token table,
+  // regenerate and tooltip strings in the eager locales (6,945,181 -> 6,947,820 B raw, 2,095,616 -> 2,096,333 B
+  // transfer against 6eeb690f8d, one machine and build, 105 chunks). Raised by that growth.
+  transferBytes: 2_097_044,
+  rawBytes: 6_961_352,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

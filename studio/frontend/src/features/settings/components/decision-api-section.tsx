@@ -349,7 +349,7 @@ export function DecisionApiSection(): ReactElement | null {
   const header = (
     <>
       <div className="flex items-start gap-3 bg-muted/30 p-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+        <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
           <HugeiconsIcon
             icon={TaskDone01Icon}
             className="size-4 text-foreground"
@@ -558,7 +558,7 @@ export function DecisionApiSection(): ReactElement | null {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
+                className="shrink-0 text-xs"
                 disabled={busy || downloading}
                 onClick={() => plan && void startDownload(plan)}
               >
@@ -569,7 +569,7 @@ export function DecisionApiSection(): ReactElement | null {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
+                className="shrink-0 text-xs"
                 disabled={busy}
                 onClick={() => void unload()}
               >

@@ -4576,17 +4576,15 @@ function Install-UnslothStudio {
                 $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
             }
             # uv's discovery: UV_CONFIG_FILE alone (even with UV_NO_CONFIG); relative paths from --directory.
-            # uv's bool parser (Test-UvEnvFlag), inlined: setup.ps1 reaches this before it defines that helper.
-            $uvTrue = @('1', 't', 'true', 'y', 'yes', 'on')
             $files = @("$env:APPDATA\uv\uv.toml")
-            if ($uvTrue -notcontains "$env:UV_NO_SYSTEM_CONFIG".Trim().ToLowerInvariant()) { $files += "$env:ProgramData\uv\uv.toml" }
+            if (-not (Test-UvEnvFlag 'UV_NO_SYSTEM_CONFIG')) { $files += "$env:ProgramData\uv\uv.toml" }
             $dir = (Get-Location -PSProvider FileSystem).ProviderPath
             $workDir = if ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
             if ($workDir) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $workDir)) }
             $configFile = if ($env:UV_CONFIG_FILE) { [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_CONFIG_FILE)) }
             if ($env:UV_PROJECT) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_PROJECT)) }
             if ($configFile) { $files = @($configFile); $dir = $null }
-            elseif ($uvTrue -contains "$env:UV_NO_CONFIG".Trim().ToLowerInvariant()) { $files = @(); $dir = $null }
+            elseif (Test-UvEnvFlag 'UV_NO_CONFIG') { $files = @(); $dir = $null }
             while ($dir) {
                 $pyproject = Join-Path $dir 'pyproject.toml'
                 if (Test-Path -LiteralPath (Join-Path $dir 'uv.toml') -PathType Leaf) { $files += Join-Path $dir 'uv.toml'; break }
@@ -9573,6 +9571,8 @@ main()
         # silent, so a supported Radeon named only by Windows took the CPU path there, and
         # the report-only peer scan cannot undo that. Same class and fields as every other
         # adapter scan in this file, and identical output under Windows PowerShell 5.1.
+        # Both AMD scans below ask WMI the same question; the peer scan reuses this answer.
+        $amdWmiScanned = $false
         if (-not $HasROCm) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
@@ -9583,8 +9583,11 @@ main()
                 # If the filter leaves none, keep the full list: code 45 ("not connected") is
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
-                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                $amdWmiErr = $null
+                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue -ErrorVariable amdWmiErr |
                     Where-Object { $_.Name -match "AMD|Radeon" })
+                # A scan that reported an error may be partial: the peer scan then asks again, as before.
+                $amdWmiScanned = (-not $amdWmiErr)
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
                 $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
@@ -9596,8 +9599,9 @@ main()
         $wmiAmdNames = @()
         if (-not $ROCmGfxArch) {
             try {
-                $peerAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -match "AMD|Radeon" })
+                $peerAdapters = @(if ($amdWmiScanned) { $amdAdapters } else {
+                    Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -match "AMD|Radeon" } })
                 $healthyPeers = @($peerAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
                 $usePeers = @(if ($healthyPeers.Count -gt 0) { $healthyPeers } else { $peerAdapters })
@@ -10792,8 +10796,8 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.7" }
-    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.7"
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.8" }
+    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.8"
 
     # Twin of install.sh's _relax_unsloth_floors_to_index (#14031).
     function Resolve-UnslothFloorsForIndex {
