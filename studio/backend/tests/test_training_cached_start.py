@@ -132,7 +132,7 @@ def _known_cache_root(monkeypatch, tmp_path):
 
 @pytest.fixture
 def _cuda_trainer():
-    # Continuation needs the CUDA trainer; an Apple Silicon runner would take the MLX refusal.
+    # On the CUDA trainer only PEFT weight names count as adapter weights.
     with patch("core.training.training.should_use_mlx_training_backend", return_value = False):
         yield
 
@@ -519,7 +519,7 @@ def test_untrainable_gate_refuses_cached_hub_adapter_snapshot_for_lora(tmp_path)
     assert exc_info.value.detail["code"] == "training_hub_adapter_unsupported"
 
 
-@pytest.mark.parametrize("runner", ["embedding", "decision", "mlx"])
+@pytest.mark.parametrize("runner", ["embedding", "decision"])
 def test_start_refuses_adapter_dir_where_runner_builds_a_fresh_adapter(tmp_path, runner):
     route = _load_route_module(f"training_route_adapter_dir_{runner}")
     (tmp_path / "adapter_config.json").write_text("{}")
@@ -531,12 +531,43 @@ def test_start_refuses_adapter_dir_where_runner_builds_a_fresh_adapter(tmp_path,
         is_decision = runner == "decision",
     )
 
-    with patch(
-        "core.training.training.should_use_mlx_training_backend",
-        return_value = runner == "mlx",
-    ):
-        exc_info = _shared_setup_2(request, route)
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_model_adapter_not_trainable"
+
+
+@pytest.mark.parametrize("weights", ["adapter_model.safetensors", "adapters.safetensors"])
+def test_mlx_start_continues_a_peft_or_mlx_adapter_dir(tmp_path, weights):
+    route = _load_route_module(f"training_route_mlx_adapter_dir_{weights}")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / weights).write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with patch("core.training.training.should_use_mlx_training_backend", return_value = True):
+        result = route._reject_untrainable_model_request(request)
+    assert result.model_name == str(tmp_path.resolve())
+
+
+def test_mlx_start_refuses_a_bin_only_peft_adapter_dir(tmp_path):
+    route = _load_route_module("training_route_mlx_bin_adapter_dir")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model.bin").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    with patch("core.training.training.should_use_mlx_training_backend", return_value = True):
+        exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_weights_missing"
+
+
+@pytest.mark.usefixtures("_cuda_trainer")
+def test_cuda_start_refuses_an_mlx_only_adapter_dir(tmp_path):
+    route = _load_route_module("training_route_cuda_mlx_adapter_dir")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapters.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    exc_info = _shared_setup_2(request, route)
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_weights_missing"
 
 
 @pytest.mark.parametrize("refused", [True, False])
@@ -2901,8 +2932,9 @@ def test_worker_rejects_inference_only_model_formats():
         assert (
             worker._untrainable_model_format_error({**lora_adapter, runner_flag: True}) is not None
         )
-    with patch.object(worker, "_uses_mlx_training_backend", return_value = True):
-        assert worker._untrainable_model_format_error(lora_adapter) is not None
+    # The MLX runner continues a saved adapter too.
+    with patch("core.training.training.should_use_mlx_training_backend", return_value = True):
+        assert worker._untrainable_model_format_error(lora_adapter) is None
     assert worker._untrainable_model_format_error({"model_format": "safetensors"}) is None
     assert worker._untrainable_model_format_error({}) is None
 

@@ -195,7 +195,7 @@ export function validateTrainingConfig(
       return { ok: false, errorKey: "studio.modelPicker.reasonGguf" };
     }
     // Adapter format is valid when continuing LoRA / CPT from a saved adapter (#13140).
-    // Decision, embedding and Apple Silicon runs build a fresh adapter, so they need a base.
+    // Decision and embedding runs build a fresh adapter, so they need a base.
     // Only a saved local adapter folder is continued; a Hub adapter repo is not yet.
     if (
       !isAdapterMethod(config.trainingMethod) ||
@@ -205,8 +205,7 @@ export function validateTrainingConfig(
         localPath: config.modelLocalPath,
       }) ||
       config.modelType === "decision" ||
-      config.isEmbeddingModel ||
-      deviceType === "mac"
+      config.isEmbeddingModel
     ) {
       return { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
     }

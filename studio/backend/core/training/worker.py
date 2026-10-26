@@ -127,11 +127,6 @@ def _dataset_local_files_only(config: dict) -> bool:
     return bool(config.get("dataset_snapshot_path"))
 
 
-def _uses_mlx_training_backend() -> bool:
-    from core.training.training import should_use_mlx_training_backend
-    return should_use_mlx_training_backend()
-
-
 def _adapter_trains_embeddings(model) -> bool:
     """Whether a loaded adapter already trains embed_tokens or lm_head in full (#13140)."""
     for adapter in (getattr(model, "peft_config", None) or {}).values():
@@ -172,11 +167,9 @@ def _untrainable_model_format_error(config: dict) -> str | None:
         return "GGUF models are inference-only and cannot be trained."
     if model_format == "adapter":
         # LoRA / CPT may continue from a saved adapter; full finetune still cannot (#13140).
-        # The embedding, decision and MLX runners wrap a fresh adapter; only the CUDA trainer continues one.
+        # The embedding and decision runners wrap a fresh adapter, so they still need a base.
         if config.get("training_type") in ("LoRA/QLoRA", "Continued Pretraining") and not (
-            config.get("is_embedding", False)
-            or config.get("is_decision", False)
-            or _uses_mlx_training_backend()
+            config.get("is_embedding", False) or config.get("is_decision", False)
         ):
             from utils.paths import is_local_path
 
@@ -3033,6 +3026,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             MLXTrainingConfig,
             train_on_responses_only,
         )
+        from unsloth_zoo.mlx.utils import iter_mlx_lora_modules
     except ImportError as e:
         raise ImportError(
             "Unsloth: MLX training requires unsloth-zoo with the MLX modules "
@@ -3088,7 +3082,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
     # Before the download/load below: unlike the CUDA path, this needs none of the model.
-    if use_lora:
+    # A continued adapter keeps its own targets, so the requested ones are not checked.
+    if use_lora and config.get("model_format") != "adapter":
         _check_mlx_finetune_targets(config)
     # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
@@ -3194,7 +3189,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         use_grad_checkpoint = gc_setting
 
-    if use_lora:
+    # A saved adapter folder reloads with only its LoRA (and saved full modules) trainable; do not
+    # stack a second adapter on it (#13140).
+    continues_adapter = use_lora and next(iter_mlx_lora_modules(model), None) is not None
+    if continues_adapter:
+        _send(
+            "status",
+            status_message = "Continuing from existing LoRA adapters (kept the adapter's settings)",
+        )
+    elif use_lora:
         _send("status", status_message = "Configuring LoRA adapters...")
         peft_kwargs = dict(
             r = config.get("lora_r", 16),

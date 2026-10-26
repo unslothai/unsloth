@@ -365,8 +365,8 @@ def test_pre_detect_training_model_leaves_a_valid_run_alone():
 
 
 def test_mlx_worker_calls_the_guard_in_its_lora_branch():
-    """_run_mlx_training imports mlx, so it cannot be invoked off Apple Silicon. Pin the call
-    site structurally instead: inside `if use_lora:` and above the from_pretrained below it."""
+    """_run_mlx_training imports mlx, so it cannot be invoked off Apple Silicon. Run its guard
+    statement alone instead, and pin it above the from_pretrained below it."""
     source = textwrap.dedent(inspect.getsource(_run_mlx_training))
     tree = ast.parse(source)
     calls = [
@@ -379,16 +379,30 @@ def test_mlx_worker_calls_the_guard_in_its_lora_branch():
 
     assert len(calls) == 1
 
-    guarded = [
+    guard = next(
         node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Name)
-        and node.test.id == "use_lora"
-        and any(call in ast.walk(node) for call in calls)
-    ]
+        for node in tree.body[0].body
+        if isinstance(node, ast.If) and any(call in ast.walk(node) for call in calls)
+    )
+    code = compile(ast.Module(body = [guard], type_ignores = []), "<guard>", "exec")
 
-    assert guarded, "_check_mlx_finetune_targets must sit under `if use_lora:`"
+    def guarded_call(use_lora, model_format = None):
+        checked = []
+        exec(
+            code,
+            {
+                "use_lora": use_lora,
+                "is_cpt": False,
+                "config": {"model_format": model_format},
+                "_check_mlx_finetune_targets": checked.append,
+            },
+        )
+        return bool(checked)
+
+    assert guarded_call(True)
+    assert not guarded_call(False)
+    # A continued adapter keeps its own targets, so the requested ones are not checked.
+    assert not guarded_call(True, model_format = "adapter")
 
     from_pretrained_lines = [
         node.lineno
@@ -397,7 +411,6 @@ def test_mlx_worker_calls_the_guard_in_its_lora_branch():
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "from_pretrained"
     ]
-
     assert from_pretrained_lines
     assert calls[0].lineno < min(from_pretrained_lines)
 

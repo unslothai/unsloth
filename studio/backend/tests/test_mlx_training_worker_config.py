@@ -614,3 +614,62 @@ def test_mlx_single_process_finalization_keeps_prior_contract():
     events = _finalize(trainer, stop = (True, True), checkpoint_ok = False)
     assert trainer.saved == ["/out"]
     assert events[-1][0] == "error" and events[-1][1]["resume_blocked"] is True
+
+
+def _adapter_setup_block():
+    """The `continues_adapter = ...` line and the LoRA setup `if` after it in _run_mlx_training."""
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    starts = [
+        i
+        for i, node in enumerate(body)
+        if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "continues_adapter"
+    ]
+    assert len(starts) == 1, "expected one continues_adapter assignment"
+    return body[starts[0] : starts[0] + 2]
+
+
+def _run_adapter_setup(
+    lora_modules,
+    training_type = "LoRA/QLoRA",
+    **config,
+):
+    """Lifts the real adapter setup out of _run_mlx_training, which only runs on Apple Silicon."""
+    block = compile(ast.Module(body = _adapter_setup_block(), type_ignores = []), "<peft>", "exec")
+    events, wraps = [], []
+    model = types.SimpleNamespace(lora_modules = lora_modules)
+
+    def get_peft_model(wrapped, **kwargs):
+        wraps.append(kwargs)
+        return wrapped
+
+    namespace = dict(vars(_worker))
+    namespace.update(
+        {
+            "config": config,
+            "model": model,
+            "training_type": training_type,
+            "use_lora": training_type in ("LoRA/QLoRA", "Continued Pretraining"),
+            "is_vlm": False,
+            "use_grad_checkpoint": "mlx",
+            "lora_random_state": 3407,
+            "mlx_dora_kwargs": {},
+            "FastMLXModel": types.SimpleNamespace(get_peft_model = get_peft_model),
+            "iter_mlx_lora_modules": lambda m: iter(m.lora_modules),
+            "_send": lambda event_type, **kw: events.append((event_type, kw)),
+        }
+    )
+    exec(block, namespace)
+    return events, wraps
+
+
+def test_mlx_continued_adapter_is_not_wrapped_again():
+    events, wraps = _run_adapter_setup([("layers.0.self_attn.q_proj", object())])
+
+    assert wraps == []
+    assert any("Continuing from existing LoRA adapters" in kw["status_message"] for _, kw in events)
+
+
+def test_mlx_base_model_gets_a_fresh_adapter():
+    _, wraps = _run_adapter_setup([], lora_r = 8)
+
+    assert [kwargs["r"] for kwargs in wraps] == [8]

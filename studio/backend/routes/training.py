@@ -472,23 +472,28 @@ def _has_adapter_metadata(path: Path) -> bool:
 def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
     """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140).
 
-    Only the CUDA trainer keeps an adapter it loaded; the embedding, decision and Apple Silicon
-    (MLX) runners always build a fresh one on top, so those still need a base model."""
+    The embedding and decision runners always build a fresh adapter on top, so those still need
+    a base model."""
     if request.training_type not in ("LoRA/QLoRA", "Continued Pretraining"):
         return False
-    if getattr(request, "is_embedding", False) or getattr(request, "is_decision", False):
-        return False
-    from core.training.training import should_use_mlx_training_backend
-
-    return not should_use_mlx_training_backend()
+    return not (getattr(request, "is_embedding", False) or getattr(request, "is_decision", False))
 
 
 # The names PEFT and Unsloth's loader open; numbered adapter shards are not loaded.
 _ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+# The MLX loader imports PEFT safetensors (not .bin) and reads its own saved format.
+_MLX_ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapters.safetensors")
 
 
 def _has_local_adapter_weights(path: Path) -> bool:
-    return path.is_dir() and any((path / name).is_file() for name in _ADAPTER_WEIGHT_FILES)
+    if not path.is_dir():
+        return False
+    from core.training.training import should_use_mlx_training_backend
+
+    names = (
+        _MLX_ADAPTER_WEIGHT_FILES if should_use_mlx_training_backend() else _ADAPTER_WEIGHT_FILES
+    )
+    return any((path / name).is_file() for name in names)
 
 
 _HF_MODEL_ACCESS_DENIED = (

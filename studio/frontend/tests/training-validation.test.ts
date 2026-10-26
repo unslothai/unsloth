@@ -358,6 +358,12 @@ test("training validation lets LoRA and CPT continue from a saved adapter (#1314
       { ok: true, errorKey: null },
     );
   }
+  for (const trainingMethod of ["lora", "qlora"] as const) {
+    assert.deepEqual(
+      validateTrainingConfig({ ...adapter, trainingMethod } as never, "mac"),
+      { ok: true, errorKey: null },
+    );
+  }
 });
 
 test("training validation refuses an adapter where a fresh adapter would be built", () => {
@@ -388,7 +394,6 @@ test("training validation refuses an adapter where a fresh adapter would be buil
     ),
     refused,
   );
-  assert.deepEqual(validateTrainingConfig(adapter as never, "mac"), refused);
 });
 
 test("training validation refuses continuing a Hub adapter repo", () => {
