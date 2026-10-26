@@ -21,9 +21,11 @@ from typing import Optional
 
 BOOTSTRAP_TIMEOUT_ENV_VAR = "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT"
 DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 3600
+# Retry cadence and window for a failed auth storage read at the deadline.
+STORAGE_RETRY_SECONDS = 5
+STORAGE_RETRY_WINDOW_SECONDS = 600
 
-# Monotonic expiry, or None when nothing is armed. Read back over HTTP because the
-# stderr warning is lost on the launches that arm it (--secure, external bind).
+# Read back over HTTP because the stderr warning is lost on --secure / external-bind launches.
 _deadline_at: Optional[float] = None
 
 
@@ -118,20 +120,37 @@ def enforce_bootstrap_password_deadline(
 ) -> bool:
     """Deadline handler: shut down iff the seeded admin password is still unchanged. Returns True if it
     shut Unsloth down, False if it left it running (the password was changed in time)."""
-    try:
-        still_default = storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
-    except Exception:
-        return False
-    if not still_default:
+    # One-shot timer: a failed read retries for a bounded window, then counts as unsecured.
+    give_up_at = time.monotonic() + STORAGE_RETRY_WINDOW_SECONDS
+    while True:
+        try:
+            still_default = storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
+            break
+        except Exception as e:
+            if logger is not None:
+                logger.warning("Bootstrap deadline could not read auth storage, retrying: %s", e)
+            if time.monotonic() >= give_up_at:
+                still_default = None
+                break
+            time.sleep(STORAGE_RETRY_SECONDS)
+    if still_default is not None and not still_default:
         return False
 
-    message = (
-        "\nUnsloth Studio was exposed on the network but its default admin "
-        f"password was not changed within {_format_duration(timeout_seconds)}. "
-        "Shutting down to avoid leaving an unsecured public instance running.\n"
-        "Next time, sign in and change the password on first login, or set "
-        f"{BOOTSTRAP_TIMEOUT_ENV_VAR}=0 to disable this timeout."
-    )
+    if still_default is None:
+        message = (
+            "\nUnsloth Studio was exposed on the network and auth storage stayed unreadable for "
+            f"{_format_duration(STORAGE_RETRY_WINDOW_SECONDS)} after the first-login deadline, so "
+            "whether the default admin password was changed is unknown. "
+            "Shutting down to avoid leaving an unsecured public instance running."
+        )
+    else:
+        message = (
+            "\nUnsloth Studio was exposed on the network but its default admin "
+            f"password was not changed within {_format_duration(timeout_seconds)}. "
+            "Shutting down to avoid leaving an unsecured public instance running.\n"
+            "Next time, sign in and change the password on first login, or set "
+            f"{BOOTSTRAP_TIMEOUT_ENV_VAR}=0 to disable this timeout."
+        )
     if logger is not None:
         logger.warning(message)
     print(message, file = sys.stderr, flush = True)

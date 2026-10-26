@@ -3,9 +3,8 @@
 
 export type OpenAIModel = {
   id: string;
-  // Resident in memory now; the rest are downloaded and servable.
   loaded?: boolean;
-  // On-disk GGUF quant. Ids stay bare for OpenAI compat, so append `:quant` to pin it.
+  // Ids stay bare for OpenAI compat; append `:quant` to pin one.
   quant?: string;
 };
 
@@ -86,6 +85,20 @@ export function audioModelsFromCatalog(body: unknown): AudioApiModel[] {
         ]
       : [],
   );
+}
+
+/** A loaded TTS model that can "speak"; a saved voice prefers one that can "clone", which the
+ *  server runs as a clone. */
+export function loadedSpeechModelId(
+  models: AudioApiModel[],
+  wantsClone = false,
+): string | null {
+  const loaded = models.filter((m) => m.loaded && m.task === "text-to-speech");
+  const cloner = wantsClone
+    ? loaded.find((m) => m.workflows?.includes("clone"))
+    : undefined;
+  const speaker = loaded.find((m) => m.workflows?.includes("speak"));
+  return (cloner ?? speaker)?.id ?? null;
 }
 
 const AUDIO_CATALOG_RETRY_MS = 15000;

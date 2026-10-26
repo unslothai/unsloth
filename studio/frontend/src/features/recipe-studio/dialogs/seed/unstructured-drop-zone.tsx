@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
 import { consumeNativePathToken, useNativeFileDrop } from "@/features/native-intents";
 import {
-  CloudUploadIcon,
+  Alert02Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
-  Alert02Icon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { Spinner } from "@/components/ui/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -16,9 +16,16 @@ import {
   UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL,
 } from "./upload-limits";
 
-const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
+// Mirrors UNSTRUCTURED_ALLOWED_EXTS in routes/data_recipe/seed.py (parity test).
+const ACCEPTED_EXTENSIONS = [
+  ".pdf", ".docx", ".txt", ".md", ".markdown", ".html", ".htm", ".xhtml", ".xht",
+  ".doc", ".docm", ".dotx", ".dotm", ".odt", ".ott", ".rtf",
+  ".epub", ".mobi", ".fb2",
+  ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlt", ".ods", ".ots",
+  ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppt", ".pps", ".odp", ".otp",
+  ".eml", ".msg", ".mht", ".mhtml",
+];
 
-/** One queued upload: browser bytes, or a desktop drop the backend redeems. */
 type UploadCandidate = {
   name: string;
   size: number;
@@ -178,10 +185,8 @@ export function UnstructuredDropZone({
       if (!needsServerRemove) return;
       deletedIdsRef.current.add(entry.id);
       removeUnstructuredFile(blockId, entry.id).catch(() => {
-        // Skip if the drop zone unmounted or its block changed: the id no
-        // longer belongs here and restoring would leak it into another block.
+        // The id would leak into another block if the zone unmounted or its block changed.
         if (!mountedRef.current || blockIdRef.current !== blockId) return;
-        // Still exists server-side (counts toward quota); restore it at its original position.
         deletedIdsRef.current.delete(entry.id);
         onFilesChange((prev) => {
           const next = [...prev];
@@ -199,12 +204,10 @@ export function UnstructuredDropZone({
     [blockId, onFilesChange],
   );
 
-  // Tauri suppresses webview drop events, so the plain `onDrop` this zone
-  // carried was dead on desktop (#9036).
+  // Tauri suppresses webview drop events, so a plain onDrop is dead on desktop.
   const { ref: dropRef, dragging: isDragOver, dragHandlers } = useNativeFileDrop({
     onFiles: handleFiles,
-    // A seed corpus can run to hundreds of MB, so the backend redeems the
-    // signed path itself rather than routing bytes through the webview.
+    // A seed corpus can be hundreds of MB, so the backend redeems the signed path itself.
     onNativeIntents: (intents) =>
       uploadCandidates(
         intents.map((intent) => ({
@@ -239,9 +242,9 @@ export function UnstructuredDropZone({
         // Stays hit-testable while disabled: pointer-events-none hides it from
         // elementFromPoint, so a native drop misses this target and falls
         // through to the window instead of saying the block is busy.
-        className={`nodrag flex flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
+        className={`nodrag flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
-            ? "border-ring-strong bg-primary/5"
+            ? "border-ring-strong bg-wash-5"
             : "border-muted-foreground/25 hover:border-muted-foreground/50"
         } ${disabled ? "cursor-default opacity-50" : "cursor-pointer"}`}
         ref={dropRef}
@@ -249,14 +252,14 @@ export function UnstructuredDropZone({
         onClick={handleClick}
       >
         <HugeiconsIcon
-          icon={CloudUploadIcon}
+          icon={PlusSignIcon}
           className="text-muted-foreground mb-2 size-8"
         />
         <p className="text-muted-foreground text-sm">
           Drop files here or click to browse
         </p>
         <p className="text-muted-foreground/60 mt-1 text-xs">
-          PDF, DOCX, TXT, MD - up to {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}{" "}
+          PDF, Word, EPUB, MOBI, Excel, PowerPoint, HTML, TXT, MD and more - up to {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}{" "}
           each, {UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL} total
         </p>
       </div>
@@ -292,7 +295,6 @@ export function UnstructuredDropZone({
                   className="size-4 text-red-500"
                 />
               )}
-              {/* Queued local upload, so keep the name out of the snapshot. */}
               <span data-reload-snapshot-sensitive className="flex-1 truncate">
                 {entry.name}
               </span>
@@ -304,7 +306,7 @@ export function UnstructuredDropZone({
               )}
               <button
                 type="button"
-                className="ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                className="ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleRemove(i);

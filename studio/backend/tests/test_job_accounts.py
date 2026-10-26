@@ -225,6 +225,43 @@ def test_export_finished_checkpoint_and_logs_are_private(export):
     assert proc.is_alive()
 
 
+def test_export_handover_never_leaves_the_previous_accounts_worker(export, monkeypatch):
+    from utils.models import checkpoints
+
+    backend, proc = export
+    assert run_as(ALICE, backend.load_checkpoint, str(run_as(ALICE, outputs_root) / "checkpoint"))[
+        0
+    ]
+
+    def unparsable(*args):
+        raise RecursionError
+
+    # Bob's load fails after he became the owner and before it would have replaced the worker.
+    monkeypatch.setattr(checkpoints, "is_unquantized_full_finetune", unparsable)
+    with pytest.raises(RecursionError):
+        run_as(
+            BOB, backend.load_checkpoint, str(run_as(BOB, outputs_root) / "c"), load_in_4bit = None
+        )
+    assert not proc.is_alive()
+    result = run_as(BOB, backend.export_base_model, str(run_as(BOB, exports_root)))
+    assert result[0] is False and "No export subprocess running" in result[1]
+
+
+def test_export_handover_is_refused_while_the_previous_worker_survives(export, monkeypatch):
+    backend, proc = export
+    assert run_as(ALICE, backend.load_checkpoint, str(run_as(ALICE, outputs_root) / "checkpoint"))[
+        0
+    ]
+    monkeypatch.setattr(backend, "_shutdown_subprocess", lambda **kwargs: False)
+    with pytest.raises(HTTPException) as exc:
+        run_as(BOB, backend.load_checkpoint, str(run_as(BOB, outputs_root) / "checkpoint"))
+    assert exc.value.status_code == 409
+    assert backend._result_account == ALICE and backend.current_checkpoint is not None
+    with pytest.raises(HTTPException) as exc:
+        run_as(BOB, backend.export_base_model, str(run_as(BOB, exports_root)))
+    assert exc.value.status_code == 404
+
+
 def test_export_busy_status_hides_checkpoint(export, monkeypatch):
     from routes import export as route
 
@@ -428,7 +465,7 @@ def test_an_install_that_never_had_a_managed_account_does_no_job_bookkeeping(mon
     monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: False)
 
     service = _OwnedJobService()
-    service._account_job_lock = None  # any reservation would raise here
+    service._account_job_lock = None
     assert run_as(OWNER, service.start) == "started"
     assert service._result_account is None and service.job_account is None
 
@@ -812,6 +849,8 @@ def test_owner_training_start_status_cancel_bytes_are_unchanged(training, monkey
             "total_steps": 0,
             "loss": None,
             "learning_rate": None,
+            "elapsed_seconds": None,
+            "eta_seconds": None,
             "output_dir": None,
             "drafter": None,
             "model_download_repo_id": None,
@@ -1025,6 +1064,47 @@ def test_hugging_face_recipe_seeds_use_explicit_account_credentials():
         run_as(ALICE, jobs.validate_recipe_access, {"source": {**source, "path": "/owner/private"}})
     with pytest.raises(HTTPException):
         run_as(ALICE, jobs.validate_recipe_access, {"source": {**source, "token": ""}})
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"seed_type": "agent_rollout", "format": "codex"},
+        {"seed_type": "agent_rollout", "format": "claude_code", "path": None},
+        {"seed_type": "agent_rollout", "format": "codex", "path": ""},
+        {"seed_type": "directory", "path": ""},
+        {"seed_type": "file_contents", "path": ""},
+    ],
+)
+def test_folder_recipe_seeds_cannot_fall_back_to_a_host_folder(source):
+    with pytest.raises(HTTPException):
+        run_as(ALICE, jobs.validate_recipe_access, {"seed_config": {"source": source}})
+    run_as(OWNER, jobs.validate_recipe_access, {"seed_config": {"source": source}})
+    own = {**source, "path": str(run_as(ALICE, workspace_root) / "rollouts")}
+    run_as(ALICE, jobs.validate_recipe_access, {"seed_config": {"source": own}})
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["/tmp/elsewhere", "../elsewhere", "..\\elsewhere", "nested/name", "C:x", "..", "", None],
+)
+def test_recipe_processor_names_cannot_be_paths(name):
+    recipe = {"processors": [{"processor_type": "schema_transform", "name": name, "template": {}}]}
+    with pytest.raises(HTTPException):
+        run_as(ALICE, jobs.validate_recipe_access, recipe)
+    run_as(OWNER, jobs.validate_recipe_access, recipe)
+
+
+def test_recipe_plain_processor_names_pass():
+    for name in ("schema_transform", "schema_transform_2", "chat format v1.2"):
+        recipe = {"processors": [{"processor_type": "schema_transform", "name": name}]}
+        run_as(ALICE, jobs.validate_recipe_access, recipe)
+    # A schema-transform template may name an output column processor_type.
+    template = {"processor_type": "{{ kind }}", "text": "{{ text }}"}
+    recipe = {
+        "processors": [{"processor_type": "schema_transform", "name": "out", "template": template}]
+    }
+    run_as(ALICE, jobs.validate_recipe_access, recipe)
 
 
 @pytest.mark.parametrize("account", [OWNER, ALICE])
@@ -1333,7 +1413,6 @@ def test_retirement_cancels_model_downloads_and_no_late_grant_recreates_the_work
         assert proc.poll() is not None, "the retired account's model worker is still running"
         assert not workspace.exists()
 
-        # A worker of the same account that still reaches a clean exit must not write the account back.
         registry.drop_process(key, proc)
         finished = subprocess.Popen([sys.executable, "-c", "pass"], stderr = subprocess.PIPE)
         registry.register_process(key, finished)
@@ -1573,7 +1652,6 @@ def test_a_late_finalizer_cannot_recreate_a_deleted_accounts_workspace(monkeypat
         ):
             started.set()
             assert cancel_event.wait(10)
-            # The finalizers that run after the cancel is observed: db.finish_run, then the gallery write.
             assert gate.wait(10)
             for call in (studio_db.get_connection, image_gallery.gallery_dir):
                 with pytest.raises(RetiredAccountError):
@@ -1621,7 +1699,6 @@ def test_retirement_reaps_stt_downloads_and_fences_a_parked_start(tmp_path, monk
     monkeypatch.setattr(access, "authorize_download", lambda *a: None)
     monkeypatch.setattr(access, "account_hf_token", lambda token: "alice-token")
 
-    # A sidecar-shaped module whose transfer is a real child process.
     handles = {"proc": None, "tokens": []}
 
     def start_model_download(
@@ -1667,7 +1744,6 @@ def test_retirement_reaps_stt_downloads_and_fences_a_parked_start(tmp_path, monk
         jobs.retire_account_jobs(ALICE)
         assert worker.poll() is not None, "the retired account's dictation worker is still running"
         assert inference._stt_download_accounts == {}
-        # The engine must not stay claimed by an account that no longer exists.
         run_as(
             BOB,
             inference._start_account_stt_download,
@@ -1678,7 +1754,6 @@ def test_retirement_reaps_stt_downloads_and_fences_a_parked_start(tmp_path, monk
         )
         handles["proc"].kill()
 
-        # A start parked on remote validation when retirement lands must not reach the worker.
         jobs.restore_account_jobs(ALICE.account_id)
         handles["proc"], handles["tokens"] = None, []
         parked, release = threading.Event(), threading.Event()
@@ -1754,7 +1829,6 @@ def test_a_creation_in_flight_cannot_outlive_the_rename_that_retires_the_roots(
     real_ensure_dir = storage_roots._mkdir
 
     def slow_ensure_dir(path):
-        # Past the existence gate of ensure_account_dir; hand the CPU to the deleting thread.
         checked.set()
         assert release.wait(10)
         return real_ensure_dir(path)
@@ -1830,7 +1904,6 @@ def test_deleting_an_account_cancels_its_image_generation_and_keeps_its_roots(
         monkeypatch.setattr(diffusion, "_diffusion_backend", backend)
 
         def denoise():
-            # The real slot: it binds the cancel event and the acting account under the lock.
             with backend._generation_slot(cancel):
                 entered.set()
                 release.wait(10)

@@ -10,10 +10,10 @@ import {
 import { useT } from "@/i18n";
 import {
   Cancel01Icon,
-  Copy01Icon,
   Download01Icon,
   ExpandIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ComponentProps,
@@ -199,7 +199,7 @@ export function MarkdownTable({
             <button
               type="button"
               aria-label={t("common.close")}
-              className="absolute top-4 right-4 flex size-10 cursor-pointer items-center justify-center rounded-full bg-popover text-foreground shadow-lg ring-1 ring-border/60 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute top-4 right-4 flex size-10 cursor-pointer items-center justify-center rounded-full bg-popover text-foreground shadow-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <HugeiconsIcon
                 icon={Cancel01Icon}

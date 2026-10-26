@@ -466,7 +466,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
             ):
                 # A replaceable interpreter alias would let the next host probe execute tool code.
                 raise WorkdirUnsafeError(
-                    "the session workdir holds a link to the Python that runs Studio: "
+                    "the session workdir holds a link to the Python that runs Unsloth: "
                     f"{posixpath.abspath(candidate)}"
                 )
             continue
@@ -597,6 +597,8 @@ def build_profile(
         # bash process substitution opens /dev/fd/63.
         '(allow file-read* (regex #"^/dev/fd/[0-9]+$"))',
         '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))',
+        # Unlistable, CPython close()s every fd up to RLIMIT_NOFILE before exec: forever when unlimited.
+        '(allow file-read* (literal "/dev/fd"))',
         _rule("allow file-ioctl", device_filters),
         "(allow ipc-posix-sem)",
         # write-data: libomp writes its registration into the segment.

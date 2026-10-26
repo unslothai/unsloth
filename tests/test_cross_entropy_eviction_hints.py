@@ -27,6 +27,7 @@ _SIGNATURE = {
     "logits_ptr": "*bf16",
     "loss_ptr": "*fp32",
     "logsumexp_ptr": "*fp32",
+    "logsumexp_others_ptr": "*fp32",
     "labels_ptr": "*i64",
 }
 
@@ -50,11 +51,17 @@ def _compile(evict, cc):
     fn = ce_mod._chunked_cross_entropy_forward.fn
     signature = {name: _SIGNATURE.get(name, "constexpr") for name in fn.arg_names}
     constexprs = dict(_CHUNKED, EVICT = evict, **_COMMON)
-    return triton.compile(
-        ASTSource(fn, signature = signature, constexprs = constexprs),
-        target = GPUTarget("cuda", cc, 32),
-        options = {"num_warps": 32},
-    )
+    try:
+        return triton.compile(
+            ASTSource(fn, signature = signature, constexprs = constexprs),
+            target = GPUTarget("cuda", cc, 32),
+            options = {"num_warps": 32},
+        )
+    except Exception as error:
+        # CUDA 13 ptxas (torch's, picked once Inductor sets TRITON_PTXAS_PATH) has no sm_52 to sm_72.
+        if "is not defined for option 'gpu-name'" in str(error):
+            pytest.skip(f"the active ptxas cannot target sm_{cc}")
+        raise
 
 
 @pytest.mark.parametrize("capability", [(5, 2), (6, 1)])

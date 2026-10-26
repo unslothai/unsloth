@@ -106,7 +106,7 @@ async function adoptActiveModelDownloads(): Promise<void> {
       safeGeneration(download.generation),
       download.state,
       isResolvedTransport(download.transport) ? download.transport : undefined,
-      // null, not undefined: this endpoint always reports the marker, so "no marker" must clear one left in storage.
+      // null, not undefined: this endpoint always reports the marker, so "no marker" clears storage.
       isResolvedTransport(download.cancel_transport)
         ? download.cancel_transport
         : null,
@@ -132,7 +132,7 @@ async function adoptActiveDatasetDownloads(): Promise<void> {
       safeGeneration(download.generation),
       download.state,
       isResolvedTransport(download.transport) ? download.transport : undefined,
-      // null, not undefined: this endpoint always reports the marker, so "no marker" must clear one left in storage.
+      // null, not undefined: this endpoint always reports the marker, so "no marker" clears storage.
       isResolvedTransport(download.cancel_transport)
         ? download.cancel_transport
         : null,
@@ -189,8 +189,7 @@ async function probeHydratedIdleProgress(
       finalize(key, "complete", { bytes: updated.downloadedBytes });
       return "settled";
     }
-    // A persisted job whose cache was wiped must read "gone" here, not sit as a phantom download blocking a fresh start until the idle-evict grace expires.
-    // A zero alone is not proof, since a transient measurement failure returns a successful all-zero response; cache_path is null only when no cache dir exists.
+    // A wiped cache must read "gone" or a phantom job blocks fresh starts until idle eviction.
     return idleProbeVerdict(
       progressResp.downloaded_bytes,
       progressResp.cache_path,
@@ -285,7 +284,6 @@ export function hydrateDownloadManager(): void {
   void hydrateBackendActiveDownloads();
   const jobs = Object.values(getState().jobs);
   for (const job of jobs) {
-    // External jobs are live in memory and have no hub job to probe.
     if (job.external) continue;
     if (!ACTIVE_STATES.has(job.state)) {
       removeJob(job.key);

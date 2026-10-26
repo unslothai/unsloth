@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Admission-control wiring for the Anthropic /v1/messages endpoint.
-
-The FIFO queue itself is unit-tested in test_llama_admission.py; here we exercise
-how anthropic_messages reserves a slot, queues when the backend is saturated,
-streams keep-alives while waiting, releases on completion, and maps rejects to
-429/503. Slot occupancy is driven directly through the shared queue (keyed by the
-backend base_url) so generation stays fast and no thread has to block.
-"""
+"""Admission wiring for /v1/messages; the FIFO queue itself is tested in test_llama_admission.py."""
 
 from __future__ import annotations
 
@@ -121,12 +114,96 @@ def _payload(**fields) -> AnthropicMessagesRequest:
     return AnthropicMessagesRequest(**base)
 
 
-def _record_admission_logs(monkeypatch):
-    """Capture _llama_admission_log output.
+@pytest.mark.parametrize(
+    "thinking", [{"type": "disabled"}, {"type": "enabled", "budget_tokens": 1024}]
+)
+@pytest.mark.parametrize("server_tools", [False, True])
+def test_admission_counts_native_anthropic_thinking_mode(monkeypatch, thinking, server_tools):
+    counts = []
+    generated = []
 
-    Through the logger rather than caplog: this one is a structlog bound logger,
-    so it never reaches the stdlib handlers caplog installs.
-    """
+    def count(*args, **kwargs):
+        counts.append(kwargs)
+        return 2
+
+    backend = _install_backend(monkeypatch, count_tokens = count)
+
+    def generate(**kwargs):
+        generated.append(kwargs)
+        yield "ok"
+
+    def generate_tools(**kwargs):
+        generated.append(kwargs)
+        kwargs["on_conversation_grew"](kwargs["messages"])
+        yield {"type": "content", "text": "ok"}
+
+    backend.generate_chat_completion = generate
+    backend.generate_chat_completion_with_tools = generate_tools
+    backend._request_reasoning_kwargs = lambda enable, effort, preserve: {"enable_thinking": enable}
+    payload = _payload(
+        thinking = thinking,
+        max_tokens = 1536,
+        stream = False,
+        enable_tools = server_tools,
+        permission_mode = "off",
+    )
+    asyncio.run(inf_mod.anthropic_messages(payload, _Request(), "test-user"))
+    expected = thinking["type"] == "enabled"
+    assert generated[0]["enable_thinking"] is expected
+    assert counts[0]["chat_template_kwargs"]["enable_thinking"] is expected
+    assert all(item["chat_template_kwargs"]["enable_thinking"] is expected for item in counts)
+
+
+@pytest.mark.parametrize("mode", ["forced-tool", "schema"])
+def test_admission_uses_normalized_anthropic_passthrough_body(monkeypatch, mode):
+    backend = _install_backend(monkeypatch)
+    backend.supports_tool_passthrough = True
+    fields = {"stream": False}
+    if mode == "forced-tool":
+        fields.update(
+            tools = [
+                {
+                    "name": name,
+                    "description": name,
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+                for name in ["first", "wanted"]
+            ],
+            tool_choice = {"type": "tool", "name": "wanted"},
+        )
+    else:
+        fields["output_config"] = {
+            "format": {
+                "type": "json_schema",
+                "schema": {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                    "additionalProperties": False,
+                },
+            }
+        }
+    captured = []
+
+    async def reserve(**kwargs):
+        captured.append(kwargs)
+        raise RuntimeError("captured admission")
+
+    monkeypatch.setattr(inf_mod, "_reserve_counted_gguf_chat", reserve)
+    with pytest.raises(RuntimeError, match = "captured admission"):
+        asyncio.run(inf_mod.anthropic_messages(_payload(**fields), _Request(), "test-user"))
+    body = captured[0]["prepared_body"]
+    if mode == "forced-tool":
+        assert [tool["function"]["name"] for tool in body["tools"]] == ["wanted"]
+        assert body["tool_choice"] == "required"
+    else:
+        assert body["response_format"]["type"] == "json_schema"
+    assert captured[0]["messages"] == body["messages"]
+    assert captured[0]["injected_tools"] == body.get("tools")
+
+
+def _record_admission_logs(monkeypatch):
+    """Records via the logger, not caplog: this structlog logger never reaches the stdlib handlers."""
     records = []
 
     def _record(level):
@@ -168,9 +245,6 @@ async def _consume(response):
     return "".join(chunks)
 
 
-# ── Non-streaming ─────────────────────────────────────────────
-
-
 def test_non_streaming_completes_and_releases_slot(monkeypatch):
     _install_backend(monkeypatch, slots = 2)
 
@@ -188,17 +262,14 @@ def test_non_streaming_queue_full_returns_429(monkeypatch):
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
-        held = _occupy(_KEY, 1, 1)  # slot busy
-        # One waiter fills the max_queue=1; the next reserve rejects.
+        held = _occupy(_KEY, 1, 1)
         get_llama_admission_queue(_KEY).reserve(
             capacity = 1, config = LlamaAdmissionConfig(max_queue = 1)
         )
         with pytest.raises(HTTPException) as exc:
             await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         assert exc.value.status_code == 429
-        # rate_limit_error is what Anthropic SDKs back off on; overloaded_error is 529.
-        # The type string alone does not pin the envelope, since OpenAI's 429 uses the
-        # same word. Assert the shape too, or emitting an OpenAI body still passes.
+        # Assert the envelope shape: OpenAI's 429 uses the same type string.
         detail = exc.value.detail
         assert detail["type"] == "error"
         assert "request_id" in detail
@@ -211,9 +282,6 @@ def test_non_streaming_queue_full_returns_429(monkeypatch):
 
 
 def test_admission_events_are_logged_on_the_anthropic_surface(monkeypatch):
-    # The OpenAI passthrough logs these with a mode; without the same on /v1/messages
-    # an operator debugging a slow Anthropic client has nothing to look at, and the
-    # pool is shared, so it is the same triage.
     records = _record_admission_logs(monkeypatch)
     monkeypatch.setenv(ADMISSION_MAX_QUEUE_ENV, "1")
     _install_backend(monkeypatch, slots = 1)
@@ -236,7 +304,6 @@ def test_admission_events_are_logged_on_the_anthropic_surface(monkeypatch):
 
 
 def test_streaming_admission_waiting_is_logged(monkeypatch):
-    # queued and granted-after-wait were both emitted with nothing asserting them.
     records = _record_admission_logs(monkeypatch)
     monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
     _install_backend(monkeypatch, slots = 1)
@@ -254,14 +321,12 @@ def test_streaming_admission_waiting_is_logged(monkeypatch):
 
     asyncio.run(_run())
     events = [msg for _level, msg in records if "llama admission" in msg]
-    # "llama admission queued", not "queued": every line carries a queued=N field,
-    # so the bare substring matches any admission log at all.
+    # Every line carries queued=N, so match the full phrase.
     assert any(
         "llama admission queued" in m and "mode=anthropic_stream" in m for m in events
     ), events
     granted = [m for m in events if "granted-after-wait" in m]
     assert granted, events
-    # wait_ms is the point of the event: a grant that reports nothing is useless.
     assert re.search(r"wait_ms=\d+", granted[0]), granted
 
 
@@ -272,7 +337,7 @@ def test_streaming_admission_timeout_is_logged(monkeypatch):
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
-        held = _occupy(_KEY, 1, 1)  # never released, so the waiter times out
+        held = _occupy(_KEY, 1, 1)
         response = await anthropic_messages(
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
@@ -287,8 +352,6 @@ def test_streaming_admission_timeout_is_logged(monkeypatch):
 
 
 def test_streaming_give_up_while_queued_is_logged(monkeypatch):
-    # cancelled-before-upstream is the one that tells an operator a client walked
-    # away rather than the backend being slow.
     records = _record_admission_logs(monkeypatch)
     monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
     _install_backend(monkeypatch, slots = 1)
@@ -314,7 +377,7 @@ def test_non_streaming_times_out_returns_503(monkeypatch):
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
-        held = _occupy(_KEY, 1, 1)  # never released -> waiter times out
+        held = _occupy(_KEY, 1, 1)
         with pytest.raises(HTTPException) as exc:
             await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         assert exc.value.status_code == 503
@@ -333,8 +396,8 @@ def test_non_streaming_queued_then_admitted(monkeypatch):
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
         await asyncio.sleep(0.1)
-        assert _snapshot().queued == 1  # waiting on the busy slot
-        held[0].release()  # free it
+        assert _snapshot().queued == 1
+        held[0].release()
         response = await asyncio.wait_for(task, timeout = 2)
         assert response.status_code == 200
         assert _snapshot().active == 0 and _snapshot().queued == 0
@@ -346,7 +409,7 @@ def test_capacity_enforced_from_effective_parallel_slots(monkeypatch):
     _install_backend(monkeypatch, slots = 3)
 
     async def _run():
-        held = _occupy(_KEY, 3, 3)  # all 3 slots busy
+        held = _occupy(_KEY, 3, 3)
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
@@ -366,7 +429,7 @@ def test_disabled_admission_bypasses_limit(monkeypatch):
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
-        held = _occupy(_KEY, 1, 1)  # would block if admission were on
+        held = _occupy(_KEY, 1, 1)
         response = await asyncio.wait_for(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t"),
             timeout = 2,
@@ -376,9 +439,6 @@ def test_disabled_admission_bypasses_limit(monkeypatch):
             lease.release()
 
     asyncio.run(_run())
-
-
-# ── Streaming ─────────────────────────────────────────────────
 
 
 def test_streaming_completes_and_releases_slot(monkeypatch):
@@ -409,8 +469,8 @@ def test_streaming_emits_keepalives_while_queued_then_streams(monkeypatch):
         # First chunk must be a keep-alive comment (slot still busy).
         first = await asyncio.wait_for(body.__anext__(), timeout = 2)
         first = first.decode() if isinstance(first, (bytes, bytearray)) else first
-        assert first.startswith(":")  # SSE comment keep-alive
-        held[0].release()  # free the slot -> real stream follows
+        assert first.startswith(":")
+        held[0].release()
         rest = await asyncio.wait_for(_drain(body), timeout = 2)
         assert "event: message_start" in rest
         assert _snapshot().active == 0 and _snapshot().queued == 0
@@ -446,9 +506,9 @@ def test_streaming_disconnect_while_queued_frees_slot(monkeypatch):
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
         body = response.body_iterator
-        await asyncio.wait_for(body.__anext__(), timeout = 2)  # one keep-alive
+        await asyncio.wait_for(body.__anext__(), timeout = 2)
         assert _snapshot().queued == 1
-        await body.aclose()  # client goes away mid-wait
+        await body.aclose()
         held[0].release()
         await asyncio.sleep(0.05)
         snap = _snapshot()
@@ -457,16 +517,8 @@ def test_streaming_disconnect_while_queued_frees_slot(monkeypatch):
     asyncio.run(_run())
 
 
-# ── Shared queue + fairness + speed ───────────────────────────
-
-
 def test_shares_queue_with_openai_by_base_url(monkeypatch):
-    """The two API surfaces must land on one pool of the same llama-server slots.
-
-    Reserves through the OpenAI helper the /v1/chat/completions path uses, rather
-    than poking the queue directly, so this fails if either side ever derives a
-    different key.
-    """
+    """Reserves through the OpenAI helper, so the test fails if either API derives a different queue key."""
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
@@ -475,13 +527,13 @@ def test_shares_queue_with_openai_by_base_url(monkeypatch):
         )
         openai_lease = openai_reservation.lease_nowait()
         assert openai_lease is not None
-        assert _snapshot().active == 1  # same key the Anthropic side will use
+        assert _snapshot().active == 1
 
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
         await asyncio.sleep(0.1)
-        assert _snapshot().queued == 1  # queued behind the OpenAI generation
+        assert _snapshot().queued == 1
         openai_lease.release()
         assert (await asyncio.wait_for(task, timeout = 2)).status_code == 200
 
@@ -489,7 +541,6 @@ def test_shares_queue_with_openai_by_base_url(monkeypatch):
 
 
 def test_non_streaming_client_gone_while_queued_returns_499(monkeypatch):
-    # The disconnect-while-queued branch; nothing else exercised 499.
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
@@ -499,7 +550,7 @@ def test_non_streaming_client_gone_while_queued_returns_499(monkeypatch):
                 _payload(), request = _Request(disconnected = True), current_subject = "t"
             )
         assert exc.value.status_code == 499
-        assert _snapshot().queued == 0  # waiter cleaned up, not left parked
+        assert _snapshot().queued == 0
         for lease in held:
             lease.release()
 
@@ -507,19 +558,18 @@ def test_non_streaming_client_gone_while_queued_returns_499(monkeypatch):
 
 
 def test_streaming_timeout_emits_an_error_event_and_frees_the_slot(monkeypatch):
-    # Only the non-streaming 503 was covered; streaming reports in-band instead.
     monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.15")
     monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
-        held = _occupy(_KEY, 1, 1)  # never released, so the waiter times out
+        held = _occupy(_KEY, 1, 1)
         response = await anthropic_messages(
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
         body = await _consume(response)
         assert "event: error" in body
-        assert "message_start" not in body  # never reached the model
+        assert "message_start" not in body
         for lease in held:
             lease.release()
         assert _snapshot().active == 0 and _snapshot().queued == 0
@@ -544,7 +594,7 @@ def test_fifo_fairness_across_many_waiters(monkeypatch):
         assert _snapshot().queued == 8
         held[0].release()
         await asyncio.wait_for(asyncio.gather(*tasks), timeout = 5)
-        assert order == list(range(8))  # granted in arrival order
+        assert order == list(range(8))
         assert _snapshot().active == 0 and _snapshot().queued == 0
 
     asyncio.run(_run())
@@ -559,9 +609,7 @@ def test_uncontended_hot_path_is_fast(monkeypatch):
             resp = await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
             assert resp.status_code == 200
         elapsed = time.perf_counter() - start
-        # Generous ceiling on purpose: this guards against admission accidentally
-        # serialising or sleeping on the uncontended path, not against a slow
-        # runner, so it must not flake on a loaded CI box.
+        # Generous ceiling: guards against serialising, not a slow runner.
         assert elapsed < 10.0, f"50 uncontended round-trips took {elapsed:.2f}s"
         assert _snapshot().active == 0 and _snapshot().queued == 0
 
@@ -576,9 +624,7 @@ async def _drain(body):
 
 
 def test_streaming_midstream_cancel_finalizes_the_monitor(monkeypatch):
-    # A mid-stream disconnect is delivered as CancelledError so the monitored body
-    # can finalize its entry. Closing the inner iterator with aclose() instead
-    # delivers GeneratorExit, and the entry stays "running" for the process life.
+    # Disconnect must arrive as CancelledError; aclose() leaves the entry running.
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
@@ -586,13 +632,11 @@ def test_streaming_midstream_cancel_finalizes_the_monitor(monkeypatch):
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
         body = response.body_iterator
-        await asyncio.wait_for(body.__anext__(), timeout = 2)  # stream started
+        await asyncio.wait_for(body.__anext__(), timeout = 2)
         assert inf_mod.api_monitor.active_count() == 1
 
-        # Propagates back out, as the un-admitted path did; what matters is that
-        # the monitored body saw it on the way through.
         with pytest.raises(asyncio.CancelledError):
-            await body.athrow(asyncio.CancelledError())  # client vanished
+            await body.athrow(asyncio.CancelledError())
 
         assert inf_mod.api_monitor.active_count() == 0
         assert _snapshot().active == 0 and _snapshot().queued == 0
@@ -601,8 +645,7 @@ def test_streaming_midstream_cancel_finalizes_the_monitor(monkeypatch):
 
 
 def test_streaming_give_up_while_queued_finalizes_the_monitor(monkeypatch):
-    # Cancelled before the body ever ran, so nothing downstream can close the
-    # entry out; the wrapper has to do it.
+    # Cancelled before the body ran, so the wrapper must close the entry.
     monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
     _install_backend(monkeypatch, slots = 1)
 
@@ -612,10 +655,10 @@ def test_streaming_give_up_while_queued_finalizes_the_monitor(monkeypatch):
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
         body = response.body_iterator
-        await asyncio.wait_for(body.__anext__(), timeout = 2)  # keep-alive, still queued
+        await asyncio.wait_for(body.__anext__(), timeout = 2)
         assert inf_mod.api_monitor.active_count() == 1
 
-        await body.aclose()  # give up while waiting
+        await body.aclose()
 
         assert inf_mod.api_monitor.active_count() == 0
         for lease in held:
@@ -626,12 +669,7 @@ def test_streaming_give_up_while_queued_finalizes_the_monitor(monkeypatch):
 
 
 def test_every_dispatch_site_goes_through_admission():
-    """All six generation returns in anthropic_messages are admission-wrapped.
-
-    The tool paths need a passthrough-capable backend and a tools payload to reach
-    at runtime, so guard them structurally instead: a new dispatch site added
-    without admission (or one reverted to _monitored_anthropic) fails here.
-    """
+    """Tool paths need a passthrough backend, so every dispatch site is checked by AST instead."""
     import ast
     import inspect
 
@@ -641,8 +679,7 @@ def test_every_dispatch_site_goes_through_admission():
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "anthropic_messages"
     )
-    # The wrappers themselves call _monitored_anthropic (the non-streaming one
-    # through the swap-gate tracker); only the dispatch sites count.
+    # Wrappers call _monitored_anthropic themselves; count only dispatch sites.
     nested = {
         node
         for node in ast.walk(handler)
@@ -663,13 +700,7 @@ def test_every_dispatch_site_goes_through_admission():
 
 
 def test_queued_give_up_runs_the_response_pre_start_cleanup(monkeypatch):
-    """A stream abandoned while queued must run the builder's eager cleanup.
-
-    The passthrough enters a _TrackedCancel before returning its response and
-    relies on the stream's finally to exit it. That finally never runs for a
-    generator that never started, so the response carries a pre-start hook and
-    the admission wrapper has to chain to it instead of replacing it.
-    """
+    """A queued give-up must run the pre-start hook, since an unstarted stream's finally never runs."""
     monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
     _install_backend(monkeypatch, slots = 1)
     ran = []
@@ -690,8 +721,8 @@ def test_queued_give_up_runs_the_response_pre_start_cleanup(monkeypatch):
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
         body = response.body_iterator
-        await asyncio.wait_for(body.__anext__(), timeout = 2)  # keep-alive, still queued
-        await body.aclose()  # give up before the body ran
+        await asyncio.wait_for(body.__anext__(), timeout = 2)
+        await body.aclose()
 
         assert ran == [True]
         for lease in held:
@@ -701,8 +732,6 @@ def test_queued_give_up_runs_the_response_pre_start_cleanup(monkeypatch):
 
 
 def test_passthrough_stream_registers_a_pre_start_cleanup():
-    # Structural guard: the tracker is entered eagerly, so the response must
-    # carry the hook that exits it when the body never starts.
     import ast
     import inspect
 
@@ -716,15 +745,13 @@ def test_passthrough_stream_registers_a_pre_start_cleanup():
         and getattr(n.value.func, "id", "") == "_sse_streaming_response"
     )
     hook = next(kw.value for kw in call.keywords if kw.arg == "unstarted_cleanup")
-    # Not just present: a literal None passes the keyword check and still leaks.
+    # A literal None passes the keyword check and still leaks.
     assert isinstance(hook, ast.Call)
     assert getattr(hook.func, "id", None) == "_tracked_cancel_unstarted_cleanup"
 
 
 def test_slot_is_released_even_if_closing_the_body_raises(monkeypatch):
-    # A slot lost here never comes back: with no queue timeout the pool silently
-    # shrinks and later callers wait forever, so the release must not sit behind
-    # anything that can throw.
+    # A lost slot never returns, so release must not sit behind anything that throws.
     _install_backend(monkeypatch, slots = 1)
 
     async def _boom(iterator, *, cancelled):
@@ -737,14 +764,13 @@ def test_slot_is_released_even_if_closing_the_body_raises(monkeypatch):
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
         body = response.body_iterator
-        await asyncio.wait_for(body.__anext__(), timeout = 2)  # stream started
+        await asyncio.wait_for(body.__anext__(), timeout = 2)
         assert _snapshot().active == 1
 
         with pytest.raises(RuntimeError):
             await body.aclose()
 
-        assert _snapshot().active == 0  # slot returned despite the failure
-        # And the pool still serves the next caller.
+        assert _snapshot().active == 0
         again = get_llama_admission_queue(_KEY).reserve(capacity = 1, config = LlamaAdmissionConfig())
         lease = again.lease_nowait()
         assert lease is not None
@@ -759,19 +785,11 @@ _CLIENT_TOOLS = [
 
 
 def _passthrough_payload(**fields):
-    # server_tools off + declared tools + a passthrough-capable backend routes
-    # anthropic_messages down the client-tool passthrough dispatch site.
     return _payload(tools = _CLIENT_TOOLS, enable_tools = False, **fields)
 
 
 def test_response_pre_start_cleanup_leaves_no_passthrough_tracker(monkeypatch):
-    """A disconnect before the body starts must leave no tracker and no slot.
-
-    The passthrough registers from inside its body rather than eagerly, so a
-    generator that never runs registers nothing; the hook still has to hand the
-    admission slot back. Asserting through _CANCEL_REGISTRY and the pool rather
-    than the wiring, because the hook can be present and still be a no-op.
-    """
+    """A disconnect before the body starts must return the slot and register no tracker."""
     backend = _install_backend(monkeypatch, slots = 1)
     backend.supports_tool_passthrough = True
     monkeypatch.setattr(inf_mod, "_CANCEL_REGISTRY", {})
@@ -793,7 +811,6 @@ def test_response_pre_start_cleanup_leaves_no_passthrough_tracker(monkeypatch):
 
 
 def test_passthrough_dispatch_site_reserves_and_releases(monkeypatch):
-    # Behavioural cover for a dispatch site the other tests never reach.
     backend = _install_backend(monkeypatch, slots = 1)
     backend.supports_tool_passthrough = True
 
@@ -803,20 +820,18 @@ def test_passthrough_dispatch_site_reserves_and_releases(monkeypatch):
             anthropic_messages(_passthrough_payload(), request = _Request(), current_subject = "t")
         )
         await asyncio.sleep(0.1)
-        assert _snapshot().queued == 1  # queued behind the busy slot, not bypassing
+        assert _snapshot().queued == 1
         for lease in held:
             lease.release()
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(task, timeout = 2)  # upstream is not mocked
+            await asyncio.wait_for(task, timeout = 2)
         assert _snapshot().active == 0 and _snapshot().queued == 0
 
     asyncio.run(_run())
 
 
 def test_stream_setup_failure_returns_the_slot(monkeypatch):
-    # count_chat_tokens makes a blocking HTTP call to llama-server, so a dead
-    # server raises here: after lease_nowait() took the slot, before a body
-    # exists to release it. Nothing else can hand the slot back.
+    # count_chat_tokens can raise after lease_nowait() took the slot.
     def _boom(*_a, **_k):
         raise RuntimeError("tokenizer unreachable")
 
@@ -827,7 +842,6 @@ def test_stream_setup_failure_returns_the_slot(monkeypatch):
             await anthropic_messages(_payload(stream = True), request = _Request(), current_subject = "t")
         snap = _snapshot()
         assert snap.active == 0, f"slot leaked after stream setup failed: {snap}"
-        # And the pool still serves the next caller.
         again = get_llama_admission_queue(_KEY).reserve(capacity = 1, config = LlamaAdmissionConfig())
         assert again.lease_nowait() is not None
 
@@ -835,8 +849,7 @@ def test_stream_setup_failure_returns_the_slot(monkeypatch):
 
 
 def test_queued_non_stream_cancel_does_not_leak_a_coroutine(monkeypatch):
-    # The non-stream path builds the generation coroutine before reserving and
-    # only awaits it once admitted. Giving up while queued must close it.
+    # Giving up while queued must close the pre-built generation coroutine.
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
@@ -861,15 +874,13 @@ def test_queued_non_stream_cancel_does_not_leak_a_coroutine(monkeypatch):
 
 
 def test_stream_timeout_marks_the_monitor_entry_as_error(monkeypatch):
-    # The finally finishes the entry as "cancelled"; without the fail() first, a
-    # timed-out request is indistinguishable from a client hang-up in the
-    # monitor. api_monitor.finish is a no-op on an already terminal entry.
+    # fail() first so a timeout is distinguishable from a hang-up in the monitor.
     monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.15")
     monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
-        held = _occupy(_KEY, 1, 1)  # never released, so the waiter times out
+        held = _occupy(_KEY, 1, 1)
         response = await anthropic_messages(
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
@@ -911,9 +922,7 @@ class _RespawnBackend:
 
 
 def test_retry_url_stands_down_while_an_mtp_fallback_is_reloading():
-    # Only the first caller gets True from _maybe_recover_from_mtp_crash; the rest
-    # see False and must still stand down, or they respawn the same MTP config
-    # underneath the fallback already reloading without it.
+    # Later callers get False and must still stand down, or they respawn MTP.
     backend = _RespawnBackend(mtp_handled = False, fallback_in_progress = True)
 
     url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
@@ -944,14 +953,13 @@ async def _passthrough_response(backend):
 
 
 def test_disconnect_during_the_opening_lines_exits_the_tracker():
-    # Suspended inside emitter.start()'s yields the generator has not reached the
-    # try/finally that exits the tracker, so those yields need their own.
+    # Yields inside emitter.start() precede the try/finally, so need their own exit.
     backend = _RespawnBackend()
 
     async def _run():
         response = await _passthrough_response(backend)
         body = response.body_iterator
-        await asyncio.wait_for(body.__anext__(), timeout = 2)  # first start line
+        await asyncio.wait_for(body.__anext__(), timeout = 2)
         assert inf_mod._CANCEL_REGISTRY, "tracker should be registered"
         await body.aclose()
         assert inf_mod._CANCEL_REGISTRY == {}, "tracker leaked"
@@ -960,7 +968,6 @@ def test_disconnect_during_the_opening_lines_exits_the_tracker():
 
 
 def test_cancel_during_the_opening_lines_exits_the_tracker():
-    # Same window, delivered the way _SameTaskStreamingResponse delivers it.
     backend = _RespawnBackend()
 
     async def _run():

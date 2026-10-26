@@ -8,7 +8,6 @@ import { type Ref, useMemo } from "react";
 import { EDIT_DIFF_MAX_WORDS, countChanges, diffSegments } from "../edit-diff";
 import { EDIT_COPY } from "../edit-policy";
 
-/** ② the transcript's editable copy, each change marked below it (with sr-only text too). */
 export function TranscriptDiffEditor({
   value,
   onChange,
@@ -80,7 +79,7 @@ export function TranscriptDiffEditor({
         <p
           id={diffId}
           aria-label="Changes from the transcript"
-          className="rounded-xl bg-muted/50 px-3 py-2 text-ui-13 leading-relaxed text-foreground [overflow-wrap:anywhere]"
+          className="rounded-lg bg-muted/50 px-3 py-2 text-ui-13 leading-relaxed text-foreground [overflow-wrap:anywhere]"
         >
           {segments.map((segment, index) => {
             return (

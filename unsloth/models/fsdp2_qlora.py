@@ -36,6 +36,7 @@ __all__ = [
 
 import contextlib
 import inspect
+import sys
 
 import torch
 
@@ -47,19 +48,28 @@ _QUANT_ATTRS = (
     "quant_type",
     "quant_storage",
     "bnb_quantized",
+    # A transformers v5 3D expert stack (zoo moe_utils_bnb4bit) records its logical shape here.
+    "_original_shape",
 )
+
+
+# Marks an FSDP2 all-gathered 4-bit weight (read by unsloth-zoo's MoE pointer-table caches).
+_GATHERED_MARK = "_unsloth_fsdp2_gathered"
 
 
 def is_params4bit(tensor):
     return any(cls.__name__ == "Params4bit" for cls in type(tensor).__mro__)
 
 
-def float_storage_survives_wrap(prepare_fn = None):
+def float_storage_survives_wrap(prepare_fn = None, native = False):
     """Whether 4-bit weights may be packed in a float dtype for FSDP2. False when this torch's FSDP2
     cannot be patched (`patch_fsdp2_params4bit`), checks frozen dtypes per unit (torch < 2.8), or when accelerate's FSDP2 wrap ends with
     `model.to(torch.float32)` (accelerate < 1.13 with mixed precision), which converts float-stored
     packed bytes as if they were weights. uint8 storage is safe from both, so 4-bit weights then stay
-    uint8 (left replicated by accelerate, but correct)."""
+    uint8 (left replicated by accelerate, but correct). `native` is Unsloth's own fully_shard wrap
+    (`fsdp2_native`), which never upcasts the model: only the two FSDP2 conditions apply."""
+    if native:
+        return not _missing_fsdp2_anchors() and not _fsdp2_checks_frozen_dtypes()
     if prepare_fn is None:
         try:
             from accelerate.utils.fsdp_utils import fsdp2_prepare_model as prepare_fn
@@ -82,9 +92,92 @@ def float_storage_survives_wrap(prepare_fn = None):
     return "model.to(torch.float32)" not in source
 
 
+# FSDP2's private modules, by static import on either layout: torch.distributed.fsdp._fully_shard.<name>
+# (torch >= 2.6) or torch.distributed._composable.fsdp.<name> (2.4 / 2.5).
+
+
+def _load_fsdp_param():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_param as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_param as module
+    return module
+
+
+def _load_fsdp_state():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_state as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_state as module
+    return module
+
+
+def _load_fsdp_common():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_common as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_common as module
+    return module
+
+
+def _load_fsdp_param_group():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_param_group as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_param_group as module
+    return module
+
+
+def _load_fsdp_init():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_init as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_init as module
+    return module
+
+
+def _load_fsdp_collectives():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fsdp_collectives as module
+    except ImportError:  # torch 2.4 / 2.5
+        from torch.distributed._composable.fsdp import _fsdp_collectives as module
+    return module
+
+
+def _load_fully_shard():
+    try:
+        from torch.distributed.fsdp._fully_shard import _fully_shard as module
+    except (
+        ImportError
+    ):  # torch 2.4 / 2.5: the module is `fully_shard` (the package attribute is the function)
+        import torch.distributed._composable.fsdp.fully_shard  # noqa: F401
+        module = sys.modules["torch.distributed._composable.fsdp.fully_shard"]
+    return module
+
+
+_FSDP_PRIVATE_LOADERS = {
+    "_fsdp_param": _load_fsdp_param,
+    "_fsdp_state": _load_fsdp_state,
+    "_fsdp_common": _load_fsdp_common,
+    "_fsdp_param_group": _load_fsdp_param_group,
+    "_fsdp_init": _load_fsdp_init,
+    "_fsdp_collectives": _load_fsdp_collectives,
+    "_fully_shard": _load_fully_shard,
+}
+
+
+def _fsdp_private(submodule):
+    """FSDP2's private module `submodule` (_fsdp_param, _fsdp_state, _fsdp_common, _fsdp_param_group,
+    _fsdp_init, _fsdp_collectives, _fully_shard) on either layout (see _FSDP_PRIVATE_LOADERS)."""
+    loader = _FSDP_PRIVATE_LOADERS.get(submodule)
+    if loader is None:
+        raise ImportError(f"no FSDP2 module {submodule}")
+    return loader()
+
+
 def _fsdp2_checks_frozen_dtypes():
     try:
-        from torch.distributed.fsdp._fully_shard._fsdp_param_group import FSDPParamGroup
+        FSDPParamGroup = _fsdp_private("_fsdp_param_group").FSDPParamGroup
         return "requires_grad" not in inspect.getsource(FSDPParamGroup._init_mp_dtypes)
     except Exception:
         return True
@@ -167,6 +260,42 @@ def params4bit_to_uint8_storage(model):
     return converted, left
 
 
+@contextlib.contextmanager
+def packed_4bit_as_uint8(model, enabled = True):
+    """Show float-packed 4-bit weights as the uint8 bitsandbytes stores by default for the duration.
+    Loader dtype passes (`module.to(module._pre_set_compute_dtype)`, forced float32) cast every
+    floating parameter of a module, so packed bytes held in float16 / bfloat16 would be converted as
+    if they were weights; as uint8 they are skipped, as they are without FSDP2. Restored afterwards."""
+    packed = []
+    if enabled:
+        for module in model.modules():
+            for name, param in module._parameters.items():
+                if (
+                    param is None
+                    or not is_params4bit(param)
+                    or not param.is_floating_point()
+                    or not getattr(param, "bnb_quantized", False)
+                    or getattr(param, "quant_state", None) is None
+                    or not param.is_contiguous()
+                    or param.device.type == "meta"
+                ):
+                    continue
+                packed.append((module, name, param.dtype))
+    for module, name, _ in packed:
+        param = module._parameters[name]
+        param.data = param.data.reshape(-1).view(torch.uint8).reshape(-1, 1)
+        param.quant_storage = torch.uint8
+    try:
+        yield len(packed)
+    finally:
+        for module, name, dtype in packed:
+            param = module._parameters.get(name)
+            if param is None or param.dtype != torch.uint8:
+                continue
+            param.data = param.data.reshape(-1).view(dtype).reshape(-1, 1)
+            param.quant_storage = dtype
+
+
 def _packed_numel(param):
     if is_params4bit(param) and param.is_floating_point():
         return param.numel() * param.element_size()
@@ -213,16 +342,11 @@ def nonfloat_frozen_unmanaged():
     every unit, as accelerate >= 1.14 does with `ignored_params` on torch >= 2.7. torch < 2.8 asserts one
     original dtype over all of a unit's parameters, so uint8 next to float LoRA weights cannot be sharded."""
     modules = []
-    try:
-        from torch.distributed.fsdp._fully_shard import _fully_shard as _fully_shard_module
-        modules.append(_fully_shard_module)
-    except Exception:
-        pass
-    try:
-        from torch.distributed.fsdp._fully_shard import _fsdp_init as _fsdp_init_module
-        modules.append(_fsdp_init_module)
-    except Exception:
-        pass
+    for name in ("_fully_shard", "_fsdp_init"):
+        try:
+            modules.append(_fsdp_private(name))
+        except Exception:
+            pass
 
     patched = []
     for module in modules:
@@ -254,6 +378,31 @@ def _quant_meta(param):
     if not is_params4bit(param) or getattr(param, "quant_state", None) is None:
         return None
     return {k: getattr(param, k) for k in _QUANT_ATTRS if hasattr(param, k)}
+
+
+def _restore_param_class(
+    unsharded,
+    cls,
+    module = None,
+):
+    """FSDP2 rebuilds the all-gathered weight as a plain nn.Parameter. Give it back the class it was
+    sharded from (bitsandbytes Params4bit), so the `isinstance(weight, Params4bit)` checks of the
+    unsloth-zoo 4-bit MoE paths (and of bitsandbytes) see what they see without FSDP2. Same object,
+    same storage: only the Python type changes, plus the `module` Params4bit.__torch_function__ reads
+    on torch.chunk / torch.split. A DTensor (HSDP / TP) or another subclass is left as it is."""
+    if unsharded is None or cls is None or type(unsharded) is cls:
+        return
+    if type(unsharded) is not torch.nn.Parameter or not issubclass(cls, torch.nn.Parameter):
+        return
+    try:
+        unsharded.__class__ = cls
+    except TypeError:
+        return
+    if not hasattr(unsharded, "module"):
+        try:
+            unsharded.module = module
+        except Exception:
+            pass
 
 
 def _attach_quant_meta(tensor, meta):
@@ -322,8 +471,8 @@ def _check_collectives_anchors(collectives):
 
 def _missing_fsdp2_anchors():
     try:
-        from torch.distributed.fsdp._fully_shard import _fsdp_collectives
-        from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
+        _fsdp_collectives = _fsdp_private("_fsdp_collectives")
+        FSDPParam = _fsdp_private("_fsdp_param").FSDPParam
     except Exception as error:
         return [f"FSDP2 ({type(error).__name__})"]
     return _check_fsdp_param_anchors(FSDPParam) + _check_collectives_anchors(_fsdp_collectives)
@@ -348,8 +497,8 @@ def patch_fsdp2_params4bit():
     missing = _missing_fsdp2_anchors()
     if missing:
         return False, f"torch {torch.__version__} FSDP2 lacks " + ", ".join(missing)
-    from torch.distributed.fsdp._fully_shard import _fsdp_collectives
-    from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
+    _fsdp_collectives = _fsdp_private("_fsdp_collectives")
+    FSDPParam = _fsdp_private("_fsdp_param").FSDPParam
 
     if getattr(FSDPParam.init_dtype_attrs, "_unsloth_original", None) is not None:
         _PATCH_STATE["patched"] = True
@@ -364,6 +513,8 @@ def patch_fsdp2_params4bit():
         out = original_init_sharded_param(self, param, *args, **kwargs)
         if meta is not None:
             self._unsloth_quant_meta = meta
+            self._unsloth_param_cls = type(param)
+            self._unsloth_param_module = getattr(param, "module", None)
             _attach_quant_meta(getattr(self, "sharded_param", None), meta)
         return out
 
@@ -377,6 +528,19 @@ def patch_fsdp2_params4bit():
                 and getattr(unsharded, "quant_state", None) is not meta["quant_state"]
             ):
                 _attach_quant_meta(unsharded, meta)
+            _restore_param_class(
+                unsharded,
+                getattr(self, "_unsloth_param_cls", None),
+                getattr(self, "_unsloth_param_module", None),
+            )
+            if unsharded is not None and not getattr(unsharded, _GATHERED_MARK, False):
+                # unsloth-zoo's 4-bit MoE paths cache NF4 pointer tables by weight address; FSDP2
+                # frees and re-allocates this storage around every forward and backward, so they
+                # re-key it per call instead (zoo moe_ready_epoch.FSDP2_GATHERED).
+                try:
+                    setattr(unsharded, _GATHERED_MARK, True)
+                except Exception:
+                    pass
         return out
 
     def init_dtype_attrs(self, mp_policy, *args, **kwargs):
@@ -475,13 +639,6 @@ def prepare_fsdp2_qlora(
     info["params4bit"] = len(params4bit)
     if not params4bit:
         return info
-    try:
-        from ..kernels import utils as kernel_utils
-    except ImportError:  # loaded on its own, without the Unsloth package (tests)
-        kernel_utils = None
-    if kernel_utils is not None:
-        # Sharded 4-bit weights can now reach the LoRA kernels without their quant_state.
-        kernel_utils._FSDP2_QLORA_PREPARED = True
     if dtype is None:
         dtype = next(
             (
@@ -501,15 +658,22 @@ def prepare_fsdp2_qlora(
 
 
 @contextlib.contextmanager
-def fsdp2_qlora_wrap(model, prepare_fn = None):
-    """Around an FSDP2 wrap (accelerate's `fsdp2_prepare_model` is `prepare_fn`): prepare the 4-bit
-    weights, and let uint8 ones still left shard on torch < 2.12. Yields the `prepare_fsdp2_qlora`
-    info, or None for a model without bitsandbytes 4-bit weights (nothing is touched then)."""
+def fsdp2_qlora_wrap(
+    model,
+    prepare_fn = None,
+    native = False,
+    dtype = None,
+):
+    """Around an FSDP2 wrap (accelerate's `fsdp2_prepare_model` is `prepare_fn`, or Unsloth's own
+    fully_shard calls with `native = True`): prepare the 4-bit weights, and let uint8 ones still left
+    shard on torch < 2.12. Yields the `prepare_fsdp2_qlora` info, or None for a model without
+    bitsandbytes 4-bit weights (nothing is touched then). `dtype` is the float storage (default: the
+    weights' compute dtype)."""
     if not any(is_params4bit(p) for p in model.parameters()):
         yield None
         return
-    survives = float_storage_survives_wrap(prepare_fn)
-    info = prepare_fsdp2_qlora(model, float_storage = survives)
+    survives = float_storage_survives_wrap(prepare_fn, native = native)
+    info = prepare_fsdp2_qlora(model, dtype = dtype, float_storage = survives)
     info["reverted"] = 0
     if not survives or not info["patched"]:
         # Float storage here comes only from the caller's own BitsAndBytesConfig. An unpatched FSDP2

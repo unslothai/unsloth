@@ -52,6 +52,8 @@ class RepoScraper:
         # light=True uses trimmed GraphQL queries so PR pages can be larger without hitting GitHub's node-count ceiling.
         self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
+        if not self.repo_dir.resolve().is_relative_to(base_dir.resolve()):
+            raise ValueError(f"Repository {owner}/{name} would be scraped outside {base_dir}")
         self.repo_dir.mkdir(parents = True, exist_ok = True)
         self.state = StateStore(base_dir / "state" / f"{owner}__{name}.json")
 
@@ -109,8 +111,7 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # The light query skips heavy nested fields, so 50/page is safe; clamp by trial_limit so limit=1
-        # does not fetch a full page.
+        # Light queries skip heavy fields, so 50/page is safe; trial_limit keeps limit=1 from a full page.
         page_cap = 50 if self.light else 15
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -215,8 +216,7 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # The heavy nested PR query caps at 3/page against GitHub's node-count ceiling and the light one at
-        # 25; clamp by trial_limit so limit=1 does not fetch a whole page.
+        # Heavy PR query caps at 3 per page, light at 25, for the node-count ceiling; clamp by trial_limit so limit=1 fetches one page.
         page_cap = 25 if self.light else 3
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap

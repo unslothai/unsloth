@@ -142,6 +142,26 @@ export function lanApiUrls(status: LanAccessStatus): string[] {
   return status.managedBy === "settings" ? status.urls : [];
 }
 
+// A listener keeps the address it bound after Wi-Fi changes or DHCP renews, while detection is fresh.
+export function staleLanUrls(status: LanAccessStatus): string[] {
+  if (
+    status.managedBy !== "settings" ||
+    status.availableAddresses.length === 0
+  ) {
+    return [];
+  }
+  const present = new Set(
+    status.availableAddresses.map((entry) => entry.address),
+  );
+  return status.urls.filter((url) => {
+    try {
+      return !present.has(new URL(url).hostname.replace(/^\[|\]$/g, ""));
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function keylessLanAccessDescription(
   status: LanAccessStatus | null,
 ): string {
@@ -166,7 +186,6 @@ export function keylessLanAccessDescription(
   return `Inference is keyless on localhost; LAN callers require an active private listener.${tools}`;
 }
 
-// start and stop are synchronous socket work, so there is no transition to chase
 export const LAN_ACCESS_POLL_MS = 5000;
 
 export function lanAccessAutoStartReadOnly(
@@ -262,7 +281,6 @@ export function lanAccessStopDisconnectsOrigin(
   });
 }
 
-// the backend owns wildcard classification so the message follows its flag
 function launchManagedMessage(status: LanAccessStatus): string {
   if (status.wildcardBind) {
     const option = status.bindHost ? ` (--host ${status.bindHost})` : "";

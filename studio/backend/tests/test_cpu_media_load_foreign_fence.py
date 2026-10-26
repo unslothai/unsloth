@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A CPU-only media load must re-check for foreign generations before it touches the backend.
-
-The GPU path re-asks ``require_no_foreign_generations`` right before engine activation, and the
-arbiter re-asks it again under its lock. The CPU path takes neither, so a generation another
-account starts while this load is still validating (a multi-second window of Hub / header reads)
-is cancelled or replaced by ``begin_load``, which signals the active generation with no regard
-for who owns it.
-"""
+"""CPU media loads must re-check for foreign generations; begin_load cancels another account's work."""
 
 from __future__ import annotations
 
@@ -88,7 +81,6 @@ def test_cpu_media_load_refuses_a_generation_started_mid_load(
         return None
 
     def start_foreign(*_a, **_k):
-        # The window: another account's generation registers while this load is still validating.
         foreign_generation("diffusion" if modality == "image" else "video")
 
     monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: backend)
@@ -130,5 +122,4 @@ def test_cpu_media_load_refuses_a_generation_started_mid_load(
         asyncio.run(arun_as(BOB, load(request, BOB.username)))
     assert refused.value.status_code == 409
     assert refused.value.detail["error"] == "gpu_busy"
-    # Nothing was activated and nothing was loaded: ALICE's generation still owns the backend.
     assert touched == []

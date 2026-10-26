@@ -16,6 +16,7 @@ import {
   instructionsKindFor,
   legacyMusicDescription,
   panelApplies,
+  readsRequestInput,
 } from "./select";
 import { SPEAK_TOOL_PANELS } from "./speak-panels";
 import type {
@@ -54,7 +55,9 @@ function instructionsPanel(
     claims: [],
     appliesTo: (ctx) =>
       instructionsKindFor(ctx) === kind &&
-      (kind !== "music" || legacyMusicDescription(ctx)),
+      (kind !== "music" || legacyMusicDescription(ctx)) &&
+      // A strict model that reads no instruction (Kokoro) would drop the description.
+      (kind !== "voice" || readsRequestInput(ctx, "instruct", "instruction")),
     initial: () => ({ instructions: "", language: "" }),
     Component: ({ value, onChange, ctx }) => (
       <>

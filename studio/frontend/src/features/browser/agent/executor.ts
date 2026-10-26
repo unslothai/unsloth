@@ -9,14 +9,27 @@ import { openChatItemById, useChatNavigationStore, visibleChatItems } from "@/fe
 import { getLocale, translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { isTauri } from "@/lib/api-base";
+import { unwrapRedirect } from "../address";
 import { captureHiddenPage, screenshotPage } from "../capture";
 import { useBrowserHistoryStore } from "../history-store";
 import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
-import { callNative, useNativeBrowser } from "../native-support";
-import { requestFrameAgent } from "../page-frame";
+import { isLoopbackUrl } from "../address";
+import { callNative, localOriginGranted, useNativeBrowser } from "../native-support";
+import { requestFrameAgent, sendFrameCommand } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
-import { type Answer, adoptAgentChat, agentChat, askUser, liveChat, onBrowserAgentRunEnd, patchAgentChat, setActiveAction, useBrowserAgentStore } from "./agent-store";
+import {
+  type AgentStep,
+  type Answer,
+  adoptAgentChat,
+  agentChat,
+  askUser,
+  liveChat,
+  onBrowserAgentRunEnd,
+  patchAgentChat,
+  setActiveAction,
+  useBrowserAgentStore,
+} from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
@@ -197,8 +210,9 @@ function admit(url: string, gate: Gate, context: Run): void {
 
 const TEXT_ROLES = new Set(["textbox", "searchbox", "password", "combobox", "spinbutton"]);
 
-// A replayed stream frame must not click twice.
+// A replayed frame must not click twice; ids are unguessable, so only recent ones are kept.
 const seen = new Set<string>();
+const MAX_SEEN = 4_000;
 
 export function runBrowserAction(action: BrowserAction, actionContext: ActionContext): Promise<void> {
   const session = sessionFor(chatOf(actionContext));
@@ -206,6 +220,10 @@ export function runBrowserAction(action: BrowserAction, actionContext: ActionCon
   const { chat } = session;
   if (seen.has(action.id)) return session.queue;
   seen.add(action.id);
+  for (const old of seen) {
+    if (seen.size <= MAX_SEEN) break;
+    seen.delete(old);
+  }
   // The server's wait starts when it sends the action, not when an earlier one lets this one run.
   const expires = action.timeoutS ? Date.now() + (action.timeoutS - 2) * 1000 : null;
   const next = session.queue.then(async () => {
@@ -233,7 +251,7 @@ export function runBrowserAction(action: BrowserAction, actionContext: ActionCon
       if (deadline) clearTimeout(deadline);
       context.signal?.removeEventListener("abort", abort);
       setActiveAction(chat, null);
-      patchAgentChat(chat, { working: false });
+      patchAgentChat(chat, { working: false, step: null });
     }
     if (expired && !result.ok) result = { ok: false, error: EXPIRED };
     if (agentChat(chat).stoppedRun === context.runKey) result = { ok: false, error: STOPPED };
@@ -312,8 +330,9 @@ const AGENT_ERRORS = [
   /^r\d{1,9} is covered by an overlay; snapshot to find its close button, or scroll first\.$/,
   /^r\d{1,9} is not a text field\.$/,
   /^r\d{1,9} is disabled or read-only\.$/,
-  /^r\d{1,9} takes a value like (2026-03-14|09:30|2026-03-14T09:30|2026-03|2026-W11)\.$/,
+  /^r\d{1,9} takes a value like (2026-03-14|09:30|2026-03-14T09:30|2026-03|2026-W11|a number such as 42)\.$/,
   /^r\d{1,9} is a radio button; select another option in its group instead\.$/,
+  /^r\d{1,9} is a (checkbox|radio|switch); value must be "true", "false" or its own label\. Pick the ref of the option to choose\.$/,
   /^that key does nothing in this field; click or type instead\.$/,
   /^r\d{1,9} has no such option; snapshot it to see its options\.$/,
   /^r\d{1,9} is not a dropdown or checkbox; click it, then click the option\.$/,
@@ -547,8 +566,9 @@ async function askInPanel(question: Question, context: Run, remember = true): Pr
   const tabId = agentChat(context.session.chat).tabId;
   const store = useBrowserStore.getState();
   if (tabId) store.revealIn(context.session.chat, tabId);
-  else if (chatOnScreen(context) && !store.open) store.openPanel();
-  if (!chatOnScreen(context)) notifyOffScreenQuestion(context.session.chat);
+  // Even when already open: a project's overlay or Research can be hiding it, and only a new open shows it.
+  if (chatOnScreen(context)) store.openPanel();
+  else notifyOffScreenQuestion(context.session.chat);
   const answer = await askUser(context.session.chat, question, context.signal, keep);
   if (answer === "always" && keep) granted.add(key);
   return answer;
@@ -571,7 +591,7 @@ async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<
   if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
   }
-  if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set(context.fullAccess === true ? [] : answer.links ?? []);
+  if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set(context.fullAccess === true ? [] : linkedPages(answer.links ?? []));
   return {
     ok: true,
     url: tabUrl(fresh),
@@ -581,10 +601,32 @@ async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<
   };
 }
 
+// By its entry, not the page shown: a granted page can show a data: or about:blank document.
+function onGrantedOrigin(tab: BrowserTab): boolean {
+  const entry = currentEntry(tab);
+  return entry.kind === "web" && localOriginGranted(tab.id, entry.url);
+}
+
+function grantedLocalTab(url: string, chat: string): BrowserTab | undefined {
+  return useBrowserStore.getState().tabs.find((tab) => tab.chat === chat && localOriginGranted(tab.id, url));
+}
+
+function moveRun(context: Run, tabId: string): void {
+  const previous = agentChat(context.session.chat).tabId;
+  if (previous && previous !== tabId) releaseBackground(previous);
+  patchAgentChat(context.session.chat, { tabId });
+  context.session.trail = [];
+  context.session.at = -1;
+}
+
 async function open(url: string, context: Run): Promise<BrowserTab | null> {
   const store = useBrowserStore.getState();
-  const existing = agentTab(context);
+  const agent = agentTab(context);
+  const existing = isLoopbackUrl(url)
+    ? agent && localOriginGranted(agent.id, url) ? agent : grantedLocalTab(url, context.session.chat)
+    : agent && !onGrantedOrigin(agent) ? agent : undefined;
   if (existing) {
+    if (agentChat(context.session.chat).tabId !== existing.id) moveRun(context, existing.id);
     store.navigate(existing.id, { url }, { replace: false });
     showTab(existing, context);
     return waitForLoad(existing.id, context.signal);
@@ -594,12 +636,44 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
   if (!tabId) return null;
   // Off screen the view opens a beat later: loading until it reports in, so the wait below doesn't read the blank view.
   if (!chatOnScreen(context)) store.updateTab(tabId, { loading: true });
-  patchAgentChat(context.session.chat, { tabId });
-  context.session.trail = [];
-  context.session.at = -1;
+  moveRun(context, tabId);
   const tab = findTab(tabId);
   if (tab) showTab(tab, context);
   return waitForLoad(tabId, context.signal);
+}
+
+function stepOf(action: BrowserAction): AgentStep {
+  switch (action.op) {
+    case "navigate":
+      return { kind: "open", detail: hostOfUrl(action.url ?? "") };
+    case "back":
+    case "forward":
+    case "reload":
+      return { kind: action.op, detail: "" };
+    case "find":
+      return { kind: "find", detail: action.query ?? "" };
+    case "click":
+    case "type":
+    case "select":
+      return { kind: action.op, detail: action.ref ?? "" };
+    case "press":
+      return { kind: "press", detail: action.key ?? "" };
+    case "scroll":
+    case "screenshot":
+    case "evaluate":
+    case "history":
+    case "move":
+    case "drag":
+      return { kind: action.op, detail: "" };
+    default:
+      return { kind: "read", detail: "" };
+  }
+}
+
+function nameStep(chat: string, info: ElementInfo): void {
+  const current = agentChat(chat).step;
+  if (!current) return;
+  patchAgentChat(chat, { step: { ...current, detail: info.name || info.role || current.detail } });
 }
 
 function permissions(context: Pick<ActionContext, "fullAccess">) {
@@ -628,6 +702,34 @@ function navigationContext(action: BrowserAction, context: Run) {
   };
 }
 
+/** Where a search engine's redirect link lands: the tab opens that page, so that page is the one gated. */
+/** Every URL a redirect link passes through, the link first and its landing page last. */
+function redirectChain(url: string): string[] {
+  const chain = [url];
+  // Each hop's target is a strictly shorter part of the link, so this ends.
+  for (let next = unwrapRedirect(url); next !== chain[chain.length - 1]; next = unwrapRedirect(next)) chain.push(next);
+  return chain;
+}
+
+/** A page's links, with each search-result redirect's landing page too: the tab opens that page,
+ *  and the link to it is on the page, so following it is as linked as any other link there. */
+function linkedPages(links: string[]): string[] {
+  return links.flatMap((link) =>
+    redirectChain(link).flatMap((url) => {
+      try {
+        return [new URL(url).href];
+      } catch {
+        return [];
+      }
+    }),
+  );
+}
+
+function redirectEnd(url: string): string {
+  const chain = redirectChain(url);
+  return chain[chain.length - 1];
+}
+
 async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const { signal, session } = context;
   const { chat, reachedHosts } = session;
@@ -647,10 +749,19 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   if (owner && owner !== context.runKey) {
     return { ok: false, error: "Another reply in this chat is using the browser right now. Wait for it to finish, or tell the user." };
   }
-  patchAgentChat(chat, { working: true, runKey: context.runKey });
+  patchAgentChat(chat, { working: true, runKey: context.runKey, step: stepOf(action) });
 
   if (action.op === "navigate") {
-    const url = action.url ?? "";
+    const url = redirectEnd(action.url ?? "");
+    if (isLoopbackUrl(url) && !grantedLocalTab(url, chat)) {
+      const { host } = new URL(url);
+      return {
+        ok: false,
+        error: useNativeBrowser.getState().enabled
+          ? `${host} is on the user's computer, and the browser panel opens a local address only in the tab where the user types it in this chat's address bar. Ask the user to open it there first.`
+          : `${host} is a local address, and the browser only opens public sites.`,
+      };
+    }
     const gate = gateNavigation(url, navigationContext(action, context));
     const refused = await pass(gate, context);
     if (refused) return { ok: false, error: refused };
@@ -691,6 +802,22 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
           : entry?.kind === "web"
             ? entry.url
             : "";
+    // A router's pushState / hash history lives in the page and comes first, as the toolbar's Back does.
+    if (action.op !== "reload" && !nativeMove && tab.pageHistory?.[action.op]) {
+      const since = Date.now();
+      if (sendFrameCommand(tab.id, { command: "go", delta: action.op === "back" ? -1 : 1 })) {
+        const after = await settle(tab.id, before, since, signal);
+        if (!after) return { ok: false, error: "the browser tab closed." };
+        return arrive(after, before, action, context, since);
+      }
+    }
+    if (action.op !== "reload" && !nativeMove && !entry) {
+      const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
+      if (!ready) return { ok: false, error: "the browser tab closed." };
+      const refused = await stillAllowed(ready, action, context);
+      if (refused) return { ok: false, error: refused };
+      return observe(ready, context, `There is no ${action.op === "back" ? "previous" : "next"} page in this tab's history; this is still the same page.`);
+    }
     if (destination) {
       const blocked = navigationBlocks(destination, action.policy, permissions(context));
       const gate: Gate = blocked
@@ -766,6 +893,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     return { ok: false, error: described.error ?? (point ? "nothing is at that point." : `${ref} could not be found.`) };
   }
   const info: ElementInfo = described.info;
+  if (action.op !== "press") nameStep(chat, action.op === "select" && info.option ? { ...info, name: info.option } : info);
   const gates: Gate[] = [];
   if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, here, action.policy, permissions(context)));
   const opaque = point ? opaqueGate(info, here, context) : null;
@@ -799,8 +927,14 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     /^https?:/i.test(info.href) &&
     info.href.split("#")[0] !== here.split("#")[0] &&
     ((action.op === "click" && useNativeBrowser.getState().enabled) || (activates && info.role === "link"));
-  const linkGate = followsLink ? gateNavigation(info.href, navigationContext(action, context)) : null;
+  // A search engine's redirect link is gated at the page it lands on, as a navigate would be.
+  const linkEnd = followsLink ? redirectEnd(info.href) : "";
+  const linkGate = followsLink ? gateNavigation(linkEnd, navigationContext(action, context)) : null;
   if (linkGate) gates.push(linkGate);
+  // The page itself still loads the wrapper first, so the wrapper keeps its own checks too.
+  const wrappers = followsLink ? redirectChain(info.href).slice(0, -1) : [];
+  const wrapperGates = wrappers.map((url) => gateNavigation(url, navigationContext(action, context)));
+  gates.push(...wrapperGates);
   // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
   const formAction = submits && info.formAction ? info.formAction : "";
   const formGate =
@@ -824,7 +958,8 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     if (signal?.aborted) return { ok: false, error: STOPPED };
   }
   if (formGate) admit(formAction, formGate, context);
-  if (linkGate) admit(info.href, linkGate, context);
+  if (linkGate) admit(linkEnd, linkGate, context);
+  wrappers.forEach((url, index) => admit(url, wrapperGates[index], context));
 
   // Before the action goes out, after any question: a request its handler starts at once is the action's too.
   const since = Date.now();
@@ -841,19 +976,21 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       const pressedAt = Date.now();
       // A link: opened in this tab, under the same rules as any other address. Its href is read
       // now, so it may not be one the last snapshot listed.
-      const gate = gateNavigation(clicked.navigate, navigationContext(action, context));
+      const end = redirectEnd(clicked.navigate);
+      const gate = gateNavigation(end, navigationContext(action, context));
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
-      admit(clicked.navigate, gate, context);
+      admit(end, gate, context);
       // The page goes the moment the tab navigates, taking the cursor with it: let its press show first.
       if (useBrowserAgentStore.getState().showCursor) {
         await sleep(Math.max(0, LINK_PRESS_MS - (Date.now() - pressedAt)));
         if (signal?.aborted) return { ok: false, error: STOPPED };
       }
       const sent = Date.now();
-      useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: here }, { replace: false });
+      // Straight to the landing page that was gated: the store unwraps only one redirect hop.
+      useBrowserStore.getState().navigate(ready.id, { url: end, from: here }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
-      return loaded ? arrive(loaded, clicked.navigate, action, context, sent) : { ok: false, error: "the browser tab closed." };
+      return loaded ? arrive(loaded, end, action, context, sent) : { ok: false, error: "the browser tab closed." };
     }
     note = clicked.note;
   } else if (action.op === "type") {
@@ -1271,6 +1408,10 @@ async function readHistory(action: BrowserAction, context: Run): Promise<Result>
       return terms.every((term) => haystack.includes(term));
     })
     .slice(0, limit);
-  const lines = visits.map((visit) => `${new Date(visit.visitedAt).toISOString().slice(0, 16).replace("T", " ")}  ${visit.title || "(untitled)"}  ${visit.url}`);
+  const when = (at: number) => {
+    const date = new Date(at);
+    return Number.isNaN(date.getTime()) ? "(unknown time)" : date.toISOString().slice(0, 16).replace("T", " ");
+  };
+  const lines = visits.map((visit) => `${when(visit.visitedAt)}  ${visit.title || "(untitled)"}  ${visit.url}`);
   return { ok: true, text: lines.length ? lines.join("\n") : "No pages in the browsing history match." };
 }

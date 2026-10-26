@@ -48,8 +48,7 @@ test("a Hermes GGUF becomes a loadable local row", () => {
 });
 
 test("the chat picker allowlist admits Hermes rows", async () => {
-  // PICKER_LOCAL_SOURCES and CHAT_LOCAL_SOURCES are documented as the same set; a source
-  // present in one and not the other shows a model in Chat that the picker cannot pick.
+  // PICKER_LOCAL_SOURCES and CHAT_LOCAL_SOURCES must be the same set.
   const fs = await import("node:fs/promises");
   const picker = await fs.readFile(
     new URL(

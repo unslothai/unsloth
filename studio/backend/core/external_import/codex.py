@@ -100,12 +100,7 @@ def list_projects(home: Path) -> list[SourceProject]:
 
 
 def _records(path: Path) -> list[tuple[str, int, dict]]:
-    """``(origin file, ordinal, record)`` with a paginated thread's inherited prefix first.
-
-    A fork or revert (codex-rs ``history_base``) writes only the tail; the prefix is the rollout
-    named by ``history_base.thread_id`` (a rollout id, not ``session_meta.id``) up to
-    ``end_ordinal_exclusive``.
-    """
+    """A fork's prefix comes from the rollout named by ``history_base.thread_id``, not session_meta.id."""
     own = list(read_jsonl(path))
     origin = session_id_of(path)
     tagged = [(origin, record.get("ordinal", index), record) for index, record in enumerate(own)]

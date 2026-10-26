@@ -51,7 +51,11 @@ def _reset_probe(monkeypatch):
     stack_mod._invalidate_torch_runtime_probe()
 
 
-def _sh_routing_leaf(arches, env = ""):
+def _sh_routing_leaf(
+    arches,
+    env = "",
+    leaf = "rocm7.1",
+):
     """install.sh's routing block on a rocminfo stub; the index leaf it leaves selected."""
     source = _INSTALL_SH.read_text(encoding = "utf-8")
     start = source.find('case "$_torch_index_leaf" in\n    rocm[0-9]*)')
@@ -63,8 +67,8 @@ def _sh_routing_leaf(arches, env = ""):
         + "\n"
         + rocm_support._gpu_record_helpers(source)
         + "\n"
-        + 'TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm7.1"\n'
-        + '_torch_index_leaf="rocm7.1"\n'
+        + f'TORCH_INDEX_URL="https://download.pytorch.org/whl/{leaf}"\n'
+        + f'_torch_index_leaf="{leaf}"\n'
         + "_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon=false\n"
         + "_gfx_rocm64_target=false\n"
         + "unset HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES\n"
@@ -86,6 +90,23 @@ def _sh_routing_leaf(arches, env = ""):
 # ── Strix APU + discrete card ───────────────────────────────────────────────
 
 
+@pytest.fixture
+def _generic_tag_with_strix_fixes(monkeypatch):
+    """A generic rocm7.13 tag (none is published yet), the only one a leading Strix defers to."""
+    monkeypatch.setitem(stack_mod._ROCM_TORCH_INDEX, (7, 13), "rocm7.13")
+
+
+@pytest.mark.parametrize(
+    "devices", [("gfx1151", "gfx1100"), ("gfx1151", "gfx1201"), ("gfx1150", "gfx1101")]
+)
+@pytest.mark.parametrize("rocm_version", [(6, 4), (7, 1), (7, 2)])
+def test_python_a_leading_strix_keeps_its_index_below_the_fix_floor(devices, rocm_version):
+    # Below rocm7.13 deferring traded a working APU for the dGPU (#13931).
+    calls = routing._run_install(gfx_devices = devices, rocm_version = rocm_version)
+    assert f"repo.amd.com/rocm/whl/{devices[0]}" in calls, calls
+    assert "installing for" not in routing._run_install.printed
+
+
 @pytest.mark.parametrize(
     "devices,expected",
     [
@@ -94,20 +115,13 @@ def _sh_routing_leaf(arches, env = ""):
         (("gfx1150", "gfx1101"), "gfx1101"),
     ],
 )
-def test_python_target_skips_a_leading_strix_apu(devices, expected):
-    calls = routing._run_install(gfx_devices = devices, rocm_version = (7, 1))
+def test_python_a_leading_strix_defers_once_the_generic_tag_has_its_fixes(
+    devices, expected, _generic_tag_with_strix_fixes
+):
+    calls = routing._run_install(gfx_devices = devices, rocm_version = (7, 13))
     assert _STRIX_INDEX not in calls and "whl/gfx1150" not in calls, calls
+    assert "download.pytorch.org/whl/rocm7.13" in calls, calls
     assert f"installing for {expected}" in routing._run_install.printed
-
-
-def test_python_strix_plus_rdna3_installs_the_generic_wheel():
-    calls = routing._run_install(gfx_devices = ("gfx1151", "gfx1100"), rocm_version = (7, 1))
-    assert "download.pytorch.org/whl/rocm7.1" in calls, calls
-
-
-def test_python_strix_plus_rdna4_installs_the_rdna4_family():
-    calls = routing._run_install(gfx_devices = ("gfx1151", "gfx1201"), rocm_version = (7, 1))
-    assert "repo.amd.com/rocm/whl/gfx120X-all" in calls, calls
 
 
 @pytest.mark.parametrize(
@@ -125,15 +139,23 @@ def test_python_lone_or_selected_strix_keeps_its_index(devices, env):
 
 @_POSIX
 @pytest.mark.parametrize(
-    "arches,env,expected",
+    "arches,expected",
     [
-        (("gfx1151", "gfx1100"), "", "rocm7.1"),
-        (("gfx1151", "gfx1201"), "", "gfx120x-all"),
-        (("gfx1152", "gfx1102"), "", "rocm7.1"),
+        (("gfx1151", "gfx1100"), "gfx1151"),
+        (("gfx1151", "gfx1201"), "gfx1151"),
+        (("gfx1152", "gfx1102"), "gfx1152"),
     ],
 )
-def test_install_sh_skips_a_leading_strix_apu(arches, env, expected):
-    assert _sh_routing_leaf(arches, env) == expected
+def test_install_sh_a_leading_strix_keeps_its_index_below_the_fix_floor(arches, expected):
+    assert _sh_routing_leaf(arches) == expected
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    "arches", [("gfx1151", "gfx1100"), ("gfx1151", "gfx1201"), ("gfx1152", "gfx1102")]
+)
+def test_install_sh_a_leading_strix_defers_on_a_generic_index_with_its_fixes(arches):
+    assert _sh_routing_leaf(arches, leaf = "rocm7.13") == "rocm7.13"
 
 
 @_POSIX
@@ -236,6 +258,50 @@ def test_python_lspci_names_gfx1153_before_gfx1152(monkeypatch):
     assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
 
 
+def test_python_lspci_keeps_no_failed_query(monkeypatch):
+    # A failed lspci is not an answer: the next caller asks again.
+    line = "c4:00.0 VGA compatible controller [0300]: " + _KRACKAN2_TEXT[1]
+    results = [
+        subprocess.CompletedProcess([], 1, "", ""),
+        subprocess.CompletedProcess([], 0, line, ""),
+    ]
+    calls = []
+
+    def run(*a, **k):
+        calls.append(a)
+        return results.pop(0)
+
+    monkeypatch.setattr(stack_mod, "_LSPCI_MEMO", None)
+    monkeypatch.setattr(stack_mod.shutil, "which", lambda _n: "/usr/bin/lspci")
+    monkeypatch.setattr(stack_mod.subprocess, "run", run)
+    assert stack_mod._linux_amd_gfx_from_lspci() is None
+    assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
+    assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
+    assert len(calls) == 2
+
+
+def test_python_lspci_runs_once_per_run(monkeypatch):
+    # _infer_linux_amd_gfx_arch has several callers in one install; lspci answers once.
+    line = "c4:00.0 VGA compatible controller [0300]: " + _KRACKAN2_TEXT[1]
+    calls = []
+
+    def run(*a, **k):
+        calls.append(a)
+        return subprocess.CompletedProcess(a, 0, line, "")
+
+    monkeypatch.setattr(stack_mod.shutil, "which", lambda _n: "/usr/bin/lspci")
+    monkeypatch.setattr(stack_mod.subprocess, "run", run)
+    assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
+    assert stack_mod._linux_amd_gfx_from_lspci(beside_krackan2 = True) is None
+    assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
+    assert len(calls) == 1
+    # Another runner (a different stub) is asked afresh, never handed this answer.
+    monkeypatch.setattr(
+        stack_mod.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "")
+    )
+    assert stack_mod._linux_amd_gfx_from_lspci() is None
+
+
 def _sh_infer(
     tmp_path,
     cpuinfo,
@@ -311,22 +377,65 @@ def test_python_strix_keeps_its_index_under_an_hsa_override(devices):
     assert "gfx120X-all" not in calls and "whl/rocm7.1" not in calls, calls
 
 
-def test_python_inferred_install_uses_the_deferred_discrete_card():
+def test_python_inferred_strix_keeps_its_index_below_the_fix_floor():
     calls = routing._run_install(
         gfx_devices = ("gfx1151", "gfx1201"),
         inferred = "gfx1151",
         rocm_version = (7, 1),
         rocm_gpu_visible = False,
     )
-    assert "repo.amd.com/rocm/whl/gfx120X-all" in calls and _STRIX_INDEX not in calls, calls
+    assert _STRIX_INDEX in calls and "gfx120X-all" not in calls, calls
+
+
+def test_python_inferred_install_uses_the_deferred_discrete_card(_generic_tag_with_strix_fixes):
+    calls = routing._run_install(
+        gfx_devices = ("gfx1151", "gfx1201"),
+        inferred = "gfx1151",
+        rocm_version = (7, 13),
+        rocm_gpu_visible = False,
+    )
+    assert _STRIX_INDEX not in calls, calls
+
+
+@pytest.mark.parametrize(
+    "devices,inferred,expected",
+    [
+        (("gfx942", "gfx1151"), "gfx1151", _STRIX_INDEX),
+        (("gfx1103", "gfx942"), "gfx1103", "repo.amd.com/rocm/whl/gfx110X-all"),
+        (("gfx942", "gfx1103"), "gfx1103", "repo.amd.com/rocm/whl/gfx110X-all"),
+    ],
+)
+def test_python_versionless_inferred_install_keeps_an_installable_arch(devices, inferred, expected):
+    # No ROCm version and no per-arch index for the KFD pick: switching to it installed nothing.
+    calls = routing._run_install(
+        gfx_devices = devices, inferred = inferred, rocm_version = None, rocm_gpu_visible = False
+    )
+    assert expected in calls, calls
+
+
+def test_python_versionless_gfx950_ahead_of_an_apu_keeps_the_generic_fallback():
+    # gfx950 has no per-arch index, but a known minimum generic tag the versionless fallback picks.
+    calls = routing._run_install(
+        gfx_devices = ("gfx950", "gfx1151"),
+        inferred = "gfx1151",
+        rocm_version = None,
+        rocm_gpu_visible = False,
+    )
+    assert _STRIX_INDEX not in calls and "download.pytorch.org/whl/rocm" in calls, calls
 
 
 @_POSIX
-@pytest.mark.parametrize("hsa,expected", [("", "gfx1201"), ("11.5.1", "gfx1151")])
-def test_install_sh_strix_keeps_its_index_under_an_hsa_override(hsa, expected):
+@pytest.mark.parametrize(
+    "hsa,leaf,expected",
+    [("", "rocm7.13", "gfx1201"), ("11.5.1", "rocm7.13", "gfx1151"), ("", "rocm7.2", "gfx1151")],
+)
+def test_install_sh_strix_keeps_its_index_under_an_hsa_override(hsa, leaf, expected):
     source = _INSTALL_SH.read_text(encoding = "utf-8")
     script = (
-        rocm_support._gpu_record_helpers(source)
+        rocm_support._extract_sh_function_body(source, "_rocm_leaf_below")
+        + "\n"
+        + rocm_support._gpu_record_helpers(source)
+        + f"\n_torch_index_leaf={leaf}\n"
         + "\nunset HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES\n"
         + (
             f"export HSA_OVERRIDE_GFX_VERSION={hsa}\n"
@@ -392,15 +501,15 @@ def test_install_sh_final_summary_keeps_the_inferred_gfx1153():
 _RX7900 = "03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XTX]"
 
 
-def test_python_inferred_strix_defers_to_a_generic_only_dgpu():
-    # gfx942 has no AMD per-arch index: the generic route installs for it, not the Strix wheel.
+def test_python_inferred_strix_defers_to_a_generic_only_dgpu(_generic_tag_with_strix_fixes):
+    # gfx942 has no AMD per-arch index: once the generic tag carries the Strix fixes, it serves both.
     calls = routing._run_install(
         gfx_devices = ("gfx1151", "gfx942"),
         inferred = "gfx1151",
-        rocm_version = (7, 1),
+        rocm_version = (7, 13),
         rocm_gpu_visible = False,
     )
-    assert "download.pytorch.org/whl/rocm7.1" in calls and _STRIX_INDEX not in calls, calls
+    assert "download.pytorch.org/whl/rocm7.13" in calls and _STRIX_INDEX not in calls, calls
 
 
 @pytest.mark.parametrize(
@@ -439,14 +548,17 @@ def test_install_sh_gfx1153_keeps_its_hip_guidance(arches, vulkan):
     url, err = guards._run_sh_get_torch_index_url(arches, rocm_tag = "rocm7.2")
     assert url.endswith("/cpu"), (url, err)
     assert ("UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in err) is vulkan, err
-    assert ("llama.cpp HIP build" in err) is (not vulkan), err
+    assert ("a llama.cpp ROCm build when one covers gfx1153" in err) is (not vulkan), err
 
 
 def test_setup_sh_gfx1153_keeps_its_hip_guidance():
     source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     block = source[source.index('step "gpu" "AMD GPU detected ($_setup_unsup_gfx)') :]
     block = block[: block.index('elif [ -n "$_setup_mkt" ]')]
-    assert 'if [ "$_setup_unsup_gfx" = gfx1153 ]' in block and "llama.cpp HIP build" in block
+    assert (
+        'if [ "$_setup_unsup_gfx" = gfx1153 ]' in block
+        and "a llama.cpp ROCm build when one covers gfx1153" in block
+    )
 
 
 def _setup_unsupported_lookup(gpu_name, lspci_lines, tmp_path):
@@ -558,9 +670,8 @@ def test_install_sh_lspci_gfx1153_is_only_the_fallback(tmp_path, lines, expected
     ],
 )
 def test_setup_sh_forwards_an_inferred_gfx1153_to_llama_cpp(unsup, setup_gfx, expected):
-    # The forwarding below the summary passes _setup_gfx as --rocm-gfx; gfx1153 keeps a HIP bundle.
     source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
-    start = source.index("        # gfx1153 keeps its llama.cpp HIP bundle")
+    start = source.index("        # Forward gfx1153, which a runtime-less probe cannot read")
     end = source.index("        fi\n", start) + len("        fi\n")
     script = (
         "step() { :; }\n"

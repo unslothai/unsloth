@@ -4,18 +4,23 @@
 """Opt-in achieved TFLOPs and MFU logging with LoRA-aware FLOP counts.
 
 Turn on with `UNSLOTH_LOG_MFU=1` before building the trainer, or call `add_mfu_callback(trainer)`.
-Each training log then gains `train_tflops_per_gpu` and, when the GPU peak is known,
-`train_mfu`. Set `UNSLOTH_PEAK_TFLOPS` to the per GPU dense peak to override the table
-(for example a measured MAMF number).
+Each training log then gains `train_tflops_per_gpu` and `train_hw_tflops_per_gpu` and, when the
+GPU peak is known, `train_mfu` and `train_hfu`. Set `UNSLOTH_PEAK_TFLOPS` to the per GPU dense
+peak to override the table (for example a measured MAMF number).
+
+`train_mfu` excludes the checkpointing recompute (PaLM MFU); `train_hfu` includes it. They were
+one value (HFU) before the split; that value is now `train_hfu` / `train_hw_tflops_per_gpu`.
 
 Model FLOPs per non padding token, summed over every linear layer with n = in * out weights:
     forward                  2n   every linear, frozen or trainable
     backward input grads     2n   every linear (gradients flow through frozen weights to LoRA)
     backward weight grads    2n   only linears whose weight requires grad
     recompute                2n   every linear except the output head, when checkpointing
+                                  (hardware FLOPs / HFU only)
 Attention adds 4 * layers * heads * head_dim FLOPs per causal (query, key) pair in the forward
 (QK^T and AV), L * (L + 1) / 2 pairs for a sequence of length L (L * L when every attention
-layer is bidirectional), times 3 for forward plus backward and times 4 with checkpointing. The
+layer is bidirectional), times 3 for forward plus backward (times 4 with checkpointing in the
+hardware count). The
 output head is charged only for the last `logits_to_keep` positions when the forward passes it.
 Only the active copy of a PEFT `modules_to_save` wrapper and the active LoRA adapters are
 counted. Experts held as `nn.Linear` in an `experts` ModuleList count top_k / num_experts of
@@ -52,9 +57,28 @@ _PEAK_TFLOPS_16BIT = (
     ("H100 PCIE", 756.0),
     ("H100 NVL", 835.0),
     ("H100", 989.0),
+    ("H200 NVL", 835.5),
     ("H200", 989.0),
     ("GH200", 989.0),
+    # Dense = half NVIDIA's sparse figure (nvidia.com/en-us/data-center/hgx, gb200-nvl72).
+    # GB* first: the B200 / B300 keys would match inside their names.
+    ("GB300", 2500.0),
+    ("GB200", 2500.0),
+    ("B300", 2250.0),
     ("B200", 2250.0),
+    # sm120. NVIDIA RTX PRO Blackwell GPU Architecture whitepaper v1.1, Table 4 (dense FP16 / BF16
+    # tensor with FP32 accumulate): Workstation 503.8, Max-Q 438.9. Server Edition: nvidia.com
+    # rtx-pro-6000-blackwell-server-edition lists 1 PFLOP FP16 / BF16 with sparsity -> 500 dense.
+    # GeForce RTX 5090: NVIDIA RTX Blackwell GPU Architecture whitepaper v1.1, Table 3, 209.5 dense
+    # with FP32 accumulate (GeForce runs FP32 accumulate at half the FP16 accumulate rate).
+    # Specific editions first; every key needs "PRO", so "RTX 6000 Ada Generation" never matches.
+    ("RTX PRO 6000 BLACKWELL MAX-Q", 438.9),
+    ("RTX PRO 6000 BLACKWELL SERVER", 500.0),
+    ("RTX PRO 6000 BLACKWELL", 503.8),
+    # Unknown (None): the China variant and the laptop part (a smaller GB203) have no figure there.
+    ("RTX 5090 D", None),
+    ("RTX 5090 LAPTOP", None),
+    ("RTX 5090", 209.5),
     ("A100", 312.0),
     ("L40S", 362.05),
     ("L40", 181.05),
@@ -351,12 +375,15 @@ def _sequence_lengths(kwargs, args):
         return attention_mask.sum(dim = -1)
     position_ids = kwargs.get("position_ids")
     if torch.is_tensor(position_ids) and position_ids.dim() == 2 and position_ids.shape[0] == 1:
-        # Padding free packing: each document restarts its positions at 0.
+        # Padding free packing: each document restarts its positions at 0. Fixed shape [N] with
+        # zero padding (no nonzero / data dependent branch): no host sync, and fullgraph compiles.
         position_ids = position_ids[0]
-        starts = torch.nonzero(position_ids == 0).reshape(-1)
-        if starts.numel() > 0:
-            ends = torch.cat([starts[1:], starts.new_tensor([position_ids.numel()])])
-            return ends - starts
+        starts = position_ids == 0
+        doc = starts.cumsum(0) - 1
+        lengths = torch.zeros_like(doc).scatter_add_(0, doc.clamp(min = 0), (doc >= 0).to(doc.dtype))
+        whole_row = torch.zeros_like(doc)
+        whole_row[0] = position_ids.numel()
+        return torch.where(starts.any(), lengths, whole_row)
     if torch.is_tensor(input_ids) and input_ids.dim() >= 2:
         return torch.full((input_ids.shape[0],), input_ids.shape[1], device = input_ids.device)
     return None
@@ -378,7 +405,8 @@ def _unsupported_setup(
 
 
 class UnslothMFUCallback(TrainerCallback):
-    """Adds `train_tflops_per_gpu` and `train_mfu` to training logs. Prefer `add_mfu_callback`."""
+    """Adds `train_tflops_per_gpu` / `train_mfu` (model FLOPs) and `train_hw_tflops_per_gpu` /
+    `train_hfu` (recompute included) to training logs. Prefer `add_mfu_callback`."""
 
     def __init__(
         self,
@@ -391,6 +419,8 @@ class UnslothMFUCallback(TrainerCallback):
         self._linear_per_token = 0
         self._head_per_token = 0
         self._attention_per_pair = 0
+        self._hw_linear_per_token = 0
+        self._hw_attention_per_pair = 0
         self._bidirectional = False
         self._num_devices = 1
         self._devices = []
@@ -463,11 +493,15 @@ class UnslothMFUCallback(TrainerCallback):
         checkpointing = self.gradient_checkpointing
         if checkpointing is None:
             checkpointing = _gradient_checkpointing_on(model, args)
-        total, _, self._head_per_token = _linear_flops(model, checkpointing)
-        self._linear_per_token = total - self._head_per_token
+        total, breakdown, self._head_per_token = _linear_flops(model, checkpointing)
+        self._hw_linear_per_token = total - self._head_per_token
+        self._linear_per_token = self._hw_linear_per_token - breakdown["recompute"]
         self._bidirectional = _all_attention_bidirectional(model)
         self._unsloth_head_window = _runs_unsloth_head_window(model)
         self._attention_per_pair = (
+            count_attention_flops_per_pair(config, False) if config is not None else 0
+        )
+        self._hw_attention_per_pair = (
             count_attention_flops_per_pair(config, checkpointing) if config is not None else 0
         )
         devices = sorted(
@@ -547,16 +581,15 @@ class UnslothMFUCallback(TrainerCallback):
         self._reset()
         if tokens <= 0 or elapsed <= 0:
             return
-        flops = (
-            tokens * self._linear_per_token
-            + head_tokens * self._head_per_token
-            + pairs * self._attention_per_pair
-        )
-        flops = flops / self._num_devices
-        tflops = flops / elapsed / 1e12
-        extra = {"train_tflops_per_gpu": tflops}
+        head = head_tokens * self._head_per_token
+        flops = tokens * self._linear_per_token + head + pairs * self._attention_per_pair
+        hw_flops = tokens * self._hw_linear_per_token + head + pairs * self._hw_attention_per_pair
+        tflops = flops / self._num_devices / elapsed / 1e12
+        hw_tflops = hw_flops / self._num_devices / elapsed / 1e12
+        extra = {"train_tflops_per_gpu": tflops, "train_hw_tflops_per_gpu": hw_tflops}
         if self.peak_tflops:
             extra["train_mfu"] = tflops / self.peak_tflops
+            extra["train_hfu"] = hw_tflops / self.peak_tflops
         logs.update(extra)
         # Trainer.log appended a copy of logs to log_history before calling the callbacks.
         if state.log_history and state.log_history[-1].get("step") == state.global_step:

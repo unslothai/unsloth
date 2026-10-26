@@ -1,11 +1,7 @@
-# Model defaults for unsloth/Qwen3-4B-Instruct-2507
-# Based on Qwen3_(4B)-Instruct.ipynb
 # Also applies to: unsloth/Qwen3-4B-Instruct-2507-unsloth-bnb-4bit, Qwen/Qwen3-4B-Instruct-2507, unsloth/Qwen3-4B-Instruct-2507-bnb-4bit, Qwen/Qwen3-4B-Instruct-2507-FP8, unsloth/Qwen3-4B-Instruct-2507-FP8
-# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

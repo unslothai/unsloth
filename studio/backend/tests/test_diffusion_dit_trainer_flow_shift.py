@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the DiT trainer's timestep-shift / CFG-dropout / loss-weighting levers.
-
-CPU-only: cover the flow_shift config resolution (qwen-image defaults to "auto", every
-other family stays on the identity 1.0), the exact sigma transform for the auto and
-numeric modes, the shifted sampling distribution, and the bell weight table. The full
-training loop is exercised by the live GPU smokes, not here."""
+"""CPU tests for flow_shift resolution, sigma transforms, shifted sampling and bell loss weights."""
 
 from __future__ import annotations
 
@@ -46,7 +41,6 @@ def _flux_static_scheduler():
     return diffusers.FlowMatchEulerDiscreteScheduler(num_train_timesteps = 1000, shift = 3.0)
 
 
-# ── config resolution ─────────────────────────────────────────────────────────
 def test_flow_shift_defaults_per_family():
     qwen = DiffusionLoraConfig(
         base_model = "Qwen/Qwen-Image", data_dir = "d", output_dir = "o"
@@ -68,7 +62,6 @@ def test_flow_shift_explicit_values_and_validation():
         base_model = "Qwen/Qwen-Image", data_dir = "d", output_dir = "o", flow_shift = 2.2
     ).normalized()
     assert cfg.flow_shift == 2.2
-    # String numerics from the Unsloth config path coerce; "auto" passes through.
     assert (
         DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "3.0")
         .normalized()
@@ -138,7 +131,6 @@ def test_config_from_dict_plumbs_the_new_fields():
     assert cfg.weighting_scheme == "bell"
 
 
-# ── sigma table transforms ────────────────────────────────────────────────────
 def test_auto_table_matches_the_exact_qwen_transform():
     import torch
 
@@ -150,11 +142,9 @@ def test_auto_table_matches_the_exact_qwen_transform():
     scale = (1.0 - shifted[-1]) / (1.0 - QWEN_SHIFT_TERMINAL)
     expected = 1.0 - (1.0 - shifted) / scale
     assert torch.allclose(table, expected, atol = 1e-6)
-    # Fixed-point spot checks: sigma 1.0 stays 1.0, the terminal sigma lands on 0.02, and u = 0.5 rises to ~0.754.
     assert abs(float(table[0]) - 1.0) < 1e-6
     assert abs(float(table[-1]) - QWEN_SHIFT_TERMINAL) < 1e-6
     assert abs(float(table[499]) - 0.75427) < 1e-3
-    # The table stays a valid descending schedule in (0, 1].
     assert bool((table[:-1] > table[1:]).all())
 
 
@@ -250,12 +240,10 @@ def test_gather_sigmas_broadcasts_to_ndim():
     assert abs(float(sig[0].flatten()) - 1.0) < 1e-6
 
 
-# ── bell weighting ────────────────────────────────────────────────────────────
 def test_bell_weights_shape_peak_and_normalization():
     w = _bell_loss_weights(1000)
     assert w.shape == (1000,)
     assert float(w.min()) >= 0.0
-    # Peak at mid-schedule, mean 1 so the expected loss scale is unchanged.
     assert int(w.argmax()) == 500
     assert abs(float(w.mean()) - 1.0) < 1e-5
     assert float(w[500]) > float(w[0])

@@ -195,7 +195,8 @@ def _pretokenized(tokenizer, model_name: str, rows: list, max_length: int, reque
     from datasets import Dataset
     from utils.datasets.pretokenized import has_custom_labels, prepare_pretokenized_dataset
 
-    dataset = Dataset.from_list(rows)
+    # Lengths after masked padding is trimmed, so only a real max_seq_length cut reads as truncation.
+    dataset = prepare_pretokenized_dataset(Dataset.from_list(rows), max_seq_length = None)
     full_lengths = [len(ids) for ids in dataset["input_ids"]]
     dataset = prepare_pretokenized_dataset(dataset, max_seq_length = max_length)
     input_ids = [list(ids) for ids in dataset["input_ids"]]
@@ -314,8 +315,10 @@ def run_token_preview_process(*, cmd_queue: Any, resp_queue: Any, config: dict) 
         sys.path.insert(0, backend_path)
 
     from utils.security.hub_data_files import install as guard_hub_data_files
+    from utils.security.dataset_media import install as guard_dataset_media
 
     guard_hub_data_files()
+    guard_dataset_media()
 
     tokenizer = None
     load_error = None

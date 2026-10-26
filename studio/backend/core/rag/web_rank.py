@@ -58,19 +58,11 @@ def retrieve_web_chunks(
     overlap: int | None = None,
     model_name: str | None = None,
 ) -> tuple[str, list[dict]]:
-    """Ingest scraped pages into an ephemeral RAG scope, hybrid-retrieve the passages most
-    relevant to ``query``, and return ``(rendered_chunks, sources)`` using Unsloth's KB
-    formatter.
-
-    ``pages`` is a list of dicts with ``text`` (required) and optional ``title`` / ``url``
-    (``title`` becomes the ``<chunk source>``). Returns ``("", [])`` when there is nothing
-    usable or RAG is unavailable, so the caller can fall back to snippet evidence. The scope
-    is always deleted before returning, so nothing is left in the store."""
+    """Ingests pages into a throwaway scope that is always deleted; empty result means use snippets."""
     query = (query or "").strip()
     if not query or top_n <= 0 or not pages or not rag_db.RAG_AVAILABLE:
         return "", []
     model = model_name or config.effective_embedding_model()
-    max_tokens = max_tokens or config.CHUNK_TOKENS
     overlap = config.CHUNK_OVERLAP if overlap is None else overlap
     count = embeddings.token_counter(model)
 
@@ -82,6 +74,7 @@ def retrieve_web_chunks(
     scope = f"research_scrape_{uuid.uuid4().hex}"
     doc_ids: list[str] = []
     try:
+        max_tokens = max_tokens or embeddings.chunk_tokens(model)
         for page in pages:
             text = str(page.get("text") or "").strip()
             if not text:
@@ -95,8 +88,7 @@ def retrieve_web_chunks(
             )
             if not chunks:
                 continue
-            # The identity must come from the encode that produced these vectors: a concurrent ST failure
-            # swaps the process embedder, and reading it after the fact labels the page with the wrong space.
+            # Take identity from the encode that made these vectors; reading it later can label the wrong space.
             vectors, identity = embeddings.encode_with_identity(
                 [chunk.text for chunk in chunks], model_name = model, normalize = True
             )

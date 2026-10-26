@@ -61,7 +61,6 @@ def main() -> int:
                 tag.append("NAME")
             if tag:
                 sus.append((n, m.in_features, m.out_features, ",".join(tag)))
-        # distinct fqn shapes, block indices collapsed to {i}
         import re
 
         seen = {}
