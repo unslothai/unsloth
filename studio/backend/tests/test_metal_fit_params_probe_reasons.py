@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama-fit-params probe: say why a measurement failed, and only cache answers that repeat.
-
-The Metal fit discount needs the probe; when it is unavailable the log named one cause
-("missing or unreadable") for six, and a timeout or crash stayed cached for the session.
-"""
+"""llama-fit-params probe: say why a measurement failed, and only cache answers that repeat."""
 
 import sys
 
@@ -127,3 +123,19 @@ def test_the_launch_log_carries_the_reason():
     src = inspect.getsource(LlamaCppBackend._metal_demand_paged_embedding_bytes)
     assert "_metal_probe_failure" in src
     assert "missing or unreadable" not in src
+
+
+@posix_only
+def test_a_failed_probe_runs_once_per_load(tmp_path):
+    calls, script = _counting(tmp_path, "exit 3")
+    binary, model, _ = _install(tmp_path, script)
+    backend = LlamaCppBackend()
+    with lc._load_probe_memo_scope():
+        assert backend._metal_measured_model_mib(binary, model) is None
+        assert backend._metal_measured_model_mib(binary, model) is None
+        assert "exited with code 3" in backend._metal_probe_failure
+    assert _ncalls(calls) == 1
+    # The next load probes again: a cold shader compile may have finished by then.
+    with lc._load_probe_memo_scope():
+        assert backend._metal_measured_model_mib(binary, model) is None
+    assert _ncalls(calls) == 2
