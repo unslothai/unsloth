@@ -322,6 +322,23 @@ test("melee does not reach through a wall", () => {
   assert.equal(c.enemies.h, undefined);
 });
 
+test("melee only reaches a hostile at the player's own height", () => {
+  const w = world();
+  const c = A.newCombat();
+  const v = V.newVerbs();
+  assert.equal(
+    V.melee(w, c, v, { x: 5, y: 5, z: 10 }, 1, 0, [hostile("below", 6, 5)])
+      ?.hit,
+    null,
+  );
+  assert.equal(c.enemies.below, undefined);
+  V.verbsTick(v, V.MELEE_COOLDOWN_S);
+  assert.equal(
+    V.melee(w, c, v, { x: 5, y: 5, z: 1 }, 1, 0, [hostile("level", 6, 5)])?.hit,
+    "level",
+  );
+});
+
 function fly(
   w: ReturnType<typeof world>,
   dir = { x: 1, y: 0, z: 0 },
