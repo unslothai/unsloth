@@ -4277,7 +4277,13 @@ def _checkpoint_tensor_dtypes(
                     raise _UnreadableCheckpointNames(path)
             return None
 
-        if not local_files_only and not subfolder and not variant and st_single and explicit is None:
+        if (
+            not local_files_only
+            and not subfolder
+            and not variant
+            and st_single
+            and explicit is None
+        ):
             try:
                 from huggingface_hub import get_safetensors_metadata
 

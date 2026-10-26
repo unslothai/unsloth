@@ -44,7 +44,12 @@ def _cfg(transformers_weights = None):
     return cfg
 
 
-def _repo(tmp_path, standard, chosen, chosen_name = "chosen.safetensors"):
+def _repo(
+    tmp_path,
+    standard,
+    chosen,
+    chosen_name = "chosen.safetensors",
+):
     d = tmp_path / "ckpt"
     d.mkdir()
     _save(d / "model.safetensors", standard)
