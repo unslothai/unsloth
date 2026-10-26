@@ -6105,6 +6105,18 @@ def patch_gradient_accumulation_fix(Trainer):
                     model_init = bound["model_init"],
                     optimizer_cls_and_kwargs = bound["optimizer_cls_and_kwargs"],
                 )
+            # The generated TRL trainers already do this (rl.py); plain Trainer / Seq2SeqTrainer / other
+            # subclasses need it too. Before init: transformers 5 builds the DDP kwargs in __init__.
+            if model is not None:
+                try:
+                    from ._ddp_defaults import unsloth_default_ddp_find_unused_parameters
+
+                    unsloth_default_ddp_find_unused_parameters(
+                        kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None),
+                        model,
+                    )
+                except Exception:
+                    pass
             _original_trainer_init(self, *args, **kwargs)
             if native_fsdp2:
                 native_fsdp2_trainer_setup(self, phase = "post")
