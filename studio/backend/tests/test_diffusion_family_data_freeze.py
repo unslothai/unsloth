@@ -117,6 +117,7 @@ def _snapshot() -> dict:
     for fam in (*IMAGE, *VIDEO):
         flags[fam.name] = {
             "cudnn_benchmark": getattr(fam, "cudnn_benchmark", True),
+            "vae_fused_encoder": getattr(fam, "vae_fused_encoder", True),
             "filter_reduction_configs": bool(getattr(fam, "filter_reduction_configs", False)),
             "filter_reduction_configs_archs": _jsonable(
                 tuple(getattr(fam, "filter_reduction_configs_archs", None) or ())

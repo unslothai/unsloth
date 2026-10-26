@@ -326,6 +326,8 @@ def test_chained_non_hub_urls_are_refused(monkeypatch, path):
     ],
 )
 def test_network_share_paths_are_refused(monkeypatch, path):
+    from utils.datasets import remote_images
+    monkeypatch.setattr(remote_images, "_WINDOWS", True)
     with pytest.raises(OSError, match = "network share"):
         _decode_without_io(monkeypatch, path)
 
@@ -347,6 +349,9 @@ def test_local_and_hub_paths_still_reach_datasets(monkeypatch, path):
 
 
 def test_string_rows_naming_a_network_share_never_touch_it(monkeypatch):
+    from utils.datasets import remote_images
+
+    monkeypatch.setattr(remote_images, "_WINDOWS", True)
     import PIL.Image
 
     from utils.datasets import format_conversion
@@ -361,3 +366,171 @@ def test_string_rows_naming_a_network_share_never_touch_it(monkeypatch):
     with pytest.raises((OSError, ValueError)) as err:
         convert_to_vlm_format(ds, instruction = "Describe.", text_column = "caption")
     assert "touched" not in str(err.value)
+
+
+def test_guard_applies_when_datasets_loads_after_this_module():
+    """Startup imports this module without datasets; the guard must still land on first use."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    snippet = (
+        "import sys\n"
+        "import utils.datasets.remote_images\n"
+        "assert 'datasets' not in sys.modules, 'importing remote_images loaded datasets'\n"
+        "from datasets.features import image\n"
+        "assert getattr(image.Image.decode_example, '_unsloth_guarded', False)\n"
+        "print('GUARDED_LAZILY')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        cwd = Path(__file__).resolve().parents[1],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "GUARDED_LAZILY" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "\\\\wsl$\\Ubuntu\\home\\u\\a.png",
+        "\\\\wsl.localhost\\Ubuntu\\home\\u\\a.png",
+        "file://wsl.localhost/Ubuntu/home/u/a.png",
+        "\\\\?\\C:\\data\\a.png",
+    ],
+)
+def test_wsl_and_drive_paths_are_local_on_windows(monkeypatch, path):
+    from utils.datasets import remote_images
+    monkeypatch.setattr(remote_images, "_WINDOWS", True)
+    with pytest.raises(AssertionError, match = "reached"):
+        _decode_without_io(monkeypatch, path)
+
+
+def test_double_slash_paths_are_ordinary_paths_off_windows(monkeypatch):
+    from utils.datasets import remote_images
+    monkeypatch.setattr(remote_images, "_WINDOWS", False)
+    with pytest.raises(AssertionError, match = "reached"):
+        _decode_without_io(monkeypatch, "//data/images/a.png")
+
+
+def test_refusals_name_the_opt_in(monkeypatch):
+    with pytest.raises(OSError, match = "UNSLOTH_ALLOW_PRIVATE_URL_FETCH=1"):
+        _decode_without_io(monkeypatch, "zip://a.png::https://attacker.example/x.zip")
+
+
+def _single_user(monkeypatch, single = True):
+    from auth import policy
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: not single)
+
+
+def test_the_opt_in_restores_private_hosts_and_archives(monkeypatch, loopback_server):
+    # The owner's own LAN image server or non-Hub archive loads the way datasets loads it.
+    base, hits = loopback_server
+    monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
+    _single_user(monkeypatch)
+    ds = Dataset.from_list([{"image": f"{base}/lan.png", "caption": "x"}])
+    out = convert_to_vlm_format(ds, instruction = "Describe.", text_column = "caption")
+    assert isinstance(out[0]["messages"][0]["content"][1]["image"], Image.Image)
+    assert isinstance(_typed_image_dataset(f"{base}/typed.png")[0]["image"], Image.Image)
+    assert len(hits) >= 2
+    with pytest.raises(AssertionError, match = "reached"):
+        _decode_without_io(monkeypatch, "zip://a.png::https://images.example.org/x.zip")
+
+
+@pytest.mark.parametrize("known_size", [True, False])
+def test_the_opt_in_keeps_the_image_size_cap(monkeypatch, known_size):
+    from utils.datasets import remote_images
+    from utils.datasets.format_conversion import _fetch_row_image
+
+    body = _png()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"  # no Content-Length: the body ends when the server closes
+
+        def do_GET(self):
+            self.send_response(200)
+            if known_size:
+                self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
+        _single_user(monkeypatch)
+        assert isinstance(_fetch_row_image(f"{base}/small.png"), Image.Image)
+        monkeypatch.setattr(remote_images, "_MAX_IMAGE_BYTES", 16)
+        with pytest.raises(OSError, match = "larger than"):
+            _fetch_row_image(f"{base}/big.png")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_opted_in_requests_are_quoted_idna_encoded_and_time_bounded(monkeypatch):
+    import urllib.request
+
+    from utils.datasets.remote_images import open_opted_in_url
+
+    seen = []
+
+    def fake_urlopen(request, timeout):
+        seen.append((request.full_url, request.get_method(), timeout))
+        raise OSError("stop")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    for kwargs in ({}, {"method": "HEAD", "timeout": 3}):
+        with pytest.raises(OSError, match = "stop"):
+            open_opted_in_url("https://u@例子.测试:8443/my images/a.png", **kwargs)
+    assert seen == [
+        ("https://u@xn--fsqu00a.xn--0zwm56d:8443/my%20images/a.png", "GET", 30),
+        ("https://u@xn--fsqu00a.xn--0zwm56d:8443/my%20images/a.png", "HEAD", 3),
+    ]
+
+
+def test_unencoded_spaces_are_quoted_before_the_guard(monkeypatch):
+    calls = _recording_fetch(monkeypatch, _png())
+    _typed_image_dataset("https://example.com/my images/a b.png")[0]
+    assert calls == ["https://example.com/my%20images/a%20b.png"]
+
+
+def test_the_opt_in_is_ignored_once_managed_accounts_exist(monkeypatch, loopback_server):
+    # A managed account's row must not reach the owner's LAN through the owner's opt-in.
+    base, hits = loopback_server
+    monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
+    _single_user(monkeypatch, single = False)
+    with pytest.raises(OSError):
+        _typed_image_dataset(f"{base}/typed.png")[0]
+    assert hits == []
+
+
+def test_an_internationalized_host_is_not_percent_encoded():
+    from utils.datasets.remote_images import guard_url
+    assert guard_url("https://例子.测试/my images/a.png") == "https://例子.测试/my%20images/a.png"
+    assert (
+        guard_url("https://example.com/a.png?x[]=1&b=c d")
+        == "https://example.com/a.png?x[]=1&b=c%20d"
+    )
+
+
+def test_only_private_refusals_suggest_the_opt_in(monkeypatch):
+    from core.inference import tools
+    from utils.datasets.remote_images import fetch_untrusted_image_bytes
+    for error, hinted in (
+        ("Blocked: refusing to fetch non-public address 10.0.0.1.", True),
+        ("Failed to fetch URL: HTTP 404", False),
+    ):
+        monkeypatch.setattr(
+            tools, "_fetch_url_raw", lambda url, error = error, **kwargs: (error, b"", "")
+        )
+        with pytest.raises(OSError) as refused:
+            fetch_untrusted_image_bytes("https://example.com/a.png")
+        assert ("UNSLOTH_ALLOW_PRIVATE_URL_FETCH" in str(refused.value)) is hinted

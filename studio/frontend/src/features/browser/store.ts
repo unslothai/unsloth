@@ -49,7 +49,6 @@ export type RequestEdits = (prompt: string) => void;
 /** false keeps marks when the composer rejects them and explains why; `files` carries the annotation screenshot. */
 export type SendAnnotations = (annotations: DocumentAnnotations, files?: File[]) => Promise<boolean>;
 
-/** Stages a file in the chat's composer; false when it refused it (it says why). */
 export type AttachToChat = (file: File) => Promise<boolean>;
 
 export type FileViewMode = "preview" | "source";
@@ -94,7 +93,6 @@ export type BrowserTab = {
   /** The name the reader gave the tab; kept as it navigates. */
   customTitle: string | null;
   muted: boolean;
-  /** The sidebar pin this tab shows (pinned-pages-store), kept as it navigates. */
   pinnedId: string | null;
   /** The chat the tab belongs to (`BrowserState.chat`); the panel shows only that chat's tabs. */
   chat: string;
@@ -149,8 +147,7 @@ export function setNativeWebHistory(native: boolean): void {
 
 const MAX_HISTORY = 50;
 
-// Loaded pages by history entry, so back and forward skip the fetch. Reload drops only its own entry.
-// Fewer on a low-memory machine.
+// Page cache by history entry for back/forward; smaller on low-memory machines.
 const cacheLimit = cacheLimits(reportedDeviceMemory());
 const pageCache = new PageCache<BrowserEntry>(cacheLimit.maxPages, cacheLimit.maxTotalBytes);
 
@@ -235,12 +232,16 @@ export const MAX_TAB_TITLE_CHARS = 120;
 function copyTab(tab: BrowserTab): BrowserTab {
   return {
     ...createTab({ kind: "newtab" }),
-    history: tab.history.map((entry) => {
+    history: tab.history.map((entry, index) => {
       const copy = { ...entry };
       // The original keeps its key; a copy going Back must not claim it.
       if (copy.kind === "file") delete copy.openKey;
       // A form result is not sent again unasked just because the tab was copied.
       if (entry.kind === "web" && entry.method === "POST") sentPosts.add(copy);
+      // Open where the tab got to: native-view clicks and router moves update only displayUrl.
+      if (index === tab.index && copy.kind === "web" && copy.method !== "POST" && tab.displayUrl && isWeb(tab.displayUrl)) {
+        copy.url = tab.displayUrl;
+      }
       return copy;
     }),
     index: tab.index,
@@ -274,7 +275,14 @@ async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
   if (!a || a.size !== b.size) return false;
   for (let start = 0; start < b.size; start += COMPARE_CHUNK_BYTES) {
     const end = start + COMPARE_CHUNK_BYTES;
-    const [x, y] = await Promise.all([a.slice(start, end).arrayBuffer(), b.slice(start, end).arrayBuffer()]);
+    let x: ArrayBuffer;
+    let y: ArrayBuffer;
+    try {
+      [x, y] = await Promise.all([a.slice(start, end).arrayBuffer(), b.slice(start, end).arrayBuffer()]);
+    } catch {
+      // A File changed on disk can't be read: treat as different, so it is replaced.
+      return false;
+    }
     if (!sameBuffer(x, y)) return false;
   }
   return true;
@@ -326,7 +334,6 @@ type BrowserState = {
   fullView: boolean;
   chatDock: ChatDock;
   chatSide: ChatSide;
-  /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
   requestEdits: RequestEdits | null;
   sendAnnotations: SendAnnotations | null;
   attachToChat: AttachToChat | null;
@@ -369,7 +376,6 @@ type BrowserState = {
   reload: (tabId: string) => void;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
-  /** Moves a tab to `index` in the strip, as dragging it there does. */
   moveTab: (tabId: string, index: number) => void;
   updateTab: (
     tabId: string,
@@ -691,8 +697,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (openKey && existing) {
         focusExisting(openKey);
         if (page) get().setFileView(existing.id, { pageTarget: { page } });
-        // refresh changed files in order per tab so the last reopen wins.
-        const previous = refreshes.get(existing.id) ?? Promise.resolve();
+        // refresh changed files in order per tab so the last reopen wins; one that failed doesn't skip the next.
+        const previous = (refreshes.get(existing.id) ?? Promise.resolve()).catch(() => undefined);
         queuedFiles.add(fileId);
         const next = previous.then(async () => {
           const tab = get().tabs.find((candidate) => candidate.id === existing.id);

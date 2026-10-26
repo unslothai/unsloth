@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
 from .diffusion_single_file_converters import host_ram_budget_scope
+from .diffusion_small_host import FP8_STORAGE_HOST_RESERVE_MIB
 
 COMFY_QUANT_SUFFIX = ".comfy_quant"
 QUANT_METADATA_KEY = "_quantization_metadata"
@@ -39,7 +40,6 @@ COMFY_FP8_ENV = "UNSLOTH_DIFFUSION_COMFY_FP8"
 # Store fp8 layers no fp8 GEMM takes as fp8, widened per layer (ComfyUI manual_cast). Unset: only when widening
 # would offload or crowd host RAM (per-layer widen costs eager steps); ``1``: always; ``0``: never.
 FP8_STORAGE_ENV = "UNSLOTH_DIFFUSION_FP8_STORAGE"
-FP8_STORAGE_HOST_RESERVE_MIB = 4096
 # Header metadata our own converter writes (base model, scheme); ComfyUI ignores it.
 CONVERSION_RECORD_KEY = "unsloth_comfy_conversion"
 
@@ -158,11 +158,7 @@ def header_has_fp8_weights(path: Optional[str], *, fnuz_only: bool = False) -> O
 
 
 def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
-    """The ComfyUI quantization a safetensors single file declares, or None for a plain checkpoint.
-
-    Torch-free: reads the header and the few hundred bytes of ``.comfy_quant`` JSON. Never raises for
-    a file it cannot read as safetensors (the regular loader reports that); returns a scan whose
-    ``problems`` are non-empty for one it must refuse."""
+    """Torch-free header read; None for a plain checkpoint, and never raises on an unreadable file."""
     if not path or not str(path).lower().endswith(".safetensors") or not os.path.isfile(path):
         return None
     try:
@@ -872,10 +868,7 @@ def comfy_int8_backend(
     *,
     offload: bool = False,
 ) -> Optional[str]:
-    """Which of Studio's int8 runtimes takes the int8 layers, by the rule its own int8 quant follows:
-    ``"torchao"`` (``Int8Tensor``) on a resident plan, ``"native"`` (the torchao-free twin, plain
-    buffers the offload hooks can move) under offload or on a host without the torchao path, None
-    (dequantize to bf16) where neither runs. ``UNSLOTH_DIFFUSION_COMFY_INT8=0`` always dequantizes."""
+    """int8 runtime: torchao when resident, native under offload, None to dequantise to bf16."""
     if (os.environ.get(COMFY_INT8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:
@@ -979,6 +972,26 @@ def fp8_storage_wanted(
     return int(widened_mib) + FP8_STORAGE_HOST_RESERVE_MIB > int(host_available_mib)
 
 
+def fp8_widen_chosen(
+    target: Any = None,
+    *,
+    lora: bool = False,
+    offload: bool = False,
+    widened_mib: Optional[int] = None,
+    host_available_mib: Optional[int] = None,
+) -> bool:
+    """Whether ``fp8_storage_wanted`` had the choice and widened because the load fits with its host reserve free. Only
+    such a load is refused against that reserve (``single_file_host_reserve_mib``); every other one keeps the
+    proportional small-host reserve."""
+    if not comfy_fp8_storage(target, lora = lora) or fp8_storage_forced() or offload:
+        return False
+    if widened_mib is None or host_available_mib is None:
+        return False
+    return not fp8_storage_wanted(
+        target, lora = lora, widened_mib = widened_mib, host_available_mib = host_available_mib
+    )
+
+
 def comfy_fp8_storage(target: Any = None, *, lora: bool = False) -> bool:
     """Whether fp8 storage can run: same weights as the load-time dequant, half the bytes. Off for a LoRA (needs
     dense Linears), MPS and torch without float8."""
@@ -1036,11 +1049,7 @@ def load_comfy_prequant(
     config_subfolder: str = "transformer",
     logger: Any = None,
 ) -> Any:
-    """A hosted (or local) ComfyUI-format prequant as the transformer Studio's own ``scheme`` checkpoint
-    rebuilds into, on the CPU: int8 layers as ``Int8Tensor`` under ConvRot-rotating Linears, fp8 layers as
-    per-row ``Float8Tensor``. Placement, small-M padding and the rest stay with the caller, exactly as for
-    Studio's own checkpoints. Raises ``ValueError`` for a file it must refuse: a format Studio cannot run,
-    layers of another scheme, or a recorded base model that is not ``base``."""
+    """Rebuilds a ComfyUI prequant on the CPU as Studio's scheme; ValueError for formats it cannot run."""
     name = os.path.basename(str(path))
     scan = scan_comfy_quant(path)
     if scan is None:
@@ -1118,6 +1127,7 @@ def load_comfy_quant_transformer(
     prepare_model: Any = None,
     keep_dtype: Any = None,
     fp8_storage: Optional[bool] = None,
+    fp8_widen_chosen: bool = False,
 ) -> Any:
     """Build ``transformer_cls`` from the ComfyUI-quantized ``path``.
 
@@ -1263,7 +1273,16 @@ def load_comfy_quant_transformer(
     # The header estimate refuses early; the budget it activates is charged by every allocating helper
     # below, so a layer the estimate cannot see (runtime filters, nibble swaps) still cannot OOM the host.
     budget = HostRamBudget(
-        path, f"expanding its quantized weights to {str(dtype).replace('torch.', '')}", logger
+        path,
+        f"expanding its quantized weights to {str(dtype).replace('torch.', '')}",
+        logger,
+        # The fp8-storage rule chose to widen this load: refuse against its reserve, and only if fp8 layers widen.
+        fp8_widen_chosen = bool(fp8_widen_chosen)
+        and not fp8_storage
+        and any(
+            layer.format in FP8_FORMATS and _widened.get(layer.name + ".weight")
+            for layer in scan.layers.values()
+        ),
     )
     budget.check(
         converted_host_bytes(

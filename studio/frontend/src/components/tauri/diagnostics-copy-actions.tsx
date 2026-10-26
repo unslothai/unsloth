@@ -6,12 +6,7 @@ import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
 import { useState } from "react";
 
-/**
- * The action row every failure state ends in: copy the support report, plus whatever
- * recovery buttons that state offers, passed as children so the caller keeps ownership
- * of them. When the clipboard refuses — a headless session, a denied permission — the
- * report is rendered into a selectable textarea so the user can still hand it over.
- */
+/** Falls back to a selectable textarea when the clipboard refuses. */
 export function DiagnosticsCopyActions({
   onCopyDiagnostics,
   children,
@@ -58,13 +53,11 @@ export function DiagnosticsCopyActions({
         <p className="max-w-md text-center text-xs text-destructive">{manualMessage}</p>
       )}
       {manualReport && (
-        // text-left, not the inherited centering: a diagnostics report is read line by
-        // line, and both screens center everything else in their column.
         <textarea
           readOnly
           value={manualReport}
           onFocus={(event) => event.currentTarget.select()}
-          className="h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 text-left font-mono text-ui-10 text-muted-foreground"
+          className="h-32 w-full max-w-md resize-none rounded-xl border border-border/50 bg-muted/30 p-2 text-left font-mono text-ui-10 text-muted-foreground"
         />
       )}
     </div>

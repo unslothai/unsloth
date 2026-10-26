@@ -90,7 +90,7 @@ function CopyableCommand({
   };
 
   return (
-    <div className="flex min-w-0 items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
+    <div className="flex min-w-0 items-stretch overflow-hidden rounded-full border border-border bg-muted/40">
       <input
         type="text"
         readOnly={true}
@@ -235,8 +235,7 @@ export function UpdateStudioInstructions({
   const shell = shellOverride ?? defaultShell;
   const prefersReducedMotion = useReducedMotion();
   const windows = shell === "windows";
-  // null means the desktop app: its bundled backend updates through the
-  // built-in updater, so terminal commands would target the wrong install.
+  // null means the desktop app, which updates through its built-in updater.
   const desktopManaged = installSource === null;
   const localInstallSource = isLocalInstallSource(installSource);
   const checkoutInstallSource =

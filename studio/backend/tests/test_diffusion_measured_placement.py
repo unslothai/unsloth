@@ -170,14 +170,16 @@ def test_whole_transformer_tier_kill_switch(q21_pipe, monkeypatch):
     assert new.resident_transformer_mib == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
 
 
-def test_whole_transformer_tier_needs_streamed_encoders(q21_pipe, monkeypatch):
-    """A group plan whose encoders stay resident cannot trade them for the DiT: the tier leaves it alone."""
+def test_whole_transformer_tier_streams_resident_encoders(q21_pipe, monkeypatch):
+    """Resident encoders stream when that keeps more of the DiT resident (it runs every step, they once per prompt)."""
     monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
     plan = dm.replace(
         _flat_plan(9550, 12288), offload_policy = dm.OFFLOAD_GROUP, stream_text_encoders = False
     )
     new = _refine(q21_pipe, plan)
-    assert int(new.resident_transformer_mib or 0) < 6922
+    assert new.resident_transformer_mib == 6922
+    assert new.stream_text_encoders
+    assert new.estimates["denoiser_first_resident_te_dit_mib"] < 6922
 
 
 def test_no_room_keeps_flat_plan(q21_pipe):
@@ -807,6 +809,29 @@ def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkey
         assert torch.equal(net(x.cuda()).cpu(), ref)
 
 
+def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
+    """The encode release streams groups and pins them back on every new prompt. It leaves the freed blocks cached:
+    an encoder allocation that needs the room gets it back from the allocator itself. An empty_cache per prompt cost a
+    device sync plus fresh cudaMallocs for the encoder on every render."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    block_mib = 4
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 1
+    flushes = {"n": 0}
+    real = torch.cuda.empty_cache
+
+    def counted():
+        flushes["n"] += 1
+        real()
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", counted)
+    for _ in range(3):
+        enc(torch.randn(2, 8, device = "cuda"))
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2  # the release still ran
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert flushes["n"] == 0
+
+
 def test_encode_release_restores_after_a_failed_encode(monkeypatch):
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     dm.install_encode_release(pipe, _whole_plan(1024, 0), None)
@@ -835,6 +860,76 @@ def test_encode_release_keeps_an_oversized_release_streamed(monkeypatch):
     outer()
     assert on_device() == ["cuda"] * 6
     assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def _two_encoder_pipe(monkeypatch):
+    """FLUX.1-shaped: encode_prompt runs a small and a large encoder back to back (CLIP, then T5)."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    enc2 = type(enc)()
+    pipe.components["text_encoder_2"] = enc2
+    calls = {"release": 0, "restore": 0}
+    real = dm.release_resident_groups
+
+    def counted(*args, **kwargs):
+        restore = real(*args, **kwargs)
+        if restore is None:
+            return None
+        calls["release"] += 1
+
+        def counted_restore(*a, **k):
+            calls["restore"] += 1
+            return restore(*a, **k)
+
+        return counted_restore
+
+    monkeypatch.setattr(dm, "release_resident_groups", counted)
+
+    def encode_prompt(prompt, fail = False):
+        enc(torch.randn(2, 8, device = "cuda"))
+        enc2.fail = fail
+        return enc2(torch.randn(2, 8, device = "cuda"))
+
+    pipe.encode_prompt = encode_prompt
+    return torch, net, enc, enc2, pipe, x, ref, on_device, calls
+
+
+def test_encode_release_streams_the_denoiser_once_per_prompt_with_two_encoders(monkeypatch):
+    """Two encoders in one encode_prompt: the denoiser moves out and back once, not once per encoder."""
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    block_mib = 4
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 2
+    for prompt in range(3):
+        pipe.encode_prompt(f"p{prompt}")
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+        assert enc2.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert calls == {"release": 3, "restore": 3}
+    # outside encode_prompt: pins back on its own return
+    enc2(torch.randn(2, 8, device = "cuda"))
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 4, "restore": 4}
+
+
+def test_encode_release_once_restores_after_a_failed_second_encoder(monkeypatch):
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    with pytest.raises(RuntimeError):
+        pipe.encode_prompt("p", fail = True)
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 1, "restore": 1}
+    pipe.encode_prompt("p")
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_release_once_kill_switch(monkeypatch):
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    monkeypatch.setenv(dm.ENCODE_RELEASE_ONCE_ENV, "0")
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    pipe.encode_prompt("p")
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 2, "restore": 2}  # once per encoder
 
 
 def test_encode_release_only_for_the_whole_tier(monkeypatch):

@@ -145,10 +145,10 @@ export function McpAccessSection({
   return (
     <section
       data-settings-label={t("settings.apiKeys.mcp.title")}
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       <div className="flex items-start gap-3 bg-muted/30 p-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+        <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
           <HugeiconsIcon
             icon={McpServerIcon}
             className="size-4 text-foreground"

@@ -38,7 +38,6 @@ type RailProps = Omit<
   | "claimedOptions"
 >;
 
-/** Selects ②'s last word so typing replaces it. */
 function selectLastWord(field: HTMLTextAreaElement | null) {
   if (!field) return;
   const match = /([\p{L}\p{N}'’-]+)[^\p{L}\p{N}]*$/u.exec(field.value);
@@ -123,7 +122,7 @@ function EditInputs({
               ? "Listening to the recording…"
               : "What the recording says. It fills in once you add one."
           }
-          className="min-h-16 rounded-lg"
+          className="min-h-16"
         />
         {transcriber.error ? (
           <p

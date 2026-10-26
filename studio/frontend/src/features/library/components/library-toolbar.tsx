@@ -23,7 +23,6 @@ import {
   Presentation01Icon,
   Search01Icon,
   Settings02Icon,
-  Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { type TranslationKey, useT } from "@/i18n";
@@ -37,6 +36,7 @@ import type { LibraryAudioWorkflow } from "../audio-items";
 import type { LibraryTypeFilter } from "../file-kind";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
 import type { LibrarySortKey, LibraryView } from "../settings-store";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const ICON = "size-icon";
 export const ROUND_BUTTON =
@@ -73,9 +73,7 @@ export type LibrarySortChoice = "default" | LibrarySortKey;
 export interface LibrarySortMenuProps {
   value: LibrarySortChoice;
   onChange: (next: LibrarySortChoice) => void;
-  /** The view orders by last activity rather than modified time. */
   activity?: boolean;
-  /** False where only folders show, which have no size. */
   showSize?: boolean;
   desc?: boolean;
   onDirectionChange?: (desc: boolean) => void;
@@ -230,7 +228,6 @@ function SortMenu({
   onDirectionChange,
 }: LibrarySortMenuProps) {
   const t = useT();
-  // Suggested orders "Modified" by last activity, as its list view header says.
   const options = SORT_OPTIONS.filter((option) => showSize || option.value !== "size").map(
     (option) =>
       activity && option.value === "modified"
@@ -303,7 +300,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-ui-14 text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex shrink-0 items-center gap-1.5 rounded-full bg-action pl-[calc(15px*var(--ui-space-scale,1))] pr-[calc(14px*var(--ui-space-scale,1))] py-2 font-medium text-ui-14 text-background [&_svg]:-my-2 outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
           {t("common.new")}
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} className="size-4" />
@@ -346,7 +343,6 @@ export function LibraryToolbar({
   workflows?: readonly LibraryAudioWorkflow[];
   view: LibraryView;
   onViewChange: (view: LibraryView) => void;
-  /** Grid view only: list view sorts by column headers. */
   sort?: LibrarySortMenuProps;
   search: string;
   onSearchChange: (value: string) => void;
@@ -379,8 +375,6 @@ export function LibraryToolbar({
             <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
           </button>
         ))}
-        {/* Outlined on light; a lighter fill than the page on dark, where an outline reads as a hole.
-            Sized by the header row (cqw), not the window, so it never reaches the title. */}
         <label className="relative ml-2 flex h-9 w-[clamp(10rem,calc(100cqw-30rem),min(15rem,24vw))] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon
             icon={Search01Icon}

@@ -145,11 +145,7 @@ def _matches(path: Path, file: FlmFile) -> bool:
 def download_files(
     model: FlmModelFiles, client: Optional[httpx.Client] = None
 ) -> Iterator[dict[str, Any]]:
-    """Download every missing file, yielding progress over the whole model as its percent moves.
-
-    Raises FlmDownloadError when a file stops making progress or fails its hash check. Whatever
-    was written stays in ``.partial`` files, so the next call continues from there.
-    """
+    """Raises FlmDownloadError on a stall or bad hash; partial files are kept so the next call resumes."""
     model.folder.mkdir(parents = True, exist_ok = True)
     owned = client is None
     client = client or httpx.Client(follow_redirects = True, timeout = httpx.Timeout(30.0, read = 120.0))

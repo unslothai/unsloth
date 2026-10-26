@@ -36,7 +36,7 @@ import {
   AiBrain01Icon,
   Database02Icon,
   FloppyDiskIcon,
-  Settings05Icon,
+  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import type { CSSProperties, ReactNode } from "react";
@@ -206,7 +206,7 @@ function TrainingMethodSelect() {
         side="bottom"
         align="start"
         sideOffset={8}
-        className="rounded-[14px] ring-0"
+        className="rounded-xl ring-0"
       >
         {TRAINING_METHOD_ORDER.filter(
           (method) =>
@@ -287,7 +287,7 @@ function TrainAsSelect() {
         side="bottom"
         align="start"
         sideOffset={8}
-        className="rounded-[14px] ring-0"
+        className="rounded-xl ring-0"
       >
         {["language", "decision"].map((option) => (
           <SelectItem key={option} value={option}>
@@ -337,7 +337,7 @@ function CheckpointSelect({
         side="bottom"
         align="start"
         sideOffset={8}
-        className="rounded-[14px] ring-0"
+        className="rounded-xl ring-0"
       >
         {checkpoints.map((checkpoint) => (
           <SelectItem key={checkpoint.name} value={checkpoint.name}>
@@ -431,7 +431,7 @@ export function TrainingWizard({
         title={t("studio.wizard.datasetTitle")}
         description={t("studio.wizard.datasetDescription")}
         icon={Database02Icon}
-        chipTint="var(--chart-4)"
+        chipTint="var(--chart-1)"
         dataTour="studio-dataset"
         titleAction={<DatasetSourceToggleAction />}
       >
@@ -441,8 +441,8 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.paramsTitle")}
         description={t("studio.wizard.paramsDescription")}
-        icon={Settings05Icon}
-        chipTint="var(--chart-5)"
+        icon={Settings02Icon}
+        chipTint="var(--chart-1)"
         dataTour="studio-params"
         titleAction={
           <ParamModeToggle mode={paramMode} onChange={onParamModeChange} />
@@ -455,7 +455,7 @@ export function TrainingWizard({
         title={t("studio.wizard.configTitle")}
         description={t("studio.wizard.configDescription")}
         icon={FloppyDiskIcon}
-        chipTint="var(--chart-3)"
+        chipTint="var(--chart-1)"
       >
         <ConfigActions />
       </SectionBox>
