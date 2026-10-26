@@ -119,8 +119,6 @@ class _Registry:
 
 
 def test_streamed_tensor_is_written_from_its_host_copy(pipe_dir):
-    """The live ``.data`` of a streamed tensor is a destination the render owns (here: another block's bytes, as a
-    reused window slot holds); the group's host copy is what the next onload uploads."""
     cand = _cand(pipe_dir)
     dense = _dense(cand)
     reference = {k: v.clone() for k, v in dense.state_dict().items()}
@@ -150,8 +148,7 @@ def test_layout_version_retires_entries_written_by_the_racy_reader(pipe_dir):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
 def test_block_streamed_write_during_a_refill_is_bit_identical(pipe_dir, monkeypatch):
-    """Real diffusers block offload with a copy stream. Mid-write, every group is refilled in place on its copy
-    stream behind a long delay (Studio's window-slot refill): its device bytes are stale until the copy lands."""
+    """Mid-write, every group is refilled in place on its copy stream behind a delay: device bytes are stale."""
     from diffusers.hooks import apply_group_offloading
 
     monkeypatch.setattr(CC, "_ONLOAD_WAIT_SECONDS", 0.0)
@@ -186,13 +183,12 @@ def test_block_streamed_write_during_a_refill_is_bit_identical(pipe_dir, monkeyp
         for g in groups:
             with torch.cuda.stream(g.stream):
                 for t in g.cpu_param_dict:
-                    t.data.fill_(float("nan"))  # another block's bytes
+                    t.data.fill_(float("nan"))
                 torch.cuda._sleep(200_000_000)
                 for t, src in g.cpu_param_dict.items():
                     t.data.copy_(src, non_blocking = True)
 
     def check():
-        # after the write has read a device tensor once (the old reader synchronised only then)
         state["calls"] += 1
         if state["calls"] == 3:
             refill()

@@ -31,8 +31,7 @@ CAST_CACHE_ENV = "UNSLOTH_DIFFUSION_CAST_CACHE"
 CAST_CACHE_IMAGE_ENV = "UNSLOTH_DIFFUSION_CAST_CACHE_IMAGE"
 _OFF = ("0", "off", "false", "no", "none")
 _HALF = {"float16": "float16", "fp16": "float16", "bfloat16": "bfloat16", "bf16": "bfloat16"}
-# 2: a write during a render reads streamed tensors from their offload group's host copy; a layout-1 entry written
-# under block streaming may hold a tensor read off the device before its upload landed, so it is never read.
+# 2: layout-1 entries written under block streaming may hold tensors read before their upload landed.
 CAST_LAYOUT_VERSION = 2
 CAST_META_KEY = "unsloth_cast_component"
 _LIBRARIES = ("diffusers", "transformers")
@@ -468,7 +467,7 @@ def _tied_keys(module: Any) -> set:
 
 
 def _resolve_ref(module: Any, name: str) -> Any:
-    """The Parameter / buffer object itself (offload groups key their host copies by it)."""
+    """The Parameter / buffer itself (offload groups key host copies by it)."""
     parent_name, _, leaf = name.rpartition(".")
     parent = module.get_submodule(parent_name) if parent_name else module
     tensor = (
@@ -485,7 +484,6 @@ def _resolve(module: Any, name: str) -> Any:
 
 
 def _offload_groups(module: Any) -> list:
-    """diffusers offload groups under ``module`` that keep a host copy per tensor (``cpu_param_dict``)."""
     out: list = []
     seen: set = set()
     for m in module.modules():
@@ -551,13 +549,11 @@ def _hooked(module: Any) -> bool:
 
 
 class _Reader:
-    """Host copies of one component's live tensors, read while the published pipeline may be rendering.
+    """Host copies of one component's live tensors, read while the pipeline may be rendering.
 
-    A tensor an offload group streams is read from that group's host copy: its device ``.data`` is re-pointed at a
-    fresh destination (or a reused window slot) as soon as a prefetch is queued, before the copy lands, so reading
-    it races the copy stream (uninitialised or another block's bytes, written into the entry; NaN on the next load).
-    Any other device tensor is read on a side stream after a device synchronise per read, which drains every queued
-    upload into it; never behind the render on the default stream."""
+    Streamed tensors come from their offload group's host copy: device ``.data`` is re-pointed before the prefetch
+    lands, so reading it races the copy stream (NaN entries). Other device tensors are read on a side stream after
+    a per-read device synchronise, never behind the render on the default stream."""
 
     def __init__(self, module: Any, check: Any) -> None:
         self.module = module
