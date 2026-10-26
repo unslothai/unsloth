@@ -491,8 +491,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         pipeline_class = "Flux2KleinPipeline",
-        # B200: a per-process XBLOCK pick for the q/k RMSNorm reduction changed the latent and stuck to the compile home.
-        filter_reduction_configs_archs = ((10, 0),),
+        # Every arch: a per-process XBLOCK pick for the q/k RMSNorm reduction changed the latent and stuck to the
+        # compile home (B200 bf16; fp16 W8A8 on T4 and under an sm_75 policy on B200 rendered 2-3 variants per seed).
+        filter_reduction_configs = True,
         # Same VAE as FLUX.2-dev: cudnn.benchmark's per-process conv pick decoded one latent into 6 images over 9 fresh
         # B200 processes; with it off every process matched.
         cudnn_benchmark = False,
