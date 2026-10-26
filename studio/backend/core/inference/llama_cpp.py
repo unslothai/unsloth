@@ -461,6 +461,7 @@ from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
     REPEATABLE_TOOL_NAMES,
+    TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -38652,6 +38653,31 @@ class LlamaCppBackend:
                         if _meta is not None:
                             yield _meta
                         return
+
+                # A healed XML tail can be valid JSON while still containing half a shell
+                # rewrite. Judge the generation boundary before preparing or running any call,
+                # including complete siblings and structured deltas from the same cut turn.
+                if _iter_finish_reason in ("length", "content_filter"):
+                    for _pid, _pname in provisional_started_tool_calls.items():
+                        if _pid not in resolved_provisional_tool_call_ids:
+                            resolved_provisional_tool_call_ids.add(_pid)
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": _pname,
+                                "tool_call_id": _pid,
+                                "result": TRUNCATED_TOOL_TURN_MESSAGE,
+                                "provenance": provisional_tool_provenance(_pname),
+                            }
+                    yield {"type": "status", "text": ""}
+                    yield {
+                        "type": "content",
+                        "text": with_appended_text(
+                            _strip_tool_markup(cumulative_display, final = True, force = True),
+                            TRUNCATED_TOOL_TURN_MESSAGE,
+                        ),
+                    }
+                    yield _build_metadata_event(_iter_usage, _iter_timings, _iter_finish_reason)
+                    return
 
                 # ── Execute tool calls ──
                 # Progress made: reset stall counters and restore thinking.
