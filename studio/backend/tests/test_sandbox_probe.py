@@ -434,16 +434,26 @@ def test_linux_runtime_identity_includes_the_verified_bwrap(monkeypatch):
     assert os_sandbox._runtime_identity() != first
 
 
-def test_an_expired_verdict_is_re_probed(monkeypatch):
-    """Set before the first probe: the expiry is stamped when the verdict is stored. With no stale
-    grace the re-probe is in the foreground (test_permission_mode_degrade covers the grace)."""
-    monkeypatch.setattr(sandbox_probe, "_CACHE_TTL_SECONDS", 0.0)
-    monkeypatch.setattr(sandbox_probe, "_STALE_GRACE_SECONDS", 0.0)
+def test_a_verdict_is_never_re_probed_on_its_own(monkeypatch):
+    """No TTL: a re-probe on a timer is what piled up hung probes on macOS (one a minute while failing)."""
+    import types
+
+    leap = {"now": 1000.0}
+
+    def monotonic():
+        leap["now"] += 86400.0
+        return leap["now"]
+
+    monkeypatch.setattr(
+        sandbox_probe, "time", types.SimpleNamespace(monotonic = monotonic), raising = False
+    )
     backend = _Backend("confining", _confining)
-    sandbox_probe.probe(backend)
+    for _ in range(5):
+        assert sandbox_probe.probe(backend)[0] is True
+    assert backend.calls == 1
+    sandbox_probe.reset_probe_cache()
     sandbox_probe.probe(backend)
     assert backend.calls == 2
-    assert not sandbox_probe._refreshing
 
 
 def test_the_cache_cannot_grow_without_bound():
@@ -551,53 +561,8 @@ def test_the_landlock_helper_imports_where_it_will_never_be_used():
         sandbox_landlock.abstract_scope_supported.cache_clear()
 
 
-def test_a_cached_verdict_outlives_the_old_sixty_second_window(monkeypatch, tmp_path):
-    """The TTL was 60s, so an idle chat paid the cold probe again on its next message: a call 70s after the last one cost 1.24s against 0.040s unsandboxed."""
-    from core.inference import sandbox_probe
-
-    assert sandbox_probe._CACHE_TTL_SECONDS >= 600, (
-        "the probe TTL is back under 10 minutes; an idle chat pays the cold "
-        "probe again on its next message"
-    )
-
-    calls = []
-
-    class Backend:
-        BACKEND_NAME = "ttl-probe"
-
-        @staticmethod
-        def prepare(plan):
-            calls.append(plan)
-            raise AssertionError("the probe should not have re-run inside the TTL")
-
-    sandbox_probe.reset_probe_cache()
-    clock = {"now": 1000.0}
-    monkeypatch.setattr(sandbox_probe.time, "monotonic", lambda: clock["now"])
-
-    from core.inference import os_sandbox as _os_sandbox
-
-    key = (Backend.BACKEND_NAME, _os_sandbox._runtime_identity())
-    sandbox_probe._cache[key] = (
-        clock["now"] + sandbox_probe._CACHE_TTL_SECONDS,
-        True,
-        "seeded",
-    )
-
-    clock["now"] += 70.0
-    available, reason = sandbox_probe.probe(Backend)
-    assert (available, reason) == (True, "seeded")
-    assert calls == [], "the probe re-ran 70s later, which is the cost this fixed"
-
-
-def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, tmp_path):
-    """A user who installs bubblewrap must not wait 15 minutes for it to count."""
-    from core.inference import os_sandbox as _os_sandbox
-    from core.inference import sandbox_probe
-
-    assert (
-        sandbox_probe._CACHE_TTL_UNAVAILABLE_SECONDS <= 120
-    ), "an unavailable verdict is cached long enough to outlive the user's own remediation"
-
+def test_an_unavailable_verdict_waits_for_refresh_or_a_new_runtime(monkeypatch):
+    """Installing bubblewrap changes the runtime identity, which the next tool launch re-reads."""
     probes = []
 
     class Backend:
@@ -608,24 +573,17 @@ def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, t
             probes.append(plan)
             raise RuntimeError("bubblewrap is not installed")
 
+    identity = ["before"]
+    monkeypatch.setattr(os_sandbox, "_runtime_identity", lambda: identity[0])
     sandbox_probe.reset_probe_cache()
-    clock = {"now": 5000.0}
-    monkeypatch.setattr(sandbox_probe.time, "monotonic", lambda: clock["now"])
-
-    available, _ = sandbox_probe.probe(Backend)
-    assert available is False
+    for _ in range(5):
+        assert sandbox_probe.probe(Backend)[0] is False
     assert len(probes) == 1
-
-    clock["now"] += 30.0
+    assert sandbox_probe.probe(Backend, force = True)[0] is False
+    assert len(probes) == 2
+    identity[0] = "bubblewrap installed"
     sandbox_probe.probe(Backend)
-    assert len(probes) == 1, "an unavailable verdict should still be cached briefly"
-
-    clock["now"] += 100.0
-    sandbox_probe.probe(Backend)
-    assert len(probes) == 2, (
-        "the host was never re-examined, so installing bubblewrap does not "
-        "take effect until the long TTL expires"
-    )
+    assert len(probes) == 3
 
 
 def test_the_capability_names_the_empty_proc_layout_it_was_probed_with(monkeypatch):
