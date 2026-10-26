@@ -226,7 +226,7 @@ def create_scheduled_task(
 # Declared ahead of /{task_id} so "runs" is never read as a task id.
 @router.get("/runs", response_model = ScheduledTaskActivity)
 def scheduled_task_activity(
-    since: Optional[int] = Query(default = None, ge = 0),
+    since: Optional[int] = Query(default = None, ge = 0, le = 2**63 - 1),
     current_subject: str = Depends(get_current_subject),
 ):
     """Runs finished since ``since`` (ms), for a client that notifies when results arrive."""
