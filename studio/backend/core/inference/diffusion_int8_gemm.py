@@ -43,9 +43,8 @@ A block-streamed denoiser installs against its onload device (``install(..., dev
 ``swap_tensors`` keeps each Parameter's identity and the forward reads the payload off the live Parameter, so every
 call sees the onloaded copy. Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``.
 
-That install also patches the SwiGLU MLPs, whose weights are still on the host (12 / 8 GB Qwen-Image-2.1): the
-group hook onloads the whole block before the MLP runs, and the fused path keeps the stock MLP on any weight that is
-not on the activation's device. ``UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED=0`` keeps those MLPs stock.
+It also patches host-resident SwiGLU MLPs (the group hook onloads the block first; off-device weights fall back to
+stock). Kill switch ``UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED=0``.
 """
 
 from __future__ import annotations
@@ -789,7 +788,7 @@ def _install_swiglu_ff(
     index: int,
     streamed: bool = False,
 ) -> int:
-    """Patch the eligible SwiGLU MLPs on card ``index``; ``streamed``: also those whose weights are still on the host."""
+    """Patch the eligible SwiGLU MLPs on card ``index`` (``streamed``: also host-resident ones)."""
     count = 0
     for module in transformer.modules():
         if _FF_MARK in module.__dict__:

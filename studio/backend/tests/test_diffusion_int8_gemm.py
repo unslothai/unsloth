@@ -1280,7 +1280,6 @@ def test_swiglu_mlp_without_the_prologue_still_shares_the_gate_value_quant(h16_r
 
 
 def _host_swiglu_ff(monkeypatch):
-    """A SwiGLU MLP still on the host (a group-offloaded block before its onload), eligible for the fused forward."""
     ff = torch.nn.Module()
     ff.gate_layer, ff.proj, ff.out = (
         torch.nn.Linear(8, 8),
@@ -1294,8 +1293,6 @@ def _host_swiglu_ff(monkeypatch):
 
 @pytest.mark.parametrize("streamed, patched", [(False, False), (True, True)])
 def test_streamed_install_patches_the_host_swiglu_mlp(monkeypatch, streamed, patched):
-    """The block-streamed install (12 / 8 GB Qwen-Image-2.1) patches the MLPs whose weights the hook onloads later;
-    the resident install still keeps a MLP whose weights sit on no card stock."""
     monkeypatch.delenv(g8.INT8_SWIGLU_STREAMED_ENV, raising = False)
     ff = _host_swiglu_ff(monkeypatch)
     assert g8._install_swiglu_ff(torch.nn.Sequential(ff), 0, streamed = streamed) == int(patched)
@@ -1325,9 +1322,7 @@ def test_swap_passes_streamed_only_for_the_onload_device_install(monkeypatch):
 
 @needs_cuda
 def test_block_streamed_swiglu_mlp_runs_fused_after_the_onload(h16_rotq, monkeypatch):
-    """Group-offloaded block on the host, installed against the onload device: the SwiGLU MLP takes the fused path at
-    each call (as when it is resident) and matches the resident install bit for bit;
-    UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED=0 keeps it stock."""
+    """Streamed host MLP runs fused, bit-identical to resident; the kill switch keeps it stock."""
     hooks = pytest.importorskip("diffusers.hooks")
     if not cq._SWIGLU_DEVICE.get(torch.cuda.current_device()):
         pytest.skip("SwiGLU prologue probe refused this device")
