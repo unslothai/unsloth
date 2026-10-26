@@ -123,6 +123,9 @@ export interface CityState {
   };
   trips: { ok: number; failed: number; noRoad: number };
   monthTrips: { ok: number; failed: number; noRoad: number };
+  /** Last month whose tax was collected, and whose petitions / event / name were applied: never twice. */
+  taxed: number;
+  petitioned: number;
   residents: Record<string, string>;
   advisor: { month: number; text: string; source: "model" | "local" } | null;
   petitions: Petition[];
@@ -195,6 +198,8 @@ export function newCity(spec: WorldSpec): CityState {
       },
       trips: { ok: 0, failed: 0, noRoad: 0 },
       monthTrips: { ok: 0, failed: 0, noRoad: 0 },
+      taxed: 0,
+      petitioned: 0,
       residents: {},
       advisor: null,
       petitions: [],
@@ -307,6 +312,8 @@ export function parseCity(raw: unknown, spec: WorldSpec): CityState | null {
     },
     trips: trips(r.trips),
     monthTrips: trips(r.monthTrips),
+    taxed: int(r.taxed, int(r.month, 0, 0), 0),
+    petitioned: int(r.petitioned, int(r.month, 0, 0), 0),
     residents,
     advisor:
       r.advisor && typeof r.advisor.text === "string"
@@ -668,8 +675,11 @@ export class CitySim {
     if (s.cycle % CENSUS_RATE === 0) this.takeCensus();
     let monthEnded = false;
     if (s.cycle % CYCLES_PER_MONTH === 0) {
-      this.collectTax();
       s.month++;
+      if (s.month > s.taxed) {
+        this.collectTax();
+        s.taxed = s.month;
+      }
       s.monthTrips = s.trips;
       s.trips = { ok: 0, failed: 0, noRoad: 0 };
       monthEnded = true;
@@ -1197,6 +1207,17 @@ export class CitySim {
 
   setAdvisor(text: string, source: "model" | "local"): void {
     this.state.advisor = { month: this.state.month, text, source };
+  }
+
+  get petitioned(): number {
+    return this.state.petitioned;
+  }
+
+  /** Claim a month's petitions, event and name; false when that month was already applied. */
+  claimMonth(month: number): boolean {
+    if (month <= this.state.petitioned) return false;
+    this.state.petitioned = month;
+    return true;
   }
 
   addPetitions(ps: Petition[]): void {

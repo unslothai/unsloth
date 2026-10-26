@@ -1566,7 +1566,6 @@ export function WorldPlayer({
               api={api}
               flowId={flowId}
               replyEntry={replyEntry}
-              steerHomes={!sim}
               tileRef={cityTile}
               toast={toast}
             />

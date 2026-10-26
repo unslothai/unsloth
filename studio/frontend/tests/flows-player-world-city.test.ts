@@ -61,6 +61,7 @@ function town(s: Spec): Sim {
     c.moveIn(["ada"]);
   }
   assert.ok(c.residents.ada, "someone moved in");
+  while (c.month < 1) c.step();
   return c;
 }
 
@@ -313,6 +314,10 @@ test("the simulation is deterministic and a save round-trips exactly", () => {
     a.step();
     b.step();
   }
+  for (let k = 0; k < 64 && !a.traffic.some((v) => v > 0); k++) {
+    a.step();
+    b.step();
+  }
   assert.deepEqual(a.snapshot(), b.snapshot());
   assert.ok(
     a.traffic.some((v) => v > 0),
@@ -413,6 +418,14 @@ test("a mayor reply only lands what the digest supports", () => {
       petitions: [
         {
           citizen: "ada",
+          zone: "C99",
+          metric: "crime",
+          value: 1,
+          text: "Wrong home.",
+        },
+
+        {
+          citizen: "ada",
           zone: ada.zone,
           metric: "crime",
           value: ada.crime,
@@ -460,4 +473,108 @@ test("events come from the fixed menu and act deterministically", () => {
     [...C.EVENTS],
     ["none", "festival", "fire", "strike", "flood", "boom"],
   );
+});
+
+test("tax and a month's petitions apply once across a save and reload at the month boundary", () => {
+  const s = spec();
+  const live = town(s);
+  while (live.cycle % C.CYCLES_PER_MONTH !== C.CYCLES_PER_MONTH - 1)
+    live.step();
+  const before = JSON.parse(JSON.stringify(live.snapshot()));
+  live.step();
+  const after = JSON.parse(JSON.stringify(live.snapshot()));
+  assert.equal(after.taxed, after.month, "the month just ended was taxed");
+  // Reload just before the boundary: crossing it taxes exactly as the live run did.
+  const early = new C.CitySim(C.parseCity(before, s)!, null);
+  early.step();
+  assert.deepEqual(early.snapshot(), live.snapshot());
+  // Reload just after it: the next month end is the only tax.
+  const late = new C.CitySim(C.parseCity(after, s)!, null);
+  const funds = late.funds;
+  for (let k = 1; k < C.CYCLES_PER_MONTH; k++) late.step();
+  assert.equal(late.funds, funds, "no tax again mid-month");
+  assert.equal(late.snapshot().taxed, after.month);
+  // A stale save with a month already taxed does not collect it twice.
+  const busy = {
+    ...before,
+    census: { ...before.census, res: 400, com: 4, ind: 4, lv: 120 },
+  };
+  const taxed = new C.CitySim(C.parseCity(busy, s)!, null);
+  const taxedFunds = taxed.funds;
+  taxed.step();
+  assert.ok(
+    taxed.cash.tax > 0 && taxed.funds !== taxedFunds,
+    "the fixture pays tax",
+  );
+  const stale = new C.CitySim(
+    C.parseCity({ ...busy, taxed: before.month + 1 }, s)!,
+    null,
+  );
+  const staleFunds = stale.funds;
+  stale.step();
+  assert.equal(
+    stale.funds,
+    staleFunds,
+    "a month already taxed is not taxed again",
+  );
+
+  const d = A.cityDigest(s, live, "month");
+  const ada = d.residents[0];
+  const reply = A.parseMayorReply({
+    mayor: {
+      advice: "Fine.",
+      petitions: [
+        {
+          citizen: "ada",
+          zone: ada.zone,
+          metric: "crime",
+          value: ada.crime,
+          text: "Crime.",
+        },
+      ],
+      event: { kind: "festival", zone: "", size: 1 },
+      name: null,
+    },
+  })!;
+  const r0 = live.valves.r;
+  A.applyMayorReply(live, d, reply);
+  const saved = JSON.parse(JSON.stringify(live.snapshot()));
+  A.applyMayorReply(live, d, reply);
+  const reloaded = new C.CitySim(C.parseCity(saved, s)!, null);
+  A.applyMayorReply(reloaded, d, reply);
+  for (const c of [live, reloaded]) {
+    assert.equal(c.petitions.length, 1, "one petition, not two");
+    assert.equal(c.valves.r, Math.min(2000, r0 + 100), "the festival once");
+  }
+});
+
+test("old saves (v1, v2) still load; a city world opens them without new state", () => {
+  const s = spec();
+  const plain: Spec = { ...s };
+  delete plain.city;
+  for (const v of [1, 2]) {
+    const old = { ...W.initialWorldState(plain), v };
+    const raw = JSON.parse(JSON.stringify(old));
+    const asCity = W.deserialize(s, raw);
+    assert.ok(asCity, `v${v} loads`);
+    assert.equal(
+      "city" in (asCity ?? {}),
+      false,
+      "no city state until the mayor builds",
+    );
+    assert.deepEqual(
+      raw,
+      JSON.parse(JSON.stringify(old)),
+      "loading does not rewrite it",
+    );
+    assert.equal("city" in (W.deserialize(plain, raw) ?? {}), false);
+  }
+  // A city save from before the period fields counts its months as applied.
+  const c = town(s);
+  const legacy = JSON.parse(JSON.stringify(c.snapshot()));
+  delete legacy.taxed;
+  delete legacy.petitioned;
+  const parsed = C.parseCity(legacy, s)!;
+  assert.equal(parsed.taxed, parsed.month);
+  assert.equal(parsed.petitioned, parsed.month);
 });

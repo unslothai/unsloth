@@ -57,7 +57,6 @@ export interface MayorHudProps {
   api: PlayerApi;
   flowId: string;
   replyEntry?: string;
-  steerHomes: boolean;
   tileRef: MutableRefObject<(p: Point, drag: boolean) => boolean>;
   toast: (text: string) => void;
 }
@@ -114,18 +113,6 @@ function paintOn(
   game.current?.paintCity?.((g, T) => drawCity(g, sim, T, overlay));
 }
 
-/** Villagers without a village simulation keep to the zone they moved into. */
-function steerHome(
-  game: MutableRefObject<WorldGameHandle | null>,
-  sim: CitySim,
-): void {
-  for (const [id, zoneId] of Object.entries(sim.residents)) {
-    const z = sim.zoneById(zoneId);
-    if (z)
-      game.current?.setNpcPlace(id, { x: z.x - 1, y: z.y - 1, w: 3, h: 3 });
-  }
-}
-
 export function MayorHud({
   spec,
   map,
@@ -139,7 +126,6 @@ export function MayorHud({
   api,
   flowId,
   replyEntry,
-  steerHomes,
   tileRef,
   toast,
 }: MayorHudProps) {
@@ -179,14 +165,11 @@ export function MayorHud({
     if (ready) paint();
   }, [ready, view, paint, city]);
 
-  const home = useCallback(() => {
-    if (steerHomes) steerHome(game, sim);
-  }, [game, sim, steerHomes]);
-
   const ask = useCallback(
     async (kind: "month" | "advice", signal: AbortSignal) => {
       const digest = cityDigest(spec, sim, kind);
       if (!replyEntry) {
+        if (kind === "month") sim.claimMonth(digest.month);
         sim.setAdvisor(localAdvice(digest), "local");
         commit();
         return;
@@ -203,9 +186,13 @@ export function MayorHud({
         const reply = parseMayorReply(res.outputs.reply);
         if (reply)
           for (const line of applyMayorReply(sim, digest, reply)) toast(line);
-        else sim.setAdvisor(localAdvice(digest), "local");
+        else {
+          if (kind === "month") sim.claimMonth(digest.month);
+          sim.setAdvisor(localAdvice(digest), "local");
+        }
       } catch {
         if (signal.aborted || live.current !== sim) return;
+        if (kind === "month") sim.claimMonth(digest.month);
         sim.setAdvisor(localAdvice(digest), "local");
       } finally {
         setAsking(false);
@@ -244,13 +231,16 @@ export function MayorHud({
           `${npcs.find((n) => n.id === id)?.name ?? id} moved into ${z?.name ?? z?.id}`,
         );
       }
-      home();
       commit();
       if (ended) askLater("month");
       queue.pump();
     },
-    [askLater, commit, home, queue, sim, spec.npcs, toast],
+    [askLater, commit, queue, sim, spec.npcs, toast],
   );
+
+  useEffect(() => {
+    if (ready && sim.month > sim.petitioned) askLater("month");
+  }, [ready, sim, askLater]);
 
   useEffect(() => {
     if (!ready) return;

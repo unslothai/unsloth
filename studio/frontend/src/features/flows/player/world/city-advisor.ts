@@ -193,7 +193,7 @@ export function applyMayorReply(
 ): string[] {
   const out: string[] = [];
   if (reply.advice) sim.setAdvisor(reply.advice, "model");
-  if (digest.kind !== "month") return out;
+  if (digest.kind !== "month" || !sim.claimMonth(digest.month)) return out;
   const residents = new Map(digest.residents.map((r) => [r.id, r]));
   const petitions: Petition[] = [];
   for (const p of reply.petitions) {

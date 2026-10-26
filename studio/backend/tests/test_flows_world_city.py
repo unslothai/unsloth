@@ -263,3 +263,47 @@ def test_the_mayor_example_turns_city_on():
     assert world["city"]["enabled"] is True and world["city"]["funds"] == 20000
     assert world["entry_points"]["npc_reply"] == "reply"
     assert "simulation" not in world
+
+
+CITY_ALL = {
+    "enabled": True,
+    "funds": 4321,
+    "tax": 12,
+    "advisor": False,
+    "petitions": False,
+    "events": False,
+}
+
+
+def test_every_city_field_round_trips_normalize_and_export_import():
+    from core.flows import package
+    from core.flows.package import read_package
+
+    w = normalize_world({"title": "T", "npcs": [{"name": "Tom"}], "city": CITY_ALL}, seed = 2)
+    assert w["city"] == CITY_ALL
+    assert normalize_world(w, seed = 2)["city"] == CITY_ALL
+    doc = copy.deepcopy(next(d for d in build() if d["id"] == "mayor-meadow"))
+    node = next(n for n in doc["nodes"] if n["id"] == "world")
+    node["params"]["world"]["city"] = CITY_ALL
+
+    async def read_media(_ref):
+        raise AssertionError("no media")
+
+    for mode in ("json", "package"):
+        data, _, _ = run(package.export_flow(doc, mode, read_media))
+        parsed, _, _ = read_package(data)
+        assert resolve_world(parsed)["city"] == CITY_ALL, mode
+
+
+def test_city_wins_over_rivals_with_a_warning():
+    from core.flows.world import resolve_world_report
+
+    w = normalize_world({"title": "T", "city": True, "rivals": {"factions": []}}, seed = 1)
+    assert "rivals" not in w and w["city"]["enabled"]
+    doc = copy.deepcopy(next(d for d in build() if d["id"] == "mayor-meadow"))
+    next(n for n in doc["nodes"] if n["id"] == "world")["params"]["world"]["rivals"] = {
+        "factions": []
+    }
+    world, warnings = resolve_world_report(doc)
+    assert "rivals" not in world
+    assert any("only the Mayor panel" in x for x in warnings)

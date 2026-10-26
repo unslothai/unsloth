@@ -259,7 +259,9 @@ def normalize_world(
         world["props3d"] = props
     city = normalize_city(raw.get("city"))
     if city:
+        # One side panel at a time: Mayor mode wins over Village Rivals.
         world["city"] = city
+        world.pop("rivals", None)
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
 
 
@@ -1203,6 +1205,8 @@ def resolve_world_report(
     level = (reply.get("params") or {}).get("autonomy") if reply is not None else None
     if level in AUTONOMY_LEVELS and level != "off":
         world["autonomy"] = {k: k in AUTONOMY_LEVELS[level] for k in AUTONOMY_FLAGS}
+    if world.get("city") and raw.get("rivals"):
+        warnings.append("This world turns on both city and rivals: only the Mayor panel shows")
     if "npc_reply" not in eps:
         warnings.append("No NPC Reply (live) node: NPCs will only say their greeting")
     sim = world.get("simulation")
