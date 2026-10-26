@@ -300,8 +300,6 @@ def test_live_bytes_check_errors_are_not_reported_as_foreign(monkeypatch):
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_live_bytes_check_is_bitwise_for_float_quant_storage(monkeypatch, dtype):
-    """Packed codes stored as fp16 / bf16 / fp32 (`bnb_4bit_quant_storage`) include NaN byte
-    patterns and both signed zeros: equal bytes must match, differing bytes must not."""
     from unsloth import save as unsloth_save
 
     monkeypatch.setattr(unsloth_save, "_PARAMS4BIT_COMPARE_CHUNK_BYTES", 64)
@@ -319,7 +317,6 @@ def test_live_bytes_check_is_bitwise_for_float_quant_storage(monkeypatch, dtype)
     flipped = live.clone()
     flipped[7, 2] = -0.0  # different bytes, equal under ==
     assert not unsloth_save._is_live_params4bit_data(param, flipped)
-    # Non-contiguous live data goes through the row-sliced comparison.
     param_nc = param_of(live.t())
     assert unsloth_save._is_live_params4bit_data(param_nc, live.t().contiguous())
     assert not unsloth_save._is_live_params4bit_data(param_nc, flipped.t().contiguous())
@@ -329,8 +326,6 @@ def test_live_bytes_check_is_bitwise_for_float_quant_storage(monkeypatch, dtype)
 
 @pytest.mark.parametrize("quant_storage", [torch.float16, torch.bfloat16, torch.float32])
 def test_supplied_cloned_float_quant_storage_bytes_are_kept(tmp_path, quant_storage):
-    """`save_pretrained(state_dict = <cloned dict>)` with float packed storage: the cloned bytes are
-    the live ones, so the save gets the live quant state instead of refusing them as foreign."""
     bnb = pytest.importorskip("bitsandbytes")
     from unsloth.save import patch_saving_functions
 

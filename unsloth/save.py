@@ -362,10 +362,7 @@ _PARAMS4BIT_COMPARE_CHUNK_BYTES = 64 * 1024 * 1024
 
 
 def _packed_bytes_equal(a, b):
-    """Bitwise equality of two same-dtype packed slices. Packed 4-bit codes can live in a float
-    `quant_storage` (fp16 / bf16 / fp32), where some byte patterns are NaN (never equal to
-    themselves under `torch.equal`) and +0 / -0 are different bytes that compare equal, so float
-    slices are compared as raw bytes."""
+    # Float quant_storage packs NaN / +-0 byte patterns: torch.equal would misjudge them.
     if a.is_floating_point() or a.is_complex():
         a = a.contiguous().reshape(-1).view(torch.uint8)
         b = b.contiguous().reshape(-1).view(torch.uint8)
