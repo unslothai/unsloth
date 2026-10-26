@@ -15,6 +15,5 @@ test("typing a Hub search clears an opened model but not the split view's auto-p
     /const openedModel =\s*!!urlModel && urlModel !== autoPreviewIdRef\.current;/,
   );
   assert.match(handler, /if \(openedModel \|\| urlSection\) \{/);
-  // The auto-preview effect must still record what it picked, or every model reads as opened.
   assert.match(src, /autoPreviewIdRef\.current = firstId;/);
 });
