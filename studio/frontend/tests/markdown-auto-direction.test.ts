@@ -88,7 +88,8 @@ test("chat replies, sent prompts and right-to-left lists are wired to it", () =>
     readSrc("components/assistant-ui/thread.tsx"),
     /<div\s+dir="auto"\s+className="aui-user-message-content /,
   );
-  // A physical padding-left would leave a right-to-left list's bullets hanging off the right edge.
+  // A physical padding-left would leave a right-to-left list's bullets hanging off the right edge,
+  // so no list rule may use one, the wider indents of long ordered lists included.
   const css = readSrc("index.css");
   for (const list of ["unordered-list", "ordered-list"]) {
     const rule = css.match(
@@ -96,6 +97,10 @@ test("chat replies, sent prompts and right-to-left lists are wired to it", () =>
     )?.[1];
     assert.ok(rule, list);
     assert.match(rule, /padding-inline-start:/, list);
-    assert.doesNotMatch(rule, /padding-left:/, list);
+    for (const [, body] of css.matchAll(
+      new RegExp(`\\[data-streamdown="${list}"\\][^{]*\\{([^}]*)\\}`, "g"),
+    )) {
+      assert.doesNotMatch(body, /padding-left:/, list);
+    }
   }
 });

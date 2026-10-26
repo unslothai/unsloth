@@ -4407,11 +4407,11 @@ html[data-chat-font] .aui-root {
 			:has(> li:nth-child(10)),
 			[start]:not([start="1"], [start="2"], [start="3"], [start="4"], [start="5"], [start="6"], [start="7"], [start="8"], [start="9"])
 		) {
-		padding-left: 2.2em;
+		padding-inline-start: 2.2em;
 	}
 
 	[data-streamdown="ordered-list"]:has(> li:nth-child(100)) {
-		padding-left: 2.8em;
+		padding-inline-start: 2.8em;
 	}
 
 	[data-streamdown="list-item"] {
