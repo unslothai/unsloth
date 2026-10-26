@@ -598,6 +598,99 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "studio manifest: ${TAG} @ ${DIGEST}"
 
+  # Unsloth Studio without CUDA or PyTorch, for ARM64 hosts with no NVIDIA GPU (:cpu-arm64)
+  build-cpu-arm64:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
+
+      - name: Resolve tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=cpu-arm64,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=ref,event=tag,prefix=cpu-arm64-
+            type=schedule,pattern=cpu-arm64-nightly-${{ needs.prepare.outputs.pin_date }}
+
+      - name: Build CPU ARM64 image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile.cpu-arm64
+          platforms: linux/arm64
+          load: true
+          tags: unsloth/unsloth:cpu-arm64-test
+          build-args: |
+            UNSLOTH_REF=${{ needs.prepare.outputs.unsloth_ref }}
+            UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
+
+      - name: Smoke test CPU ARM64 image (boot, health, and restart)
+        run: |
+          CID="$(docker run -d -p 8000:8000 -e UNSLOTH_STUDIO_PASSWORD=smoketest unsloth/unsloth:cpu-arm64-test)"
+          trap 'docker logs --tail 100 "$CID" || true; docker rm -f "$CID" || true' EXIT
+          echo "Waiting for Studio to respond on http://localhost:8000/api/health..."
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$ok" = 1 ] || { echo "Studio /api/health never became healthy on initial start"; exit 1; }
+          echo "Initial boot healthy. Verifying restart persistence..."
+          docker restart "$CID"
+          ok_restart=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; then
+              ok_restart=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$ok_restart" = 1 ] || { echo "Studio failed to respond on /api/health after docker restart"; exit 1; }
+          echo "CPU ARM64 Studio boot, healthcheck, and restart verified successfully!"
+          docker rm -f "$CID"
+          trap - EXIT
+
+      - name: Push CPU ARM64 image
+        if: ${{ steps.meta.outputs.tags != '' }}
+        run: |
+          for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+            name="${tag##*:}"
+            case "$name" in
+              cpu-arm64-nightly-[0-9]*)
+                # A dated pin is immutable, as in merge: only 404 frees the name.
+                for i in 1 2 3 4 5; do
+                  code="$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}" || true)"
+                  case "$code" in 200|404) break ;; esac
+                  echo "probe of ${tag} returned HTTP ${code} (attempt $i)"; sleep 15
+                done
+                case "$code" in
+                  200) echo "::notice::${tag} already exists and stays as it is"; continue ;;
+                  404) ;;
+                  *) echo "::error::Cannot tell whether ${tag} exists (HTTP ${code}); not risking an overwrite"; exit 1 ;;
+                esac ;;
+            esac
+            docker tag unsloth/unsloth:cpu-arm64-test "$tag"
+            docker push "$tag"
+          done
+
   # The Docker Hub page is not written by any push: it is repository metadata that
   # only the Hub API changes, so without this it stays whatever was pasted in by
   # hand. Synced from docker/DOCKERHUB.md whenever :latest moved, i.e. the same
@@ -746,7 +839,7 @@ jobs:
             done
             for name in $names; do
               case "$name" in
-                nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]|core-nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9])
+                nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]|core-nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]|cpu-arm64-nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9])
                   stamp="${name##*nightly-}"
                   if [ "$stamp" \< "$cutoff" ]; then drop "$name"; fi ;;
               esac

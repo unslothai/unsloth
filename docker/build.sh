@@ -5,6 +5,7 @@
 # Usage:
 #   ./build.sh                 # builds unsloth-blackwell:latest pinned to unsloth main
 #   ./build.sh --rocm          # builds unsloth-rocm:latest for AMD GPUs
+#   ./build.sh --cpu-arm64     # builds unsloth-cpu-arm64:latest, Studio without CUDA
 #   TAG=2026.05.1 ./build.sh   # custom tag
 #   UNSLOTH_REF=v2026.5.6 UNSLOTH_ZOO_REF=v2026.5.4 ./build.sh   # pin git refs
 #
@@ -22,17 +23,23 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ROCM=0
+CPU_ARM64=0
 ROCM_GFX="${ROCM_GFX:-}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --rocm) ROCM=1 ;;
+        --cpu-arm64) CPU_ARM64=1 ;;
         --gfx)  [[ $# -ge 2 ]] || { echo "--gfx needs an arch (e.g. gfx1151)" >&2; exit 2; }
                 ROCM_GFX="$2"; shift ;;
         --gfx=*) ROCM_GFX="${1#--gfx=}" ;;
-        *) echo "unknown option: $1 (build.sh takes --rocm [--gfx <arch>])" >&2; exit 2 ;;
+        *) echo "unknown option: $1 (build.sh takes --rocm [--gfx <arch>] or --cpu-arm64)" >&2; exit 2 ;;
     esac
     shift
 done
+if [[ $ROCM -eq 1 && $CPU_ARM64 -eq 1 ]]; then
+    echo "--rocm and --cpu-arm64 are separate images; pick one" >&2
+    exit 2
+fi
 if [[ -n "$ROCM_GFX" && $ROCM -eq 0 ]]; then
     echo "--gfx / ROCM_GFX only applies to --rocm builds" >&2
     exit 2
@@ -137,6 +144,22 @@ if [[ $ROCM -eq 1 ]]; then
     echo
     echo "Smoke test on an AMD host (run.sh defaults to the published image, so name this one):"
     echo "  UNSLOTH_IMAGE=${IMAGE_NAME}:${TAG} UNSLOTH_WORKSPACE_VOLUME= bash run.sh --rocm python /workspace/smoke_test_rocm.py"
+    exit 0
+fi
+
+if [[ $CPU_ARM64 -eq 1 ]]; then
+    echo "Building unsloth-cpu-arm64:${TAG}  [CPU only, no CUDA]"
+    echo "  unsloth        @${UNSLOTH_REF}"
+    echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
+    echo
+    DOCKER_BUILDKIT=1 docker build \
+        --progress=plain \
+        -f Dockerfile.cpu-arm64 \
+        --build-arg UNSLOTH_REF="${UNSLOTH_REF}" \
+        --build-arg UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF}" \
+        -t "unsloth-cpu-arm64:${TAG}" \
+        .
+    echo "Built unsloth-cpu-arm64:${TAG}"
     exit 0
 fi
 
