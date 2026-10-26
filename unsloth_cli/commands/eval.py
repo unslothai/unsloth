@@ -549,7 +549,7 @@ def evaluate(
         ensure_studio_backend_path(seed_cache_env = False)
         from utils.paths import default_run_dir_name
 
-        output_dir = Path("eval_results") / f"{default_run_dir_name(model)}_{int(time.time())}"
+        run_name, stamp = default_run_dir_name(model), int(time.time())
     # find_spec, not import: lm_eval imports transformers, which must come after unsloth
     if "lm_eval" not in sys.modules and find_spec("lm_eval") is None:
         _fail("evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.", code = 1)
@@ -746,6 +746,14 @@ def evaluate(
         _fail("evaluation returned no results.", code = 1)
 
     _render_results(results)
+    if output_dir is None:
+        while True:
+            output_dir = Path("eval_results") / f"{run_name}_{stamp}"
+            try:
+                output_dir.mkdir(parents = True)
+                break
+            except FileExistsError:
+                stamp += 1
     output_dir.mkdir(parents = True, exist_ok = True)
     results_path = output_dir / "results.json"
     results_path.write_text(json.dumps(results, indent = 2, default = _json_default), encoding = "utf-8")
