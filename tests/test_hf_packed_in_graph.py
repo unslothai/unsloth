@@ -65,7 +65,9 @@ def _probs(q, k, mask, scale):
 def _reference(query, key, value, cu, is_causal, scale, window_size):
     """(T, H, D) math attention per segment."""
     out = torch.empty_like(query)
-    for rows, q, k, v, mask, scale, _ in _segments(query, key, value, cu, is_causal, scale, window_size):
+    for rows, q, k, v, mask, scale, _ in _segments(
+        query, key, value, cu, is_causal, scale, window_size
+    ):
         out[rows] = (_probs(q, k, mask, scale) @ v).transpose(0, 1)
     return out
 
@@ -73,7 +75,9 @@ def _reference(query, key, value, cu, is_causal, scale, window_size):
 def _reference_grads(grad_out, query, key, value, cu, is_causal, scale, window_size):
     """Analytic softmax-attention backward per segment (kernels run below autograd)."""
     dq, dk, dv = torch.zeros_like(query), torch.zeros_like(key), torch.zeros_like(value)
-    for rows, q, k, v, mask, scale, groups in _segments(query, key, value, cu, is_causal, scale, window_size):
+    for rows, q, k, v, mask, scale, groups in _segments(
+        query, key, value, cu, is_causal, scale, window_size
+    ):
         p = _probs(q, k, mask, scale)
         do = grad_out[rows].transpose(0, 1)
         dv_h = p.transpose(-1, -2) @ do
@@ -90,17 +94,32 @@ def _reference_grads(grad_out, query, key, value, cu, is_causal, scale, window_s
 _CALLS = {"fwd": 0, "bwd": 0, "max_q": []}
 
 
-def _cpu_fwd(query, key, value, cu_seq_q, cu_seq_k, max_q, max_k, is_causal = False, *rest, **kw):
+def _cpu_fwd(
+    query,
+    key,
+    value,
+    cu_seq_q,
+    cu_seq_k,
+    max_q,
+    max_k,
+    is_causal = False,
+    *rest,
+    **kw,
+):
     names = ("scale", "window_size", "enable_gqa")
     opts = dict(zip(names, rest), **kw)
     _CALLS["fwd"] += 1
     _CALLS["max_q"].append(int(max_q))
-    out = _reference(query, key, value, cu_seq_q, is_causal, opts.get("scale"), opts.get("window_size"))
+    out = _reference(
+        query, key, value, cu_seq_q, is_causal, opts.get("scale"), opts.get("window_size")
+    )
     lse = torch.zeros(query.shape[1], query.shape[0], dtype = torch.float)
     return out, lse, torch.zeros(2, dtype = torch.uint64)
 
 
-def _cpu_bwd(grad_out, query, key, value, out, lse, cu_seq_q, cu_seq_k, max_q, max_k, is_causal, *rest, **kw):
+def _cpu_bwd(
+    grad_out, query, key, value, out, lse, cu_seq_q, cu_seq_k, max_q, max_k, is_causal, *rest, **kw
+):
     # (rng_state, scale, window_size[, enable_gqa]) after is_causal on 2.11 / 2.12 / 2.13 / 2.14.
     names = ("rng_state", "scale", "window_size", "enable_gqa")
     opts = dict(zip(names, rest), **kw)
@@ -140,7 +159,10 @@ def gate(monkeypatch):
     monkeypatch.setattr(hpa, "_leaves_block", torch._dynamo.assume_constant_result(lambda *a: True))
     # Absent before this change: setting it there is harmless and main keeps leaving the graph.
     monkeypatch.setattr(
-        hpa, "_in_graph_kernel", torch._dynamo.assume_constant_result(lambda *a: True), raising = False
+        hpa,
+        "_in_graph_kernel",
+        torch._dynamo.assume_constant_result(lambda *a: True),
+        raising = False,
     )
     monkeypatch.setattr(hpa, "_in_graph_device", lambda device: True, raising = False)
     monkeypatch.setattr(hpa, "_layer_leaves", lambda layer, hidden_states: True, raising = False)
@@ -154,7 +176,11 @@ def gate(monkeypatch):
     torch._dynamo.reset()
 
 
-def _tiny(arch = "qwen3", dtype = torch.float32, seed = 0):
+def _tiny(
+    arch = "qwen3",
+    dtype = torch.float32,
+    seed = 0,
+):
     import transformers
 
     torch.manual_seed(seed)
@@ -196,7 +222,11 @@ def _tiny(arch = "qwen3", dtype = torch.float32, seed = 0):
     return model
 
 
-def _counting_compile(monkeypatch, M, backend = "aot_eager"):
+def _counting_compile(
+    monkeypatch,
+    M,
+    backend = "aot_eager",
+):
     """_block_compile's torch.compile with a counting backend (no Inductor / C++ toolchain on CPU)."""
     from torch._dynamo.testing import CompileCounterWithBackend
 
@@ -210,7 +240,11 @@ def _counting_compile(monkeypatch, M, backend = "aot_eager"):
 
     def fake_compile(fn, **kwargs):
         kwargs.pop("options", None)
-        return real(fn, backend = capture, **{k: v for k, v in kwargs.items() if k in ("fullgraph", "dynamic")})
+        return real(
+            fn,
+            backend = capture,
+            **{k: v for k, v in kwargs.items() if k in ("fullgraph", "dynamic")},
+        )
 
     monkeypatch.setattr(torch, "compile", fake_compile)
     return counter, graphs
@@ -225,7 +259,11 @@ def _wrap_layers(monkeypatch, model):
     return M, counter, graphs, (layer_cls, original)
 
 
-def _packed_batch(lengths, vocab = 128, seed = 0):
+def _packed_batch(
+    lengths,
+    vocab = 128,
+    seed = 0,
+):
     g = torch.Generator().manual_seed(seed)
     total = sum(lengths)
     input_ids = torch.randint(0, vocab, (1, total), generator = g)
@@ -284,7 +322,11 @@ def test_in_graph_rows_match_the_dense_mask_and_an_fp64_oracle(monkeypatch, gate
     lengths = [6, 11, 4, 9]
     batch = _packed_batch(lengths)
     results = {}
-    for name, dtype, wrap in (("oracle", torch.float64, False), ("stock", torch.float32, False), ("ours", torch.float32, True)):
+    for name, dtype, wrap in (
+        ("oracle", torch.float64, False),
+        ("stock", torch.float32, False),
+        ("ours", torch.float32, True),
+    ):
         model = _tiny(arch, dtype = dtype)
         if wrap:
             _, _, graphs, restore = _wrap_layers(monkeypatch, model)
@@ -294,12 +336,19 @@ def test_in_graph_rows_match_the_dense_mask_and_an_fp64_oracle(monkeypatch, gate
         finally:
             if wrap:
                 restore[0].forward = restore[1]
-        results[name] = (loss.detach().double(), {n: p.grad.double() for n, p in model.named_parameters()})
+        results[name] = (
+            loss.detach().double(),
+            {n: p.grad.double() for n, p in model.named_parameters()},
+        )
     assert _CALLS["fwd"] == len(model.model.layers)  # ours took varlen in every layer
     oracle_loss, oracle_grads = results["oracle"]
     for name in ("stock", "ours"):
         loss, grads = results[name]
-        assert abs(loss - oracle_loss) <= 1e-5 * abs(oracle_loss) + 1e-7, (name, float(loss), float(oracle_loss))
+        assert abs(loss - oracle_loss) <= 1e-5 * abs(oracle_loss) + 1e-7, (
+            name,
+            float(loss),
+            float(oracle_loss),
+        )
         for key, ref in oracle_grads.items():
             err = (grads[key] - ref).norm() / (ref.norm() + 1e-12)
             assert err < 1e-4, (name, key, float(err))
@@ -363,7 +412,9 @@ def test_rows_varlen_cannot_take_keep_the_previous_path(monkeypatch, gate, why):
     model = _tiny("qwen3")
     batch = _packed_batch([5, 9, 3])
     if why == "no_kernel":
-        monkeypatch.setattr(hpa, "_in_graph_kernel", torch._dynamo.assume_constant_result(lambda *a: False))
+        monkeypatch.setattr(
+            hpa, "_in_graph_kernel", torch._dynamo.assume_constant_result(lambda *a: False)
+        )
     elif why == "bidirectional_mask":
         total = 17
         mask = torch.zeros(1, 1, total, total, dtype = torch.bool)
@@ -373,7 +424,9 @@ def test_rows_varlen_cannot_take_keep_the_previous_path(monkeypatch, gate, why):
     elif why == "no_cudnn":
         # Dense-mask SDPA would not pick cuDNN (RTX PRO 6000, H100, A100, T4, torch >= 2.13): the
         # masked SDPA stays in the graph exactly as before and no plan is built.
-        monkeypatch.setattr(hpa, "_leaves_block", torch._dynamo.assume_constant_result(lambda *a: False))
+        monkeypatch.setattr(
+            hpa, "_leaves_block", torch._dynamo.assume_constant_result(lambda *a: False)
+        )
         monkeypatch.setattr(hpa, "_layer_leaves", lambda layer, hidden_states: False)
         built = []
         real_plan = hpa.block_packed_plan
@@ -442,7 +495,11 @@ def _tiny_qwen3_vl():
             },
         ),
         vision_config = dict(
-            depth = 1, hidden_size = 32, intermediate_size = 64, num_heads = 2, out_hidden_size = 64,
+            depth = 1,
+            hidden_size = 32,
+            intermediate_size = 64,
+            num_heads = 2,
+            out_hidden_size = 64,
             deepstack_visual_indexes = [0],
         ),
         image_token_id = 120,
@@ -515,7 +572,14 @@ def _gpu_varlen():
 _GPU = pytest.mark.skipif(_gpu_varlen() is None, reason = "needs CUDA sm80+ with torch varlen_attn")
 
 
-def _gpu_inputs(lengths, n_heads, n_kv, head_dim = 64, dtype = torch.bfloat16, seed = 0):
+def _gpu_inputs(
+    lengths,
+    n_heads,
+    n_kv,
+    head_dim = 64,
+    dtype = torch.bfloat16,
+    seed = 0,
+):
     g = torch.Generator(device = "cuda").manual_seed(seed)
     total = sum(lengths)
     make = lambda h: torch.randn(1, h, total, head_dim, device = "cuda", dtype = dtype, generator = g)
@@ -525,7 +589,13 @@ def _gpu_inputs(lengths, n_heads, n_kv, head_dim = 64, dtype = torch.bfloat16, s
     return q, k, v, mask, torch.tensor(lengths, dtype = torch.int32)
 
 
-def _oracle(q, k, v, mask, window = None):
+def _oracle(
+    q,
+    k,
+    v,
+    mask,
+    window = None,
+):
     q64, k64, v64 = (t.double() for t in (q, k, v))
     groups = q.shape[1] // k.shape[1]
     k64, v64 = k64.repeat_interleave(groups, 1), v64.repeat_interleave(groups, 1)
@@ -559,7 +629,12 @@ def test_gpu_in_graph_varlen_matches_the_eager_kernel_and_fp64(monkeypatch, n_kv
     )
     layer = torch.nn.Module()
     layer.sliding_window = window
-    plan = hpa.block_packed_plan(layer, q.new_zeros(1, sum(lengths), 8), (), {"attention_mask": mask, "packed_seq_lengths": psl})
+    plan = hpa.block_packed_plan(
+        layer,
+        q.new_zeros(1, sum(lengths), 8),
+        (),
+        {"attention_mask": mask, "packed_seq_lengths": psl},
+    )
     assert plan is not None and plan[1].shape[0] == 150
 
     def eager(q, k, v):
@@ -567,7 +642,9 @@ def test_gpu_in_graph_varlen_matches_the_eager_kernel_and_fp64(monkeypatch, n_kv
         return hpa._sdpa_packed_varlen(module, q, k, v, mask, packed_seq_lengths = psl)[0]
 
     def in_graph(q, k, v):
-        out = hpa._in_graph_varlen(module, q, k, v, mask, 0.0, None, None, {"packed_seq_lengths": psl})
+        out = hpa._in_graph_varlen(
+            module, q, k, v, mask, 0.0, None, None, {"packed_seq_lengths": psl}
+        )
         assert out is not None
         return out
 
@@ -596,7 +673,9 @@ def test_gpu_in_graph_varlen_matches_the_eager_kernel_and_fp64(monkeypatch, n_kv
         a, b, c = results["eager"][1][i], results["eager2"][1][i], results["ours"][1][i]
         spread = (a - b).abs().max().item()
         scale = a.abs().max().item()
-        assert (c - a).abs().max().item() <= max(2 * spread, 2 * torch.finfo(torch.bfloat16).eps * scale), i
+        assert (c - a).abs().max().item() <= max(
+            2 * spread, 2 * torch.finfo(torch.bfloat16).eps * scale
+        ), i
     q64, k64, v64 = (t.detach().double().requires_grad_() for t in (q, k, v))
     _oracle(q64, k64, v64, mask, window).backward(results["eager"][2].double())
     for i, ref_grad in enumerate((q64.grad, k64.grad, v64.grad)):
