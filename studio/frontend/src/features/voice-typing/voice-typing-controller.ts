@@ -100,6 +100,9 @@ export class VoiceTypingController {
   /** Microphone kept open between sessions so the next press records at once. */
   private warmStream: MediaStream | null = null;
   private warmTimer: number | null = null;
+  /** Bumped when a warm stream is released; an open that resolves afterwards is
+   *  stopped instead of leaving the microphone on after a cancel. */
+  private warmToken = 0;
   /** The warm stream a running session borrowed, reclaimed when it ends. */
   private sessionStream: MediaStream | null = null;
   private hudText = "";
@@ -775,12 +778,21 @@ export class VoiceTypingController {
   /** Open the microphone after a dictation so the next press records at once. */
   private warmMicrophone(): void {
     const { enabled, micWarmSeconds: seconds } = useVoiceTypingStore.getState();
-    if (!enabled || this.disposed || seconds <= 0 || this.warmStream) return;
+    if (!enabled || this.disposed || seconds <= 0) return;
+    if (this.warmStream) {
+      // A session gives its borrowed stream back before the insert completes.
+      // Restart the hold window here so the time spent inserting is not taken
+      // out of the time the microphone stays ready for the next press.
+      this.armWarmTimer();
+      return;
+    }
+    const token = this.warmToken;
     const { micDeviceId } = useVoiceSettingsStore.getState();
     void openMicrophone(micDeviceId)
       .then((stream) => {
         if (
           this.disposed ||
+          token !== this.warmToken ||
           this.session ||
           !useVoiceTypingStore.getState().enabled ||
           useVoiceTypingStore.getState().micWarmSeconds <= 0 ||
@@ -817,6 +829,9 @@ export class VoiceTypingController {
   }
 
   private releaseWarmMicrophone(): void {
+    // Any openMicrophone() still pending belongs to the release that just
+    // happened; its result must be stopped rather than kept warm.
+    this.warmToken += 1;
     this.clearWarmTimer();
     const stream = this.warmStream;
     this.warmStream = null;
