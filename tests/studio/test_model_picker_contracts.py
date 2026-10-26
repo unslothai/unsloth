@@ -3140,6 +3140,25 @@ def test_run_settings_gear_label_names_its_model():
     assert "aria-label={ariaLabel}" in action
 
 
+def _gutter_class_names(pickers: str) -> set[str]:
+    """ROW_ACTIONS_CLASS plus every `const X = ...;` whose value is built from it."""
+    names = {"ROW_ACTIONS_CLASS"}
+    for match in re.finditer(r"\bconst\s+(ROW_ACTIONS_\w+)\s*=\s*([^;]*);", pickers):
+        if re.search(r"\bROW_ACTIONS_CLASS\b", match.group(2)):
+            names.add(match.group(1))
+    return names
+
+
+def test_the_gutter_aliases_are_read_from_their_definitions():
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    names = _gutter_class_names(pickers)
+    assert names - {
+        "ROW_ACTIONS_CLASS"
+    }, f"no constant built from ROW_ACTIONS_CLASS was found: {names}"
+    # A constant that does not build on the gutter class is not a gutter.
+    assert _gutter_class_names("const ROW_ACTIONS_OTHER = cn('w-4');") == {"ROW_ACTIONS_CLASS"}
+
+
 def test_a_multi_quant_parent_row_still_has_no_gear():
     """The driver reads the absence of a gear as "this row expands rather than loads".
     Give the parent row a gear and that inference silently inverts."""
@@ -3148,11 +3167,22 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     start = pickers.index("const renderDownloadedGgufRow")
     parent = pickers[start : pickers.index("const renderDownloadedModelRow", start)]
     parent_row = parent[: parent.index("{expanderOpen && (")]
-    # The gutter by reference, not pixel width.
-    gutter = "ROW_ACTIONS_CLASS" in parent_row or re.search(r"w-\[\d+px\]", parent_row)
+    # A partial repo puts a row menu in the gutter instead; the gear invariant is about the
+    # branch that expands, so read that one when the row splits on it.
+    split = parent_row.find("isPartialRepo ?")
+    expandable = parent_row[parent_row.index(") : (", split) :] if split >= 0 else parent_row
+    # The gutter by reference, not pixel width: ROW_ACTIONS_CLASS or a constant built from it
+    # (ROW_ACTIONS_PINNED_CLASS holds the chevron in that same column).
+    gutter = any(
+        re.search(rf"\b{name}\b", expandable) for name in _gutter_class_names(pickers)
+    ) or re.search(r"w-\[\d+px\]", expandable)
     assert (
-        'aria-hidden="true"' in parent_row and gutter
+        'aria-hidden="true"' in expandable and gutter
     ), "the multi-quant parent row lost the spacer that stands in for a gear"
+    # The driver finds gears by accessible name, so whatever fills this gutter must not have one.
+    assert (
+        "aria-label" not in expandable
+    ), "the expandable parent row's gutter gained a labelled control"
     assert "ModelLoadSettingsAction" not in parent_row, (
         "the multi-quant parent row grew a gear, so the driver's 'no gear means "
         "this row expands rather than loads' inference is now wrong"
