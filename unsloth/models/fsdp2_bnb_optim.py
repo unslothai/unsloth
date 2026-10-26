@@ -583,7 +583,31 @@ def localize_bnb_optimizer(optimizer):
             "parameters; build it after `shard_model(model)` and before training."
         )
     optimizer.__class__ = _local_shard_class(type(optimizer))
+    _rebind_scheduler_step(optimizer)
     return True
+
+
+def _rebind_scheduler_step(optimizer):
+    """An LR scheduler built before localization (Trainer(optimizers = (opt, scheduler))) wrapped the
+    old class's step on the instance (torch.optim.lr_scheduler patch_track_step_called), so the
+    local-shard step would never run. Point that wrapper at the new class step, keeping the
+    scheduler's step-called tracking."""
+    wrapped = vars(optimizer).get("step")
+    if wrapped is None or not getattr(wrapped, "_wrapped_by_lr_sched", False):
+        return
+    import weakref
+
+    opt_ref = weakref.ref(optimizer)
+    func = type(optimizer).step
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        opt = opt_ref()
+        opt._opt_called = True
+        return func.__get__(opt, opt.__class__)(*args, **kwargs)
+
+    wrapper._wrapped_by_lr_sched = True
+    optimizer.step = wrapper
 
 
 def rename_optimizer_state_for(optimizer, full_state):

@@ -8,6 +8,7 @@ torch.cuda.synchronize() each time. Only paged optimizers keep bitsandbytes' fen
 
 import os
 import sys
+import warnings
 
 import pytest
 import torch
@@ -120,3 +121,30 @@ def test_local_shard_step_on_a_side_stream_keeps_every_fence(monkeypatch):
     with torch.cuda.stream(side):
         opt.step()
     assert len(calls) == len(_SHAPES) + 1, calls
+
+
+def test_local_shard_step_runs_when_the_scheduler_was_built_first(sync_calls):
+    """Trainer(optimizers = (opt, scheduler)): the scheduler wraps opt.step before localization."""
+    bnb, calls = sync_calls
+    from unsloth.models.fsdp2_bnb_optim import localize_bnb_optimizer
+
+    local, ref = _params(0), _params(0)
+    opt = bnb.optim.AdamW8bit(local, lr = 1e-2, min_8bit_size = 0)
+    ref_opt = bnb.optim.AdamW8bit(ref, lr = 1e-2, min_8bit_size = 0)
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 1.0)
+    assert localize_bnb_optimizer(opt)
+    hooks = []
+    opt.register_step_post_hook(lambda *a: hooks.append(1))
+    for step in range(2):
+        _set_grads(local, step)
+        _set_grads(ref, step)
+        ref_opt.step()
+        calls.clear()
+        opt.step()
+        assert calls == [], calls
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # "lr_scheduler.step() before optimizer.step()" would raise
+            sched.step()
+    for a, b in zip(local, ref):
+        assert torch.equal(a, b)
+    assert len(hooks) == 2
