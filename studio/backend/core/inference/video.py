@@ -3307,10 +3307,9 @@ def _native_cache_background() -> bool:
 
 
 class _NativeCacheWrites:
-    """The offloaded native build's cache writes, started once the load is published and its background pins are done.
+    """Offloaded native build's cache writes, run after the load is published.
 
-    Inside the load they took 49 + 48 s of a 361 s Wan2.2-A14B first load (A100-80, 16 GiB budget). After the pins,
-    so the writer reads the pinned copies the pinner swapped in, not pageable tensors it would keep alive beside them."""
+    Waits for the background pins so the writer reads the pinned copies, not pageable tensors it would keep alive."""
 
     def __init__(
         self,

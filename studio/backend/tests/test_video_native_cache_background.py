@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An offloaded video load writes its native int8 build to the prequant cache after the load is published and its
-background pins are done, not inside the load (Wan2.2-A14B: 49 + 48 s of a 361 s first load)."""
+"""Offloaded video loads write the native int8 build after the load is published, not inside it."""
 
 import ast
 import inspect
