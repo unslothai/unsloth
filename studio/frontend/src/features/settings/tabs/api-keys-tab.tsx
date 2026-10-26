@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { cn } from "@/lib/utils";
 import { translate, useT } from "@/i18n";
@@ -21,9 +22,10 @@ import {
   fetchApiKeys,
   revokeApiKey,
 } from "../api/api-keys";
-import type {
-  KeylessApiAccessExposure,
-  KeylessApiAccessScope,
+import {
+  type KeylessApiAccessExposure,
+  type KeylessApiAccessScope,
+  loadKeylessApiAccess,
 } from "../api/keyless-api-access";
 import { apiKeyActionMessage } from "../components/api-key-action-message";
 import {
@@ -36,7 +38,7 @@ import { MediaApiExamples } from "../components/media-api-examples";
 import { CreateKeyForm } from "../components/create-key-form";
 import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
-import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
+import { KeylessApiAccessLink } from "../components/keyless-api-access-link";
 import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
@@ -71,6 +73,30 @@ export function ApiKeysTab() {
     tools: boolean;
     exposure: KeylessApiAccessExposure | null;
   }>({ scope: "off", tools: false, exposure: null });
+  // Edited on Remote & LAN; read here so the examples only use a placeholder key where the server
+  // admits one. Owner-only, as that route is. Re-read when a tunnel comes or goes: it changes exposure.
+  const cloudflareUrl = usePlatformStore((state) => state.cloudflareUrl);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cloudflareUrl is a trigger, not an input
+  useEffect(() => {
+    if (!isOwner) {
+      return;
+    }
+    let cancelled = false;
+    loadKeylessApiAccess()
+      .then((next) => {
+        if (!cancelled) {
+          setKeyless({
+            scope: next.suspendedByAccounts ? "off" : next.scope,
+            tools: next.tools,
+            exposure: next.exposure,
+          });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isOwner, cloudflareUrl]);
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
@@ -258,9 +284,7 @@ export function ApiKeysTab() {
         agentsExtra={isOwner ? <McpAccessSection apiKey={revealed} /> : null}
       />
 
-      {isOwner ? (
-        <KeylessApiAccessSection onSettingsChange={setKeyless} />
-      ) : null}
+      {isOwner ? <KeylessApiAccessLink /> : null}
 
       <MonitorLink />
 

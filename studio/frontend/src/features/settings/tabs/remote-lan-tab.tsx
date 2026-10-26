@@ -2,13 +2,35 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useT } from "@/i18n";
+import { useEffect, useRef } from "react";
 import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
 import { LanAccessSection } from "../components/lan-access-section";
 import { RemoteAccessSection } from "../components/remote-access-section";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 /** Reaching Unsloth from another device, without the API token list in the way. */
 export function RemoteLanTab() {
   const t = useT();
+  const keylessRef = useRef<HTMLDivElement>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
+
+  // The API tab's "Open in Remote & LAN" lands on keyless access, the last section here. Again once
+  // the sections above have read their status: their rows arrive late and push it back down.
+  useEffect(() => {
+    if (scrollTarget !== "remote-lan-keyless") return;
+    const land = () => keylessRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    const frame = window.requestAnimationFrame(land);
+    // Consumed here, not on the first frame: clearing the target re-runs this effect and its cleanup.
+    const settle = window.setTimeout(() => {
+      land();
+      consumeScrollTarget("remote-lan-keyless");
+    }, 600);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
+    };
+  }, [consumeScrollTarget, scrollTarget]);
 
   return (
     <div className="settings-page">
@@ -32,7 +54,9 @@ export function RemoteLanTab() {
 
       <LanAccessSection />
 
-      <KeylessApiAccessSection />
+      <div ref={keylessRef}>
+        <KeylessApiAccessSection />
+      </div>
     </div>
   );
 }

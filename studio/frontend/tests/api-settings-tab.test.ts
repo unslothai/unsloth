@@ -38,7 +38,18 @@ test("usage examples sit right under the keys, where a new key lands", () => {
   const examples = TAB.indexOf("<UsageExamples");
   assert.ok(examples > TAB.indexOf("<CreateKeyForm"));
   assert.ok(examples < TAB.indexOf("<MonitorLink />"));
-  assert.ok(examples < TAB.indexOf("<KeylessApiAccessSection"));
+  assert.ok(examples < TAB.indexOf("<KeylessApiAccessLink"));
+});
+
+test("keyless API access is edited on Remote & LAN; the API tab links there and reads it for the examples", () => {
+  const link = readSrc("features/settings/components/keyless-api-access-link.tsx");
+  assert.match(link, /openDialog\("remote-lan", \{ scrollTarget: "remote-lan-keyless" \}\)/);
+  const remoteLan = readSrc("features/settings/tabs/remote-lan-tab.tsx");
+  assert.match(remoteLan, /scrollTarget !== "remote-lan-keyless"/);
+  assert.match(remoteLan, /<div ref=\{keylessRef\}>\s*<KeylessApiAccessSection \/>/);
+  assert.match(TAB, /loadKeylessApiAccess\(\)/);
+  assert.match(TAB, /scope: next\.suspendedByAccounts \? "off" : next\.scope/);
+  assert.doesNotMatch(TAB, /<KeylessApiAccessSection/);
 });
 
 test("the remote and LAN polls skip their request while the tab is hidden", () => {

@@ -37,7 +37,7 @@ test("only the owner sees it, under the Agents heading, and settings search find
   );
   assert.match(
     API_TAB,
-    /\{isOwner \? \(\s*<KeylessApiAccessSection onSettingsChange=\{setKeyless\} \/>\s*\) : null\}/,
+    /\{isOwner \? <KeylessApiAccessLink \/> : null\}/,
   );
   assert.doesNotMatch(SECTION, /useIsAccountOwner/);
   assert.match(

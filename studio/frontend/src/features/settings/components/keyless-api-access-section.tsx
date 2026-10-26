@@ -18,9 +18,10 @@ import {
   loadKeylessApiAccess,
   updateKeylessApiAccess,
 } from "@/features/settings/api/keyless-api-access";
+import { LaptopIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";
-import { SettingsSection } from "./settings-section";
 
 type PendingGrant = Exclude<KeylessApiAccessScope, "off"> | "tools";
 
@@ -182,57 +183,81 @@ export function KeylessApiAccessSection({
   };
 
   return (
-    <SettingsSection
-      title="Keyless API access"
-      description="Use Unsloth from other apps without creating an API key. Signing in is unchanged; public URLs and Colab always require a key."
+    <section
+      data-settings-label="Keyless API access"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
+      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
+            <HugeiconsIcon
+              icon={LaptopIcon}
+              className="size-4 text-foreground"
+            />
+          </div>
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <h2 className="settings-heading text-base font-semibold font-heading">
+              Keyless API access
+            </h2>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Use Unsloth from other apps without creating an API key. Signing
+              in is unchanged; public URLs and Colab always require a key.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {settings?.suspendedByAccounts ? (
-        <p className="pt-2 text-xs leading-snug text-muted-foreground">
+        <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-muted-foreground">
           Off while this install has other accounts: every request needs a key.
         </p>
       ) : null}
 
       {error ? (
-        <p className="pt-2 text-xs leading-snug text-destructive">{error}</p>
+        <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-destructive">
+          {error}
+        </p>
       ) : null}
 
-      <SettingsRow
-        label="Chat and inference"
-        description="Serve the approved OpenAI and Anthropic inference endpoints on localhost and an active private LAN."
-      >
-        <Switch
-          checked={scope !== "off"}
-          disabled={busy}
-          onCheckedChange={(on) =>
-            request(on ? "inference" : "off", "inference")
-          }
-          aria-label="Chat and inference"
-        />
-      </SettingsRow>
+      <div className="border-t border-border/60 px-4 py-1">
+        <SettingsRow
+          label="Chat and inference"
+          description="Serve the approved OpenAI and Anthropic inference endpoints on localhost and an active private LAN."
+        >
+          <Switch
+            checked={scope !== "off"}
+            disabled={busy}
+            onCheckedChange={(on) =>
+              request(on ? "inference" : "off", "inference")
+            }
+            aria-label="Chat and inference"
+          />
+        </SettingsRow>
 
-      <SettingsRow
-        label="Everything else"
-        description="Also serve training, files and settings, but only to local loopback callers."
-      >
-        <Switch
-          checked={scope === "full"}
-          disabled={busy}
-          onCheckedChange={(on) => request(on ? "full" : "inference", "full")}
-          aria-label="Everything else"
-        />
-      </SettingsRow>
+        <SettingsRow
+          label="Everything else"
+          description="Also serve training, files and settings, but only to local loopback callers."
+        >
+          <Switch
+            checked={scope === "full"}
+            disabled={busy}
+            onCheckedChange={(on) => request(on ? "full" : "inference", "full")}
+            aria-label="Everything else"
+          />
+        </SettingsRow>
 
-      <SettingsRow
-        label="Allow tools"
-        description="Let keyless callers use the built-in Python, terminal and web search tools. Off unless you turn it on."
-      >
-        <Switch
-          checked={tools}
-          disabled={busy || scope === "off"}
-          onCheckedChange={requestTools}
-          aria-label="Allow tools"
-        />
-      </SettingsRow>
+        <SettingsRow
+          label="Allow tools"
+          description="Let keyless callers use the built-in Python, terminal and web search tools. Off unless you turn it on."
+        >
+          <Switch
+            checked={tools}
+            disabled={busy || scope === "off"}
+            onCheckedChange={requestTools}
+            aria-label="Allow tools"
+          />
+        </SettingsRow>
+      </div>
 
       <Dialog
         open={pending !== null}
@@ -267,6 +292,6 @@ export function KeylessApiAccessSection({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </SettingsSection>
+    </section>
   );
 }

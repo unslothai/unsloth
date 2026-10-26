@@ -43,6 +43,7 @@ export type SettingsScrollTarget =
   /** Old name of sandbox-permissions, from when Permissions lived in General. */
   | "general-permissions"
   | "library-storage"
+  | "remote-lan-keyless"
   | "resources-caches"
   | "resources-model-memory"
   | "sandbox-os"
@@ -179,6 +180,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "general-rag-embedding": "general",
   "general-permissions": "sandbox",
   "library-storage": "library",
+  "remote-lan-keyless": "remote-lan",
   "resources-caches": "resources",
   "resources-model-memory": "resources",
   "sandbox-os": "sandbox",
