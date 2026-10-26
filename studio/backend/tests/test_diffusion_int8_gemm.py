@@ -1347,9 +1347,9 @@ def test_block_streamed_swiglu_mlp_runs_fused_after_the_onload(h16_rotq, monkeyp
         ref = resident(x)
     for kill, fused in ((None, True), ("0", False)):
         if kill is None:
-            monkeypatch.delenv(g8.INT8_SWIGLU_STREAMED_ENV, raising = False)
+            monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED", raising = False)
         else:
-            monkeypatch.setenv(g8.INT8_SWIGLU_STREAMED_ENV, kill)
+            monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED", kill)
         ff = _swiglu_ff(1024, 3072, 2)
         holder = Holder(ff).requires_grad_(False).cpu()
         hooks.apply_group_offloading(
