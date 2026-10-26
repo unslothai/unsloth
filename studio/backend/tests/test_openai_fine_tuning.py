@@ -905,6 +905,8 @@ def test_jobs_differing_only_in_member_fields_batch_in_queue_order(batching, tmp
         {"use_dora": True},
         {"use_loftq": True},
         {"enable_wandb": True},
+        {"enable_tensorboard": True},
+        {"lr_scheduler_type": "reduce_lr_on_plateau"},
         {"training_type": "Full Finetuning"},
         {"training_type": "Continued Pretraining"},
         {"is_dataset_image": True},

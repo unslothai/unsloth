@@ -622,7 +622,10 @@ def _batchable(request: TrainingStartRequest) -> bool:
         and not request.packing
         and request.lora_dropout == 0
         and not (request.use_dora or request.use_loftq)
-        and not (request.enable_wandb or request.early_stopping_patience)
+        and not (
+            request.enable_wandb or request.enable_tensorboard or request.early_stopping_patience
+        )
+        and request.lr_scheduler_type != "reduce_lr_on_plateau"
         and not (
             request.is_dataset_image
             or request.is_dataset_audio

@@ -372,20 +372,11 @@ def _windows(n_rows: int, batch_size: int, grad_accum: int, seed: int):
         epoch += 1
 
 
-def _build_optimizer(params: list, config: dict, lr: float, total_steps: int):
+def _member_scheduler(config: dict, lr: float, total_steps: int):
+    """The single job's schedule for this member, on a stand-in optimizer: it only yields learning rates."""
     import torch
     from transformers import get_scheduler
 
-    optim = config.get("optim", "adamw_8bit") or "adamw_8bit"
-    weight_decay = float(config.get("weight_decay", 0.001) or 0.0)
-    if optim == "adamw_8bit":
-        import bitsandbytes as bnb
-        optimizer = bnb.optim.AdamW8bit(params, lr = lr, weight_decay = weight_decay)
-    elif optim in ("adamw_torch", "adamw_torch_fused"):
-        fused = optim == "adamw_torch_fused" and params[0].device.type == "cuda"
-        optimizer = torch.optim.AdamW(params, lr = lr, weight_decay = weight_decay, fused = fused)
-    else:
-        raise ValueError(f"Batched training does not support the optimizer {optim!r}.")
     warmup_ratio, warmup_steps = config.get("warmup_ratio"), config.get("warmup_steps")
     if warmup_ratio is not None:
         warmup = math.ceil(total_steps * float(warmup_ratio))
@@ -393,16 +384,43 @@ def _build_optimizer(params: list, config: dict, lr: float, total_steps: int):
         warmup = int(warmup_steps)
     else:
         warmup = 5
-    scheduler = get_scheduler(
+    stand_in = torch.optim.SGD([torch.zeros(1, requires_grad = True)], lr = lr)
+    return get_scheduler(
         config.get("lr_scheduler_type", "linear") or "linear",
-        optimizer,
+        stand_in,
         num_warmup_steps = warmup,
         num_training_steps = total_steps,
     )
-    return optimizer, scheduler
 
 
-def _collate(rows: list, pad_id: int, device):
+class _PerMemberLR:
+    """Steps every member's own schedule and writes its rate into that member's parameter group."""
+
+    def __init__(self, optimizer, schedulers: list):
+        self.optimizer = optimizer
+        self.schedulers = schedulers
+        self._apply()
+
+    def _apply(self) -> None:
+        for group, scheduler in zip(self.optimizer.param_groups, self.schedulers):
+            group["lr"] = scheduler.get_last_lr()[0]
+
+    def step(self) -> None:
+        for scheduler in self.schedulers:
+            scheduler.step()
+        self._apply()
+
+    def get_last_lr(self) -> list:
+        return [group["lr"] for group in self.optimizer.param_groups]
+
+    def state_dict(self) -> dict:
+        return {}
+
+    def load_state_dict(self, state: dict) -> None:
+        pass
+
+
+def _collate(rows: list, slots: list, pad_id: int) -> dict:
     import torch
 
     T = max(len(ids) for ids, _ in rows)
@@ -413,7 +431,12 @@ def _collate(rows: list, pad_id: int, device):
         input_ids[i, : len(ids)] = torch.tensor(ids)
         labels[i, : len(lab)] = torch.tensor(lab)
         attention[i, : len(ids)] = 1
-    return input_ids.to(device), attention.to(device), labels.to(device), T
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention,
+        "labels": labels,
+        "adapter_ids": torch.tensor(slots, dtype = torch.long),
+    }
 
 
 def _unique_output_dir(config: dict, model_name: str, taken: set) -> str:
@@ -437,7 +460,14 @@ def _unique_output_dir(config: dict, model_name: str, taken: set) -> str:
     raise RuntimeError("Could not reserve an output folder for a batched job.")
 
 
-def _export(model, member: _Member, trainer, targets: list, use_rslora: bool) -> None:
+def _export(
+    model,
+    member: _Member,
+    trainer,
+    targets: list,
+    use_rslora: bool,
+    path: str = "",
+) -> None:
     from peft import LoraConfig
     from safetensors.torch import save_file
 
@@ -445,14 +475,15 @@ def _export(model, member: _Member, trainer, targets: list, use_rslora: bool) ->
     from unsloth.kernels.multi_lora import adapter_state_dict
     from utils.paths import ensure_dir
 
-    ensure_dir(Path(member.output_dir))
+    path = path or member.output_dir
+    ensure_dir(Path(path))
     state = {
         k: v.detach().to("cpu").contiguous()
         for k, v in adapter_state_dict(model, member.slot).items()
     }
     save_file(
         state,
-        os.path.join(member.output_dir, "adapter_model.safetensors"),
+        os.path.join(path, "adapter_model.safetensors"),
         metadata = {"format": "pt"},
     )
     LoraConfig(
@@ -464,9 +495,9 @@ def _export(model, member: _Member, trainer, targets: list, use_rslora: bool) ->
         use_rslora = use_rslora,
         task_type = "CAUSAL_LM",
         base_model_name_or_path = getattr(model.config, "_name_or_path", None),
-    ).save_pretrained(member.output_dir)
-    member.tokenizer.save_pretrained(member.output_dir)
-    UnslothTrainer._patch_adapter_config(trainer, member.output_dir)
+    ).save_pretrained(path)
+    member.tokenizer.save_pretrained(path)
+    UnslothTrainer._patch_adapter_config(trainer, path)
 
 
 def _status_forwarder(event_queue):
@@ -562,17 +593,9 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
     ensure_real_packages("unsloth_zoo", "unsloth")
     import torch
 
-    from core.training.resume import session_eta_seconds
     from core.training.trainer import normalize_gradient_checkpointing
     from core.training.worker import _send_status, _worker_hf_token
-    from unsloth.kernels.multi_lora import (
-        adapter_token_counts,
-        clip_grad_norm_per_adapter_,
-        drop_absent_adapter_grads_,
-        inject_multi_lora,
-        per_adapter_loss,
-        set_multi_lora_batch,
-    )
+    from unsloth.kernels.multi_lora import inject_multi_lora
 
     trainer = _new_trainer()
     if hasattr(trainer, "add_progress_callback"):
@@ -665,7 +688,6 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
 
     layers = _multi_lora_layers(model)
     grad_accum = max(int(config.get("gradient_accumulation_steps", 4) or 1), 1)
-    max_grad_norm = float(config.get("max_grad_norm", 1.0) or 1.0)
     taken: set = set()
     for member in live:
         cfg = member.config
@@ -678,55 +700,20 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             if max_steps > 0
             else member.steps_per_epoch * int(cfg.get("num_epochs", 3) or 1)
         )
-        seed = int(cfg.get("random_seed", 3407))
-        member.windows = _windows(len(member.rows), batch_size, grad_accum, seed)
+        member.windows = _windows(
+            len(member.rows), batch_size, grad_accum, int(cfg.get("random_seed", 3407))
+        )
         member.params = [
             p for _, layer in layers for p in (layer.lora_A[member.slot], layer.lora_B[member.slot])
         ]
-        member.optimizer, member.scheduler = _build_optimizer(
-            member.params, cfg, float(cfg.get("learning_rate", 2e-4)), member.total_steps
-        )
         member.output_dir = _unique_output_dir(cfg, model_name, taken)
         _send(event_queue, "output_dir", member, output_dir = member.output_dir)
 
-    amp_dtype = None
-    if device.type == "cuda":
-        from unsloth import is_bfloat16_supported
-        amp_dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
-    scaler = torch.amp.GradScaler("cuda") if amp_dtype == torch.float16 else None
-    pad_id = (
-        tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
-    )
-    pad_id = 0 if pad_id is None else int(pad_id)
+    def export(member: _Member, path: str = "") -> None:
+        _export(model, member, trainer, targets, use_rslora, path)
 
-    def export(member: _Member) -> None:
-        _export(model, member, trainer, targets, use_rslora)
-
-    def progress(member: _Member, loss, grad_norm, lr, elapsed) -> None:
-        _send(
-            event_queue,
-            "progress",
-            member,
-            step = member.step,
-            epoch = round(member.step / member.steps_per_epoch, 2),
-            loss = loss,
-            learning_rate = lr,
-            total_steps = member.total_steps,
-            elapsed_seconds = elapsed,
-            eta_seconds = session_eta_seconds(elapsed, member.step, 0, member.total_steps),
-            session_start_step = 0,
-            grad_norm = grad_norm,
-            num_tokens = member.num_tokens,
-            eval_loss = None,
-            status_message = "",
-        )
-
-    start = time.time()
-    for member in live:
-        progress(member, None, None, member.scheduler.get_last_lr()[0], 0.0)
-    _send_status(event_queue, f'Training {U} jobs together on "{model_name}"')
-
-    while True:
+    def take_messages() -> Optional[bool]:
+        """Applies queued member stops; returns the save flag of a whole-batch stop, if one arrived."""
         save_all = None
         while not inbox.empty():
             message = inbox.get_nowait()
@@ -738,98 +725,299 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             )
             if target is not None:
                 _finish_stopped(event_queue, [target], bool(message.get("save", True)), export)
-        if save_all is not None:
-            _finish_stopped(event_queue, live, save_all, export)
-            event_queue.put(
-                {
-                    "type": "complete",
-                    "output_dir": None,
-                    "status_message": "Training stopped",
-                    "ts": time.time(),
-                }
-            )
-            return
-        active = [m for m in live if not m.done]
-        if not active:
-            break
+        return save_all
 
-        windows = {m.slot: next(m.windows)[1] for m in active}
-        micros = []
-        for k in range(max(len(w) for w in windows.values())):
-            rows, ids = [], []
-            for member in active:
-                window = windows[member.slot]
-                if k < len(window):
-                    picked = [member.rows[r] for r in window[k]]
-                    member.num_tokens += sum(len(row_ids) for row_ids, _ in picked)
-                    rows.extend(picked)
-                    ids.extend([member.slot] * len(picked))
-            input_ids, attention, labels, T = _collate(rows, pad_id, device)
-            micros.append(
-                (
-                    input_ids,
-                    attention,
-                    labels,
-                    T,
-                    torch.tensor(ids, dtype = torch.long, device = device),
-                )
-            )
-        counts = sum(adapter_token_counts(m[2], m[4], U) for m in micros)
-        losses = torch.zeros(U)
-        for input_ids, attention, labels, T, row_ids in micros:
-            set_multi_lora_batch(model, row_ids, seq_len = T)
-            with torch.autocast(
-                device_type = device.type, dtype = amp_dtype, enabled = amp_dtype is not None
-            ):
-                logits = model(
-                    input_ids = input_ids, attention_mask = attention, use_cache = False
-                ).logits
-            loss, per = per_adapter_loss(
-                logits, labels, row_ids, U, model = model, num_items_in_batch = counts
-            )
-            (scaler.scale(loss) if scaler is not None else loss).backward()
-            losses += per.float().cpu()
-            del logits, loss
-        drop_absent_adapter_grads_(model)
-        stepping = [m for m in active if any(p.grad is not None for p in m.params)]
-        if scaler is not None:
-            for member in stepping:
-                scaler.unscale_(member.optimizer)
-        norms = clip_grad_norm_per_adapter_(model, max_grad_norm).float().cpu()
-        for member in stepping:
-            if scaler is not None:
-                scaler.step(member.optimizer)
-            else:
-                member.optimizer.step()
-        if scaler is not None:
-            scaler.update()
-        elapsed = time.time() - start
-        for member in active:
-            member.optimizer.zero_grad(set_to_none = True)
-            member.scheduler.step()
-            member.step += 1
-            progress(
-                member,
-                float(losses[member.slot]),
-                float(norms[member.slot]),
-                member.scheduler.get_last_lr()[0],
-                elapsed,
-            )
-            if member.step >= member.total_steps:
-                export(member)
-                member.done = True
-                _send(
-                    event_queue,
-                    "complete",
-                    member,
-                    output_dir = member.output_dir,
-                    status_message = f"Training completed! Model saved to {member.output_dir}",
-                )
-    event_queue.put(
-        {
-            "type": "complete",
-            "output_dir": None,
-            "status_message": "Training completed",
-            "ts": time.time(),
-        }
+    def stop_all(save: bool) -> None:
+        _finish_stopped(event_queue, live, save, export)
+        event_queue.put(
+            {
+                "type": "complete",
+                "output_dir": None,
+                "status_message": "Training stopped",
+                "ts": time.time(),
+            }
+        )
+
+    save_all = take_messages()
+    if save_all is not None:
+        stop_all(save_all)
+        return
+    if all(m.done for m in live):
+        event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
+        return
+
+    sft = _build_sft_trainer(
+        model,
+        tokenizer,
+        config,
+        live,
+        grad_accum,
+        device,
+        event_queue,
+        export,
+        take_messages,
+        stop_all,
     )
+    for member in live:
+        if not member.done:
+            sft.progress(member, None, None, 0.0)
+    _send_status(event_queue, f'Training {U} jobs together on "{model_name}"')
+    sft.train()
+    if not sft.stopped:
+        event_queue.put(
+            {
+                "type": "complete",
+                "output_dir": None,
+                "status_message": "Training completed",
+                "ts": time.time(),
+            }
+        )
+
+
+def _build_sft_trainer(
+    model, tokenizer, config, live, grad_accum, device, event_queue, export, take_messages, stop_all
+):
+    """TRL's SFTTrainer over the batch: each optimizer step gives every running member its own next
+    window, losses and gradient clipping stay per adapter, and each member keeps its own learning rate
+    schedule (one parameter group each)."""
+    import torch
+    from datasets import Dataset
+    from torch.utils.data import DataLoader
+    from transformers import TrainerCallback
+    from trl import SFTConfig, SFTTrainer
+
+    from core.training.resume import session_eta_seconds
+    from core.training.training import apply_save_strategy
+    from unsloth.kernels.multi_lora import (
+        adapter_token_counts,
+        clip_grad_norm_per_adapter_,
+        drop_absent_adapter_grads_,
+        per_adapter_loss,
+        set_multi_lora_batch,
+    )
+
+    U = len(live)
+    total = max(m.total_steps for m in live if not m.done)
+    pad_id = (
+        tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    )
+    pad_id = 0 if pad_id is None else int(pad_id)
+    bf16 = fp16 = False
+    if device.type == "cuda":
+        from unsloth import is_bfloat16_supported
+        bf16 = is_bfloat16_supported()
+        fp16 = not bf16
+    args = {
+        "output_dir": live[0].output_dir,
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": grad_accum,
+        "max_steps": total,
+        "learning_rate": float(live[0].config.get("learning_rate", 2e-4)),
+        "max_grad_norm": float(config.get("max_grad_norm", 1.0) or 1.0),
+        "bf16": bf16,
+        "fp16": fp16,
+        "logging_strategy": "no",
+        "report_to": "none",
+        "disable_tqdm": True,
+        "seed": int(live[0].config.get("random_seed", 3407)),
+        "remove_unused_columns": False,
+        "gradient_checkpointing": False,
+        "dataset_kwargs": {"skip_prepare_dataset": True},
+        "dataloader_num_workers": 0,
+    }
+    apply_save_strategy(args, config.get("save_steps", 0))
+    micro_total = total * grad_accum
+
+    class _Steps(TrainerCallback):
+        def on_step_end(self, args, state, control, **kwargs):
+            sft.after_step(control)
+
+    class MultiLoraSFTTrainer(SFTTrainer):
+        def __init__(self, **kwargs):
+            # Trainer refuses a quantized base without a PEFT wrapper; the adapters here are injected.
+            loaded = getattr(model, "_hf_peft_config_loaded", None)
+            model._hf_peft_config_loaded = True
+            try:
+                super().__init__(**kwargs)
+            finally:
+                if loaded is None:
+                    del model._hf_peft_config_loaded
+                else:
+                    model._hf_peft_config_loaded = loaded
+            # compute_loss already normalizes each adapter by its own window's tokens.
+            self.model_accepts_loss_kwargs = True
+            self.stopped = False
+            self.round = []
+            self.round_losses = torch.zeros(U)
+            self.member_norms = torch.zeros(U)
+            self.start = time.time()
+
+        def get_train_dataloader(self):
+            return DataLoader(range(micro_total), batch_size = 1)
+
+        def create_optimizer(self, model = None):
+            if self.optimizer is None:
+                groups = [
+                    {
+                        "params": m.params,
+                        "lr": float(m.config.get("learning_rate", 2e-4)),
+                        "weight_decay": float(m.config.get("weight_decay", 0.001) or 0.0),
+                    }
+                    for m in live
+                ]
+                optim = config.get("optim", "adamw_8bit") or "adamw_8bit"
+                if optim == "adamw_8bit":
+                    import bitsandbytes as bnb
+                    self.optimizer = bnb.optim.AdamW8bit(groups)
+                elif optim in ("adamw_torch", "adamw_torch_fused"):
+                    fused = optim == "adamw_torch_fused" and device.type == "cuda"
+                    self.optimizer = torch.optim.AdamW(groups, fused = fused)
+                else:
+                    raise ValueError(f"Batched training does not support the optimizer {optim!r}.")
+            return self.optimizer
+
+        def create_scheduler(
+            self,
+            num_training_steps,
+            optimizer = None,
+        ):
+            if self.lr_scheduler is None:
+                self.lr_scheduler = _PerMemberLR(
+                    optimizer or self.optimizer,
+                    [
+                        _member_scheduler(
+                            m.config, float(m.config.get("learning_rate", 2e-4)), m.total_steps
+                        )
+                        for m in live
+                    ],
+                )
+            return self.lr_scheduler
+
+        def get_batch_samples(self, epoch_iterator, num_batches, device):
+            """One optimizer step: micro-batch k holds every running member's k-th micro-batch."""
+            self.round = [m for m in live if not m.done]
+            if not self.round:
+                return [], None
+            windows = {m.slot: next(m.windows)[1] for m in self.round}
+            samples = []
+            counts = None
+            for k in range(num_batches):
+                rows, slots = [], []
+                for member in self.round:
+                    window = windows[member.slot]
+                    if k < len(window):
+                        picked = [member.rows[r] for r in window[k]]
+                        member.num_tokens += sum(len(ids) for ids, _ in picked)
+                        rows.extend(picked)
+                        slots.extend([member.slot] * len(picked))
+                if not rows:
+                    # Every member's window is shorter here (an epoch end); the step keeps its size.
+                    samples.append({"multi_lora_empty": torch.zeros(1)})
+                    continue
+                batch = _collate(rows, slots, pad_id)
+                found = adapter_token_counts(batch["labels"], batch["adapter_ids"], U).cpu()
+                counts = found if counts is None else counts + found
+                samples.append(batch)
+            self.round_losses = torch.zeros(U)
+            return samples, counts.to(device)
+
+        def compute_loss(
+            self,
+            model,
+            inputs,
+            return_outputs = False,
+            num_items_in_batch = None,
+        ):
+            if "multi_lora_empty" in inputs:
+                return torch.zeros((), device = self.args.device, requires_grad = True)
+            ids = inputs["adapter_ids"]
+            set_multi_lora_batch(self.model, ids, seq_len = inputs["input_ids"].shape[1])
+            logits = model(
+                input_ids = inputs["input_ids"],
+                attention_mask = inputs["attention_mask"],
+                use_cache = False,
+            ).logits
+            loss, per = per_adapter_loss(
+                logits,
+                inputs["labels"],
+                ids,
+                U,
+                model = self.model,
+                num_items_in_batch = num_items_in_batch,
+            )
+            self.round_losses += per.detach().float().cpu()
+            return loss
+
+        def _clip_grad_norm(self, model):
+            drop_absent_adapter_grads_(self.model)
+            self.accelerator.unscale_gradients()
+            self.member_norms = (
+                clip_grad_norm_per_adapter_(self.model, self.args.max_grad_norm).float().cpu()
+            )
+            return self.member_norms.norm()
+
+        def _save_checkpoint(self, model, trial):
+            name = f"checkpoint-{self.state.global_step}"
+            for member in self.round:
+                export(member, os.path.join(member.output_dir, name))
+
+        def progress(self, member, loss, grad_norm, elapsed) -> None:
+            lr = (
+                self.lr_scheduler.get_last_lr()[member.slot]
+                if self.lr_scheduler
+                else (float(member.config.get("learning_rate", 2e-4)))
+            )
+            _send(
+                event_queue,
+                "progress",
+                member,
+                step = member.step,
+                epoch = round(member.step / member.steps_per_epoch, 2),
+                loss = loss,
+                learning_rate = lr,
+                total_steps = member.total_steps,
+                elapsed_seconds = elapsed,
+                eta_seconds = session_eta_seconds(elapsed, member.step, 0, member.total_steps),
+                session_start_step = 0,
+                grad_norm = grad_norm,
+                num_tokens = member.num_tokens,
+                eval_loss = None,
+                status_message = "",
+            )
+
+        def after_step(self, control) -> None:
+            elapsed = time.time() - self.start
+            for member in self.round:
+                member.step += 1
+                self.progress(
+                    member,
+                    float(self.round_losses[member.slot]),
+                    float(self.member_norms[member.slot]),
+                    elapsed,
+                )
+                if member.step >= member.total_steps and not member.done:
+                    export(member)
+                    member.done = True
+                    _send(
+                        event_queue,
+                        "complete",
+                        member,
+                        output_dir = member.output_dir,
+                        status_message = f"Training completed! Model saved to {member.output_dir}",
+                    )
+            save_all = take_messages()
+            if save_all is not None:
+                stop_all(save_all)
+                self.stopped = True
+            if self.stopped or all(m.done for m in live):
+                control.should_training_stop = True
+
+    sft = MultiLoraSFTTrainer(
+        model = model,
+        args = SFTConfig(**args),
+        train_dataset = Dataset.from_dict({"input_ids": [[pad_id]] * micro_total}),
+        processing_class = tokenizer,
+        data_collator = lambda rows: rows,
+        callbacks = [_Steps()],
+    )
+    return sft

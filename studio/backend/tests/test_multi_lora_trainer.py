@@ -10,6 +10,7 @@ import json
 import os
 import queue
 import types
+from pathlib import Path
 
 import sys
 
@@ -125,6 +126,7 @@ def _run(
     monkeypatch,
     members,
     on_event = None,
+    **extra,
 ):
     base = _base()
     pristine = copy.deepcopy(base)
@@ -165,6 +167,7 @@ def _run(
         "gradient_checkpointing": "unsloth",
         "target_modules": ["all-linear"],
         "batch_members": [{"run_id": m["run_id"], "config": c} for m, c in zip(members, configs)],
+        **extra,
     }
     events = _Events(None if on_event is None else lambda e: on_event(e, inboxes[0]))
     mlt.run_multi_lora_training(events, queue.Queue(), config)
@@ -298,6 +301,34 @@ def test_completion_masking_masks_the_prompt():
     response = ids.index(tokenizer.convert_tokens_to_ids("[B]")) + 1
     assert all(t == -100 for t in labels[:response])
     assert labels[response:] == ids[response:]
+
+
+def test_batch_trains_through_sft_trainer_and_saves_checkpoints(monkeypatch, tmp_path):
+    from trl import SFTTrainer
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    built = []
+    original = mlt._build_sft_trainer
+
+    def spy(*args, **kwargs):
+        built.append(original(*args, **kwargs))
+        return built[-1]
+
+    monkeypatch.setattr(mlt, "_build_sft_trainer", spy)
+    events, model, pristine = _run(monkeypatch, MEMBERS[:2], save_steps = 2)
+    assert isinstance(built[0], SFTTrainer) and built[0].state.global_step == 6
+    found = {}
+    for m in MEMBERS[:2]:
+        out = _member_events(events, m["run_id"])[0]["output_dir"]
+        found[m["run_id"]] = sorted(p.name for p in Path(out).glob("checkpoint-*"))
+        last = os.path.join(out, found[m["run_id"]][-1], "adapter_model.safetensors")
+        final = load_file(os.path.join(out, "adapter_model.safetensors"))
+        for key, value in load_file(last).items():
+            torch.testing.assert_close(value, final[key], atol = 0, rtol = 0)
+    assert found == {
+        "job_a": ["checkpoint-2"],
+        "job_b": ["checkpoint-2", "checkpoint-4", "checkpoint-6"],
+    }
 
 
 def test_pretokenized_assistant_masks_become_labels():
