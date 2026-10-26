@@ -4034,6 +4034,46 @@ def _comfy_keep_fp32_pricing(fam: Any, target: Any) -> dict:
     return {"keep_fp32": keep, "keep_fp32_bytes": 4 if fp16 else None}
 
 
+def _image_cast_candidates(
+    fam: Any,
+    source: Any,
+    *,
+    dtype: Any,
+    base: Optional[str],
+    skip: tuple = (),
+) -> list:
+    """Generic diffusers assembly only (per-component assemblers are not wired). Never raises."""
+    try:
+        from .diffusion_cast_cache import candidates, image_enabled
+
+        if not image_enabled() or not source:
+            return []
+        if is_flux3_family(fam) or getattr(fam, "name", None) in (
+            MOSS_IMAGE_FAMILY_NAME,
+            KREA2_FAMILY_NAME,
+            IDEOGRAM4_FAMILY_NAME,
+        ):
+            return []
+        return candidates(
+            source,
+            torch_dtype = dtype,
+            cache_dir = None if os.path.isdir(str(source)) else hub_cache_dir(),
+            skip = skip,
+            base_repo = base,
+            logger = logger,
+        )
+    except Exception as exc:  # noqa: BLE001 - a cache problem is a miss
+        logger.warning("diffusion.cast_cache: skipped (%s)", exc)
+        return []
+
+
+def _image_cast_cached(cands: list, variant: Optional[str]) -> list:
+    if not cands or variant is not None:
+        return []
+    from .diffusion_cast_cache import cached_components
+    return cached_components(cands)
+
+
 def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
     """Windows: transformers components converted to ``dtype`` read through ``pread`` (no copy-on-write commit for the
     stored bytes, #14513); components the small-host route loads at their stored dtype stay memory-mapped."""
@@ -9402,6 +9442,7 @@ class DiffusionBackend:
                 load_bg_compile = None
                 state = None
                 pending_cache_write = None
+                pending_cast_write = None
                 native_streamed = False
                 try:
                     self._raise_if_load_cancelled(_load_token)
@@ -9567,6 +9608,13 @@ class DiffusionBackend:
                                     if _fp16_variant_eligible
                                     else None
                                 )
+                                _cast_cands = _image_cast_candidates(
+                                    fam,
+                                    _base_local_dir or fetch_base,
+                                    dtype = dtype,
+                                    base = base,
+                                    skip = tuple(_te_replaced or ()),
+                                )
                                 # Stopped once the pipeline is built.
                                 self._stop_load_prefetch()
                                 self._load_prefetch = start_load_prefetch(
@@ -9575,7 +9623,8 @@ class DiffusionBackend:
                                     prequant_scheme = pipeline_seed_scheme,
                                     prequant_path_override = transformer_prequant_path,
                                     prequant_base_repo = base,
-                                    text_encoders_replaced = _te_replaced,
+                                    text_encoders_replaced = tuple(_te_replaced or ())
+                                    + tuple(_image_cast_cached(_cast_cands, _fp16_variant)),
                                     cache_dir = hub_cache_dir(),
                                     logger = logger,
                                     variant = _fp16_variant,
@@ -9848,6 +9897,24 @@ class DiffusionBackend:
                                             _fp16_variant,
                                             str(dtype).replace("torch.", ""),
                                         )
+                                    _cast_missed = []
+                                    if (
+                                        _cast_cands
+                                        and _fp16_variant is None
+                                        and not (small_host is not None and small_host.engaged)
+                                    ):
+                                        from .diffusion_cast_cache import inject as _cast_inject
+
+                                        # Twins (fp16 variant) and the small-host dtype map read other bytes.
+                                        _cast_missed = _cast_inject(
+                                            pipe_kwargs,
+                                            _cast_cands,
+                                            logger = logger,
+                                            cancel_check = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            label = "diffusion",
+                                        )
                                     # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                     # otherwise)
                                     try:
@@ -9857,6 +9924,13 @@ class DiffusionBackend:
                                             )
                                     finally:
                                         self._stop_load_prefetch()
+                                    if _cast_missed:
+                                        from .diffusion_cast_cache import defer_writes
+
+                                        # Names only: the write reads the live tensors once the load is published.
+                                        pending_cast_write = defer_writes(
+                                            pipe, _cast_missed, logger = logger
+                                        )
                                     if fam.single_file_is_pipeline:
                                         # A v-pred SDXL repo can ship an epsilon scheduler config beside the root
                                         # single file that declares v_pred / ztsnr (NoobAI-XL V-Pred 1.0).
@@ -11320,6 +11394,15 @@ class DiffusionBackend:
                         except Exception:  # noqa: BLE001 - a cache write never fails a load
                             pass
                         pending_cache_write = None
+                    if pending_cast_write is not None:
+                        try:
+                            if state_committed:
+                                pending_cast_write.start()
+                            else:
+                                pending_cast_write.discard()
+                        except Exception:  # noqa: BLE001 - a cache write never fails a load
+                            pass
+                        pending_cast_write = None
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
                         # Never published, so _unload_locked cannot reach them: the pinners would keep the encoders.

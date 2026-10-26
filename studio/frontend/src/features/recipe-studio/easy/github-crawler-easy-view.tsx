@@ -3,13 +3,14 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { GithubIcon, PlayCircleIcon } from "@hugeicons/core-free-icons";
+import { GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { LocalRecipeModelSelector } from "../dialogs/models/local-recipe-model-selector";
 import { GithubRepoSeedForm } from "../dialogs/seed/seed-dialog";
 import { FieldLabel } from "../dialogs/shared/field-label";
 import type { ModelConfig, NodeConfig, SeedConfig } from "../types";
+import { PlayIcon } from "lucide-react";
 
 type GithubCrawlerEasyViewProps = {
   configs: Record<string, NodeConfig>;
@@ -232,7 +233,7 @@ export function GithubCrawlerEasyView({
           Advanced (drag and drop canvas)
         </button>
         <Button variant="dark" type="button" size="lg" onClick={onRun} disabled={runLoading}>
-          <HugeiconsIcon icon={PlayCircleIcon} className="size-4" />
+          <PlayIcon className="size-4" />
           {runLoading ? "Running..." : "Run"}
         </Button>
       </div>

@@ -70,6 +70,7 @@ from .models.loader_utils import (
     _tokenizer_wants_local_only,
 )
 from .models._utils import (
+    _refuse_model_parallel_export,
     _convert_torchao_model,
     _merged_torchao_config_for_peft_qat,
     _peft_untied_lm_head,
@@ -1284,6 +1285,23 @@ def _restore_tied_weights_keys(originals):
             pass
 
 
+def _model_parallel_refuses_save(method):
+    """Every whole-model export refuses an apply_tensor_parallel / apply_pipeline_parallel model before it
+    writes anything (see _refuse_model_parallel_export)."""
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            model = args[0] if args else kwargs.get("model", kwargs.get("self"))
+            if model is not None:
+                _refuse_model_parallel_export(model, method)
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
 def _normalize_tied_weights_keys_for_save(save_fn):
     """Coerce legacy list-form ``_tied_weights_keys`` to dict for the duration of a save, then restore: transformers >= 5 re-ties from the dict's VALUES, so a persisted ``{k: k}`` self-map would no-op a later resize/re-tie. ``model`` is the first positional arg (bound-method self) or the ``model=`` keyword."""
 
@@ -1303,6 +1321,7 @@ def _normalize_tied_weights_keys_for_save(save_fn):
     return wrapper
 
 
+@_model_parallel_refuses_save("unsloth_save_model")
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_save_model(
@@ -2738,6 +2757,7 @@ def save_to_gguf(
     return all_saved_locations, want_full_precision, is_vlm
 
 
+@_model_parallel_refuses_save("save_pretrained_merged")
 def unsloth_save_pretrained_merged(
     self,
     save_directory: Union[str, os.PathLike],
@@ -2877,6 +2897,7 @@ def unsloth_save_pretrained_merged(
         gc.collect()
 
 
+@_model_parallel_refuses_save("push_to_hub_merged")
 def unsloth_push_to_hub_merged(
     self,
     repo_id: str,
@@ -4484,6 +4505,7 @@ def _fsdp2_refuses_save(method):
     return decorate
 
 
+@_model_parallel_refuses_save("save_pretrained_gguf")
 @_fsdp2_refuses_save("save_pretrained_gguf")
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
@@ -5158,6 +5180,7 @@ def _free_merge_if_disk_is_tight(
     return freed
 
 
+@_model_parallel_refuses_save("push_to_hub_gguf")
 @_fsdp2_refuses_save("push_to_hub_gguf")
 def unsloth_push_to_hub_gguf(
     self,
@@ -5439,6 +5462,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
     return full_repo_id
 
 
+@_model_parallel_refuses_save("save_lora_to_custom_dir")
 def save_lora_to_custom_dir(model, tokenizer, save_directory):
     os.makedirs(save_directory, exist_ok = True)
 
@@ -5631,6 +5655,7 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
     )
 
 
+@_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
     tokenizer,
@@ -5797,6 +5822,7 @@ def _unsloth_save_lora_gguf(
             shutil.rmtree(base_config_dir, ignore_errors = True)
 
 
+@_model_parallel_refuses_save("push_to_hub_ggml")
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
     tokenizer,
@@ -5827,6 +5853,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     )
 
 
+@_model_parallel_refuses_save("save_pretrained_ggml")
 def unsloth_convert_lora_to_ggml_and_save_locally(
     self,
     save_directory: str,
@@ -6025,6 +6052,7 @@ def _prewarm_base_model_hub_cache(
         )
 
 
+@_model_parallel_refuses_save("save_pretrained_gguf")
 @torch.inference_mode
 def save_to_gguf_generic(
     model,
@@ -6281,6 +6309,7 @@ def _unmerge_flags_on_error(streamed):
         raise
 
 
+@_model_parallel_refuses_save("save_pretrained_merged")
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -6695,6 +6724,7 @@ def _fsdp2_merged_gather_options(model, args, kwargs):
     return merged_save_gather_options(model, _merged_save_method(args, kwargs))
 
 
+@_model_parallel_refuses_save("save_pretrained_merged")
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
@@ -6863,6 +6893,7 @@ def unsloth_generic_save_pretrained_merged(
 
 
 # Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads.
+@_model_parallel_refuses_save("push_to_hub_merged")
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
@@ -7545,6 +7576,7 @@ def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
         )
 
 
+@_model_parallel_refuses_save("save_pretrained_merged")
 def _unsloth_save_compressed_tensors(
     model,
     save_directory: Union[str, os.PathLike],
@@ -7814,6 +7846,7 @@ def _unsloth_save_compressed_tensors(
             clean_gpu_cache()
 
 
+@_model_parallel_refuses_save("save_pretrained_torchao")
 def _unsloth_save_torchao(
     model,
     save_directory: Union[str, os.PathLike],
@@ -8079,6 +8112,7 @@ def _write_executorch_export_config(
     return path
 
 
+@_model_parallel_refuses_save("save_pretrained_torchao")
 @_fsdp2_refuses_save("save_pretrained_torchao")
 def unsloth_save_pretrained_torchao(
     self,
@@ -8264,6 +8298,7 @@ def _openvino_transformers_mismatch(model_type, task):
     )
 
 
+@_model_parallel_refuses_save("save_pretrained_openvino")
 def _unsloth_save_openvino(
     model,
     save_directory: Union[str, os.PathLike],
@@ -8406,6 +8441,7 @@ def _unsloth_save_openvino(
             gc.collect()
 
 
+@_model_parallel_refuses_save("save_pretrained_openvino")
 def unsloth_save_pretrained_openvino(
     self,
     save_directory: Union[str, os.PathLike],
@@ -8440,6 +8476,7 @@ def unsloth_save_pretrained_openvino(
     )
 
 
+@_model_parallel_refuses_save("push_to_hub_openvino")
 def unsloth_push_to_hub_openvino(
     self,
     repo_id: str,

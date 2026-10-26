@@ -24,9 +24,12 @@ _DEFAULT_BUDGET_MB = 256
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
-# Wan encodes prompt and negative separately; caching per text reuses the unchanged negative. "0" = pair key only.
+# Cache the per-text helper so an unchanged CFG negative is reused across prompts. "0" = pair key only.
 _ENV_PER_TEXT = "UNSLOTH_DIFFUSION_PROMPT_CACHE_PER_TEXT"
-_PER_TEXT_METHODS = {"Wan": "_get_t5_prompt_embeds"}
+_PER_TEXT_METHODS = {
+    "Wan": "_get_t5_prompt_embeds",
+    "ZImage": "_encode_prompt",
+}
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
 
 

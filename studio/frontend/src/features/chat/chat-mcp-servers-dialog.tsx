@@ -5,9 +5,9 @@ import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { UploadIcon } from "lucide-react";
 import {
   type ChangeEvent,
   useCallback,
@@ -971,7 +971,7 @@ export function ChatMcpServersDialog({
                   disabled={importing || formPending}
                   title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
                 >
-                  {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
+                  {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />}
                   Import config
                 </Button>
               </div>
@@ -1210,7 +1210,7 @@ export function ChatMcpServersDialog({
                 disabled={importing}
                 title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
               >
-                {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
+                {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />}
                 Import config
               </Button>
               <Button variant="secondary" size="sm" onClick={startCreate} disabled={importing}>

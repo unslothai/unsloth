@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Telescope02Icon } from "@hugeicons/core-free-icons";
+import { Telescope02Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Dialog,
@@ -16,7 +16,6 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { XIcon } from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
@@ -135,7 +134,7 @@ function DomainList({
                 onChange(values.filter((value) => value !== domain))
               }
             >
-              <XIcon className="size-3" />
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
             </button>
           </span>
         ))}
@@ -306,7 +305,7 @@ export function DeepResearchComposerButton({
         className="composer-pill-glyph cursor-pointer"
       >
         <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(15px*var(--ui-space-scale,1))]" />
-        <XIcon className="composer-pill-x" />
+        <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
       </span>
       <span>Deep research</span>
       {/* Same caret as the other composer pills, so the arrows match. */}

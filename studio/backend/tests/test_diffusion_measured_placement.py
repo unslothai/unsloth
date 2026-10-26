@@ -862,6 +862,76 @@ def test_encode_release_keeps_an_oversized_release_streamed(monkeypatch):
     assert torch.equal(net(x.cuda()).cpu(), ref)
 
 
+def _two_encoder_pipe(monkeypatch):
+    """FLUX.1-shaped: encode_prompt runs a small and a large encoder back to back (CLIP, then T5)."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    enc2 = type(enc)()
+    pipe.components["text_encoder_2"] = enc2
+    calls = {"release": 0, "restore": 0}
+    real = dm.release_resident_groups
+
+    def counted(*args, **kwargs):
+        restore = real(*args, **kwargs)
+        if restore is None:
+            return None
+        calls["release"] += 1
+
+        def counted_restore(*a, **k):
+            calls["restore"] += 1
+            return restore(*a, **k)
+
+        return counted_restore
+
+    monkeypatch.setattr(dm, "release_resident_groups", counted)
+
+    def encode_prompt(prompt, fail = False):
+        enc(torch.randn(2, 8, device = "cuda"))
+        enc2.fail = fail
+        return enc2(torch.randn(2, 8, device = "cuda"))
+
+    pipe.encode_prompt = encode_prompt
+    return torch, net, enc, enc2, pipe, x, ref, on_device, calls
+
+
+def test_encode_release_streams_the_denoiser_once_per_prompt_with_two_encoders(monkeypatch):
+    """Two encoders in one encode_prompt: the denoiser moves out and back once, not once per encoder."""
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    block_mib = 4
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 2
+    for prompt in range(3):
+        pipe.encode_prompt(f"p{prompt}")
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+        assert enc2.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert calls == {"release": 3, "restore": 3}
+    # outside encode_prompt: pins back on its own return
+    enc2(torch.randn(2, 8, device = "cuda"))
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 4, "restore": 4}
+
+
+def test_encode_release_once_restores_after_a_failed_second_encoder(monkeypatch):
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    with pytest.raises(RuntimeError):
+        pipe.encode_prompt("p", fail = True)
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 1, "restore": 1}
+    pipe.encode_prompt("p")
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_release_once_kill_switch(monkeypatch):
+    torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
+    monkeypatch.setenv(dm.ENCODE_RELEASE_ONCE_ENV, "0")
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 2
+    pipe.encode_prompt("p")
+    assert on_device() == ["cuda"] * 6
+    assert calls == {"release": 2, "restore": 2}  # once per encoder
+
+
 def test_encode_release_only_for_the_whole_tier(monkeypatch):
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     assert (

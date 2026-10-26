@@ -5458,13 +5458,18 @@ def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
     return False
 
 
+# "0": pin the denoiser back after every text encoder instead of once per encode_prompt call.
+ENCODE_RELEASE_ONCE_ENV = "UNSLOTH_DIFFUSION_ENCODE_RELEASE_ONCE"
+
+
 def install_encode_release(
     pipe: Any,
     plan: Any,
     logger: Any = None,
 ) -> int:
     """While a text encoder runs, stream the whole-resident (or widened partial) denoiser back to the flat room (the
-    partial placement's encode state); pin it back on return. Returns the number of encoders hooked."""
+    partial placement's encode state); pin it back on return, or once encode_prompt returns (one move per prompt with
+    several encoders). Returns the number of encoders hooked."""
     estimates = getattr(plan, "estimates", None) or {}
     encode_room = estimates.get("encode_resident_transformer_mib")
     whole = getattr(plan, "resident_transformer_mib", None)
@@ -5495,12 +5500,20 @@ def install_encode_release(
             # No empty_cache: the allocator frees cached segments and retries on OOM; flushing per prompt cost a sync.
             pending.append(restore)
 
-        def _after(module: Any, args: Any, output: Any) -> None:
+        # encode_prompt calls in flight: their encoders keep one release and the outermost return pins back
+        scope = [0]
+
+        def _restore_pending() -> None:
             if not pending:
                 return
             restore = pending.pop()
             if restore is not None:
                 restore()
+
+        def _after(module: Any, args: Any, output: Any) -> None:
+            if scope[0] > 0:
+                return  # the next encoder of this prompt reuses the room; encode_prompt's return pins back
+            _restore_pending()
 
         before = disable(_before) if callable(disable) else _before
         after = disable(_after) if callable(disable) else _after
@@ -5515,6 +5528,29 @@ def install_encode_release(
             )
             module._unsloth_encode_release = handles
             hooked += 1
+        encode = getattr(pipe, "encode_prompt", None)
+        if (
+            hooked > 1
+            and callable(encode)
+            and not _env_off(ENCODE_RELEASE_ONCE_ENV)
+            and not getattr(encode, "_unsloth_encode_release_scope", False)
+        ):
+
+            @functools.wraps(encode)
+            def encode_prompt(*args: Any, **kwargs: Any) -> Any:
+                scope[0] += 1
+                try:
+                    return encode(*args, **kwargs)
+                finally:
+                    scope[0] -= 1
+                    if scope[0] == 0:
+                        _restore_pending()
+
+            encode_prompt._unsloth_encode_release_scope = True
+            try:
+                pipe.encode_prompt = encode_prompt
+            except Exception:  # noqa: BLE001 - a read-only attribute keeps the per-encoder pin-back
+                pass
         if hooked and logger is not None:
             logger.info(
                 "diffusion.memory: the prompt encode streams %d MiB of the resident transformer (%d MiB stay), "
