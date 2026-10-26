@@ -9,7 +9,7 @@ import asyncio
 import copy
 import re
 from collections import OrderedDict
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from core.flows import memory as mem
 from core.flows.authoring import AuthoringError, constrained_call
@@ -391,6 +391,10 @@ async def _direct(ctx: NodeContext, state: dict) -> dict:
     return {"reply": {"patch": out.value}}
 
 
+async def _with_spec(place: Callable[[dict], Any], spec: dict) -> dict:
+    return {**await place(spec), "spec": spec}
+
+
 async def describe_place(ctx: NodeContext, req: dict) -> dict:
     """Lay out the described place on the request's map (rows of ``#`` / ``.`` / ``R``, or an open field)."""
     text = re.sub(r"\s+", " ", str(req.get("text") or ctx.params.get("description") or "")).strip()[
@@ -411,12 +415,15 @@ async def describe_place(ctx: NodeContext, req: dict) -> dict:
     taken = {str(i) for i in req.get("taken") or [] if isinstance(i, str)}
     seed = int(req["seed"]) if isinstance(req.get("seed"), int) else int(ctx.seed or 0)
 
-    def place(spec: dict) -> dict:
-        return solve(spec, Grid.from_request(req), focus = focus, seed = seed, taken_ids = taken)
+    async def place(spec: dict) -> dict:
+        # A crowded map makes the solver search hard: keep it off the event loop.
+        return await asyncio.to_thread(
+            solve, spec, Grid.from_request(req), focus = focus, seed = seed, taken_ids = taken
+        )
 
-    def check(raw: Any) -> dict:
+    async def check(raw: Any) -> dict:
         spec = validate_scene(raw)
-        result = place(spec)
+        result = await place(spec)
         want = sum(p["count"] for p in spec["props"])
         if len(result["props3d"]) * 2 < want:
             raise AuthoringError(
@@ -429,7 +436,7 @@ async def describe_place(ctx: NodeContext, req: dict) -> dict:
         SCENE_SCHEMA,
         f"Describe this place as a scene: {text}\n",
         check,
-        fallback = lambda: {**place(spec := fallback_scene(text)), "spec": spec},
+        fallback = lambda: _with_spec(place, fallback_scene(text)),
         system = SCENE_SYSTEM,
         temperature = 0.7,
         max_tokens = 900,

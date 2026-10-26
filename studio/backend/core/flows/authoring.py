@@ -11,6 +11,7 @@ answer is asked again with the reason, at most ``repair_max`` times, and then ``
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
@@ -169,7 +170,10 @@ async def constrained_call(
             errors.append("; ".join(bad[:4]))
             continue
         try:
-            return Authored(validate(raw), attempts, errors)
+            value = validate(raw)
+            if inspect.isawaitable(value):
+                value = await value
+            return Authored(value, attempts, errors)
         except ValueError as exc:
             errors.append(str(exc) or type(exc).__name__)
     if fallback is None:
@@ -178,6 +182,8 @@ async def constrained_call(
         )
     try:
         value = fallback()
+        if inspect.isawaitable(value):
+            value = await value
     except ValueError as exc:
         raise FlowNodeError(str(exc), retryable = True) from exc
     ctx.log(
