@@ -438,6 +438,11 @@ export interface WorldSimulation {
   chat_cooldown_min: number;
   calls_per_minute: number;
   needs?: boolean;
+  options?: boolean;
+  plan_cache?: number;
+  reflect_at?: number;
+  rate_batch?: number;
+  relationships?: boolean;
 }
 
 export interface WorldSpec {

@@ -87,6 +87,7 @@ import {
   inspectGlb,
   saveUntilCurrent,
 } from "./props3d";
+import * as Life from "./life-sim";
 import {
   BackgroundQueue,
   type Note,
@@ -142,6 +143,8 @@ interface NpcChat {
   b_learns: Note[];
   a_recalled: string[];
   b_recalled: string[];
+  a_feels?: { affinity?: number; fact?: string };
+  b_feels?: { affinity?: number; fact?: string };
 }
 
 async function loadImage(url: string): Promise<HTMLImageElement> {
@@ -345,6 +348,7 @@ export function WorldPlayer({
   const withNeeds = useMemo(() => needsOn(baseSpec), [baseSpec]);
   const offers = useMemo(() => advertisements(sim?.places ?? []), [sim]);
   const areas = useMemo(() => placeAreas(baseSpec), [baseSpec]);
+  const lifeCfg = useMemo(() => Life.lifeOf(baseSpec), [baseSpec]);
   const [background, setBackground] = useState<string | null>(null);
 
   const witness = useCallback(
@@ -358,14 +362,20 @@ export function WorldPlayer({
           next = withMind(next, id, (m) =>
             remember(
               m,
-              [{ text: `${spec.player.name} ${what}`, importance }],
+              [
+                {
+                  text: `${spec.player.name} ${what}`,
+                  importance,
+                  guess: lifeCfg.reflectAt > 0,
+                },
+              ],
               s.clock,
             ),
           );
       }
       return next;
     },
-    [sim, spec.player.name],
+    [sim, spec.player.name, lifeCfg],
   );
 
   const onInteract = useCallback(
@@ -789,7 +799,26 @@ export function WorldPlayer({
       if (!planEntry || !sim) return;
       const generation = loads.current;
       const s = wsRef.current;
+      const here =
+        placeAt(sim.places, game.current?.npcTile(npcId) ?? { x: -1, y: -1 })
+          ?.id ?? "";
+      const mind = s.npc[npcId] ?? emptyMind();
+      if (mind.planDay === day && !Life.planDue(lifeCfg, mind, s.clock))
+        return false;
+      const hit = Life.cachedPlan(spec, lifeCfg, s, npcId, s.clock, here);
+      if (hit) {
+        setWs(hit);
+        return false;
+      }
       setBackground(`${npcById.get(npcId)?.name ?? npcId} is planning the day`);
+      const key = Life.planCacheKey(
+        lifeCfg,
+        spec,
+        npcId,
+        s.npc[npcId],
+        s.clock,
+        here,
+      );
       try {
         const res = await api.invoke(
           flowId,
@@ -800,6 +829,7 @@ export function WorldPlayer({
               npc_id: npcId,
               memory: s.npc[npcId]?.memory ?? [],
               clock: s.clock,
+              ...Life.planAsk(lifeCfg, s.npc[npcId]),
             },
           },
           { signal },
@@ -815,33 +845,49 @@ export function WorldPlayer({
           )
           .join("; ");
         setWs((st) =>
-          withMind(st, npcId, (m) =>
-            remember(
-              { ...m, plan: blocks, planDay: day },
-              text
-                ? [
-                    {
-                      text: `My plan for day ${day + 1}: ${text}`,
-                      importance: 4,
-                    },
-                  ]
-                : [],
-              st.clock,
-              "plan",
+          Life.storePlan(
+            withMind(st, npcId, (m) =>
+              remember(
+                {
+                  ...m,
+                  plan: blocks,
+                  planDay: day,
+                  ...Life.lifePlanned(m, res.outputs.plan, st.clock),
+                },
+                text
+                  ? [
+                      {
+                        text: `My plan for day ${day + 1}: ${text}`,
+                        importance: 4,
+                      },
+                    ]
+                  : [],
+                st.clock,
+                "plan",
+              ),
             ),
+            lifeCfg,
+            key,
+            res.outputs.plan,
+            st.clock,
           ),
         );
       } catch (e) {
         if (!signal.aborted && generation === loads.current)
           setWs((st) =>
-            withMind(st, npcId, (m) => ({ ...m, plan: [], planDay: day })),
+            withMind(st, npcId, (m) => ({
+              ...m,
+              plan: [],
+              planDay: day,
+              ...Life.lifePlanned(m, null, st.clock),
+            })),
           );
         throw e;
       } finally {
         setBackground(null);
       }
     },
-    [api, flowId, npcById, planEntry, sim, spec],
+    [api, flowId, npcById, planEntry, sim, spec, lifeCfg],
   );
 
   const chat = useCallback(
@@ -873,6 +919,7 @@ export function WorldPlayer({
               place,
               memory_a: s.npc[a]?.memory ?? [],
               memory_b: s.npc[b]?.memory ?? [],
+              ...Life.chatAsk(lifeCfg, s, a, b),
             },
           },
           { signal },
@@ -882,6 +929,8 @@ export function WorldPlayer({
         if (!c?.lines?.length) return;
         const where = place ? ` at ${place}` : "";
         setWs((st) => {
+          const heard = (from: string, notes: Note[]) =>
+            lifeCfg.relationships ? Life.rumours(st, from, notes) : notes;
           const learn =
             (other: string, notes: Note[], ids: string[]) =>
             (m: ReturnType<typeof emptyMind>) =>
@@ -897,10 +946,20 @@ export function WorldPlayer({
                 ids,
                 st.clock,
               );
-          return withMind(
-            withMind(st, a, learn(nameB, c.a_learns ?? [], c.a_recalled ?? [])),
+          return Life.afterChat(
+            lifeCfg,
+            withMind(
+              withMind(
+                st,
+                a,
+                learn(nameB, heard(b, c.a_learns ?? []), c.a_recalled ?? []),
+              ),
+              b,
+              learn(nameA, heard(a, c.b_learns ?? []), c.b_recalled ?? []),
+            ),
+            a,
             b,
-            learn(nameA, c.b_learns ?? [], c.b_recalled ?? []),
+            c,
           );
         });
         c.lines.forEach((line, i) =>
@@ -922,7 +981,7 @@ export function WorldPlayer({
         }, hold);
       }
     },
-    [api, chatEntry, flowId, npcById, sim, spec],
+    [api, chatEntry, flowId, npcById, sim, spec, lifeCfg],
   );
 
   useEffect(() => {
@@ -942,7 +1001,20 @@ export function WorldPlayer({
       const ticked: Record<string, Needs> = {};
       for (const n of specRef.current.npcs) {
         const mind = s.npc[n.id] ?? emptyMind();
-        if (planEntry && mind.planDay !== day)
+        const cached =
+          planEntry && Life.planDue(lifeCfg, mind, clock)
+            ? Life.cachedPlan(
+                specRef.current,
+                lifeCfg,
+                s,
+                n.id,
+                clock,
+                placeAt(sim.places, g.npcTile(n.id) ?? { x: -1, y: -1 })?.id ??
+                  "",
+              )
+            : undefined;
+        if (cached) setWs(cached);
+        else if (cached === null)
           queue.push({
             key: `plan:${n.id}`,
             kind: "plan",
@@ -965,14 +1037,14 @@ export function WorldPlayer({
               clock,
               offers,
               areas,
+              held: s.auto?.held,
             })
           : null;
         if (life) {
           lives[n.id] = life;
           continue;
         }
-        const block =
-          mind.planDay === day ? currentBlock(mind.plan, clock) : null;
+        const block = Life.lifeBlock(mind, clock);
         g.setNpcPlace(n.id, block ? (places.get(block.place) ?? null) : null);
         g.setNpcStatus(n.id, block ? activityEmoji(block.activity) : "");
       }
@@ -998,12 +1070,40 @@ export function WorldPlayer({
             ...st,
             npc: markChat(st.npc, pair[0], pair[1], st.clock),
           }));
-          queue.push({
-            key: `chat:${pair[0]}:${pair[1]}`,
-            kind: "chat",
-            run: (signal) => chat(pair[0], pair[1], signal),
-          });
+          if (
+            !Life.smallTalk({
+              cfg: lifeCfg,
+              spec: specRef.current,
+              s,
+              a: pair[0],
+              b: pair[1],
+              clock,
+              say: g.say,
+              update: setWs,
+            })
+          )
+            queue.push({
+              key: `chat:${pair[0]}:${pair[1]}`,
+              kind: "chat",
+              run: (signal) => chat(pair[0], pair[1], signal),
+            });
         }
+      }
+      if (planEntry) {
+        const gen = loads.current;
+        for (const job of Life.lifeJobs(
+          specRef.current,
+          lifeCfg,
+          s,
+          (state, signal) =>
+            api
+              .invoke(flowId, planEntry, { state }, { signal })
+              .then((r) => r.outputs.plan),
+          (fn) => {
+            if (gen === loads.current) setWs(fn);
+          },
+        ))
+          queue.push(job);
       }
       queue.pump();
     }, 1000);
@@ -1021,6 +1121,9 @@ export function WorldPlayer({
     withNeeds,
     offers,
     areas,
+    lifeCfg,
+    api,
+    flowId,
   ]);
 
   useEffect(() => {
@@ -1552,6 +1655,7 @@ export function WorldPlayer({
             <div
               className="pointer-events-none absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/45 px-3 py-1 text-white/75 text-xs backdrop-blur-md"
               data-testid="world-sim-activity"
+              title={queue.callsLabel()}
             >
               <span className="size-1.5 animate-pulse rounded-full bg-emerald-300" />
               {background}
