@@ -76,7 +76,6 @@ export function ClipCard({
   status?: string;
   focusOnMount?: boolean;
   onFocused?: () => void;
-  /** Replaces the waveform player, e.g. Edit's Original/Edited or Convert's Source/Converted compare. */
   player?: ReactNode;
 }) {
   const focusPlay = (element: HTMLDivElement | null) => {

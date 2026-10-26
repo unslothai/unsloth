@@ -57,8 +57,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 
-/** Permission levels for tool calls. Full access stays last because it disables both approval
- *  prompts and the code sandbox. */
+/** Full access stays last: it disables approval prompts and the sandbox. */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
   label: string;
@@ -91,7 +90,6 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   },
 ] as const;
 
-/** What Full access opens up, listed in its confirmation. */
 const FULL_ACCESS_SCOPES = [
   {
     icon: Folder01Icon,
@@ -104,7 +102,6 @@ const FULL_ACCESS_SCOPES = [
     description: "Run terminal and Python code, install packages",
   },
   {
-    // The app's own internet glyph, as on Web search.
     icon: InternetIcon,
     title: "Internet",
     description: "Browse, send data and use MCP tools",
@@ -114,7 +111,7 @@ const FULL_ACCESS_SCOPES = [
 export function permissionModeOption(mode: PermissionMode) {
   return (
     PERMISSION_MODE_OPTIONS.find((option) => option.value === mode) ??
-    // Unknown values fall back to the default ("Approve for me"), not row 0 ("Ask").
+    // Unknown values fall back to the default ("Approve for me"), not row 0.
     PERMISSION_MODE_OPTIONS.find((option) => option.value === "auto") ??
     PERMISSION_MODE_OPTIONS[0]
   );
@@ -316,7 +313,7 @@ export function useSandboxCapability(enabled: boolean): SandboxCapability | null
   useEffect(() => {
     if (!enabled) return;
     let live = true;
-    // Only the newest read applies: an older answer resolving last must not undo a newer one.
+    // Only the newest read applies, so a late older answer cannot undo it.
     let reads = 0;
     const read = () => {
       const id = ++reads;
@@ -373,7 +370,6 @@ export function PermissionModeMenuItems({
             <HugeiconsIcon
               icon={MenuTickIcon}
               strokeWidth={2}
-              // Centred on both lines; sized in index.css.
               className="permission-mode-tick ml-auto size-4 shrink-0 self-center"
             />
           ) : null}
@@ -383,12 +379,10 @@ export function PermissionModeMenuItems({
   );
 }
 
-/** The level in effect, for Settings to spell out. */
 export function useActivePermissionMode() {
   return permissionModeOption(useAccountPermissionMode().permissionMode);
 }
 
-/** The focused element, or for a closing menu its trigger (menus label themselves by it). */
 function lastFocusOutsideMenus(): HTMLElement | null {
   let element = document.activeElement;
   for (
@@ -402,7 +396,6 @@ function lastFocusOutsideMenus(): HTMLElement | null {
   return element instanceof HTMLElement && element !== document.body ? element : null;
 }
 
-/** Full access confirmation body, shared by both dialogs that ask for it. */
 export function FullAccessConfirmContent({
   onConfirm,
   onClose,
@@ -411,14 +404,12 @@ export function FullAccessConfirmContent({
   onClose: () => void;
 }) {
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
-  // Focus before the dialog opened, so Settings can return there and not to a removed button.
   const returnFocusRef = useRef<HTMLElement | null>(null);
   return (
-    // Backdrop click cancels; no ring.
     <AlertDialogContent
       className="gap-5 p-7 ring-0 data-[size=default]:sm:max-w-[calc(500px*var(--ui-space-scale,1))]"
       onOverlayClick={onClose}
-      // Focus the card, not Cancel, so Cancel shows no focus border until tabbed to.
+      // Focus the card, not Cancel, so Cancel shows no focus ring until tabbed to.
       onOpenAutoFocus={(event) => {
         event.preventDefault();
         returnFocusRef.current = lastFocusOutsideMenus();
@@ -430,7 +421,6 @@ export function FullAccessConfirmContent({
           <ShieldAlertGlyph className="size-5 shrink-0" strokeWidth={2} />
           Turn on Full access?
         </AlertDialogTitle>
-        {/* text-pretty: balance splits this sentence into two short lines. */}
         <AlertDialogDescription className="text-pretty leading-relaxed">
           Tools will run without asking and outside the sandbox, including:
         </AlertDialogDescription>
@@ -470,7 +460,6 @@ export function FullAccessConfirmContent({
         </button>
       </p>
       <AlertDialogFooter className="mt-1">
-        {/* Muted, not outline: outline keeps a border in light mode. */}
         <AlertDialogCancel variant="muted">Cancel</AlertDialogCancel>
         <AlertDialogAction variant="destructive" onClick={onConfirm}>
           Turn on
@@ -480,8 +469,6 @@ export function FullAccessConfirmContent({
   );
 }
 
-/** Danger confirmation shown before Full access turns on. Self-contained so the dropdown works
- *  outside the chat page (e.g. the Settings dialog). */
 export function FullAccessConfirmDialog({
   open,
   onOpenChange,
@@ -554,8 +541,7 @@ export function PermissionModeDropdown({
             onOsSandboxMissing={() => setSandboxSetupOpen(true)}
           />
           <PermissionModeMenuItems
-            // Defer past the menu-close focus restoration so the dialog's focus trap is not broken by the
-            // dropdown grabbing focus back.
+            // Defer past menu-close focus restore so the dialog focus trap holds.
             onRequestFullAccess={() =>
               setTimeout(() => setConfirmOpen(true), 0)
             }
@@ -574,9 +560,7 @@ export function PermissionModeDropdown({
   );
 }
 
-/** Composer pill showing the current permission level in the chat box; clicking opens the level
- *  dropdown. The Full access pick routes through the store-driven confirm dialog mounted at the
- *  chat-page root, so the warning survives this menu unmounting. */
+/** Full access routes through a confirm dialog at the chat-page root so it survives unmount. */
 export function PermissionModeComposerPill({
   side = "bottom",
 }: {
@@ -619,7 +603,6 @@ export function PermissionModeComposerPill({
       >
         <PermissionMenuLabel sandboxControls={true} />
         <PermissionModeMenuItems
-          // Defer past the menu-close focus restoration (see PermissionModeDropdown).
           onRequestFullAccess={() =>
             setTimeout(() => setBypassConfirmOpen(true), 0)
           }

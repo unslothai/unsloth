@@ -130,12 +130,7 @@ def _rocm_dll_directories() -> list[str]:
 
 
 def _died_by_signal(returncode: int) -> bool:
-    """Whether the code represents a hard fault, not any death by signal.
-
-    SIGKILL and SIGTERM are excluded: the OOM killer, a container stop and an operator all produce them, and they are not evidence the device faulted. Matches the hard-fault set ``LlamaCppBackend._is_signal_crash`` already uses. They are not read as a pass either: the caller sends them to ``_unknown_verdict`` instead.
-
-    On Windows a native abort() takes both shapes, an NTSTATUS for an access violation and the CRT's plain exit status 3 when torch or a ROCm library calls abort() itself. The second reads as an ordinary non-zero exit, so without it a crashing device was reported as usable and the parent went on to repeat the crash in its own process.
-    """
+    """Windows exit 3 is the CRT abort() and counts as a fault; SIGKILL and SIGTERM are not evidence either way and go to unknown, never to pass."""
     if returncode < 0:
         return -returncode in _FATAL_SIGNALS
     if os.name != "nt":
@@ -175,12 +170,7 @@ def _identity_key() -> tuple[str | None, ...]:
 
 
 def device_can_allocate(device: str) -> bool:
-    """Return false unless the device is known to be usable.
-
-    False when the child crashes or times out, and also when it could not be spawned or its result could not be read: those last two are not evidence the device is fine, only that we do not know, and the outcomes are not symmetric, since guessing wrong towards CPU costs embedding speed while guessing wrong towards the accelerator costs the backend.
-
-    An ordinary exception from a child that RAN and reported still returns true, because the in-process loader raises the same error and reports it better than a silent downgrade to CPU. Results are cached per device and device-identity environment.
-    """
+    """False when the probe crashes, times out or its result is unreadable (unknown is not usable); an ordinary exception from a child that ran still returns true."""
     return _device_can_allocate_cached(device, _identity_key())
 
 

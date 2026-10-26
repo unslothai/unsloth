@@ -128,6 +128,7 @@ def test_skippable_models_keep_transformers_default(ddp_env, make):
         {"encoder_layerdrop": 0.1},
         {"decoder_layerdrop": 0.1},
         {"add_cross_attention": True},
+        {"cross_attention_layers": [3, 8]},  # MllamaTextConfig: layers skipped without images
         {"speech_encoder_layerdrop": 0.1},
         {"is_encoder_decoder": True},
     ],

@@ -204,7 +204,6 @@ export function TranscribeRail({
           label={name === "timestamps" ? "Timestamps" : "Speakers"}
           value={switches[name]}
           disabled={disabled}
-          // One "Use" link when both switches would offer the same model.
           onUseSpeakersModel={
             name === "speakers" && switches.timestamps.suggestSpeakersModel
               ? undefined
@@ -297,7 +296,6 @@ export function TranscribeOutput({
           />
         )}
         {transcript ? (
-          // Focused and announced by the host after a run.
           <section
             id="transcribe-result"
             tabIndex={-1}

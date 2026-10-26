@@ -105,7 +105,6 @@ export function ApiKeyRow({
 }) {
   const t = useT();
   const locale = useLocale();
-  // The ellipsis is display only; a copied prefix must not carry it.
   const prefix = `sk-unsloth-${apiKey.key_prefix}`;
   const expired = isExpired(apiKey.expires_at);
   return (

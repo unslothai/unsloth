@@ -496,7 +496,6 @@ export const de = {
       clearDataFailed: "Websitedaten konnten nicht gelöscht werden. Versuche es erneut.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "OS-Sandbox ist nicht verfügbar",
@@ -705,7 +704,6 @@ export const de = {
     shutdown: "Herunterfahren",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Dokumentation",
       keyboardShortcuts: "Tastenkürzel",
@@ -777,11 +775,8 @@ export const de = {
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
-      // Shown under an empty project folder in the sidebar.
       noChats: "Keine Chats",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Alle Projekte angepinnt",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "Alle Projekte sind angeheftet oder in Abschnitten",
       noProjects: "Keine Projekte",
       showMore: "Mehr anzeigen",
@@ -883,11 +878,9 @@ export const de = {
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
       sortPinnedChats: "Angeheftete Chats sortieren",
-      // Header of the menu's section-visibility toggles.
       show: "Anzeigen",
       newSection: "Neuer Abschnitt",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "Neuer Abschnitt",
       createDescription: "Gruppiere Chats und Projekte ganz nach Belieben",
@@ -898,16 +891,13 @@ export const de = {
       edit: "Bearbeiten",
       remove: "Abschnitt entfernen",
       markAllRead: "Alle als gelesen markieren",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Verschieben nach",
       section: "Abschnitt",
       sectionsHeading: "Abschnitte",
       removeFromProject: "Aus Projekt entfernen",
       newSection: "Neuer Abschnitt",
       removeFromSection: "Aus Abschnitt entfernen",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "Aus {name} entfernen",
-      // Shown in a section with nothing filed in it yet.
       empty: "Chats oder Projekte hierher ziehen",
       sectionOptions: "Abschnittsoptionen",
       newChatInSection: "Neuer Chat in {name}",
@@ -2454,7 +2444,6 @@ export const de = {
           updateChecksDisabled:
             "Update-Prüfungen sind deaktiviert (UNSLOTH_DISABLE_UPDATE_CHECK=1), daher werden die verfügbaren Backends nicht abgefragt.",
         },
-        // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
         llamaBackendKeywords:
           "llama.cpp backend gguf inferenz cuda rocm hip vulkan metal cpu gpu beschleuniger prebuilt wechseln engine",
       },
@@ -2488,7 +2477,6 @@ export const de = {
         reloadRequired: "Modell neu laden, um die neuen Speicheroptionen anzuwenden.",
         loadError: "Modellspeicher-Einstellungen konnten nicht geladen werden",
         saveError: "Modellspeicher-Einstellungen konnten nicht gespeichert werden",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu speicher arbeitsspeicher ram resident anheften fixieren sperren geladen halten entladen leerlauf mmap no-mmap load-mode auslagern",
         multiModelKeywords:
@@ -2632,8 +2620,6 @@ export const de = {
       docsLabel: "Dokumentation zu unsloth start öffnen",
       agentDocs: "Einrichtungsdokumentation zu {agent} öffnen",
       copyGeneratedCommand: "Generierten Befehl kopieren",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -4438,6 +4424,21 @@ export const de = {
       archiveSuccessful: "Erfolgreiche Ausführungen archivieren",
       project: "Projekt",
       projectNone: "Keins",
+      model: "Modell",
+      modelLoaded: "Das jeweils geladene Modell",
+      modelOnDevice: "Auf diesem Gerät",
+      modelNote: "Ist dieses Modell beim Ausführen nicht geladen, fragt Unsloth zuerst.",
+      modelNoteAllowed: "Wechselt nur zu diesem Modell, während Sie Unsloth nicht nutzen, und danach zurück.",
+      modelEmpty: "Laden Sie ein Modell im Model Hub herunter oder fügen Sie eine Verbindung hinzu, um ein anderes zu wählen.",
+      modelMissing: "{model} (nicht auf diesem Gerät)",
+      allowLoad: "Automatisch wechseln, wenn ich weg bin",
+      allowLoadHint:
+        "Wenn diese Aufgabe fällig ist und du Unsloth seit 5 Minuten nicht benutzt hast, lädt sie dieses Modell ohne Nachfrage, führt die Aufgabe aus und wechselt dann zurück zu deinem vorherigen Modell. Benutzt du Unsloth gerade oder läuft ein Training, wird der Lauf übersprungen und dein Modell bleibt unverändert. Ist die Option aus, fragt Unsloth vor dem Laden.",
+      reasoning: "Denkaufwand",
+      reasoningDefault: "Standard",
+      reasoningOff: "Aus",
+      reasoningLowest: "Niedrigste",
+      reasoningHighest: "Höchste",
       create: "Erstellen",
     },
     deleteDialog: {
@@ -4446,6 +4447,10 @@ export const de = {
     },
     errors: {
       noModel: "Es war kein Modell geladen. Laden Sie im Chat ein Modell und führen Sie die Aufgabe erneut aus.",
+      modelNotLoaded: "Das Modell der Aufgabe war nicht geladen. Laden Sie es im Chat und führen Sie die Aufgabe erneut aus.",
+      modelLoadFailed: "Das Modell der Aufgabe konnte nicht geladen werden. Prüfen Sie, ob es im Model Hub noch heruntergeladen ist.",
+      modelBusy: "Übersprungen, während Sie Unsloth genutzt haben; Ihr Modell blieb unverändert.",
+      connectionUnavailable: "Die Verbindung der Aufgabe fehlt oder ist deaktiviert. Prüfen Sie sie unter Verbindungen.",
       timeout: "Das Modell hat zu lange für die Antwort gebraucht.",
       cancelled: "Die Ausführung wurde vor dem Ende gestoppt.",
       interrupted: "Unsloth wurde geschlossen, bevor die Ausführung fertig war.",
@@ -4455,6 +4460,13 @@ export const de = {
       updateFailed: "Aufgabe konnte nicht aktualisiert werden",
       deleteFailed: "Aufgabe konnte nicht gelöscht werden",
       runFailed: "Aufgabe konnte nicht gestartet werden",
+    },
+    loadPrompt: {
+      title: "{model} laden?",
+      description: "„{title}“ läuft mit {model}, das nicht geladen ist. Beim Ausführen wechselt der Chat bis zum Ende zu {model}, danach zurück.",
+      always: "Nicht mehr fragen. Nur wechseln, während ich Unsloth nicht nutze.",
+      notNow: "Nicht jetzt",
+      load: "Laden und ausführen",
     },
     toast: {
       finished: "„{title}“ ist fertig",
@@ -4478,7 +4490,6 @@ export const de = {
       all: "Alle",
       chats: "Chats",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Chats",

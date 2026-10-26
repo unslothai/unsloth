@@ -24,8 +24,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { PipelineType } from "@huggingface/hub";
 import { type ReactElement, useMemo, useState } from "react";
 
-// HF pipeline filter for embedding models; matches the backend's
-// is_embedding_model signals (sentence-similarity / feature-extraction).
+// Matches the backend's is_embedding_model signals.
 const EMBEDDING_TASKS: readonly PipelineType[] = [
   "sentence-similarity",
   "feature-extraction",
@@ -35,18 +34,15 @@ const EMBEDDING_TASKS: readonly PipelineType[] = [
 const PINNED_EMBEDDING_MODELS: readonly string[] = ["unsloth/embeddinggemma-2"];
 type EmbeddingModelPickerProps = {
   value: string;
-  /** Fires once, on a pick. Typing is a search, not a selection. */
+  /** Fires once, on a pick; typing is a search. */
   onSelect: (model: string) => void;
-  /** The env/default model, marked "Recommended" so it is findable again. */
   defaultModel?: string;
-  /** Repos already on disk, for the on-device dot. */
   cachedModels?: ReadonlySet<string>;
   /** Models pinned to the RAG menu; each row toggles its own pin. */
   pinnedModels?: readonly string[];
   onTogglePin?: (model: string) => void;
   accessToken?: string;
   disabled?: boolean;
-  /** Held open with a spinner while the pick is resolved and saved. */
   busy?: boolean;
   /** The selected model is in memory: green tick on the trigger. */
   loaded?: boolean;
@@ -55,30 +51,14 @@ type EmbeddingModelPickerProps = {
   className?: string;
 };
 
-/**
- * Embedding model picker for Settings -> Documents & RAG.
- *
- * Modelled on the dictation picker (voice-tab.tsx `SttModelPicker`): a button
- * trigger, so the saved model never reads as a half-typed query, and one field
- * that reaches the whole Hub. Empty lists unsloth's embedders, which the global
- * top-downloads page would bury.
- */
-/** Repo ids an on-device copy of `model` can be filed under.
- *
- * The inventory records what was fetched, not what was picked, and the two differ
- * by the conventions the backend resolves through: llama-server opens the `-GGUF`
- * companion, and a slashless alias resolves under `sentence-transformers/`.
- *
- * An off-convention mirror is not derivable here and still shows no dot; the
- * row's own status line covers the selected model. */
+/** Repo ids an on-device copy can be filed under: llama-server opens the `-GGUF` companion and
+ * a slashless alias resolves under `sentence-transformers/`. */
 export function cachedRepoCandidates(model: string): string[] {
   const id = model.trim();
   if (!id) return [];
   const candidates = [id, `${id}-GGUF`];
   if (!id.includes("/")) candidates.push(`sentence-transformers/${id}`);
-  // Mirrors the backend's _QUANT_SUFFIX_RE: an unquantized re-upload's GGUF sits
-  // on the base name, so embeddinggemma-300m-qat-q8_0-unquantized resolves to
-  // embeddinggemma-300m-GGUF and would otherwise never light up.
+  // Mirrors the backend's _QUANT_SUFFIX_RE: an unquantized re-upload's GGUF sits on the base name.
   const slash = id.lastIndexOf("/");
   const owner = slash === -1 ? "" : id.slice(0, slash + 1);
   const name = id.slice(slash + 1);
@@ -129,14 +109,12 @@ export function EmbeddingModelPicker({
       id: result.id,
       sizeBytes: result.estimatedSizeBytes ?? result.curatedSizeBytes ?? null,
     }));
-    // Keep the saved model reachable when the listing drops it: a local path, or
-    // a repo the query does not match.
+    // Keep the saved model reachable when the listing drops it.
     const selected = value.trim();
     if (selected && !rows.some((row) => row.id === selected)) {
       rows.push({ id: selected, sizeBytes: null });
     }
-    // The configured default the same way: the empty search is scoped to `unsloth`, so a private,
-    // other-owner or local default had no row, and the old "Reset to default" button is gone.
+    // The empty search is scoped to `unsloth`, so a private or local default needs its own row.
     const fallback = defaultModel?.trim();
     if (fallback && !rows.some((row) => row.id === fallback)) {
       rows.push({ id: fallback, sizeBytes: null });
@@ -151,8 +129,7 @@ export function EmbeddingModelPicker({
   const pick = (model: string) => {
     setOpen(false);
     setQuery("");
-    // Reselecting is a retry: a previous transfer may have been cancelled or
-    // its cache evicted while the setting still names this model.
+    // Reselecting is a retry: a transfer may have been cancelled or evicted.
     onSelect(model);
   };
 
@@ -232,8 +209,7 @@ export function EmbeddingModelPicker({
             onKeyDown={(event) => {
               if (event.key !== "Enter") return;
               event.preventDefault();
-              // Preserve arbitrary typed submission: the backend can recognize
-              // existing relative paths such as "embedder" that have no slash.
+              // The backend can recognize slashless relative paths such as "embedder".
               const typed = query.trim();
               if (typed) {
                 pick(typed);

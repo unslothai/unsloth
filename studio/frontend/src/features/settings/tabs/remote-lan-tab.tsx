@@ -9,7 +9,6 @@ import { RemoteAccessSection } from "../components/remote-access-section";
 import { scrollIntoPane } from "../lib/scroll-into-pane";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-/** Reaching Unsloth from another device, without the API token list in the way. */
 export function RemoteLanTab() {
   const t = useT();
   const keylessRef = useRef<HTMLDivElement>(null);
@@ -37,7 +36,6 @@ export function RemoteLanTab() {
 
   return (
     <div className="settings-page">
-      {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
         <h1
           data-settings-label={t("settings.remoteLan.title")}

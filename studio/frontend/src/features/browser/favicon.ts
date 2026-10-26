@@ -6,7 +6,6 @@ import { fetchBrowserPage } from "./api";
 const MAX_ICON_BYTES = 256 * 1024;
 const MAX_ICONS = 64;
 
-// Favicon URL to a data: URL, oldest first.
 const icons = new Map<string, Promise<string | null>>();
 
 function dataUrl(blob: Blob): Promise<string | null> {
