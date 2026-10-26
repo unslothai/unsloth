@@ -10003,6 +10003,15 @@ def _matches_any(requested: str, candidates) -> bool:
     return False
 
 
+def _trained_run_dir(model: Optional[str]) -> Optional[str]:
+    from utils.paths import outputs_root
+
+    if not model or model in (".", "..") or model != os.path.basename(model) or "\\" in model:
+        return None
+    run_dir = outputs_root() / model
+    return str(run_dir) if run_dir.is_dir() else None
+
+
 def _looks_like_local_path(value: str) -> bool:
     """A filesystem path rather than a repo id, so case matters."""
     text = str(value)
@@ -10223,7 +10232,7 @@ async def _reject_unservable_model(
             ),
         )
 
-    still_indexing = torn = False
+    still_indexing = torn = trained = False
     try:
         if await asyncio.to_thread(_loaded_satisfies, requested_model):
             return
@@ -10308,7 +10317,10 @@ async def _reject_unservable_model(
             and base.strip().count("/") == 1
             and await asyncio.to_thread(local_gguf_torn_only, base)
         )
-        here = here or torn
+        trained = (
+            not here and await asyncio.to_thread(_trained_run_dir, requested_model) is not None
+        )
+        here = here or torn or trained
         switchable = downloaded and get_openai_auto_switch_enabled()
     except HTTPException:
         # A refusal decided above must propagate, not fall through to the resident model.
@@ -10318,7 +10330,7 @@ async def _reject_unservable_model(
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
         if not quantified:
             return
-        downloaded = here = switchable = torn = False
+        downloaded = here = switchable = torn = trained = False
     if still_indexing:
         _raise_still_indexing(requested_model, fastapi_request)
     if gguf_hub_repo and not (quantified or here):
@@ -10350,6 +10362,12 @@ async def _reject_unservable_model(
         message = (
             f"The model '{requested_model}' is only partly downloaded on this server, so it "
             "cannot be served. Finish the download in Unsloth Studio."
+        )
+    elif trained:
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The fine-tuned model '{requested_model}' is not loaded. Load it in Unsloth "
+            "Studio, or with POST /api/inference/load, then retry."
         )
     elif downloaded:
         status_code, code = 404, "model_not_found"
@@ -17022,6 +17040,12 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    trained = _trained_run_dir(request.model_path)
+    if trained:
+        from hub.utils.host_paths import note_resolved_handle
+
+        note_resolved_handle(request.model_path, trained)
+        request.model_path = trained
     return await _tunnel_safe_json(
         load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
         label = "Model load",
