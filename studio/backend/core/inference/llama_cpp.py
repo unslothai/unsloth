@@ -30293,12 +30293,21 @@ class LlamaCppBackend:
                             and not _draft_share_unknown
                             # A drafter pinned to another device (RPC) is not Metal's to hold.
                             and _draft_on_target_device_now()
+                            # Zero KV would read as a target that fits alone (as the discrete drop).
+                            and self._can_estimate_kv()
                         ):
                             # The un-reserved budget: _apple_fit_budget_mib already holds
                             # a fraction back for this drafter under the flat fallback.
-                            _sc_ctx = min(_metal_floor_ctx, native_ctx_for_cap or _metal_floor_ctx)
+                            # An explicit context launches verbatim, so it is priced as such.
+                            _sc_ctx = (
+                                effective_ctx
+                                if explicit_ctx
+                                else min(_metal_floor_ctx, native_ctx_for_cap or _metal_floor_ctx)
+                            )
                             _sc_target_mib = (
-                                _apple_model_size_fit + _kv_bytes(_sc_ctx) + _cc_bytes(_sc_ctx)
+                                _apple_model_size_fit
+                                + _kv_bytes(_sc_ctx, _fit_ctx_checkpoints)
+                                + _cc_bytes(_sc_ctx)
                             ) / (1024 * 1024)
                             # The draft micro-batch the spawn reprice reads, capped by the
                             # batch and the context as llama_context caps it.
@@ -30325,11 +30334,23 @@ class LlamaCppBackend:
                                 mtp_draft_path,
                                 flat_mib = math.ceil(_flat_mtp_reserve * max(0, _apple_budget_mib)),
                             )
+                            # An explicit context is refused past the wired limit (not the
+                            # budget) when that is readable, so it is a limit here too.
+                            _sc_wired_mib = (
+                                self._apple_metal_wired_ceiling_bytes() // (1024 * 1024)
+                                if explicit_ctx
+                                and not _caller_owns_budget
+                                and not _paravirtual_cpu_forced
+                                else 0
+                            )
+                            _sc_over_limit = _apple_budget_mib < _sc_with_draft_mib or (
+                                0 < _sc_wired_mib < _sc_with_draft_mib
+                            )
                             # Only when both do not fit: the draft-free embedding discount can
                             # cost a cold llama-fit-params run.
                             _sc_host_embd_without_draft = _apple_host_embd
                             _sc_target_only_mib = _sc_target_mib
-                            if _apple_budget_mib < _sc_with_draft_mib:
+                            if _sc_over_limit:
                                 # The target alone sheds the drafter's compute charge and gets
                                 # the embedding discount it would have with no drafter engaged.
                                 _sc_host_embd_without_draft = (
@@ -30351,7 +30372,10 @@ class LlamaCppBackend:
                                     + _sc_host_embd_without_draft
                                     - _apple_host_embd
                                 ) / (1024 * 1024)
-                            if _sc_target_only_mib <= _apple_budget_mib < _sc_with_draft_mib:
+                            if _sc_target_only_mib <= _apple_budget_mib < _sc_with_draft_mib or (
+                                _sc_wired_mib > 0
+                                and _sc_target_only_mib <= _sc_wired_mib < _sc_with_draft_mib
+                            ):
                                 logger.info(
                                     "Auto: the %s sidecar does not fit in unified memory "
                                     "alongside the model, so it is dropped.",

@@ -16948,9 +16948,13 @@ async def _unload_llama_before_standard_load(llama_backend) -> None:
             llama_backend._cancel_event.set()
         with lock or nullcontext():
             if not llama_backend.is_loaded:
-                if lock is not None:
-                    llama_backend.unload_model()
-                return None
+                if lock is None:
+                    return None
+                kill_started = time.monotonic()
+                llama_backend.unload_model()
+                # A starting or recovering server was killed: wait for it like a loaded one.
+                last_kill = getattr(llama_backend, "_last_kill_monotonic", 0.0) or 0.0
+                return kill_started if last_kill >= kill_started else None
             logger.info("Unloading GGUF model before loading Unsloth model")
             kill_started = time.monotonic()
             llama_backend.unload_model()
