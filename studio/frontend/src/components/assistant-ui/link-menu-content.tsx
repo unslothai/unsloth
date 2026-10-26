@@ -37,7 +37,6 @@ import {
   InternetIcon,
   Link01Icon,
   LinkSquare02Icon,
-  SquareArrowUpRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -217,7 +216,7 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
         <ContextMenuItem
           onSelect={() => void postSandbox(sandbox.sessionId, "open", sandbox.file).catch(failed("linkMenu.openFailed"))}
         >
-          <ItemIcon icon={SquareArrowUpRightIcon} />
+          <ItemIcon icon={LinkSquare02Icon} />
           {t("linkMenu.openDefaultApp")}
         </ContextMenuItem>
       ) : null}

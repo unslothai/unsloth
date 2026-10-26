@@ -17,7 +17,6 @@ import {
   ArrowTurnBackwardIcon,
   Delete02Icon,
   Download01Icon,
-  Edit02Icon,
   Edit03Icon,
   Folder01Icon,
   FolderAddIcon,
@@ -123,7 +122,7 @@ export function LibraryActionsMenu({
         </DropdownMenuItem>
         {item && hasImagePreview(item) && (
           <DropdownMenuItem onSelect={() => actions.editImage(item)}>
-            <HugeiconsIcon icon={Edit02Icon} strokeWidth={1.75} className={ICON} />
+            <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className={ICON} />
             {t("library.menu.editImage")}
           </DropdownMenuItem>
         )}

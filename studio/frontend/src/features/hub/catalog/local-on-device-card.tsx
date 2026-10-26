@@ -23,7 +23,7 @@ import {
   Alert02Icon,
   Folder01Icon,
   LayerIcon,
-  Share05Icon,
+  LinkSquare02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
@@ -182,7 +182,7 @@ function BaseModelReference({
               }}
             >
               <HugeiconsIcon
-                icon={Share05Icon}
+                icon={LinkSquare02Icon}
                 strokeWidth={1.75}
                 className="size-3.5"
               />
