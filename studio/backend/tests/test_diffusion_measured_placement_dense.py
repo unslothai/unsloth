@@ -282,6 +282,9 @@ def test_small_host_int8_seed_kill_switch_and_scope(klein_pipe, monkeypatch):
     )
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
     assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048) > 0
+    # the seed is eager-only: once the deferred profile moves the tier with no tier peak, the flat estimate prices it
+    setattr(pipe, dm.TIER_MOVED_ATTR, True)
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) > 0
 
 
 # ------------------------------------------------------------------- learned-only placement (bf16 / packed denoisers)

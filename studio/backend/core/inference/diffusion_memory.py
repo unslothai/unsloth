@@ -5637,8 +5637,8 @@ def measured_request_extra_mib(
     tier_moved = bool(getattr(pipe, TIER_MOVED_ATTR, False))
     tier_peak = int(tier_peak_mib) if tier_moved and tier_peak_mib else None
     if (unpriced_references and tier_seeded) or (
-        # the bf16 seed is eager-only like a learned peak: same invalidation
-        (learned or need is None or sized["dense_bf16"])
+        # the bf16 and small-host int8 seeds are eager-only like a learned peak: same invalidation
+        (learned or need is None or sized["dense_bf16"] or sized["small_host_int8"])
         and (
             getattr(pipe, "_unsloth_peak_static", False)
             or (tier_moved and tier_peak is None)
