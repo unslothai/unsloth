@@ -1491,7 +1491,12 @@ def _flex_preferred_fits(config, dtype = None):
         return True
 
 
-def _supports_flex_attention(model_class, config, model_type, dtype = None):
+def _supports_flex_attention(
+    model_class,
+    config,
+    model_type,
+    dtype = None,
+):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
     if not getattr(model_class, "_supports_flex_attn", False):
