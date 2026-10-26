@@ -3283,7 +3283,7 @@ export const en = {
         useViaApi: "Use via API",
       },
       mediaApi: {
-        title: "Image and Video API",
+        title: "Images / Video API",
         description: "Generate images and videos from your own code with the OpenAI-compatible endpoints.",
         images: "Images",
         video: "Video",

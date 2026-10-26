@@ -83,7 +83,12 @@ function errorMessage(error: unknown): string | null {
   return error instanceof Error ? error.message : null;
 }
 
-export function DecisionApiSection(): ReactElement | null {
+export function DecisionApiSection({
+  showHeading = true,
+}: {
+  /** Off on the API page, where a tab names the section. */
+  showHeading?: boolean;
+} = {}): ReactElement | null {
   const t = useT();
   const [settings, setSettings] = useState<SystemOneSettings | null>(null);
   const [connections, setConnections] = useState<SystemOneConnection[] | null>(
@@ -346,14 +351,16 @@ export function DecisionApiSection(): ReactElement | null {
     <div className="flex items-start justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-1">
         <div className="flex min-w-0 items-baseline gap-2">
-          <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-            <HugeiconsIcon
-              icon={TaskDone01Icon}
-              strokeWidth={1.75}
-              className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
-            />
-            {t("settings.apiKeys.decisionApi.title")}
-          </h2>
+          {showHeading && (
+            <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+              <HugeiconsIcon
+                icon={TaskDone01Icon}
+                strokeWidth={1.75}
+                className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+              />
+              {t("settings.apiKeys.decisionApi.title")}
+            </h2>
+          )}
           {/* title, not aria-label, so the accessible name stays the visible text. */}
           <a
             href={DOCS_URL}

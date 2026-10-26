@@ -1061,6 +1061,7 @@ export function ChatsLibrary({
           showSection={showSection}
           locationColumn={locationColumn}
           times={{ bucket }}
+          showTile={shownEntries !== null}
         />
       ) : (
         <ChatCard
@@ -1070,6 +1071,8 @@ export function ChatsLibrary({
           showProject={showProject}
           showSection={showSection}
           times={{ bucket }}
+          // Only All mixes chats with projects and sections; elsewhere the tab names the kind.
+          showTile={shownEntries !== null}
         />
       );
     const entryRow = (entry: NonNullable<typeof shownEntries>[number]) => {
@@ -1187,7 +1190,7 @@ export function ChatsLibrary({
           <SectionListHeader date={sectionDateColumn} />
           <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
             {visibleSections.map((entry) => (
-              <SectionRow key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} />
+              <SectionRow key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} showTile={false} />
             ))}
           </div>
         </div>
@@ -1204,7 +1207,7 @@ export function ChatsLibrary({
           {t("shell.sections.newSection")}
         </button>
         {visibleSections.map((entry) => (
-          <SectionCard key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} />
+          <SectionCard key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} showTile={false} />
         ))}
       </CardGrid>
     );
@@ -1236,13 +1239,13 @@ export function ChatsLibrary({
         {view === "list" ? (
           <div className={cn("flex flex-col", LIST_ROW_GAP)}>
             {sectionProjects.map((project) => (
-              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} />
+              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
           </div>
         ) : (
           <CardGrid equalRows>
             {sectionProjects.map((project) => (
-              <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} />
+              <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
           </CardGrid>
         )}
@@ -1282,7 +1285,7 @@ export function ChatsLibrary({
           <ProjectListHeader date={projectDateColumn} />
           <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
             {visibleProjects.map((project) => (
-              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} />
+              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
           </div>
         </div>
@@ -1301,7 +1304,7 @@ export function ChatsLibrary({
           </button>
         )}
         {visibleProjects.map((project) => (
-          <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} />
+          <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
         ))}
       </CardGrid>
     );

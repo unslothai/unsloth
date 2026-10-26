@@ -1076,6 +1076,7 @@ export function ChatRow({
   locationColumn = showProject || showSection,
   fileColumns = false,
   times = {},
+  showTile = true,
 }: {
   chat: SidebarItem;
   archived: boolean;
@@ -1085,6 +1086,7 @@ export function ChatRow({
   locationColumn?: boolean;
   fileColumns?: boolean;
   times?: RowTimes;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1110,8 +1112,8 @@ export function ChatRow({
         visible={actions.selection.size > 0}
         className="absolute end-full top-1/2 me-3 flex -translate-y-1/2"
       />
-      <div className="flex min-w-0 flex-1 items-center gap-4 py-2">
-        <ChatTile chat={chat} />
+      <div className={cn("flex min-w-0 flex-1 items-center gap-4 py-2", !showTile && TILELESS_ROW_NAME)}>
+        {showTile && <ChatTile chat={chat} />}
         <div className="flex min-w-0 flex-col">
           <span className="flex min-w-0 items-center gap-2">
             <button
@@ -1172,12 +1174,15 @@ export function ChatCard({
   showProject,
   showSection,
   times = {},
+  showTile = true,
 }: {
   chat: SidebarItem;
   archived: boolean;
   showProject: boolean;
   showSection: boolean;
   times?: RowTimes;
+  /** Off where every card is a chat; fork and compare then read as badges. */
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1197,9 +1202,9 @@ export function ChatCard({
       }
       className={cn(CARD, selected && "ring-2 ring-foreground")}
     >
-      <div className="flex items-center gap-2">
-        <ChatTile chat={chat} />
-        <ChatBadges chat={chat} marksOnly />
+      <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
+        {showTile && <ChatTile chat={chat} />}
+        <ChatBadges chat={chat} marksOnly={showTile} />
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
       <SelectBox chat={chat} visible={selecting} className="absolute bottom-5 end-4 flex" />
@@ -1210,7 +1215,7 @@ export function ChatCard({
           if (selecting) actions.toggleSelected(chat.id, event.shiftKey);
           else actions.open(chat);
         }}
-        className={CARD_TITLE}
+        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
       >
         {/* Clamp an inner span: buttons ignore line-clamp. */}
         <span className="line-clamp-2">{chatTitle(chat, t)}</span>
@@ -1237,6 +1242,12 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
     </div>
   );
 }
+
+// Without a tile the marks row collapses when empty, and the title clears the corner menu.
+const TILELESS_ROW = "empty:hidden pe-8";
+const TILELESS_TITLE = "pe-6";
+// A list row keeps the tile's height, so dropping it does not shorten the row.
+const TILELESS_ROW_NAME = "min-h-13";
 
 const CARD_TITLE =
   "block w-full rounded-md text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
@@ -1414,9 +1425,11 @@ function chatCount(count: number, t: ReturnType<typeof useT>): string {
 export function ProjectCard({
   project,
   stats,
+  showTile = true,
 }: {
   project: ProjectRecord;
   stats?: ProjectStats;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1428,8 +1441,8 @@ export function ProjectCard({
       onClick={() => actions.viewProject(project.id)}
       className={CARD}
     >
-      <div className="flex items-center gap-2">
-        <CollectionTile icon={Folder02Icon} />
+      <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
+        {showTile && <CollectionTile icon={Folder02Icon} />}
         {actions.favoriteProjects.has(project.id) && <FavoriteMark />}
         {pinned && <PinMark />}
       </div>
@@ -1440,7 +1453,7 @@ export function ProjectCard({
           event.stopPropagation();
           actions.viewProject(project.id);
         }}
-        className={CARD_TITLE}
+        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
       >
         <span className="line-clamp-2">{project.name}</span>
       </button>
@@ -1456,10 +1469,12 @@ export function ProjectRow({
   project,
   stats,
   layout = "own",
+  showTile = true,
 }: {
   project: ProjectRecord;
   stats?: ProjectStats;
   layout?: CollectionRowLayout;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1478,8 +1493,8 @@ export function ProjectRow({
         ROW_INSET,
       )}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-4 py-2">
-        <CollectionTile icon={Folder02Icon} />
+      <div className={cn("flex min-w-0 flex-1 items-center gap-4 py-2", !showTile && TILELESS_ROW_NAME)}>
+        {showTile && <CollectionTile icon={Folder02Icon} />}
         <div className="flex min-w-0 flex-col">
           <span className="flex min-w-0 items-center gap-2">
             <button
@@ -1661,9 +1676,11 @@ function sectionCountLabel(
 export function SectionCard({
   section,
   stats,
+  showTile = true,
 }: {
   section: SidebarCustomSection;
   stats?: SectionStats;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1674,8 +1691,8 @@ export function SectionCard({
       onClick={() => actions.viewSection(section.id)}
       className={CARD}
     >
-      <div className="flex items-center gap-2">
-        <CollectionTile icon={LayerIcon} />
+      <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
+        {showTile && <CollectionTile icon={LayerIcon} />}
         {actions.favoriteSections.has(section.id) && <FavoriteMark />}
       </div>
       <SectionMenu section={section} variant="card" />
@@ -1685,7 +1702,7 @@ export function SectionCard({
           event.stopPropagation();
           actions.viewSection(section.id);
         }}
-        className={CARD_TITLE}
+        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
       >
         <span className="line-clamp-2">{section.name}</span>
       </button>
@@ -1701,10 +1718,12 @@ export function SectionRow({
   section,
   stats,
   layout = "own",
+  showTile = true,
 }: {
   section: SidebarCustomSection;
   stats?: SectionStats;
   layout?: CollectionRowLayout;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1718,8 +1737,8 @@ export function SectionRow({
         ROW_INSET,
       )}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-4 py-2">
-        <CollectionTile icon={LayerIcon} />
+      <div className={cn("flex min-w-0 flex-1 items-center gap-4 py-2", !showTile && TILELESS_ROW_NAME)}>
+        {showTile && <CollectionTile icon={LayerIcon} />}
         <span className="flex min-w-0 items-center gap-2">
           <button
             type="button"

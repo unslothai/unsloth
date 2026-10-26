@@ -35,6 +35,8 @@ export type SettingsScrollTarget =
   | "api-keys-audio-api"
   | "api-keys-media-api"
   | "api-keys-decision-api"
+  | "api-keys-agents"
+  | "api-keys-mcp"
   | "appearance-sidebar-nav"
   | "chat-composer"
   | "browser-html-network"
@@ -174,6 +176,8 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "api-keys-audio-api": "api-keys",
   "api-keys-media-api": "api-keys",
   "api-keys-decision-api": "api-keys",
+  "api-keys-agents": "api-keys",
+  "api-keys-mcp": "api-keys",
   "appearance-sidebar-nav": "appearance",
   "browser-html-network": "browser",
   "general-hub": "general",

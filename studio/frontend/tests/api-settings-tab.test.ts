@@ -41,12 +41,38 @@ test("usage examples sit right under the keys, where a new key lands", () => {
   assert.ok(examples < TAB.indexOf("<KeylessApiAccessLink"));
 });
 
-test("usage examples link to the tab's other APIs, which sit images first, then audio, then decisions", () => {
+test("jump links above the token form reach the tab's APIs from any page, which sit images first, then audio, then decisions", () => {
+  const links = readSrc("features/settings/components/api-jump-links.tsx");
   const examples = readSrc("features/settings/components/usage-examples.tsx");
-  assert.match(examples, /scrollTarget: "api-keys-media-api"/);
-  assert.match(examples, /scrollTarget: "api-keys-audio-api"/);
-  assert.match(examples, /scrollTarget: "api-keys-decision-api"/);
-  assert.match(examples, /if \(agentsRef\.current\) scrollIntoPane\(agentsRef\.current\)/);
+  for (const target of ["api-keys-media-api", "api-keys-audio-api", "api-keys-decision-api", "api-keys-agents", "api-keys-mcp"]) {
+    assert.match(links, new RegExp(`target: "${target}"`));
+  }
+  assert.match(links, /openDialog\("api-keys", \{ scrollTarget: link\.target \}\)/);
+  // Agents and MCP hold their section in place like the other API sections.
+  assert.match(examples, /scrollTarget !== "api-keys-agents" && scrollTarget !== "api-keys-mcp"/);
+  assert.match(examples, /consumeScrollTarget\(target\)/);
+  assert.match(examples, /<div id=\{API_AGENTS_SECTION_ID\}/);
+  assert.match(examples, /<div id=\{API_MCP_SECTION_ID\}>\{agentsExtra\}<\/div>/);
+  assert.ok(TAB.indexOf("<ApiJumpLinks") > 0);
+  assert.ok(TAB.indexOf("<ApiJumpLinks") < TAB.indexOf("<CreateKeyForm"));
+  // The token form and list share one section heading.
+  assert.match(TAB, /<h2 className="settings-heading text-base font-semibold font-heading">\s*\{t\("settings\.apiKeys\.accessTokens"\)\}\s*<\/h2>\s*<AnimatePresence/);
+  assert.equal(TAB.split('t("settings.apiKeys.accessTokens")').length - 1, 1);
+  // The API page shows the other APIs' examples itself, a tab each, headings left to the tab.
+  const monitor = readSrc("features/api-monitor/api-monitor-page.tsx");
+  assert.doesNotMatch(monitor, /<ApiJumpLinks/);
+  for (const part of [
+    /<MediaApiExamples useTunnel=\{useTunnel\} showHeading=\{false\} \/>/,
+    /<AudioApiExamples useTunnel=\{useTunnel\} showHeading=\{false\} \/>/,
+    /<DecisionApiSection showHeading=\{false\} \/>/,
+    /<UsageExamples[^>]*agentsOnly=\{true\}/,
+    /<McpAccessSection \/>/,
+  ]) {
+    assert.match(monitor, part);
+  }
+  assert.match(monitor, /\.\.\.\(isOwner \? \[\{ id: "decision" as const/);
+  assert.match(monitor, /\.\.\.\(isOwner \? \[\{ id: "mcp" as const/);
+  assert.match(examples, /\{agentsOnly \? null : \(/);
   assert.ok(TAB.indexOf("<MediaApiExamples") < TAB.indexOf("<AudioApiExamples"));
   assert.ok(TAB.indexOf("<AudioApiExamples") < TAB.indexOf("<DecisionApiSection"));
   // The Decision API has a heading like the other API sections, outside its card.

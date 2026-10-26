@@ -32,11 +32,23 @@ import {
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   loadLanAccess,
   publishLanUrls,
   useSettingsDialogStore,
 } from "@/features/settings";
+// Direct, not through the barrel: these pull in the chat feature, which every barrel importer
+// would then load.
+import { RAISED_SURFACE } from "@/features/library/surface";
+import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
+import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
+import { McpAccessSection } from "@/features/settings/components/mcp-access-section";
+import { MediaApiExamples } from "@/features/settings/components/media-api-examples";
+import {
+  UsageExamples,
+  useApiTunnelPref,
+} from "@/features/settings/components/usage-examples";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -853,6 +865,14 @@ function RequestDetail({
   );
 }
 
+type QuickStartKind =
+  | "chat"
+  | "media"
+  | "audio"
+  | "decision"
+  | "agents"
+  | "mcp";
+
 function QuickStart({
   baseUrl,
   model,
@@ -861,6 +881,18 @@ function QuickStart({
   model: string | null;
 }): ReactElement {
   const choices = useApiExampleChoices(baseUrl, "curl");
+  const isOwner = useIsAccountOwner();
+  const [useTunnel, setUseTunnel] = useApiTunnelPref();
+  const [kind, setKind] = useState<QuickStartKind>("chat");
+  // The other APIs' examples as Settings > API shows them; Decision and MCP are owner-only there too.
+  const kinds: { id: QuickStartKind; label: string }[] = [
+    { id: "chat", label: "Chat" },
+    { id: "media", label: "Images / Video" },
+    { id: "audio", label: "Audio" },
+    ...(isOwner ? [{ id: "decision" as const, label: "Decision" }] : []),
+    { id: "agents", label: "Agents" },
+    ...(isOwner ? [{ id: "mcp" as const, label: "MCP" }] : []),
+  ];
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -876,22 +908,64 @@ function QuickStart({
         </h3>
         <p className="text-sm text-muted-foreground">
           {model
-            ? "Send a request to the base URL and it appears here as it streams."
-            : "Load a model, then send a request to the base URL. It appears here as it streams."}
+            ? "Send a request to the base URL to see it here."
+            : "Load a model, then send a request to see it here."}
         </p>
       </div>
-      <div className="w-full max-w-2xl text-left">
-        <ApiExampleBox
-          choices={choices}
-          code={buildApiExample({
-            baseUrl,
-            model: model ?? "MODEL_ID",
-            sampling: {},
-            language: choices.language,
-            os: choices.os,
-          })}
-        />
-      </div>
+      {/* The Library's tab row: no track, the current tab lifted. */}
+      <nav aria-label="Example" className="flex flex-wrap justify-center gap-1">
+        {kinds.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            aria-current={entry.id === kind ? "page" : undefined}
+            onClick={() => setKind(entry.id)}
+            className={cn(
+              "flex h-9 shrink-0 items-center rounded-full px-3.5 text-ui-15 text-foreground/80 transition-colors hover:text-foreground",
+              // On the card, the lift is one step up from it, not the card colour itself.
+              entry.id === kind &&
+                cn(
+                  RAISED_SURFACE,
+                  "font-medium text-foreground dark:bg-accent",
+                ),
+            )}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </nav>
+      {kind === "chat" ? (
+        <div className="w-full max-w-2xl text-left">
+          <ApiExampleBox
+            choices={choices}
+            code={buildApiExample({
+              baseUrl,
+              model: model ?? "MODEL_ID",
+              sampling: {},
+              language: choices.language,
+              os: choices.os,
+            })}
+          />
+        </div>
+      ) : (
+        <div className="w-full max-w-3xl text-left">
+          {kind === "media" ? (
+            <MediaApiExamples useTunnel={useTunnel} showHeading={false} />
+          ) : kind === "audio" ? (
+            <AudioApiExamples useTunnel={useTunnel} showHeading={false} />
+          ) : kind === "decision" ? (
+            <DecisionApiSection showHeading={false} />
+          ) : kind === "agents" ? (
+            <UsageExamples
+              useTunnel={useTunnel}
+              onUseTunnelChange={setUseTunnel}
+              agentsOnly={true}
+            />
+          ) : (
+            <McpAccessSection />
+          )}
+        </div>
+      )}
       <Button
         type="button"
         variant="outline"
@@ -1436,7 +1510,7 @@ export function ApiMonitorPage(): ReactElement {
           className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
         />
       </div>
-      <main className="@container/page mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
+      <main className="api-monitor-page @container/page mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
         <GuidedTour {...tour.tourProps} />
         <header className="flex items-start justify-between gap-4 @2xl/page:items-end">
           <div className="flex min-w-0 flex-col gap-1">
