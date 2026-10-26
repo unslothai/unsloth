@@ -3152,6 +3152,58 @@ def _save_runtime_quant_to_cache(
         logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
 
 
+def _read_cast_cache(
+    pipe_kwargs: dict,
+    *,
+    source: Any,
+    revision: Optional[str],
+    base: Optional[str],
+    cancel_check: Any = None,
+) -> list:
+    """Inject cached float16 casts into ``pipe_kwargs``; returns the unserved candidates. Never raises."""
+    try:
+        from .diffusion_cast_cache import candidates, read_all
+
+        cands = candidates(
+            source,
+            torch_dtype = pipe_kwargs.get("torch_dtype"),
+            cache_dir = None
+            if source and os.path.isdir(str(source))
+            else pipe_kwargs.get("cache_dir"),
+            revision = revision,
+            skip = tuple(pipe_kwargs),
+            base_repo = base,
+            logger = logger,
+        )
+        if not cands:
+            return []
+        hits = read_all(cands, logger = logger, cancel_check = cancel_check)
+        pipe_kwargs.update(hits)
+        if hits:
+            logger.info(
+                "video.cast_cache: read %s from the local float16 cast cache",
+                ", ".join(sorted(hits)),
+            )
+        return [c for c in cands if c.component not in hits]
+    except Exception as exc:  # noqa: BLE001 - a cache problem is a miss
+        if cancel_check is not None:
+            cancel_check()
+        logger.warning("video.cast_cache: skipped (%s)", exc)
+        return []
+
+
+def _finish_cast_writes(pipe: Any) -> None:
+    writes = getattr(pipe, "_unsloth_cast_writes", None)
+    if writes is None:
+        return
+    try:
+        from .diffusion_cast_cache import finish
+        finish(writes)
+        pipe._unsloth_cast_writes = None
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def _video_native_cache_spec(
     fam: Any,
     *,
@@ -9144,13 +9196,26 @@ class VideoBackend:
 
             # The encoder runs in the worker; the enhancer, processor and duration head are never used.
             pipe_kwargs.update({name: None for name in LTX25_NONE_COMPONENTS})
+        cast_writes = None
         if kind == "pipeline":
+            cast_missed = _read_cast_cache(
+                pipe_kwargs,
+                source = _base_local_dir or fetch_base,
+                revision = None if _base_local_dir else _base_fetch_revision,
+                base = base,
+                cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+            )
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
             pipe = pipeline_cls.from_pretrained(
                 _base_local_dir or fetch_base,
                 **_pinned_base_kwargs(),
                 **pipe_kwargs,
             )
+            if cast_missed:
+                from .diffusion_cast_cache import defer_writes
+
+                # Names only: the write reads the live tensors once the load is published.
+                cast_writes = defer_writes(pipe, cast_missed, logger = logger)
         else:
             transformer_cls = getattr(diffusers, fam.transformer_class)
             # checkpoint_path was resolved (and downloaded) by the memory-planning branch above.
@@ -10390,6 +10455,9 @@ class VideoBackend:
             transformer_quant_engaged or "off",
         )
         start_background_pins(pipe)
+        if cast_writes is not None:
+            pipe._unsloth_cast_writes = cast_writes
+            cast_writes.start()
         return self.status()
 
     @staticmethod
@@ -11133,24 +11201,47 @@ class VideoBackend:
                                 pin_streamed_top_level_group(denoiser, logger = logger)
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_top_group: %s", exc)
+                            block_pinner = None
                             if denoiser_streamed == "stream_lazy":
-                                from .video_minimax_h3_residency import pin_streamed_block_groups
+                                from .video_minimax_h3_residency import (
+                                    defer_streamed_block_pins,
+                                    pin_streamed_block_groups,
+                                )
                                 try:
-                                    done, total = pin_streamed_block_groups(denoiser, logger = logger)
-                                except Exception as exc:  # noqa: BLE001 -- a speed-up only
-                                    done, total = 0, 0
+                                    # the 9-12 s slab copy, off the load path
+                                    block_pinner = defer_streamed_block_pins(
+                                        pipe, denoiser, device, logger = logger
+                                    )
+                                except Exception as exc:  # noqa: BLE001 -- pin up front instead
                                     logger.warning("video.h3_block_pin: %s", exc)
-                                if total and done == total:
-                                    # every group now holds one pinned copy: the prefetch below engages
+                                if block_pinner is not None:
                                     denoiser_streamed = "stream"
                                     denoiser_single_host_copy = True
+                                else:
+                                    try:
+                                        done, total = pin_streamed_block_groups(
+                                            denoiser, logger = logger
+                                        )
+                                    except Exception as exc:  # noqa: BLE001 -- a speed-up only
+                                        done, total = 0, 0
+                                        logger.warning("video.h3_block_pin: %s", exc)
+                                    if total and done == total:
+                                        # every group now holds one pinned copy: the prefetch below engages
+                                        denoiser_streamed = "stream"
+                                        denoiser_single_host_copy = True
                             # after the top-level pin (it becomes one of the prefetched groups), before the residency fit
                             from .video_minimax_h3_residency import install_h3_stream_prefetch
 
+                            covered = 0
                             try:
-                                install_h3_stream_prefetch(denoiser, device, logger = logger)
+                                covered = install_h3_stream_prefetch(
+                                    denoiser, device, logger = logger
+                                )
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_stream_prefetch: %s", exc)
+                            if block_pinner is not None and not covered:
+                                # Only the prefetcher's onload is sure to wait for a group's pin: finish it now.
+                                block_pinner.join()
                         if h3_dit_resident_enabled() and denoiser_streamed in (
                             "stream",
                             "stream_lazy",
@@ -11577,6 +11668,7 @@ class VideoBackend:
         )
         with self._lock:
             if _load_token is not None and _load_token != self._load_token:
+                stop_background_pins(pipe)
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
@@ -13915,6 +14007,8 @@ class VideoBackend:
                 close_encoder(getattr(state, "pipe", None))
             # A pinner still copying would hold its chunks past release_pinned_host_memory().
             stop_background_pins(getattr(state, "pipe", None))
+            # A cast cache write still reads the components the teardown frees.
+            _finish_cast_writes(getattr(state, "pipe", None))
             uninstall_cfg_parallel(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(

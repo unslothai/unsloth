@@ -732,7 +732,7 @@ function NavItem({
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
         <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
         {badge && (
-          <Badge variant="secondary" className="group-data-[collapsible=icon]:hidden">
+          <Badge variant="accent" className="group-data-[collapsible=icon]:hidden">
             {badge}
           </Badge>
         )}
@@ -1061,7 +1061,7 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge && <Badge variant="secondary">{badge}</Badge>}
+      {badge && <Badge variant="accent">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
       {newAction && (
         <button
@@ -1136,7 +1136,7 @@ function MediaMoreSubmenu<Id extends string>({
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <Badge variant="secondary">{badge}</Badge>}
+        {badge && <Badge variant="accent">{badge}</Badge>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
