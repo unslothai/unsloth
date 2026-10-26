@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Opt-in villager cost cutters: option-action plans (Lyfe), a plan cache (Affordable Generative Agents),
-// importance-gated reflection with batched rating, pair memory and traceable rumours.
+// Opt-in villager cost cutters after Lyfe Agents and Affordable Generative Agents.
 
 import type { WorldSpec } from "../../types";
 import {
@@ -115,7 +114,6 @@ export function activeOption(mind: NpcMind): PlanOption | null {
   return mind.options?.[mind.optionAt ?? 0] ?? null;
 }
 
-/** Steps past finished options; null when nothing changed. Code only, no model call. */
 export function advanceOptions(
   mind: NpcMind,
   c: OptionCtx,
@@ -147,7 +145,6 @@ export function optionDoing(o: PlanOption, clock: number): Doing {
 export const critical = (needs: Needs) =>
   NEEDS.some((n) => needs[n] < CRITICAL);
 
-/** The block steering a villager now: the running option, else the classic day plan. */
 export function lifeBlock(mind: NpcMind, clock: number): PlanBlock | null {
   const o = activeOption(mind);
   if (o) {
@@ -180,7 +177,6 @@ export function planDue(
   );
 }
 
-/** Extra plan request fields; empty for classic worlds. */
 export function planAsk(cfg: LifeConfig, mind: NpcMind | undefined) {
   return cfg.options ? { options: true, needs: mind?.needs } : {};
 }
@@ -320,7 +316,6 @@ export function cachePut(
   return { cache: cache.slice(Math.max(0, cache.length - size)) };
 }
 
-/** Stores a fresh model plan under `key` (minutes made day-relative). */
 export function storePlan(
   st: WorldState,
   cfg: LifeConfig,
@@ -456,7 +451,6 @@ type Call = (
 ) => Promise<unknown>;
 type Update = (fn: (st: WorldState) => WorldState) => void;
 
-/** Rating and reflection jobs due now; none unless the world sets `reflect_at`. */
 export function lifeJobs(
   spec: WorldSpec,
   cfg: LifeConfig,
@@ -515,7 +509,6 @@ export function lifeJobs(
   return jobs;
 }
 
-/** One rating call answers many observations; each folds into its owner's importance sum. */
 export function applyRatings(
   st: WorldState,
   rated: [string, MemoryRecord][],
@@ -548,7 +541,6 @@ export function applyRatings(
   return { ...st, npc };
 }
 
-// Pair memory and rumours.
 
 export function pairOf(mind: NpcMind | undefined, other: string): PairMemory {
   return mind?.rel?.[other] ?? { affinity: 0, facts: [] };
@@ -618,7 +610,6 @@ interface Feels {
   fact?: string;
 }
 
-/** Pair memory after a model chat: each side's liking and one fact about the other. */
 export function afterChat(
   cfg: LifeConfig,
   st: WorldState,
@@ -716,7 +707,6 @@ export function smallTalk(opts: {
   return true;
 }
 
-// Saves.
 
 export function lifeMindOf(raw: unknown, fresh: NpcMind): Partial<NpcMind> {
   const r = (raw ?? {}) as Partial<NpcMind>;

@@ -63,7 +63,6 @@ export function budgetSpec(villagers: number, life: Record<string, unknown>) {
   };
 }
 
-/** Deterministic stand-in for the backend entry points; counts calls by task. */
 export function fakeModel(counts: Record<string, number>) {
   let n = 0;
   return async (

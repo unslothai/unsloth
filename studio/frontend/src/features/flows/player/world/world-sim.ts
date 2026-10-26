@@ -67,7 +67,6 @@ export interface PlanOption {
 export interface PairMemory {
   affinity: number;
   facts: string[];
-  /** Game clock of the last model-written chat between the pair. */
   talked?: number;
 }
 
@@ -269,7 +268,6 @@ export class BackgroundQueue {
   private starts: number[] = [];
   private current: { job: SimJob; ctrl: AbortController } | null = null;
   private paused = false;
-  /** Background model calls started, by job kind (debug overlay and budget tests). */
   readonly calls: Record<string, number> = {};
 
   private perMinute: number;

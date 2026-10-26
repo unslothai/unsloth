@@ -459,7 +459,6 @@ def _simulation(raw: Any, width: int, height: int, regions: list[dict]) -> Optio
 
 
 def _life_fields(raw: dict) -> dict:
-    """Opt-in cost cutters; absent keys keep the classic village."""
     out: dict[str, Any] = {}
     for flag in ("options", "relationships"):
         if raw.get(flag) is True:
@@ -646,7 +645,6 @@ def npc_life(world: dict, npc: dict) -> str:
 
 
 def heard_from(record: dict, names: Optional[dict] = None) -> str:
-    """A rumour's source chain as prose: "heard from Bea, who heard it from Tom"."""
     chain = [
         (names or {}).get(s, "the player" if s == "player" else s)
         for s in record.get("source") or []
