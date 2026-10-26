@@ -24,8 +24,7 @@ _DEFAULT_BUDGET_MB = 256
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
-# These encode_prompt calls encode the prompt and the negative in one call, through one helper per text; caching that
-# helper per text reuses the unchanged negative on a new prompt. Class-name prefix -> helper. "0" = pair key only.
+# Cache the per-text helper so an unchanged CFG negative is reused across prompts. "0" = pair key only.
 _ENV_PER_TEXT = "UNSLOTH_DIFFUSION_PROMPT_CACHE_PER_TEXT"
 _PER_TEXT_METHODS = {
     "Wan": "_get_t5_prompt_embeds",

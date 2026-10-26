@@ -611,8 +611,7 @@ def _flat(x):
 
 
 def test_cfg_negative_is_encoded_once_across_new_prompts():
-    """A new prompt under CFG re-ran the text encoder on the unchanged negative: the pair key missed. Per text, only
-    the new prompt is encoded, and every result equals the uncached pipeline's."""
+    """Under CFG only the new prompt is encoded; the unchanged negative is reused. Results match uncached."""
     pipe = ZImageStubPipeline()
     assert prompt_cache.install(pipe)
     want = ZImageStubPipeline()

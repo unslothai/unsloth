@@ -894,20 +894,18 @@ def _two_encoder_pipe(monkeypatch):
 
 
 def test_encode_release_streams_the_denoiser_once_per_prompt_with_two_encoders(monkeypatch):
-    """Two encoders in one encode_prompt: the denoiser streams out before the first and is pinned back once after the
-    last. Pinning it back between them moved the same groups out and in twice per new prompt (FLUX.1 on a 12 GiB
-    card: 1570 MiB each way, twice)."""
+    """Two encoders in one encode_prompt: the denoiser moves out and back once, not once per encoder."""
     torch, net, enc, enc2, pipe, x, ref, on_device, calls = _two_encoder_pipe(monkeypatch)
     block_mib = 4
     assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 2
     for prompt in range(3):
         pipe.encode_prompt(f"p{prompt}")
         assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
-        assert enc2.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2  # the second encoder still has the room
+        assert enc2.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
         assert on_device() == ["cuda"] * 6
         assert torch.equal(net(x.cuda()).cpu(), ref)
     assert calls == {"release": 3, "restore": 3}
-    # an encoder run outside encode_prompt pins back on its own return, as before
+    # outside encode_prompt: pins back on its own return
     enc2(torch.randn(2, 8, device = "cuda"))
     assert on_device() == ["cuda"] * 6
     assert calls == {"release": 4, "restore": 4}

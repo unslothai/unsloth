@@ -5468,9 +5468,8 @@ def install_encode_release(
     logger: Any = None,
 ) -> int:
     """While a text encoder runs, stream the whole-resident (or widened partial) denoiser back to the flat room (the
-    partial placement's encode state); pin it back on return. Inside ``pipe.encode_prompt`` the pin-back waits for the
-    call to return, so a pipeline with several encoders (FLUX.1 CLIP + T5, SD3, HiDream) moves the denoiser out and
-    back once per prompt, not once per encoder. Returns the number of encoders hooked."""
+    partial placement's encode state); pin it back on return, or once encode_prompt returns (one move per prompt with
+    several encoders). Returns the number of encoders hooked."""
     estimates = getattr(plan, "estimates", None) or {}
     encode_room = estimates.get("encode_resident_transformer_mib")
     whole = getattr(plan, "resident_transformer_mib", None)
