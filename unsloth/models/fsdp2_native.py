@@ -2358,13 +2358,14 @@ def native_save_optimizer(
         # A local-shard bitsandbytes optimizer offloads each parameter's float32 state as it exports
         # it, instead of holding every moment on the device until torch's gather runs.
         from .fsdp2_bnb_optim import full_cpu_state_export
-
         export = full_cpu_state_export(optimizer)
     with export:
         state = get_optimizer_state_dict(
             model,
             optimizer,
-            options = StateDictOptions(full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0),
+            options = StateDictOptions(
+                full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0
+            ),
         )
     if writer_rank != 0:
         state = _gather_to_writer(state, writer_rank)

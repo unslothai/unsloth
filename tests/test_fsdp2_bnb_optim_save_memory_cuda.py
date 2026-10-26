@@ -61,7 +61,6 @@ def _worker(out, arm, rdzv):
         else:
             opt = bnb.optim.AdamW8bit(model.parameters(), lr = 1e-3)
             from unsloth.models.fsdp2_bnb_optim import localize_bnb_optimizer
-
             assert localize_bnb_optimizer(opt)
         return model, opt
 
@@ -82,7 +81,10 @@ def _worker(out, arm, rdzv):
     peak = torch.cuda.max_memory_allocated() - before
     retained = torch.cuda.memory_allocated() - before
     on_cpu = all(
-        v.device.type == "cpu" for s in state["state"].values() for v in s.values() if torch.is_tensor(v)
+        v.device.type == "cpu"
+        for s in state["state"].values()
+        for v in s.values()
+        if torch.is_tensor(v)
     )
     # torch's own unbounded export of the same optimizer, for equality.
     ref = get_optimizer_state_dict(
@@ -91,7 +93,9 @@ def _worker(out, arm, rdzv):
     equal = state["state"].keys() == ref["state"].keys() and all(
         state["state"][k].keys() == ref["state"][k].keys()
         and all(
-            torch.equal(v, ref["state"][k][key]) if torch.is_tensor(v) else v == ref["state"][k][key]
+            torch.equal(v, ref["state"][k][key])
+            if torch.is_tensor(v)
+            else v == ref["state"][k][key]
             for key, v in state["state"][k].items()
         )
         for k in state["state"]
@@ -103,7 +107,10 @@ def _worker(out, arm, rdzv):
         raw = {n: opt.state[p] for n, p in model.named_parameters()}
         raw2 = {n: opt2.state[p] for n, p in model2.named_parameters()}
         resumed = all(
-            all(torch.equal(raw[n][key], raw2[n][key]) for key in ("state1", "state2", "absmax1", "absmax2"))
+            all(
+                torch.equal(raw[n][key], raw2[n][key])
+                for key in ("state1", "state2", "absmax1", "absmax2")
+            )
             for n in raw
         )
     result = {
@@ -126,7 +133,16 @@ def _run(tmp_path, arm = "bnb"):
     env = dict(os.environ)
     env["CUDA_VISIBLE_DEVICES"] = env.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "0"
     subprocess.run(
-        [sys.executable, __file__, "--out", str(out), "--arm", arm, "--rdzv", str(tmp_path / "rdzv")],
+        [
+            sys.executable,
+            __file__,
+            "--out",
+            str(out),
+            "--arm",
+            arm,
+            "--rdzv",
+            str(tmp_path / "rdzv"),
+        ],
         check = True,
         env = env,
         timeout = 600,
