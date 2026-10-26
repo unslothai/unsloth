@@ -2882,6 +2882,7 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
+      use24HourTime: "תצוגת 24 שעות",
       showGenerationDetails: "פרטי יצירה",
       showGenerationDetailsDescription:
         "הצגת מהירות ומספר אסימונים בזמן אמת בזמן שתשובה נוצרת, והיכן הוצבו השכבות של מודל מקומי.",

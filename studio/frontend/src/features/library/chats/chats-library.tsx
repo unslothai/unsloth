@@ -286,6 +286,7 @@ export function ChatsLibrary({
   const unpinProject = usePinnedProjectsStore((s) => s.unpin);
   const alwaysDeleteChatFiles = useChatPreferencesStore((s) => s.alwaysDeleteChatFiles);
   const confirmDeleteChats = useChatPreferencesStore((s) => s.confirmDeleteChats);
+  const use24HourTime = useChatPreferencesStore((s) => s.use24HourTime);
   // Shared with the sidebar: filing a chat here files it there.
   const sections = useSidebarOrganizationStore((s) => s.customSections);
   const sectionByChatId = useSidebarOrganizationStore((s) => s.sectionByChatId);
@@ -916,6 +917,7 @@ export function ChatsLibrary({
     sectionOf,
     projectSectionOf,
     dateField: prefs.dateField,
+    use24HourTime,
     chatContents,
     viewSection: (id) => go({ chatSection: id }),
     newChatInSection: (id) => newChatInSection(id),

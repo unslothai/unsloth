@@ -2783,6 +2783,7 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
+      use24HourTime: "24-часовой формат",
       showGenerationDetails: "Подробности генерации",
       showGenerationDetailsDescription:
         "Показывать скорость и число токенов в реальном времени во время ответа и где размещены слои локальной модели.",

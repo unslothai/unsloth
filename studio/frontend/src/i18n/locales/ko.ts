@@ -2757,6 +2757,7 @@ export const ko = {
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:
         "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
+      use24HourTime: "24시간 형식",
       showGenerationDetails: "생성 세부 정보",
       showGenerationDetailsDescription:
         "응답이 생성되는 동안 속도와 토큰 수를 실시간으로 표시하고, 로컬 모델의 레이어가 어디에 배치되었는지 보여줍니다.",

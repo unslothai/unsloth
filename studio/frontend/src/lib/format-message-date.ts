@@ -12,12 +12,14 @@ export function formatMessageDate(
     today: (time: string) => string;
     yesterday: (time: string) => string;
   },
+  use24HourTime?: boolean,
 ): string {
   const date = new Date(createdAt);
   const today = new Date(now);
   const time = date.toLocaleTimeString(locale, {
     hour: "numeric",
     minute: "2-digit",
+    hour12: use24HourTime === undefined ? undefined : !use24HourTime,
   });
   const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
   if (sameDay(date, today)) return labels.today(time);
@@ -29,5 +31,6 @@ export function formatMessageDate(
     ...(date.getFullYear() !== today.getFullYear() && { year: "numeric" }),
     hour: "numeric",
     minute: "2-digit",
+    hour12: use24HourTime === undefined ? undefined : !use24HourTime,
   });
 }

@@ -2752,6 +2752,7 @@ export const ja = {
       showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
       showReplyTimesKeywords:
         "タイムスタンプ 時刻 時間 日付 完了 応答 メッセージ timestamp time clock date reply",
+      use24HourTime: "24時間表示",
       showGenerationDetails: "生成の詳細",
       showGenerationDetailsDescription:
         "応答の生成中に速度とトークン数をリアルタイムで表示し、ローカルモデルのレイヤーの配置も表示します。",

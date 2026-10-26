@@ -18,6 +18,7 @@ export const AssistantMessageTime: FC = () => {
  *  Tooltip: one per reply would subscribe to the modal-layer store. */
 const ReplyTime: FC = () => {
   const locale = useLocale();
+  const use24HourTime = useChatPreferencesStore((state) => state.use24HourTime);
   const finishedAt = useAuiState(({ message }) => replyFinishedTimestamp(message));
   const [currentYear] = useState(() => new Date().getFullYear());
   if (finishedAt === undefined) {
@@ -27,7 +28,7 @@ const ReplyTime: FC = () => {
   return (
     <time
       dateTime={date.toISOString()}
-      title={date.toLocaleString(locale, { dateStyle: "full", timeStyle: "medium" })}
+      title={date.toLocaleString(locale, { dateStyle: "full", timeStyle: "medium", hour12: use24HourTime === undefined ? undefined : !use24HourTime })}
       className="aui-assistant-message-time ml-[var(--icon-btn-inset)] mr-2 shrink-0 select-none text-ui-11p5 text-muted-foreground tabular-nums"
     >
       {date.toLocaleString(locale, {
@@ -36,6 +37,7 @@ const ReplyTime: FC = () => {
         ...(date.getFullYear() !== currentYear && { year: "numeric" }),
         hour: "numeric",
         minute: "2-digit",
+        hour12: use24HourTime === undefined ? undefined : !use24HourTime,
       })}
     </time>
   );

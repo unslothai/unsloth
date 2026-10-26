@@ -2807,6 +2807,7 @@ export const de = {
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
+      use24HourTime: "24-Stunden-Format",
       showGenerationDetails: "Generierungsdetails",
       showGenerationDetailsDescription:
         "Tempo und Tokenzahl live anzeigen, während eine Antwort gestreamt wird, und wo die Schichten eines lokalen Modells liegen.",
