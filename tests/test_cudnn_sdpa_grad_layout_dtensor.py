@@ -73,7 +73,8 @@ def _free_port():
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 @pytest.mark.skipif(
-    not (torch.distributed.is_available() and torch.distributed.is_nccl_available()), reason = "needs NCCL"
+    not (torch.distributed.is_available() and torch.distributed.is_nccl_available()),
+    reason = "needs NCCL",
 )
 @pytest.mark.skipif(not _context_parallel_available(), reason = "torch without context_parallel")
 def test_context_parallel_sdpa_backward_with_the_grad_layout_wrapper():
