@@ -68,7 +68,13 @@ class _Patch:
 def _real_class(name: str) -> Any:
     try:
         import diffusers
-        return getattr(diffusers, name, None)
+
+        found = getattr(diffusers, name, None)
+        if found is None:
+            # Studio's in-tree pipelines (MOSS-Image) define their own denoiser class.
+            from core.inference.diffusion_moss_image import in_tree_class
+            found = in_tree_class(name)
+        return found
     except Exception:  # noqa: BLE001
         return None
 
@@ -473,6 +479,9 @@ def snapshot(entry: Callable) -> dict:
 
     patch.setattr(diffusion_flux2_rope, "_kernel", lambda: (lambda *a, **k: None))
     patch.setattr(video_wan_fused, "_kernels", lambda: {})
+    from core.inference import diffusion_rocm_fused
+
+    patch.setattr(diffusion_rocm_fused, "_is_nvidia_linux", lambda: False)
     out: dict = {}
     try:
         for backend, fam in _families():

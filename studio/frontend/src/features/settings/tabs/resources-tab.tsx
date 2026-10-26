@@ -10,7 +10,6 @@ import {
 } from "@/components/monitor-details";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { formatBytes } from "@/features/hub";
@@ -34,6 +33,7 @@ import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
   type GpuDevice,
+  type SystemInfoResponse,
   type SystemGpuInfo,
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
@@ -50,16 +50,29 @@ import {
 } from "../api/hugging-face-cache";
 import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
-import { CacheStorageRows } from "../components/cache-storage-rows";
+import { useIsAccountOwner } from "@/features/auth";
+import {
+  CacheStorageRows,
+  useCacheStorage,
+} from "../components/cache-storage-rows";
+import { DeveloperModeSection } from "../components/developer-mode-section";
+import { EngineVersionsSection } from "../components/engine-versions-section";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import {
+  STORAGE_COLORS,
+  SettingsCard,
+  SettingsCardRow,
+  type StorageSegment,
+  StorageOverview,
+} from "../components/storage-overview";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { FolderOpenIcon, LayersIcon } from "lucide-react";
+import { LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -267,6 +280,7 @@ type GpuPhysicalInventory = SystemGpuInfo & {
 
 export function ResourcesTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
   const setLiveUpdates = useSettingsPanelPrefsStore(
     (s) => s.setResourcesLiveUpdates,
@@ -302,6 +316,7 @@ export function ResourcesTab() {
   const [hfCacheLoaded, setHfCacheLoaded] = useState(false);
   const [cacheBrowserOpen, setCacheBrowserOpen] = useState(false);
   const [cacheSaving, setCacheSaving] = useState(false);
+  const cache = useCacheStorage();
   const displayedGpu = systemInfo.gpu?.available
     ? systemInfo.gpu
     : (systemInfo.inference_gpu ?? systemInfo.gpu);
@@ -356,7 +371,6 @@ export function ResourcesTab() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
-
 
   const metrics = useMemo(() => {
     const devices = displayedGpu?.devices ?? [];
@@ -524,13 +538,80 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
+  // Disk readings are decimal GB, as are cache sizes once divided by 1e9.
+  // A models folder on another drive takes the Hugging Face caches under it (hub, Xet, ...) off the system disk.
+  const modelsRoot = hfCache?.cacheHome.replace(/[\\/]+$/, "");
+  const onSystemDisk = (paths: string[]) =>
+    !(
+      metrics.modelsDisk &&
+      modelsRoot &&
+      paths.some(
+        (path) =>
+          path === modelsRoot ||
+          path.startsWith(`${modelsRoot}/`) ||
+          path.startsWith(`${modelsRoot}\\`),
+      )
+    );
+  const systemEntries = cache.entries.filter(
+    (entry) =>
+      !(metrics.modelsDisk && entry.key === "hf_hub") &&
+      onSystemDisk(entry.paths),
+  );
+  const modelsDiskGb =
+    (systemEntries.find((entry) => entry.key === "hf_hub")?.sizeBytes ?? 0) /
+    1e9;
+  const cachesDiskGb =
+    systemEntries
+      .filter((entry) => entry.key !== "hf_hub")
+      .reduce((sum, entry) => sum + entry.sizeBytes, 0) / 1e9;
+  const otherDiskGb = Math.max(
+    0,
+    metrics.diskUsed - modelsDiskGb - cachesDiskGb,
+  );
+  const cacheValue = (diskGb: number) =>
+    cache.inventory ? formatGb(diskGb) : t("common.loading");
+  const storageSegments: StorageSegment[] = [
+    ...(metrics.modelsDisk
+      ? []
+      : [
+          {
+            key: "models",
+            label: t("settings.resources.storage.segmentModels"),
+            bytes: modelsDiskGb,
+            value: cacheValue(modelsDiskGb),
+            color: STORAGE_COLORS.yellow,
+          },
+        ]),
+    {
+      key: "caches",
+      label: t("settings.resources.storage.segmentCaches"),
+      bytes: cachesDiskGb,
+      value: cacheValue(cachesDiskGb),
+      color: STORAGE_COLORS.purple,
+    },
+    {
+      key: "other",
+      label: t("settings.resources.storage.segmentOther"),
+      bytes: otherDiskGb,
+      value: formatGb(otherDiskGb),
+      color: STORAGE_COLORS.other,
+    },
+    {
+      key: "free",
+      label: t("settings.resources.storage.segmentFree"),
+      bytes: metrics.diskFree,
+      value: formatGb(metrics.diskFree),
+      color: STORAGE_COLORS.free,
+    },
+  ];
+  const unifiedPool = metrics.vramShared > 0 && metrics.vramDedicated === 0;
   const vramCapacityLabel =
-    metrics.vramShared > 0
+    metrics.vramShared > 0 && !unifiedPool
       ? t("settings.resources.environment.vramWithShared", {
           vram: formatGiB(metrics.vramDedicated),
           shared: formatGiB(metrics.vramShared),
         })
-      : formatGiB(metrics.vramTotal);
+      : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu rather than displayedGpu: this describes the TRAINING view of the host,
@@ -686,11 +767,15 @@ export function ResourcesTab() {
                 : hasGpu
                   ? memoryDisplay.sharedOnly
                     ? t("settings.resources.gpu.sharedWithSystemRam")
-                    : metrics.vramUsageKnown
-                      ? t("settings.resources.liveMonitor.free", {
-                          value: formatGiB(metrics.vramFree),
+                    : unifiedPool && memoryDisplay.unifiedAvailableGb !== null
+                      ? t("settings.resources.gpu.estimatedAvailable", {
+                          value: formatGiB(memoryDisplay.unifiedAvailableGb),
                         })
-                      : unknownLabel
+                      : metrics.vramUsageKnown
+                        ? t("settings.resources.liveMonitor.free", {
+                            value: formatGiB(metrics.vramFree),
+                          })
+                        : unknownLabel
                   : gpuMismatch
                     ? t("settings.resources.liveMonitor.gpuUnusableDetail")
                     : backendLabel
@@ -700,7 +785,9 @@ export function ResourcesTab() {
               !memoryDisplay.sharedOnly &&
               memoryDisplay.sharedDevices.length > 0
                 ? `${t("settings.resources.gpu.sharedWithSystemRam")}\n${t("settings.resources.gpu.estimatedAvailable", { value: memoryDisplay.sharedAvailableGb === null ? unknownLabel : formatGiB(memoryDisplay.sharedAvailableGb) })}`
-                : undefined
+                : unifiedPool && !memoryDisplay.sharedOnly
+                  ? t("settings.resources.gpu.sharedWithSystemRam")
+                  : undefined
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
@@ -741,7 +828,6 @@ export function ResourcesTab() {
           description={t(
             "settings.resources.liveMonitor.detailedViewDescription",
           )}
-          className="border-t border-border/60"
         >
           <Switch
             aria-label={t("settings.resources.liveMonitor.detailedView")}
@@ -1048,116 +1134,93 @@ export function ResourcesTab() {
         )}
       </SettingsSection>
 
-      {/* Below the GPU section it describes, above the memory settings that
-          apply to whichever backend is selected. */}
-      <LlamaBackendSection />
-      <InferenceEnginesSection />
-
       <ModelMemorySection ref={modelMemoryRef} />
+
+      <LlamaBackendSection />
+      <EngineVersionsSection />
+      <InferenceEnginesSection />
 
       <SettingsSection
         ref={storageSectionRef}
         title={t("settings.resources.storage.title")}
       >
-        <InfoRow
+        <StorageOverview
           label={t("settings.resources.storage.systemDisk")}
-          value={t("settings.resources.storage.diskUsage", {
+          heading={t("settings.resources.storage.systemUsed", {
             used: formatGb(metrics.diskUsed),
             total: formatGb(metrics.diskTotal),
           })}
-          detail={t("settings.resources.storage.diskFree", {
-            free: formatGb(metrics.diskFree),
-          })}
-        />
-        {metrics.modelsDisk && (
-          <InfoRow
-            label={t("settings.resources.storage.modelsDisk")}
-            value={t("settings.resources.storage.diskUsage", {
-              used: formatGb(metrics.modelsDiskUsed),
-              total: formatGb(metrics.modelsDisk.total_gb),
-            })}
-            detail={t("settings.resources.storage.diskFree", {
-              free: formatGb(metrics.modelsDisk.free_gb),
-            })}
-          />
-        )}
-        <SettingsRow
-          label={t("settings.resources.storage.modelsFolder")}
-          description={t("settings.resources.storage.modelsFolderDescription")}
-          hint={t("settings.resources.storage.modelsFolderHint")}
-          className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
-          below={
-            cacheLocationDetail || hfCache?.isCustom ? (
-              <div className="w-[calc(392px*var(--ui-space-scale,1))] min-w-0 max-[840px]:w-full">
-                <div className="flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
-                  {cacheLocationDetail ? (
-                    <span
-                      title={cacheLocationDetail}
-                      className="min-w-0 truncate"
-                    >
-                      {cacheLocationDetail}
-                    </span>
-                  ) : null}
-                  {hfCache?.isCustom ? (
-                    <Button
-                      variant="link"
-                      size="xs"
-                      className="h-auto px-0 text-xs"
-                      disabled={cacheSaving}
-                      onClick={() => void saveCacheFolder(null)}
-                    >
-                      {t("settings.resources.storage.resetAction")}
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null
-          }
-        >
-          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 max-[840px]:w-full">
-            <div className="relative min-w-0">
-              <Input
-                readOnly
-                aria-label={t("settings.resources.storage.modelsFolder")}
-                value={modelsFolderPath}
-                title={hfCache?.cacheHome}
-                className="h-8 w-full pr-7 font-mono text-xs"
-              />
-              <button
-                type="button"
-                disabled={!hfCache}
-                onClick={() => void handleCacheFolder()}
-                aria-label={
-                  isTauri
-                    ? t("settings.resources.storage.openAction")
-                    : t("settings.resources.storage.copyAction")
-                }
-                title={
-                  isTauri
-                    ? t("settings.resources.storage.openAction")
-                    : t("settings.resources.storage.copyAction")
-                }
-                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-              >
-                {isTauri ? (
-                  <FolderOpenIcon className="size-3.5" />
-                ) : (
-                  <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
-                )}
-              </button>
-            </div>
+          action={
             <Button
               variant="outline"
               size="sm"
-              className="h-8"
+              disabled={cache.loading || cache.clearing}
+              onClick={() => void cache.refresh({ refresh: true })}
+            >
+              {t("settings.resources.storage.refreshAction")}
+            </Button>
+          }
+          totalBytes={metrics.diskTotal}
+          segments={storageSegments}
+          footer={
+            metrics.modelsDisk
+              ? t("settings.resources.storage.modelsDiskSummary", {
+                  used: formatGb(metrics.modelsDiskUsed),
+                  total: formatGb(metrics.modelsDisk.total_gb),
+                  free: formatGb(metrics.modelsDisk.free_gb),
+                })
+              : null
+          }
+        />
+        <SettingsCard>
+          <SettingsCardRow
+            label={t("settings.resources.storage.modelsFolder")}
+            hint={t("settings.resources.storage.modelsFolderHint")}
+            description={
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span
+                  title={hfCache?.cacheHome}
+                  className="truncate font-mono text-ui-11"
+                >
+                  {modelsFolderPath}
+                </span>
+                {cacheLocationDetail ? (
+                  <span className="truncate">{cacheLocationDetail}</span>
+                ) : null}
+              </span>
+            }
+          >
+            {hfCache?.isCustom ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={cacheSaving}
+                onClick={() => void saveCacheFolder(null)}
+              >
+                {t("settings.resources.storage.resetAction")}
+              </Button>
+            ) : null}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!hfCache}
+              onClick={() => void handleCacheFolder()}
+            >
+              {isTauri
+                ? t("settings.resources.storage.openAction")
+                : t("settings.resources.storage.copyAction")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               disabled={!hfCache?.editable || cacheSaving}
               onClick={() => void changeCacheFolder()}
             >
               {t("settings.resources.storage.changeAction")}
             </Button>
-          </div>
-        </SettingsRow>
-        <CacheStorageRows />
+          </SettingsCardRow>
+          <CacheStorageRows cache={cache} />
+        </SettingsCard>
       </SettingsSection>
 
       <FolderBrowser
@@ -1170,38 +1233,67 @@ export function ResourcesTab() {
         showModelHints={false}
       />
 
-      <SettingsSection title={t("settings.resources.environment.title")}>
-        <InfoRow
-          label={t("settings.resources.environment.backend")}
-          value={hostReading(backendLabel)}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.python")}
-          value={systemInfo.python_version}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.torch")}
-          value={hostReading(
-            systemInfo.ml_packages.torch ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.transformers")}
-          value={hostReading(
-            systemInfo.ml_packages.transformers ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.uptime")}
-          value={hostReading(formatUptime(systemInfo.uptime_seconds))}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.processMemory")}
-          value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
-        />
-      </SettingsSection>
+      {isOwner ? <DeveloperModeSection /> : null}
+
+      <EnvironmentSection systemInfo={systemInfo} backendLabel={backendLabel} />
     </div>
+  );
+}
+
+/** About renders this too, from its own system query. */
+export function EnvironmentSection({
+  systemInfo,
+  backendLabel,
+}: {
+  systemInfo: SystemInfoResponse;
+  backendLabel: string;
+}) {
+  const t = useT();
+  const unknownLabel = t("settings.resources.environment.unknown");
+  const hostReading = (value: string) =>
+    systemInfo.status !== "ready" ? unknownLabel : value;
+  return (
+    <SettingsSection title={t("settings.resources.environment.title")}>
+      <InfoRow
+        label={t("settings.resources.environment.backend")}
+        value={hostReading(backendLabel)}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.python")}
+        value={systemInfo.python_version}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.torch")}
+        value={hostReading(
+          systemInfo.ml_packages.torch ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.transformers")}
+        value={hostReading(
+          systemInfo.ml_packages.transformers ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.uptime")}
+        value={hostReading(formatUptime(systemInfo.uptime_seconds))}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.processMemory")}
+        value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
+      />
+    </SettingsSection>
+  );
+}
+
+export function StandaloneEnvironmentSection() {
+  const systemInfo = useSystemInfo();
+  return (
+    <EnvironmentSection
+      systemInfo={systemInfo}
+      backendLabel={(systemInfo.device_backend ?? "cpu").toUpperCase()}
+    />
   );
 }

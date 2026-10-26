@@ -57,11 +57,11 @@ const BLOCKED_HOSTS_SHOWN = 3;
 // The wrapper spans the canvas, so only the notice itself takes clicks.
 const NOTICE_WRAP = "pointer-events-none absolute inset-x-0 top-0 flex justify-center p-2";
 const NOTICE =
-  "pointer-events-auto max-w-[calc(460px*var(--ui-space-scale,1))] gap-y-0.5 rounded-[calc(var(--radius)+6px)] border-transparent bg-popover py-3 ps-4.5 text-ui-13 leading-normal text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] has-data-[slot=alert-action]:pe-12 dark:bg-card dark:shadow-[0_2px_8px_-2px_var(--background)]";
+  "pointer-events-auto max-w-[calc(460px*var(--ui-space-scale,1))] gap-y-0.5 rounded-lg border-transparent bg-popover py-3 ps-4.5 text-ui-13 leading-normal text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] has-data-[slot=alert-action]:pe-12 dark:bg-card dark:shadow-[0_2px_8px_-2px_var(--background)]";
 const NOTICE_BODY =
   "text-ui-13 leading-[1.4] text-muted-foreground [&_p:not(:last-child)]:mb-2.5";
 const NOTICE_BUTTON = "h-6 rounded-full px-2 text-ui-12 font-medium";
-const NOTICE_PRIMARY = `${NOTICE_BUTTON} bg-foreground text-background hover:bg-foreground hover:opacity-90`;
+const NOTICE_PRIMARY = `${NOTICE_BUTTON} bg-action text-background hover:bg-action hover:opacity-90`;
 const NOTICE_SECONDARY = `${NOTICE_BUTTON} border-transparent bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] text-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]`;
 const NOTICE_CLOSE =
   "size-5 rounded-full bg-popover text-popover-foreground hover:bg-muted hover:text-popover-foreground dark:bg-card dark:hover:bg-muted";
@@ -147,6 +147,7 @@ export function ArtifactHtmlFrame({
   onConsoleOpenChange,
   onOutputCountChange,
   onFixWithModel,
+  onFrameReady,
   kind = "html",
 }: {
   code: string;
@@ -162,6 +163,7 @@ export function ArtifactHtmlFrame({
   onFixWithModel?: (prompt: string) => void;
   // A React preview runs compiled code, so its runtime line numbers aren't shown.
   kind?: "html" | "react";
+  onFrameReady?: (frame: HTMLIFrameElement) => (() => void) | undefined;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -277,6 +279,9 @@ export function ArtifactHtmlFrame({
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
   }, [networkAllowed, loadVersion]);
+  useEffect(() => {
+    if (iframeRef.current) return onFrameReady?.(iframeRef.current);
+  }, [onFrameReady, src]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {

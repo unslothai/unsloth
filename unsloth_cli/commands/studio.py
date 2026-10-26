@@ -2585,9 +2585,11 @@ def run(
         rich_help_panel = _RUN_PANEL_SERVER,
         help = (
             "llama-server parallel decode slots. N requests share one "
-            "loaded model; each slot gets ctx/N KV cache. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Unsloth "
-            "run settings (Parallel Slots) can override it per load."
+            "loaded model and one KV cache of the full context "
+            "(--kv-unified), so a single request can use all of it. "
+            "llama.cpp builds without --kv-unified fall back to one slot. "
+            "The Unsloth run settings (Parallel Slots) can override it per "
+            "load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam guard: every VAE Studio tiles decodes in tiles wide and overlapping enough not to leave lines.
-
-Each family's VAE is built on the meta device from its real ``vae/config.json``, set up as a Studio load sets it
-up (``enable_tiling()`` plus every tile override module), and its real ``decode`` runs over every canvas side
-Studio offers with a shape-only decoder; the tile grid is read from the latent slices the decode takes. Off CUDA
-the overrides size tiles for zero free VRAM, the tightest tier.
-"""
+"""Seam guard: tiled VAE decodes must overlap enough to hide tile seams at every offered size."""
 
 from __future__ import annotations
 
@@ -77,7 +71,7 @@ def keep_stock() -> dict[str, str]:
     return dict(getattr(_module("diffusion_vae_tiling"), "KEEP_STOCK", {}) or {})
 
 
-# "VAE class@ratio" -> a smaller geometry measured seam-free (real latent, tiled vs untiled decode). Measurement required.
+# "VAE class@ratio" -> a smaller geometry measured seam-free. Measurement required.
 SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     # #12698 seam bench: worst 64 px window <= 1.88 levels, PSNR >= 53 dB (stock 2-latent overlaps: 2.3-7.7).
     "AutoencoderKLLTX2Video@32x": Floor(
@@ -90,7 +84,6 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     "AutoencoderKLMiniMaxH3@16x": Floor(
         16, 4, 16, "decoder works at its 256 px tile; untiled is out of distribution"
     ),
-    # 16x video VAEs at stock tiles, real 33-frame clip vs untiled.
     "AutoencoderKLHunyuanVideo15@16x": Floor(
         16, 4, 4, "video seam audit: PSNR >= 50.6 dB, no line at the boundaries"
     ),

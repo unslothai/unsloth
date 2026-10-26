@@ -33,7 +33,7 @@ export function RecipeDialogContent({
       <div
         data-slot="recipe-dialog-viewport"
         className={cn(
-          "grid min-h-0 gap-6 overflow-y-auto overflow-x-hidden scroll-rounded rounded-4xl px-7 pt-8 pb-7",
+          "grid min-h-0 gap-6 overflow-y-auto overflow-x-hidden scroll-rounded rounded-3xl px-7 pt-8 pb-7",
           viewportClassName,
         )}
       >

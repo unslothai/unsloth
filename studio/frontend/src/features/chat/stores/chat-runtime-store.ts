@@ -16,6 +16,7 @@ import {
 import {
   loadedContextFields,
   type MlxKvQuant,
+  type MlxOffload,
 } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
@@ -28,7 +29,9 @@ import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
 import { getChatSettings } from "../api/chat-settings-api";
 import {
+  type CpuFallbackReason,
   GPU_LAYERS_AUTO,
+  isCpuFallbackReason,
   recoverDroppedDiffusionSplit,
   shouldHydrateGpuPlacementControls,
 } from "../lib/gpu-placement";
@@ -42,6 +45,7 @@ import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
+  getPresetOwnedParams,
   getPresetSource,
 } from "../presets/preset-policy";
 import { normalizeModelIdentity } from "../../hub/lib/model-identity";
@@ -118,6 +122,8 @@ import {
   type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
+import { prefillLabelShown } from "../lib/generation-progress";
+import { adoptFirstTurnConfirmations } from "../utils/adopt-first-turn-confirmations";
 import type { MmprojFallbackReason } from "../types/api";
 import type {
   ResearchMcpSource,
@@ -424,6 +430,36 @@ export type DiffusionCanvasFrame = {
   total: number;
   text: string;
 };
+/** Where llama.cpp placed a loaded GGUF's weights (counts from its log; MiB from its buffers). */
+export type LoadedPlacement = {
+  offloaded: number | null;
+  total: number | null;
+  /** Layers whose MoE experts --fit kept in system memory; null when --fit did not run. */
+  overflowLayers: number | null;
+  gpuWeightsMib: number | null;
+  hostWeightsMib: number | null;
+  /** Set when every routed expert is in RAM with a GPU cache of the busiest (--moe-cache-mib auto). */
+  expertCacheMib: number | null;
+};
+export type LivePrefillProgress = {
+  processed: number;
+  total: number | null;
+  cached: number | null;
+  tokPerS: number | null;
+};
+export type LiveDecodeProgress = {
+  tokens: number;
+  tokPerS: number | null;
+  draftN: number | null;
+  draftAccepted: number | null;
+};
+/** Transient, like the diffusion canvas: set from generation_progress frames, cleared when the run ends. */
+export type LiveGenerationProgress = {
+  prefill: LivePrefillProgress | null;
+  /** Whether "Processing prompt" is up for this pass; see prefillLabelShown. */
+  prefillShown: boolean;
+  decode: LiveDecodeProgress | null;
+};
 export type PendingImageEditReference = {
   threadId: string | null;
   openaiImageGenerationCallId: string;
@@ -482,7 +518,26 @@ const ATOMIC_SETTING_KEYS = new Set<string>(["ragSource"]);
 const NESTED_MAP_SETTING_KEYS = new Set<string>(["inferenceParamsByModel"]);
 
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
+  // The server forgets before it merges, so an older queued edit to a forgotten key goes too.
+  const forget = more.forgetInferenceParamsByModel;
+  if (forget) {
+    const byModel = into.inferenceParamsByModel;
+    const merged = { ...into.forgetInferenceParamsByModel };
+    for (const [id, keys] of Object.entries(forget)) {
+      merged[id] = [...new Set([...(merged[id] ?? []), ...keys])];
+      const queued = byModel?.[id];
+      if (byModel && queued) {
+        byModel[id] = Object.fromEntries(
+          Object.entries(queued).filter(([key]) => !keys.includes(key)),
+        );
+      }
+    }
+    into.forgetInferenceParamsByModel = merged;
+  }
   for (const [key, value] of Object.entries(more)) {
+    if (key === "forgetInferenceParamsByModel") {
+      continue;
+    }
     const intoAny = into as Record<string, unknown>;
     const prev = intoAny[key];
     if (ATOMIC_SETTING_KEYS.has(key)) {
@@ -1927,6 +1982,15 @@ function isHeldThreadScopedField(field: string): boolean {
 }
 
 // Reports whether the edit was taken; with no chat open the caller persists globally as before.
+/** Whether a sampling edit made now goes to the open chat, as captureThreadScopedEdit decides it. */
+function threadCapturesSampling(): boolean {
+  const threadId = useChatRuntimeStore.getState().activeThreadId;
+  return (
+    threadId !== null &&
+    (threadId === threadScopedSettingsThreadId || threadId === pendingPairingThreadId)
+  );
+}
+
 function captureThreadScopedEdit(
   field: string,
   writeGlobal: (() => void) | null = null,
@@ -2298,7 +2362,7 @@ export function loadedGpuMemoryFields(resp: {
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
-  cpu_fallback_reason?: "vulkan_startup_crash" | null;
+  cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -2317,7 +2381,11 @@ export function loadedGpuMemoryFields(resp: {
     const gpuIds = managed
       ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])
       : null;
-    const indexKind = managed ? ("physical" as const) : null;
+    const indexKind = managed
+      ? cachedPinnableGpuIndexKind() === "cuda_device"
+        ? ("cuda_device" as const)
+        : ("physical" as const)
+      : null;
     return {
       selectedGpuIds: gpuIds,
       selectedGpuIndexKind: indexKind,
@@ -2399,7 +2467,7 @@ export function loadedGpuMemoryFields(resp: {
         : { gpuMemoryMode: mode }
       : {}),
     loadedGpuMemoryMode: mode,
-    loadedCpuFallback: resp.cpu_fallback_reason === "vulkan_startup_crash",
+    loadedCpuFallback: isCpuFallbackReason(resp.cpu_fallback_reason),
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
@@ -2592,13 +2660,15 @@ type ChatRuntimeStore = {
   alwaysAllowToolsBySession: Map<string, Set<string>>;
   /** Calls paused for allow/deny, keyed by scoped frontend tool-call id. Each carries the
    *  backend `approvalId` and the run's `sessionId` so the exact call resolves;
-   *  `autoAllowKey` scopes "Always allow" per chat. Backend-gated local calls only. */
+   *  `autoAllowKey` scopes "Always allow" per chat; `threadId` names the asking chat ("" for a
+   *  run with no saved chat yet). Backend-gated local calls only. */
   toolConfirmations: Record<
     string,
     {
       approvalId: string;
       sessionId: string;
       autoAllowKey: string;
+      threadId: string;
       imageDisclosure?: ImageDisclosure;
     }
   >;
@@ -2631,6 +2701,17 @@ type ChatRuntimeStore = {
   mlxKvQuantNote: string | null;
   mlxInt8Prefill: boolean;
   loadedMlxInt8PrefillRequested: boolean;
+  /** MLX offload knobs as chosen (null = Auto), as the resident load asked for them, the
+   *  fraction it applied (null = none), and why a request was not applied. */
+  mlxPleOffload: MlxOffload;
+  mlxExpertOffload: MlxOffload;
+  loadedMlxPleOffloadRequested: MlxOffload;
+  loadedMlxExpertOffloadRequested: MlxOffload;
+  loadedMlxPleOffload: number | null;
+  loadedMlxExpertOffload: number | null;
+  mlxPleOffloadReason: string | null;
+  mlxExpertOffloadReason: string | null;
+  loadedMlxOffloadDiskBytes: number | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
@@ -2639,6 +2720,8 @@ type ChatRuntimeStore = {
   specFallbackReason: string | null;
   /** Projector recovery outcome for the active GGUF, or null. */
   mmprojFallbackReason: MmprojFallbackReason | null;
+  /** Where the loaded GGUF's weights went, from llama.cpp's load log; null for other backends. */
+  loadedPlacement: LoadedPlacement | null;
   /** Which drafter the speculative resolution was about ("mtp", "dspark", "dflash").
    *  specFallbackReason alone cannot name the file to fix, since Auto resolves it server-side. */
   specDrafterKind: string | null;
@@ -2733,6 +2816,8 @@ type ChatRuntimeStore = {
   /** Live denoising frame per conversation ("__default" until the id exists). Transient and
    *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
+  /** Live prefill / decode progress per conversation, keyed like the diffusion canvas. */
+  liveGenerationByThreadId: Record<string, LiveGenerationProgress>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking and a later fit
    *  Apply can tell an explicit pin from Auto. */
@@ -2786,6 +2871,9 @@ type ChatRuntimeStore = {
       /** Defaults came from the server-resident model at startup, so a legacy
        * global snapshot can be attributed to it. */
       migrateOwnedGlobalQwenDefaults?: boolean;
+      /** A preset pick: not an edit of the loaded model, so its remembered params are dropped
+       *  instead of overwritten, and its recommendation applies again on the next load. */
+      fromPreset?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -2874,6 +2962,7 @@ type ChatRuntimeStore = {
     approvalId: string,
     sessionId: string,
     autoAllowKey: string,
+    threadId: string,
     imageDisclosure?: ImageDisclosure,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
@@ -2918,6 +3007,9 @@ type ChatRuntimeStore = {
   ) => void;
   /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe another's. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
+  setLivePrefill: (threadId: string | null, prefill: LivePrefillProgress) => void;
+  setLiveDecode: (threadId: string | null, decode: LiveDecodeProgress) => void;
+  clearLiveGenerationForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
@@ -3055,6 +3147,8 @@ const SCALAR_SETTING_KEYS = [
 // Ids this browser holds a local answer for. Hydration keeps these and merges the rest, so a
 // pre-hydration edit cannot drop other models.
 const locallyRememberedModels = new Set<string>();
+// Models showing a preset's values: their edits are filed as deltas and they are not snapshotted on leave.
+const modelsShowingPresetPick = new Set<string>();
 // Per-model edits made before the settings response landed, held as PATCHES rather than rows.
 // The set above is overlaid wholesale, which is right for a row built from a hydrated entry but
 // not for one typed before there was an entry: that row names only the keys the user touched, so
@@ -3274,6 +3368,19 @@ function getParamsByModelAfterEdit(
   if (!persist) {
     return outgoing;
   }
+  // After a preset pick the server holds only what was edited since, so this browser does too:
+  // a whole snapshot would file the preset's values and replay them on the next load.
+  if (modelsShowingPresetPick.has(nextParams.checkpoint)) {
+    const base = outgoing ?? state.paramsByModel;
+    const delta = recordMaxTokensAsMax(
+      pickRememberedChanges(changedParams),
+      rememberedWindow(nextParams.checkpoint),
+    );
+    const partial = state.rememberParamsPerModel && hasKeys(delta)
+      ? { ...base, [nextParams.checkpoint]: { ...base[nextParams.checkpoint], ...delta } }
+      : null;
+    return trackParamsByModel(state, partial, nextParams.checkpoint) ?? outgoing;
+  }
   const recorded = trackParamsByModel(
     state,
     getRememberedParamsPatch(
@@ -3296,6 +3403,70 @@ function getParamsByModelAfterEdit(
   return recorded ?? outgoing;
 }
 
+/** The map with the preset-owned keys of `modelId`'s entry dropped, keeping what presets do not
+ *  set (Fast mode, trust remote code) and, with a chat open, the sampling that chat captures. The
+ *  server is told which keys to drop, since its merge cannot remove one. */
+function forgetModelParams(
+  state: ChatRuntimeStore,
+  outgoing: Record<string, PersistedInferenceParams> | null,
+  modelId: string,
+): Record<string, PersistedInferenceParams> | null {
+  if (!(state.rememberParamsPerModel && modelId && state.settingsHydrated)) {
+    return outgoing;
+  }
+  const current = outgoing ?? state.paramsByModel;
+  const chatOwnsSampling = threadCapturesSampling();
+  const forgotten = Object.keys(getPresetOwnedParams(state.params)).filter(
+    (key) => !(chatOwnsSampling && isThreadScopedParamKey(key)),
+  );
+  if (!chatOwnsSampling) {
+    modelsShowingPresetPick.add(modelId);
+  }
+  saveSettingsPatch({ forgetInferenceParamsByModel: { [modelId]: forgotten } });
+  const entry = current[modelId];
+  if (entry === undefined) {
+    return outgoing;
+  }
+  const kept = Object.fromEntries(
+    Object.entries(entry).filter(([key]) => !forgotten.includes(key)),
+  ) as PersistedInferenceParams;
+  const rest = Object.fromEntries(
+    Object.entries(current).filter(([id]) => id !== modelId),
+  );
+  return hasKeys(kept) ? { ...rest, [modelId]: kept } : rest;
+}
+
+/** Every preset-owned value the installation keeps, minus the sampling an open chat captures. */
+function persistPresetDefaults(params: InferenceParams): void {
+  const chatOwnsSampling = threadCapturesSampling();
+  const owned = getPresetOwnedParams(params) as Record<string, unknown>;
+  const defaults = Object.fromEntries(
+    Object.entries(owned).filter(
+      ([key]) => !(chatOwnsSampling && isThreadScopedParamKey(key)),
+    ),
+  ) as PersistedInferenceParams;
+  if (hasKeys(defaults)) {
+    saveSettingsPatch({ inferenceParams: defaults });
+  }
+}
+
+/** A model reaching the screen under a custom preset shows that preset's values, so its later edits
+ *  file only themselves; reaching it under Default or the user's own edits ends that. */
+function notePresetOnLoad(
+  state: ChatRuntimeStore,
+  modelId: string,
+  switched: boolean,
+  fromModelDefaults = false,
+): void {
+  if (!modelId || !(switched || fromModelDefaults)) return;
+  if (state.activePresetSource === "custom") {
+    modelsShowingPresetPick.add(modelId);
+  } else if (switched || state.activePresetSource === "builtin-default") {
+    // A same-model poll under edited values replaces nothing, so it keeps the mark.
+    modelsShowingPresetPick.delete(modelId);
+  }
+}
+
 /** Snapshot the model being switched away from, so a model that was never edited still keeps what it ran with. */
 function rememberOutgoingModel(
   state: ChatRuntimeStore,
@@ -3303,6 +3474,14 @@ function rememberOutgoingModel(
 ): Record<string, PersistedInferenceParams> | null {
   if (!state.settingsHydrated && outgoing.checkpoint) {
     modelLeftBeforeHydration = outgoing.checkpoint;
+  }
+  // A custom preset's values, or Default's fixed ones before a status lands, are not this model's
+  // own: filed, they outranked its recommendation on every later load (#14068).
+  if (
+    state.activePresetSource === "custom" ||
+    modelsShowingPresetPick.has(outgoing.checkpoint)
+  ) {
+    return null;
   }
   const picked = pickRememberedParams(
     withoutActiveThreadParams(state, outgoing),
@@ -3405,6 +3584,13 @@ function getHydratedPresetState(
     nextState.activePresetSource =
       settings.activePresetSource ?? getPresetSource(activePreset);
   }
+  // A model resident before hydration loaded under the placeholder source, so restoring a custom
+  // preset here is its load under that preset.
+  notePresetOnLoad(
+    { ...state, ...nextState } as ChatRuntimeStore,
+    state.params.checkpoint,
+    nextState.activePresetSource !== undefined,
+  );
   return nextState;
 }
 
@@ -4480,6 +4666,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolFullOutput: {},
   generatingStatus: null,
   activeDiffusionCanvasByThreadId: {},
+  liveGenerationByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
   deduplicateToolCalls: true,
@@ -4495,11 +4682,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   mlxKvQuantNote: null,
   mlxInt8Prefill: false,
   loadedMlxInt8PrefillRequested: false,
+  mlxPleOffload: null,
+  mlxExpertOffload: null,
+  loadedMlxPleOffloadRequested: null,
+  loadedMlxExpertOffloadRequested: null,
+  loadedMlxPleOffload: null,
+  loadedMlxExpertOffload: null,
+  mlxPleOffloadReason: null,
+  mlxExpertOffloadReason: null,
+  loadedMlxOffloadDiskBytes: null,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
   mmprojFallbackReason: null,
+  loadedPlacement: null,
   specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
@@ -4801,6 +4998,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const outgoing = checkpointChanged
         ? rememberOutgoingModel(state, state.params)
         : null;
+      notePresetOnLoad(state, params.checkpoint, checkpointChanged, fromModelDefaults);
       // An interactive local load arrives with the destination checkpoint and recommended params, reaching
       // setCheckpoint only later, so replay here or the switch never restores the model's own settings.
       noteLoadedContext(params.checkpoint, options?.maxTokensCap);
@@ -4848,21 +5046,28 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           : changedParams;
       // An edit belongs to the model the params now describe, so a call moving checkpoint and
       // sliders at once files them under the destination.
-      const paramsByModel = getParamsByModelAfterEdit(
-        state,
-        outgoing,
-        nextParams,
-        sharedParams,
-        options?.persist !== false && !fromModelDefaults,
-      );
+      const fromPreset = options?.fromPreset === true;
+      const paramsByModel = fromPreset
+        ? forgetModelParams(state, outgoing, nextParams.checkpoint)
+        : getParamsByModelAfterEdit(
+            state,
+            outgoing,
+            nextParams,
+            sharedParams,
+            options?.persist !== false && !fromModelDefaults,
+          );
       if (persistingGlobally) {
         // A switch replays the destination's entry over the params, so writing it back says nothing
         // new and, merged per key, would overwrite another tab's copy.
         persistParamEdit(
           sharedParams,
-          checkpointChanged ? null : paramsByModel,
+          checkpointChanged || fromPreset ? null : paramsByModel,
           nextParams.checkpoint,
         );
+        // The row is forgotten and an unmoved value sends nothing, so the defaults need the whole preset.
+        if (fromPreset) {
+          persistPresetDefaults(nextParams);
+        }
         // Level with what was just written, or a chat opened later this session falls back to the
         // sampling from before this model loaded.
         noteThreadScopedDefaults(sharedParams);
@@ -5003,6 +5208,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.activeDiffusionCanvasByThreadId,
         "activeDiffusionCanvasByThreadId",
       );
+      move(state.liveGenerationByThreadId, "liveGenerationByThreadId");
+      // Its parked calls too, or the row never trades its spinner for the approval mark.
+      if (moved.runningByThreadId) {
+        const confirmations = adoptFirstTurnConfirmations(
+          state.toolConfirmations,
+          threadId,
+        );
+        if (confirmations) moved.toolConfirmations = confirmations;
+      }
       return Object.keys(moved).length > 0 ? moved : state;
     }),
   runKeyForOwner: (fallbackKey, owner) => {
@@ -5080,6 +5294,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged && options?.persist !== false
           ? rememberOutgoingModel(state, state.params)
           : null;
+      notePresetOnLoad(state, modelId, checkpointChanged);
       // A compare pane's load reaches the store only here.
       const previousWindow = rememberedWindow(modelId);
       noteLoadedContext(modelId, options?.maxTokensCap);
@@ -5177,6 +5392,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               activeModelIsLocal: false,
               specFallbackReason: null,
               mmprojFallbackReason: null,
+              loadedPlacement: null,
               specDrafterKind: null,
             }
           : {}),
@@ -5471,6 +5687,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolLiveOutput: {},
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
+      liveGenerationByThreadId: {},
       kvCacheDtype: null,
       mlxKvQuant: null,
       loadedMlxKvQuantRequested: null,
@@ -5479,11 +5696,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       mlxKvQuantNote: null,
       mlxInt8Prefill: false,
       loadedMlxInt8PrefillRequested: false,
+      mlxPleOffload: null,
+      mlxExpertOffload: null,
+      loadedMlxPleOffloadRequested: null,
+      loadedMlxExpertOffloadRequested: null,
+      loadedMlxPleOffload: null,
+      loadedMlxExpertOffload: null,
+      mlxPleOffloadReason: null,
+      mlxExpertOffloadReason: null,
+      loadedMlxOffloadDiskBytes: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
       mmprojFallbackReason: null,
+      loadedPlacement: null,
       specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
@@ -5884,12 +6111,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     approvalId,
     sessionId,
     autoAllowKey,
+    threadId,
     imageDisclosure,
   ) =>
     set((state) => ({
       toolConfirmations: {
         ...state.toolConfirmations,
-        [toolCallId]: { approvalId, sessionId, autoAllowKey, imageDisclosure },
+        [toolCallId]: {
+          approvalId,
+          sessionId,
+          autoAllowKey,
+          threadId,
+          imageDisclosure,
+        },
       },
     })),
   clearToolConfirmation: (toolCallId) =>
@@ -6154,6 +6388,41 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const next = { ...state.activeDiffusionCanvasByThreadId };
       delete next[key];
       return { activeDiffusionCanvasByThreadId: next };
+    }),
+  setLivePrefill: (threadId, prefill) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const prefillShown = prefillLabelShown(state.liveGenerationByThreadId[key], prefill);
+      // A new prompt pass (the next round of a tool loop) starts over, so its decode figures go too.
+      return {
+        liveGenerationByThreadId: {
+          ...state.liveGenerationByThreadId,
+          [key]: { prefill, prefillShown, decode: null },
+        },
+      };
+    }),
+  setLiveDecode: (threadId, decode) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      return {
+        liveGenerationByThreadId: {
+          ...state.liveGenerationByThreadId,
+          [key]: {
+            prefill: current?.prefill ?? null,
+            prefillShown: current?.prefillShown ?? false,
+            decode,
+          },
+        },
+      };
+    }),
+  clearLiveGenerationForThread: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      if (state.liveGenerationByThreadId[key] === undefined) return state;
+      const next = { ...state.liveGenerationByThreadId };
+      delete next[key];
+      return { liveGenerationByThreadId: next };
     }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>

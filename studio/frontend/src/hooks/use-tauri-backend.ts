@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
+import { invalidateHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   MANAGED_ENVIRONMENT_BUSY,
   MANAGED_ENVIRONMENT_UPDATING,
@@ -512,6 +513,9 @@ export function useTauriBackend() {
     try {
       await invoke("start_managed_repair", { forceInstaller });
       recordRuntimeRepair(repairReasonRef.current);
+      // The old backend's export verdict would otherwise outlive the repair: the shell remounts
+      // from the module cache, so Export stays disabled after Repair added PyTorch.
+      invalidateHardwareInfo();
       // The repair ends here; what follows is an ordinary start, and holding the flag across it
       // swallows the Retry that server-start-timeout offers.
       releaseRepair();

@@ -12,6 +12,9 @@ name: Windows Unsloth UI CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       # The two halves the lanes drive, the backend and the React bundle, plus the
       # Windows installer chain and the CLI. Not unsloth/** or studio/src-tauri: the
@@ -100,6 +103,7 @@ permissions:
 
 jobs:
   ui-smoke:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Chat UI Tests
     runs-on: windows-latest
     timeout-minutes: 45

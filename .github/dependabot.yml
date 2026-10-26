@@ -57,9 +57,33 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    # pyproject.toml is a hand-kept matrix: many packages are split by Python version or
+    # accelerator (typer / fastapi / uvicorn / gguf for 3.9, triton / flash-attn wheel URLs),
+    # and a version update rewrites every copy of a requirement at once. Version-update PRs
+    # stay off, as for /studio/frontend; security PRs have their own limit and still open.
+    open-pull-requests-limit: 0
     cooldown:
       default-days: 7
+    # pyproject.toml pins these by hand: torch / torchvision per CUDA extra (with the
+    # matching +cuXXX tag and xformers wheel), and transformers / datasets / bitsandbytes
+    # to tested windows with `!=` exclusions. Dependabot rewrites each whole specifier
+    # (#13833, #14469 collapsed every cuXXX-torchYYY extra to plain torch==2.14.1), so
+    # these move with the version matrix by hand. Advisories still show as alerts.
+    ignore:
+      - dependency-name: "torch"
+      - dependency-name: "torchvision"
+      - dependency-name: "torchaudio"
+      - dependency-name: "xformers"
+      - dependency-name: "bitsandbytes"
+      - dependency-name: "transformers"
+      - dependency-name: "datasets"
+      # Also hand-kept: torchcodec per audio-torch extra (matched to each torch line), and
+      # huggingface-hub split by Python version (1.x needs 3.10+, 3.9 stays on 0.36.2).
+      - dependency-name: "torchcodec"
+      - dependency-name: "huggingface-hub"
+      # A major bump (huggingface-hub 2.x, pymupdf4llm 0.3 -> 1.x) needs its own review.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       python:
         patterns: ["*"]
@@ -93,6 +117,15 @@ updates:
       # compiling (`write_to_png` not found), as in #13837.
       - dependency-name: "cairo-rs"
         versions: [">= 0.19"]
+      # gio is only used for the proxy resolver gtk already builds; 0.19+
+      # adds a second glib next to gtk's 0.18.
+      - dependency-name: "gio"
+        versions: [">= 0.19"]
+      # tauri-plugin-deep-link 2.6.2 builds rust-ini's ParseOption as a
+      # struct literal, and 0.21.3 added fields to it, so Linux stops
+      # compiling (E0063). Lift once deep-link builds against 0.21.3.
+      - dependency-name: "rust-ini"
+        versions: [">= 0.21.2"]
       # windows-core must match the copy webview2-com and tauri build on
       # (Cargo.toml: "Keep these versions aligned with Tauri's WebView2
       # controller bindings"); a lone windows-core bump puts a second copy

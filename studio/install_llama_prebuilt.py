@@ -132,7 +132,7 @@ VULKAN_PREFERRED_GFX_TARGETS = frozenset({"gfx1150", "gfx1151"})
 
 # No ROCm torch wheel and no linux-rocm bundle covers these, so a HIP source build has no
 # rocBLAS kernels for them. Mirrors install_python_stack._LINUX_UNCOVERED_AMD_GFX.
-LINUX_NO_ROCM_GFX_TARGETS = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803"})
+LINUX_NO_ROCM_GFX_TARGETS = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803", "gfx90c"})
 
 # APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
 # install_python_stack.py / setup.ps1 (TestShadowingIntegratedGfxParity keeps them in step);
@@ -3085,23 +3085,34 @@ def _windows_display_adapter_in_registry(needles: tuple[tuple[str, str], ...]) -
     return False
 
 
+@functools.lru_cache(maxsize = 1)
+def _darwin_hw_optional_arm64() -> bool:
+    """sysctl hw.optional.arm64 read in-process (no subprocess on the launch preflight)."""
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        value = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        if (
+            libc.sysctlbyname(
+                b"hw.optional.arm64", ctypes.byref(value), ctypes.byref(size), None, 0
+            )
+            == 0
+        ):
+            return value.value == 1
+    except (OSError, AttributeError, TypeError, ValueError):
+        pass
+    return False
+
+
 def _host_machine(system: str) -> str:
     """platform.machine(), but arm64 under Rosetta: macos-x64 is built without Metal."""
     machine = platform.machine().lower()
     if system != "Darwin" or machine != "x86_64":
         return machine
-    try:
-        result = subprocess.run(
-            ["sysctl", "-n", "hw.optional.arm64"],
-            capture_output = True,
-            text = True,
-            timeout = 5,
-        )
-        if result.returncode == 0 and result.stdout.strip() == "1":
-            return "arm64"
-    except Exception:
-        pass
-    return machine
+    return "arm64" if _darwin_hw_optional_arm64() else machine
 
 
 def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
@@ -7394,6 +7405,29 @@ def resolve_install_attempts(
     return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
 
 
+def _hipcc_available() -> bool:
+    """hipcc where setup.sh's HIP source build looks: PATH, /opt/rocm/bin, /opt/rocm-*/bin."""
+    return bool(
+        shutil.which("hipcc")
+        or os.access("/opt/rocm/bin/hipcc", os.X_OK)
+        or glob.glob("/opt/rocm-*/bin/hipcc")
+    )
+
+
+def _uncovered_rocm_gpu_takes_vulkan(host: HostInfo) -> bool:
+    """No hipcc means a CPU-only source build; Vulkan ignores HIP masks and would reach an NVIDIA card."""
+    return (
+        host.is_linux
+        and host.is_x86_64
+        and not host.has_physical_nvidia
+        # Following ROCm torch clears has_physical_nvidia but keeps the card's evidence.
+        and not (host.nvidia_smi or host.physical_compute_caps or host.driver_cuda_version)
+        and not _hip_visible_device_mask_set()
+        and not _vulkan_visible_device_mask_set()
+        and not _hipcc_available()
+    )
+
+
 def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) -> list[AssetChoice]:
     """Build the install attempts for a fork Linux host from a manifest-described
     bundle: CUDA, per-gfx ROCm, Vulkan, or CPU. Same selection the upstream filename
@@ -7422,6 +7456,14 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         published_rocm = published_rocm_choice_for_host(bundle, host, "linux-rocm")
         if published_rocm is not None:
             attempts.append(published_rocm)
+        elif _uncovered_rocm_gpu_takes_vulkan(host):
+            vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
+            if vulkan_choice is not None:
+                log(
+                    f"no ROCm prebuilt covers {_active_rocm_gfx_target(host) or 'this AMD GPU'} "
+                    "and hipcc is not installed -- using the Vulkan prebuilt"
+                )
+                attempts.append(vulkan_choice)
     else:
         # Same condition as direct_upstream_release_plan and resolve_upstream_asset_choice,
         # which all three must state; this is the normal published-bundle branch. Reaching here
@@ -10519,6 +10561,27 @@ print(json.dumps(devices))
 """
 # VK_DRIVER_ID_GOOGLE_SWIFTSHADER, _MESA_LLVMPIPE (software), _MESA_DOZEN (Vulkan over D3D12).
 _VULKAN_SKIPPED_DRIVER_IDS = frozenset({10, 13, 23})
+# VK_DRIVER_ID_QUALCOMM_PROPRIETARY (Snapdragon X, Windows): garbage output (ggml-org/llama.cpp#28290), so
+# explicit Vulkan requests only until verified there. Mesa Turnip on Adreno is a different driver.
+_VULKAN_AUTO_OPT_IN_DRIVER_IDS = frozenset({8})
+
+
+class _VulkanGpuName(str):
+    """A Vulkan device name that also carries its vendor and driver ids (None when unknown)."""
+
+    vendor = None
+    driver = None
+
+    def __new__(
+        cls,
+        name,
+        vendor = None,
+        driver = None,
+    ):
+        self = super().__new__(cls, name)
+        self.vendor = vendor
+        self.driver = driver
+        return self
 
 
 @functools.lru_cache(maxsize = 1)
@@ -10557,10 +10620,27 @@ def _vulkan_gpu_devices() -> tuple[str, ...]:
                 and device["driver"] not in _VULKAN_SKIPPED_DRIVER_IDS
                 and device["vendor"] not in hidden_vendors
             ):
-                names.append(str(device["name"]))
+                names.append(
+                    _VulkanGpuName(str(device["name"]), device["vendor"], device["driver"])
+                )
         except (KeyError, TypeError):
             continue
     return tuple(names)
+
+
+def _vulkan_auto_gpu_devices() -> tuple[str, ...]:
+    """The GPUs the automatic route may pick: every accepted one except opt-in-only drivers."""
+    devices = _vulkan_gpu_devices()
+    auto = tuple(
+        d for d in devices if getattr(d, "driver", None) not in _VULKAN_AUTO_OPT_IN_DRIVER_IDS
+    )
+    if devices and not auto:
+        log(
+            f"Vulkan GPU found ({', '.join(dict.fromkeys(devices))}) but llama.cpp's Vulkan backend "
+            "is unverified there, so the CPU llama.cpp prebuilt is used. Set "
+            "UNSLOTH_LLAMA_CPP_BACKEND=vulkan to install the Vulkan prebuilt instead."
+        )
+    return auto
 
 
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
@@ -11057,8 +11137,8 @@ def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
 
 def _should_auto_vulkan_for_amd_linux(host: HostInfo) -> bool:
     """Linux counterpart of _should_auto_vulkan_for_amd_windows: ROCm userspace is installed
-    but no AMD GPU here has ROCm kernels (RDNA 1, Polaris), so HIP would source-build into a
-    binary that cannot run. Same guards as the integrated-GPU preference, plus an explicit
+    but no AMD GPU here has ROCm kernels (RDNA 1, Polaris, gfx90c), so HIP would source-build
+    into a binary that cannot run. Same guards as the integrated-GPU preference, plus an explicit
     HSA_OVERRIDE_GFX_VERSION, which means the user runs this card on ROCm on purpose."""
     active = _active_rocm_gfx_target(host)
     if not active:
@@ -11144,7 +11224,8 @@ def _route_to_vulkan_prebuilt(
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
         has_intel_gpu probe;
       * any other non-macOS host that would get the CPU bundle, when the Vulkan loader
-        enumerates a GPU llama.cpp accepts (Snapdragon X, Linux arm64 GPUs, nouveau).
+        enumerates a GPU llama.cpp accepts (Linux arm64 GPUs, nouveau); Qualcomm's proprietary
+        driver (Snapdragon X) stays behind the explicit request above.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the "is a prebuilt
     available" answer matches what actually gets installed.
 
@@ -11183,7 +11264,7 @@ def _route_to_vulkan_prebuilt(
         and not host.has_rocm
         and not (host.is_x86_64 and host.has_amd_gpu_without_rocm)
         and not _vulkan_visible_device_mask_set()
-        and bool(_vulkan_gpu_devices())
+        and bool(_vulkan_auto_gpu_devices())
     )
     if force_cpu or not (forced or auto_intel or auto_no_hip or auto_igpu or auto_device):
         return host, published_repo, published_release_tag, None
@@ -11233,7 +11314,7 @@ def _route_to_vulkan_prebuilt(
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
     else:
-        names = ", ".join(dict.fromkeys(_vulkan_gpu_devices()))
+        names = ", ".join(dict.fromkeys(_vulkan_auto_gpu_devices()))
         log(
             f"Vulkan GPU found ({names}); installing the Vulkan llama.cpp prebuilt, "
             "with the CPU bundle as fallback"

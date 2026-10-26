@@ -1925,6 +1925,12 @@ def _ensure_mamba_ssm(
     )
 
 
+# Integrated-only Radeon names for the other APU targets, as whole tokens (a substring would read "RX 7600M" as "600M"):
+# 820M Krackan Point 2 (gfx1153), 8040S Strix Halo (gfx1151), 780M / 760M / 740M Phoenix / Hawk Point (gfx1103),
+# 680M / 660M Rembrandt (gfx1035), 610M Raphael / Dragon Range / Mendocino (gfx1036 / gfx1037).
+_ROCM_APU_NAME_RE = re.compile(r"(?<![\w-])(?:820m|8040s|780m|760m|740m|680m|660m|610m)(?!\w)")
+
+
 def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     """Classify a ROCm device as unified-memory (APU) or discrete, returning ``(gcn_arch,
     is_unified)``. ``gcn_arch`` is the canonical arch string (e.g. ``"gfx1151"``) when a known
@@ -1970,6 +1976,7 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         or "8050s" in dev_lower
         or "860m" in dev_lower
         or "840m" in dev_lower
+        or _ROCM_APU_NAME_RE.search(dev_lower) is not None
     )
     return gcn_arch, is_unified
 
@@ -2446,6 +2453,35 @@ def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None
         )
 
 
+def _mlx_vocab_size(model):
+    """Rows of the MLX model's input embedding table (the CUDA path reads get_input_embeddings().num_embeddings), so
+    a pre-tokenized id or label past it is refused before the loss indexes it. None when it cannot be found, which
+    skips only the range check."""
+    for owner in (model, getattr(model, "language_model", None)):
+        if owner is None:
+            continue
+        for embed in (
+            getattr(getattr(owner, "model", None), "embed_tokens", None),
+            getattr(owner, "embed_tokens", None),
+        ):
+            # A LoRA-wrapped embedding keeps the table on its inner module.
+            for layer in (
+                embed,
+                getattr(embed, "embedding", None),
+                getattr(embed, "base_layer", None),
+            ):
+                if layer is None:
+                    continue
+                # QuantizedEmbedding packs its weight, so its row count is the stored num_embeddings.
+                rows = getattr(layer, "num_embeddings", None)
+                shape = getattr(getattr(layer, "weight", None), "shape", None)
+                if rows is None and shape:
+                    rows = shape[0]
+                if isinstance(rows, int) and not isinstance(rows, bool) and rows > 0:
+                    return rows
+    return None
+
+
 def _carry_mlx_chat_template_to_processor(model, tokenizer) -> bool:
     """MLXTrainer saves the loader's processor when it has one, so a text run on a multimodal base checkpoint (Qwen3.5
     Base) saved no template and Chat failed with "chat_template is not set". Give it the template the rows used."""
@@ -2713,20 +2749,24 @@ def _normalize_mlx_studio_scheduler(value):
     return raw
 
 
+def _resolve_mlx_local_dataset_path(dataset_file) -> Path:
+    from utils.paths import resolve_dataset_path
+
+    dataset_path = Path(os.path.expanduser(str(dataset_file)))
+    if dataset_path.is_absolute():
+        return dataset_path
+    if dataset_path.exists():
+        return dataset_path.resolve()
+    return Path(str(resolve_dataset_path(str(dataset_file))))
+
+
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
-    from utils.paths import dataset_files_in_dir, resolve_dataset_path
+    from utils.paths import dataset_files_in_dir
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
-        dataset_path = Path(os.path.expanduser(str(dataset_file)))
-        if dataset_path.is_absolute():
-            file_path = str(dataset_path)
-        elif dataset_path.exists():
-            file_path = str(dataset_path.resolve())
-        else:
-            file_path = str(resolve_dataset_path(str(dataset_file)))
-        file_path_obj = Path(file_path)
+        file_path_obj = _resolve_mlx_local_dataset_path(dataset_file)
 
         if file_path_obj.is_dir():
             all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
@@ -3380,12 +3420,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
 
     def _load_local(file_paths):
-        from datasets import load_from_disk
+        from utils.datasets.saved import load_saved_dataset
 
         if len(file_paths) == 1:
-            p = Path(file_paths[0])
-            if p.is_dir() and ((p / "dataset_info.json").exists() or (p / "state.json").exists()):
-                return load_from_disk(str(p))
+            saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
+            if saved is not None:
+                return saved
         all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
             raise ValueError("No local dataset files found")
@@ -3454,6 +3494,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
     dataset_final_format = ""
+    eval_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -3527,6 +3568,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             for message in info.get("run_warnings", []):
                 _send("warning", message = message)
             dataset_final_format = str(info.get("final_format", "") or "").lower()
+            eval_final_format = dataset_final_format
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
                     eval_dataset,
@@ -3541,6 +3583,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
+                    # A separately supplied eval split is detected on its own and may not be pre-tokenized.
+                    eval_final_format = str(ev.get("final_format", "") or "").lower()
                     if hasattr(eval_dataset, "__len__") and len(eval_dataset) == 0:
                         _send(
                             "warning",
@@ -3586,6 +3630,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
         else:
             dataset, eval_dataset = split_result
+            eval_final_format = dataset_final_format
+
+    # zoo's MLX batcher reads input_ids / labels and ignores attention_mask, so masked padding is trimmed here as on
+    # CUDA. MLX truncates to max_seq_length itself. Each split goes by its own format: a separately supplied eval
+    # split can be pre-tokenized while the training split is text, and the reverse.
+    if dataset_final_format == "pretokenized":
+        from utils.datasets.pretokenized import prepare_pretokenized_dataset
+        dataset = prepare_pretokenized_dataset(
+            dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model), mlx = True
+        )
+    if eval_dataset is not None and eval_final_format == "pretokenized":
+        from utils.datasets.pretokenized import prepare_pretokenized_dataset
+        eval_dataset = prepare_pretokenized_dataset(
+            eval_dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model), mlx = True
+        )
 
     requested_max_steps = config.get("max_steps", 0) or 0
     num_epochs = config.get("num_epochs", 3)

@@ -225,6 +225,11 @@ def _is_idle(ttl_seconds: float) -> bool:
         return _inflight == 0 and _pending == 0 and (time.monotonic() - _last_active) >= ttl_seconds
 
 
+def inference_in_flight() -> bool:
+    with _lock:
+        return _inflight > 0 or _pending > 0
+
+
 def _note_activity() -> None:
     """Stamp activity, e.g. on a (re)load, so the model survives at least one TTL."""
     global _last_active
@@ -470,6 +475,18 @@ def untrack_admitted_inference(scope) -> None:
     if not isinstance(scope, dict) or not scope.pop(_ADMITTED_SCOPE_KEY, False):
         return
     _note_admitted_end()
+
+
+def end_in_process_request(scope, answered: bool) -> None:
+    """LlamaKeepWarmMiddleware's end-of-request bookkeeping for an in-process request. Idempotent."""
+    if (
+        answered
+        and isinstance(scope, dict)
+        and scope.get(_ADMITTED_SCOPE_KEY)
+        and not scope.get(_RESPONSE_FAILED_SCOPE_KEY)
+    ):
+        _claim_non_preview_slot()
+    untrack_admitted_inference(scope)
 
 
 def begin_preview_serializer_wait(scope) -> bool:

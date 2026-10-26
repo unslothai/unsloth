@@ -8,6 +8,7 @@ import ast
 import base64
 import codecs
 import copy
+import dataclasses
 from collections import OrderedDict, deque
 from collections.abc import Iterable
 import fnmatch
@@ -144,6 +145,13 @@ _DDGS_RESET_MARKERS = (
     "forcibly closed",  # Windows WSAECONNRESET (10054)
 )
 _DDGS_HTTP1_RETRY_LOCK = threading.Lock()
+# Connect cap per engine: a blocked tier 1 otherwise spent the whole tool budget, so tier 2 and the
+# Wikipedia fallback never ran (#15143). A connected engine keeps the full budget to answer.
+_SEARCH_CONNECT_TIMEOUT = 10
+# primp's and httpx's wording for a connect timeout; a read timeout is "operation timed out".
+_DDGS_CONNECT_TIMEOUT_MARKERS = ("connection timed out", "connecttimeout")
+_DDGS_CONNECT_TIMEOUT_LOCK = threading.Lock()
+_DDGS_PENDING = threading.local()
 
 # Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
 # an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
@@ -10178,11 +10186,46 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
 _with_session_packages = os_sandbox.with_session_packages
 
 
+def _script_top_level_imports(script: str) -> "list[str]":
+    """Top-level module names an approved script imports by absolute name; none if it does not parse."""
+    try:
+        tree = ast.parse(script)
+    except (SyntaxError, ValueError):
+        return []
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return sorted(names)
+
+
+def _requested_chat_clis(scripts: str, text: str, dest: str) -> "str | None":
+    """Copy the chat-installed CLIs whose names appear as words in *text* into *dest*; *dest* if any."""
+    try:
+        entries = os.listdir(scripts)
+    except OSError:
+        return None
+    # Windows resolves commands case-insensitively.
+    fold = str.lower if os.name == "nt" else str
+    words = {fold(word) for word in re.findall(r"[\w.+-]+", text)}
+    copied = False
+    for entry in entries:
+        stem = os.path.splitext(entry)[0] if os.name == "nt" else entry
+        source = os.path.join(scripts, entry)
+        if (fold(entry) in words or fold(stem) in words) and os.path.isfile(source):
+            os.makedirs(dest, exist_ok = True)
+            shutil.copy2(source, os.path.join(dest, entry))
+            copied = True
+    return dest if copied else None
+
+
 def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]":
     """argv and env for an approved host-access launch: nothing it loads comes from the sandbox-writable workdir.
 
     HOME and (for the python tool) the script move to a private per-call directory outside every workdir, and the
-    session packages stay off PYTHONPATH/PATH; earlier sandboxed calls can write all of those in the workdir. The
+    session packages and the helpers the script imports only ever go last on sys.path/PATH; earlier sandboxed calls can write all of those in the workdir. The
     cwd stays the workdir, so relative paths in the approved code resolve as before.
     """
     private = tempfile.mkdtemp(prefix = "unsloth-host-call-")
@@ -10192,25 +10235,34 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
         if sys.platform == "win32":
             env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(private)
         argv = tuple(plan.argv)
+        packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+        if os.path.isdir(packages):
+            # The trusted sitecustomize appends these after installed packages for Python and Terminal alike.
+            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
+            env["PYTHONNOUSERSITE"] = "1"
+            # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
+            # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
+            requested = _requested_chat_clis(
+                os.path.join(packages, "Scripts" if os.name == "nt" else "bin"),
+                script if script is not None else " ".join(map(str, argv)),
+                os.path.join(private, ".unsloth-chat-bin"),
+            )
+            if requested:
+                env["PATH"] = os.pathsep.join(
+                    part for part in (env.get("PATH", ""), requested) if part
+                )
         if script is not None and argv:
+            # Helper modules the approved script itself imports stay importable from the chat folder, after
+            # everything else. Only those names: a library probing an optional import never reaches the folder.
+            helpers = _script_top_level_imports(script)
+            if helpers:
+                env["_UNSLOTH_HOST_WORKDIR"] = plan.workdir
+                env["_UNSLOTH_HOST_WORKDIR_MODULES"] = ",".join(helpers)
             # Written here, not read back from the workdir copy: a sandboxed call could have replaced that file.
             path = os.path.join(private, os.path.basename(argv[-1]))
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding = "utf-8") as f:
                 f.write(script)
-            packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
-            if os.path.isdir(packages):
-                # Chat-installed packages go last on sys.path, so the sandbox-writable folder cannot shadow anything.
-                launcher = os.path.join(private, "unsloth_host_launch.py")
-                fd = os.open(launcher, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w", encoding = "utf-8") as f:
-                    f.write(
-                        "import runpy, sys\n"
-                        f"sys.path.append({packages!r})\n"
-                        f"sys.argv[0] = {path!r}\n"
-                        f"runpy.run_path({path!r}, run_name = '__main__')\n"
-                    )
-                path = launcher
             argv = (*argv[:-1], path)
             # The script's own folder stays off sys.path too (CPython >= 3.11).
             env["PYTHONSAFEPATH"] = "1"
@@ -10287,6 +10339,28 @@ def _reaches_host_paths(kind: str, text: str) -> bool:
     return False
 
 
+def approval_grants_host_access(name: str, arguments) -> bool:
+    """Whether approving this call lets it reach host paths: what the executor checks before honouring the approval."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(arguments, dict):
+        return False
+    if name == "python":
+        return _reaches_host_paths("python", str(arguments.get("code") or ""))
+    if name == "terminal":
+        return _reaches_host_paths("terminal", str(arguments.get("command") or ""))
+    return False
+
+
+def _api_host_access_refused() -> bool:
+    """An API-key request keeps the OS sandbox even after an approval, like Full access (#14345, #14422)."""
+    from auth.policy import api_full_access_refused
+    return api_full_access_refused()
+
+
 def _prepare_tool_launch(
     plan,
     *,
@@ -10297,6 +10371,15 @@ def _prepare_tool_launch(
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
     if user_folder and plan.requested_mode == "auto":
         os_sandbox.recheck_overran_workdir(plan.workdir)
+    if host_access_approved and plan.requested_mode == "auto" and _api_host_access_refused():
+        # Approved from an API-key request: stay in the OS sandbox, and refuse rather than fall back if it is gone.
+        logger.info(
+            "Approved host access ignored for an API-key request; the call stays in the OS sandbox "
+            "(set UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 to allow it)"
+        )
+        host_access_approved = False
+        if not user_folder:
+            plan = dataclasses.replace(plan, requested_mode = "required")
     if host_access_approved and plan.requested_mode == "auto":
         # A chosen project folder is never a sandbox workdir in auto, so its calls keep importing from it.
         return _software_safeguards_launch(
@@ -15054,6 +15137,16 @@ def _scope_retrieval_kwargs(scope: dict) -> dict:
     return {"mode": mode if mode in ("hybrid", "dense", "lexical") else "hybrid"}
 
 
+# The sidebar's Top K maximum. Uncapped, lexical binds top_k as an SQL LIMIT and dense fails past vec0's KNN limit.
+_MAX_KNOWLEDGE_SEARCH_TOP_K = 50
+
+
+def _kb_top_k(value) -> int | None:
+    """``value`` capped at the sidebar maximum, or None (the search default) when it is not a positive count."""
+    k = _opt_int(value)
+    return min(k, _MAX_KNOWLEDGE_SEARCH_TOP_K) if k is not None and k > 0 else None
+
+
 def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     """Run the RAG search bound to the hidden per-request ``rag_scope`` (the model supplies only
     ``query``/``top_k``). Lazy import; missing sqlite-vec degrades to a friendly message."""
@@ -15070,7 +15163,7 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         logger.warning("RAG tool unavailable: %s", exc)
         return "Knowledge base search is unavailable on this server."
 
-    top_k = _opt_int((arguments or {}).get("top_k") or scope.get("default_top_k"))
+    top_k = _kb_top_k((arguments or {}).get("top_k")) or _kb_top_k(scope.get("default_top_k"))
     text, sources = search_knowledge_base_with_sources(
         query = str(query),
         scope_kb_id = scope.get("kb_id"),
@@ -18140,6 +18233,15 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
             "Search failed: the search engines are rate limiting this machine. Wait a minute "
             'before searching again, or read a known page directly with {"url": "<URL>"}.'
         )
+    if name == "TimeoutException" and any(
+        marker in str(exc).lower() for marker in _DDGS_CONNECT_TIMEOUT_MARKERS
+    ):
+        return (
+            "Search failed: the search engines could not be reached within "
+            f"{_search_connect_timeout(timeout):g}s, so they may be blocked on this network. "
+            "Start Studio with HTTPS_PROXY set to a working proxy, or read a known page "
+            'directly with {"url": "<URL>"}.'
+        )
     if name == "TimeoutException":
         budget = f" within {timeout}s" if timeout else ""
         return f"Search failed: the search engines did not respond{budget}."
@@ -18147,6 +18249,111 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     if name == "DDGSException" and _DDGS_EMPTY_SWEEP in str(exc):
         return EMPTY_SEARCH_RESULTS[0]
     return f"Search failed: {exc}"
+
+
+def _search_connect_timeout(timeout) -> float:
+    return min(timeout, _SEARCH_CONNECT_TIMEOUT) if timeout else _SEARCH_CONNECT_TIMEOUT
+
+
+class _PrimpWithConnectTimeout:
+    """``primp`` as ddgs's ``http_client`` sees it, with a connect timeout on every ``Client``."""
+
+    _unsloth_connect_timeout = True
+
+    def __init__(self, module):
+        self._module = module
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+    def Client(self, *args, **kwargs):
+        connect = _search_connect_timeout(kwargs.get("timeout"))
+        try:
+            return self._module.Client(*args, **{"connect_timeout": connect, **kwargs})
+        except TypeError:  # primp 0.15 (ddgs 9.8.0) has no connect_timeout
+            return self._module.Client(*args, **kwargs)
+
+
+def _ddgs_wait_recording(
+    fs,
+    timeout = None,
+    return_when = "ALL_COMPLETED",
+):
+    """ddgs's batch ``wait``, unchanged, remembering what was still running after the last batch."""
+    import concurrent.futures
+
+    done, not_done = concurrent.futures.wait(fs, timeout = timeout, return_when = return_when)
+    _DDGS_PENDING.futures = list(not_done)
+    return done, not_done
+
+
+def _ddgs_text(client, query, max_results, backend) -> list:
+    """``client.text`` plus answers ddgs dropped: its batch wait returns at the first failure and
+    never reads engines still running after the last batch, so an engine failing its connect cap
+    discarded a slower engine's results (#15143). Its executor has joined them by return."""
+    _DDGS_PENDING.futures = []
+    try:
+        results, error = client.text(query, max_results = max_results, backend = backend), None
+    except Exception as exc:  # noqa: BLE001 - re-raised below unless a dropped engine answered
+        results, error = [], exc
+    pending, _DDGS_PENDING.futures = getattr(_DDGS_PENDING, "futures", []), []
+    late = []
+    if len(results) < max_results:
+        for future in pending:
+            if future.done() and not future.cancelled() and future.exception() is None:
+                late.extend(future.result() or [])
+    if late:
+        from ddgs.results import ResultsAggregator
+
+        seen = {r.get("href") for r in results if isinstance(r, dict)}
+        aggregator = ResultsAggregator({"href", "image", "url", "embed_url"})
+        aggregator.extend(late)
+        results = list(results) + [
+            r for r in aggregator.extract_dicts() if r.get("href") not in seen
+        ]
+    if not results and error is not None:
+        raise error
+    return results[:max_results]
+
+
+def _install_ddgs_connect_timeout() -> None:
+    """Cap how long a ddgs engine may take to connect (#15143), leaving the read on the caller's
+    timeout so a slow engine that did connect can still answer late. Applies once; never raises."""
+    try:
+        import concurrent.futures
+
+        from ddgs import ddgs as ddgs_module, http_client
+        with _DDGS_CONNECT_TIMEOUT_LOCK:
+            if not getattr(http_client.primp, "_unsloth_connect_timeout", False):
+                http_client.primp = _PrimpWithConnectTimeout(http_client.primp)
+            if getattr(ddgs_module, "wait", None) is concurrent.futures.wait:
+                ddgs_module.wait = _ddgs_wait_recording
+            try:
+                from ddgs import http_client2
+            except ImportError:
+                return
+            cls = getattr(http_client2, "HttpClient2", None)
+            if cls is None or cls.__dict__.get("_unsloth_connect_timeout"):
+                return
+            orig_init = cls.__init__
+
+            @functools.wraps(orig_init)
+            def __init__(self, *args, **kwargs):
+                orig_init(self, *args, **kwargs)
+                import httpx
+
+                current = self.client.timeout
+                self.client.timeout = httpx.Timeout(
+                    connect = _search_connect_timeout(current.connect),
+                    read = current.read,
+                    write = current.write,
+                    pool = current.pool,
+                )
+
+            cls.__init__ = __init__
+            cls._unsloth_connect_timeout = True
+    except Exception:  # noqa: BLE001 - a hardening layer, never a reason to fail a search
+        logger.debug("ddgs connect timeout not installed", exc_info = True)
 
 
 def _resolve_engine_tiers(text_engines) -> list:
@@ -18475,6 +18682,7 @@ def _web_search(
             text_engines = ENGINES.get("text") or {}
             _install_yahoo_layout_parser(text_engines)
             _install_ddgs_http1_retry()
+            _install_ddgs_connect_timeout()
             engine_tiers = _resolve_engine_tiers(text_engines)
             if not engine_tiers:
                 raise RuntimeError("no approved search engine is available.")
@@ -18491,7 +18699,7 @@ def _web_search(
                         break
                     client = DDGS(timeout = remaining)
                 try:
-                    candidates = client.text(effective_query, max_results = wanted, backend = backend)
+                    candidates = _ddgs_text(client, effective_query, wanted, backend)
                     results = _usable_search_results(candidates, website_policy)
                     rejected_results = rejected_results or bool(candidates and not results)
                 except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
@@ -18655,6 +18863,7 @@ def _image_search(
     except Exception as e:
         return _search_failure_message(e, timeout)
     _install_ddgs_http1_retry()
+    _install_ddgs_connect_timeout()
     if not callable(getattr(DDGS, "images", None)):
         return "Image search is unavailable in this install."
 

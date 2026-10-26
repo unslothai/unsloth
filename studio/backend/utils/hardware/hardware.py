@@ -48,7 +48,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
+# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": installed --no-torch on Apple Silicon, or on a host whose GPU inventory shows a card a PyTorch GPU build could use, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What blocked the reason above, when there is something specific to say. Only "mlx_unavailable" sets it: the gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, so naming the offending package is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
@@ -179,19 +179,30 @@ def _running_under_rosetta() -> bool:
 
 # Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA libs); the CPU fallback reports that as a detection failure, not as "no GPU".
 TORCH_IMPORT_ERROR: Optional[str] = None
+# Detection epoch of the last broken import: retried (and logged) once per epoch, not on every poll.
+_TORCH_IMPORT_FAILED_EPOCH: Optional[int] = None
 
 
 def _has_torch() -> bool:
     """True if PyTorch is importable. Any failure counts as "no torch": ensure_hardware_detected() re-runs while DEVICE is None, so an escaping OSError would make every request retry the import. The error is recorded, or the host is told to install the torch it already has."""
-    global TORCH_IMPORT_ERROR
+    global TORCH_IMPORT_ERROR, _TORCH_IMPORT_FAILED_EPOCH
+    if (
+        TORCH_IMPORT_ERROR is not None
+        and _TORCH_IMPORT_FAILED_EPOCH == DETECTION_EPOCH
+        and "torch" not in sys.modules
+    ):
+        return False
     try:
         import torch
+
         TORCH_IMPORT_ERROR = None
+        _TORCH_IMPORT_FAILED_EPOCH = None
         return True
     except Exception as exc:
         # ImportError does NOT mean "not installed": a wheel with unresolved native libs raises it from torch's own __init__. Only ModuleNotFoundError naming torch itself is absent; a failed submodule is a broken install.
         absent = isinstance(exc, ModuleNotFoundError) and exc.name == "torch"
         TORCH_IMPORT_ERROR = None if absent else repr(exc)
+        _TORCH_IMPORT_FAILED_EPOCH = None if absent else DETECTION_EPOCH
         if TORCH_IMPORT_ERROR is not None:
             logger.error("torch is installed but failed to import: %r", exc)
         # A part-way failure leaves submodules cached under an evicted parent, so the next importer gets a torch missing pieces; purge_partial_import() clears that.
@@ -277,6 +288,8 @@ _physical_gpu_inventory_refreshing = False
 # One re-detection request per recovery, or a poll every few seconds starves detection.
 _REDETECTION_REQUESTED = False
 _physical_gpu_inventory_cache: Optional[tuple[float, Dict[str, Any]]] = None
+# Bumped when a refresh finds a different device set, so device-listing caches can tell a stale answer apart.
+_physical_gpu_inventory_generation = 0
 # Same treatment for the torch side: classify_torch_build() calls availability probes that block on a wedged driver, and /api/health and /api/liveness reach it through the verdict.
 _TORCH_BUILD_SNAPSHOT_TTL_SECONDS = 60.0
 _torch_build_snapshot_lock = threading.Lock()
@@ -429,8 +442,107 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
     return found
 
 
+# The gfx target is the silicon's: kept until re-detection rather than re-running rocminfo (it starts HSA)
+# every 60 s inventory pass. Keyed on the resolved binaries and the masks / overrides the CLIs inherit.
+_GFX_CANDIDATE_ENV = (
+    "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "CUDA_VISIBLE_DEVICES",
+    "GPU_DEVICE_ORDINAL",
+    "HSA_OVERRIDE_GFX_VERSION",
+)
+_gfx_candidates_cache: Optional[tuple[tuple, list[str], float]] = None
+# An empty answer (GPU runtime still coming up) is asked again after this long.
+_GFX_EMPTY_TTL_S = 300.0
+# In the key: a probe started before a forced detection publishes under a key no later read matches.
+_gfx_detect_epoch = 0
+
+
+def _gfx_candidates_key() -> Optional[tuple]:
+    """None when caching is off or gpu_query is unavailable (the no-torch sandbox stub tree)."""
+    try:
+        import shutil
+
+        from . import gpu_query
+
+        if not gpu_query.enabled():
+            return None
+        static_gen = gpu_query._static_gen
+        binaries = (shutil.which("rocminfo"), shutil.which("amd-smi"))
+    except Exception:
+        return None
+    topology = _linux_amd_pci_topology()
+    if topology is None:
+        # An unreadable walk cannot see a swapped card: probe every pass, as before.
+        return None
+    # The runner object, as gpu_query keys it, so a swapped fake never shares an answer.
+    return (
+        subprocess.run,
+        static_gen,
+        binaries,
+        tuple(os.environ.get(name) for name in _GFX_CANDIDATE_ENV),
+        # Per-device overrides (HSA_OVERRIDE_GFX_VERSION_<n>) change what rocminfo reports too.
+        tuple(
+            sorted(
+                (k, v) for k, v in os.environ.items() if k.startswith("HSA_OVERRIDE_GFX_VERSION_")
+            )
+        ),
+        topology,
+        _gfx_detect_epoch,
+    )
+
+
+def _linux_amd_pci_topology(root: str = "/sys/class/drm") -> "tuple | None":
+    """Sorted (PCI address, device id) of every bound AMD card: sees a card swapped beside one that stays,
+    which re-detection misses. () with no DRM class (not Linux), None when the walk is unreadable."""
+    try:
+        entries = os.listdir(root)
+    except FileNotFoundError:
+        return ()
+    except OSError:
+        return None
+    found = []
+    for entry in entries:
+        if not re.fullmatch(r"card\d+", entry):
+            continue
+        device = os.path.join(root, entry, "device")
+        try:
+            with open(os.path.join(device, "vendor"), encoding = "utf-8") as fh:
+                if fh.read().strip().lower() != "0x1002":
+                    continue
+            with open(os.path.join(device, "device"), encoding = "utf-8") as fh:
+                device_id = fh.read().strip().lower()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        found.append((os.path.basename(os.path.realpath(device)), device_id))
+    return tuple(sorted(found))
+
+
 def _linux_amd_gfx_candidates() -> list[str]:
     """gfx targets the ROCm userspace reports for this host, sorted, or []. rocminfo is what studio/setup.sh reads to pick an arch, with amd-smi as its fallback; neither is required to exist, and a host with no ROCm userspace reports nothing, so the caller keeps the card rather than guessing an arch. Bounded and never raises."""
+    global _gfx_candidates_cache
+    key = _gfx_candidates_key()
+    cached = _gfx_candidates_cache
+    if (
+        key is not None
+        and cached is not None
+        and cached[0] == key
+        and (cached[1] or time.monotonic() - cached[2] < _GFX_EMPTY_TTL_S)
+    ):
+        return list(cached[1])
+    found, settled = _probe_linux_amd_gfx_candidates()
+    if key is not None and settled:
+        _gfx_candidates_cache = (key, list(found), time.monotonic())
+    return found
+
+
+def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
+    """(targets, settled); not settled when an existing CLI timed out, could not start or failed."""
+    import shutil
+
+    settled = True
     for command, pattern in (
         (["rocminfo"], r"\bgfx[0-9a-f]+\b"),
         (["amd-smi", "static", "--asic"], r"\bgfx[0-9a-f]+\b"),
@@ -446,14 +558,22 @@ def _linux_amd_gfx_candidates() -> list[str]:
                 check = False,
             )
         except FileNotFoundError:
+            # ENOENT also comes from an executable that exists but cannot start (a missing interpreter).
+            if shutil.which(command[0]) is not None:
+                settled = False
             continue
         except (OSError, subprocess.TimeoutExpired) as e:
             logger.debug("%s could not report a gfx target: %s", command[0], e)
+            settled = False
             continue
         found = {match.group(0).lower() for match in re.finditer(pattern, result.stdout or "")}
         if found:
-            return sorted(found)
-    return []
+            # Used, not kept, after a non-zero exit (maybe partial output) or a failed rocminfo.
+            return sorted(found), settled and result.returncode == 0
+        # Ran and failed (no /dev/kfd access yet, driver loading): not an answer.
+        if result.returncode != 0:
+            settled = False
+    return [], settled
 
 
 def _hidden_console_kwargs() -> Dict[str, Any]:
@@ -635,7 +755,7 @@ def _carry_unanswered_vendors_forward(
 
 def _run_physical_gpu_inventory_probe() -> Dict[str, Any]:
     """One probe pass, stored in the cache. Never raises."""
-    global _physical_gpu_inventory_cache
+    global _physical_gpu_inventory_cache, _physical_gpu_inventory_generation
     previous = _physical_gpu_inventory_cache
     try:
         inventory = _probe_physical_gpu_inventory()
@@ -647,8 +767,17 @@ def _run_physical_gpu_inventory_probe() -> Dict[str, Any]:
     inventory = _carry_unanswered_vendors_forward(
         inventory, previous[1] if previous is not None else None
     )
+    if previous is not None and previous[1].get("devices") != inventory.get("devices"):
+        _physical_gpu_inventory_generation += 1
     _physical_gpu_inventory_cache = (time.monotonic(), inventory)
     return inventory
+
+
+def physical_gpu_inventory_generation() -> int:
+    """Changes whenever the GPUs this host has may have changed: a refresh that found a different device set, or an
+    explicit re-detection (``gpu_query.invalidate_static``). Never probes."""
+    from . import gpu_query
+    return _physical_gpu_inventory_generation + gpu_query.static_generation()
 
 
 def get_physical_gpu_inventory(*, block: bool = True) -> Dict[str, Any]:
@@ -847,6 +976,18 @@ def _installed_without_torch() -> bool:
         return False
 
 
+def _a_gpu_build_would_train_here() -> bool:
+    """Whether the PyTorch-free inventory shows a card the mismatch verdicts count. Blocking, so detection only. An inventory that cannot answer counts: no_gpu on a GPU host is the bug no_torch replaced."""
+    try:
+        inventory = get_physical_gpu_inventory()
+        if _devices_that_can_establish_a_mismatch(inventory.get("devices") or []):
+            return True
+        return bool(inventory.get("unknown"))
+    except Exception as e:
+        logger.debug("GPU inventory for the no_torch verdict failed: %s", e)
+        return True
+
+
 def _mlx_distribution_installed() -> bool:
     try:
         pkg_version("mlx")
@@ -881,7 +1022,9 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     recorded, pinned = _recorded_install_flavor()
     if recorded == "cpu" and not pinned:
         # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
-        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair.
+        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair. A stated GPU index wins.
+        if _stated_torch_index_source():
+            return False
         from utils.tegra import tegra_before_cuda13
         return tegra_before_cuda13()
     return recorded == "cpu" and pinned
@@ -1111,7 +1254,7 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
 
 # install_python_stack._LINUX_UNCOVERED_AMD_GFX: the arches the Linux installers leave on CPU torch.
-_LINUX_UNCOVERED_AMD_GFX = _ROCM_SUPPORTED_GFX_WINDOWS_ONLY | {"gfx803"}
+_LINUX_UNCOVERED_AMD_GFX = _ROCM_SUPPORTED_GFX_WINDOWS_ONLY | {"gfx803", "gfx90c"}
 
 # Krackan Point 2 (gfx1153) names overlap the table's gfx1152 row; the Linux installers read them
 # first and leave CPU torch on purpose (install_python_stack._LINUX_KRACKAN2_NAME_RE).
@@ -1545,7 +1688,16 @@ def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
     global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS
+    global _gfx_candidates_cache, _gfx_detect_epoch
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
+    # A forced detection asks the ROCm CLIs again, and an older probe cannot publish.
+    _gfx_detect_epoch += 1
+    _gfx_candidates_cache = None
+    try:
+        from . import amd as _amd
+        _amd.invalidate_hip_id_map()
+    except Exception:
+        pass
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
     CHAT_ONLY_MISMATCH_VENDORS = frozenset()
@@ -1563,6 +1715,12 @@ def _detect_hardware_locked() -> DeviceType:
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         cuda_hidden = cvd is not None and cvd.strip() in ("", "-1")
         force_xpu = os.environ.get("UNSLOTH_FORCE_XPU") == "1"
+        # cuInit off the GIL first: torch's probe below holds it for the whole driver init.
+        try:
+            from utils.cuda_driver_prime import prime_cuda_driver
+            prime_cuda_driver(torch)
+        except Exception:  # noqa: BLE001 - never fatal (also loaded standalone, without the package)
+            pass
         try:
             cuda_unavailable = not torch.cuda.is_available()
         except Exception:
@@ -1707,9 +1865,11 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
-        elif _installed_without_torch():
+        elif _installed_without_torch() and _a_gpu_build_would_train_here():
             # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
+            # Without such a GPU it stays no_gpu: the Desktop offers the full install on no_torch.
             CHAT_ONLY_REASON = "no_torch"
+            _record_chat_only_hint("no_torch", None)
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -1881,8 +2041,48 @@ def _amd_permission_hint_for_mismatch(
     return node_hint, wheel_targets_amd
 
 
+# install_python_stack.py's _MLX_MIN_PYTHON / _MLX_MIN_MACOS_MAJOR: the pinned MLX wheels need both.
+_MLX_MIN_PYTHON = (3, 10)
+_MLX_MIN_MACOS_MAJOR = 14
+
+
+def _mlx_wheel_blocker() -> Optional[str]:
+    """Mirrors install_python_stack._mlx_pins_are_installable, which skips MLX; an unreadable macOS reads as too old."""
+    try:
+        major = int(platform.mac_ver()[0].split(".", 1)[0])
+    except (ValueError, IndexError):
+        major = 0
+    if major < _MLX_MIN_MACOS_MAJOR:
+        return f"macOS {_MLX_MIN_MACOS_MAJOR} or later"
+    if sys.version_info < _MLX_MIN_PYTHON:
+        return f"Python {_MLX_MIN_PYTHON[0]}.{_MLX_MIN_PYTHON[1]} or later"
+    return None
+
+
+def _no_torch_mac_without_mlx_wheels() -> Optional[str]:
+    return _mlx_wheel_blocker() if is_apple_silicon() else None
+
+
+def _no_torch_amd_node_hint() -> Optional[str]:
+    """A --no-torch host whose trainable AMD cards sit behind closed or missing nodes, with no NVIDIA card to train instead: the full install would restart into torch_cuda_unavailable (#14067)."""
+    devices = _devices_that_can_establish_a_mismatch(
+        get_physical_gpu_inventory().get("devices") or []
+    )
+    vendors = {str(device.get("vendor")).lower() for device in devices}
+    # Only NVIDIA routes the installer elsewhere: install.sh's _intel_xpu_auto_gpu_id skips XPU when AMD is present.
+    if "amd" not in vendors or "nvidia" in vendors:
+        return None
+    from utils.hardware.amd import amd_closed_nodes_block_the_runtime, amd_node_permission_hint
+
+    return amd_node_permission_hint() if amd_closed_nodes_block_the_runtime() else None
+
+
 def chat_only_permission_hint(reason: Optional[str], detail: Optional[str]) -> Optional[str]:
-    """The closed-node sentence for /api/health, read from the last detection pass that recorded this verdict."""
+    """Why the fix this verdict points at cannot enable Train: a closed AMD node from the last detection pass, or a --no-torch Mac the MLX wheels skip. The Desktop offers the full install only when this is None."""
+    if reason == "no_torch":
+        blocker = _no_torch_mac_without_mlx_wheels()
+        if blocker:
+            return f"Training on this Mac needs MLX, which requires {blocker}."
     # Keyed on the reason only: the refreshed verdict can relabel the same wheel.
     stored = _CHAT_ONLY_HINT
     return stored[1] if stored is not None and stored[0] == reason else None
@@ -1892,7 +2092,12 @@ def _record_chat_only_hint(reason: Optional[str], detail: Optional[str]) -> None
     """Detection-time only: the probe stats nodes and resolves group names, which /api/health (async) must not."""
     global _CHAT_ONLY_HINT
     hint = None
-    if reason == "torch_cuda_unavailable":
+    if reason == "no_torch":
+        try:
+            hint = _no_torch_amd_node_hint()
+        except Exception as exc:
+            logger.debug("AMD device node hint for no_torch failed: %s", exc)
+    elif reason == "torch_cuda_unavailable":
         try:
             node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(detail)
             hint = node_hint if wheel_targets_amd else None
@@ -1965,8 +2170,11 @@ def export_capability() -> dict:
         )
     elif verdict[0] == "no_torch":
         reason = "no_torch"
+        blocker = _no_torch_mac_without_mlx_wheels()
         message = (
-            "This install was set up without the training stack (--no-torch), so export is "
+            f"Export on this Mac needs MLX, which requires {blocker}."
+            if blocker
+            else "This install was set up without the training stack (--no-torch), so export is "
             "disabled. Reinstall Unsloth Studio without --no-torch to enable export."
         )
     elif is_apple_silicon():
@@ -2126,7 +2334,13 @@ def clear_gpu_cache():
         if torch.cuda.is_available() and any(
             torch.cuda.memory_reserved(i) for i in range(torch.cuda.device_count())
         ):
-            torch.cuda.synchronize()
+            # An unload beside another backend's render: a device sync must not land inside its graph recording.
+            sync = torch.cuda.synchronize
+            try:
+                from core.inference.diffusion_cuda_graph import synchronize_outside_capture as sync
+            except Exception:  # noqa: BLE001 - no Studio diffusion backend here: a plain sync
+                pass
+            sync()
         # Both are no-ops without an allocator and neither creates a context.
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
@@ -2799,7 +3013,24 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
 
 
 # APU architectures that are unified memory but sit outside the shared classifier's positive set, which names anything else from hipDeviceProp_t::integrated. clr never assigned deviceProps.integrated before rocm-6.2.0 and the legacy R0000 property ABI still does not, while paldevice.cpp inflates globalMemSize_ off settings().apuSystem_ in both cases -- harmless for the cap and the total, wrong for a NUMERATOR. gfx1103 Phoenix / Hawk Point never shipped as a discrete board, so naming it here can only upgrade a part whose props.total_memory really does span host memory.
-_ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
+# The rest of LLVM's AMDGPUUsage processor table rows typed APU are named here on the same footing (none ever shipped as a
+# discrete board): gfx1153 Krackan Point 2 (Windows-supported), gfx1033 Van Gogh, gfx1035 Rembrandt, gfx1036 Raphael /
+# Granite Ridge iGPU, gfx1013 Cyan Skillfish, gfx90c / gfx902 / gfx909 Renoir / Raven, gfx801 / gfx810 Carrizo / Stoney.
+_ROCM_UNNAMED_APU_ARCHES = frozenset(
+    {
+        "gfx801",
+        "gfx810",
+        "gfx902",
+        "gfx909",
+        "gfx90c",
+        "gfx1013",
+        "gfx1033",
+        "gfx1035",
+        "gfx1036",
+        "gfx1103",
+        "gfx1153",
+    }
+)
 
 
 def _rocm_props_unified_status(props: Any) -> Optional[bool]:
@@ -3099,8 +3330,33 @@ def _smi_query(func_name: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
     return None
 
 
+_APPLE_GPU_STATS_TTL_S = 1.5
+_apple_gpu_stats_lock = threading.Lock()
+_apple_gpu_stats_cache: Optional[tuple[float, Dict[str, Any]]] = None
+
+
 def _read_apple_gpu_stats() -> Dict[str, Any]:
-    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed."""
+    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed. Display reads reuse one up to 1.5 s old (a refresh asks twice); fit and placement read fresh."""
+    global _apple_gpu_stats_cache
+    try:
+        from utils.hardware import gpu_query
+        serve_cached = gpu_query.display_cache_allowed()
+    except Exception:
+        serve_cached = False
+    with _apple_gpu_stats_lock:
+        cached = _apple_gpu_stats_cache
+        if (
+            serve_cached
+            and cached is not None
+            and time.monotonic() - cached[0] < _APPLE_GPU_STATS_TTL_S
+        ):
+            return dict(cached[1])
+        stats = _read_apple_gpu_stats_uncached()
+        _apple_gpu_stats_cache = (time.monotonic(), dict(stats)) if stats else None
+        return stats
+
+
+def _read_apple_gpu_stats_uncached() -> Dict[str, Any]:
     try:
         result = subprocess.run(
             ["ioreg", "-r", "-c", "AGXAccelerator"],
@@ -4974,17 +5230,124 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     _apply_system_wide_vram(devices, _rocm_system_wide_vram_by_index(devices))
 
 
+# Discrete-only gfx targets: an APU's sysfs total is the BIOS carve-out, so unlisted targets read unknown. gfx942 is
+# excluded because MI300A (an APU) shares it with MI300X.
+_ROCM_DISCRETE_ONLY_ARCHES = frozenset(
+    {
+        "gfx803",
+        "gfx900",
+        "gfx906",
+        "gfx908",
+        "gfx90a",
+        "gfx950",
+        "gfx1010",
+        "gfx1011",
+        "gfx1012",
+        "gfx1030",
+        "gfx1031",
+        "gfx1032",
+        "gfx1034",
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1200",
+        "gfx1201",
+    }
+)
+
+
+def _rocm_context_free_visible_devices() -> list[Dict[str, Any]]:
+    """Linux ROCm per-device VRAM from KFD topology + DRM sysfs, joined by PCI address, with no torch call. Empty under
+    any visibility mask, a KFD reader disagreement, a shared PCI address or a KFD address with no amdgpu device (a
+    partitioned card); non-discrete targets keep their row with used / total None."""
+    if platform.system() != "Linux" or _rocm_visibility_mask_active():
+        return []
+    pci_ids = _rocm_kfd_gpu_pci_ids()
+    if not pci_ids or len(set(p.lower() for p in pci_ids)) != len(pci_ids):
+        return []
+    # A partitioned card ORs each partition's node id into its KFD location_id (kfd_topology_add_device), so partitions
+    # decode to PCI functions with no amdgpu device of their own while partition 0 matches the whole-board sysfs total.
+    if not {p.lower() for p in pci_ids} <= {c[0].lower() for c in _rocm_linux_amdgpu_cards()}:
+        return []
+    try:
+        from . import amd
+        targets = amd.amd_kfd_gpu_gfx_targets()
+    except Exception as e:
+        logger.debug("KFD gfx target read failed: %s", e)
+        return []
+    if targets is None or len(targets) != len(pci_ids):
+        return []
+    vram_by_pci = _rocm_linux_sysfs_vram_by_pci_gb()
+    devices = []
+    for ordinal, (bdf, target) in enumerate(zip(pci_ids, targets)):
+        entry = vram_by_pci.get(bdf.lower()) if target in _ROCM_DISCRETE_ONLY_ARCHES else None
+        used, total = entry if entry is not None else (None, None)
+        devices.append(
+            {
+                "index": ordinal,
+                "index_kind": "physical",
+                "visible_ordinal": ordinal,
+                "gpu_utilization_pct": None,
+                "temperature_c": None,
+                "vram_used_gb": used,
+                "vram_total_gb": total,
+                "vram_utilization_pct": round((used / total) * 100, 1)
+                if used is not None and total
+                else None,
+                "power_draw_w": None,
+                "power_limit_w": None,
+                "power_utilization_pct": None,
+            }
+        )
+    return devices
+
+
 def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
-    """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
-    when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
+    """``no_context``: never ask torch (it leaves a resident driver context): CUDA devices are empty without nvidia-smi,
+    ROCm ones come from _rocm_context_free_visible_devices."""
     device = get_device()
+    if device == DeviceType.CUDA and not IS_ROCM:
+        from . import mig
+        rows = mig.visible_devices(fresh = True)
+        if rows is not None:
+            devices = []
+            for ordinal, row in enumerate(rows):
+                free = int(row.get("memory_free_mib") or 0)
+                total = int(row.get("memory_total_mib") or 0)
+                used = max(0, total - free) if total else None
+                devices.append(
+                    {
+                        "index": int(row["index"]),
+                        "index_kind": "cuda_device",
+                        "visible_ordinal": ordinal,
+                        "name": row.get("name"),
+                        "uuid": row["uuid"],
+                        "gpu_utilization_pct": None,
+                        "temperature_c": None,
+                        "vram_used_gb": round(used / 1024, 2) if used is not None else None,
+                        "vram_total_gb": round(total / 1024, 2) if total else None,
+                        "vram_utilization_pct": round(used / total * 100, 1) if total else None,
+                        "power_draw_w": None,
+                        "power_limit_w": None,
+                        "power_utilization_pct": None,
+                    }
+                )
+            return {
+                "available": bool(rows),
+                "backend": _backend_label(device),
+                "parent_visible_gpu_ids": [d["index"] for d in devices],
+                "devices": devices,
+                "index_kind": "cuda_device",
+                "mig_corrected": True,
+            }
     if no_context and IS_ROCM and device == DeviceType.CUDA:
+        devices = _rocm_context_free_visible_devices()
         return {
-            "available": False,
+            "available": bool(devices),
             "backend": _backend_label(device),
-            "parent_visible_gpu_ids": [],
-            "devices": [],
-            "index_kind": "relative",
+            "parent_visible_gpu_ids": [d["index"] for d in devices],
+            "devices": devices,
+            "index_kind": "physical" if devices else "relative",
         }
 
     if device == DeviceType.CUDA:
@@ -5135,6 +5498,15 @@ def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
                 "devices": [],
                 "index_kind": "relative",
             }
+        gpu_utilization_pct = temperature_c = power_draw_w = None
+        try:
+            from . import apple
+
+            gpu_utilization_pct = _read_apple_gpu_stats().get("utilization_pct")
+            temperature_c = apple.read_gpu_temperature_c()
+            power_draw_w = apple.read_gpu_power_w()
+        except Exception as e:
+            logger.debug("Apple GPU telemetry unavailable: %s", e)
         return {
             "available": True,
             "backend": _backend_label(device),
@@ -5144,14 +5516,14 @@ def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
                     "index": 0,
                     "index_kind": "relative",
                     "visible_ordinal": 0,
-                    "gpu_utilization_pct": None,
-                    "temperature_c": None,
+                    "gpu_utilization_pct": gpu_utilization_pct,
+                    "temperature_c": temperature_c,
                     "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
                     "vram_total_gb": round(mem.get("total_gb", 0), 2),
                     # Unified memory: free is not total - used, so publish it rather than let the caller subtract.
                     "vram_free_gb": round(mem.get("free_gb", 0), 2),
                     "vram_utilization_pct": round(mem.get("utilization_pct", 0), 1),
-                    "power_draw_w": None,
+                    "power_draw_w": power_draw_w,
                     "power_limit_w": None,
                     "power_utilization_pct": None,
                 }
@@ -5181,6 +5553,16 @@ _visible_gpu_count: Optional[int] = None
 
 
 def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
+    if get_device() == DeviceType.CUDA and not IS_ROCM:
+        from . import mig
+        rows = mig.visible_devices()
+        if rows is not None:
+            return {
+                "raw": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                "numeric_ids": [int(r["index"]) for r in rows],
+                "supports_explicit_gpu_ids": True,
+                "index_kind": "cuda_device",
+            }
     # On Intel XPU, visibility is controlled by ZE_AFFINITY_MASK (Level Zero), not CUDA_VISIBLE_DEVICES.
     if get_device() == DeviceType.XPU:
         xpu_mask_raw = _ze_affinity_mask()
@@ -6395,13 +6777,16 @@ def auto_select_gpu_ids(
 
     smi_by_ordinal = (
         _smi_rows_for_cuda_ordinals(get_parent_visible_gpu_ids())
-        if _mask_names_cuda_ordinals(parent_visible_spec)
+        if parent_visible_spec.get("index_kind") != "cuda_device"
+        and _mask_names_cuda_ordinals(parent_visible_spec)
         else None
     )
     if smi_by_ordinal is not None:
         # nvidia-smi telemetry for the cards the ids select, joined by PCI bus id out of process.
         utilization = smi_by_ordinal
-    elif _mask_names_cuda_ordinals(parent_visible_spec):
+    elif parent_visible_spec.get("index_kind") != "cuda_device" and _mask_names_cuda_ordinals(
+        parent_visible_spec
+    ):
         # The display keeps the CLI rows; ranking needs the cards the worker will get. Torch already
         # reports a MIG slice's own memory, and these rows carry mask ids, not the physical rows the
         # MIG correction keys on, so it must not run on them.
@@ -6419,7 +6804,8 @@ def auto_select_gpu_ids(
     else:
         utilization = get_visible_gpu_utilization()
     devices = [d for d in utilization.get("devices", []) if d.get("index") not in _uncovered]
-    if not utilization.get("mig_corrected"):
+    # Instance rows carry slice memory; the physical-card correction would overwrite it.
+    if not utilization.get("mig_corrected") and utilization.get("index_kind") != "cuda_device":
         devices = _with_mig_instance_memory(devices)
     parent_ids = _covered(get_parent_visible_gpu_ids())
 
@@ -6989,6 +7375,47 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
     return stale
 
 
+def current_gpu_index_kind(is_vulkan: bool = False) -> str:
+    """GPU id namespace on this host now: ``vulkan``, ``cuda_device`` (R570+ MIG) or ``physical``."""
+    if is_vulkan:
+        return "vulkan"
+    try:
+        if _get_parent_visible_gpu_spec().get("index_kind") == "cuda_device":
+            return "cuda_device"
+    except Exception:
+        pass
+    return "physical"
+
+
+def _mig_backend_visible_gpu_info(raw_mask) -> Optional[Dict[str, Any]]:
+    """Backend-visible inventory on an R570+ MIG host, one row per CUDA device, else None."""
+    from . import mig
+
+    rows = mig.visible_devices()
+    if rows is None:
+        return None
+    devices = []
+    for ordinal, row in enumerate(rows):
+        total_mib = int(row.get("memory_total_mib") or 0)
+        devices.append(
+            {
+                "index": int(row["index"]),
+                "index_kind": "cuda_device",
+                "visible_ordinal": ordinal,
+                "name": row.get("name"),
+                "uuid": row["uuid"],
+                "memory_total_gb": round(total_mib / 1024, 2) if total_mib else None,
+            }
+        )
+    return {
+        "available": bool(devices),
+        "backend_cuda_visible_devices": raw_mask,
+        "parent_visible_gpu_ids": [d["index"] for d in devices],
+        "devices": devices,
+        "index_kind": "cuda_device",
+    }
+
+
 def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
@@ -7003,6 +7430,11 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                 from . import nvidia
 
                 parent_visible_spec = _get_parent_visible_gpu_spec()
+                if parent_visible_spec.get("index_kind") == "cuda_device":
+                    mig_result = _mig_backend_visible_gpu_info(parent_visible_spec["raw"])
+                    if mig_result is not None:
+                        mig_result["backend"] = _backend_label(device)
+                        return mig_result
                 result = nvidia.get_backend_visible_gpu_info(
                     parent_visible_spec["numeric_ids"],
                     parent_visible_spec["raw"],
@@ -7139,6 +7571,14 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                 "index_kind": "relative",
             }
         memory_total_gb = round(mem.get("total_gb", 0), 2)
+        # The loader budgets min(this, available) * 0.85, not total RAM; the picker flags tight GGUFs with it.
+        try:
+            working_set_bytes = int(_metal_recommended_working_set_bytes() or 0)
+        except Exception:
+            working_set_bytes = 0
+        metal_working_set_gb = (
+            round(working_set_bytes / (1024**3), 2) if working_set_bytes > 0 else None
+        )
         return {
             "available": True,
             "backend": _backend_label(device),
@@ -7153,6 +7593,7 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                     "memory_total_gb": memory_total_gb,
                     "shared_memory": True,
                     "shared_memory_host_backed_gb": memory_total_gb,
+                    "metal_working_set_gb": metal_working_set_gb,
                 }
             ],
             "index_kind": "relative",
@@ -7268,6 +7709,18 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         return
 
     global _visible_gpu_count
+
+    if (
+        backend == DeviceType.CUDA.value or (backend is None and DEVICE == DeviceType.CUDA)
+    ) and not IS_ROCM:
+        from . import mig
+
+        ids = gpu_ids if isinstance(gpu_ids, (list, tuple)) else str(gpu_ids).split(",")
+        mask = mig.mask_for(ids)
+        if mask is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = mask
+            _visible_gpu_count = None
+            return
 
     if isinstance(gpu_ids, (list, tuple)):
         value = ",".join(str(g) for g in gpu_ids)

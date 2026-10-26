@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Unsloth's CPT path routes embed_tokens/lm_head through `modules_to_save`.
-
-Every branch of `Trainer.prepare_model_for_training` that builds an adapter therefore
-has to forward that argument. The audio branches used to omit it, which silently froze
-the matrices the run was configured to train while still applying an embedding LR.
-"""
+"""Each adapter branch must forward modules_to_save, or CPT embed_tokens/lm_head silently freeze."""
 
 import ast
 import os
@@ -34,7 +29,6 @@ def _peft_calls():
         name = getattr(node.func, "attr", None)
         if name == "get_peft_model" or (name is None and getattr(node.func, "id", None) == "dict"):
             kwargs = {k.arg for k in node.keywords if k.arg}
-            # Only the dicts that actually build an adapter.
             if name == "get_peft_model" or "target_modules" in kwargs:
                 calls.append((node.lineno, kwargs))
     return calls

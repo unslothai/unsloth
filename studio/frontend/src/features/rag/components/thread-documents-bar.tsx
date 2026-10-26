@@ -18,8 +18,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
   FileDatabaseIcon,
-  FolderAttachmentIcon,
   Folder02Icon,
+  FolderAttachmentIcon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import {
   AttachmentKindIcon,
@@ -329,7 +330,7 @@ function LinkedFolderCard({
       <ProjectBadge />
       <div
         title={title}
-        className={cn("flex overflow-hidden rounded-[15px]", CARD_SIZE, CARD_EDGE)}
+        className={cn("flex overflow-hidden rounded-[14px]", CARD_SIZE, CARD_EDGE)}
       >
         <FileCardBody
           name={label}
@@ -539,7 +540,7 @@ function DocumentCard({
       onClick={onRemove}
       aria-label={`Remove ${doc.filename}`}
       className={cn(
-        "absolute flex size-5 items-center justify-center rounded-full bg-foreground text-background opacity-0 shadow-sm transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100",
+        "absolute flex size-5 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-sm ring-1 ring-black/15 dark:bg-black dark:text-white dark:ring-white/20 transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100",
         compact ? "top-1/2 right-1.5 -translate-y-1/2" : "top-1.5 right-1.5",
       )}
     >
@@ -618,7 +619,7 @@ function DocumentCard({
       <button
         {...buttonProps}
         className={cn(
-          "flex overflow-hidden rounded-[15px] text-left transition-colors disabled:cursor-default",
+          "flex overflow-hidden rounded-[14px] text-left transition-colors disabled:cursor-default",
           CARD_SIZE,
           CARD_EDGE,
           canOpen && CARD_SURFACE,
@@ -677,7 +678,7 @@ function AddFilesCard({
         disabled={disabled}
         onClick={onClick}
         className={cn(
-          "unsloth-files-add-card flex flex-col items-center justify-center gap-1.5 rounded-[15px] border border-dashed border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(35%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
+          "unsloth-files-add-card flex flex-col items-center justify-center gap-1.5 rounded-[14px] border border-dashed border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(35%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
           CARD_SIZE,
         )}
       >
@@ -1489,6 +1490,7 @@ export function ThreadDocumentsBar({
                 onClick={pickFiles}
                 className="unsloth-files-panel-action"
               >
+                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
                 Add files
               </button>
             </HeaderTip>

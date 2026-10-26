@@ -30,10 +30,10 @@ const TUNNEL_PREF = readSrc(
 
 const LOCALES = { ar, de, en, es, fr, he, hi, it, ja, ko, ptBR, ru, sv, zhCN };
 
-test("only the owner sees it, after the Decision API section, and settings search finds it", () => {
+test("only the owner sees it, beside keyless access, and settings search finds it", () => {
   assert.match(
     API_TAB,
-    /\{isOwner \? <DecisionApiSection \/> : null\}\s*\{isOwner \? <McpAccessSection apiKey=\{revealed\} \/> : null\}/,
+    /\{isOwner \? \(\s*<>\s*<KeylessApiAccessSection onSettingsChange=\{setKeyless\} \/>\s*<McpAccessSection apiKey=\{revealed\} \/>\s*<\/>\s*\) : null\}/,
   );
   assert.doesNotMatch(SECTION, /useIsAccountOwner/);
   assert.match(
@@ -101,7 +101,7 @@ test("the setup snippet shows only while on, targets the usage examples' address
   assert.match(SECTION, /buildMcpSnippet\(agent, settings\.url, os, apiKey\)/);
   assert.match(
     SECTION,
-    /useTunnel && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*\(serverUrl \?\? origin\)/,
+    /useTunnel && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*isTauri\s*\?\s*\(serverUrl \?\? origin\)\s*:\s*origin/,
   );
   // tunnel preference changes must notify this section immediately.
   assert.match(

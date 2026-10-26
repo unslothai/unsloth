@@ -23,7 +23,11 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
-import { Download01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  Delete02Icon,
+  Download01Icon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
@@ -33,7 +37,6 @@ import {
   PlayIcon,
   PlusIcon,
   RotateCcwIcon,
-  Trash2Icon,
   UploadIcon,
   XIcon,
 } from "lucide-react";
@@ -1361,7 +1364,7 @@ function ExportModal({
                 className={cn(
                   "flex w-full cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "single"
-                    ? "border-ring-strong bg-primary/5"
+                    ? "border-ring-strong bg-wash-5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1384,7 +1387,7 @@ function ExportModal({
                 className={cn(
                   "flex w-full cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "training"
-                    ? "border-ring-strong bg-primary/5"
+                    ? "border-ring-strong bg-wash-5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1401,7 +1404,7 @@ function ExportModal({
                   <p className="mt-1 text-xs text-muted-foreground">
                     ShareGPT format for Unsloth fine-tuning
                   </p>
-                  <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-ui-10 text-muted-foreground/60">
+                  <code className="mt-2 block w-full truncate rounded-full bg-muted px-2 py-1 font-mono text-ui-10 text-muted-foreground/60">
                     {`{"conversations":[{"from":"human","value":"..."},{"from":"gpt","value":""}]}`}
                   </code>
                 </div>
@@ -1414,14 +1417,14 @@ function ExportModal({
             <p className="text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground/60">
               Format
             </p>
-            <div className="flex items-center gap-1 self-start rounded-lg bg-muted/60 p-1">
+            <div className="flex items-center gap-1 self-start rounded-full bg-muted/60 p-1">
               {(["jsonl", "csv"] as ExportFormat[]).map((f) => {
                 const disabled = f === "csv" && !csvAvailable;
                 return (
                   <label
                     key={f}
                     className={cn(
-                      "select-none rounded-md px-6 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all",
+                      "select-none rounded-full px-6 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all",
                       disabled
                         ? "cursor-not-allowed opacity-40 text-muted-foreground"
                         : "cursor-pointer",
@@ -1518,7 +1521,7 @@ function RailRow({
       aria-current={selected ? "true" : undefined}
       onClick={onSelect}
       className={cn(
-        "w-full rounded-lg px-2.5 py-2 text-left transition-colors border",
+        "w-full rounded-md px-2.5 py-2 text-left transition-colors border",
         "focus-visible:ring-1 focus-visible:ring-ring outline-none",
         selected
           ? "bg-muted/70 border-border"
@@ -1555,7 +1558,7 @@ function EmptyDetail({
 }): ReactElement {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-      <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">{icon}</div>
+      <div className="flex size-12 items-center justify-center rounded-lg bg-muted/60">{icon}</div>
       <div className="flex flex-col gap-1">
         <p className="text-sm font-medium text-muted-foreground">{title}</p>
         {hint && <p className="text-xs text-muted-foreground/60">{hint}</p>}
@@ -1704,19 +1707,19 @@ function PromptDetail({
         value={name}
         onChange={(e) => update({ name: e.target.value })}
         placeholder="Prompt name..."
-        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-full border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       {preview ? (
         <MarkdownPreview
           markdown={text}
-          className="min-h-0 max-h-none flex-1 rounded-lg border-border/60 bg-background/40 p-3 text-sm"
+          className="min-h-0 max-h-none flex-1 rounded-xl border-border/60 bg-background/40 p-3 text-sm"
         />
       ) : (
         <textarea
           value={text}
           onChange={(e) => update({ text: e.target.value })}
           placeholder="Prompt text..."
-          className="min-h-0 flex-1 w-full resize-none rounded-lg border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
+          className="min-h-0 flex-1 w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
         />
       )}
       <div className="flex shrink-0 items-center gap-2 text-ui-11 text-muted-foreground/70">
@@ -1735,9 +1738,9 @@ function PromptDetail({
           type="button"
           onClick={() => togglePinnedPrompt(entry.id)}
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
             isPinned
-              ? "text-primary hover:bg-primary/10"
+              ? "text-foreground hover:bg-wash-10"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
@@ -1747,7 +1750,7 @@ function PromptDetail({
         <button
           type="button"
           onClick={() => onExport(exportValue)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -1756,10 +1759,10 @@ function PromptDetail({
           type="button"
           disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
@@ -1887,13 +1890,13 @@ function NewPromptForm({
         onChange={(e) => setName(e.target.value)}
         placeholder="Prompt name (optional)..."
         autoFocus
-        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-full border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Write your prompt here..."
-        className="min-h-0 flex-1 w-full resize-none rounded-lg border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
+        className="min-h-0 flex-1 w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
       />
       <div className="flex shrink-0 flex-wrap gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
@@ -2016,7 +2019,7 @@ function PromptListDetail({
         value={name}
         onChange={(e) => update({ name: e.target.value })}
         placeholder="List name..."
-        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-full border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <p className="shrink-0 text-xs font-semibold text-muted-foreground">
         Prompts, loaded into the composer one at a time
@@ -2033,7 +2036,7 @@ function PromptListDetail({
               <button
                 type="button"
                 onClick={() => update({ items: [...items, ""] })}
-                className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+                className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
               >
                 <PlusIcon className="size-3.5" />Add prompt
               </button>
@@ -2056,7 +2059,7 @@ function PromptListDetail({
             <button
               type="button"
               onClick={() => setEditorMounted(true)}
-              className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+              className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
             >
               <PencilIcon className="size-3.5" />Edit all {items.length} prompts
             </button>
@@ -2079,9 +2082,9 @@ function PromptListDetail({
           type="button"
           onClick={() => togglePinnedList(entry.id)}
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
             isPinned
-              ? "text-primary hover:bg-primary/10"
+              ? "text-foreground hover:bg-wash-10"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
@@ -2091,7 +2094,7 @@ function PromptListDetail({
         <button
           type="button"
           onClick={() => onExport(exportValue)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -2100,10 +2103,10 @@ function PromptListDetail({
           type="button"
           disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
@@ -2212,7 +2215,7 @@ function NewPromptListForm({
         onChange={(e) => setName(e.target.value)}
         placeholder="List name..."
         autoFocus
-        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-full border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <p className="shrink-0 text-xs font-semibold text-muted-foreground">
         Prompts, loaded into the composer one at a time
@@ -2222,7 +2225,7 @@ function NewPromptListForm({
         <button
           type="button"
           onClick={addItem}
-          className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+          className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
         >
           <PlusIcon className="size-3.5" />Add another prompt
         </button>
@@ -2589,7 +2592,7 @@ export function PromptStorageDialog({
                   variant="outline"
                   size="sm"
                   onClick={() => importRef.current?.click()}
-                  className="h-8 gap-1.5 text-xs"
+                  className="gap-1.5 text-xs"
                   title="Import from JSONL, CSV, or collection JSONL"
                 >
                   <UploadIcon className="size-3.5" />
@@ -2600,7 +2603,7 @@ export function PromptStorageDialog({
                   size="sm"
                   disabled={bulkExportDisabled}
                   onClick={openBulkExport}
-                  className="h-8 gap-1.5 text-xs"
+                  className="gap-1.5 text-xs"
                 >
                   <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
                   Export
@@ -2622,14 +2625,14 @@ export function PromptStorageDialog({
           {/* */}
           <div className="px-6 pt-4 pb-3 shrink-0 flex flex-col gap-3">
             {/* */}
-            <div className="flex items-center gap-1 self-start rounded-lg bg-muted/60 p-1">
+            <div className="flex items-center gap-1 self-start rounded-full bg-muted/60 p-1">
               {(["prompts", "lists"] as Tab[]).map((tab) => (
                 <button
                   key={tab}
                   type="button"
                   onClick={() => selectTab(tab)}
                   className={cn(
-                    "rounded-md px-4 py-1.5 text-xs font-medium transition-all",
+                    "rounded-full px-4 py-1.5 text-xs font-medium transition-all",
                     activeTab === tab
                       ? "bg-background text-foreground shadow-sm ring-1 ring-border/40"
                       : "text-muted-foreground hover:text-foreground",
@@ -2649,7 +2652,7 @@ export function PromptStorageDialog({
                 onFocus={() => setShowSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
                 placeholder={`Search ${activeTab === "prompts" ? "prompts by name or text" : "prompt lists by name"}…`}
-                className="w-full rounded-lg border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
+                className="w-full rounded-full border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
               />
               {showSuggestions && searchQuery.trim() !== "" && suggestions.length > 0 && (
                 <div className="dropdown-surface absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
@@ -2683,7 +2686,7 @@ export function PromptStorageDialog({
                   if (activeTab === "prompts") setShowNewPrompt(true);
                   else setShowNewList(true);
                 }}
-                className="flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-dashed border-border/60 px-3 py-2 text-xs font-medium text-muted-foreground hover:border-border hover:bg-muted/50 hover:text-foreground transition-all"
+                className="btn-fill flex shrink-0 items-center justify-center gap-1.5 rounded-full border border-transparent px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-all"
               >
                 <PlusIcon className="size-3.5" />
                 {activeTab === "prompts" ? "New prompt" : "New prompt list"}

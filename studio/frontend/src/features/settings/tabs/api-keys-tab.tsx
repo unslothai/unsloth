@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useIsAccountOwner } from "@/features/auth";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,16 +10,29 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useIsAccountOwner } from "@/features/auth";
+import { cn } from "@/lib/utils";
 import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
-import { type ApiKey, fetchApiKeys, revokeApiKey } from "../api/api-keys";
+import {
+  type ApiKey,
+  createApiKey,
+  fetchApiKeys,
+  revokeApiKey,
+} from "../api/api-keys";
 import type {
   KeylessApiAccessExposure,
   KeylessApiAccessScope,
 } from "../api/keyless-api-access";
-import { ApiKeyRow } from "../components/api-key-row";
+import { apiKeyActionMessage } from "../components/api-key-action-message";
+import {
+  ApiKeyRow,
+  ApiKeyTableHeader,
+  TOKEN_TABLE,
+} from "../components/api-key-row";
 import { AudioApiExamples } from "../components/audio-api-examples";
+import { MediaApiExamples } from "../components/media-api-examples";
 import { CreateKeyForm } from "../components/create-key-form";
 import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
@@ -28,12 +40,17 @@ import { KeylessApiAccessSection } from "../components/keyless-api-access-sectio
 import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
+import { ModelMemorySection } from "../components/model-memory-section";
 import { MonitorLink } from "../components/monitor-link";
-import { RemoteLanSummary } from "../components/remote-lan-summary";
-import {
-  UsageExamples,
-  useApiTunnelPref,
-} from "../components/usage-examples";
+import { UsageExamples, useApiTunnelPref } from "../components/usage-examples";
+import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
+
+function expiryDays(key: ApiKey): number | null {
+  if (!key.expires_at) return null;
+  const ms =
+    new Date(key.expires_at).getTime() - new Date(key.created_at).getTime();
+  return Math.max(1, Math.round(ms / 86400000));
+}
 
 export function ApiKeysTab() {
   const t = useT();
@@ -41,10 +58,14 @@ export function ApiKeysTab() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
+  const [regenerate, setRegenerate] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
+  // Owner-only routes, as the Remote & LAN tab is.
+  usePublishAccessUrls(isOwner);
   const [keyless, setKeyless] = useState<{
     scope: KeylessApiAccessScope;
     tools: boolean;
@@ -95,12 +116,32 @@ export function ApiKeysTab() {
   const confirmRevoke = async () => {
     if (!revokeTarget) return;
     setRevoking(true);
+    setActionError(null);
     try {
+      if (regenerate) {
+        // Created before the old one is revoked, so a failed create loses nothing.
+        const created = await createApiKey(
+          revokeTarget.name,
+          expiryDays(revokeTarget),
+        );
+        setRevealed(created.key);
+      }
       await revokeApiKey(revokeTarget.id);
       await load();
       setRevokeTarget(null);
-    } catch {
-      setError(translate("settings.apiKeys.revokeError"));
+    } catch (cause) {
+      setActionError(
+        apiKeyActionMessage(
+          translate(
+            regenerate
+              ? "settings.apiKeys.regenerateError"
+              : "settings.apiKeys.revokeError",
+          ),
+          cause,
+        ),
+      );
+      void load();
+      setRevokeTarget(null);
     } finally {
       setRevoking(false);
     }
@@ -150,7 +191,8 @@ export function ApiKeysTab() {
                 setRevealed(raw);
                 void load();
               }}
-              onError={setError}
+              onError={setActionError}
+              existingNames={keys.map((k) => k.name)}
             />
           </motion.div>
         )}
@@ -160,8 +202,13 @@ export function ApiKeysTab() {
         <h2 className="settings-heading mb-2 text-sm font-semibold">
           {t("settings.apiKeys.accessTokens")}
         </h2>
+        {actionError ? (
+          <div className="mb-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
+            {actionError}
+          </div>
+        ) : null}
         {error ? (
-          <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
+          <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
             {error}
           </div>
         ) : loading ? (
@@ -179,9 +226,21 @@ export function ApiKeysTab() {
           </p>
         ) : (
           <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-            <div className="overlay-scrollbar-gutter">
+            <div className={cn("overlay-scrollbar-gutter", TOKEN_TABLE)}>
+              <ApiKeyTableHeader />
               {keys.map((k) => (
-                <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
+                <ApiKeyRow
+                  key={k.id}
+                  apiKey={k}
+                  onRevoke={(key) => {
+                    setRegenerate(false);
+                    setRevokeTarget(key);
+                  }}
+                  onRegenerate={(key) => {
+                    setRegenerate(true);
+                    setRevokeTarget(key);
+                  }}
+                />
               ))}
             </div>
           </div>
@@ -197,14 +256,20 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
-      <MonitorLink />
-
       {/* Installation-wide controls: owner-only routes. */}
       {isOwner ? (
         <>
           <KeylessApiAccessSection onSettingsChange={setKeyless} />
 
-          <RemoteLanSummary />
+          <McpAccessSection apiKey={revealed} />
+        </>
+      ) : null}
+
+      <MonitorLink />
+
+      {isOwner ? (
+        <>
+          <ModelMemorySection variant="api" />
 
           <ModelAutoSwitchSection />
 
@@ -219,9 +284,14 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
-      {isOwner ? <DecisionApiSection /> : null}
+      <MediaApiExamples
+        apiKey={revealed}
+        useTunnel={useTunnel}
+        keylessScope={keyless.scope}
+        keylessExposure={keyless.exposure}
+      />
 
-      {isOwner ? <McpAccessSection apiKey={revealed} /> : null}
+      {isOwner ? <DecisionApiSection /> : null}
 
       <Dialog
         open={revokeTarget !== null}
@@ -230,12 +300,19 @@ export function ApiKeysTab() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {t("settings.apiKeys.revokeTitle", {
-                name: revokeTarget?.name ?? "",
-              })}
+              {t(
+                regenerate
+                  ? "settings.apiKeys.regenerateTitle"
+                  : "settings.apiKeys.revokeTitle",
+                { name: revokeTarget?.name ?? "" },
+              )}
             </DialogTitle>
             <DialogDescription>
-              {t("settings.apiKeys.revokeDescription")}
+              {t(
+                regenerate
+                  ? "settings.apiKeys.regenerateDescription"
+                  : "settings.apiKeys.revokeDescription",
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -245,13 +322,19 @@ export function ApiKeysTab() {
             <Button
               onClick={confirmRevoke}
               disabled={revoking}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant={regenerate ? "dark" : "destructive"}
             >
-              {revoking
-                ? t("settings.apiKeys.revoking")
-                : t("settings.apiKeys.revokeAction", {
-                    name: revokeTarget?.name ?? "",
-                  })}
+              {regenerate
+                ? t(
+                    revoking
+                      ? "settings.apiKeys.regenerating"
+                      : "settings.apiKeys.regenerateAction",
+                  )
+                : revoking
+                  ? t("settings.apiKeys.revoking")
+                  : t("settings.apiKeys.revokeAction", {
+                      name: revokeTarget?.name ?? "",
+                    })}
             </Button>
           </DialogFooter>
         </DialogContent>

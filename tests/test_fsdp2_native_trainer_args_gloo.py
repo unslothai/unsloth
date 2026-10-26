@@ -7,7 +7,9 @@
 * an optimizer passed positionally (Trainer's own order) is refused like a keyword one;
 * `model_init` (and with it hyperparameter_search) is refused instead of training unsharded;
 * `save_on_each_node=True` across nodes is refused (only global rank 0 holds the gathered state);
-* a resume of a non-default active PEFT adapter reads `<ckpt>/<adapter>/`, never the root adapter.
+* a resume of a non-default active PEFT adapter reads `<ckpt>/<adapter>/`, never the root adapter;
+* UNSLOTH_FSDP2=1 on an XPU install with TrainingArguments(use_cpu = True) still shards natively
+  (accelerate runs a CPU Trainer as MULTI_CPU, which drops its FSDP plugin).
 Plus the launcher env: an explicit native backend turns accelerate's FSDP launch env off."""
 
 import multiprocessing
@@ -19,6 +21,7 @@ if multiprocessing.parent_process() is not None or getattr(
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import ast  # noqa: E402
+import builtins  # noqa: E402
 import importlib.util  # noqa: E402
 import sys  # noqa: E402
 import types  # noqa: E402
@@ -64,6 +67,23 @@ def _install_wrapped_trainer_init():
         "_block_swap_for_trainer_backend": noop,
         "_enable_ddp_batched_grad_copy": noop,
     }
+    # Any other module-level helper the wrapper calls is stubbed too, so a new one (#14404 added
+    # _size_auto_checkpoint_skip_for_trainer) cannot fail every rank with a NameError here.
+    bound = {
+        name.id
+        for name in ast.walk(fn)
+        if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)
+    } | {
+        (alias.asname or alias.name).split(".")[0]
+        for node in ast.walk(fn)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            name = node.func.id
+            if name not in ns and name not in bound and not hasattr(builtins, name):
+                ns[name] = noop
     exec(compile(ast.Module(body = [fn], type_ignores = []), path, "exec"), ns)
     Trainer.__init__ = ns["_unsloth_trainer_init"]
     Trainer._test_wrapped = True
@@ -164,6 +184,18 @@ def _worker(rank, world, port, out, case, tmp, env):
                 res["optimizer_keys"] = sorted(state)
             except RuntimeError as exc:
                 res["error"] = str(exc)
+        elif case == "xpu_install_use_cpu":
+            # An XPU torch build (no CUDA / ROCm): the launch step routes UNSLOTH_FSDP2=1 to
+            # accelerate's FSDP2, then the use_cpu Trainer takes native FSDP2 back.
+            torch.version.cuda = None
+            torch.version.hip = None
+            torch.version.xpu = "20250101"
+            launch = sys.modules["unsloth.fsdp2_launch"]
+            res["routed"] = launch.apply_unsloth_fsdp2_launch_env()
+            trainer = Trainer(model = _lora(1), args = _targs(os.path.join(tmp, "out")))
+            res["sharded"] = native.is_native_fsdp2(trainer.model)
+            res["accelerate_fsdp"] = os.environ.get("ACCELERATE_USE_FSDP")
+            res["distributed_type"] = str(trainer.accelerator.distributed_type)
         elif case == "named_adapter":
             cfg = native.FSDP2Config(param_dtype = torch.float32)
             ckpt = os.path.join(tmp, "ckpt")
@@ -249,6 +281,15 @@ def test_resume_reads_named_adapter_from_its_subdirectory(tmp_path):
     for rank, r in _run("named_adapter", tmp_path).items():
         assert "load_error" not in r, (rank, r)
         assert r["n_other"] > 0 and r["other_diff"] == 0.0, (rank, r)
+
+
+def test_xpu_install_cpu_trainer_shards_natively(tmp_path):
+    pytest.importorskip("transformers")
+    pytest.importorskip("peft")
+    for rank, r in _run("xpu_install_use_cpu", tmp_path).items():
+        assert r["routed"] is True, (rank, r)
+        assert r["sharded"] is True and r["accelerate_fsdp"] is None, (rank, r)
+        assert "MULTI_CPU" in r["distributed_type"], (rank, r)
 
 
 # ---- launcher env (no process group) ----------------------------------------------------------
