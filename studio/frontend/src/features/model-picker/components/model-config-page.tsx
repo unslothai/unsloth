@@ -181,6 +181,7 @@ import {
   retainModelConfigDraft,
   setExtraArgsEditForDraft,
   setExtraArgsEditLoadableForDraft,
+  setModelConfigDraftPickedSet,
   setModelConfigDraftRemember,
   setModelConfigDraftSavedRemember,
   subscribeModelConfigDraft,
@@ -3684,8 +3685,13 @@ export function ModelConfigPage({
   const modelName = modelDisplayName(configId);
   const savedSets = useSavedRunSettings(configId);
   const persistedSet = useSelectedRunSettings(configId, target.ggufVariant);
-  // undefined: follow what is stored.
-  const [pickedSet, setPickedSet] = useState<string | null | undefined>(undefined);
+  // undefined: follow what is stored. In the shared draft, or the other editor shows this set's
+  // values under the stored one and its Save writes them there.
+  const pickedSet = draftSnapshot?.pickedSet;
+  const setPickedSet = useCallback(
+    (next: string | null | undefined) => setModelConfigDraftPickedSet(draftKey, next),
+    [draftKey],
+  );
   const [naming, setNaming] = useState<RunSettingsNaming | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   useEffect(() => {
@@ -3728,25 +3734,16 @@ export function ModelConfigPage({
           perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(entry.config)),
         )?.name ?? (isDefaultConfig(forSetStore(loadedConfig)) ? null : undefined))
       : undefined;
-  // Kept past the first edit, else the draft falls back to the pinned set and Save writes into it.
-  const [inferredOnce, setInferredOnce] = useState<{
-    load: string;
-    name: string | null;
-  } | null>(null);
+  // Held as a pick past the first edit, else the draft falls back to the pinned set and Save writes
+  // into it. A new load re-seeds the draft, which drops it.
   useEffect(() => {
-    if (loadedOnce !== undefined) setInferredOnce({ load: liveSignature, name: loadedOnce });
-  }, [loadedOnce, liveSignature]);
-  const keptOnce =
-    loadedOnce !== undefined
-      ? loadedOnce
-      : pickedSet === undefined && pinnedEntry !== null && inferredOnce?.load === liveSignature
-        ? inferredOnce.name
-        : undefined;
+    if (loadedOnce !== undefined) setPickedSet(loadedOnce);
+  }, [loadedOnce, setPickedSet]);
   const wantedSet =
     pickedSet !== undefined
       ? pickedSet
-      : keptOnce !== undefined
-        ? keptOnce
+      : loadedOnce !== undefined
+        ? loadedOnce
         : selectionStale
           ? null
           : (persistedSet ?? null);
@@ -3944,7 +3941,6 @@ export function ModelConfigPage({
   const keepSelection = (into: string | null) => {
     setSelectedRunSettings(configId, target.ggufVariant, into);
     setPickedSet(undefined);
-    setInferredOnce(null);
   };
 
   // Each quant loads from its own record and override, so the others sharing a set follow its saves

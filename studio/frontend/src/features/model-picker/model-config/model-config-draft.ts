@@ -36,6 +36,8 @@ export type ModelConfigDraftSnapshot = {
   savedRemember: boolean;
   /** Last `loadedConfigSignature` applied to this draft from the resident process. */
   appliedLiveSignature: string;
+  /** The set shown while another is pinned, loaded once; absent follows the stored selection. */
+  pickedSet?: string | null;
 };
 
 const drafts = new Map<string, ModelConfigDraftSnapshot>();
@@ -224,6 +226,18 @@ export function setModelConfigDraftSavedRemember(
     return;
   }
   drafts.set(key, { ...existing, savedRemember });
+  notify();
+}
+
+export function setModelConfigDraftPickedSet(
+  key: string,
+  pickedSet: string | null | undefined,
+): void {
+  const existing = drafts.get(key);
+  if (!existing || existing.pickedSet === pickedSet) {
+    return;
+  }
+  drafts.set(key, { ...existing, pickedSet });
   notify();
 }
 

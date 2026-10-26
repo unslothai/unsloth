@@ -485,15 +485,12 @@ test("while a set is pinned, picking or loading another uses it once", () => {
     /if \(!\(loadedConfig && getPinnedRunSettings\(configId, target\.ggufVariant\) !== null\)\) \{\s*setExtraArgsLoadable\(hydratedIsLoadable\);\s*replaceModelConfigDraft\(/,
   );
   // The set a resident model loaded once stays selected past the first edit, so Save never writes
-  // into the pinned one; an explicit pick drops it.
+  // into the pinned one; the pick lives in the shared draft, so the other editor agrees.
+  assert.match(page, /const pickedSet = draftSnapshot\?\.pickedSet;/);
+  assert.match(page, /setModelConfigDraftPickedSet\(draftKey, next\)/);
   assert.match(
     page,
-    /const keptOnce =\s*loadedOnce !== undefined\s*\? loadedOnce\s*: pickedSet === undefined && pinnedEntry !== null && inferredOnce\?\.load === liveSignature\s*\? inferredOnce\.name/,
-  );
-  assert.match(page, /: keptOnce !== undefined\s*\? keptOnce/);
-  assert.match(
-    page,
-    /const keepSelection = [\s\S]{0,160}setPickedSet\(undefined\);\s*setInferredOnce\(null\);/,
+    /useEffect\(\(\) => \{\s*if \(loadedOnce !== undefined\) setPickedSet\(loadedOnce\);\s*\}, \[loadedOnce, setPickedSet\]\);/,
   );
   // Deleting the pinned set unpins it, and what the panel shows becomes what loads.
   assert.match(
