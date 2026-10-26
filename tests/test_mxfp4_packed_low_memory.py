@@ -392,3 +392,25 @@ def test_cold_compiled_direct_helper_backward():
     )
     if result.returncode != 0 or "OK" not in result.stdout:
         pytest.fail(result.stdout[-2000:] + "\n" + result.stderr[-4000:], pytrace = False)
+
+
+def test_chunked_dx_does_not_overflow_in_a_16bit_chunk_product():
+    # 256 rows all decoding to 6.0, two 128-row chunks with dY = +100 then -100: each fp16 chunk
+    # product is 76800 (> 65504) but the full reduction is exactly 0.
+    device = torch.device("cuda", torch.cuda.current_device())
+    N, K = 256, 64
+    packed = torch.full((N, K // 2), 0x77, dtype = torch.uint8, device = device)
+    scale = torch.full((N, K // 32), 127, dtype = torch.uint8, device = device)
+    x = torch.cat([torch.full((1, 128), 100.0), torch.full((1, 128), -100.0)], dim = 1)
+    x = x.to(device = device, dtype = torch.float16)
+    saved = mcl._DENSE_BUDGET.get(device.index)
+    mcl._DENSE_BUDGET[device.index] = [128 * K * x.element_size(), 1 << 20]
+    try:
+        y = mcl._bounded_dense_matmul_t_eager(x, packed, scale)
+    finally:
+        if saved is None:
+            mcl._DENSE_BUDGET.pop(device.index, None)
+        else:
+            mcl._DENSE_BUDGET[device.index] = saved
+    assert torch.isfinite(y).all()
+    assert torch.equal(y, torch.zeros_like(y))

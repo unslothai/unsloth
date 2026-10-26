@@ -320,7 +320,8 @@ def _bounded_dense_matmul_t_eager(
                 weight = dequantize_mxfp4_packed(
                     packed[r0:r1], scale[r0:r1], dtype, out = buffer[: r1 - r0]
                 )
-                acc += torch.matmul(x2[:, r0:r1], weight)
+                # fp32 products: a 16-bit chunk product can overflow even when the sum fits.
+                acc.addmm_(x2[:, r0:r1].float(), weight.float())
             y = acc.to(dtype).view(*lead, K)
             return y if out is None else out.copy_(y)
         except torch.cuda.OutOfMemoryError:
