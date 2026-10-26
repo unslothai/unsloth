@@ -173,7 +173,9 @@ def test_fused_chunk_never_outgrows_the_eager_chunk(in_f, out_f):
 
 def test_eager_forced_pass_never_enters_the_compiled_linear(monkeypatch):
     layer = _layer()
-    monkeypatch.setattr(nq, "_fused_w8a8", lambda: pytest.fail("compiled linear inside a force-eager pass"))
+    monkeypatch.setattr(
+        nq, "_fused_w8a8", lambda: pytest.fail("compiled linear inside a force-eager pass")
+    )
     x = torch.randn(64, 512, dtype = torch.bfloat16)
     with bg.auxiliary_pass():
         assert layer._forward_fused(x) is None
