@@ -161,8 +161,6 @@ def test_load_paths_key_the_bundle_on_the_same_decision():
     assert 'getattr(state.family, "filter_reduction_configs"' not in src
 
 
-# FLUX.2-klein races wherever inductor benchmarks its q/k RMSNorm configs, not only on B200: native int8 W8A8 under an
-# sm_75 (T4) policy rendered one seed 3 ways over 4 fresh processes on B200 and on a real T4 (LPIPS up to 0.37).
 @pytest.mark.parametrize("cap", [(7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
 @pytest.mark.parametrize(
     "repo", ["black-forest-labs/FLUX.2-klein-4B", "black-forest-labs/FLUX.2-klein-9B"]
