@@ -370,6 +370,10 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
 
     # Checked here rather than first so an image repo the picker already claims keeps its existing route.
     vid = detect_video_family(base_model)
+    if vid is None and is_local_diffusers:
+        from core.inference.video_families import local_cosmos3_pipeline_family
+        local_family = local_cosmos3_pipeline_family(base_model)
+        vid = detect_video_family("", override = local_family) if local_family else None
     if vid is not None:
         if vid.name not in TRAINABLE_VIDEO_FAMILIES:
             _refuse_untrainable_video_family(vid.name)

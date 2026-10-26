@@ -59,7 +59,8 @@ def loader():
         n
         for n in tree.body
         if isinstance(n, ast.FunctionDef)
-        and n.name in ("_precision_flags_conflict", "_modelscope_snapshot_or_none")
+        and n.name
+        in ("_precision_flags_conflict", "_modelscope_snapshot_or_none", "_fold_rope_parameters")
     ]
     captured = {"config_calls": 0}
 

@@ -76,6 +76,7 @@ import { Slider } from "@/components/ui/slider";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -2501,6 +2502,10 @@ export function ImagesPage({
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
   if (viewerId && (!active || !viewerImage)) setViewerId(null);
+  // The strip tile whose actions menu a right-click opened. A tile's <img> would otherwise get the
+  // webview's own image menu, whose Open in New Window and Copy Image cannot act on a blob: URL.
+  const [tileMenuId, setTileMenuId] = useState<string | null>(null);
+  if (tileMenuId && (!active || !images.some((image) => image.id === tileMenuId))) setTileMenuId(null);
   // Pruning below must not revoke the image on screen.
   const viewerIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -6900,7 +6905,7 @@ export function ImagesPage({
               label={workflow === "edit" ? "Instruction" : "Prompt"}
               hint={external ? undefined : status?.prompt_hint || undefined}
             >
-              <Textarea
+              <DeferredTextarea
                 data-type-to-activate="prompt"
                 rows={4}
                 className={cn(PROMPT_BOX_CLASS, "min-h-32")}
@@ -6913,7 +6918,7 @@ export function ImagesPage({
                   dismissExample(`images:${workflow}`);
                   setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
                 }}
-                onChange={(e) => setPrompt(e.target.value)}
+                onValueChange={setPrompt}
                 onPaste={(e) => {
                   // A whole AUTOMATIC1111 / Forge / Civitai block fills the form instead of the prompt.
                   const text = e.clipboardData.getData("text/plain");
@@ -7445,7 +7450,7 @@ export function ImagesPage({
                 alt="Live preview of the image being generated"
                 data-testid="images-live-preview"
                 style={{ maxWidth: width, maxHeight: height }}
-                className="size-full object-contain shadow-sm"
+                className="media-stage-shadow size-full object-contain shadow-sm"
               />
             ) : selected && selectedSrc ? (
               <>
@@ -7463,7 +7468,7 @@ export function ImagesPage({
                       openViewer();
                     }
                   }}
-                  className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
+                  className="media-stage-shadow max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
@@ -7644,6 +7649,13 @@ export function ImagesPage({
                   key={image.id}
                   data-image-id={image.id}
                   {...stripReorder.tileProps(image.id)}
+                  // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
+                  // Portalled children (the New project dialog) bubble here too: leave their menu alone.
+                  onContextMenu={(event) => {
+                    if (!isTauri || !event.currentTarget.contains(event.target as Node)) return;
+                    event.preventDefault();
+                    setTileMenuId(image.id);
+                  }}
                   className={cn(
                     "group relative size-16 shrink-0",
                     // Fade the tile being dragged.
@@ -7688,6 +7700,8 @@ export function ImagesPage({
                       variant="overlay"
                       noun="image"
                       active={active}
+                      open={tileMenuId === image.id}
+                      onOpenChange={(open) => setTileMenuId(open ? image.id : null)}
                       pinned={Boolean(image.pinned)}
                       archived={Boolean(image.archived)}
                       favorite={isFavorite(`image:${image.id}`)}

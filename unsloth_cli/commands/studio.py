@@ -48,9 +48,8 @@ def _enable_verbose_access_logs() -> None:
     os.environ["LOG_LEVEL"] = "DEBUG"
 
 
-# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, UNSLOTH_HOME/studio, sys.prefix,
-# legacy ~/.unsloth/studio. Keep this aligned with storage_roots.studio_root().
-# Shim markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
+# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, UNSLOTH_HOME/studio, sys.prefix, legacy
+# ~/.unsloth/studio; keep aligned with storage_roots.studio_root(). Markers mirror install.ps1.
 _CMD_SHIM_MARKERS = (b"unsloth-studio-managed-launcher", b"from unsloth_cli import app")
 _CMD_SHIM_MAX_BYTES = 8192
 
@@ -149,11 +148,7 @@ def _recorded_master_root() -> Optional[Path]:
         here = STUDIO_HOME.resolve()
         if not (master.is_dir() and (here == master or master in here.parents)):
             return None
-        # A legacy-rooted install has no master root, and both uninstallers already refuse what
-        # that shape records. storage_roots._is_legacy_studio_tree declines it too, and
-        # test_unsloth_home_root_agreement.py holds the two together: without this the CLI would
-        # export UNSLOTH_HOME for a note the backend has declined. Keyed on the TREE, so a note
-        # naming $HOME or any other ancestor goes with it.
+        # Decline a legacy-rooted note, keyed on the tree so a note naming $HOME or an ancestor goes too, like storage_roots._is_legacy_studio_tree.
         try:
             if here == (Path.home() / ".unsloth" / "studio").resolve():
                 return None
@@ -189,14 +184,8 @@ def _ensure_studio_env_exported() -> None:
     """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
     root the resolver above declined, per subcommand rather than at import, so unrelated
     importers see no env changes."""
-    # storage_roots.studio_root() honours UNSLOTH_HOME with no install check, so the fallback
-    # keeping this CLI on an installed legacy root must be told to the backend too: unexported,
-    # `unsloth studio` runs the legacy venv while the backend inside it writes studio.db, auth
-    # and the pid file under <master>/studio. Exporting the root does not make it custom, since
-    # the value equals the legacy path both installers compare against.
-    # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
-    # because setup runs as a subprocess and would otherwise refresh the runtimes at
-    # <master>/studio/ while the backend kept launching the ones at <master>/.
+    # storage_roots.studio_root() honours UNSLOTH_HOME unconditionally, so export the root this CLI chose,
+    # or the backend and setup subprocess write elsewhere.
     if not (os.environ.get("UNSLOTH_HOME") or "").strip():
         _recorded = _recorded_master_root()
         if _recorded is not None:
@@ -211,8 +200,7 @@ def _ensure_studio_env_exported() -> None:
         _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
     except (OSError, ValueError):
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
-    # The runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is one
-    # level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
+    # Runtimes are siblings of studio/; run.py keeps a non-blank value, so a wrong export wins everywhere.
     _llama_dir = _master_root_llama_dir()
     if _llama_dir is None:
         _llama_dir = (
@@ -586,11 +574,8 @@ def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
     return False
 
 
-# The single gfx arch this install carries kernels for, published for the backend.
-# Read by studio/backend/utils/desktop_shell_env.py, which imports ROCm variables a
-# desktop launch never received out of the login shell: that profile is where the
-# #7331 override lives, so the backend needs the same arbiter this guard uses, not
-# just the outcome of running it against a GUI environment that never had the value.
+# Read by studio/backend/utils/desktop_shell_env.py, which imports the login shell's ROCm variables
+# (where the #7331 override lives), so it needs this arbiter.
 ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
 
 
@@ -654,9 +639,7 @@ def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     _venv = STUDIO_HOME / "unsloth_studio"
     _root = Path(sys.prefix) if _running_in_studio_venv(_venv) else _venv
     _arch = _clear_hsa_override_contradicting_install(_root)
-    # Published whether or not anything was cleared here: on a desktop launch the GUI
-    # environment never carried the override, so the clear above is a no-op and the
-    # contradicting value is still sitting in the profile the backend is about to read.
+    # Published regardless: a desktop launch never had the override, but the profile still does.
     _installed = _installed_rocm_single_arch(_root)
     if _installed and platform.system() != "Windows":
         os.environ[ROCM_INSTALLED_ARCH_ENV] = _installed
@@ -907,9 +890,7 @@ def _create_api_key_inprocess(name: str) -> str:
         username = storage.DEFAULT_ADMIN_USERNAME,
         name = name,
     )
-    # Best-effort: the key is already committed and the caller shuts the server
-    # down on any exception, so raising here would kill a healthy launch and
-    # re-mint on every retry. Same trade-off as start.py's _write_private_json.
+    # Best-effort: raising would kill a healthy launch and re-mint on every retry.
     try:
         _write_auth_secret(_cli_api_key_secret_path(name), raw_key)
     except OSError as exc:
@@ -956,8 +937,7 @@ def _load_backend_auth_storage():
 
 def _write_auth_secret(path: Path, secret: str) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
-    # mkdir under a 022 umask leaves auth/ world-readable when this runs before the DB connection does it; the files
-    # below are 0600 either way, but the directory listing names them. Best-effort, like the chmods below.
+    # mkdir under a 022 umask leaves auth/ world-readable; the listing names the files.
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
@@ -1302,8 +1282,7 @@ def _cli_update_password(
         return
     stale_files = [BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE]
     if revoke_api_keys:
-        # Reset only: the rows are gone, so each cached key is now plaintext for a
-        # dead credential. An ordinary change keeps the rows, so its cache stays valid.
+        # Reset only: the rows are gone, so each cached key is plaintext for a dead credential.
         try:
             stale_files += sorted(
                 p.name for p in (STUDIO_HOME / "auth").glob(f"{CLI_API_KEY_FILE_PREFIX}*")
@@ -3695,11 +3674,8 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 
 
 _UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")
-# The subset `uv pip install` CREATES, which is the only uv command studio/setup.sh runs. The
-# rule is what uv is measured to write: a `git+` requirement creates git-v0 and builds-v0, so
-# those are in, while flat-index-v2 is not created even by `--find-links --no-index`, and
-# binaries, environments, osv and python belong to uv self-update, uv venv and uv python.
-# Probing a store uv never touches only throws warm caches away. Re-measure on a pin bump.
+# Only the stores `uv pip install` creates (setup.sh runs nothing else); probing others discards
+# warm caches. Re-measure on a uv pin bump.
 _UV_PIP_STORES = (
     "archive",
     "builds",
@@ -3719,8 +3695,7 @@ def _uv_is_bucket_name(name: str) -> bool:
     install.ps1, over the narrower kind list: this one only answers whether a bucket holds
     package BYTES, where the installers also probe the kinds uv merely writes."""
     kind, marker, version = name.rpartition("-v")
-    # isascii too: str.isdigit() is true for Arabic-Indic and superscript digits, which the sh
-    # `*[!0-9]*` case and the PowerShell \A[0-9]+\z both reject. uv writes ASCII.
+    # isascii too: isdigit() accepts non-ASCII digits, which the sh and PowerShell checks reject.
     return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_CACHE_BUCKETS
 
 
@@ -3777,8 +3752,7 @@ def _uv_platform_cache_dir() -> Optional[Path]:
     return Path(home) / ".cache" / "uv" if home else None
 
 
-# clap's literals, which is what uv binds UV_NO_CACHE to (BoolishValueParser). `y` and `t` are
-# real spellings uv honours, and were missing here, in install.sh and in install.ps1 alike.
+# clap's BoolishValueParser literals for UV_NO_CACHE.
 _UV_TRUE = ("1", "y", "yes", "t", "true", "on")
 
 
@@ -3907,39 +3881,27 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
     probes = [cache_dir]
     folds = _uv_cache_folds_case(cache_dir)
     try:
-        # Only the directories uv OWNS: an unrelated read-only one must not disqualify a
-        # usable cache, and that is what the kind list above is for.
+        # Only the directories uv owns.
         for entry in cache_dir.iterdir():
             if not _uv_is_store_name(entry.name):
-                # On APFS or NTFS `Python-V0` is the same path uv opens as `python-v0`, so
-                # skipping it would report a cache writable that uv then aborts on.
+                # On APFS or NTFS `Python-V0` is the same path as `python-v0`.
                 if not (folds and _uv_is_store_name(entry.name.lower())):
                     continue
             if not entry.is_dir():
-                # A file, or a symlink dangling or not, is an existing path to mkdir, so uv
-                # cannot make the store and aborts. Skipping it would report the cache writable.
+                # A file or any symlink is an existing path uv cannot mkdir.
                 return False
             probes.append(entry)
-            # One level inside the index stores, and only those. uv REWRITES this metadata on
-            # every resolve, so a shard another account owns aborts it. Measured on BOTH the
-            # pinned uv 0.12.1 and 0.10.7: a 0555 `simple-*/pypi` or `wheels-*/pypi` gives
-            # "Failed to write to the client cache", exit 2. One level is the leaf on both:
-            # 0.12.1 lays this out as `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a
-            # 0555 `wheels-v6/pypi/requests` one deeper installs fine. Bounded on purpose.
+            # One level inside the index stores: uv rewrites this metadata every resolve, so a foreign-owned
+            # shard aborts it (measured on uv 0.12.1 and 0.10.7). Bounded on purpose.
             if entry.name.lower().startswith(("simple-", "wheels-")):
-                # `index/<hash>`, one per CUSTOM index, is where uv puts metadata when
-                # --index-url is set, which Studio does for the torch wheels. Measured on the
-                # pinned uv 0.12.1: a 0555 `simple-v24/index/<hash>` passes a one-level probe
-                # and then aborts with "Failed to write to the client cache".
+                # `index/<hash>` holds custom-index metadata (Studio's torch index); a read-only one aborts uv.
                 shards = list(entry.iterdir())
                 index_dir = entry / "index"
                 if index_dir.is_dir():
                     shards.extend(index_dir.iterdir())
                 for shard in shards:
                     if not shard.is_dir():
-                        # Same rule as the store level: a file, or a symlink dangling or not, is
-                        # an existing path uv can neither open nor mkdir. Measured on the pinned
-                        # uv 0.12.1, both abort with "Failed to write to the client cache".
+                        # A file or any symlink here aborts uv too.
                         return False
                     probes.append(shard)
     except OSError:
@@ -3950,17 +3912,13 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
                 pass
         except OSError:
             return False
-    # Only the names uv is measured to need writable: rejecting more throws away the warm cache
-    # this path exists to find. Every control file at 0444 against uv 0.10.7: the root .lock
-    # aborts (exit 2) and sdists-v9/.git aborts (exit 2); root CACHEDIR.TAG and .gitignore, and
-    # .git/.gitignore/.lock under archive-v0, interpreter-v4, simple-v20 and wheels-v6, all
-    # install fine. uv creates only the three root files, so a per-store .git is someone else's.
+    # Only names uv is measured to need writable (root .lock, sdists-v9/.git); rejecting more throws
+    # away the warm cache.
     for target in probes:
         if target == cache_dir:
             names = (".lock",)
         elif target.name.lower().startswith("sdists-"):
-            # The one store measured to abort on a read-only .git. Rejecting a cache uv accepts
-            # costs the warm cache this path exists to find, so the rest are left alone.
+            # The one store measured to abort on a read-only .git; rejecting a cache uv accepts loses the warm cache this path exists to find.
             names = (".git",)
         else:
             continue
@@ -3968,9 +3926,7 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
             control = target / name
             if not control.exists() and not control.is_symlink():
                 continue
-            # Not a regular file, so uv cannot open it at all: measured on uv 0.10.7, a `.lock`
-            # DIRECTORY or a symlink to one exits 2 with "Could not acquire lock ... Is a
-            # directory". is_file() alone skipped it and reported the cache usable.
+            # A `.lock` directory or symlink to one also aborts uv.
             if not control.is_file() or not os.access(control, os.R_OK | os.W_OK):
                 return False
     return True
@@ -3982,10 +3938,7 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         return env
     if _uv_no_cache_requested():
-        # Removed, not left alone: uv parses an exported EMPTY value as `--cache-dir ''` even
-        # under --no-cache and exits 2, "a value is required for '--cache-dir'". setup.sh unsets
-        # it in its own no-cache branch; setup.ps1 has no cache handling at all, so on Windows a
-        # blank inherited value reached uv and failed the update before no-cache took effect.
+        # Removed: uv reads an exported EMPTY value as `--cache-dir ''` and exits 2, even with --no-cache.
         no_cache = {**(env or os.environ)}
         no_cache.pop("UV_CACHE_DIR", None)
         return no_cache
@@ -3996,12 +3949,9 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
         and _uv_cache_has_packages(recorded)
         and _uv_cache_is_writable(recorded)
     ):
-        # Only while it holds something and uv can still write to it: a marker for an emptied cache loses to a warm one, and setup treats
-        # the value this hands it as the caller's choice, so a cache gone read-only since the install would abort every uv command.
+        # Only while non-empty and writable: setup treats this as the caller's choice, so a read-only one would abort every uv command.
         return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
-    # Content cannot settle it: one on-demand wheel warms the Studio cache even in shared mode,
-    # so uv's default goes first and a warm Studio cache is the fallback below. The installers
-    # order the same three the same way.
+    # Order by location, not content: one wheel warms the Studio cache even in shared mode, so uv's default goes first, then a warm Studio cache.
     default_cache = _uv_default_cache_dir(cwd)
     if (
         default_cache is not None
@@ -4009,22 +3959,14 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
         and _uv_cache_is_writable(default_cache)
     ):
         return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
-    # setup.sh treats an inherited UV_CACHE_DIR as the caller's choice and skips its own write
-    # probe, so handing it an unwritable Studio cache aborts every uv command in the update --
-    # the one branch here that was still unprobed. Left unset, setup.sh probes and falls back.
-    #
-    # Only for a root that already exists, and the root is never created here: setup.sh fails
-    # fast on a STUDIO_HOME override that does not, exactly so a typo cannot materialise an
-    # empty workspace, and making the cache under it first would satisfy that guard and let the
-    # update run on against a tree with no venv.
+    # setup.sh skips its probe for inherited UV_CACHE_DIR, so probe here; never create the root, or setup's fail-fast on a typo is defeated.
     if STUDIO_HOME.is_dir():
         try:
             studio_cache.mkdir(parents = True, exist_ok = True)
         except OSError:
             pass
         if not _uv_cache_is_writable(studio_cache):
-            # Explicitly absent rather than a bare `return env`: the other branches all hand back
-            # a dict, and setup.sh's own probe wants the variable gone, not inherited from here.
+            # Explicitly absent: setup.sh's own probe wants the variable gone.
             unset = {**(env or os.environ)}
             unset.pop("UV_CACHE_DIR", None)
             return unset
@@ -4254,8 +4196,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # -NoProfile unconditionally, as in _run_setup_script: the visible console path loads a profile.
         ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            # Avoid the same Hidden/Bypass detection pair as setup above;
-            # both local and fetched runners set CREATE_NO_WINDOW.
+            # Avoid the Hidden/Bypass detection pair, as in setup above.
             ps_argv.extend(["-NoLogo", "-NonInteractive"])
 
         # Stops at the first candidate that launched; only an unlaunchable one moves on.
@@ -5003,31 +4944,19 @@ def _llama_runtime_to_grade() -> Optional[Path]:
     ``default_managed_llama_dir`` already grades the tree it names.
     """
     pinned = os.environ.get("LLAMA_SERVER_PATH", "").strip()
-    # Nonblank is not the test: _scan_pinned treats an absent pin as no pin and
-    # falls through to the managed tree, so suppressing the verdict for a path
-    # that was deleted would leave a quarantined managed runtime reporting Ready.
-    # The line is the finder's own _file_status, not the directory entry: a pin
-    # that exists but is denied or not executable does stop the finder, while a
-    # symlink whose target was deleted or quarantined is is_file() False, reads as
-    # "absent" there, and falls through like any missing pin. lexists called that
-    # a pin and left the managed tree the backend really loads ungraded.
+    # Use the finder's own _file_status: an absent pin (including a dangling symlink) falls through to the
+    # managed tree, which must then be graded.
     if pinned:
         try:
             stops_the_finder = Path(pinned).is_file()
         except PermissionError:
-            # is_file raises rather than answering for a locked file on Windows;
-            # _file_status retries and then calls it "denied", which halts the
-            # finder with no fallback.
+            # is_file raises for a locked file on Windows; _file_status calls it "denied", halting the finder.
             stops_the_finder = True
         except OSError:
             stops_the_finder = False
         if stops_the_finder:
             return None
-    # studio/backend on sys.path first. llama_cpp_path_settings imports
-    # storage.studio_db as a top level package and swallows the failure, so
-    # without this the stored selection always reads as absent and a user whose
-    # custom folder is set in Studio would be sent to repair a tree their backend
-    # never opens. Mirrors the backend_dir insert the other commands here do.
+    # Put studio/backend first on sys.path: else llama_cpp_path_settings swallows a failed storage.studio_db import and selection reads absent.
     backend_dir = _PACKAGE_ROOT / "studio" / "backend"
     if backend_dir.is_dir() and str(backend_dir) not in sys.path:
         sys.path.insert(0, str(backend_dir))
@@ -5039,57 +4968,29 @@ def _llama_runtime_to_grade() -> Optional[Path]:
         )
         from studio.install_llama_prebuilt import default_managed_llama_dir
     except Exception:
-        # No settings module means no stored selection to honour, and no way to
-        # ask whether a folder holds a server, so the managed root stands.
+        # Without a settings module there is no stored selection and no way to check for a server, so use the managed root.
         from studio.install_llama_prebuilt import default_managed_llama_dir
         return default_managed_llama_dir()
-    # UNSLOTH_LLAMA_CPP_PATH outranks the stored folder in the finder (1b before
-    # 2), and default_managed_llama_dir points at exactly that tree, so it is ours
-    # to grade even when an older selection is still in the settings database.
-    # Reading the setting first left the tree the backend actually opens ungraded.
-    # The managed marker is the exception: the finder skips the override when the
-    # desktop set it, so the stored folder wins again.
+    # UNSLOTH_LLAMA_CPP_PATH outranks the stored folder, unless the desktop set it (managed marker).
     override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
-    # Classified, not merely read off the marker. studio/backend/main.py calls
-    # mark_managed_llama_cpp_path(managed) before discovery, which marks any
-    # override equal to the managed tree however it got there, and the finder then
-    # skips it. _ensure_studio_env_exported writes exactly that value under a
-    # custom STUDIO_HOME and sets no marker, so trusting the marker alone made
-    # this grade the managed tree as a user pin while the backend walked past it
-    # to the stored selection: a damaged managed tree blocked launch and was sent
-    # for repair though nothing would ever open it.
+    # Classify the override rather than trust the marker: a custom STUDIO_HOME export equals the managed tree yet sets no marker.
     managed_override = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
     if override and not managed_override:
-        # Against the tree the studio home names with the override out of the way,
-        # never default_managed_llama_dir(): that reads the override first and
-        # would call every user pin managed. The backend compares against exactly
-        # this value, STUDIO_ROOT/llama.cpp computed before it exported anything.
+        # Compare against STUDIO_ROOT/llama.cpp, never default_managed_llama_dir(), which reads the override first and would call every pin managed.
         managed_override = _same_runtime_tree(
             expanded_user_path(override), _managed_llama_dir_ignoring_the_override()
         )
     if override and not managed_override:
-        # Only a folder that holds a server stops discovery. _scan_pinned finds no
-        # candidate under an empty or missing override and walks on, so a tree behind
-        # it is still ours to grade; one that holds a server is not.
-        # Not graded, because nothing can repair it: setup.sh derives LLAMA_CPP_DIR
-        # from STUDIO_HOME and setup.ps1 from Get-ManagedLlamaCppDir, and neither
-        # reads UNSLOTH_LLAMA_CPP_PATH at all, so an update sent here would rebuild a
-        # different tree, report success, and leave the next launch offering the same
-        # repair forever. LLAMA_SERVER_PATH is skipped for the same reason.
-        # expanded_user_path, not Path.expanduser: the finder reads the same
-        # variable through it, and a "~name" naming no account makes expanduser
-        # raise RuntimeError out of a doctor whose whole job is to answer.
+        # Only a folder holding a server stops discovery. Not graded: setup.sh / setup.ps1 never read
+        # UNSLOTH_LLAMA_CPP_PATH, so a repair would loop. expanded_user_path: expanduser can raise.
         if _layout_stops_discovery(llama_server_candidates(expanded_user_path(override))):
             return None
     if get_stored_custom_llama_cpp_path() is not None:
         return None
     if managed_override:
-        # The finder skips an override that names the managed tree, and that tree
-        # is the one this install owns, so it is still the answer.
+        # The finder skips an override naming the managed tree, which is still ours.
         return default_managed_llama_dir()
-    # The finder has walked past the override, so the tree it reaches is the one
-    # the managed root names with that override out of the way. Reading it with
-    # the variable still set would name the folder just ruled out.
+    # Read with the override out of the way, or it names the folder just ruled out.
     return _managed_llama_dir_ignoring_the_override()
 
 
@@ -5145,11 +5046,7 @@ def _managed_llama_dir_ignoring_the_override() -> Path:
     """
     from studio.install_llama_prebuilt import default_managed_llama_dir
 
-    # A master root first, for the same reason the export computes it that way: the
-    # runtimes sit beside studio/, and default_managed_llama_dir reads only the studio
-    # home, so it would answer <master>/studio/llama.cpp and grade the tree the
-    # installer exported -- the one actually in use -- as somebody's own pin, which
-    # left these installs out of the health check entirely.
+    # Master root first: runtimes sit beside studio/, which default_managed_llama_dir does not see.
     master_dir = _master_root_llama_dir()
     if master_dir is not None:
         return master_dir
@@ -5157,8 +5054,7 @@ def _managed_llama_dir_ignoring_the_override() -> Path:
     saved = os.environ.pop("UNSLOTH_LLAMA_CPP_PATH", None)
     had_home = "UNSLOTH_STUDIO_HOME" in os.environ
     saved_home = os.environ.get("UNSLOTH_STUDIO_HOME")
-    # Truthy-check, not a bare presence one, the way _ensure_studio_env_exported reads
-    # it: a blank UNSLOTH_STUDIO_HOME= is not a root either.
+    # Truthy-check: a blank UNSLOTH_STUDIO_HOME= is not a root either.
     if _STUDIO_HOME_IS_CUSTOM and not (saved_home or "").strip():
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     try:
@@ -5191,15 +5087,12 @@ def desktop_capabilities(
         # Did the install finish and are the backend boot deps still there.
         "studio_install_ok": bool(state["ok"]),
         "studio_install_reason": state["reason"],
-        # And is the llama.cpp runtime the backend loads still intact. Null when
-        # nothing is installed yet (NotInstalled, not a broken install). Older
-        # desktops ignore both keys.
+        # Null when nothing is installed yet. Older desktops ignore both keys.
         "llama_runtime_ok": None,
         "llama_runtime_reason": "",
         "version": "unknown",
     }
-    # Best effort: a probe that cannot answer must not turn a working install into
-    # a stale one, so a failure here leaves llama_runtime_ok null.
+    # A probe that cannot answer must not turn a working install stale.
     try:
         from studio.install_llama_prebuilt import installed_runtime_health
         runtime_root = _llama_runtime_to_grade()
@@ -5208,20 +5101,11 @@ def desktop_capabilities(
             if health is not None:
                 payload["llama_runtime_ok"], payload["llama_runtime_reason"] = health
         else:
-            # Null with a reason, because the two nulls are not the same thing.
-            # Nothing installed is a fact about the machine and stays true until
-            # the tree changes, so the desktop may cache it. This one is a fact
-            # about a selection the desktop's fingerprint does not watch, so the
-            # answer expires the moment the user clears their custom folder, and
-            # managed.rs declines to cache it on the strength of this reason.
-            # The verdict itself is still null, so nothing turns stale on it.
+            # A null that must not be cached: it depends on a selection the desktop does not watch
+            # (managed.rs keys off this reason).
             payload["llama_runtime_reason"] = "llama_runtime_not_managed"
     except Exception:
-        # The third null, and the one that must not be kept. Nothing-installed is a
-        # fact about the machine; this is a fact about one attempt, and it shares the
-        # damaged tree's fingerprint, so caching it froze a Ready that was never
-        # reached over a runtime the probe would have rejected. Same reason string
-        # shape as the skip, so managed.rs refuses both without a second rule.
+        # Never cache a failed attempt: it shares the damaged tree's fingerprint.
         payload["llama_runtime_ok"] = None
         payload["llama_runtime_reason"] = "llama_runtime_probe_failed"
     try:

@@ -439,6 +439,7 @@ export const BUDGET = {
   // Settings and the row menu on the loaded model in Recommended (#15249) add 82 B raw / 176 B transfer to the eager
   // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
   // build, Node 26, 105 chunks). Raised by that growth.
+  // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -483,8 +484,10 @@ export const BUDGET = {
   // Merged with main at 4f18eb4326 (the scheduled task model picker among its frontend changes): measured
   // 6,794.7 KB raw / 2,051.7 KB transfer (105 chunks). Raw still under main's limit; transfer set to that
   // plus about 1.2 KB.
-  transferBytes: 2_102_200,
-  rawBytes: 6_971_572,
+  // Merged with main at 9e1ddce97f (Cosmos3 video families): measured 6,795.1 KB raw / 2,051.9 KB transfer
+  // (105 chunks). Raw kept at main's limit, above it; transfer set to that plus about 1.2 KB.
+  transferBytes: 2_102_400,
+  rawBytes: 6_972_038,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
