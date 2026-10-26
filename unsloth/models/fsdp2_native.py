@@ -3089,6 +3089,14 @@ def _install_trainer_hooks():
             with fsdp2_gathered(root, trainable_only = True, include = include) as writer:
                 if writer is not False and _trainer_save_writer(self, root)[0]:
                     _save_unwrapped(self, root, output_dir)
+        elif getattr(getattr(type(root), "save", None), "_unsloth_fsdp2_collective", False):
+            # A SentenceTransformer (FastSentenceTransformer): its trainer's _save ignores a state_dict
+            # and calls model.save_pretrained, so gather here; the collective save then just writes.
+            from .fsdp2_save import fsdp2_gathered
+            from .sentence_transformer import fsdp2_st_usage_snippet
+            with fsdp2_st_usage_snippet(root), fsdp2_gathered(root) as writer:
+                if writer is not False and _trainer_save_writer(self, root)[0]:
+                    _save_unwrapped(self, root, output_dir)
         else:
             from .fsdp2_save import _dist, _wait_for_writer, writes_off_rank0
 
