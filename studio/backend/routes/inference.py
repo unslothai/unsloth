@@ -17043,7 +17043,6 @@ async def load_model(
     trained = _trained_run_dir(request.model_path)
     if trained:
         from hub.utils.host_paths import note_resolved_handle
-
         note_resolved_handle(request.model_path, trained)
         request.model_path = trained
     return await _tunnel_safe_json(
