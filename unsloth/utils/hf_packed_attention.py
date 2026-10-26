@@ -751,28 +751,34 @@ def block_packed_plan(layer, hidden_states, args, kwargs):
         or _in_graph_disabled()
     ):
         return None
+    # The SDPA policy is read every call, before anything is cached or marked: sdpa_kernel / flash off /
+    # deterministic mode take effect on the next block call exactly as main, and the plan carries the
+    # policy so Dynamo guards the traced choice on it.
+    policy = _sdpa_policy()
+    if policy is None:
+        return None
     device, total = hidden_states.device, hidden_states.shape[1]
     entry = _PLAN_CACHE.get(device)
-    if entry is None or entry[0] is not lengths or entry[1] != total:
+    inference = torch.is_inference_mode_enabled()
+    if entry is None or entry[0] is not lengths or entry[1] != total or entry[3] != inference:
         from .packing import get_packed_info_from_kwargs
 
         seq_info = get_packed_info_from_kwargs(kwargs, device)
         if seq_info is None:
             return None
         _, cu_seqlens, max_seqlen = seq_info
+        if torch.is_inference(cu_seqlens) and not inference:
+            # packing's cache can hold an inference-mode tensor for this lengths object (an earlier
+            # inference_mode forward over the same batch): autograd cannot save it for backward.
+            cu_seqlens = cu_seqlens.clone()
         # The segment count changes every step: one dynamic graph, not one per count.
         torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
         if isinstance(lengths, torch.Tensor) and lengths.dim() == 1:
             torch._dynamo.maybe_mark_dynamic(lengths, 0)
         # One document: transformers may pass no mask (plain causal), which varlen computes exactly.
         one_document = cu_seqlens.shape[0] == 2 and max_seqlen == total
-        entry = (lengths, total, (cu_seqlens, _max_carrier(max_seqlen, device), one_document))
+        entry = (lengths, total, (cu_seqlens, _max_carrier(max_seqlen, device), one_document), inference)
         _PLAN_CACHE[device] = entry
-    # The SDPA policy is read every call: sdpa_kernel / flash off / deterministic mode take effect on
-    # the next block call, and the plan carries the policy so Dynamo guards the traced choice on it.
-    policy = _sdpa_policy()
-    if policy is None:
-        return None
     plan = (*entry[2], policy)
     windows = _layer_windows(layer)
     for obj in (*args, *kwargs.values()):

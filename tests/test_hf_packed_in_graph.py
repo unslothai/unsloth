@@ -510,6 +510,21 @@ def test_kernel_verdict_is_cached_per_sdpa_policy(monkeypatch):
     assert len(asked) == 2 and all(key == args for key in asked)
 
 
+def test_inference_mode_forward_then_training_on_the_same_batch(monkeypatch, gate):
+    """A ref / old-logps forward under inference_mode over the same batch must not leave an
+    inference cu_seqlens in the plan: the next grad-mode step saves it for backward."""
+    model = _tiny("qwen3")
+    batch = _packed_batch([9])  # one document: no mask, the in-graph path takes it
+    M, counter, graphs, restore = _wrap_layers(monkeypatch, model)
+    try:
+        with torch.inference_mode():
+            model(**batch)
+        _loss(model, batch).backward()
+    finally:
+        restore[0].forward = restore[1]
+    assert _CALLS["bwd"] > 0
+
+
 def test_plan_is_only_set_while_a_compiled_block_runs(monkeypatch, gate):
     model = _tiny("qwen3")
     seen = []
