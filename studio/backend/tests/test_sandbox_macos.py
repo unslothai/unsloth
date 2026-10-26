@@ -458,10 +458,11 @@ def test_a_child_spawns_promptly_under_an_unlimited_fd_limit(tmp_path):
     except subprocess.TimeoutExpired:
         pytest.fail("spawning a child inside the sandbox did not finish within 30s")
     finally:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
         proc.wait()
         prepared.cleanup()
     assert proc.returncode == 0, stderr

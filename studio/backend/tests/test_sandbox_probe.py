@@ -307,6 +307,14 @@ def test_a_timed_out_probe_also_ends_what_the_payload_spawned(monkeypatch, tmp_p
     assert _gone(grandchild), f"the payload's child {grandchild} outlived the probe"
 
 
+def test_a_finished_probe_never_signals_a_group_it_no_longer_pins(monkeypatch):
+    """After communicate() reaps the leader, an emptied group's id can be reused by another process."""
+    signalled = []
+    monkeypatch.setattr(sandbox_probe.os, "killpg", lambda pgid, sig: signalled.append(pgid))
+    assert sandbox_probe.probe(_Backend("confining", _confining))[0] is True
+    assert signalled == []
+
+
 def test_a_timed_out_host_control_also_ends_what_it_spawned(monkeypatch, tmp_path):
     monkeypatch.setattr(sandbox_probe, "PROBE_TIMEOUT_SECONDS", 1.0)
     pid_file = tmp_path / "grandchild.pid"

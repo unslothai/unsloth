@@ -408,6 +408,28 @@ def test_a_reset_during_a_probe_keeps_its_result_out(probe_env):
     assert sandbox_probe.probe(_Backend()) == (False, "after")
 
 
+def test_an_older_probe_finishing_last_never_replaces_a_newer_verdict(probe_env, monkeypatch):
+    """With no TTL, a slow ordinary probe landing after a forced Refresh would have stuck for good."""
+    identity, verdicts, gate, calls = probe_env
+    slow_started, release_slow = threading.Event(), threading.Event()
+
+    def run_probe(backend, name, plan_cls):
+        if not slow_started.is_set():
+            slow_started.set()
+            release_slow.wait(5)
+            return False, "old failure"
+        return True, "forced pass"
+
+    monkeypatch.setattr(sandbox_probe, "_run_probe", run_probe)
+    slow = threading.Thread(target = sandbox_probe.probe, args = (_Backend(),))
+    slow.start()
+    assert slow_started.wait(5)
+    assert sandbox_probe.probe(_Backend(), force = True) == (True, "forced pass")
+    release_slow.set()
+    slow.join(5)
+    assert sandbox_probe.probe(_Backend()) == (True, "forced pass")
+
+
 def test_polling_an_answered_tool_never_probes_again(monkeypatch):
     monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
     _leap_time(monkeypatch, os_sandbox)

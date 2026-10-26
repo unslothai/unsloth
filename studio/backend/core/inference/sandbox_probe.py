@@ -6,6 +6,7 @@
 from __future__ import annotations
 import ctypes
 import errno
+import itertools
 import os
 import re
 import shutil
@@ -102,6 +103,9 @@ def _classified(reason: str, exc: BaseException | None = None) -> str:
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[bool, str]] = {}
 _generation = 0
+# Probes take a ticket when they start: a slower, older probe must not replace a newer (forced) verdict.
+_tickets = itertools.count(1)
+_published: dict[tuple[str, str], int] = {}
 
 
 def reset_probe_cache() -> None:
@@ -109,6 +113,7 @@ def reset_probe_cache() -> None:
     global _generation
     with _cache_lock:
         _cache.clear()
+        _published.clear()
         _generation += 1
     if sys.platform == "linux":
         try:
@@ -129,10 +134,14 @@ def _cache_put(
     reason: str,
     *,
     generation: int | None = None,
+    ticket: int = 0,
 ) -> None:
     with _cache_lock:
         if generation is not None and generation != _generation:
             return
+        if ticket < _published.get(key, 0):
+            return
+        _published[key] = ticket
         _cache.pop(key, None)
         _cache[key] = (available, reason)
         while len(_cache) > _CACHE_MAX_ENTRIES:
@@ -264,11 +273,13 @@ def _probe_preexec() -> None:
 
 
 def _end_probe_group(proc: subprocess.Popen) -> None:
-    """killpg, not kill: the payload's own children outlive a killed payload, and on macOS one spun forever."""
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except OSError:
-        proc.kill()
+    """killpg, not kill: the payload's own children outlive a killed payload, and on macOS one spun forever.
+    Only while the leader is unreaped: once reaped and its group empty, the id can name someone else's group."""
+    if proc.returncode is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
     proc.wait()
     for pipe in (proc.stdout, proc.stderr):
         if pipe is not None:
@@ -407,11 +418,12 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
 
     with _cache_lock:
         generation = _generation
+        ticket = next(_tickets)
     available, reason = _run_probe(backend, backend_name, ToolLaunchPlan)
     if isinstance(reason, UndecidedReason):
         # Re-probed on the next call: the resource may be freed by then.
         return False, reason
-    _cache_put(key, available, reason, generation = generation)
+    _cache_put(key, available, reason, generation = generation, ticket = ticket)
     return available, reason
 
 
