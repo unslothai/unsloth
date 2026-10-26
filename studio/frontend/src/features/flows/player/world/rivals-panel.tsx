@@ -73,6 +73,10 @@ export interface RivalsPanelProps {
   onTalking?: (talking: boolean) => void;
 }
 
+// A cancelled turn may leave its jobs queued, also across a 2D/3D remount: every attempt gets its own keys
+// so a retry is never dropped as a duplicate.
+let turnAttempts = 0;
+
 export function RivalsPanel({
   api,
   flowId,
@@ -106,8 +110,7 @@ export function RivalsPanel({
   );
   const run = useRef<AbortController | null>(null);
   const from = useRef<RivalsState | null>(null);
-  // A cancelled turn may leave its jobs queued: each attempt gets its own keys so a retry is not dropped.
-  const attempts = useRef(0);
+
   useEffect(() => () => run.current?.abort(), []);
   useEffect(() => {
     // Worlds without a simulation have no tick to pump the queue once its minute budget frees up.
@@ -147,7 +150,7 @@ export function RivalsPanel({
     const ctl = new AbortController();
     run.current = ctl;
     from.current = s;
-    const attempt = ++attempts.current;
+    const attempt = ++turnAttempts;
     const ask = entry
       ? (fid: string, request: unknown) =>
           queuedCall(
@@ -436,7 +439,8 @@ export function RivalsPanel({
                   <span className="flex-1">{o.text}</span>
                   <button
                     type="button"
-                    className="rounded-full bg-white/15 px-2 py-0.5"
+                    className="rounded-full bg-white/15 px-2 py-0.5 disabled:opacity-40"
+                    disabled={busy}
                     onClick={() => {
                       const r = acceptOffer(board, s, o.id);
                       setNote(r.ok ? "" : (r.why ?? ""));
@@ -447,7 +451,8 @@ export function RivalsPanel({
                   </button>
                   <button
                     type="button"
-                    className="rounded-full px-2 py-0.5 text-white/60"
+                    className="rounded-full px-2 py-0.5 text-white/60 disabled:opacity-40"
+                    disabled={busy}
                     onClick={() => onChange(declineOffer(s, o.id))}
                   >
                     No
@@ -497,7 +502,8 @@ export function RivalsPanel({
                 <button
                   type="button"
                   onClick={takeDeal}
-                  className="self-start rounded-full bg-emerald-400/20 px-2.5 py-1 text-emerald-100 hover:bg-emerald-400/30"
+                  disabled={busy}
+                  className="self-start rounded-full bg-emerald-400/20 disabled:opacity-40 px-2.5 py-1 text-emerald-100 hover:bg-emerald-400/30"
                   data-testid="rivals-deal"
                 >
                   Accept: {describe(board, deal.action)}
