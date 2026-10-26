@@ -1118,11 +1118,9 @@ class PreemptionController:
         count back over a newer sample. Returns the sequence it was recorded at, for
         `note_erased_since`, or None when nothing was recorded."""
         with self._lock:
-            if (
-                started_at_seq is not None
-                and self._last_sample_seq
-                and started_at_seq <= self._last_sample_started
-            ):
+            # Also before the first sample: a respawn's forget_residency() advances the floor, and
+            # a probe still in flight from the old server must not become the new one's count.
+            if started_at_seq is not None and started_at_seq <= self._last_sample_started:
                 return None
             if resident is None:
                 if (

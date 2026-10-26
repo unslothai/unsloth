@@ -250,7 +250,11 @@ def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
         name = _flag_name(token)
         following = tokens[index + 1] if index + 1 < len(tokens) else None
         if name == "--cache-reuse":
-            contradicts = _flag_value(token, following) not in ("0", None)
+            # As llama-server parses it, and as the env check above reads it: +0, 00 and -0 are
+            # zero too.
+            value = _flag_value(token, following)
+            leading = re.match(r"\s*[+-]?\d+", str(value or ""))
+            contradicts = value is not None and (leading is None or int(leading.group(0)) != 0)
         elif name in _CACHE_TYPE_FLAGS:
             value = (_flag_value(token, following) or "").strip().lower()
             contradicts = bool(value) and value not in ("f16", "fp16", "float16")
