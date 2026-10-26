@@ -12,6 +12,7 @@ import re
 from typing import Any, Optional
 
 from core.flows import assets as asset_store
+from core.flows.city import normalize_city
 from core.flows.expr import Prng, seed_from
 from core.flows.schema import WorldSpec
 from core.flows.story import _unique, input_values, most_downstream, node_value, slug
@@ -256,6 +257,9 @@ def normalize_world(
     props = props3d(raw.get("props3d"), width, height)
     if props:
         world["props3d"] = props
+    city = normalize_city(raw.get("city"))
+    if city:
+        world["city"] = city
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
 
 

@@ -56,6 +56,8 @@ import {
   isNoChatModelError,
   offlineLine,
 } from "./live-reply";
+import { cityQueueRate, mayorOn } from "./city-advisor";
+import { MayorHud } from "./mayor-panel";
 import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import {
@@ -336,9 +338,10 @@ export function WorldPlayer({
   const planEntry = sim ? spec.entry_points?.npc_plan : undefined;
   const chatEntry = sim ? spec.entry_points?.npc_chat : undefined;
   const queue = useMemo(
-    () => new BackgroundQueue(sim?.calls_per_minute ?? 0),
-    [sim],
+    () => new BackgroundQueue(sim?.calls_per_minute ?? cityQueueRate(baseSpec)),
+    [sim, baseSpec],
   );
+  const cityTile = useRef<(p: Point, drag: boolean) => boolean>(() => false);
   useEffect(() => () => queue.clear(), [queue]);
   const busy = useRef(new Set<string>());
   const steered = useRef(new Set<string>());
@@ -475,6 +478,7 @@ export function WorldPlayer({
             action: wsRef.current.action,
             onEvent: (text) => toast(text),
             safeAt: (p) => safeRef.current(p),
+            onTile: (p, drag) => cityTile.current(p, drag),
           },
         );
         game.current = handle;
@@ -1548,6 +1552,25 @@ export function WorldPlayer({
               </button>
             ) : null}
           </div>
+          {mayorOn(baseSpec) && started ? (
+            <MayorHud
+              spec={spec}
+              map={map}
+              city={ws.city}
+              setWs={setWs}
+              game={game}
+              ready={ready}
+              view={view}
+              locked={lockedRef}
+              queue={queue}
+              api={api}
+              flowId={flowId}
+              replyEntry={replyEntry}
+              steerHomes={!sim}
+              tileRef={cityTile}
+              toast={toast}
+            />
+          ) : null}
           {background && !talking ? (
             <div
               className="pointer-events-none absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/45 px-3 py-1 text-white/75 text-xs backdrop-blur-md"

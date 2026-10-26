@@ -470,6 +470,17 @@ export interface WorldSpec {
   view3d?: World3dView;
   props3d?: WorldProp3d[];
   player_node?: string;
+  city?: WorldCity | null;
+}
+
+/** Mayor mode: zone, build roads and power, and let a Micropolis-style simulation grow the town. */
+export interface WorldCity {
+  enabled?: boolean;
+  funds?: number;
+  tax?: number;
+  advisor?: boolean;
+  petitions?: boolean;
+  events?: boolean;
 }
 
 export type WorldPropKind =

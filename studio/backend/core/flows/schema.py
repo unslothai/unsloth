@@ -403,6 +403,17 @@ class WorldProp3d(_Strict):
     solid: bool = True  # blocks walking on its tile, in 2D and 3D
 
 
+class WorldCity(_Strict):
+    """Mayor mode: the player zones and builds, a Micropolis-style simulation grows the town."""
+
+    enabled: bool = True
+    funds: int = Field(default = 20000, ge = 0, le = 1_000_000)
+    tax: int = Field(default = 7, ge = 0, le = 20)
+    advisor: bool = True  # a monthly advisor report from the chat model
+    petitions: bool = True  # residents file 1-2 petitions a month
+    events: bool = True  # the model may pick one event a month from a fixed menu
+
+
 class WorldSpec(_Strict):
     title: str
     seed: int = 0
@@ -427,6 +438,7 @@ class WorldSpec(_Strict):
     view3d: Optional[World3dView] = None
     props3d: Optional[list[WorldProp3d]] = None
     player_node: Optional[str] = None
+    city: Optional[WorldCity] = None
 
 
 RunStatus = Literal[

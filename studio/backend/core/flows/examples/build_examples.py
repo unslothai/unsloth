@@ -943,6 +943,77 @@ def lantern_isle_3d() -> B:
     return b
 
 
+def mayor_meadow() -> B:
+    b = B(
+        "mayor-meadow",
+        "Mayor of Meadowbrook",
+        "world",
+        "Mayor mode: zone homes, shops and factories, lay roads and power lines, and watch a Micropolis-style "
+        "simulation grow the town. Villagers move into the houses; the chat model is the city advisor and speaks "
+        "for the residents once a month, but never places a tile.",
+        tags = ["world", "game", "city", "simulation"],
+        seed = 1989,
+    ).need("chat")
+    world = {
+        "title": "Meadowbrook",
+        "seed": 1989,
+        "biome": "meadow",
+        "width": 48,
+        "height": 36,
+        "intro_text": "Meadowbrook is a meadow with a handful of settlers and a mayor with 20,000 dollars. Build a "
+        "power plant, zone a block, and connect it all with roads and power lines.",
+        "player": {"name": "Mayor"},
+        "npcs": [
+            {
+                "name": "Rosa Park",
+                "persona": "A retired teacher who wants quiet streets and clean air.",
+                "greeting": "Welcome, Mayor. Mind you keep the factories away from my roses.",
+            },
+            {
+                "name": "Dev Patel",
+                "persona": "A young shopkeeper who wants busy roads past his door.",
+                "greeting": "More people means more customers. Build, build, build!",
+            },
+            {
+                "name": "Old Bram",
+                "persona": "A grumpy miller who distrusts taxes and loves the old meadow.",
+                "greeting": "Hmph. Another mayor with big plans.",
+            },
+            {
+                "name": "Lena Fox",
+                "persona": "A factory foreman who wants steady power and jobs.",
+                "greeting": "Power and jobs, Mayor. That is all we ask.",
+            },
+        ],
+        "city": {"funds": 20000, "tax": 7},
+    }
+    b.n("world", "world.spec", 0, 1, world = world)
+    b.n("play", "world.play", 1, 1, view = "2d")
+    b.e("world.world", "play.world")
+    b.n(
+        "reply",
+        "world.npc_reply",
+        2,
+        1,
+        label = "Advisor and residents (live)",
+        model = CHAT,
+        max_tokens = 160,
+        rules = "Stay in character. Keep replies under 50 words. Talk about life in the growing town.",
+    )
+    b.note(
+        "about",
+        "Mayor mode after Micropolis, the GPL release of the original SimCity: residential, commercial and industrial "
+        "demand, a power flood fill, traffic as a random-walk trip test, and land value, pollution and crime overlays, "
+        "all deterministic in the player. Pick a tool in the Mayor panel and click the map (zones are 3x3). One game "
+        "month is 24 seconds; the advisor and up to two resident petitions cost one model call a month.",
+        0,
+        2.2,
+        1.8,
+        1.4,
+    )
+    return b
+
+
 def comic_strip() -> B:
     b = B(
         "comic-strip",
@@ -4396,6 +4467,7 @@ BUILDERS = (
     inventory_reconcile,
     campaign_kit,
     lantern_isle_3d,
+    mayor_meadow,
 )
 
 

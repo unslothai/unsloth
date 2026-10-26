@@ -5,6 +5,7 @@
 import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
 import { type AutoState, autoOf, initialAuto } from "./autonomy";
+import { type CityState, cityOf, parseCity } from "./city-sim";
 import {
   REPLY_ACTIONS,
   type ReplyAction,
@@ -65,6 +66,7 @@ export interface WorldState {
   auto?: AutoState;
   npcAt?: Record<string, Point>;
   action?: { combat?: unknown; pose?: { z: number } };
+  city?: CityState;
 }
 
 export interface Errand {
@@ -375,6 +377,7 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   const itemIds = new Set(played.items.map((i) => i.id));
   const questIds = new Set(played.quests.map((q) => q.id));
   const fresh = initialWorldState(played);
+  const city = cityOf(played) ? parseCity(r.city, played) : null;
   const npc: Record<string, NpcMind> = {};
   for (const id of Object.keys(fresh.npc))
     npc[id] = r.npc?.[id] ? mindOf(r.npc[id], fresh.npc[id]) : fresh.npc[id];
@@ -415,6 +418,7 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
     ...(played.action?.movement && r.action && typeof r.action === "object"
       ? { action: r.action }
       : {}),
+    ...(city ? { city } : {}),
   };
 }
 
