@@ -70,3 +70,26 @@ def test_every_loop_route_counts_through_the_reading_variant():
         source = "".join(inspect.getsource(route).split())
         assert "_openai_llama_count_completions_holder(" not in source
         assert "_openai_llama_count_embeddings_holder(" not in source
+
+
+def test_a_tts_holder_on_the_loop_plans_on_the_fresh_reading(backend, monkeypatch):
+    fake, controller = backend
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: fake)
+
+    async def route():
+        # As _generate_tts_wav runs: read, then the sync context manager counts and plans.
+        await inference._openai_llama_read_cache_for_direct_holder(fake)
+        with inference._direct_llama_request(kv_tokens = 500) as holder:
+            return holder, controller.participant("chat").state
+
+    holder, state = asyncio.run(route())
+    assert holder is not None
+    assert state == ParticipantState.PREEMPTING, "the TTS plan ran on the stale reading"
+
+
+def test_the_tts_route_reads_the_cache_before_its_holder_plans():
+    import inspect
+
+    source = "".join(inspect.getsource(inference._generate_tts_wav).split())
+    read = source.index("await_openai_llama_read_cache_for_direct_holder(get_llama_cpp_backend())")
+    assert read < source.index("with_direct_llama_request(")

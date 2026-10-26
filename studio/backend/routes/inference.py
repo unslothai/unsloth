@@ -3624,6 +3624,13 @@ async def _openai_llama_count_direct_holder_async(
     first, awaited in a worker as the raw relays do: on the loop the plan would otherwise start the
     read and plan on the reading already held, missing the cells a running holder took since, and
     send this request upstream with no room made for it."""
+    await _openai_llama_read_cache_for_direct_holder(llama_backend)
+    return _openai_llama_count_direct_holder(llama_backend, tokens, prefix, refresh = False)
+
+
+async def _openai_llama_read_cache_for_direct_holder(llama_backend) -> None:
+    """The cache read a direct holder plans on, awaited in a worker by a caller on the event loop
+    (bounded, as the raw relays' read is). A no-op when preemption does not apply."""
     try:
         if _openai_llama_direct_holder_applies(llama_backend):
             await _refresh_residency_before_planning_async(
@@ -3631,7 +3638,6 @@ async def _openai_llama_count_direct_holder_async(
             )
     except Exception:
         logger.debug("could not read the cache before counting a direct holder", exc_info = True)
-    return _openai_llama_count_direct_holder(llama_backend, tokens, prefix, refresh = False)
 
 
 def _openai_llama_count_completions_holder(llama_backend, prompt_text) -> Optional[str]:
@@ -27094,6 +27100,10 @@ async def _generate_tts_wav(
         # of the request timeout after the chat had already reported it stopped.
         _audio_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, _audio_cancel))
         try:
+            if _direct_llama_tts and _direct_llama_kv_tokens:
+                # On the loop the holder's plan only starts the cache read and plans on the
+                # reading already held, so read it first, as the completions route does.
+                await _openai_llama_read_cache_for_direct_holder(get_llama_cpp_backend())
             with _direct_llama_request(
                 _direct_llama_tts, kv_tokens = _direct_llama_kv_tokens
             ) as _tts_holder:
