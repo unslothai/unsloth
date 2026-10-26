@@ -39,7 +39,9 @@ def _case(rank, world, tmp):
     patch_saving_functions(tok)
     model = build(LLAMA)
     model.base_model.model.__dict__["_saved_temp_tokenizer"] = tok
-    tp_native.apply_tensor_parallel(model, init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))["tp"])
+    tp_native.apply_tensor_parallel(
+        model, init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))["tp"]
+    )
     writers = []
     original = tok.original_save_pretrained
 
@@ -107,7 +109,8 @@ def _spawn(world = 2):
             p.join(600)
         assert [p.exitcode for p in procs] == [0] * world
         results = [
-            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
         ]
     if "skip" in results[0]:
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
