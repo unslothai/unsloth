@@ -53,7 +53,6 @@ import {
   FileSearchIcon,
   FlashIcon,
   PauseIcon,
-  PlayIcon,
   PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
@@ -108,6 +107,7 @@ import {
   filterEntries,
   useApiMonitor,
 } from "./use-api-monitor";
+import { PlayIcon } from "lucide-react";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
@@ -1788,11 +1788,15 @@ export function ApiMonitorPage(): ReactElement {
                       "bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-500",
                   )}
                 >
-                  <HugeiconsIcon
-                    icon={paused ? PlayIcon : PauseIcon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
+                  {paused ? (
+                    <PlayIcon strokeWidth={1.75} className="size-4" />
+                  ) : (
+                    <HugeiconsIcon
+                      icon={PauseIcon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  )}
                 </Button>
               </ToolbarTooltip>
               <ToolbarTooltip label="Refresh">

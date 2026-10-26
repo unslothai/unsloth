@@ -14,12 +14,12 @@ import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Bookmark,
-  Check,
   ClipboardPaste,
   ImageUp,
 } from "lucide-react";
 import { Fragment, useState } from "react";
 import { DEFAULT_PRESET_NAME } from "./preset-policy";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 interface MediaGenerationPresetControlProps {
   kind: "image" | "video";
@@ -185,7 +185,7 @@ export function MediaGenerationPresetControl({
                     </span>
                   ) : null}
                   {isActive ? (
-                    <Check className="size-3.5 shrink-0 text-primary" />
+                    <HugeiconsIcon icon={Tick02Icon} className="size-3.5 shrink-0 text-primary" />
                   ) : null}
                 </button>
               </Fragment>

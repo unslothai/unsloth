@@ -42,7 +42,6 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
-  PlayIcon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -68,6 +67,7 @@ import {
 } from "../lib/decision-model-labels";
 import { DecisionTryDialog } from "./decision-try-dialog";
 import { SettingsRow } from "./settings-row";
+import { PlayIcon } from "lucide-react";
 
 const DOWNLOAD_SCOPE = "systemone";
 const DOCS_URL = "https://unsloth.ai/docs/models/decision-laya";
@@ -386,8 +386,7 @@ export function DecisionApiSection(): ReactElement | null {
                   disabled={!enabled}
                   onClick={() => setTryOpen(true)}
                 >
-                  <HugeiconsIcon
-                    icon={PlayIcon}
+                  <PlayIcon
                     strokeWidth={2}
                     className="size-3.5"
                   />

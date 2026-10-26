@@ -111,11 +111,6 @@ import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
   Columns2Icon,
-  MoreHorizontalIcon,
-  PlusIcon,
-  SquareIcon,
-  SlidersHorizontalIcon,
-  XIcon,
 } from "lucide-react";
 import {
   AttachmentIcon,
@@ -128,6 +123,11 @@ import {
   Image03Icon,
   McpServerIcon,
   Scroll01Icon,
+  MoreHorizontalIcon,
+  PlusSignIcon,
+  StopIcon,
+  SlidersHorizontalIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
@@ -556,7 +556,7 @@ function PendingImageThumb({
         className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-white text-muted-foreground shadow-sm hover:bg-destructive hover:text-destructive-foreground"
         aria-label="Remove attachment"
       >
-        <XIcon className="size-3" />
+        <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
       </button>
     </div>
   );
@@ -590,7 +590,7 @@ function PillGlyph({ children }: { children: ReactNode }) {
   return (
     <span className="composer-pill-glyph">
       {children}
-      <XIcon className="composer-pill-x" />
+      <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
     </span>
   );
 }
@@ -2906,7 +2906,7 @@ export function SharedComposer({
                 className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
                 aria-label="Remove audio"
               >
-                <XIcon className="size-3" />
+                <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
               </button>
             </div>
           ))}
@@ -2960,7 +2960,7 @@ export function SharedComposer({
                   data-pill-label="Add files and more"
                   className="unsloth-composer-plus"
                 >
-                  <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
+                  <HugeiconsIcon icon={PlusSignIcon} className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent
@@ -3062,7 +3062,7 @@ export function SharedComposer({
                 ))}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
-                    <MoreHorizontalIcon className="size-4" />
+                    <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
                     More
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
@@ -3075,7 +3075,7 @@ export function SharedComposer({
                         scrollTarget: "chat-composer",
                       })}
                     >
-                      <SlidersHorizontalIcon className="size-4" />
+                      <HugeiconsIcon icon={SlidersHorizontalIcon} className="size-4" />
                       {t("composerSettings.settings")}
                     </DropdownMenuItem>
                   </DropdownMenuSubContent>
@@ -3513,7 +3513,7 @@ export function SharedComposer({
                     >
                       <Spinner className="size-4" />
                       <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
-                      <XIcon className="size-3.5" aria-hidden="true" />
+                      <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" aria-hidden="true" />
                     </Button>
                   ) : (
                     <TooltipIconButton
@@ -3545,7 +3545,7 @@ export function SharedComposer({
                         : "Stop dictation"
                     }
                   >
-                    <SquareIcon className="composer-glyph-snap size-3.5 animate-pulse fill-current" />
+                    <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 animate-pulse fill-current" />
                   </TooltipIconButton>
                 )}
               </>
@@ -3562,7 +3562,7 @@ export function SharedComposer({
                   aria-label="Stop prompt queue"
                   className="btn-fill flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground "
                 >
-                  <SquareIcon className="size-2.5 shrink-0 fill-current" />
+                  <HugeiconsIcon icon={StopIcon} className="size-2.5 shrink-0 fill-current" />
                   <span className="tabular-nums">
                     Stop queue {queueProgress.current}/{queueProgress.total}
                   </span>
@@ -3577,7 +3577,7 @@ export function SharedComposer({
                 aria-label="Stop generating"
                 onClick={stop}
               >
-                <SquareIcon className="composer-glyph-snap size-3.5 fill-current" />
+                <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
               </Button>
             ) : (
               <TooltipIconButton
