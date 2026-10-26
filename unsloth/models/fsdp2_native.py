@@ -1265,11 +1265,31 @@ _FLOAT8 = tuple(
 )
 
 
-def _is_torchao_weight(t):
-    """A torchao tensor subclass weight (load_in_fp8's Float8Tensor, other torchao quantized tensors). It
+def _holds_float8(t, depth = 0):
+    """True when a tensor, or a tensor subclass's inner tensors (__tensor_flatten__), stores float8."""
+    if t.dtype in _FLOAT8:
+        return True
+    if depth > 3 or not hasattr(t, "__tensor_flatten__"):
+        return False
+    try:
+        names = t.__tensor_flatten__()[0]
+    except Exception:
+        return False
+    for name in names:
+        inner = getattr(t, name, None)
+        if isinstance(inner, torch.Tensor) and _holds_float8(inner, depth + 1):
+            return True
+    return False
+
+
+def _is_torchao_float8_weight(t):
+    """A torchao inference FP8 weight (load_in_fp8's Float8Tensor, a float8 AffineQuantizedTensor). It
     reports the high precision dtype (bfloat16), not float8, and implements only the ops its linear needs:
-    fully_shard's sharding (aten.new_zeros) and DDP's flattening broadcast (reshape to [-1]) fail on it."""
-    return any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__)
+    fully_shard's sharding (aten.new_zeros) fails on it. Other torchao subclasses (NF4Tensor, int8 mixed
+    precision training weights) store no float8 and implement FSDP2's hooks, so fully_shard keeps them."""
+    if not any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__):
+        return False
+    return _holds_float8(t)
 
 
 def _float8_params(model):
@@ -1282,7 +1302,7 @@ def _float8_params(model):
         # torchao's Float8 training weights (torchao.float8, enable_fsdp_float8_all_gather) implement
         # FSDP2's all-gather hooks, so fully_shard keeps them.
         if p.dtype in _FLOAT8
-        or (_is_torchao_weight(p) and not type(p).__module__.startswith("torchao.float8"))
+        or (_is_torchao_float8_weight(p) and not type(p).__module__.startswith("torchao.float8"))
     ]
     trainable = [n for n, p in found if p.requires_grad]
     if trainable:
