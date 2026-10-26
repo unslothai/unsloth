@@ -138,6 +138,53 @@ async def test_a_spare_key_deleted_by_a_credential_reset_is_not_used():
     await eng.release_spare_keys()
 
 
+@run_async
+async def test_a_cancelled_key_acquisition_still_revokes_its_key():
+    import threading
+
+    from utils.account_context import OWNER
+
+    gate, minted, revoked = threading.Event(), [], []
+    eng = _engine(dict(BASE))
+
+    def mint(account):
+        gate.wait(2)
+        minted.append(len(minted) + 1)
+        return (f"k{minted[-1]}", minted[-1])
+
+    eng.mint_key = mint
+    eng.revoke_key = lambda key_id: revoked.append(key_id)
+    eng.key_alive = lambda key_id: True
+    # Cancelled while minting a fresh key.
+    first = asyncio.create_task(eng.take_key(OWNER))
+    await asyncio.sleep(0.05)
+    first.cancel()
+    await asyncio.gather(first, return_exceptions = True)
+    gate.set()
+    for _ in range(100):
+        if revoked:
+            break
+        await asyncio.sleep(0.02)
+    assert revoked == [1]
+    # Cancelled while waiting on the spare minted ahead.
+    gate.clear()
+    eng._spare_keys[(OWNER.account_id, OWNER.username)] = asyncio.create_task(
+        eng._mint_spare(OWNER)
+    )
+    second = asyncio.create_task(eng.take_key(OWNER))
+    await asyncio.sleep(0.05)
+    second.cancel()
+    await asyncio.gather(second, return_exceptions = True)
+    gate.set()
+    for _ in range(100):
+        if len(revoked) == 2:
+            break
+        await asyncio.sleep(0.02)
+    await asyncio.gather(*eng._revoking, return_exceptions = True)
+    assert sorted(revoked) == sorted(minted)
+    await eng.release_spare_keys()
+
+
 def test_a_run_key_reads_dead_after_revoke_or_account_reset(tmp_path, monkeypatch):
     import secrets
 

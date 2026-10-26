@@ -816,24 +816,42 @@ class FlowEngine:
     async def take_key(self, account: AccountContext) -> tuple[str, Optional[int]]:
         slot = (account.account_id, account.username)
         spare = self._spare_keys.pop(slot, None)
-        found = None
-        if spare is not None and spare.get_loop() is asyncio.get_running_loop():
-            if not spare.done():
-                try:
-                    found = await spare
-                except Exception:
-                    found = None
-            elif not spare.cancelled() and spare.exception() is None:
-                found = spare.result()
-        # A credential reset while the spare waited deletes it.
-        if found is not None and not await asyncio.to_thread(self.key_alive, found[1]):
-            self._revoke_soon(found[1])
-            found = None
-        if found is None:
-            found = await asyncio.to_thread(self.mint_key, account)
+        found = pending = None
+        try:
+            if spare is not None and spare.get_loop() is asyncio.get_running_loop():
+                if not spare.done():
+                    pending = spare
+                    try:
+                        found = await asyncio.shield(spare)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        found = None
+                    pending = None
+                elif not spare.cancelled() and spare.exception() is None:
+                    found = spare.result()
+            # A credential reset while the spare waited deletes it.
+            if found is not None and not await asyncio.to_thread(self.key_alive, found[1]):
+                self._revoke_soon(found[1])
+                found = None
+            if found is None:
+                pending = asyncio.ensure_future(asyncio.to_thread(self.mint_key, account))
+                found = await asyncio.shield(pending)
+                pending = None
+        except asyncio.CancelledError:
+            # The caller never gets this key, so nothing else would revoke it.
+            if found is not None:
+                self._revoke_soon(found[1])
+            elif pending is not None:
+                pending.add_done_callback(self._revoke_minted)
+            raise
         if slot not in self._spare_keys:
             self._spare_keys[slot] = asyncio.create_task(self._mint_spare(account))
         return found
+
+    def _revoke_minted(self, task: asyncio.Future) -> None:
+        if not task.cancelled() and task.exception() is None:
+            self._revoke_soon(task.result()[1])
 
     async def _mint_spare(self, account: AccountContext) -> tuple[str, Optional[int]]:
         token, key_id = await asyncio.to_thread(self.mint_key, account)
