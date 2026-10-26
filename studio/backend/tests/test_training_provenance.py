@@ -736,9 +736,7 @@ def test_extension_before_shard_weight_names_count_as_model_weights(tmp_path, fi
     snapshot = _model_snapshot(tmp_path, "unsloth/Qwen3.5-2B", "qwen35", weights = False)
     (snapshot / filename).write_bytes(b"weights")
     assert _snapshot_has_model_weights(snapshot)
-    assert exact_model_snapshot_path(str(snapshot), "unsloth/Qwen3.5-2B") == str(
-        snapshot.resolve()
-    )
+    assert exact_model_snapshot_path(str(snapshot), "unsloth/Qwen3.5-2B") == str(snapshot.resolve())
 
 
 def test_exact_model_snapshot_accepts_own_blob_symlink(tmp_path):
