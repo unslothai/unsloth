@@ -125,7 +125,7 @@ export function SettingsCardRow({
       data-settings-label={label}
       className="flex flex-col border-border/60 py-3.5 not-first:border-t"
     >
-      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
         <div className="flex min-w-0 flex-1 basis-60 flex-col gap-1">
           <span className="text-sm font-medium text-foreground">
             {label}
