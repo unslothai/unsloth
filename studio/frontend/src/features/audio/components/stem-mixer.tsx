@@ -18,7 +18,6 @@ import {
   Download01Icon,
   HeadphonesIcon,
   PauseIcon,
-  PlayIcon,
   VolumeHighIcon,
   VolumeOffIcon,
 } from "@hugeicons/core-free-icons";
@@ -40,7 +39,7 @@ import {
 import type { StemMixerProps } from "./stem-mixer-types";
 import { WaveformBars } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
-import { ArrowUpIcon } from "lucide-react";
+import { ArrowUpIcon, PlayIcon } from "lucide-react";
 
 const SEEK_STEP_SECONDS = 5;
 
@@ -149,10 +148,11 @@ export function StemMixer({
           disabled={!ready}
           onClick={toggle}
         >
-          <HugeiconsIcon
-            icon={playing ? PauseIcon : PlayIcon}
-            className="size-3.5"
-          />
+          {playing ? (
+            <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
+          ) : (
+            <PlayIcon className="size-3.5" />
+          )}
         </Button>
         <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
           {formatSeconds(position)} / {formatSeconds(duration)}
