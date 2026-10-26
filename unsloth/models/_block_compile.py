@@ -832,7 +832,7 @@ def _wrap(
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
         # Packed rows run hf_packed_attention's varlen kernel inside the graph from a plan built
-        # here, eagerly (cu_seqlens, bucketed max length), else outside the graph (see there).
+        # here, eagerly (cu_seqlens, longest segment), else outside the graph (see there).
         packed_module = sys.modules.get(_PACKED_MODULE)
         packed = getattr(packed_module, "IN_COMPILED_BLOCK", _NO_PACKED)
         packed_previous = packed[0]
