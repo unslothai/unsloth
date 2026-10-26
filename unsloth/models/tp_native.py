@@ -1183,7 +1183,6 @@ def _replica_generate(level, prior):
 
     def generate(*args, **kwargs):
         from .tp_replica import tp_generate
-
         return tp_generate(level, prior, args, kwargs)
 
     generate._unsloth_tp_generate = True
@@ -1251,7 +1250,13 @@ def _set_local_heads(module, region, tp):
     # What tp_replica puts back while a whole replica is gathered.
     module.__dict__["_unsloth_tp_saved_attrs"] = {
         name: module.__dict__.get(name, _MISSING)
-        for name in ("num_heads", "num_key_value_heads", "num_attention_heads", "num_kv_heads", "config")
+        for name in (
+            "num_heads",
+            "num_key_value_heads",
+            "num_attention_heads",
+            "num_kv_heads",
+            "config",
+        )
     }
     module._unsloth_tp_heads = heads
     module._unsloth_tp_kv_heads = kv_heads

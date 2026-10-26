@@ -49,7 +49,6 @@ _MiB = 1 << 20
 
 def _dist():
     import torch.distributed as dist
-
     return dist if dist.is_available() and dist.is_initialized() else None
 
 
@@ -169,7 +168,6 @@ def _free_bytes(device):
 def _host_free():
     try:
         import psutil
-
         return psutil.virtual_memory().available
     except Exception:
         pages = os.sysconf("SC_AVPHYS_PAGES") if hasattr(os, "sysconf") else 0
@@ -213,7 +211,9 @@ def _full_params4bit(weight, base, group, device, keep):
     full_state = getattr(weight, "_unsloth_tp_quant_state", None)
     absmax = None
     if full_state is None:  # no 1-GPU state kept: the shards' float32 absmax, gathered the same way
-        absmax = _gather_cat(state.absmax.float().view(out_local, in_local // blocksize), dim, group, tp)
+        absmax = _gather_cat(
+            state.absmax.float().view(out_local, in_local // blocksize), dim, group, tp
+        )
     if not keep:
         return None
     if col:
@@ -269,7 +269,9 @@ class _Replica:
 def _room(need, free, device):
     """Every rank's (need, free) in bytes, rank order (all ranks run the gather or none does)."""
     dist = _dist()
-    mine = torch.tensor([float(need), float(free)], dtype = torch.float64, device = _comm_device(None, device))
+    mine = torch.tensor(
+        [float(need), float(free)], dtype = torch.float64, device = _comm_device(None, device)
+    )
     if dist is None:
         return [(need, free)]
     rows = [torch.empty_like(mine) for _ in range(dist.get_world_size())]
@@ -279,7 +281,9 @@ def _room(need, free, device):
 
 def _short(room):
     """The first rank without room, or None."""
-    return next((r for r, (need, free) in enumerate(room) if need and need + _margin(need) > free), None)
+    return next(
+        (r for r, (need, free) in enumerate(room) if need and need + _margin(need) > free), None
+    )
 
 
 def _plan(root, select, keep, what, allow_cpu):
@@ -311,7 +315,13 @@ def _plan(root, select, keep, what, allow_cpu):
     )
 
 
-def gather_replica(model, select = "all", keep = True, what = "generate", allow_cpu = False):
+def gather_replica(
+    model,
+    select = "all",
+    keep = True,
+    what = "generate",
+    allow_cpu = False,
+):
     """Collective (every rank of the tensor parallel world): replace the sharded parameters of `model` by whole
     tensors. select "all" (everything sharded, plus the module state the shards changed: a one-GPU model) or
     "adapters" (the trainable / LoRA tensors only, for an adapter save). keep = False takes part in the gather
@@ -425,7 +435,9 @@ def tp_for_inference(model):
     """for_inference: the whole replica on every rank (collective)."""
     if _marked(model, tpn._TP_FLAG):
         replica = gather_replica(model, "all", keep = True, what = "for_inference")
-        if _GENERATE_DEPTH[0] == 0:  # the user's call (generate's own for_inference does not keep it)
+        if (
+            _GENERATE_DEPTH[0] == 0
+        ):  # the user's call (generate's own for_inference does not keep it)
             replica.persistent = True
     elif _marked(model, "_unsloth_pp"):
         raise RuntimeError(_refusal(model, "for_inference"))
@@ -487,7 +499,9 @@ def tp_generate(level, prior, args, kwargs):
 
 def _timeout():
     try:
-        return datetime.timedelta(seconds = float(os.environ.get("UNSLOTH_TP_SAVE_TIMEOUT", 7 * 86400)))
+        return datetime.timedelta(
+            seconds = float(os.environ.get("UNSLOTH_TP_SAVE_TIMEOUT", 7 * 86400))
+        )
     except ValueError:
         return datetime.timedelta(days = 7)
 
@@ -547,7 +561,12 @@ def _on_rank0(key, what, call):
     return value
 
 
-def tp_collective(model, what, call, select = "all"):
+def tp_collective(
+    model,
+    what,
+    call,
+    select = "all",
+):
     """Every rank calls; the tensors `select` needs are gathered to rank 0, which runs `call` (the unchanged
     single-process save) on the one-GPU-looking model; the other ranks wait and return rank 0's result."""
     if _ACTIVE or _dist() is None:
@@ -562,7 +581,9 @@ def tp_collective(model, what, call, select = "all"):
     gathered = False
     if current is None or (current.select != "all" and select == "all"):
         if _rank() == 0 and select == "all":
-            print(f"Unsloth: tensor parallel `{what}`: gathering the whole model to rank 0, which saves.")
+            print(
+                f"Unsloth: tensor parallel `{what}`: gathering the whole model to rank 0, which saves."
+            )
         gather_replica(root, select, keep = writer, what = what, allow_cpu = select == "all")
         gathered = writer
     try:

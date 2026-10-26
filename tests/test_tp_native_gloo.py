@@ -118,7 +118,9 @@ def _case_parity(
     assert tpn.apply_tensor_parallel(model, mesh["tp"]) is model  # idempotent
     # generate runs on a gathered replica (tp_replica.py); the first training forward below puts the shards
     # back, so the parity checks also cover that release.
-    generated = model.generate(input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0)
+    generated = model.generate(
+        input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0
+    )
     assert generated.shape == (1, 4), generated.shape
     from test_fsdp2_native_units import _load_native
 
@@ -995,7 +997,11 @@ def test_tp2_entry_points_outside_the_regions_are_refused_or_gather():
                         value,
                     )
                 elif "for_inference" in key or key.startswith("generate:"):
-                    assert value is None, (applied, key, value)  # gathered a replica (tp_replica.py)
+                    assert value is None, (
+                        applied,
+                        key,
+                        value,
+                    )  # gathered a replica (tp_replica.py)
                 elif key.startswith("replica_released:"):
                     assert value is True, (applied, key, value)
                 elif key.startswith("model_init:"):

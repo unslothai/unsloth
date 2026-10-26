@@ -316,7 +316,6 @@ def _is_adapter(values):
         return False
     try:
         from huggingface_hub import file_exists
-
         return bool(file_exists(name, "adapter_config.json", token = values.get("token")))
     except Exception:
         return False

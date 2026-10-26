@@ -34,7 +34,6 @@ from test_tp_native_oracle import ARCHS, LLAMA, _batch, build, skip_unsupported 
 
 def _mesh(world, tp = None):
     from torch.distributed.device_mesh import init_device_mesh
-
     tp = tp or world
     return init_device_mesh("cpu", (world // tp, tp), mesh_dim_names = ("dp", "tp"))["tp"]
 
@@ -47,11 +46,16 @@ def _generate(model, prompt, **kwargs):
 
 def _all_plain(model):
     from torch.distributed.tensor import DTensor
-
     return not any(isinstance(p, DTensor) for p in model.parameters())
 
 
-def _case_generate(rank, world, tmp, arch, tp = None):
+def _case_generate(
+    rank,
+    world,
+    tmp,
+    arch,
+    tp = None,
+):
     """Train 2 steps under tp, then for_inference + greedy / sampled generate on the replica vs one process with
     the same (gathered) weights; for_training (and a training forward) puts the shards back."""
     error = _import_checkout_unsloth()
@@ -143,9 +147,13 @@ def _case_qlora(rank, world, tmp, nested):
         codes, deq = ref_w[n]
         got = m.weight.data.reshape(-1).view(torch.uint8)
         codes_equal &= torch.equal(got, codes)
-        deq_equal &= torch.equal(bnb.functional.dequantize_4bit(m.weight.data, m.weight.quant_state), deq)
+        deq_equal &= torch.equal(
+            bnb.functional.dequantize_4bit(m.weight.data, m.weight.quant_state), deq
+        )
         shapes &= tuple(m.weight.quant_state.shape) == tuple(deq.shape)
-        shapes &= m.weight.quant_state.nested == nested  # the 1-GPU QuantState, double quantized or not
+        shapes &= (
+            m.weight.quant_state.nested == nested
+        )  # the 1-GPU QuantState, double quantized or not
     with torch.no_grad():
         logits = model(input_ids = ids).logits
         ref_logits = ref(input_ids = ids).logits
@@ -160,7 +168,9 @@ def _case_qlora(rank, world, tmp, nested):
     }
     tp_replica.release_replica(model)
     with torch.no_grad():
-        out["released_logits_err"] = float((model(input_ids = ids).logits - sharded_logits).abs().max())
+        out["released_logits_err"] = float(
+            (model(input_ids = ids).logits - sharded_logits).abs().max()
+        )
     return out
 
 
@@ -173,7 +183,11 @@ def _files(directory):
     return out
 
 
-def _slow_rank0(obj, attr, seconds = 1.5):
+def _slow_rank0(
+    obj,
+    attr,
+    seconds = 1.5,
+):
     """Rank 0's writer sleeps first: a rank that returned before rank 0 wrote would see no files."""
     import torch.distributed as dist
 
@@ -233,7 +247,9 @@ def _case_save(rank, world, tmp):
     def fail():
         raise ValueError("disk full")
 
-    out["collective_error"] = _raised(lambda: tp_replica.tp_collective(model, "probe", fail, "adapters"))
+    out["collective_error"] = _raised(
+        lambda: tp_replica.tp_collective(model, "probe", fail, "adapters")
+    )
     # Reload: every rank loads what rank 0 wrote (the adapter matches the trained tp model).
     from peft import PeftModel
 
@@ -259,7 +275,9 @@ def _case_merged(rank, world, tmp, ckpt):
     from unsloth.models import tp_native
     from unsloth.save import patch_saving_functions
 
-    zoo_saving._active_merge_device = lambda: "cpu"  # the device spoof says cuda; these ranks have none
+    zoo_saving._active_merge_device = (
+        lambda: "cpu"
+    )  # the device spoof says cuda; these ranks have none
     zoo_saving.DEVICE_TYPE = "cpu"
 
     def load():
@@ -316,7 +334,9 @@ def _case_refuse(rank, world, tmp):
     if rank == 1:
         tp_replica._free_bytes = lambda device: (1 << 10, "free on its GPU")
     out = {"for_inference": _raised(lambda: FastLanguageModel.for_inference(model))}
-    out["generate"] = _raised(lambda: model.generate(input_ids = _batch(model)[:1, :4], max_new_tokens = 2))
+    out["generate"] = _raised(
+        lambda: model.generate(input_ids = _batch(model)[:1, :4], max_new_tokens = 2)
+    )
     tp_replica._free_bytes = real
     out["untouched"] = all(p is sharded[n] for n, p in model.named_parameters())
     out["replica"] = tp_replica.replica_active(model)
@@ -359,7 +379,11 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -396,7 +420,9 @@ def test_tp2_generate_on_replica_equals_one_process(arch):
         assert res["sample_tp"] == res["sample_ref"], (rank, res["sample_tp"], res["sample_ref"])
         assert res["restored"] and res["is_tp"] and res["loss_err"] == 0.0, res
         assert res["bare_generate_released"], res
-        assert res["replica_after_generate"] and res["released_by_forward"] and res["restored_2"], res
+        assert (
+            res["replica_after_generate"] and res["released_by_forward"] and res["restored_2"]
+        ), res
         assert res["loss_err_2"] == 0.0 and res["dtensor_grads"], res
 
 
@@ -416,7 +442,12 @@ def test_env_reload_of_an_adapter_directory_loads_in_full(tmp_path):
     import importlib.util
 
     # By path, next to the tp_native the oracle loaded: no `import unsloth` in the pytest process.
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "models", "tp_env.py")
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "unsloth",
+        "models",
+        "tp_env.py",
+    )
     spec = importlib.util.spec_from_file_location("unsloth.models.tp_env", path)
     tp_env = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tp_env)
@@ -481,7 +512,13 @@ def test_tp2_merged_save_equals_one_process():
 def test_tp2_replica_that_does_not_fit_is_refused_on_every_rank():
     for rank, res in enumerate(_spawn("refuse", 2)):
         for key in ("for_inference", "generate"):
-            assert res[key] and "gathers a whole single-GPU replica" in res[key], (rank, key, res[key])
-            assert "rank 1 needs" in res[key] and "MiB more" in res[key] and "has 0.0 MiB" in res[key], res[key]
+            assert res[key] and "gathers a whole single-GPU replica" in res[key], (
+                rank,
+                key,
+                res[key],
+            )
+            assert (
+                "rank 1 needs" in res[key] and "MiB more" in res[key] and "has 0.0 MiB" in res[key]
+            ), res[key]
         assert res["untouched"] and not res["replica"], res
         assert res["pp_for_inference"] and "pipeline parallel" in res["pp_for_inference"], res

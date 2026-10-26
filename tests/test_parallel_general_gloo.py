@@ -719,7 +719,9 @@ def test_exports_refuse_pipeline_parallel_before_writing(name):
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
     for res in results:
         r = res[f"pp:{name}"]
-        assert r["error"] and "RuntimeError" in r["error"] and "pipeline parallel model" in r["error"], r
+        assert (
+            r["error"] and "RuntimeError" in r["error"] and "pipeline parallel model" in r["error"]
+        ), r
         assert not r["wrote"], r
 
 
@@ -735,7 +737,9 @@ def test_exports_of_a_tensor_parallel_model_run_on_rank0_only(name):
     if rank0["error"] is None:
         assert rank0["wrote"] and rank1["error"] is None, (rank0, rank1)
     else:
-        assert "tensor parallel" not in rank0["error"], rank0  # the export's own error, not a refusal
+        assert (
+            "tensor parallel" not in rank0["error"]
+        ), rank0  # the export's own error, not a refusal
         assert rank1["error"] and "failed on rank 0" in rank1["error"], rank1
 
 

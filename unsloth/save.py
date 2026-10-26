@@ -1297,7 +1297,6 @@ def _model_parallel_refuses_save(method):
             model = args[0] if args else kwargs.get("model", kwargs.get("self"))
             if model is not None and _is_unsloth_tensor_parallel(model):
                 from .models.tp_replica import collective_applies, tp_collective
-
                 if collective_applies(model):
                     # The whole model, also for LoRA-only writers: they run under inference_mode, where
                     # state_dict() cannot detach the frozen DTensor shards.
@@ -6693,7 +6692,6 @@ def _tp_collective_save(method):
         def wrapper(self, *args, **kwargs):
             if isinstance(self, torch.nn.Module) and _is_unsloth_tensor_parallel(self):
                 from .models.tp_replica import collective_applies, tp_collective
-
                 arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
                 if arguments.get("state_dict") is None and collective_applies(self):
                     adapter = isinstance(self, PeftModel) and not torch.is_inference_mode_enabled()
@@ -6701,7 +6699,6 @@ def _tp_collective_save(method):
                     return tp_collective(self, method, lambda: fn(self, *args, **kwargs), select)
             elif getattr(self, "__dict__", {}).get("_unsloth_tp_world_save"):
                 from .models.tp_replica import tp_world_save
-
                 return tp_world_save(method, lambda: fn(self, *args, **kwargs))
             return fn(self, *args, **kwargs)
 
@@ -8578,7 +8575,6 @@ def unsloth_tokenizer_save_pretrained(
     if self.__dict__.get("_unsloth_tp_world_save"):
         # Tensor parallel run: rank 0 writes, the others wait (a reload cell then reads complete files).
         from .models.tp_replica import tp_world_save
-
         return tp_world_save(
             "tokenizer.save_pretrained",
             lambda: _unsloth_tokenizer_save_pretrained(
