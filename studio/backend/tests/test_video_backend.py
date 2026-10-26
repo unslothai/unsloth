@@ -1783,8 +1783,7 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
 def test_first_clip_seeds_floats_before_the_denoise_and_keeps_them_before_the_decode(
     fake_runtime, monkeypatch
 ):
-    """The float seeds go in when the denoise loop opens (before the first, compiling, denoiser forward) and are
-    kept when the decoder is entered (before the VAE decode adds its own compile's names)."""
+    """Seeds go in at denoise entry and are kept at decode entry."""
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     pipe = backend._state.pipe

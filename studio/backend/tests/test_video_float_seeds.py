@@ -190,7 +190,6 @@ def test_seed_dir_is_keyed_like_the_compile_cache(tmp_path, monkeypatch):
     dits, path = _seed_dir(pipe)
     assert dits == [net]
     assert path.parent == tmp_path / "cc" / "video_float_seeds" and len(path.name) == 32
-    # the load passes a torch dtype, the state its name: one key
     assert _seed_dir(pipe, dtype = torch.bfloat16)[1] == path
     assert _seed_dir(pipe, dtype = "float16")[1] != path
     assert _seed_dir(pipe, quant = "int8")[1] != path
@@ -219,7 +218,7 @@ def test_backend_holds_one_seeder_per_load_until_it_kept():
     assert backend._inline_float_seeds(state) is seeds
     seeds.seed()
     seeds.keep()
-    assert backend._inline_float_seeds(state) is None  # later clips: nothing to do
+    assert backend._inline_float_seeds(state) is None
     other = _state(types.SimpleNamespace(transformer = Net()))
     fresh = backend._inline_float_seeds(other)
     assert fresh is not None and fresh is not seeds

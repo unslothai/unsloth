@@ -115,7 +115,6 @@ def _code_signature(module: Any) -> Optional[str]:
 
 
 def _modules_signature(modules: Any) -> Optional[str]:
-    """``_code_signature`` of one module; of several (a dual-DiT pipe), each one's in order, or None if any has none."""
     modules = list(modules) if isinstance(modules, (list, tuple)) else [modules]
     sigs = [_code_signature(m) for m in modules]
     if not sigs or any(s is None for s in sigs):
@@ -158,8 +157,7 @@ def _write_float_seeds(path: Path, signature: str, names: set) -> bool:
 
 
 def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple], int]:
-    """Pre-seed the SymFloat specialisations the last compile of this key learned: (what ``_keep_floats`` needs, the
-    number of names added). (None, 0) when disabled, unsupported, or unsigned."""
+    """Pre-seed the SymFloat names the last compile of this key learned; returns (keep state, names added)."""
     if seed_dir is None or not float_seeds_enabled():
         return None, 0
     try:
@@ -178,8 +176,7 @@ def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple
 
 
 def _keep_floats(seeded: Optional[tuple]) -> int:
-    """Save the names this compile specialised (seeded or learned on a restart) when they changed; returns how many
-    it learned beyond the seeds."""
+    """Save this compile's specialised names if changed; returns how many are new."""
     if seeded is None:
         return 0
     state, path, signature, before, seeds = seeded
@@ -196,9 +193,8 @@ def _keep_floats(seeded: Optional[tuple]) -> int:
 
 
 class InlineFloatSeeds:
-    """The same float seeds for a compile that runs inside a render instead of on a background thread (video's
-    first clip): ``seed`` once at the denoise entry, ``keep`` once at the decode entry, so the file holds only the
-    names the denoiser's compile specialised, in the order main's own compile meets them. Never raises."""
+    """Float seeds for a compile inside a render (video's first clip): ``seed`` at denoise entry, ``keep`` at decode
+    entry, so only the denoiser's names are saved. Never raises."""
 
     def __init__(
         self,

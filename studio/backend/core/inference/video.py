@@ -1219,9 +1219,7 @@ def _settle_bg_compile(bg: Any, *, i2v: bool) -> None:
 
 
 def _float_seed_dits(pipe: Any) -> list:
-    """The denoiser DiTs a ``dynamic=True`` regional compile traces with SymFloat floats: the ones whose first compile
-    restarts once per block type. Static (LTX-2 / 2.5) and automatic-dynamic (torchao) compiles specialise every float
-    up front and never restart, so they have none."""
+    """DiTs compiled with ``dynamic=True`` (SymFloat restarts); static and torchao compiles never restart."""
     try:
         from .diffusion_speed import _guarded_dits
 
@@ -1238,9 +1236,7 @@ def _float_seed_dits(pipe: Any) -> list:
 def _video_float_seed_dir(
     pipe: Any, *, family: Any, dtype: Any, quant: Any, attention_backend: Any
 ) -> tuple[list, Optional[Path]]:
-    """(DiTs, dir) of this load's float seeds: a per-key dir under the compile-cache root, keyed like the image
-    backend's compile cache (torch / Triton / diffusers / GPU, family, DiT, dtype, quant, attention, compile kwargs).
-    Video loads take no compile-cache ctx (VIDEO_COMPILE_CACHE_DECLINE), so the dir is its own; ([], None) = none."""
+    """(DiTs, per-key seed dir keyed like the image compile cache), or ([], None). Video has no compile-cache ctx."""
     from . import diffusion_bg_compile
 
     if not diffusion_bg_compile.float_seeds_enabled():
@@ -4562,7 +4558,6 @@ class VideoBackend:
         # (load token, client) of an LTX-2.5 Gemma 4 encoder worker whose load has not committed yet; a failed load stops
         # it.
         self._ltx25_pending_encoder: Optional[tuple[Optional[int], Any]] = None
-        # (state, InlineFloatSeeds) of the loaded pipeline's first compiled clip; cleared once it has kept its names.
         self._float_seeds: Optional[tuple[Any, Any]] = None
         # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline. A generation queued
         # behind the active one holds no cancel event yet, so without this fence it could win the lock after an eject
@@ -4590,8 +4585,7 @@ class VideoBackend:
         return target
 
     def _inline_float_seeds(self, state: Any) -> Any:
-        """This load's ``InlineFloatSeeds`` until its first compiled clip has kept its names, else None (a static or
-        eager load, a background compile owning the compile, or UNSLOTH_DIFFUSION_BG_COMPILE_FLOAT_SEEDS=0)."""
+        """This load's ``InlineFloatSeeds`` until its first compiled clip kept its names, else None."""
         held = self._float_seeds
         if held is not None and held[0] is state:
             return None if held[1] is None or held[1].done() else held[1]
@@ -11776,7 +11770,6 @@ class VideoBackend:
             bg = getattr(state, "bg_compile", None)
             bg_eager = bg is not None and bg.pending()
             bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
-            # The first compiled clip's denoiser compile starts from the float specialisations the last load learned.
             float_seeds = None if bg_eager else self._inline_float_seeds(state)
             # Closed in the finally so the pipeline is text-to-video again on return, cancel or failure.
             i2v_swap = contextlib.ExitStack()
@@ -12284,7 +12277,7 @@ class VideoBackend:
 
                 def _enter_denoise() -> None:
                     if float_seeds is not None:
-                        # Before the first denoiser forward, so the compile it triggers takes the seeded path.
+                        # Before the first (compiling) denoiser forward.
                         float_seeds.seed()
                     if self._gen.get("phase") == "encode":
                         self._gen.update(phase = "denoise")
@@ -12329,7 +12322,7 @@ class VideoBackend:
                     """Mark the decode boundary in the stream, retrying under contention; flip when
                     the GPU reaches it."""
                     if float_seeds is not None:
-                        # The denoiser has compiled; before the VAE decode's own compile adds its names.
+                        # Before the VAE decode's compile adds its own names.
                         float_seeds.keep()
                     marked = False
                     for _ in range(_BOUNDARY_MARK_ATTEMPTS):
