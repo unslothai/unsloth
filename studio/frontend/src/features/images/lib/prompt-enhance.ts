@@ -307,8 +307,7 @@ export function previewSignature(body: PromptUpsamplerPreviewRequest): string {
   return JSON.stringify([body.prompt.trim(), body.variant ?? null, refs]);
 }
 
-/** Non-blocking notice after the upsampler failed on a prompt, else null. An unavailable upsampler (not downloaded,
- *  no llama.cpp) stays silent. */
+/** Notice when the upsampler failed, else null; "unavailable" stays silent. */
 export function enhancementNotice(
   outcome: string | null | undefined,
 ): { title: string; description: string } | null {

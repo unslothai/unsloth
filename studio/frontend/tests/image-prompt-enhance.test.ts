@@ -236,7 +236,6 @@ test("routes live in one place; variant and notices", () => {
   assert.equal(upsamplerVariantFor("flux.3-klein-base"), "base");
   assert.equal(upsamplerVariantFor("flux.3-klein"), "distilled");
   assert.equal(upsamplerVariantFor(null), "distilled");
-  // An upsampler that is not downloaded (or has no llama.cpp) stays silent; only a failed rewrite says so.
   assert.equal(enhancementNotice("unavailable"), null);
   assert.ok(enhancementNotice("failed"));
   assert.equal(enhancementNotice("applied"), null);
