@@ -61,6 +61,8 @@ test("Reload all stops when a load is cancelled or a newer pick supersedes it", 
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.equal(runtime.match(/if \(!stopDecision\.proceed\) \{\s*modelLoadCancelEpoch \+= 1;/g)?.length, 2);
   assert.match(runtime, /modelLoadCancelEpoch \+= 1;\s*run\.abortController\.abort\(\);/);
+  // A declined Hugging Face token prompt also resolves quietly, so it counts as a cancel too.
+  assert.match(runtime, /if \(!preparedToken\.proceed\) \{\s*modelLoadCancelEpoch \+= 1;/);
   assert.match(hook, /const before = readModelLoadEpochs\(\);\s*await load\(rowTarget\(model\)\);/);
   assert.match(hook, /after\.cancels !== before\.cancels \|\|\s*after\.intent > before\.intent \+ 1/);
   assert.match(page, /readModelLoadEpochs: runtime\.readModelLoadEpochs,/);

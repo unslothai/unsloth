@@ -1406,6 +1406,7 @@ export function useChatModelRuntime() {
       if (mayReachHub) {
         const preparedToken = await prepareHfTokenForUse(hfToken);
         if (!preparedToken.proceed) {
+          modelLoadCancelEpoch += 1;
           if (modelSelectionIntentEpoch === loadIntentId) {
             toast.error("Model load cancelled.");
             // This pick invalidated the previous run before opening credentials. If that run
