@@ -203,6 +203,7 @@ import { localGgufKindFor } from "./local-gguf-policy";
 import {
   type ModelCapabilities,
   detectCapabilities,
+  isDiffusionTask,
 } from "./model-capabilities";
 import {
   AUDIO_CATALOG,
@@ -2784,10 +2785,6 @@ export const AUDIO_GEN_TASKS = [
   "audio-to-audio",
 ] as const;
 
-// Diffusion GGUF archs the Images backend cannot assemble yet. The backend tags them with this
-// task so both pickers leave them out; they would 400 on load.
-const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
-
 // Generation tasks the Images / Video / Audio pages own. Not chat-loadable, so an on-device pick routes to its page.
 const MEDIA_PAGE_TASKS: readonly string[] = [
   ...IMAGE_GEN_TASKS,
@@ -2869,9 +2866,8 @@ function passesTaskGate(
       !(!taskFilterHasAudio(filter) && isImageEditModel(repoId))
     ) || localModel?.opaque === true;
   }
-  // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to its page
-  // on click; only the never-loadable tag is hidden.
-  return repoTask !== UNSUPPORTED_DIFFUSION_TASK;
+  // Chat lists models it can load. Images/Video retain their task-scoped inventories.
+  return !isDiffusionTask(repoTask);
 }
 
 // Module-level caches so re-mounting the popover shows results instantly.
@@ -4551,9 +4547,8 @@ export function HubModelPicker({
     catalogSeedRows,
   ]);
 
-  // Ordered by the On Device dropdown (Recent / Size / Name / Downloaded). The gate keeps a
-  // supported diffusion GGUF listed here so picking one routes to Images or Video; only the
-  // never-loadable tag is dropped.
+  // Ordered by the On Device dropdown (Recent / Size / Name / Downloaded), with the
+  // same task gate for GGUFs and dense checkpoints.
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
