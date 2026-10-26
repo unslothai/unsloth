@@ -299,7 +299,11 @@ def normalize_world(
     view = _view3d(raw.get("view3d"))
     if view:
         world["view3d"] = view
-    props = props3d(raw.get("props3d"), width, height, {i["id"] for i in world["items"]})
+    raw_props = raw.get("props3d")
+    if isinstance(raw_props, list):
+        # Item links name items as the author wrote them; map them to the normalised ids.
+        raw_props = [_prop_item_refs(p, lambda v: ref(v, item_ids)) for p in raw_props]
+    props = props3d(raw_props, width, height, {i["id"] for i in world["items"]})
     if props:
         world["props3d"] = props
     rivals = normalize_rivals(raw.get("rivals"), npc_ids, regions, ref, taken)
@@ -428,6 +432,17 @@ def props3d(
             prop["targets"] = [t for t in prop["targets"] if t in doors]
             if not prop["targets"]:
                 del prop["targets"]
+    return out
+
+
+def _prop_item_refs(p: Any, resolve) -> Any:
+    if not isinstance(p, dict):
+        return p
+    out = dict(p)
+    if isinstance(p.get("locked_by"), str):
+        out["locked_by"] = resolve(p["locked_by"]) or p["locked_by"]
+    if isinstance(p.get("contents"), list):
+        out["contents"] = [(resolve(v) or v) if isinstance(v, str) else v for v in p["contents"]]
     return out
 
 

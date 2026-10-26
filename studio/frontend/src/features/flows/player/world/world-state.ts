@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
 import { type PropStates, type UseOutcome, propStatesOf } from "./action-verbs";
@@ -326,8 +325,7 @@ export function applyReply(
     let vars = st.vars;
     try {
       vars = applySets(quest.set, st.vars);
-    } catch {
-    }
+    } catch {}
     st = {
       ...st,
       vars,
@@ -365,7 +363,7 @@ export function serialize(s: WorldState): WorldState {
 const num = (v: unknown, d: number) =>
   typeof v === "number" && Number.isFinite(v) ? v : d;
 
-function mindOf(raw: unknown, fresh: NpcMind): NpcMind {
+function mindOf(raw: unknown, fresh: NpcMind, optionsOn: boolean): NpcMind {
   const r = (raw ?? {}) as Partial<NpcMind>;
   const memory = (Array.isArray(r.memory) ? r.memory : []).filter(
     (m): m is MemoryRecord =>
@@ -387,7 +385,7 @@ function mindOf(raw: unknown, fresh: NpcMind): NpcMind {
     ...(fresh.needs && parseDoing(r.doing)
       ? { doing: parseDoing(r.doing) }
       : {}),
-    ...lifeMindOf(r, fresh),
+    ...lifeMindOf(r, fresh, optionsOn),
   };
 }
 
@@ -415,8 +413,11 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   const fresh = initialWorldState(played);
   const city = cityOf(played) ? parseCity(r.city, played) : null;
   const npc: Record<string, NpcMind> = {};
+  const optionsOn = lifeOf(played).options;
   for (const id of Object.keys(fresh.npc))
-    npc[id] = r.npc?.[id] ? mindOf(r.npc[id], fresh.npc[id]) : fresh.npc[id];
+    npc[id] = r.npc?.[id]
+      ? mindOf(r.npc[id], fresh.npc[id], optionsOn)
+      : fresh.npc[id];
   const npcIds = new Set(played.npcs.map((n) => n.id));
   const places = placeIds(spec);
   const errands: Record<string, Errand> = {};
