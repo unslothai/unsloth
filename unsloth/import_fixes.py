@@ -2931,7 +2931,12 @@ def _rope_labels_naming_no_base(config, value):
     )
 
 
-def _carry_per_layer_rope_theta(config, parameters, carried, unnamed = None):
+def _carry_per_layer_rope_theta(
+    config,
+    parameters,
+    carried,
+    unnamed = None,
+):
     """Put each layer type's base back into a per-layer replacement that lost it.
 
     A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
@@ -2966,7 +2971,11 @@ def _carry_per_layer_rope_theta(config, parameters, carried, unnamed = None):
     return carried
 
 
-def _carry_rope_theta_across_assignment(config, carried, unnamed = None):
+def _carry_rope_theta_across_assignment(
+    config,
+    carried,
+    unnamed = None,
+):
     """Keep the RoPE base frequency across a ``rope_scaling`` replacement.
 
     Separated from the wrapper so every parameter shape is testable without a live

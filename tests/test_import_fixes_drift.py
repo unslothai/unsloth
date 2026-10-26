@@ -1314,7 +1314,10 @@ def test_rope_carry_overrides_a_global_base_the_setter_filled_into_a_nested_entr
     assert "rope_theta" not in restored
 
     # A base the caller stated is never overridden.
-    stated = {"main": {"rope_type": "default"}, "compress": {"rope_type": "default", "rope_theta": 5.0}}
+    stated = {
+        "main": {"rope_type": "default"},
+        "compress": {"rope_type": "default", "rope_theta": 5.0},
+    }
     unnamed = _rope_labels_naming_no_base(config, stated)
     assert unnamed == {"main"}
     config.rope_parameters = {k: dict(v) for k, v in stated.items()}
