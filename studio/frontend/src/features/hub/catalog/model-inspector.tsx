@@ -38,7 +38,7 @@ import {
   LibrariesIcon,
   LicenseIcon,
   PackageIcon,
-  Share05Icon,
+  LinkSquare02Icon,
 } from "@hugeicons/core-free-icons";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -86,7 +86,7 @@ function ViewRepositoryButton({
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
     <HugeiconsIcon
-      icon={Share05Icon}
+      icon={LinkSquare02Icon}
       strokeWidth={1.75}
       className="size-[calc(13px*var(--ui-space-scale,1))]"
     />

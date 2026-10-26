@@ -82,7 +82,7 @@ export function MediaIdleUnloadRow({
             )}
             disabled={disabled}
             onChange={(event) => onDraftChange(event.target.value)}
-            className="h-8 w-24"
+            className="h-control w-24"
           />
           <span className="text-xs font-medium text-muted-foreground">s</span>
         </div>
@@ -340,7 +340,7 @@ export function ModelAutoSwitchSection() {
               )}
               disabled={!settings?.enabled || isSaving}
               onChange={(event) => setDraftIdleSeconds(event.target.value)}
-              className="h-8 w-24"
+              className="h-control w-24"
             />
             <span className="text-xs font-medium text-muted-foreground">s</span>
           </div>

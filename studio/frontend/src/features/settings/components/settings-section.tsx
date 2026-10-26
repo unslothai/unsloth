@@ -3,6 +3,8 @@
 
 import type { ReactNode, Ref } from "react";
 
+import { cn } from "@/lib/utils";
+
 export function SettingsSection({
   title,
   description,
@@ -10,17 +12,27 @@ export function SettingsSection({
   ref,
   hideHeading = false,
   action,
+  danger = false,
 }: {
   title: string;
   /** Control shown beside the heading, e.g. Refresh. */
   action?: ReactNode;
   hideHeading?: boolean;
+  /** Danger zone: a divider above the heading sets it apart from the sections before it. */
+  danger?: boolean;
   description?: ReactNode;
   children: ReactNode;
   ref?: Ref<HTMLElement>;
 }) {
   return (
-    <section ref={ref} data-settings-label={title} className="flex flex-col">
+    <section
+      ref={ref}
+      data-settings-label={title}
+      className={cn(
+        "flex flex-col",
+        danger && "border-t border-border/60 pt-6",
+      )}
+    >
       {hideHeading ? null : (
         <div className="mb-1 flex flex-col gap-0.5">
           {action ? (

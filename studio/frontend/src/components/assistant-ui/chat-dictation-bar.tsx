@@ -7,9 +7,11 @@ import {
   subscribeDictationLevel,
 } from "@/features/chat";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { ArrowUpIcon, SquareIcon } from "lucide-react";
+import { ArrowUpIcon } from "lucide-react";
 import { type FC, useEffect, useRef, useState } from "react";
 import { TooltipIconButton } from "./tooltip-icon-button";
+import { StopIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 const BAR_COUNT = 84;
 // Peak height multiple (dot is 4px); stays under the 40px pill.
@@ -231,7 +233,7 @@ export const ChatDictationBar: FC<{
           {transcribing === "stop" ? (
             <Spinner className="size-3.5" />
           ) : (
-            <SquareIcon className="size-3 fill-current" />
+            <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
           )}
         </TooltipIconButton>
         <TooltipIconButton

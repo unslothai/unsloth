@@ -23,7 +23,6 @@ import {
   Presentation01Icon,
   Search01Icon,
   Settings02Icon,
-  Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { type TranslationKey, useT } from "@/i18n";
@@ -37,6 +36,7 @@ import type { LibraryAudioWorkflow } from "../audio-items";
 import type { LibraryTypeFilter } from "../file-kind";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
 import type { LibrarySortKey, LibraryView } from "../settings-store";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const ICON = "size-icon";
 export const ROUND_BUTTON =

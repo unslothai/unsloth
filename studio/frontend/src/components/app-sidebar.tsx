@@ -138,7 +138,6 @@ import {
   LayoutAlignLeftIcon,
   Settings02Icon,
   Sun03Icon,
-  Tick02Icon,
   UserCircleIcon,
   ViewIcon,
   ViewOffSlashIcon,
@@ -149,6 +148,7 @@ import {
   LayerIcon,
   ApiIcon,
   Clock01Icon,
+  Copy01Icon,
 } from "@hugeicons/core-free-icons";
 import {
   AiSpeechIcon,
@@ -163,7 +163,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, Copy, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, GitBranchIcon, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -323,6 +323,7 @@ import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-
 import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import { translate, useT, type TranslationKey } from "@/i18n";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
@@ -702,7 +703,7 @@ function NavItem({
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
         <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
         {badge && (
-          <Badge variant="secondary" className="group-data-[collapsible=icon]:hidden">
+          <Badge variant="accent" className="group-data-[collapsible=icon]:hidden">
             {badge}
           </Badge>
         )}
@@ -1018,7 +1019,7 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge && <Badge variant="secondary">{badge}</Badge>}
+      {badge && <Badge variant="accent">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
       {newAction && (
         <button
@@ -1093,7 +1094,7 @@ function MediaMoreSubmenu<Id extends string>({
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <Badge variant="secondary">{badge}</Badge>}
+        {badge && <Badge variant="accent">{badge}</Badge>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
@@ -6551,7 +6552,7 @@ export function AppSidebar() {
                               closeMobileIfOpen();
                             }}
                           >
-                            <Copy className="size-icon" />
+                            <HugeiconsIcon icon={Copy01Icon} className="size-icon" />
                             <span>{t("common.duplicate")}</span>
                           </DropdownMenuItem>
                           <DropdownMenuItem onSelect={() => openRenameRun(run)}>

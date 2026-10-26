@@ -23,7 +23,6 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
-  PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -40,6 +39,7 @@ import {
   downloadActionAriaLabel,
   downloadActionLabel,
 } from "./use-download-card-state";
+import { PlayIcon } from "lucide-react";
 
 export function DownloadCard({
   job,
@@ -115,7 +115,7 @@ export function ModelRunActionButton({
         </>
       ) : (
         <>
-          <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
+          <PlayIcon strokeWidth={1.75} />
           Run
         </>
       )}

@@ -292,9 +292,8 @@ export function AboutTab() {
       </SettingsSection>
 
       {!isTauri && (
-        <SettingsSection title={t("settings.about.dangerZone")}>
+        <SettingsSection danger={true} title={t("settings.about.dangerZone")}>
           <SettingsRow
-            destructive={true}
             label={t("settings.about.shutDownStudio")}
             description={t("settings.about.shutDownStudioDescription")}
           >

@@ -39,7 +39,6 @@ import {
   Search01Icon,
   Shield01Icon,
   TextWrapIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownIcon } from "lucide-react";
@@ -85,6 +84,7 @@ import {
   pendingLogRequestKey,
   useSettingsDialogStore,
 } from "../stores/settings-dialog-store";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 

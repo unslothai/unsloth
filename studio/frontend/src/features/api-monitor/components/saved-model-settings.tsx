@@ -12,7 +12,8 @@ import {
   putModelOverride,
 } from "@/features/model-picker/api/model-overrides";
 import { deletePerModelConfigsForOverrideKeys } from "@/features/model-picker/model-config/per-model-config";
-import { Trash2 } from "lucide-react";
+import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
   useCallback,
@@ -247,7 +248,7 @@ export function SavedModelSettingsPanel(): ReactElement {
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="shrink-0 text-muted-foreground hover:text-destructive"
+                  className="shrink-0 text-destructive hover:text-destructive"
                   aria-label={`Forget settings for ${modelId}`}
                   title="Forget these settings"
                   disabled={forgetting.has(modelId)}
@@ -256,7 +257,7 @@ export function SavedModelSettingsPanel(): ReactElement {
                   {forgetting.has(modelId) ? (
                     <Spinner label="Forgetting" />
                   ) : (
-                    <Trash2 />
+                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
                   )}
                 </Button>
               </li>

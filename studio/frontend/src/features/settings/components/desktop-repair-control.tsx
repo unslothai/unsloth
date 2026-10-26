@@ -34,7 +34,6 @@ export function DesktopRepairControl(): ReactElement | null {
   return (
     <>
       <SettingsRow
-        destructive={true}
         label={t("settings.general.repairInstall.label")}
         description={t("settings.general.repairInstall.description")}
       >

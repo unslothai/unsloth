@@ -33,18 +33,17 @@ import { RefreshGlyph } from "@/lib/refresh-icon";
 import { FileGlyph } from "@/lib/file-icon";
 import {
   DashedLineCircleIcon as CircleDashedIcon,
+  Delete02Icon,
   Telescope02Icon,
+  LinkSquare02Icon,
+  Edit03Icon,
+  PlusSignIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowDown,
-  ArrowUp,
-  Check,
-  ExternalLink,
-  Pencil,
-  Plus,
-  Trash2,
-  X,
+  ArrowUpIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -72,6 +71,7 @@ import {
   useResearchRunStore,
 } from "../stores/research-run-store";
 import type { ResearchRunStatus } from "../types/research";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const terminalStatuses = new Set<ResearchRunStatus>([
   "completed",
@@ -308,7 +308,7 @@ function ActivityIcon({
   const className = "size-3.5";
   if (activity.state === "running") return <Spinner className={className} />;
   if (activity.state === "failed")
-    return <X className={cn(className, "text-destructive")} />;
+    return <HugeiconsIcon icon={Cancel01Icon} className={cn(className, "text-destructive")} />;
   if (activity.state === "cancelled")
     return (
       <HugeiconsIcon
@@ -322,7 +322,7 @@ function ActivityIcon({
   if (activity.kind === "report") return <FileGlyph className={className} />;
   if (activity.action === "fetch" || activity.action === "search")
     return <InternetGlyph className={className} />;
-  return <Check className={className} />;
+  return <HugeiconsIcon icon={Tick02Icon} className={className} />;
 }
 
 const ActivityRow = memo(function ActivityRow({
@@ -443,7 +443,7 @@ const ActivityRow = memo(function ActivityRow({
               </span>
             ) : null}
           </span>
-          <ExternalLink className="mt-0.5 size-3 opacity-0 transition-opacity group-hover/source:opacity-100" />
+          <HugeiconsIcon icon={LinkSquare02Icon} className="mt-0.5 size-3 opacity-0 transition-opacity group-hover/source:opacity-100" />
         </button>
       ))}
       {activity.evidenceSources?.map((source) => (
@@ -639,7 +639,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                         disabled={index === 0}
                         aria-label={`Move step ${index + 1} up`}
                       >
-                        <ArrowUp />
+                        <ArrowUpIcon />
                       </Button>
                       <Button
                         variant="ghost"
@@ -667,7 +667,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                         }}
                         aria-label={`Remove step ${index + 1}`}
                       >
-                        <Trash2 />
+                        <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
                       </Button>
                     </div>
                     <Textarea
@@ -712,7 +712,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                     });
                   }}
                 >
-                  <Plus /> Add step
+                  <HugeiconsIcon icon={PlusSignIcon} /> Add step
                 </Button>
               </div>
             ) : (
@@ -751,7 +751,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
               variant="outline"
               onClick={() => setEditing(runId, !editing)}
             >
-              <Pencil /> {editing ? "Preview plan" : "Edit plan"}
+              <HugeiconsIcon icon={Edit03Icon} /> {editing ? "Preview plan" : "Edit plan"}
             </Button>
             <div className="flex flex-col-reverse gap-2 sm:flex-row">
               <Button variant="ghost" onClick={() => setOpen(runId, false)}>
@@ -942,7 +942,7 @@ export function ResearchActivityPanel({
             onClick={onClose}
             aria-label="Close research activity"
           >
-            <X />
+            <HugeiconsIcon icon={Cancel01Icon} />
           </Button>
         </div>
         {session.connection === "reconnecting" ? (

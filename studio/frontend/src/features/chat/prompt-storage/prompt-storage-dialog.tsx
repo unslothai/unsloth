@@ -23,19 +23,22 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
-import { Download01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  Delete02Icon,
+  Download01Icon,
+  Search01Icon,
+  Cancel01Icon,
+  Edit03Icon,
+  PlusSignIcon,
+  Upload01Icon,
+  ViewIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
-  EyeIcon,
   LayoutListIcon,
-  PencilIcon,
   PlayIcon,
-  PlusIcon,
   RotateCcwIcon,
-  Trash2Icon,
-  UploadIcon,
-  XIcon,
 } from "lucide-react";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { SortablePromptItems } from "./sortable-prompt-items";
@@ -1738,7 +1741,7 @@ function PromptDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
@@ -1748,9 +1751,9 @@ function PromptDetail({
         )}
         <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
           {preview ? (
-            <><PencilIcon className="size-3.5 mr-1" />Edit</>
+            <><HugeiconsIcon icon={Edit03Icon} className="size-3.5 mr-1" />Edit</>
           ) : (
-            <><EyeIcon className="size-3.5 mr-1" />Preview</>
+            <><HugeiconsIcon icon={ViewIcon} className="size-3.5 mr-1" />Preview</>
           )}
         </Button>
         <Button size="sm" variant="outline" disabled={pending || !dirty || !text.trim()} onClick={handleSave}>
@@ -1872,7 +1875,7 @@ function NewPromptForm({
       />
       <div className="flex shrink-0 flex-wrap gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
-          <XIcon className="size-3.5 mr-1" />Cancel
+          <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1" />Cancel
         </Button>
         <Button size="sm" onClick={handleSave} disabled={creating || !text.trim()}>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save Prompt
@@ -2008,7 +2011,7 @@ function PromptListDetail({
                 onClick={() => update({ items: [...items, ""] })}
                 className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
               >
-                <PlusIcon className="size-3.5" />Add prompt
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />Add prompt
               </button>
             )}
           </>
@@ -2031,7 +2034,7 @@ function PromptListDetail({
               onClick={() => setEditorMounted(true)}
               className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
             >
-              <PencilIcon className="size-3.5" />Edit all {items.length} prompts
+              <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />Edit all {items.length} prompts
             </button>
           </>
         )}
@@ -2076,7 +2079,7 @@ function PromptListDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
@@ -2087,9 +2090,9 @@ function PromptListDetail({
         {editorMounted && (
           <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
             {preview ? (
-              <><PencilIcon className="size-3.5 mr-1" />Edit</>
+              <><HugeiconsIcon icon={Edit03Icon} className="size-3.5 mr-1" />Edit</>
             ) : (
-              <><EyeIcon className="size-3.5 mr-1" />Preview</>
+              <><HugeiconsIcon icon={ViewIcon} className="size-3.5 mr-1" />Preview</>
             )}
           </Button>
         )}
@@ -2195,12 +2198,12 @@ function NewPromptListForm({
           onClick={addItem}
           className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
         >
-          <PlusIcon className="size-3.5" />Add another prompt
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />Add another prompt
         </button>
       </div>
       <div className="flex shrink-0 flex-wrap gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
-          <XIcon className="size-3.5 mr-1" />Cancel
+          <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1" />Cancel
         </Button>
         <Button
           size="sm"
@@ -2555,7 +2558,7 @@ export function PromptStorageDialog({
                   className="gap-1.5 text-xs"
                   title="Import from JSONL, CSV, or collection JSONL"
                 >
-                  <UploadIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                   Import
                 </Button>
                 <Button
@@ -2571,7 +2574,7 @@ export function PromptStorageDialog({
                 <div className="ml-1 h-5 w-px bg-border/60 shrink-0" />
                 <DialogClose asChild>
                   <Button variant="ghost" size="icon-sm">
-                    <XIcon className="size-4" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
                     <span className="sr-only">Close</span>
                   </Button>
                 </DialogClose>
@@ -2641,7 +2644,7 @@ export function PromptStorageDialog({
                 }}
                 className="btn-fill flex shrink-0 items-center justify-center gap-1.5 rounded-full border border-transparent px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-all"
               >
-                <PlusIcon className="size-3.5" />
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 {activeTab === "prompts" ? "New prompt" : "New prompt list"}
                 {(activeTab === "prompts" ? newPromptStarted : newListStarted) && (
                   <span

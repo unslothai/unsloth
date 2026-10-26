@@ -1113,13 +1113,11 @@ export function ResourcesTab() {
         )}
       </SettingsSection>
 
-      {/* Below the GPU section it describes, above the memory settings that
-          apply to whichever backend is selected. */}
+      <ModelMemorySection ref={modelMemoryRef} />
+
       <LlamaBackendSection />
       <EngineVersionsSection />
       <InferenceEnginesSection />
-
-      <ModelMemorySection ref={modelMemoryRef} />
 
       <SettingsSection
         ref={storageSectionRef}

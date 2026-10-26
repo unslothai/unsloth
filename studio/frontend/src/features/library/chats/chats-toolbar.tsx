@@ -21,7 +21,6 @@ import {
   PencilEdit02Icon,
   PinIcon,
   Search01Icon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownUpIcon, Columns2Icon, GitBranchIcon } from "lucide-react";
@@ -37,6 +36,7 @@ import {
   NO_SECTION,
   chatFiltersActive,
 } from "./model";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const ICON = "size-icon";
 const MENU_LABEL = "px-3 pb-1 pt-2 text-muted-foreground font-normal";
