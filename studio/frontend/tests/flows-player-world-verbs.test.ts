@@ -410,6 +410,15 @@ test("a rock bursts early on a hostile; the splash falls off with distance and s
   assert.equal(c.enemies.walled, undefined);
 });
 
+test("a burst far above a hostile does not splash it", () => {
+  const c = A.newCombat();
+  assert.deepEqual(
+    V.splash(world(), c, { x: 5, y: 5, z: 10 }, [hostile("below", 5, 5)]),
+    [],
+  );
+  assert.equal(c.enemies.below, undefined);
+});
+
 test("throwing needs ammo and a free rock; at most four fly at once", () => {
   const c = A.newCombat();
   const v = V.newVerbs();

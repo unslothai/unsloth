@@ -140,7 +140,29 @@ const LIVELY: WorldSpec = {
     },
   ],
 };
-const LIVED = params.get("autonomy") ? LIVELY : WORLD;
+const AUTONOMOUS = params.get("autonomy") ? LIVELY : WORLD;
+// `&sim=1`: the daily-life simulation (clock, needs) over the named regions.
+const LIVED: WorldSpec = params.get("sim")
+  ? {
+      ...AUTONOMOUS,
+      simulation: {
+        enabled: true,
+        minutes_per_second: 2,
+        start_minute: 480,
+        places: AUTONOMOUS.regions.map(({ id, name, x, y, w, h }) => ({
+          id,
+          name,
+          x,
+          y,
+          w,
+          h,
+        })),
+        chat_cooldown_min: 120,
+        calls_per_minute: 4,
+      },
+    }
+  : AUTONOMOUS;
+const streamed = params.get("stream") === "1";
 const gameplay = params.get("action");
 const course = (spec: WorldSpec): WorldProp3d[] => {
   const m = generateMap(spec);
@@ -243,7 +265,38 @@ const hideout = (spec: WorldSpec): WorldSpec => {
 const verbs = params.get("verbs") === "1";
 const ai = params.get("ai") === "v2";
 const ACTED: WorldSpec = ai ? hideout(LIVED) : verbs ? keep(LIVED) : LIVED;
-const PLAYED: WorldSpec =
+// `&clutter=N`: N non-solid props spread over open tiles, to load the renderers.
+const clutter = (spec: WorldSpec, n: number): WorldProp3d[] => {
+  const m = generateMap(spec);
+  const kinds: WorldProp3d["kind"][] = [
+    "crate",
+    "rock",
+    "fence",
+    "lamp",
+    "bench",
+    "tree",
+    "well",
+    "stall",
+  ];
+  const out: WorldProp3d[] = [];
+  for (let i = 0; out.length < n && i < m.width * m.height; i++) {
+    const k = (i * 7919) % (m.width * m.height);
+    const x = k % m.width;
+    const y = Math.floor(k / m.width);
+    if (isSolid(m, x, y) || (x === m.spawn.x && y === m.spawn.y)) continue;
+    out.push({
+      id: `clutter-${out.length}`,
+      kind: kinds[out.length % kinds.length],
+      x: x + 0.5,
+      y: y + 0.5,
+      rot: (out.length * 37) % 360,
+      scale: 1,
+      solid: false,
+    });
+  }
+  return out;
+};
+const PLAYED_BASE: WorldSpec =
   gameplay === "action" || gameplay === "shooter"
     ? {
         ...ACTED,
@@ -263,6 +316,15 @@ if (verbs || ai)
     frame: [],
     sim: [],
   };
+const PLAYED: WorldSpec = params.get("clutter")
+  ? {
+      ...PLAYED_BASE,
+      props3d: [
+        ...(PLAYED_BASE.props3d ?? []),
+        ...clutter(PLAYED_BASE, Number(params.get("clutter"))),
+      ],
+    }
+  : PLAYED_BASE;
 const PROPS_KEY = "flows-smoke-props3d";
 const MODELS_KEY = "flows-smoke-models";
 const savedProps = (): WorldProp3d[] | null => {
@@ -326,9 +388,19 @@ const mock: PlayerApi = {
     );
     return { kind: "model", ref, mime: "model/gltf-binary" } as ModelAsset;
   },
-  async invoke(_flowId, entry, inputs) {
+  async invoke(_flowId, entry, inputs, opts) {
     calls.push({ entry, inputs });
     await new Promise((r) => setTimeout(r, 300));
+    const said = (inputs.state as { player_message?: string }).player_message;
+    if (streamed && opts?.onDelta && said) {
+      // `&stream=1`: a long reply streamed in small tokens, like a local model.
+      const text = `${"The pond was quiet this morning and the fish were not biting at all. ".repeat(8)}`;
+      for (let i = 0; i < text.length; i += 4) {
+        opts.onDelta(text.slice(i, i + 4));
+        await new Promise((r) => setTimeout(r, 12));
+      }
+      return { outputs: { reply: { text } } };
+    }
     const state = inputs.state as {
       npc_id: string;
       inventory: string[];

@@ -4417,6 +4417,11 @@ def example_ids() -> list[str]:
     return list(_examples())
 
 
+def example_docs() -> list[dict]:
+    """The shared example documents: read only (``example`` returns a copy to edit)."""
+    return list(_examples().values())
+
+
 def example(example_id: str) -> dict | None:
     """A fresh copy of one example document, or None."""
     doc = _examples().get(example_id)
