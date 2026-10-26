@@ -433,7 +433,7 @@ export function TasksPage() {
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("scheduledTasks.search")}
               aria-label={t("scheduledTasks.search")}
-              className="h-9 w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
+              className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
             />
           </div>
           <Button onClick={() => setEditing(null)}>

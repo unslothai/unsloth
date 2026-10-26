@@ -251,8 +251,8 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   assert.equal(
     PICKERS.split("gpuGb={expanderGpuGb}").length - 1,
-    9,
-    "seven expanders and the two quant rows beside them",
+    10,
+    "eight expanders and the two quant rows beside them",
   );
   assert.ok(
     HUB_CARD.includes(
@@ -267,7 +267,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   assert.ok(PICKERS.includes("mediaLoad: diffusionLoad,"));
   assert.equal(
     PICKERS.split("diffusionLoad={diffusionLoad}").length - 1,
-    7,
+    8,
     "every task-scoped expander",
   );
   // On a host pool drop the RAM tier, or the APU window is counted with the RAM it maps.
@@ -311,7 +311,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   assert.equal(
     PICKERS.split("gpuCount={expanderGpuCount}").length - 1,
-    7,
+    8,
     "every task-scoped expander counts the scoped inventory",
   );
   assert.equal(
@@ -321,7 +321,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   assert.equal(
     PICKERS.split("<GgufVariantExpander").length - 1,
-    8,
+    9,
     "and that is every expander there is",
   );
   // Pass raw devices to gpuSharedHostMemoryGb; pre-folding undercounted multi-socket hosts.
@@ -466,7 +466,7 @@ test("a diffusion model too big for a shared pool is refused, not offloaded", ()
   assert.equal(
     PICKERS.split("hostPooledMemory={gpu.loadDeviceSharesHostMemory}").length -
       1,
-    7,
+    8,
     "every task-scoped expander learns the pool kind",
   );
 });
