@@ -23,7 +23,12 @@ def _slow_client(delay_s):
     return httpx.AsyncClient(transport = httpx.MockTransport(handler))
 
 
-def _post(monkeypatch, parked, timeout_s = 0.1, delay_s = 0.3):
+def _post(
+    monkeypatch,
+    parked,
+    timeout_s = 0.1,
+    delay_s = 0.3,
+):
     probes = []
 
     def grace():

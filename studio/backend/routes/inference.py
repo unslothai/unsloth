@@ -5974,7 +5974,13 @@ def _raw_park_grace(llama_backend, *, streaming: bool = True) -> Optional[Callab
 
 
 async def _nonstreaming_post_through_park(
-    client, url: str, *, llama_backend, json, upstream_headers, timeout = None
+    client,
+    url: str,
+    *,
+    llama_backend,
+    json,
+    upstream_headers,
+    timeout = None,
 ):
     """POST a non-streaming request, waiting out a server park longer than the read timeout.
     ``timeout`` defaults to the non-streaming generation timeout."""
