@@ -1136,6 +1136,53 @@ class TestEstimate:
         assert breakdown().lookup_table_on_disk is cpu_build
         assert breakdown(llama_extra_args = ["--device", "none"]).lookup_table_on_disk is True
 
+    def test_a_mig_slice_reporting_no_total_keeps_its_vram_credit(self, breakdown, monkeypatch):
+        """Total 0 means an iGPU only on Vulkan; a CUDA MIG or vGPU slice can report it
+        with VRAM of its own, which the launch's resident verdict credits."""
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 66 * 1024)
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gpu_memory",
+            staticmethod(lambda binary = None, **k: [(0, 22000, 0)]),
+        )
+        assert breakdown().lookup_table_on_disk is False
+
+    @pytest.mark.parametrize("pool", ["soc", "apu", "discrete"])
+    def test_a_unified_pool_beside_a_card_is_priced_once_as_the_launch_does(
+        self, breakdown, monkeypatch, pool
+    ):
+        """An integrated CUDA SoC or ROCm APU reports a nonzero total, but its free memory
+        is the host RAM the proof already counts, so the launch credits it once."""
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 58 * 1024)
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gpu_memory",
+            staticmethod(lambda binary = None, **k: [(0, 16000, 16384), (1, 50000, 65536)]),
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_INTEGRATED_CUDA_IDS",
+            {ri.LlamaCppBackend._integrated_cuda_mask_key(): (1,) if pool == "soc" else ()},
+        )
+        backend = ri.get_llama_cpp_backend()
+        monkeypatch.setattr(
+            backend,
+            "_amd_apu_wants_unified_memory",
+            lambda ids = None, *a, **k: (pool == "apu" and ids is not None and bool(set(ids) & {1})),
+            raising = False,
+        )
+        assert breakdown().lookup_table_on_disk is (pool != "discrete")
+
     @pytest.mark.parametrize("tensor", [False, True])
     def test_an_inherited_split_mode_the_launch_drops_keeps_the_table_resident(
         self, breakdown, monkeypatch, tensor

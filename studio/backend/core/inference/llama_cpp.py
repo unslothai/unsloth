@@ -12158,8 +12158,13 @@ class LlamaCppBackend:
         device_list: Optional[bool] = None,
         tensor_parallel: Optional[bool] = None,
         integrated_gpu_ids: Optional[Iterable[int]] = None,
+        child_gpu_order: Optional[Sequence[int]] = None,
     ) -> bool:
-        """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child."""
+        """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child.
+
+        ``child_gpu_order``: the ids the child's visibility mask will hold, in order
+        (``_planned_child_gpu_order``), for a preview whose ``env`` does not carry that
+        mask yet; a compact ``CUDA<k>`` / ``ROCm<k>`` names entry k of it."""
         tensor = (
             _effective_tensor_parallel(extra_args, False, env)
             if tensor_parallel is None
@@ -12188,7 +12193,11 @@ class LlamaCppBackend:
             ]
             ordinals = [self._device_ordinal(d) for d in gpu_names]
             if all(o is not None for o in ordinals):
-                selected = list(self._physical_ordinals(ordinals, env, is_vulkan_backend) or ())
+                if child_gpu_order is not None and not is_vulkan_backend:
+                    _order = [int(i) for i in child_gpu_order]
+                    selected = [_order[o] for o in ordinals if 0 <= o < len(_order)] or _order
+                else:
+                    selected = list(self._physical_ordinals(ordinals, env, is_vulkan_backend) or ())
         elif tensor or (device_list if device_list is not None else is_vulkan_backend):
             try:
                 selected = list(gpu_indices or ()) or None
@@ -13195,6 +13204,74 @@ class LlamaCppBackend:
         if sorted(ordered) != sorted(wanted) or ordered == wanted:
             return None
         return ordered
+
+    @staticmethod
+    def _picker_ordered_gpu_indices(gpu_ids, gpu_indices, tp_tensor_split):
+        """``(gpu_indices, tp_tensor_split)`` in the order the user dragged the picked GPUs.
+
+        No narrower subset (manual, or a failed/file-size selection) pins the whole picked
+        set. A fit that narrowed the pool keeps only its survivors, in the picker's
+        relative order. _plan_tensor_parallel returns its shares positional over the
+        ascending gpu_indices, so the shares move with the devices, and a reorder they
+        cannot follow is vetoed rather than half-applied (as _repoint_emitted_tensor_split
+        does for the mask). Unchanged without ``gpu_ids``.
+        """
+        if not gpu_ids:
+            return gpu_indices, tp_tensor_split
+        picked = [int(i) for i in gpu_ids]
+        if gpu_indices is None:
+            return picked, tp_tensor_split
+        before = [int(i) for i in gpu_indices]
+        kept = set(before)
+        reordered = [i for i in picked if i in kept] + [i for i in before if i not in set(picked)]
+        if tp_tensor_split and len(tp_tensor_split) == len(before):
+            share_by_id = dict(zip(before, tp_tensor_split))
+            if all(i in share_by_id for i in reordered):
+                return reordered, [share_by_id[i] for i in reordered]
+        elif not tp_tensor_split:
+            return reordered, tp_tensor_split
+        return gpu_indices, tp_tensor_split
+
+    def _planned_child_gpu_order(
+        self,
+        *,
+        gpu_ids,
+        gpu_indices,
+        tp_tensor_split,
+        extra_args,
+        env,
+        is_vulkan_backend: bool,
+        cpu_forced: bool = False,
+    ) -> "tuple[Optional[list[int]], Optional[list[int]]]":
+        """``(device order, visibility mask order)`` the spawn will give this child, for
+        previews that run before load_model pins it.
+
+        Device order: gpu_indices after the picker reorder, the list a Vulkan ``--device``
+        and a ``--split-mode none`` main device follow. Mask order: the ids a CUDA/ROCm
+        child's emitted visibility mask holds, so its ``CUDA<k>`` / ``ROCm<k>`` is entry k
+        (the inherited-order rule the spawn applies included); None when the spawn keeps
+        the inherited mask (Vulkan, a CPU child, nothing pinned, or ids the mask cannot
+        name), where the parent's mask still numbers the child's devices.
+        """
+        order, split = self._picker_ordered_gpu_indices(gpu_ids, gpu_indices, tp_tensor_split)
+        if order is None or is_vulkan_backend or cpu_forced:
+            return (None if order is None else [int(i) for i in order]), None
+        order = [int(i) for i in order]
+        mask = list(order)
+        if not gpu_ids:
+            inherited = self._inherited_child_gpu_order(mask)
+            if (
+                inherited is not None
+                and not _extra_args_have_tensor_split(extra_args, env)
+                and (not split or len(split) == len(mask))
+            ):
+                mask = inherited
+        try:
+            if LlamaCppBackend._pinned_child_visibility(mask) is None:
+                return order, None
+        except Exception:
+            return order, None
+        return order, mask
 
     @staticmethod
     def _repoint_emitted_tensor_split(
@@ -18064,6 +18141,30 @@ class LlamaCppBackend:
             "GPU, so the whole model is charged to system RAM."
         )
 
+    def _unified_pool_gpu_ids(
+        self, rows, *, gpu_indices, shared_gpu_ids, is_vulkan_backend: bool
+    ) -> set:
+        """Ids in ``rows`` (``(idx, free)``) whose free "VRAM" is the host RAM pool.
+
+        ``shared_gpu_ids`` already names Vulkan iGPUs (total 0); the ROCm APUs and
+        integrated CUDA SoCs it cannot see are added here, so both end up priced
+        against host RAM alone. The one classification the launch and the estimate
+        route's resident proofs share."""
+        rows = list(rows or ())
+        shared = set(shared_gpu_ids or ())
+        pinned = list(gpu_indices) if gpu_indices is not None else [row[0] for row in rows]
+        if rows and not is_vulkan_backend and self._amd_apu_wants_unified_memory(pinned):
+            # Per device, not blanket: the gate above is the cheap "is ANY of them
+            # unified" question, and a discrete card next to an APU still has a pool of
+            # its own, so re-ask per row rather than forfeit a fit that is really there.
+            shared |= {row[0] for row in rows if self._amd_apu_wants_unified_memory([row[0]])}
+        # Integrated CUDA SoCs (Jetson, DGX Spark) too. Cache only: _get_gpu_memory filled it.
+        _integrated = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+            LlamaCppBackend._integrated_cuda_mask_key(), ()
+        )
+        shared |= {row[0] for row in rows if row[0] in _integrated}
+        return shared
+
     def _fits_without_paging(
         self,
         footprint_bytes: Optional[int],
@@ -18277,18 +18378,12 @@ class LlamaCppBackend:
         # comes out of, so adding both fits a model twice into memory that holds it
         # once. shared_gpu_ids already names Vulkan iGPUs; the ROCm APUs it cannot see
         # are added here. Both end up priced against host RAM alone.
-        shared = set(shared_gpu_ids or ())
-        pinned = list(gpu_indices) if gpu_indices is not None else [idx for idx, _free in rows]
-        if rows and not is_vulkan_backend and self._amd_apu_wants_unified_memory(pinned):
-            # Per device, not blanket: the gate above is the cheap "is ANY of them
-            # unified" question, and a discrete card next to an APU still has a pool of
-            # its own, so re-ask per row rather than forfeit a fit that is really there.
-            shared |= {idx for idx, _free in rows if self._amd_apu_wants_unified_memory([idx])}
-        # Integrated CUDA SoCs (Jetson, DGX Spark) too. Cache only: _get_gpu_memory filled it.
-        _integrated = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
-            LlamaCppBackend._integrated_cuda_mask_key(), ()
+        shared = self._unified_pool_gpu_ids(
+            rows,
+            gpu_indices = gpu_indices,
+            shared_gpu_ids = shared_gpu_ids,
+            is_vulkan_backend = is_vulkan_backend,
         )
-        shared |= {idx for idx, _free in rows if idx in _integrated}
         # --no-kv-offload puts the WHOLE cache in host RAM whatever the layer placement
         # says (llama-kv-cache.cpp upgrades a layer's buffer type only inside
         # `if (offload)`), so free VRAM may not pay for it. Resolved off the same
@@ -31473,17 +31568,23 @@ class LlamaCppBackend:
                                     supports_fit_target = _supports_fit_target,
                                 )
                         # A lazily read table stays mmap'd on the host, never on the GPU.
+                        # Devices in the order and under the mask the spawn gives the child.
+                        _child_order, _child_mask = self._planned_child_gpu_order(
+                            gpu_ids = gpu_ids,
+                            gpu_indices = gpu_indices,
+                            tp_tensor_split = tp_tensor_split,
+                            extra_args = _child_extras,
+                            env = _child_env,
+                            is_vulkan_backend = is_vulkan_backend,
+                            cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                        )
                         _lazy_host = self._lazy_read_host_bytes(
                             model_path,
                             caps = server_caps,
                             extra_args = _child_extras,
                             env = _child_env,
                             auto_resolves_off = self._lazy_auto_resolves_off(
-                                gpu_indices = (
-                                    gpu_indices
-                                    if gpu_indices is not None or not gpu_ids
-                                    else [int(i) for i in gpu_ids]
-                                ),
+                                gpu_indices = _child_order,
                                 detected_gpus = _detected_gpus,
                                 shared_gpu_ids = _shared_gpu_ids,
                                 is_vulkan_backend = is_vulkan_backend,
@@ -31491,6 +31592,7 @@ class LlamaCppBackend:
                                 env = _child_env,
                                 tensor_parallel = tensor_parallel,
                                 integrated_gpu_ids = _vulkan_igpu_ids,
+                                child_gpu_order = _child_mask,
                             ),
                         )
                         _need = (
@@ -31963,6 +32065,16 @@ class LlamaCppBackend:
                     # A lazily read table stays mmap'd under every load mode: not pinned RAM.
                     # An empty inventory beside a GPU (failed probe) may hide an iGPU, where
                     # auto is off: priced resident, as lookup_tables_stream_by_default does.
+                    # Devices in the order and under the mask the spawn gives the child.
+                    _fit_child_order, _fit_child_mask = self._planned_child_gpu_order(
+                        gpu_ids = gpu_ids,
+                        gpu_indices = gpu_indices,
+                        tp_tensor_split = tp_tensor_split,
+                        extra_args = _fit_extras,
+                        env = _fit_env,
+                        is_vulkan_backend = is_vulkan_backend,
+                        cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                    )
                     _fit_lazy_auto_off = (
                         not _detected_gpus
                         and (is_vulkan_backend or _gpu_device_node_present())
@@ -31974,11 +32086,7 @@ class LlamaCppBackend:
                             tensor_parallel = tensor_parallel,
                         )
                     ) or self._lazy_auto_resolves_off(
-                        gpu_indices = (
-                            gpu_indices
-                            if gpu_indices is not None or not gpu_ids
-                            else [int(i) for i in gpu_ids]
-                        ),
+                        gpu_indices = _fit_child_order,
                         detected_gpus = _detected_gpus,
                         shared_gpu_ids = _shared_gpu_ids,
                         is_vulkan_backend = is_vulkan_backend,
@@ -31986,6 +32094,7 @@ class LlamaCppBackend:
                         env = _fit_env,
                         tensor_parallel = tensor_parallel,
                         integrated_gpu_ids = _vulkan_igpu_ids,
+                        child_gpu_order = _fit_child_mask,
                     )
                     _fit_lazy_bytes = self._lazy_read_host_bytes(
                         model_path,
@@ -32268,29 +32377,10 @@ class LlamaCppBackend:
                 # a failed/file-size selection), pin the whole picked set so the
                 # model can't spill onto an unpicked GPU.
                 if gpu_ids:
-                    _picked_order = [int(i) for i in gpu_ids]
-                    if gpu_indices is None:
-                        gpu_indices = _picked_order
-                    else:
-                        # A fit narrowed the pool. Only the survivors remain, but their
-                        # relative order is still the one the user dragged them into.
-                        _kept = {int(i) for i in gpu_indices}
-                        _before_reorder = [int(i) for i in gpu_indices]
-                        _reordered = [i for i in _picked_order if i in _kept] + [
-                            int(i) for i in gpu_indices if int(i) not in set(_picked_order)
-                        ]
-                        # _plan_tensor_parallel returned the shares positional over the
-                        # ascending gpu_indices, so reordering the devices without moving
-                        # the shares hands the roomier card's share to the smaller one --
-                        # exactly when a weighted split was needed. Veto rather than
-                        # half-apply, as _repoint_emitted_tensor_split does for the mask.
-                        if tp_tensor_split and len(tp_tensor_split) == len(_before_reorder):
-                            _share_by_id = dict(zip(_before_reorder, tp_tensor_split))
-                            if all(i in _share_by_id for i in _reordered):
-                                tp_tensor_split = [_share_by_id[i] for i in _reordered]
-                                gpu_indices = _reordered
-                        elif not tp_tensor_split:
-                            gpu_indices = _reordered
+                    # The previews read the same order (_planned_child_gpu_order).
+                    gpu_indices, tp_tensor_split = self._picker_ordered_gpu_indices(
+                        gpu_ids, gpu_indices, tp_tensor_split
+                    )
                 # Auto Vulkan fit prefers discrete GPUs and keeps that pool pinned.
                 elif (
                     is_vulkan_backend
@@ -32384,6 +32474,16 @@ class LlamaCppBackend:
                     if _gpu_ids_own_device_flags:
                         self._clear_device_placement_env(_apu_lazy_env)
                     self._reconcile_split_mode_env(_apu_lazy_env, tensor_parallel = tensor_parallel)
+                    # Devices in the order and under the mask the spawn gives the child.
+                    _apu_child_order, _apu_child_mask = self._planned_child_gpu_order(
+                        gpu_ids = gpu_ids,
+                        gpu_indices = gpu_indices,
+                        tp_tensor_split = tp_tensor_split,
+                        extra_args = _apu_lazy_extras,
+                        env = _apu_lazy_env,
+                        is_vulkan_backend = False,
+                        cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                    )
                     _apu_resident_model_size = max(
                         1,
                         model_size
@@ -32404,7 +32504,7 @@ class LlamaCppBackend:
                                 )
                             )
                             or self._lazy_auto_resolves_off(
-                                gpu_indices = gpu_indices,
+                                gpu_indices = _apu_child_order,
                                 detected_gpus = _detected_gpus,
                                 shared_gpu_ids = _shared_gpu_ids,
                                 is_vulkan_backend = False,
@@ -32412,6 +32512,7 @@ class LlamaCppBackend:
                                 extra_args = _apu_lazy_extras,
                                 env = _apu_lazy_env,
                                 tensor_parallel = tensor_parallel,
+                                child_gpu_order = _apu_child_mask,
                             ),
                         ),
                     )

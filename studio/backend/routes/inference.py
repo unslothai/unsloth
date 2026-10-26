@@ -16194,6 +16194,7 @@ def _gguf_memory_breakdown(
             except Exception:  # noqa: BLE001 -- unread cards: the whole load in RAM
                 rows = []
             pick = sorted(int(i) for i in selected_gpu_ids) if selected_gpu_ids else None
+            _lt_vulkan = LlamaCppBackend._is_vulkan_backend()
             # Manual mode plans no cards at launch (gpus = []): the whole load is RAM.
             if (
                 not rows
@@ -16202,18 +16203,30 @@ def _gguf_memory_breakdown(
                     _lt_extras,
                     _lt_env,
                     len(pick) if pick is not None else len(rows),
-                    is_vulkan_backend = LlamaCppBackend._is_vulkan_backend(),
+                    is_vulkan_backend = _lt_vulkan,
                     gpu_indices = pick,
                 )
             ):
                 rows, pick = [], None
+            _lt_rows = [(idx, free) for idx, free, _total in rows]
             return bool(
                 _lt_backend._fits_without_paging(
                     footprint,
-                    [(idx, free) for idx, free, _total in rows],
+                    _lt_rows,
                     gpu_indices = pick,
-                    # Vulkan reports total 0 for an iGPU: its free memory IS host RAM.
-                    shared_gpu_ids = {idx for idx, _free, total in rows if total <= 0},
+                    # The launch's classification: Vulkan reports total 0 for an iGPU
+                    # (a CUDA MIG or vGPU slice can too, with VRAM of its own), and ROCm
+                    # APUs and integrated CUDA SoCs pool host RAM whatever their total.
+                    shared_gpu_ids = _lt_backend._unified_pool_gpu_ids(
+                        _lt_rows,
+                        gpu_indices = pick,
+                        shared_gpu_ids = (
+                            {idx for idx, _free, total in rows if total <= 0}
+                            if _lt_vulkan
+                            else set()
+                        ),
+                        is_vulkan_backend = _lt_vulkan,
+                    ),
                     host_only_bytes = host_only,
                     vram_margin_mib = max(1024.0, fit_target_margin_in(_lt_extras, _lt_env) or 0.0),
                     avail_mib = _lt_avail,

@@ -1238,3 +1238,178 @@ def test_the_metal_discount_sees_the_split_mode_the_child_gets(tmp_path, monkeyp
     _metal_launched(tmp_path, monkeypatch)
     metal = [s for s in seen if s[0] == "_apple_lookup_table_discount"]
     assert metal and all(s[2] is None for s in metal), seen
+
+
+def _spy_lazy_auto(monkeypatch):
+    """(caller, child_gpu_order, answer) for every _lazy_auto_resolves_off call."""
+    seen = []
+    real = LlamaCppBackend._lazy_auto_resolves_off
+
+    def spy(self, *a, **k):
+        answer = real(self, *a, **k)
+        seen.append((sys._getframe(1).f_code.co_name, k.get("child_gpu_order"), answer))
+        return answer
+
+    monkeypatch.setattr(LlamaCppBackend, "_lazy_auto_resolves_off", spy)
+    return seen
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--device", "ROCm0"], ["--device", "ROCm0", "--load-mode", "none"], []],
+    ids = ["device", "device_unmapped", "no_device"],
+)
+def test_a_compact_device_names_the_card_the_child_mask_puts_first(
+    tmp_path, monkeypatch, extra_args
+):
+    """Auto pins a ROCm APU at physical 1 beside a discrete card at 0, so the child's
+    ROCm0 is the APU. The previews run before the mask is written: reading ROCm0 through
+    the parent's numbering found the discrete card, streamed the 26.82 GiB table, and
+    emitted --load-mode none with no APU RAM warning for 73.45 GiB on 58 GiB of RAM."""
+    import test_llama_cpp_placement as placement
+
+    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
+    backend, gguf = placement._apu_backend(
+        tmp_path, gguf_gb = 73.45, avail_mib = 58 * 1024, monkeypatch = monkeypatch
+    )
+    rows = [(0, 16_000, 16_384), (1, 90_000, 92_160)]
+    backend._get_gpu_memory = lambda *_a, **_kw: list(rows)
+    backend._get_gpu_free_memory = lambda *_a, **_kw: [(i, f) for i, f, _t in rows]
+    backend._amd_apu_wants_unified_memory = lambda ids = None, *a, **k: (
+        ids is not None and bool(list(ids)) and {int(i) for i in ids} <= {1}
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1}))
+    backend._select_gpus = lambda *a, **k: ([1], True)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *a, **k: GIB // 4
+    backend._gguf_tensor_scan = lambda _path: (
+        "qwen4exp",
+        {PLE: placement._QWEN38_PLE},
+        0,
+    )
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(placement._CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: caps
+    seen = _spy_lazy_auto(monkeypatch)
+
+    res = placement._launch(backend, gguf, extra_args = extra_args)
+
+    assert res["env"].get("CUDA_VISIBLE_DEVICES") == "1", res["env"]
+    previews = [s for s in seen if s[0] in ("load_model", "_fitter_vram_shortfall")]
+    assert previews and all(answer for _c, _m, answer in previews), seen
+    assert "unified-memory APU" in (backend.last_load_warning or "")
+    assert not placement._unmapped_tokens(res["cmd"]), res["cmd"]
+
+
+@pytest.mark.parametrize("ram_gib", [58, 256])
+@pytest.mark.parametrize("layout", ["dgpu0_igpu1", "igpu0_dgpu1"])
+def test_split_mode_none_reads_the_main_device_in_picker_order(
+    tmp_path, _moe_cache_host, layout, ram_gib
+):
+    """gpu_ids [1, 0] emits --device Vulkan1,Vulkan0, so --split-mode none puts every
+    weight on Vulkan1. The load-mode and managed lazy previews read the ascending list
+    (Vulkan0): an iGPU main device streamed its table, a discrete one kept it resident."""
+    import test_llama_cpp_placement as placement
+
+    dgpu, igpu = (0, 1) if layout == "dgpu0_igpu1" else (1, 0)
+    rows = sorted([(dgpu, 35 * 1024, 36 * 1024), (igpu, 55 * 1024, 0)])
+    backend, gguf = placement._moe_backend(tmp_path, size_gib = 73.45, memory = rows, moe = False)
+    backend._is_vulkan_backend = lambda _binary = None: True
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *a, **k: GIB // 4
+    backend._available_system_memory_mib = lambda: int(ram_gib * 1024)
+    backend._gguf_tensor_scan = lambda _path: ("qwen4exp", {PLE: placement._QWEN38_PLE}, 0)
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(placement._CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: caps
+
+    cmd = placement._launch(backend, gguf, gpu_ids = [1, 0], extra_args = ["--split-mode", "none"])[
+        "cmd"
+    ]
+
+    assert cmd[cmd.index("--device") + 1] == "Vulkan1,Vulkan0", cmd
+    main_is_igpu = igpu == 1
+    # An iGPU main device keeps the table resident (auto is off there): 73.45 GiB does
+    # not fit 58 GiB of RAM unmapped, so the load stays mmap'd.
+    if main_is_igpu and ram_gib == 58:
+        assert placement._load_mode(cmd) is None, cmd
+    # A discrete main device streams it unless RAM holds it, where Studio pins it resident.
+    expected_lazy = ["off"] if not main_is_igpu and ram_gib == 256 else []
+    assert _lazy_values(cmd) == expected_lazy, cmd
+
+
+@pytest.mark.parametrize(
+    "gpu_ids, gpu_indices, split, inherited, order, mask",
+    [
+        (None, [0, 1], None, None, [0, 1], [0, 1]),
+        ([1, 0], [0, 1], None, None, [1, 0], [1, 0]),
+        ([1, 0], None, None, None, [1, 0], [1, 0]),
+        ([1, 0], [0, 1], [3, 1], None, [1, 0], [1, 0]),
+        ([1, 0], [0, 1], [3], None, [0, 1], [0, 1]),
+        (None, [0, 1], None, [1, 0], [0, 1], [1, 0]),
+        (None, [0, 1], [3, 1, 2], [1, 0], [0, 1], [0, 1]),
+        (None, None, None, None, None, None),
+    ],
+    ids = [
+        "ascending",
+        "picker_reorder",
+        "picker_unnarrowed",
+        "picker_moves_shares",
+        "picker_veto_shares",
+        "inherited_order",
+        "inherited_veto_shares",
+        "unpinned",
+    ],
+)
+def test_the_planned_child_order_matches_the_spawn(
+    monkeypatch, gpu_ids, gpu_indices, split, inherited, order, mask
+):
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: inherited)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_pinned_child_visibility",
+        staticmethod(lambda ids: ",".join(str(int(i)) for i in ids)),
+    )
+    backend = LlamaCppBackend()
+    kwargs = dict(
+        gpu_ids = gpu_ids,
+        gpu_indices = gpu_indices,
+        tp_tensor_split = split,
+        extra_args = [],
+        env = {},
+    )
+    assert backend._planned_child_gpu_order(**kwargs, is_vulkan_backend = False) == (order, mask)
+    # Vulkan has no mask; a CPU child gets none either.
+    assert backend._planned_child_gpu_order(**kwargs, is_vulkan_backend = True) == (order, None)
+    assert backend._planned_child_gpu_order(**kwargs, is_vulkan_backend = False, cpu_forced = True) == (
+        order,
+        None,
+    )
+    # Ids the mask cannot name keep the inherited one: the parent's numbering stands.
+    monkeypatch.setattr(LlamaCppBackend, "_pinned_child_visibility", staticmethod(lambda ids: None))
+    assert backend._planned_child_gpu_order(**kwargs, is_vulkan_backend = False) == (order, None)
+
+
+def test_a_compact_device_maps_through_the_planned_mask():
+    backend = LlamaCppBackend()
+    backend._integrated_cuda_gpu_ids = lambda: set()
+    import unittest.mock as um
+
+    with um.patch.object(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
+    ):
+        common = dict(
+            gpu_indices = [1],
+            detected_gpus = [(0, 16_000), (1, 90_000)],
+            shared_gpu_ids = set(),
+            is_vulkan_backend = False,
+            extra_args = ["--device", "ROCm0"],
+            env = {},
+        )
+        # The parent's numbering: ROCm0 is the discrete card.
+        assert backend._lazy_auto_resolves_off(**common) is False
+        # The child's mask [1]: ROCm0 is the APU.
+        assert backend._lazy_auto_resolves_off(**common, child_gpu_order = [1]) is True
