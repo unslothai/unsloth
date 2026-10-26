@@ -2964,7 +2964,7 @@ function VideoGenerator({
       const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);
       if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
-      const pickToastId = pickToast.show();
+      const pickToastId = pickToast.show(opts.displayRepoId ?? repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
       // job must not revert it.
       const ownRevert = quantRevert.current;

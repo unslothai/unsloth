@@ -4384,7 +4384,7 @@ export function ImagesPage({
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
-      const pickToastId = downloadOnly ? undefined : pickToast.show();
+      const pickToastId = downloadOnly ? undefined : pickToast.show(opts.displayRepoId ?? repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
       // job must not revert it. A download-only pick claims no slot at all: it never relabels the
       // selector, so there is nothing here it could own, and reverting what it found would restore

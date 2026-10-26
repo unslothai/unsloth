@@ -20,11 +20,11 @@ const PICK_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 };
 
-function describePick(phase: PickToastPhase, progress: PickToastProgress | null) {
+function describePick(phase: PickToastPhase, progress: PickToastProgress | null, modelName?: string) {
   if (phase === "downloading") {
     return (
       <ModelLoadDescription
-        title="Downloading model…"
+        title={modelName ? `Downloading ${modelName}…` : "Downloading model…"}
         message="The model loads once its files are downloaded."
         progressPercent={
           progress ? (progress.downloadedBytes / progress.totalBytes) * 100 : null
@@ -40,7 +40,7 @@ function describePick(phase: PickToastPhase, progress: PickToastProgress | null)
   if (phase === "queued") {
     return (
       <ModelLoadDescription
-        title="Download queued"
+        title={modelName ? `Download queued: ${modelName}` : "Download queued"}
         message="It starts once the current download finishes."
       />
     );
@@ -48,7 +48,7 @@ function describePick(phase: PickToastPhase, progress: PickToastProgress | null)
   if (phase === "waiting") {
     return (
       <ModelLoadDescription
-        title="Model downloaded"
+        title={modelName ? `Downloaded ${modelName}` : "Model downloaded"}
         message="It loads once the other downloads finish."
       />
     );
@@ -56,14 +56,14 @@ function describePick(phase: PickToastPhase, progress: PickToastProgress | null)
   if (phase === "ready") {
     return (
       <ModelLoadDescription
-        title="Model downloaded"
+        title={modelName ? `Downloaded ${modelName}` : "Model downloaded"}
         message="It loads when you return to this page."
       />
     );
   }
   return (
     <ModelLoadDescription
-      title="Preparing download…"
+      title={modelName ? `Preparing ${modelName} download…` : "Preparing download…"}
       message="Checking which files this model needs."
     />
   );

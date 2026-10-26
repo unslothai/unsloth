@@ -170,6 +170,7 @@ const PROGRESS_INDICATOR_CLASS =
 
 type ResourceRowProps = {
   label: string;
+  resourceName?: string | null;
   state: DownloadState;
   preparation: PreparationProgress | null;
 };
@@ -189,6 +190,7 @@ export function resourceRowHasContent(
 // resource's preparation step once they stop.
 function ResourceRow({
   label,
+  resourceName,
   state,
   preparation,
 }: ResourceRowProps): ReactElement | null {
@@ -258,6 +260,9 @@ function ResourceRow({
           {percentLabel}
         </span>
       </div>
+      {resourceName ? (
+        <div className="break-all text-ui-11 text-foreground/90">{resourceName}</div>
+      ) : null}
       {sizeLabel ? (
         <div className="text-ui-11 tabular-nums text-muted-foreground">
           {sizeLabel}
@@ -483,6 +488,7 @@ export function TrainingStartOverlay({
             <AnimatedSpan className="mt-3">
               <ResourceRow
                 label={t("studio.trainingStart.modelWeights")}
+                resourceName={modelName}
                 state={modelDownload}
                 preparation={modelPreparation}
               />
