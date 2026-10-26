@@ -202,3 +202,15 @@ def test_the_default_hub_never_imports_the_probe(monkeypatch):
         assert "utils.hub_mirror_probe" not in sys.modules
     finally:
         sys.modules["utils.hub_mirror_probe"] = probe
+
+
+def test_one_failing_route_does_not_hide_the_other(monkeypatch):
+    def handler(request):
+        if request.method == "HEAD":
+            raise httpx.ConnectTimeout("timed out", request = request)
+        return httpx.Response(308, headers = {"location": f"https://huggingface.co{API}"})
+
+    monkeypatch.setattr(probe, "transport", httpx.MockTransport(handler))
+    assert probe.find_official_redirects(MIRROR) == [
+        ("Hub API calls", f"https://huggingface.co{API}")
+    ]

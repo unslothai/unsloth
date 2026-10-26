@@ -59,7 +59,11 @@ def find_official_redirects(endpoint: str) -> list[tuple[str, str]]:
             ("Hub API calls", "GET", f"{endpoint}/api/models/{PROBE_REPO}"),
             ("model downloads", "HEAD", f"{endpoint}/{PROBE_REPO}/resolve/main/{PROBE_FILE}"),
         ):
-            target = _official_redirect(client, method, url)
+            try:
+                target = _official_redirect(client, method, url)
+            except httpx.HTTPError as exc:
+                logger.debug("Hugging Face endpoint probe of %s failed: %s", url, exc)
+                continue
             if target is not None:
                 findings.append((what, target))
     return findings
