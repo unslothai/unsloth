@@ -332,3 +332,63 @@ def test_direct_helper_with_grad_keeps_the_out_contract(sm75, bias):
     got.float().sum().backward()
     want_x, _ = _grad_oracle(x, packed, scale, b, False)
     _assert_grad_close(x.grad, want_x)
+
+
+def test_t4_backward_fits_in_64mib_headroom(sm75):
+    # dX = dY @ W decoded the whole 112 MiB weight even where the forward ran in chunks.
+    device = sm75
+    N, K = 14336, 4096
+    packed, scale = _weight(N, K, device, seed = 12)
+    x = torch.randn(1, K, dtype = torch.float16, device = device).requires_grad_()
+    mcl.mxfp4_packed_matmul(x.detach(), packed, scale)  # warm kernels and their self-checks
+    with _headroom(64, device):
+        start = torch.cuda.memory_allocated(device)
+        torch.cuda.reset_peak_memory_stats(device)
+        mcl.mxfp4_packed_matmul(x, packed, scale).float().sum().backward()
+        torch.cuda.synchronize(device)
+        peak = torch.cuda.max_memory_allocated(device) - start
+    assert peak < 64 * 2**20
+    want, _ = _grad_oracle(x, packed, scale, None, False)
+    _assert_grad_close(x.grad, want)
+
+
+_COLD_COMPILED_BACKWARD = """
+import torch
+import unsloth  # noqa: F401
+import unsloth.models.mxfp4_compressed_linear as mcl
+import unsloth_zoo.mxfp4_dequant as md
+device = torch.device("cuda", torch.cuda.current_device())
+g = torch.Generator(device = device).manual_seed(10)
+packed = torch.randint(0, 256, (512, 128), dtype = torch.uint8, device = device, generator = g)
+scale = torch.randint(118, 128, (512, 8), dtype = torch.uint8, device = device, generator = g)
+x = torch.randn(3, 256, dtype = torch.float16, device = device).requires_grad_()
+md._KERNEL_VERIFIED.clear()  # nothing decoded eagerly yet
+f = torch.compile(lambda a: mcl.mxfp4_packed_matmul(a, packed, scale), fullgraph = True)
+f(x).float().sum().backward()
+w = mcl.dequantize_mxfp4_packed(packed, scale, torch.float32).double()
+want = torch.ones(3, 512, dtype = torch.float64, device = device) @ w
+err = (x.grad.double() - want).norm() / want.norm()
+assert err.item() < 1e-2, err.item()
+print("OK")
+"""
+
+
+def test_cold_compiled_direct_helper_backward():
+    # The first decode of a process can be the one traced in a compiled backward: no warm self-check to lean on.
+    import os
+    import subprocess
+    import sys
+
+    try:
+        import unsloth_zoo.mxfp4_dequant  # noqa: F401
+    except Exception:
+        pytest.skip("needs unsloth_zoo.mxfp4_dequant")
+    result = subprocess.run(
+        [sys.executable, "-c", _COLD_COMPILED_BACKWARD],
+        env = dict(os.environ),
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    if result.returncode != 0 or "OK" not in result.stdout:
+        pytest.fail(result.stdout[-2000:] + "\n" + result.stderr[-4000:], pytrace = False)
