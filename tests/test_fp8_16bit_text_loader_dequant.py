@@ -58,6 +58,18 @@ def test_block_fp8_config_gets_dequantize(as_object):
 
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
+@pytest.mark.parametrize("as_object", [False, True])
+def test_explicit_fp8_config_is_copied_for_full_finetuning(as_object):
+    qc = dict(_BLOCK_FP8, modules_to_not_convert = ["lm_head"], dequantize = False)
+    if as_object:
+        qc = FineGrainedFP8Config.from_dict(qc)
+    out = _fp8_dequantize_quantization_config(None, qc)
+    assert out.dequantize is True
+    assert out.modules_to_not_convert == ["lm_head"]
+    assert (qc.dequantize if as_object else qc["dequantize"]) is False
+
+
+@pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 def test_enum_quant_method_is_read_by_value():
     from transformers.utils.quantization_config import QuantizationMethod
 
@@ -141,6 +153,102 @@ except Exception:
     else:
         # Without the explicit flag nothing changes: transformers decides, as before.
         assert dequantize == "None", seen[-1]
+
+
+@pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
+@pytest.mark.skipif(not has_real_cuda(), reason = "full finetuning loads on CUDA")
+@pytest.mark.parametrize(
+    "entrypoint, explicit_config", [("FastModel", False), ("FastLanguageModel", True)]
+)
+@pytest.mark.parametrize("float32_mixed_precision", [False, True])
+def test_native_fp8_full_finetuning_preserves_scaled_weights(
+    tmp_path, entrypoint, explicit_config, float32_mixed_precision
+):
+    from safetensors.torch import load_file, save_file
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    src, dense, saved = tmp_path / "fp8", tmp_path / "dense", tmp_path / "saved"
+    src.mkdir()
+    dense.mkdir()
+    _write_tiny_block_fp8_llama(str(src))
+    tensors = load_file(str(src / "model.safetensors"))
+    reference = {}
+    for name, weight in tensors.items():
+        if name.endswith("weight_scale_inv"):
+            continue
+        if weight.dtype == torch.float8_e4m3fn:
+            scale = tensors[name.replace(".weight", ".weight_scale_inv")]
+            scale = scale.repeat_interleave(128, 0).repeat_interleave(128, 1)
+            weight = (weight.float() * scale).to(torch.bfloat16)
+        reference[name] = weight
+    save_file(reference, str(dense / "model.safetensors"))
+    config = json.loads((src / "config.json").read_text())
+    del config["quantization_config"]
+    (dense / "config.json").write_text(json.dumps(config))
+    raw = Tokenizer(models.WordLevel({f"t{i}": i for i in range(512)}, unk_token = "t0"))
+    raw.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object = raw, unk_token = "t0", pad_token = "t0", bos_token = "t1", eos_token = "t2"
+    )
+    tokenizer.save_pretrained(src)
+    tokenizer.save_pretrained(dense)
+    code = f"""
+import logging
+logging.getLogger("transformers").setLevel(logging.ERROR)
+import unsloth, torch
+from transformers import AutoModelForCausalLM, FineGrainedFP8Config
+from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
+
+# Exercise the kept-FP8 branch even on pre-sm89 CUDA: disable only the environment
+# fallback, retaining the real checkpoint loader, scale conversion and training code.
+FineGrainedFP8HfQuantizer.validate_environment = lambda self, *a, **kw: None
+loader = getattr(unsloth, {entrypoint!r})
+options = dict(max_seq_length = 64, dtype = torch.bfloat16, full_finetuning = True,
+               use_gradient_checkpointing = False, float32_mixed_precision = {float32_mixed_precision})
+extra = {{}}
+if {explicit_config}:
+    extra = dict(load_in_4bit = False, quantization_config = FineGrainedFP8Config())
+model, _ = loader.from_pretrained({str(src)!r}, **options, **extra)
+assert not any(p.dtype == torch.float8_e4m3fn for p in model.parameters())
+assert not any("weight_scale_inv" in name for name, _ in model.named_parameters())
+assert getattr(model.config, "quantization_config", None) is None
+reference, _ = loader.from_pretrained({str(dense)!r}, load_in_4bit = False, **options)
+actual_weights, expected_weights = dict(model.named_parameters()), dict(reference.named_parameters())
+assert actual_weights.keys() == expected_weights.keys()
+for name in actual_weights:
+    torch.testing.assert_close(actual_weights[name], expected_weights[name], rtol = 0, atol = 0, msg = name)
+ids = torch.tensor([[1, 3, 5, 7, 9, 11, 13, 2]], device = model.device)
+model.eval()
+reference.eval()
+actual = model(input_ids = ids, labels = ids)
+expected = reference(input_ids = ids, labels = ids)
+torch.testing.assert_close(actual.logits, expected.logits, rtol = 0, atol = 0)
+torch.testing.assert_close(actual.loss, expected.loss, rtol = 0, atol = 0)
+actual.loss.backward()
+expected.loss.backward()
+for name in actual_weights:
+    assert actual_weights[name].grad is not None, name
+    assert torch.isfinite(actual_weights[name].grad).all(), name
+    torch.testing.assert_close(actual_weights[name].grad, expected_weights[name].grad, rtol = 0, atol = 0, msg = name)
+optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3)
+optimizer.step()
+model.save_pretrained({str(saved)!r})
+# Reload in fp32 to preserve the full-finetuning norm weights as well as the BF16 projections.
+reloaded = AutoModelForCausalLM.from_pretrained({str(saved)!r}, dtype = torch.float32)
+assert getattr(reloaded.config, "quantization_config", None) is None
+for name, value in model.state_dict().items():
+    torch.testing.assert_close(value.float().cpu(), reloaded.state_dict()[name], rtol = 0, atol = 0, msg = name)
+print("FP8_FULL_FINETUNING_OK")
+"""
+    env = dict(
+        os.environ, UNSLOTH_COMPILE_DISABLE = "1", UNSLOTH_RETURN_LOGITS = "1", HF_HUB_OFFLINE = "1"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output = True, text = True, timeout = 600, env = env
+    )
+    assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
+    assert "FP8_FULL_FINETUNING_OK" in result.stdout
 
 
 def _write_tiny_block_fp8_qwen3_moe(path):

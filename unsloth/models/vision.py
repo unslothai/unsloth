@@ -276,6 +276,7 @@ from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_cust
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
+    _fp8_dequantize_quantization_config,
     _bnb_bits_requested,
     vlm_gradient_checkpointing_reentrant,
     set_deepspeed_moe_leaf_modules,
@@ -3822,6 +3823,16 @@ class FastBaseModel:
         ):
             # An fp8 -> 4bit load parked the checkpoint's fp8 config; give it back.
             disarm_fp8_to_nf4(auto_config)
+
+        # An explicit FP8 config must also dequantize before full finetuning casts the weights.
+        # Copy it so the caller's config is unchanged, and pass it to both the planner and loader.
+        if full_finetuning and user_quantization_config is not None:
+            _fp8_fullft_config = _fp8_dequantize_quantization_config(
+                auto_config, user_quantization_config
+            )
+            if _fp8_fullft_config is not None:
+                user_quantization_config = _fp8_fullft_config
+                kwargs["quantization_config"] = _fp8_fullft_config
 
         # text_only builds the bare decoder; from model_name the planner would plan the whole VLM.
         _planner_skip_reason = None

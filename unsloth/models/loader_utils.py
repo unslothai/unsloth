@@ -2142,10 +2142,11 @@ def _loaded_quant_method(config):
     return str(getattr(method, "value", method)).lower()
 
 
-def _fp8_dequantize_quantization_config(model_config):
-    """The checkpoint's fine-grained fp8 config with `dequantize = True` for an explicit 16bit load, else None.
+def _fp8_dequantize_quantization_config(model_config, quantization_config = None):
+    """The effective fine-grained fp8 config with `dequantize = True` for a 16bit or full-finetuning load, else None.
     On FP8-capable GPUs transformers otherwise keeps FP8Linear layers; FastModel passes the same flag."""
-    quantization_config = getattr(model_config, "quantization_config", None)
+    if quantization_config is None:
+        quantization_config = getattr(model_config, "quantization_config", None)
     if quantization_config is None:
         return None
     as_dict = (
