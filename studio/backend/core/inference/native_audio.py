@@ -423,11 +423,7 @@ def _native_audio_type(model_name: str) -> Optional[str]:
 
 
 def audio_cpp_audio_type(model_name: str) -> Optional[str]:
-    """The audio_type of an audio.cpp speech or music id, from the HF cache alone.
-
-    Only ids that name the umbrella repo, a legacy key, or a repo this process already
-    resolved are looked at, so an ordinary model name costs nothing here.
-    """
+    """Looks only at umbrella, legacy or already-resolved ids, so ordinary model names cost nothing."""
     from core.inference.audio_cpp_models import looks_like_audio_cpp, resolve
 
     if not looks_like_audio_cpp(model_name):
@@ -444,11 +440,7 @@ def is_audio_cpp_audio_model(model_name: str) -> bool:
 
 
 def is_native_audio_model(model_name: str) -> bool:
-    """Whether ``model_name`` belongs in the portable native-audio worker.
-
-    Curated Hub IDs are answered without network access. Local checkpoints are
-    recognized from small metadata files; model weights are not opened.
-    """
+    """Curated Hub ids need no network, and local checkpoints are judged from metadata, never weights."""
     return _native_audio_type(model_name) is not None
 
 
@@ -537,16 +529,7 @@ def native_audio_kv_memory_gb(
 
 
 def _moss_transformers5_config_compat(codec_source: str, token_kwargs: dict[str, Any]) -> None:
-    """Import a MOSS codec config with the pre-Transformers-5 subclass contract.
-
-    Transformers 5 turns every ``PreTrainedConfig`` subclass into a dataclass.
-    The published MOSS codec configs have required fields (including
-    ``sampling_rate``) after inherited default fields, which Python dataclasses
-    reject before any model weights are read. The remote configs already own
-    their constructors, so briefly suppressing only that automatic conversion
-    restores the contract they were published against. The base hook is always
-    restored before the actual model load begins.
-    """
+    """Turns off Transformers 5 dataclass conversion for MOSS configs, which put required fields after defaults; restore the base hook before model load"""
     import transformers
 
     try:
@@ -735,12 +718,7 @@ def _native_audio_repo_files(
 
 
 def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) -> dict[str, Any]:
-    """Return uncached Hub files for an Audio-page TTS load.
-
-    Native models add their companion codec repositories and MiniMax excludes
-    legacy weights its modular index never references. Other TTS repositories
-    use a full snapshot, matching Chat's safe generic fallback.
-    """
+    """Native models add companion codec repos, and MiniMax skips legacy weights its index never names."""
     normalized = str(model_name or "").strip()
     if not normalized:
         raise ValueError("A model repository is required.")

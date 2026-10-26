@@ -32,19 +32,12 @@ from torch import nn
 # ``_int_mm`` wants strictly more than 16 rows.
 INT_MM_MIN_M = 17
 
-# Pad to a warp-friendly constant rather than to exactly INT_MM_MIN_M. Two reasons: 32 tiles better than 17, and it
-# pins ONE compiled shape for every activation below it, so prompts of differing token counts (H3's seven eval prompts
-# run at M = 10..19) do not each trigger their own inductor recompile.
+# Pad to 32 (not 17): better tiling and one compiled shape for all smaller M.
 DEFAULT_PAD_TO = 32
 
 
 def _weight_tensors(module: Any) -> tuple:
-    """The weight objects a granularity/layout probe should look at, most specific first.
-
-    ``quantize_`` assigns ``nn.Parameter(subclass_tensor)``, and Parameter.__new__ returns the
-    SUBCLASS itself for a non-plain tensor, so the attributes normally sit on ``weight``. A build
-    that produced a real Parameter wrapper instead would hide them one level down, hence ``.data``
-    as a second look."""
+    """Attributes sit on weight itself for torchao subclasses; check .data too for a wrapping Parameter."""
     weight = getattr(module, "weight", None)
     if weight is None:
         return ()
@@ -53,30 +46,14 @@ def _weight_tensors(module: Any) -> tuple:
 
 
 def is_quantized_linear(module: Any) -> bool:
-    """True when ``module``'s weight is a torchao tensor subclass rather than a plain tensor.
-
-    A dense Linear needs no padding (``F.linear`` has no row floor), so callers use this to skip
-    one rather than to fail on it."""
+    """Dense Linears need no row padding (F.linear has no row floor), so callers skip rather than fail."""
     if not isinstance(module, nn.Linear):
         return False
     return any(hasattr(t, "__tensor_flatten__") for t in _weight_tensors(module))
 
 
 def activation_granularity_is_per_row(module: Any) -> Optional[bool]:
-    """Whether ``module`` quantizes ACTIVATIONS per row. None when it cannot be determined.
-
-    torchao spells this two ways depending on the tensor generation, and neither is a public
-    accessor, so both are probed and an unrecognised layout answers None (the caller treats that
-    as "unproven" and refuses, rather than assuming):
-
-      * v2 tensors (``Float8Tensor`` and friends) carry ``act_quant_kwargs.granularity``, which
-        is a ``PerRow`` instance for the per-row configs.
-      * v1 ``LinearActivationQuantizedTensor`` (what ``Int8DynamicActivationInt8WeightConfig``
-        produces today) carries the activation quantizer as ``input_quant_func``; the per-row
-        one is ``_int8_symm_per_token_reduced_range_quant``. Note that this holds regardless of
-        the config's ``granularity=`` argument, which sets the WEIGHT granularity -- so the
-        function name is the only honest signal here.
-    """
+    """Per-row check over both torchao layouts; None when unrecognised, so callers refuse, not assume."""
     for tensor in _weight_tensors(module):
         kwargs = getattr(tensor, "act_quant_kwargs", None)
         granularity = getattr(kwargs, "granularity", None)
@@ -111,33 +88,23 @@ class PadToMinM(nn.Module):
         super().__init__()
         self.inner = inner
         self.min_m = int(min_m)
-        # pad_to may exceed min_m to buy tiling and shape stability; it may never be below it, or the "padded"
-        # activation would still be under the floor it exists to clear.
+        # pad_to may exceed min_m for shape stability but never fall below it, or the floor is not cleared.
         self.pad_to = max(int(pad_to or min_m), self.min_m)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Deliberately free of call counters or any other mutable int attribute: dynamo treats an nn.Module's integer
-        # attributes as static and guards on their value, so a `+= 1` here would force a recompile on EVERY call until
-        # the recompile limit is hit, at which point the module silently drops back to eager. Instrumentation belongs
-        # outside.
+        # No mutable int attributes: dynamo guards on them, forcing recompiles then eager fallback.
         lead = x.shape[:-1]
         flat = x.reshape(-1, x.shape[-1])
         m = flat.shape[0]
         if m == 0:
-            # No rows to project, and no row 0 to replicate from. torchao returns a zero-row input UNPROJECTED (a
-            # quantized 1472 -> 2048 Linear maps [0, 1472] to [0, 1472]), which then breaks a downstream
-            # width-sensitive add, so synthesise the empty result at the right width instead of calling through.
+            # torchao returns a zero-row input unprojected (wrong width), so build the empty result.
             return x.new_empty((*lead, self.inner.out_features))
         if torch.compiler.is_compiling():
-            # Branch-free: `m < pad_to` guards a dynamic row count, so an H3 i2v caption past it recompiles.
-            # Arithmetic max: dynamo <= 2.8 rejects torch.sym_max on a concrete m; max() left an `m <= pad_to` guard.
+            # Branch-free: `m < pad_to` would guard a dynamic row count; dynamo <= 2.8 rejects sym_max.
             rows = torch.arange((m + self.pad_to + abs(m - self.pad_to)) // 2, device = flat.device)
             out = self.inner(flat.index_select(0, torch.where(rows < m, rows, 0)))[:m]
         elif m < self.pad_to:
-            # Everything below pad_to normalises to pad_to, not just what is below min_m. Clearing the floor takes only
-            # the latter, but pinning ONE row count means one inductor graph covers every prompt length in the range
-            # instead of one per length, and the extra rows are free at these sizes (measured on H3's 13 modules: 1.57
-            # ms padded from M = 10 against 1.48 ms unpadded at M = 17, on a 2.4 s render).
+            # Normalise everything below pad_to, not just below min_m, so one row count gives one inductor graph.
             flat = torch.cat([flat, flat[:1].expand(self.pad_to - m, -1)], dim = 0)
             out = self.inner(flat)[:m]
         else:
@@ -145,11 +112,7 @@ class PadToMinM(nn.Module):
         return out.reshape(*lead, out.shape[-1])
 
     def __getattr__(self, name: str) -> Any:
-        # Callers reach THROUGH a Linear for weight / bias / in_features / out_features: diffusers' attention processors
-        # read `to_q.weight.dtype`, and H3's blocks read `context_embedder.weight`. Without this forward the wrapper is
-        # a drop-in only until the first such access, which fails at render time rather than at wrap time.
-        # nn.Module.__getattr__ runs first, so parameters, buffers and submodules registered on the wrapper itself still
-        # win.
+        # Forward attribute access to the inner Linear (callers read e.g. `to_q.weight.dtype`).
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -161,11 +124,7 @@ class PadToMinM(nn.Module):
             return getattr(inner, name)
 
     def state_dict(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
-        """Emit the inner Linear's tensors under the WRAPPER's prefix, hiding the ``inner.`` level.
-
-        ``nn.Module.state_dict`` recurses by calling each child's ``state_dict``, so overriding it
-        here is enough to keep a checkpoint written from a wrapped transformer loadable by an
-        unwrapped one. The wrapper owns no tensors of its own, so there is nothing else to emit."""
+        """Drops the inner. key level, so a wrapped model's checkpoint loads into an unwrapped one."""
         destination = kwargs.pop("destination", args[0] if args else None)
         prefix = kwargs.pop("prefix", args[1] if len(args) > 1 else "")
         keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
@@ -185,12 +144,7 @@ class PadToMinM(nn.Module):
         unexpected_keys: list,
         error_msgs: list,
     ) -> None:
-        """Accept the unwrapped key names ``state_dict`` above writes, and hand them to ``inner``.
-
-        Rewrites ``<prefix>weight`` to ``<prefix>inner.weight`` in place, before
-        ``nn.Module.load_state_dict``'s recursion descends into ``inner``, so a state dict saved
-        from an UNWRAPPED transformer loads into a wrapped one. Keys already carrying ``inner.``
-        are left alone, so a dict written by an older build still loads."""
+        """Maps unwrapped keys to inner. before recursion, so unwrapped checkpoints load into wrappers."""
         for key in [k for k in state_dict if k.startswith(prefix)]:
             leaf = key[len(prefix) :]
             if not leaf or leaf.startswith("inner."):
@@ -284,12 +238,7 @@ def padding_is_bitwise_exact(
     *,
     pad_to: int = DEFAULT_PAD_TO,
 ) -> bool:
-    """Run ``module`` at ``m`` rows with and without padding and report bitwise equality.
-
-    The direct form of the property the granularity check infers. Used by the tests; too costly
-    for a per-module load-time gate on a 300-Linear DiT, and it cannot replace the granularity
-    check anyway (replicating row 0 leaves a per-tensor AMAX unchanged, so a per-tensor amax
-    scheme would pass this while a percentile-calibrated one would not)."""
+    """Test-only: too costly for a per-module load gate, and it cannot replace the granularity check."""
     weight = getattr(module, "weight", None)
     device = getattr(weight, "device", "cpu")
     dtype = getattr(weight, "dtype", torch.bfloat16)
@@ -308,15 +257,7 @@ def wrap_small_m_linears(
     pad_to: Optional[int] = DEFAULT_PAD_TO,
     require_per_row: bool = True,
 ) -> tuple[str, ...]:
-    """Replace each Linear named in ``fqns`` with a ``PadToMinM`` around it; return those wrapped.
-
-    Surgical by construction: only the fqns handed in are touched, so a DiT's hundreds of
-    large-M block linears keep their unwrapped fast path and cannot pay for this.
-
-    A Linear that is NOT quantized is skipped (dense ``F.linear`` has no row floor to clear), as
-    is one already wrapped. A QUANTIZED Linear whose activation granularity cannot be proven per
-    row raises ``RuntimeError``: see the module docstring for why silence is the wrong answer.
-    """
+    """Wraps only the named Linears; a quantised one whose activation granularity is unproven raises."""
     done: list[str] = []
     for fqn in sorted(set(fqns)):
         parent_name, _, leaf = fqn.rpartition(".")
@@ -326,9 +267,7 @@ def wrap_small_m_linears(
         except AttributeError:
             # a family token matching nothing on this variant is not an error
             continue
-        # Skips a dense Linear (``F.linear`` has no row floor to clear, and there is no granularity to prove) and, by
-        # the same gate, an already-wrapped one: ``PadToMinM`` is not an ``nn.Linear``, so re-wrapping cannot nest the
-        # padding and double the row count.
+        # Skips dense Linears and already-wrapped PadToMinM (not an nn.Linear), so no double pad.
         if not is_quantized_linear(module):
             continue
         if require_per_row and activation_granularity_is_per_row(module) is not True:
