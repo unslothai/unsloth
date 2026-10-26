@@ -28,14 +28,17 @@ import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
   BotIcon,
   Copy01Icon,
+  Image01Icon,
   InformationCircleIcon,
   SourceCodeIcon,
+  TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -53,6 +56,7 @@ import type {
 } from "../api/keyless-api-access";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
+import { scrollIntoPane } from "../lib/scroll-into-pane";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
@@ -584,6 +588,7 @@ export function UsageExamples({
   // isGguf at the moment of a hand-made pick, null if there has been none this session.
   // A manual pick is kept only until the model's GGUF-ness changes under it.
   const clickedUnderGgufRef = useRef<boolean | null>(null);
+  const agentsRef = useRef<HTMLDivElement | null>(null);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   // server_url is the bind address, which an SSH forward or reverse proxy does not expose.
   const base =
@@ -842,6 +847,66 @@ export function UsageExamples({
         <HugeiconsIcon icon={SourceCodeIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
         {t("settings.apiKeys.usageExamples")}
       </h2>
+      {/* The other APIs this tab covers, further down; their sections consume the scroll target. */}
+      <nav
+        aria-label={t("settings.apiKeys.usageExamples")}
+        className="-mt-1 flex min-w-0 flex-wrap gap-2"
+      >
+        {(
+          [
+            {
+              key: "agents",
+              icon: BotIcon,
+              label: t("settings.tabs.agents"),
+              go: () => {
+                if (agentsRef.current) scrollIntoPane(agentsRef.current);
+              },
+            },
+            {
+              key: "media",
+              icon: Image01Icon,
+              label: t("settings.apiKeys.mediaApi.title"),
+              go: () =>
+                useSettingsDialogStore
+                  .getState()
+                  .openDialog("api-keys", { scrollTarget: "api-keys-media-api" }),
+            },
+            {
+              key: "audio",
+              icon: AiSpeechIcon,
+              label: t("settings.apiKeys.audioApi.title"),
+              go: () =>
+                useSettingsDialogStore
+                  .getState()
+                  .openDialog("api-keys", { scrollTarget: "api-keys-audio-api" }),
+            },
+            // The Decision API section is owner-only.
+            ...(isOwner
+              ? [
+                  {
+                    key: "decision",
+                    icon: TaskDone01Icon,
+                    label: t("settings.apiKeys.decisionApi.title"),
+                    go: () =>
+                      useSettingsDialogStore.getState().openDialog("api-keys", {
+                        scrollTarget: "api-keys-decision-api",
+                      }),
+                  },
+                ]
+              : []),
+          ] as const
+        ).map((link) => (
+          <button
+            key={link.key}
+            type="button"
+            onClick={link.go}
+            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border px-3 text-ui-12 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
+          >
+            <HugeiconsIcon icon={link.icon} strokeWidth={1.75} className="size-3.5 shrink-0" />
+            {link.label}
+          </button>
+        ))}
+      </nav>
       {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
       {cloudflareUrl ? (
         <div className="flex min-w-0 items-center justify-between gap-2 rounded-full border border-border px-4 py-2">
@@ -932,7 +997,7 @@ export function UsageExamples({
         os={os}
         onOsChange={setOs}
       />
-      <div className="flex min-w-0 flex-col gap-2.5 pt-2">
+      <div ref={agentsRef} className="flex min-w-0 scroll-mt-6 flex-col gap-2.5 pt-2">
         <div className="flex items-center justify-between gap-3">
           <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
             <HugeiconsIcon icon={BotIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />

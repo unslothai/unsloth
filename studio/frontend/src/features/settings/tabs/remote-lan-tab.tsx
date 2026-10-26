@@ -6,6 +6,7 @@ import { useEffect, useRef } from "react";
 import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
 import { LanAccessSection } from "../components/lan-access-section";
 import { RemoteAccessSection } from "../components/remote-access-section";
+import { scrollIntoPane } from "../lib/scroll-into-pane";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 /** Reaching Unsloth from another device, without the API token list in the way. */
@@ -19,7 +20,9 @@ export function RemoteLanTab() {
   // the sections above have read their status: their rows arrive late and push it back down.
   useEffect(() => {
     if (scrollTarget !== "remote-lan-keyless") return;
-    const land = () => keylessRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    const land = () => {
+      if (keylessRef.current) scrollIntoPane(keylessRef.current);
+    };
     const frame = window.requestAnimationFrame(land);
     // Consumed here, not on the first frame: clearing the target re-runs this effect and its cleanup.
     const settle = window.setTimeout(() => {

@@ -10,6 +10,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { McpServerIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { usePlatformStore } from "@/config/env";
 import { translate, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -153,6 +155,13 @@ export function McpAccessSection({
       {settings ? (
         <>
           <SettingsRow
+            icon={
+              <HugeiconsIcon
+                icon={McpServerIcon}
+                strokeWidth={1.75}
+                className="size-[calc(18px*var(--ui-space-scale,1))]"
+              />
+            }
             label={t("settings.apiKeys.mcp.title")}
             hint={t("settings.apiKeys.mcp.enableDescription")}
             description={

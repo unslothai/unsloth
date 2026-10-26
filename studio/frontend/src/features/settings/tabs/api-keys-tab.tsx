@@ -298,14 +298,14 @@ export function ApiKeysTab() {
         </>
       ) : null}
 
-      <AudioApiExamples
+      <MediaApiExamples
         apiKey={revealed}
         useTunnel={useTunnel}
         keylessScope={keyless.scope}
         keylessExposure={keyless.exposure}
       />
 
-      <MediaApiExamples
+      <AudioApiExamples
         apiKey={revealed}
         useTunnel={useTunnel}
         keylessScope={keyless.scope}

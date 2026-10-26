@@ -41,6 +41,22 @@ test("usage examples sit right under the keys, where a new key lands", () => {
   assert.ok(examples < TAB.indexOf("<KeylessApiAccessLink"));
 });
 
+test("usage examples link to the tab's other APIs, which sit images first, then audio, then decisions", () => {
+  const examples = readSrc("features/settings/components/usage-examples.tsx");
+  assert.match(examples, /scrollTarget: "api-keys-media-api"/);
+  assert.match(examples, /scrollTarget: "api-keys-audio-api"/);
+  assert.match(examples, /scrollTarget: "api-keys-decision-api"/);
+  assert.match(examples, /if \(agentsRef\.current\) scrollIntoPane\(agentsRef\.current\)/);
+  assert.ok(TAB.indexOf("<MediaApiExamples") < TAB.indexOf("<AudioApiExamples"));
+  assert.ok(TAB.indexOf("<AudioApiExamples") < TAB.indexOf("<DecisionApiSection"));
+  // The Decision API has a heading like the other API sections, outside its card.
+  const decision = readSrc("features/settings/components/decision-api-section.tsx");
+  assert.match(
+    decision,
+    /<h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">\s*<HugeiconsIcon\s+icon=\{TaskDone01Icon\}/,
+  );
+});
+
 test("keyless API access is edited on Remote & LAN; the API tab links there and reads it for the examples", () => {
   const link = readSrc("features/settings/components/keyless-api-access-link.tsx");
   assert.match(link, /openDialog\("remote-lan", \{ scrollTarget: "remote-lan-keyless" \}\)/);
