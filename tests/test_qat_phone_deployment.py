@@ -381,9 +381,7 @@ def test_nested_fake_quantized_weight_call_quantizes_once():
         return torch.nn.functional.embedding(ids, emb.weight).float() * emb.embed_scale
 
     with torch.no_grad():
-        out = _call_with_fake_quantized_weight(
-            emb, _call_with_fake_quantized_weight, emb, lookup
-        )
+        out = _call_with_fake_quantized_weight(emb, _call_with_fake_quantized_weight, emb, lookup)
     assert len(calls) == 1
     torch.testing.assert_close(out, _expected_fake_quantized_lookup(emb, ids))
     assert "_unsloth_weight_fake_quantized" not in vars(emb)
@@ -411,7 +409,9 @@ def test_fsdp1_embedding_is_fake_quantized(use_orig_params, tmp_path):
         wrapped = FSDP(emb, device_id = torch.device("cpu"), use_orig_params = use_orig_params)
         calls = _count_fake_quant_calls(emb)
         seen = []
-        emb.register_forward_pre_hook(lambda m, a: seen.append(isinstance(m.weight, torch.nn.Parameter)))
+        emb.register_forward_pre_hook(
+            lambda m, a: seen.append(isinstance(m.weight, torch.nn.Parameter))
+        )
         out = wrapped(ids).float()
         out.sum().backward()
         grads = [p.grad for p in wrapped.parameters() if p.requires_grad]
