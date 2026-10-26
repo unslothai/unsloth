@@ -43,8 +43,7 @@ def install_vectorised_causal_mask(pipe: Any, logger: Any = None) -> int:
             cls = type(module)
             if cls.__name__ != _ATTN_BLOCK or not _stock_loop(cls):
                 continue
-            # A plain function on the instance is not bound, so ``self.prepare_causal_attention_mask(...)`` calls it
-            # with the staticmethod's own arguments.
+            # A plain function on the instance is unbound, so it gets the staticmethod's arguments.
             module.prepare_causal_attention_mask = causal_attention_mask
             patched += 1
     except Exception as exc:  # noqa: BLE001 - optimisation only

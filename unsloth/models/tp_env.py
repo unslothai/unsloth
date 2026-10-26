@@ -246,6 +246,15 @@ def tensor_parallel_env_load(fn):
                 + "; ".join(refused)
                 + ". Unset UNSLOTH_TP_SIZE to run this script with DDP or UNSLOTH_FSDP2=1."
             )
+        from .fsdp2_load import fsdp2_sharded_load_requested
+
+        if fsdp2_sharded_load_requested():
+            # Its per-rank shard reads know nothing of the tp mesh.
+            raise NotImplementedError(
+                f"Unsloth: UNSLOTH_TP_SIZE={layout.tp} (tensor parallel) does not support "
+                "UNSLOTH_FSDP2_SHARDED_LOAD=1. Unset UNSLOTH_FSDP2_SHARDED_LOAD; tensor parallel "
+                "already loads 16-bit weights sharded."
+            )
         mesh = layout.tp_mesh
         _DEPTH["load"] += 1
         try:

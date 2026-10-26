@@ -193,11 +193,7 @@ def pinned_arena_for_group_offload(
     slab_bytes: int = DEFAULT_SLAB_BYTES,
     expected_bytes: Optional[int] = None,
 ) -> Iterator[Optional[PinnedArena]]:
-    """While active, diffusers' group offloading pins its up-front host copies through one arena.
-
-    Yields the arena (for its byte counts) or None when disabled or when this diffusers has no
-    ``ModuleGroup._to_cpu`` to route through; either way the caller's ``apply_group_offloading``
-    call runs unchanged."""
+    """Routes group-offload pinned copies through one arena while active; yields None when disabled."""
     if enabled is None:
         enabled = pin_arena_enabled()
     if not enabled:

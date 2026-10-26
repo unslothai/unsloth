@@ -4,8 +4,7 @@
 import { listGgufVariants } from "@/features/hub";
 import { isGgufName, pickGgufFilename } from "./gguf-filename-pick";
 
-/** The .gguf for a pick that arrived with only a repo id (and maybe a quant label). Shares the picker rows' cached listing,
- *  so the row just clicked usually costs no request. Null when the repo is ambiguous or unreadable. */
+/** Shares the picker's cached listing. Null when ambiguous or unreadable. */
 export async function resolveDiffusionGgufFilename(
   repoId: string,
   options?: {
@@ -15,7 +14,6 @@ export async function resolveDiffusionGgufFilename(
   },
 ): Promise<string | null> {
   const quant = options?.quant?.trim() || null;
-  // Already a filename: no listing needed.
   if (quant && isGgufName(quant)) return quant;
   try {
     const res = await listGgufVariants(repoId, options?.hfToken, {
@@ -27,7 +25,7 @@ export async function resolveDiffusionGgufFilename(
       quant,
     );
   } catch {
-    // Unreachable Hub or unreadable directory: the caller prompts instead.
+    // The caller prompts instead.
     return null;
   }
 }

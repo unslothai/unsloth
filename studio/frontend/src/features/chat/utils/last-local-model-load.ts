@@ -7,7 +7,6 @@ export type LastLocalModelKind = "gguf" | "model";
 
 const PATH_LIKE_ID_RE = /^(?:[/~]|[A-Za-z]:[\\/]|\\\\)/;
 
-/** A filesystem target rather than a Hub repo id. */
 function isPathLikeId(id: string): boolean {
   return PATH_LIKE_ID_RE.test(id);
 }
@@ -19,7 +18,7 @@ export type LastLocalModelLoad = {
 };
 
 const API_PATH = "/api/settings/last-local-model";
-// Pre-backend installs kept the record here; still read so an upgrade does not forget the model.
+// Legacy pre-backend key; still read so an upgrade does not forget the model.
 const LEGACY_STORAGE_KEY = "unsloth.last-local-model-load.v1";
 
 function isLastLocalModelKind(value: unknown): value is LastLocalModelKind {
@@ -42,7 +41,6 @@ function toRecord(input: {
   if (!id) {
     return null;
   }
-  // A quant-less cached repo names no file; a local .gguf path is the file.
   if (input.kind === "gguf" && !ggufVariant && !isPathLikeId(id)) {
     return null;
   }
@@ -67,7 +65,6 @@ function writeLegacyRecord(
         ggufVariant: record.ggufVariant,
         // Old bundles reject entries without a numeric loadedAt.
         loadedAt,
-        // True until this record's PUT confirms; a pending shadow may be newer.
         pendingSync,
       }),
     );
@@ -139,10 +136,7 @@ export async function readLastLocalModelLoad(
             ? legacy.pendingSync
             : legacy.loadedAt > backendLoadedAt)
         ) {
-          // A local record the backend has not seen: a PUT dropped at teardown (pendingSync) or a
-          // pre-upgrade bundle's write. Re-sync it with its original stamp, even on an identity match, so
-          // the backend stamp advances past older dropped writes elsewhere. An unstamped backend record
-          // gives no order, so only a pending shadow may outrank it.
+          // Re-sync an unseen local record with its original stamp; only a pending shadow outranks an unstamped one.
           recordLastLocalModelLoad({
             ...legacy.record,
             loadedAt: legacy.loadedAt,
@@ -150,7 +144,6 @@ export async function readLastLocalModelLoad(
           return legacy.record;
         }
         if (legacy?.pendingSync) {
-          // The backend record is at least as new: adopt it, clear the marker.
           writeLegacyRecord(record, false, backendLoadedAt ?? Date.now());
         }
         return record;
@@ -161,7 +154,6 @@ export async function readLastLocalModelLoad(
     if ((err as { name?: string } | null)?.name === "AbortError") {
       throw err;
     }
-    // Unreachable settings API: fall back to the legacy record.
   }
   return readLegacyEntry()?.record ?? null;
 }
@@ -170,7 +162,6 @@ export function recordLastLocalModelLoad(input: {
   id: string;
   kind: LastLocalModelKind;
   ggufVariant?: string | null;
-  // Reconcile re-issues keep the original load time; fresh loads stamp now.
   loadedAt?: number;
 }): void {
   const record = toRecord(input);
@@ -179,8 +170,7 @@ export function recordLastLocalModelLoad(input: {
   }
   const loadedAt =
     typeof input.loadedAt === "number" ? input.loadedAt : Date.now();
-  // Shadow write first, synchronously: a fetch pending at teardown is dropped without running
-  // either callback. Also covers a pre-route backend's 404.
+  // Write the shadow synchronously first: a pending fetch is dropped at teardown.
   writeLegacyRecord(record, true, loadedAt);
   authFetch(API_PATH, {
     method: "PUT",
@@ -192,7 +182,6 @@ export function recordLastLocalModelLoad(input: {
       gguf_variant: record.ggufVariant,
       // biome-ignore lint/style/useNamingConvention: API schema
       loaded_at: loadedAt,
-      // The server shifts loaded_at by (server_now - client_now).
       // biome-ignore lint/style/useNamingConvention: API schema
       client_now: Date.now(),
     }),
@@ -201,8 +190,7 @@ export function recordLastLocalModelLoad(input: {
       if (!res.ok) {
         return;
       }
-      // Adopt the server's answer: it may have clamped or rejected this write, and the shadow must
-      // mirror what is stored.
+      // The server may clamp or reject this write; mirror what is stored.
       let serverRecord: LastLocalModelLoad | null = null;
       let serverLoadedAt: number | null = null;
       try {
@@ -224,14 +212,12 @@ export function recordLastLocalModelLoad(input: {
         serverLoadedAt =
           typeof body.loaded_at === "number" ? body.loaded_at : null;
         if (serverLoadedAt !== null && typeof body.server_now === "number") {
-          // Shadow stamps live in this clock's frame: translate back first.
           serverLoadedAt -= body.server_now - Date.now();
         }
       } catch {
         // Pre-loaded_at backend or opaque response: fall back to our stamp.
       }
-      // Clear only this write's marker: a newer load may have replaced the shadow mid-flight, even a
-      // reload of the same model, so the stamp must match too.
+      // Clear only this write's marker: the stamp must match, since a newer load may have replaced it.
       const legacy = readLegacyEntry();
       if (
         !legacy?.pendingSync ||
@@ -241,7 +227,6 @@ export function recordLastLocalModelLoad(input: {
         return;
       }
       if (serverRecord && !sameRecord(serverRecord, record)) {
-        // The server kept a newer record from another surface: ours lost.
         writeLegacyRecord(serverRecord, false, serverLoadedAt ?? Date.now());
       } else {
         writeLegacyRecord(record, false, serverLoadedAt ?? loadedAt);

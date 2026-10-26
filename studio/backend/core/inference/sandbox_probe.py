@@ -415,8 +415,8 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
             if not _background_probes_disabled():
                 _refresh_in_background(backend, key)
                 return available, reason
-            # Background probes are off: re-probe here.
 
+            # Background probes are off: re-probe here.
     with _cache_lock:
         generation = _generation
     available, reason = _run_probe(backend, backend_name, ToolLaunchPlan)

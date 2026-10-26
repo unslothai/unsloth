@@ -64,7 +64,6 @@ function AlertDialogContent({
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
   size?: "default" | "sm";
   overlayClassName?: string;
-  /** Alert dialogs ignore outside clicks; set this to cancel on backdrop click. */
   onOverlayClick?: () => void;
 }) {
   const glow = dialogDropdownGlow(className, useContext(DropdownGlowContext));
