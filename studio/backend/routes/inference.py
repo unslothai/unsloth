@@ -9493,6 +9493,23 @@ def _model_switch_allowed_for_request(fastapi_request) -> bool:
     return isinstance(scope, dict) and bool(scope.get(_ALLOW_MODEL_SWITCH_SCOPE_KEY))
 
 
+_SWITCH_PRECONDITION_SCOPE_KEY = "unsloth.switch_precondition"
+
+
+def require_for_model_switch(scope, check) -> None:
+    """Have this in-process request's switch call ``check()`` under the swap gate, just before it replaces the
+    loaded model; ``check`` raises to refuse. A scope key, so no HTTP client can set it."""
+    if isinstance(scope, dict):
+        scope[_SWITCH_PRECONDITION_SCOPE_KEY] = check
+
+
+def _check_switch_precondition(fastapi_request) -> None:
+    scope = getattr(fastapi_request, "scope", None)
+    check = scope.get(_SWITCH_PRECONDITION_SCOPE_KEY) if isinstance(scope, dict) else None
+    if callable(check):
+        check()
+
+
 _LOAD_ALONGSIDE_SCOPE_KEY = "unsloth.load_alongside"
 
 
@@ -11263,6 +11280,8 @@ async def _maybe_auto_switch_model(
                             _record_serving_alias()
                             return
                         require_no_foreign_generations(path = switch_path)
+                        # Last chance to refuse: held swap gates keep inference and loads from starting before it.
+                        _check_switch_precondition(fastapi_request)
                         # Order: variant-qualified keys before bare ids, load path before advertised id.
                         from utils.openai_auto_switch_settings import (
                             resolve_override_for_load,
