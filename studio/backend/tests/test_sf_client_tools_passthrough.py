@@ -1770,9 +1770,7 @@ def test_a_compacted_mlx_thread_keeps_archive_search_with_tools_off(
 
 
 @pytest.mark.parametrize("engine", ["sglang", "vllm"])
-def test_a_compacted_managed_engine_thread_answers_without_the_local_tool_loop(
-    monkeypatch, engine
-):
+def test_a_compacted_managed_engine_thread_answers_without_the_local_tool_loop(monkeypatch, engine):
     import routes.inference as inf
 
     monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda thread_id: True)
