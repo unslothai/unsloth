@@ -143,7 +143,9 @@ def test_local_shard_step_runs_when_the_scheduler_was_built_first(sync_calls):
         opt.step()
         assert calls == [], calls
         with warnings.catch_warnings():
-            warnings.simplefilter("error")  # "lr_scheduler.step() before optimizer.step()" would raise
+            warnings.simplefilter(
+                "error"
+            )  # "lr_scheduler.step() before optimizer.step()" would raise
             sched.step()
     for a, b in zip(local, ref):
         assert torch.equal(a, b)
