@@ -1079,7 +1079,10 @@ class DiffusionTrainingService:
             s["updated_at"] = time.time()
             if etype == "model_load_started":
                 s.update(
-                    in_model_load = True, preparation = None, status = "running", message = "Loading base model..."
+                    in_model_load = True,
+                    preparation = None,
+                    status = "running",
+                    message = "Loading base model...",
                 )
                 if ev.get("num_images") is not None:
                     s["num_images"] = ev.get("num_images")
