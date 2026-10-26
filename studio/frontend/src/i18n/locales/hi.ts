@@ -496,7 +496,6 @@ export const hi = {
       clearDataFailed: "साइट डेटा साफ़ नहीं हो सका। फिर से कोशिश करें।",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "OS सैंडबॉक्स उपलब्ध नहीं है",
@@ -705,7 +704,6 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "दस्तावेज़",
       keyboardShortcuts: "कीबोर्ड शॉर्टकट",
@@ -777,11 +775,8 @@ export const hi = {
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
-      // Shown under an empty project folder in the sidebar.
       noChats: "कोई चैट नहीं",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "सभी प्रोजेक्ट पिन किए गए",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "सभी प्रोजेक्ट पिन किए गए हैं या सेक्शन में हैं",
       noProjects: "कोई प्रोजेक्ट नहीं",
       showMore: "और दिखाएं",
@@ -883,11 +878,9 @@ export const hi = {
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
-      // Header of the menu's section-visibility toggles.
       show: "दिखाएँ",
       newSection: "नया सेक्शन",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "नया सेक्शन",
       createDescription: "चैट और प्रोजेक्ट को अपनी पसंद से समूहित करें",
@@ -898,16 +891,13 @@ export const hi = {
       edit: "संपादित करें",
       remove: "सेक्शन हटाएँ",
       markAllRead: "सभी को पढ़ा हुआ चिह्नित करें",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "यहाँ ले जाएँ",
       section: "सेक्शन",
       sectionsHeading: "सेक्शन",
       removeFromProject: "प्रोजेक्ट से हटाएँ",
       newSection: "नया सेक्शन",
       removeFromSection: "सेक्शन से हटाएँ",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "{name} से हटाएँ",
-      // Shown in a section with nothing filed in it yet.
       empty: "चैट या प्रोजेक्ट यहाँ खींचें",
       sectionOptions: "सेक्शन विकल्प",
       newChatInSection: "{name} में नई चैट",
@@ -2428,7 +2418,6 @@ export const hi = {
           updateChecksDisabled:
             "अपडेट जाँच बंद है (UNSLOTH_DISABLE_UPDATE_CHECK=1), इसलिए उपलब्ध बैकएंड नहीं खोजे जाते।",
         },
-        // दिखाया नहीं जाता: सेटिंग्स खोज के लिए अतिरिक्त शब्द।
         llamaBackendKeywords:
           "llama.cpp backend gguf इनफ़रेंस cuda rocm hip vulkan metal cpu gpu एक्सेलेरेटर prebuilt बदलें इंजन",
       },
@@ -2462,7 +2451,6 @@ export const hi = {
         reloadRequired: "नई मेमोरी सेटिंग्स लागू करने के लिए मॉडल दोबारा लोड करें।",
         loadError: "मॉडल मेमोरी सेटिंग्स लोड नहीं हो सकीं",
         saveError: "मॉडल मेमोरी सेटिंग्स सहेजी नहीं जा सकीं",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu मेमोरी रैम स्थायी पिन लॉक बनाए रखें लोड अनलोड निष्क्रिय mmap no-mmap load-mode स्वैप पेजिंग",
         multiModelKeywords:
@@ -2604,8 +2592,6 @@ export const hi = {
       docsLabel: "unsloth start दस्तावेज़ खोलें",
       agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
       copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -4374,6 +4360,21 @@ export const hi = {
       archiveSuccessful: "सफल रन संग्रहित करें",
       project: "प्रोजेक्ट",
       projectNone: "कोई नहीं",
+      model: "मॉडल",
+      modelLoaded: "जो भी मॉडल लोड हो",
+      modelOnDevice: "इस डिवाइस पर",
+      modelNote: "टास्क चलने पर यह मॉडल लोड न हो, तो Unsloth पहले पूछता है।",
+      modelNoteAllowed: "केवल तब इस मॉडल पर जाता है जब आप Unsloth इस्तेमाल नहीं कर रहे, फिर पहले वाले पर लौट आता है।",
+      modelEmpty: "दूसरा चुनने के लिए Model hub में मॉडल डाउनलोड करें या कनेक्शन जोड़ें।",
+      modelMissing: "{model} (इस डिवाइस पर नहीं)",
+      allowLoad: "मेरे दूर रहने पर अपने आप बदलें",
+      allowLoadHint:
+        "जब इस कार्य का समय होता है और आपने 5 मिनट से Unsloth का उपयोग नहीं किया है, तो यह बिना पूछे यह मॉडल लोड करता है, कार्य चलाता है, फिर आपके पिछले मॉडल पर वापस आ जाता है। अगर उस समय आप Unsloth का उपयोग कर रहे हैं या ट्रेनिंग चल रही है, तो रन छोड़ दिया जाता है और आपका मॉडल वैसा ही रहता है। बंद होने पर, Unsloth लोड करने से पहले पूछता है।",
+      reasoning: "सोचने का प्रयास",
+      reasoningDefault: "डिफ़ॉल्ट",
+      reasoningOff: "बंद",
+      reasoningLowest: "न्यूनतम",
+      reasoningHighest: "अधिकतम",
       create: "बनाएँ",
     },
     deleteDialog: {
@@ -4382,6 +4383,10 @@ export const hi = {
     },
     errors: {
       noModel: "कोई मॉडल लोड नहीं था। चैट में मॉडल लोड करें, फिर टास्क दोबारा चलाएँ।",
+      modelNotLoaded: "टास्क का मॉडल लोड नहीं था। इसे चैट में लोड करें, फिर टास्क दोबारा चलाएँ।",
+      modelLoadFailed: "टास्क का मॉडल लोड नहीं हो सका। पक्का करें कि यह अब भी Model hub में डाउनलोड है।",
+      modelBusy: "आप Unsloth इस्तेमाल कर रहे थे, इसलिए छोड़ा गया और आपका मॉडल नहीं बदला।",
+      connectionUnavailable: "टास्क का कनेक्शन मौजूद नहीं है या बंद है। इसे कनेक्शन में जाँचें।",
       timeout: "मॉडल ने जवाब देने में बहुत ज़्यादा समय लिया।",
       cancelled: "रन पूरा होने से पहले रोक दिया गया।",
       interrupted: "रन पूरा होने से पहले Unsloth बंद हो गया।",
@@ -4391,6 +4396,13 @@ export const hi = {
       updateFailed: "टास्क अपडेट नहीं हो सका",
       deleteFailed: "टास्क हटाया नहीं जा सका",
       runFailed: "टास्क शुरू नहीं हो सका",
+    },
+    loadPrompt: {
+      title: "{model} लोड करें?",
+      description: "“{title}” {model} पर चलता है, जो लोड नहीं है। इसे चलाने से चैट खत्म होने तक {model} पर जाएगी, फिर वापस।",
+      always: "दोबारा न पूछें। सिर्फ़ तब बदलें जब मैं Unsloth इस्तेमाल न कर रहा हूँ।",
+      notNow: "अभी नहीं",
+      load: "लोड करें और चलाएँ",
     },
     toast: {
       finished: "“{title}” तैयार है",
@@ -4414,7 +4426,6 @@ export const hi = {
       all: "सभी",
       chats: "चैट",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "चैट",

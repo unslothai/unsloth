@@ -1,10 +1,7 @@
 use std::time::Duration;
 
-/// Redirects are refused for the same reason `streaming_client` refuses them, and it matters
-/// more here: this is the client that posts `.desktop_secret` to `/api/auth/desktop-login`.
-/// reqwest follows up to 10 redirects by default, and its cross-host protection strips headers,
-/// not bodies, so a responder answering 307 would carry the secret off-host after the loopback
-/// URL had already been checked.
+/// Redirects refused: this client posts `.desktop_secret`, and reqwest strips headers, not bodies,
+/// on cross-host redirects, so a 307 would carry the secret off-host.
 pub(crate) fn client(timeout: Duration) -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .no_proxy()
@@ -13,9 +10,7 @@ pub(crate) fn client(timeout: Duration) -> Result<reqwest::Client, reqwest::Erro
         .build()
 }
 
-/// A client for streaming a body down. `read_timeout`, not `timeout`: a whole gallery clip
-/// outlasts any sane total deadline, while a per-read one bounds the headers and then each
-/// chunk, so a backend that accepts and goes quiet cannot hang the save. Redirects are refused
+/// `read_timeout`, not `timeout`: a long clip outlasts any total deadline. Redirects are refused
 /// so a loopback URL cannot be bounced off-host after the check.
 pub(crate) fn streaming_client(
     connect_timeout: Duration,
@@ -84,10 +79,7 @@ mod tests {
         server.join().unwrap();
     }
 
-    /// The desktop secret rides this client to /api/auth/desktop-login. A 307
-    /// preserves the method and body, so a followed redirect would hand the
-    /// secret to whatever the Location header names. Refuse instead: the caller
-    /// sees the 307 itself and treats it as a failed login.
+    /// A followed 307 would resend the desktop secret to the Location host.
     #[test]
     fn a_redirect_is_returned_not_followed() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -114,7 +106,6 @@ mod tests {
         });
 
         assert_eq!(response.status().as_u16(), 307);
-        // Still the port we dialled: nothing was re-sent anywhere else.
         assert_eq!(response.url().port(), Some(port));
         server.join().unwrap();
     }

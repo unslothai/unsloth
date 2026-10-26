@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_settings_tabs.py, shaped like smoke-ansi.html: a vite
-// entry with no backend and no auth, driving the real SettingsDialog against the real store.
+// Harness for tests/studio/playwright_settings_tabs.py; no backend, no auth.
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 /* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
@@ -27,7 +26,7 @@ import { createRoot } from "react-dom/client";
 import "./src/index.css";
 import { AUTH_TOKEN_KEY } from "@/features/auth/session";
 
-// The Accounts tab is owner-only and the owner is read from the token's claims, so the harness carries an unsigned owner token.
+// Accounts tab is owner-only, read from token claims, so use an unsigned owner token.
 if (!localStorage.getItem(AUTH_TOKEN_KEY)) {
   const claims = btoa(JSON.stringify({ sub: "unsloth", role: "owner" }))
     .replace(/\+/g, "-")
@@ -38,7 +37,6 @@ if (!localStorage.getItem(AUTH_TOKEN_KEY)) {
 
 declare global {
   interface Window {
-    // Optional: the app typechecks this entry, but only the harness page installs it.
     __settingsSmoke?: {
       open: (tab?: string) => void;
       openArchived: (shelf: string) => void;
@@ -64,8 +62,6 @@ window.addEventListener("unhandledrejection", (e) => {
   seenErrors.push(String(e.reason));
 });
 
-// The app has no boundary above the dialog, so give the harness one: whether anything
-// reaches it is exactly what is under test.
 class Boundary extends Component<
   { children: ReactNode },
   { error: string | null }
@@ -87,7 +83,6 @@ window.__settingsSmoke = {
   open: (tab?: string) => {
     store.getState().openDialog(tab as SettingsTab | undefined);
   },
-  // The archive toasts' deep-open: straight to Data, on the shelf they name.
   openArchived: (shelf: string) => {
     if (shelf === "chats") {
       store.getState().openArchivedChats();
@@ -128,7 +123,6 @@ function Harness() {
   );
 }
 
-// Several panels use router hooks (Link, useNavigate), so provide a memory router.
 const harnessRootRoute = createRootRoute({ component: Harness });
 const harnessIndexRoute = createRoute({
   getParentRoute: () => harnessRootRoute,

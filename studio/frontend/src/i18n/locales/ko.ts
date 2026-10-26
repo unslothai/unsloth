@@ -496,7 +496,6 @@ export const ko = {
       clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "OS 샌드박스를 사용할 수 없습니다",
@@ -701,7 +700,6 @@ export const ko = {
     shutdown: "종료",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "문서",
       keyboardShortcuts: "키보드 단축키",
@@ -773,11 +771,8 @@ export const ko = {
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
-      // Shown under an empty project folder in the sidebar.
       noChats: "채팅 없음",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "모든 프로젝트가 고정됨",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "모든 프로젝트가 고정되었거나 섹션에 있음",
       noProjects: "프로젝트 없음",
       showMore: "더 보기",
@@ -879,11 +874,9 @@ export const ko = {
       organizeChats: "채팅 정리",
       organizeProjects: "프로젝트 정리",
       sortPinnedChats: "고정된 채팅 정렬",
-      // Header of the menu's section-visibility toggles.
       show: "표시",
       newSection: "새 섹션",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "새 섹션",
       createDescription: "채팅과 프로젝트를 원하는 대로 묶어 보세요",
@@ -894,16 +887,13 @@ export const ko = {
       edit: "편집",
       remove: "섹션 제거",
       markAllRead: "모두 읽음으로 표시",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "이동",
       section: "섹션",
       sectionsHeading: "섹션",
       removeFromProject: "프로젝트에서 제거",
       newSection: "새 섹션",
       removeFromSection: "섹션에서 제거",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "{name}에서 제거",
-      // Shown in a section with nothing filed in it yet.
       empty: "채팅이나 프로젝트를 여기로 드래그하세요",
       sectionOptions: "섹션 옵션",
       newChatInSection: "{name}에 새 채팅",
@@ -2416,7 +2406,6 @@ export const ko = {
           updateChecksDisabled:
             "업데이트 확인이 비활성화되어 있어(UNSLOTH_DISABLE_UPDATE_CHECK=1) 사용 가능한 백엔드를 조회하지 않습니다.",
         },
-        // 표시되지 않음: 설정 검색용 추가 키워드.
         llamaBackendKeywords:
           "llama.cpp backend gguf 추론 cuda rocm hip vulkan metal cpu gpu 가속기 prebuilt 전환 엔진",
       },
@@ -2450,7 +2439,6 @@ export const ko = {
         reloadRequired: "새 메모리 옵션을 적용하려면 모델을 다시 로드하세요.",
         loadError: "모델 메모리 설정을 불러오지 못했습니다",
         saveError: "모델 메모리 설정을 저장하지 못했습니다",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 메모리 ram 상주 고정 잠금 유지 로드됨 언로드 유휴 mmap no-mmap load-mode 스왑 페이징",
         multiModelKeywords:
@@ -4352,6 +4340,21 @@ export const ko = {
       archiveSuccessful: "성공한 실행 보관",
       project: "프로젝트",
       projectNone: "없음",
+      model: "모델",
+      modelLoaded: "로드되어 있는 모델",
+      modelOnDevice: "이 기기",
+      modelNote: "작업 실행 시 이 모델이 로드되어 있지 않으면 먼저 묻습니다.",
+      modelNoteAllowed: "Unsloth를 사용하지 않는 동안에만 이 모델로 전환하고, 끝나면 원래 모델로 돌아갑니다.",
+      modelEmpty: "다른 모델을 고르려면 Model Hub에서 모델을 다운로드하거나 연결을 추가하세요.",
+      modelMissing: "{model} (이 기기에 없음)",
+      allowLoad: "자리를 비우면 자동으로 전환",
+      allowLoadHint:
+        "이 작업 시간이 되었고 5분 동안 Unsloth를 사용하지 않았다면, 묻지 않고 이 모델을 로드해 작업을 실행한 뒤 원래 모델로 되돌립니다. 그때 Unsloth를 사용 중이거나 학습 중이면 실행을 건너뛰고 모델은 그대로 둡니다. 끄면 로드하기 전에 Unsloth가 묻습니다.",
+      reasoning: "사고 수준",
+      reasoningDefault: "기본값",
+      reasoningOff: "끄기",
+      reasoningLowest: "최저",
+      reasoningHighest: "최고",
       create: "만들기",
     },
     deleteDialog: {
@@ -4360,6 +4363,10 @@ export const ko = {
     },
     errors: {
       noModel: "로드된 모델이 없었습니다. 채팅에서 모델을 로드한 다음 작업을 다시 실행하세요.",
+      modelNotLoaded: "작업의 모델이 로드되지 않았습니다. 채팅에서 로드한 후 다시 실행하세요.",
+      modelLoadFailed: "작업의 모델을 로드하지 못했습니다. Model Hub에 아직 다운로드되어 있는지 확인하세요.",
+      modelBusy: "Unsloth 사용 중이어서 건너뛰었고 모델은 그대로 두었습니다.",
+      connectionUnavailable: "작업의 연결이 없거나 꺼져 있습니다. 연결에서 확인하세요.",
       timeout: "모델이 응답하는 데 너무 오래 걸렸습니다.",
       cancelled: "실행이 완료되기 전에 중지되었습니다.",
       interrupted: "실행이 끝나기 전에 Unsloth가 닫혔습니다.",
@@ -4369,6 +4376,13 @@ export const ko = {
       updateFailed: "작업을 업데이트하지 못했습니다",
       deleteFailed: "작업을 삭제하지 못했습니다",
       runFailed: "작업을 시작하지 못했습니다",
+    },
+    loadPrompt: {
+      title: "{model}을(를) 로드할까요?",
+      description: "“{title}” 작업은 {model}에서 실행되지만 로드되어 있지 않습니다. 실행하면 끝날 때까지 채팅이 {model}로 전환되고 이후 돌아갑니다.",
+      always: "다시 묻지 않기. Unsloth를 사용하지 않을 때만 전환합니다.",
+      notNow: "나중에",
+      load: "로드하고 실행",
     },
     toast: {
       finished: "\"{title}\" 완료",
@@ -4392,7 +4406,6 @@ export const ko = {
       all: "전체",
       chats: "채팅",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "채팅",

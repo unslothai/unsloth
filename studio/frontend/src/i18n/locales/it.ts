@@ -495,7 +495,6 @@ export const it = {
       clearDataFailed: "Impossibile cancellare i dati dei siti. Riprova.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "La sandbox del sistema non è disponibile",
@@ -606,7 +605,6 @@ export const it = {
     shutdown: "Arresta",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Documentazione",
       keyboardShortcuts: "Scorciatoie da tastiera",
@@ -678,11 +676,8 @@ export const it = {
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
-      // Shown under an empty project folder in the sidebar.
       noChats: "Nessuna chat",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Tutti i progetti fissati",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "Tutti i progetti sono fissati o in sezioni",
       noProjects: "Nessun progetto",
       showMore: "Mostra altro",
@@ -784,11 +779,9 @@ export const it = {
       organizeChats: "Organizza le chat",
       organizeProjects: "Organizza i progetti",
       sortPinnedChats: "Ordina le chat fissate",
-      // Header of the menu's section-visibility toggles.
       show: "Mostra",
       newSection: "Nuova sezione",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "Nuova sezione",
       createDescription: "Raggruppa chat e progetti come preferisci",
@@ -799,16 +792,13 @@ export const it = {
       edit: "Modifica",
       remove: "Rimuovi sezione",
       markAllRead: "Segna tutto come letto",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Sposta in",
       section: "Sezione",
       sectionsHeading: "Sezioni",
       removeFromProject: "Rimuovi dal progetto",
       newSection: "Nuova sezione",
       removeFromSection: "Rimuovi dalla sezione",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "Rimuovi da {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "Trascina qui chat o progetti",
       sectionOptions: "Opzioni della sezione",
       newChatInSection: "Nuova chat in {name}",
@@ -2358,7 +2348,6 @@ export const it = {
           updateChecksDisabled:
             "I controlli degli aggiornamenti sono disattivati (UNSLOTH_DISABLE_UPDATE_CHECK=1), quindi i backend disponibili non vengono cercati.",
         },
-        // Non visualizzato: termini aggiuntivi per la ricerca nelle impostazioni.
         llamaBackendKeywords:
           "llama.cpp backend gguf inferenza cuda rocm hip vulkan metal cpu gpu acceleratore prebuilt cambiare motore",
       },
@@ -2392,7 +2381,6 @@ export const it = {
         reloadRequired: "Ricarica il modello per applicare le nuove opzioni di memoria.",
         loadError: "Impossibile caricare le impostazioni di memoria del modello",
         saveError: "Impossibile salvare le impostazioni di memoria del modello",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente bloccare fissare mantenere caricato scaricare inattivo mmap no-mmap load-mode paginazione swap",
         multiModelKeywords:
@@ -2416,7 +2404,6 @@ export const it = {
         modelsFolder: "Cartella dei modelli",
         modelsFolderDescription: "Dove vengono salvati i modelli scaricati.",
         modelsFolderHint: "Dove vengono salvati i modelli scaricati. Cambialo per tenere i modelli fuori dall'unità di sistema. Vale solo per i nuovi download: i modelli che hai già restano dove sono.",
-        // Non visualizzato: termini extra su cui la ricerca delle impostazioni trova questa riga.
         modelsFolderKeywords:
           "cartella modelli directory percorso posizione download scaricati cache archiviazione disco unità spostare sposta hugging face models folder path storage",
         futureDownloads: "Solo i nuovi download",
@@ -2536,8 +2523,6 @@ export const it = {
       docsLabel: "Apri la documentazione di unsloth start",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -4439,6 +4424,21 @@ export const it = {
       archiveSuccessful: "Archivia le esecuzioni riuscite",
       project: "Progetto",
       projectNone: "Nessuno",
+      model: "Modello",
+      modelLoaded: "Il modello caricato in quel momento",
+      modelOnDevice: "Su questo dispositivo",
+      modelNote: "Se questo modello non è caricato quando l’attività parte, Unsloth chiede prima.",
+      modelNoteAllowed: "Passa a questo modello solo mentre non usi Unsloth, poi torna al tuo.",
+      modelEmpty: "Scarica un modello da Model Hub o aggiungi una connessione per sceglierne un altro.",
+      modelMissing: "{model} (non su questo dispositivo)",
+      allowLoad: "Cambia automaticamente quando non ci sono",
+      allowLoadHint:
+        "Quando questa attività è in scadenza e non usi Unsloth da 5 minuti, carica questo modello senza chiedere, esegue l'attività e poi torna al modello che avevi. Se in quel momento stai usando Unsloth o è in corso un addestramento, l'esecuzione viene saltata e il tuo modello resta com'è. Se è disattivato, Unsloth chiede prima di caricarlo.",
+      reasoning: "Sforzo di ragionamento",
+      reasoningDefault: "Predefinito",
+      reasoningOff: "Disattivato",
+      reasoningLowest: "Minimo",
+      reasoningHighest: "Massimo",
       create: "Crea",
     },
     deleteDialog: {
@@ -4447,6 +4447,10 @@ export const it = {
     },
     errors: {
       noModel: "Nessun modello era caricato. Carica un modello nella chat, poi esegui di nuovo l’attività.",
+      modelNotLoaded: "Il modello dell’attività non era caricato. Caricalo nella chat, poi esegui di nuovo l’attività.",
+      modelLoadFailed: "Impossibile caricare il modello dell’attività. Verifica che sia ancora scaricato in Model Hub.",
+      modelBusy: "Saltata mentre usavi Unsloth: il tuo modello non è stato toccato.",
+      connectionUnavailable: "La connessione dell’attività non esiste o è disattivata. Controllala in Connessioni.",
       timeout: "Il modello ha impiegato troppo tempo a rispondere.",
       cancelled: "L’esecuzione è stata interrotta prima della fine.",
       interrupted: "Unsloth è stato chiuso prima della fine dell’esecuzione.",
@@ -4456,6 +4460,13 @@ export const it = {
       updateFailed: "Impossibile aggiornare l’attività",
       deleteFailed: "Impossibile eliminare l’attività",
       runFailed: "Impossibile avviare l’attività",
+    },
+    loadPrompt: {
+      title: "Caricare {model}?",
+      description: "«{title}» usa {model}, che non è caricato. Eseguirla porta la chat su {model} fino alla fine, poi torna indietro.",
+      always: "Non chiedere più. Cambia solo mentre non uso Unsloth.",
+      notNow: "Non ora",
+      load: "Carica ed esegui",
     },
     toast: {
       finished: "«{title}» è pronta",
@@ -4479,7 +4490,6 @@ export const it = {
       all: "Tutti",
       chats: "Chat",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Chat",

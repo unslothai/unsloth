@@ -10,7 +10,7 @@ export type ParentLinkedMessage = {
 
 const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 
-// Rows in storage order. A null is a root only after a recorded parent; earlier it chains.
+// A null parent is a root only after a recorded parent; earlier it chains.
 export function createParentResolver(): (
   message: ParentLinkedMessage,
 ) => string | null {

@@ -4,7 +4,6 @@
 const LLAMA_JOB_STARTED_STORAGE_KEY = "unsloth_llama_job_started_at";
 const LLAMA_JOB_STARTED_EVENT = "unsloth:llama-job-started";
 
-/** Prompt same-window and cross-tab listeners to fetch the shared job state. */
 export function signalLlamaJobStarted(startedAt: string | null): void {
   try {
     localStorage.setItem(
@@ -17,7 +16,6 @@ export function signalLlamaJobStarted(startedAt: string | null): void {
   window.dispatchEvent(new Event(LLAMA_JOB_STARTED_EVENT));
 }
 
-/** Signal only when an API response carries the authoritative running job. */
 export function signalRunningLlamaJob(job: {
   state: unknown;
   started_at: string | null;
@@ -29,7 +27,6 @@ export function signalRunningLlamaJob(job: {
   return true;
 }
 
-/** Subscribe to same-window and cross-tab job-start notifications. */
 export function subscribeToLlamaJobStarted(listener: () => void): () => void {
   const onStorage = (event: StorageEvent) => {
     if (event.key === LLAMA_JOB_STARTED_STORAGE_KEY) {

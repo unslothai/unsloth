@@ -204,8 +204,7 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len
     K = K.reshape(bsz, n_heads, kv_len, head_dim)
     V = V.reshape(bsz, n_heads, kv_len, head_dim)
 
-    # Gemma 9b should use 256, not hidden_size // num_attention_heads (224); 27b uses the derived value,
-    # so default to the config. See google/gemma_pytorch commit 03e6575.
+    # Gemma 9b uses 256, not hidden_size // num_attention_heads, so read the config.
     s = self.config.query_pre_attn_scalar
     t = self.config.attn_logit_softcapping
 

@@ -496,7 +496,6 @@ export const ptBR = {
       clearDataFailed: "Não foi possível limpar os dados de sites. Tente novamente.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "O sandbox do sistema não está disponível",
@@ -704,7 +703,6 @@ export const ptBR = {
     shutdown: "Desligar",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Documentação",
       keyboardShortcuts: "Atalhos de teclado",
@@ -776,11 +774,8 @@ export const ptBR = {
       export: "Exportar",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",
-      // Shown under an empty project folder in the sidebar.
       noChats: "Nenhum chat",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Todos os projetos fixados",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "Todos os projetos estão fixados ou em seções",
       noProjects: "Nenhum projeto",
       showMore: "Mostrar mais",
@@ -882,11 +877,9 @@ export const ptBR = {
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
-      // Header of the menu's section-visibility toggles.
       show: "Mostrar",
       newSection: "Nova seção",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "Nova seção",
       createDescription: "Agrupe conversas e projetos como quiser",
@@ -897,16 +890,13 @@ export const ptBR = {
       edit: "Editar",
       remove: "Remover seção",
       markAllRead: "Marcar tudo como lido",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Mover para",
       section: "Seção",
       sectionsHeading: "Seções",
       removeFromProject: "Remover do projeto",
       newSection: "Nova seção",
       removeFromSection: "Remover da seção",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "Remover de {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "Arraste conversas ou projetos para cá",
       sectionOptions: "Opções da seção",
       newChatInSection: "Novo chat em {name}",
@@ -2437,7 +2427,6 @@ export const ptBR = {
           updateChecksDisabled:
             "As verificações de atualização estão desativadas (UNSLOTH_DISABLE_UPDATE_CHECK=1), então os backends disponíveis não são consultados.",
         },
-        // Not rendered: extra terms the settings search matches these rows on.
         llamaBackendKeywords:
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
       },
@@ -2471,7 +2460,6 @@ export const ptBR = {
         reloadRequired: "Recarregue o modelo para aplicar as novas opções de memória.",
         loadError: "Falha ao carregar as configurações de memória do modelo",
         saveError: "Falha ao salvar as configurações de memória do modelo",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente fixar travar manter carregado descarregar ocioso mmap no-mmap load-mode paginacao swap",
         multiModelKeywords:
@@ -2614,8 +2602,6 @@ export const ptBR = {
       docsLabel: "Abrir a documentação do unsloth start",
       agentDocs: "Abrir a documentação de configuração do {agent}",
       copyGeneratedCommand: "Copiar comando gerado",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -4397,6 +4383,21 @@ export const ptBR = {
       archiveSuccessful: "Arquivar execuções bem-sucedidas",
       project: "Projeto",
       projectNone: "Nenhum",
+      model: "Modelo",
+      modelLoaded: "O modelo que estiver carregado",
+      modelOnDevice: "Neste dispositivo",
+      modelNote: "Se este modelo não estiver carregado quando a tarefa rodar, o Unsloth pergunta antes.",
+      modelNoteAllowed: "Muda para este modelo só enquanto você não usa o Unsloth e depois volta ao que você tinha.",
+      modelEmpty: "Baixe um modelo no Model Hub ou adicione uma conexão para escolher outro.",
+      modelMissing: "{model} (não está neste dispositivo)",
+      allowLoad: "Trocar automaticamente quando eu estiver fora",
+      allowLoadHint:
+        "Quando esta tarefa vence e você não usa o Unsloth há 5 minutos, ela carrega este modelo sem perguntar, executa a tarefa e depois volta para o modelo que você tinha. Se você estiver usando o Unsloth ou treinando nesse momento, a execução é pulada e seu modelo fica como está. Desativado, o Unsloth pergunta antes de carregar.",
+      reasoning: "Esforço de raciocínio",
+      reasoningDefault: "Padrão",
+      reasoningOff: "Desligado",
+      reasoningLowest: "Mínimo",
+      reasoningHighest: "Máximo",
       create: "Criar",
     },
     deleteDialog: {
@@ -4405,6 +4406,10 @@ export const ptBR = {
     },
     errors: {
       noModel: "Nenhum modelo estava carregado. Carregue um modelo no chat e execute a tarefa de novo.",
+      modelNotLoaded: "O modelo da tarefa não estava carregado. Carregue-o no chat e execute a tarefa novamente.",
+      modelLoadFailed: "Não foi possível carregar o modelo da tarefa. Verifique se ele ainda está baixado no Model Hub.",
+      modelBusy: "Pulada enquanto você usava o Unsloth; seu modelo não foi alterado.",
+      connectionUnavailable: "A conexão da tarefa não existe ou está desativada. Verifique em Conexões.",
       timeout: "O modelo demorou demais para responder.",
       cancelled: "A execução foi interrompida antes de terminar.",
       interrupted: "O Unsloth foi fechado antes de a execução terminar.",
@@ -4414,6 +4419,13 @@ export const ptBR = {
       updateFailed: "Não foi possível atualizar a tarefa",
       deleteFailed: "Não foi possível excluir a tarefa",
       runFailed: "Não foi possível iniciar a tarefa",
+    },
+    loadPrompt: {
+      title: "Carregar {model}?",
+      description: "“{title}” usa {model}, que não está carregado. Executá-la troca o chat para {model} até terminar e depois volta.",
+      always: "Não perguntar de novo. Trocar só enquanto eu não uso o Unsloth.",
+      notNow: "Agora não",
+      load: "Carregar e executar",
     },
     toast: {
       finished: "“{title}” está pronta",
@@ -4437,7 +4449,6 @@ export const ptBR = {
       all: "Tudo",
       chats: "Chats",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Chats",

@@ -804,6 +804,12 @@ def _hub_reachable_without_probing(monkeypatch):
     )
 
 
+@pytest.fixture(autouse = True)
+def _no_hub_mirror_probe(monkeypatch):
+    """Saving a mirror endpoint would start a background probe; test_hub_mirror_probe.py turns it back on."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_PROBE", "0")
+
+
 @pytest.fixture(scope = "session")
 def studio_server(request):
     """Yields (base_url, api_key): UNSLOTH_E2E_BASE_URL if set, else a managed server started lazily."""
