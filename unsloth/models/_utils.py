@@ -9013,7 +9013,6 @@ def _nvfp4_qat_linear_op():
         return NVFP4Tensor.to_nvfp4(t, per_tensor_scale = scale, is_swizzled_scales = swizzled)
 
     def quantize_weight(weight, per_tensor, swizzled, triton):
-        # As torchao: always the plain quantizer for weights, use_triton_kernel only set afterwards.
         weight = quantize(weight, per_tensor, swizzled)
         weight.use_triton_kernel = triton
         return weight
@@ -9044,7 +9043,6 @@ def _nvfp4_qat_linear_op():
             out.dtype != x.dtype
         ):  # older torchao adds a float32 bias without casting; the fake impl says x.dtype
             out = out.to(x.dtype)
-        # Save the quantized weight as torchao does: no requantization in the backward.
         return (
             out,
             x_q.qdata,

@@ -361,8 +361,7 @@ def test_nvfp4_accepts_rank4_inputs(monkeypatch):
 
 
 def test_nvfp4_qat_forward_compiles_fullgraph(monkeypatch):
-    # The patched forward must not be a compiler boundary: fullgraph = True traces it (CPU keeps
-    # torchao's own forward, stubbed here; CUDA routes through the custom op tested below).
+    # fullgraph = True: the patched forward must not be a compiler boundary.
     linear_cls = _nvfp4_linear()
     monkeypatch.setattr(linear_cls, "forward", lambda self, x: x @ self.weight.t())
     _probe_ok(monkeypatch)
@@ -392,8 +391,7 @@ _needs_fp4_gpu = pytest.mark.skipif(
 
 @pytest.fixture
 def exact_inductor(monkeypatch):
-    # Inductor otherwise keeps silu(gate) * up in fp32 before the bf16 round, which moves a few fp4 codes
-    # of down_proj's input (~2% grad difference). Emulating eager's casts makes compiled == eager bitwise.
+    # Inductor otherwise keeps silu(gate) * up in fp32 before the bf16 round, shifting fp4 codes (~2% grads).
     import torch._inductor.config as inductor_config
 
     monkeypatch.setattr(inductor_config, "emulate_precision_casts", True)
@@ -463,7 +461,6 @@ def test_nvfp4_qat_custom_op_matches_torchao_eager():
     model = _nvfp4_mlp()
     x = torch.randn(2, 64, 256, device = "cuda", dtype = torch.bfloat16)
     ref = _torchao_reference(model)
-    # The op runs torchao's numerics: bitwise equal to torchao's eager autograd Function.
     _assert_same(_grads(model, model, x), _grads(ref, ref, x))
     op = qat_utils._nvfp4_qat_linear_op()
     w = model.gate_proj.weight
