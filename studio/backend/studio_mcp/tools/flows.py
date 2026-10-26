@@ -111,7 +111,6 @@ async def read_run(caller: Caller, run_id: str) -> JobStatus:
 async def wait_run(caller: Caller, run_id: str, wait_s: float) -> JobStatus:
     deadline = time.monotonic() + max(0.0, min(wait_s, loading.MAX_WAIT_S))
     status = await read_run(caller, run_id)
-    # Short flows finish in well under POLL_S: start fast, back off to it.
     pause = 0.25
     while status.status not in TERMINAL and time.monotonic() < deadline:
         await asyncio.sleep(min(pause, max(0.01, deadline - time.monotonic())))
