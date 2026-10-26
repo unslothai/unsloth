@@ -31,6 +31,7 @@ export function DeleteChatFilesSwitch({
         </span>
       </label>
       <Switch
+        className="mt-[var(--ui-title-cap-inset)]"
         id={id}
         checked={checked}
         onCheckedChange={onCheckedChange}

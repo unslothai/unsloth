@@ -70,8 +70,20 @@ function SectionBox({
       className="@container/train-card elevated-card flex flex-col gap-7 bg-card p-5 pb-7"
     >
       {title && (
-        <div className="flex flex-col items-stretch gap-3 @md/train-card:flex-row @md/train-card:items-center @md/train-card:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
+        <div
+          className={cn(
+            "flex flex-col items-stretch gap-3 @md/train-card:flex-row @md/train-card:justify-between",
+            description
+              ? "@md/train-card:items-start"
+              : "@md/train-card:items-center",
+          )}
+        >
+          <div
+            className={cn(
+              "flex min-w-0 gap-3",
+              description ? "items-start" : "items-center",
+            )}
+          >
             {icon && (
               <span
                 className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
@@ -100,7 +112,14 @@ function SectionBox({
             </div>
           </div>
           {titleAction && (
-            <div className="w-full min-w-0 @md/train-card:w-auto @md/train-card:shrink-0">
+            <div
+              className={cn(
+                "w-full min-w-0 @md/train-card:w-auto @md/train-card:shrink-0",
+                // Top edge on the h2's cap top (13.5px at leading 18px; Hellix: 0.289em).
+                description &&
+                  "@md/train-card:mt-[calc(var(--text-ui-13p5)*0.289)]",
+              )}
+            >
               {titleAction}
             </div>
           )}
