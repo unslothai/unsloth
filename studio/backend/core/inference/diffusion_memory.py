@@ -5617,7 +5617,8 @@ def encode_available_mib(device: Any = None) -> Optional[int]:
             - int(torch.cuda.memory_allocated(dev))
             - _graph_held_cache_bytes(dev.index),
         )
-        return (max(free, 0) + cached) >> 20
+        # clamp after adding the cache: a reserve larger than driver free still claims part of it
+        return max(free + cached, 0) >> 20
     except Exception:  # noqa: BLE001
         return None
 

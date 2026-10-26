@@ -1067,6 +1067,20 @@ def test_encode_need_prices_the_largest_streamed_groups_and_the_tokens(monkeypat
     assert dm.encode_need_mib(types.SimpleNamespace(), (), {"input_ids": ids}) is None
 
 
+def test_encode_available_keeps_a_reserve_larger_than_driver_free(monkeypatch):
+    torch = pytest.importorskip("torch")
+    mib = 1 << 20
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev: (500 * mib, 8000 * mib))
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda dev, total: 2000 * mib)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda dev: 3000 * mib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda dev: 1000 * mib)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda index: 0)
+    # 500 free + 2000 reusable cache - 2000 reserve: the reserve still claims the cache
+    assert dm.encode_available_mib(torch.device("cuda", 0)) == 500
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda dev, total: 3000 * mib)
+    assert dm.encode_available_mib(torch.device("cuda", 0)) == 0
+
+
 def test_encode_release_only_for_the_whole_tier(monkeypatch):
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     assert (
