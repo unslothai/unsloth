@@ -44403,22 +44403,49 @@ async def _anthropic_passthrough_stream(
         items_iter = None
         cancel_watcher = None
         disconnect_watcher = None
+        _truncate_policy = _overflow_truncation_policy(payload) if 'payload' in locals() else os.environ.get('UNSLOTH_CONTEXT_OVERFLOW', '').strip().lower()
+        if _truncate_policy not in ('truncate_middle', 'truncate_oldest'):
+            _truncate_policy = 'truncate_oldest'
+        _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
+        _uncut_messages = list(body.get('messages') or [])
+        _cut_scope = _passthrough_cut_scope(llama_backend, body)
+        _truncated_messages = await asyncio.to_thread(
+            _replay_passthrough_cut,
+            body,
+            _truncate_policy,
+            getattr(llama_backend, 'context_length', None),
+            _cut_scope,
+        )
+
+        def _apply_anthropic_passthrough_truncation(err_text: str) -> bool:
+            nonlocal _truncated_messages
+            dropped = _apply_measured_overflow_truncation(body, err_text, _truncate_policy)
+            if dropped is None:
+                return False
+            _truncated_messages += dropped
+            _remember_passthrough_cut(
+                _uncut_messages, body, _truncate_policy, _truncated_messages, _cut_scope
+            )
+            return True
+
         try:
             upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
-            async with aclosing(
-                upstream.stream_response(client, body, cancel_event, request)
-            ) as opening:
-                async for opened in opening:
-                    if opened is _LLAMA_STREAM_KEEPALIVE:
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                    else:
-                        resp = opened
-            first_token_deadline = upstream.first_token_deadline
-            if resp is None:
-                return
+            while True:
+                async with aclosing(
+                    upstream.stream_response(client, body, cancel_event, request)
+                ) as opening:
+                    async for opened in opening:
+                        if opened is _LLAMA_STREAM_KEEPALIVE:
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        else:
+                            resp = opened
+                first_token_deadline = upstream.first_token_deadline
+                if resp is None:
+                    return
 
-            # Headers flushed, so upstream 4xx must surface as in-band Anthropic error, not silent end_turn.
-            if resp.status_code != 200:
+                if resp.status_code == 200:
+                    break
+
                 _err_bytes = await resp.aread()
                 _err_text = _err_bytes.decode("utf-8", "replace")[:500]
                 logger.error(
@@ -44426,11 +44453,21 @@ async def _anthropic_passthrough_stream(
                     resp.status_code,
                     _err_text,
                 )
-                # The outer 200 stream headers are already flushed, so flag the failure: the
-                # middleware must not claim a preview-owned model on a passthrough whose
-                # upstream errored before any SSE.
-                from core.inference.llama_keepwarm import mark_response_failed
 
+                if (
+                    _truncate_budget > 0
+                    and _classify_llama_generation_error(Exception(_err_text))
+                    and _apply_anthropic_passthrough_truncation(_err_text)
+                ):
+                    _truncate_budget -= 1
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
+                    resp = None
+                    continue
+
+                from core.inference.llama_keepwarm import mark_response_failed
                 mark_response_failed(getattr(request, "scope", None))
                 _over = bool(_classify_llama_generation_error(Exception(_err_text)))
                 yield build_anthropic_sse_event(
