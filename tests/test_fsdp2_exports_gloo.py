@@ -564,4 +564,6 @@ def test_host_ram_check_honours_the_cgroup_limit(runs):
     _no_raise(runs, "cgroup")
     limit, available = runs["ranks"][0]["cgroup_bytes"]
     assert limit == 3 * 1024**3 and available <= limit, runs["ranks"][0]["cgroup_bytes"]
-    assert runs["ranks"][0]["cgroup_v1_bytes"] == 1536 * 1024**2, runs["ranks"][0]["cgroup_v1_bytes"]
+    assert runs["ranks"][0]["cgroup_v1_bytes"] == 1536 * 1024**2, runs["ranks"][0][
+        "cgroup_v1_bytes"
+    ]
