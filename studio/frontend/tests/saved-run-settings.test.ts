@@ -53,7 +53,7 @@ test("the editor names a one-time load by what it sent, before matching saved se
   );
   assert.match(
     page,
-    /noteRunSettingsLoadedOnce\(\s*configId,\s*target\.ggufVariant,\s*onceOnly \? \{ name: loadSet, sent: effectiveLoadConfig \} : null,\s*\);/,
+    /noteRunSettingsLoadedOnce\(\s*configId,\s*target\.ggufVariant,\s*onceOnly \? \{ name: loadSet, sent: onceSent \} : null,\s*\);/,
   );
   assert.match(
     page,
@@ -69,10 +69,15 @@ test("the editor names a one-time load by what it sent, before matching saved se
     /notedOnce !== undefined\s*\? notedOnce\s*: inferOnce &&\s*!perModelConfigsEqual\(forSetStore\(loadedConfig\), forSetStore\(pinnedEntry\.config\)\)/,
   );
   assert.doesNotMatch(page, /loadedOnceNamed\(loadedConfig\) \?\?/);
+  // Inherited speculative decoding is recorded as the mode the runtime resolves and reports.
+  assert.match(
+    page,
+    /speculativeType:\s*normalizeSpeculativeType\(effectiveLoadConfig\.speculativeType\) \?\?\s*readPersistedSpeculativeType\(\),[\s\S]{0,200}onceOnly \? \{ name: loadSet, sent: onceSent \} : null/,
+  );
   // Recorded as submitted: the load strips managed arguments, so the record does too.
   assert.match(
     page,
-    /if \(cleaned\.length === onceArgs\.length\) return;\s*noteRunSettingsLoadedOnce\(configId, target\.ggufVariant, \{\s*name: loadSet,\s*sent: \{ \.\.\.effectiveLoadConfig, llamaExtraArgs: cleaned \},/,
+    /if \(cleaned\.length === onceArgs\.length\) return;\s*noteRunSettingsLoadedOnce\(configId, target\.ggufVariant, \{\s*name: loadSet,\s*sent: \{ \.\.\.onceSent, llamaExtraArgs: cleaned \},/,
   );
 });
 

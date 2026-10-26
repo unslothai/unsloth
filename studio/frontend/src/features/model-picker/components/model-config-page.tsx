@@ -53,6 +53,7 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   resolveStagedDiffusionClassification,
@@ -3993,13 +3994,20 @@ export function ModelConfigPage({
         : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
     // The budget row flushes on unmount, after onRun staged the load, so save it first. Locked
     // before the settle so no drag lands in between.
+    // Recorded as the runtime resolves it: inherited speculative decoding takes the standing mode.
+    const onceSent = {
+      ...effectiveLoadConfig,
+      speculativeType:
+        normalizeSpeculativeType(effectiveLoadConfig.speculativeType) ??
+        readPersistedSpeculativeType(),
+    };
     noteRunSettingsLoadedOnce(
       configId,
       target.ggufVariant,
-      onceOnly ? { name: loadSet, sent: effectiveLoadConfig } : null,
+      onceOnly ? { name: loadSet, sent: onceSent } : null,
     );
     // The load strips arguments managed since they were saved, so record what it submits.
-    const onceArgs = effectiveLoadConfig.llamaExtraArgs;
+    const onceArgs = onceSent.llamaExtraArgs;
     if (onceOnly && target.isGguf && classifiedIsDiffusion !== true && onceArgs?.length) {
       void loadManagedLlamaFlags()
         .then((managed) => {
@@ -4014,7 +4022,7 @@ export function ModelConfigPage({
           if (cleaned.length === onceArgs.length) return;
           noteRunSettingsLoadedOnce(configId, target.ggufVariant, {
             name: loadSet,
-            sent: { ...effectiveLoadConfig, llamaExtraArgs: cleaned },
+            sent: { ...onceSent, llamaExtraArgs: cleaned },
           });
         })
         .catch(() => undefined);
