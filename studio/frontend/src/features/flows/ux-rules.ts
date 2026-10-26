@@ -127,7 +127,6 @@ export function modelsToDownload(
   );
 }
 
-/** `unchecked`: the plan had errors, so its empty model list proves nothing (do not remember it). */
 export function planCheck(
   plan: { models?: PlanModel[] | null; errors?: unknown[] | null },
   askedFor: { flowId: string; models: string },
@@ -155,7 +154,6 @@ export function modelSignature(
 ): string {
   const picks: string[] = [];
   for (const node of Object.values(nodes)) {
-    // A disabled block plans nothing: enabling it must ask the plan again.
     if (node?.disabled) continue;
     for (const value of Object.values(node?.params ?? {})) {
       if (value && typeof value === "object" && "repo" in value) {

@@ -210,11 +210,6 @@ export interface SimJob {
   run: (signal: AbortSignal) => Promise<void>;
 }
 
-/**
- * Background model calls: at most one in flight, plans before chats, at most `perMinute` starts in any
- * 60 s window, and nothing new while paused (a player conversation). Pausing aborts the call in flight,
- * so the player's own reply never waits behind village gossip.
- */
 export class BackgroundQueue {
   private jobs: SimJob[] = [];
   private starts: number[] = [];

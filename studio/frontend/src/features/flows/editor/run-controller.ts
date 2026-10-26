@@ -19,7 +19,6 @@ import { failedSteps, modelSignature, planCheck } from "../ux-rules";
 
 let follower: AbortController | null = null;
 const checkedModels = new Map<string, string>();
-// Bumped when the editor closes: a download check still out then belongs to an editor that is gone.
 let editorSession = 0;
 
 export function attachRun(runId: string, afterSeq = 0): void {
@@ -121,7 +120,6 @@ async function heldForDownloads(
   return true;
 }
 
-// Set before the start request is awaited: a double-click on Run must not start two runs.
 let starting = false;
 
 export async function runFlow(options: RunOptions = {}): Promise<void> {

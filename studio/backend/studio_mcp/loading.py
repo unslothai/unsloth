@@ -423,7 +423,6 @@ async def load_llm(
             )
         )
         if extra_body:
-            # Explicit load settings (a Flows benchmark variant) win over the placement defaults.
             body.update(extra_body)
         payload = await with_progress(
             None,
@@ -467,7 +466,6 @@ async def load_llm(
             alongside,
             kv_cache_type,
             gpu_layers,
-            # Explicit load settings are part of the load too: a load with other ones is not one to follow.
             json.dumps(extra_body, sort_keys = True, default = str) if extra_body else None,
         ),
         hub_token = token,

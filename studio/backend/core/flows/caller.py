@@ -35,7 +35,6 @@ FLOW_PREFIXES = tuple(
 )
 
 
-# Load Document, Add to / Search Knowledge Base: the account's own knowledge bases, for Flows only (not MCP).
 FLOW_EXACT = (
     "/api/library",
     "/api/rag/knowledge-bases",
@@ -173,7 +172,6 @@ class _QueueStream(httpx.AsyncByteStream):
             yield chunk
 
     async def aclose(self) -> None:
-        # Leaving early (Stop, a player that left) ends the route too, so the model stops writing.
         self._done.set()
         if not self._task.done():
             self._task.cancel()

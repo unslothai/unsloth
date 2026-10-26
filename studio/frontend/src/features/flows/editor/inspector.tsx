@@ -87,7 +87,6 @@ function ParamRow({
 function InspectorImpl() {
   const nodeId = useUiStore((s) => s.inspectorNodeId);
   const node = useDocStore((s) => (nodeId ? s.graph.nodes[nodeId] : undefined));
-  // The engine applies a pin only outside For Each bodies.
   const inLoop = useDocStore(
     (s) => !!nodeId && loopMembers(Object.values(s.graph.nodes)).has(nodeId),
   );

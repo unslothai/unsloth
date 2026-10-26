@@ -52,7 +52,6 @@ def declarative_recipe(payload: Any) -> dict:
         recipe.pop(key, None)
     from core.training.account_jobs import managed_account
 
-    # `api_key_env` only names a variable; Studio reads it for the owner only, as on the Data Recipes page.
     secrets = (
         ("api_key", "extra_headers", "api_key_env")
         if managed_account()
@@ -145,7 +144,6 @@ async def recipe(ctx: NodeContext) -> dict:
             "rows": rows,
         }
     else:
-        # A preview keeps its rows in memory only, so save them while this job can still page them.
         kept = await recipe_rows(ctx, job_id)
         if not kept:
             raise FlowNodeError("The Data Recipe produced no rows")

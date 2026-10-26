@@ -25,7 +25,6 @@ export const PLAYER_ENTRYPOINTS = new Set([
   "chat.output",
 ]);
 
-/** Only what the story or world is built from: a side branch (Fine-tune, Export, Save to Library) must not run. */
 export function rerollTargets(doc: FlowDocument): string[] {
   return doc.nodes
     .filter(
@@ -37,10 +36,6 @@ export function rerollTargets(doc: FlowDocument): string[] {
     .map((n) => n.id);
 }
 
-/**
- * `doc` with the 3D editor's props on the World Player the world was played with (`player`), or on every enabled
- * World Player when that is unknown; null when there is none to hold them.
- */
 export function withWorldProps(
   doc: FlowDocument,
   props: WorldProp3d[],
@@ -272,7 +267,6 @@ export const playerApi: PlayerApi = {
       await authFetch(`/api/flows/${enc(flowId)}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // A shared story ships its generator output baked; a re-roll has to run it again.
         body: JSON.stringify({
           doc,
           ignore_baked: true,

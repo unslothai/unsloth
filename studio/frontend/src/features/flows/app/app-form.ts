@@ -135,11 +135,9 @@ export function applyAppValues(
   const nodeValues = new Map<string, unknown>();
   for (const field of fields) {
     if (!(field.key in values)) continue;
-    // An untouched block field sends nothing (the block keeps its value); a Flow Input always sends, defaults are not filled server-side.
     if (field.target !== "param" && Object.is(values[field.key], field.initial))
       continue;
     let value = values[field.key];
-    // The JSON box edits text; a Flow Input of type json is not coerced server-side, so send the parsed value.
     if (field.kind === "json" && typeof value === "string") {
       try {
         value = JSON.parse(value);

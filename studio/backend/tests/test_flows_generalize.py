@@ -454,7 +454,6 @@ def test_a_lease_refuses_other_loads_and_training_but_not_its_holder(no_lease, m
             refusal = await other.run_in_executor(None, arb.lease_refusal)
             return refusal
 
-    # run_in_executor does not copy the context: that thread is "someone else".
     refusal = asyncio.run(holder())
     assert isinstance(refusal, arb.GpuLeaseHeldError)
     assert "Benchmark Model is using the GPU" in str(refusal)
@@ -669,7 +668,6 @@ def test_every_unload_path_shares_the_lease_guard(no_lease):
 
 
 def test_a_lease_waits_for_a_residency_change_already_under_way(no_lease):
-    # A load past its lease check holds _lock until its eviction finishes; the lease must not start under it.
     with arb._lock:
         with pytest.raises(arb.GpuLeaseHeldError):
             with arb.operation_lease("bench", "run-1", 60):

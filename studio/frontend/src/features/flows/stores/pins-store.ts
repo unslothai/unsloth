@@ -4,7 +4,6 @@
 import { create } from "zustand";
 import type { MediaValue } from "../types";
 
-/** Per-flow pins, kept in this browser only (never in the document, so sharing never carries them). */
 type Pins = Record<string, Record<string, unknown>>;
 
 const KEY = (flowId: string) => `unsloth.flows.pins.${flowId}`;

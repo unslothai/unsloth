@@ -11,7 +11,6 @@ const read = (name: string) =>
     "utf8",
   );
 
-/** Required (non-optional) method names of the WorldGameHandle interface. */
 function handleMethods(src: string): string[] {
   const body = src.slice(
     src.indexOf("export interface WorldGameHandle {"),
@@ -28,7 +27,6 @@ test("the 2D and 3D renderers both implement every game handle method", () => {
     ["phaser-game.ts", phaser],
     ["three-world.ts", read("three-world.ts")],
   ] as const) {
-    // The handle object is the object literal the factory returns (directly, or named `handle` first).
     const at = src.indexOf("\n  const handle: WorldGameHandle = {");
     const handle = src.slice(at >= 0 ? at : src.lastIndexOf("\n  return {"));
     for (const m of methods)

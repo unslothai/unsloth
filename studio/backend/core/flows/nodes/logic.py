@@ -133,7 +133,6 @@ async def product(ctx: NodeContext) -> dict:
         count *= len(items)
     limit = min(int(ctx.params.get("max_items") or 64), MAX_FOREACH_ITEMS)
     if count > limit:
-        # Refused rather than cut, so a sweep never measures part of its grid without saying so.
         raise FlowNodeError(
             f"{count} combinations is more than the {limit} allowed; shorten an axis"
         )

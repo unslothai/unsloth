@@ -93,7 +93,6 @@ export function resolveView3d(spec: Pick<WorldSpec, "view3d"> | null): View3d {
   };
 }
 
-/** Fog start and end distance in tiles: 0 is clear to the far edge of a big map, 1 is a short misty walk. */
 export function fogRange(fog: number): [number, number] {
   const far = 140 - 120 * fog;
   return [far * 0.25, far];
@@ -230,7 +229,6 @@ export function decorCells(
   return out;
 }
 
-/** One cottage per region, only on a solid cell so walking and NPC paths match the 2D map exactly. */
 export function houseCells(
   spec: Pick<WorldSpec, "regions">,
   map: WorldMap,
@@ -244,7 +242,6 @@ export function houseCells(
     let bestD = Number.POSITIVE_INFINITY;
     for (let y = cy - 4; y <= cy + 4; y++) {
       for (let x = cx - 4; x <= cx + 4; x++) {
-        // Never on the border ring, so the map edge stays a wall of trees.
         if (x < 1 || y < 1 || x >= map.width - 1 || y >= map.height - 1)
           continue;
         const k = kindAt(map, x, y);
@@ -274,7 +271,6 @@ export function standTiles(x: number, y: number, radius = 0.22): Point[] {
   return [...out.values()];
 }
 
-/** True when a circle of `radius` tiles at (x, y) overlaps no solid tile: the walk collision test. */
 export function canStand(
   map: WorldMap,
   x: number,

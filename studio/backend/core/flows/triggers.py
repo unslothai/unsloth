@@ -64,7 +64,6 @@ def parse_cron(expr: str) -> list[set[int]]:
     if len(fields) != 5:
         raise ValueError("a cron schedule has five fields: minute hour day month weekday")
     sets = [_cron_field(f, lo, hi) for f, (lo, hi) in zip(fields, _CRON_RANGES)]
-    # Sunday is 0, and 7 as most cron tools also accept.
     sets[4] = {0 if d == 7 else d for d in sets[4]}
     return sets
 
@@ -156,7 +155,6 @@ async def fire(
     record = flows_db.get_flow(flow_id)
     if record is None:
         return None
-    # The saved document is the truth: a trigger switched off or removed there never fires, even if the index lags.
     if not any(
         w["node_id"] == node_id
         and w["config"].get("enabled")
@@ -176,7 +174,6 @@ async def fire(
         logger.info(
             "flows: trigger %s/%s skipped: its last triggered run is still going", flow_id, node_id
         )
-        # A skipped scheduled time counts as taken, so it is not started late once the last run ends.
         if at_ms is not None:
             flows_db.mark_trigger_fired(flow_id, node_id, at_ms)
         return None

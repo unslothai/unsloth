@@ -19,7 +19,6 @@ export async function addFileNodes(
 ): Promise<string[]> {
   const added: string[] = [];
   let skipped = 0;
-  // An upload can finish after the user opened another flow; its block belongs to the flow it was dropped on.
   const flowId = useDocStore.getState().flowId;
   for (const [i, file] of files.entries()) {
     const target = inputForFile(file.name, file.type);

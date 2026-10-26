@@ -149,7 +149,6 @@ def spec(
     requires_approval: Optional[list[str]] = None,
 ) -> dict:
     inputs = list(inputs)
-    # A bindable param also gets an optional input; a connected value replaces the field (the engine overlays it).
     for p in params:
         if p.get("bindable"):
             inputs.append(
@@ -177,14 +176,11 @@ def spec(
         "cacheable": cacheable and not side_effect,
         "side_effect": side_effect,
         "icon": icon,
-        # player: authored for a player (story/world); the engine compiles it, never runs it as a step.
         "player": player,
         "entrypoint": entrypoint,
-        # flow_in/flow_out: story control handles (edges of kind "flow"). flow_out names the outgoing handles.
         "flow_in": flow_in,
         "flow_out": flow_out or [],
     }
-    # Only when set, so the published catalog of existing nodes stays the same.
     if requires:
         found["requires"] = list(requires)
     if exclusive_gpu:

@@ -117,7 +117,6 @@ async def edit(ctx: NodeContext) -> dict:
     if not instruction:
         raise FlowNodeError("Say what to change: type an instruction or connect one")
     source, extra = ctx.inputs["image"], list(ctx.inputs.get("reference") or [])
-    # Families without instruction editing (FLUX.2 klein) still take the source as a reference, else as img2img.
     attempts = [
         {"init_image": source, "references": extra or None, "workflow": "edit"},
         {"init_image": source, "references": extra or None, "workflow": "reference"},
@@ -215,7 +214,6 @@ async def upscale(ctx: NodeContext) -> dict:
             options = {"upscale_model": ctx.params.get("upscaler")},
         )
     except FlowNodeError as exc:
-        # No image model loaded, or a family that cannot upscale (FLUX.2-klein): a plain resize still gives the size.
         if "not supported" not in str(exc) and "model is loaded" not in str(exc):
             raise
         ctx.log(f"{exc} Resized with Lanczos instead.", level = "warning")
@@ -289,7 +287,6 @@ def _open(data: bytes) -> Any:
 
     im = Image.open(io.BytesIO(data))
     im.load()
-    # Upright like Studio's image routes and the browser show it, so a phone photo is not turned sideways.
     return exif_upright(im).convert("RGBA")
 
 

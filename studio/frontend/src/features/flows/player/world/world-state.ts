@@ -57,18 +57,13 @@ export interface WorldState {
   vars: Record<string, unknown>;
   talks: Record<string, ChatTurn[]>;
   summaries: Record<string, NpcSummary>;
-  /** Game minutes since day 1 00:00. */
   clock: number;
   npc: Record<string, NpcMind>;
-  /** Optional so older saves load. */
   following?: string[];
-  /** `until` is null where the clock does not run. */
   errands?: Record<string, Errand>;
-  /** Quests, items and villagers added while playing; optional so older saves load. */
   additions?: WorldAdditions;
   auto?: AutoState;
   npcAt?: Record<string, Point>;
-  /** Health, ammo, pickups taken, knockouts and the player's height; only in worlds with action play on. */
   action?: { combat?: unknown; pose?: { z: number } };
 }
 
@@ -249,7 +244,6 @@ export function foldSummary(
   return { ...s, summaries, talks: { ...s.talks, [npcId]: turns } };
 }
 
-/** Apply a validated reply; re-checks every effect against the world so a bad reply cannot corrupt a save. */
 export function applyReply(
   spec: WorldSpec,
   s: WorldState,
@@ -371,7 +365,6 @@ function summariesOf(raw: unknown): Record<string, NpcSummary> {
   return out;
 }
 
-/** A save from this or an older version (v1 has no clock or NPC minds), or null when it is not one. */
 export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   const v = (raw as WorldState | null)?.v;
   if (!raw || typeof raw !== "object" || (v !== 1 && v !== WORLD_SAVE_VERSION))
@@ -419,7 +412,6 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
     ...(autonomyOn(played)
       ? { auto: autoOf(r.auto, played), npcAt: npcAtOf(r.npcAt, npcIds) }
       : {}),
-    // Checked again (combatOf) by the 3D view that reads it; anything else is left out.
     ...(played.action?.movement && r.action && typeof r.action === "object"
       ? { action: r.action }
       : {}),

@@ -212,7 +212,6 @@ export function reduceEvents(
     } else if (event.type === "node.partial") {
       const node = entry(id);
       const port = String(data.port ?? "");
-      // Stored events keep only the position; the value comes from live events and the snapshot.
       if (port && "value" in data) {
         node.partial = { ...(node.partial ?? {}), [port]: data.value };
         node.partialStep = stepOf(data as PartialData) ?? node.partialStep;

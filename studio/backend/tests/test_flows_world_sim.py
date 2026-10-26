@@ -292,7 +292,6 @@ def test_encounter_output_schema():
     }
     ctx = SimCtx("world.npc_chat", inputs = {"state": state}, llm = lambda **kw: copy.deepcopy(raw))
     chat = run(world_nodes.world_npc_chat(ctx))["chat"]
-    # Live calls send no fixed seed: Studio turns the prompt cache off for a seeded request.
     assert ctx.llm_calls[0].get("seed") is None
     assert chat["lines"] == [
         {"npc": a["id"], "text": "Party at the cafe tonight!"},

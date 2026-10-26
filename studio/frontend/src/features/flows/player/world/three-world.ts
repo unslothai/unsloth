@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Loaded only via import() so three.js stays out of the startup bundle; same WorldGameHandle / WorldBridge as Phaser.
 
 import * as three from "three";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
@@ -682,7 +681,6 @@ export function createWorld3d(
     const at = map.items[it.id];
     if (at && !picked.includes(it.id)) spawnItem(it, at);
   }
-  // Signs nothing walks into or picks up (a home a villager built).
   const markers = new Map<string, three.Sprite>();
   const prompt = tagSprite("E", 0.14);
   prompt.visible = false;
@@ -691,8 +689,6 @@ export function createWorld3d(
   const spawn = start && !isSolid(map, start.x, start.y) ? start : map.spawn;
   const me = { x: spawn.x + 0.5, y: spawn.y + 0.5 };
 
-  // Action play (World Player "Gameplay"): a capsule with gravity against terrain, walls and props; a shooter adds
-  // a hitscan weapon and hostiles that shoot back. Off, walking is the tile slide it always was.
   const action = spec.action?.movement === true;
   const shooter = action && spec.action?.shooter === true;
   const wallTile = (x: number, y: number) =>
@@ -701,8 +697,6 @@ export function createWorld3d(
     x >= map.width ||
     y >= map.height ||
     SOLID.has(kindAt(map, x, y));
-  // A prop placed over the player (around their feet at height z) stays passable for them, like the tiles
-  // setMapProps keeps open; one they stand on still holds them up.
   const collide = (z: number): ActionWorld => {
     const ground = (x: number, y: number) => heightAt(terrain, x, y);
     const all = map.props ?? [];
@@ -864,7 +858,6 @@ export function createWorld3d(
     } catch {
       dragLook = true;
     }
-    // No lock a moment later (headless browsers, iframes without the permission): drag to look instead.
     window.setTimeout(() => {
       if (!controls.isLocked) dragLook = true;
     }, 400);
@@ -1045,7 +1038,6 @@ export function createWorld3d(
   function fight(dt: number) {
     if (!aw || !body) return;
     tick(combat, dt);
-    // Knocked-out hostiles are gone until they get back up at home.
     for (const n of npcs) {
       const down = (combat.enemies[n.id]?.down ?? 0) > combat.clock;
       if (n.group.visible === down) {
@@ -1058,7 +1050,6 @@ export function createWorld3d(
     }
     const safe = (x: number, y: number) =>
       bridge.safeAt?.({ x: Math.floor(x), y: Math.floor(y) }) ?? false;
-    // Safe places hold for both sides: no shots out of one, none at anyone inside one.
     if (firePressed && safe(body.x, body.y)) {
       firePressed = false;
       bridge.onEvent?.("No fighting in a safe place");
@@ -1189,7 +1180,6 @@ export function createWorld3d(
           ix = route[0].x + 0.5 - me.x;
           iy = route[0].y + 0.5 - me.y;
           faceYaw = Math.atan2(-ix, -iy);
-          // Stop on the waypoint instead of stepping past it at high walk speeds.
           limit = Math.hypot(ix, iy);
         }
       }
@@ -1241,7 +1231,6 @@ export function createWorld3d(
       );
     if (shooter && body && aw && !locked) fight(dt);
     if (perf) {
-      // A test hook (set on window before the world opens): frame and simulation times, pose and fight state.
       perf.frame.push(dt * 1000);
       perf.sim.push(performance.now() - simStart);
       perf.pose = body
@@ -1354,7 +1343,6 @@ export function createWorld3d(
     let bestD = REACH;
     let bp: three.Vector3 | null = null;
     for (const n of npcs) {
-      // A knocked-out hostile is hidden and cannot be talked to.
       if (!n.group.visible) continue;
       const d = Math.hypot(n.pos.x - me.x, n.pos.y - me.y);
       if (d < bestD) {

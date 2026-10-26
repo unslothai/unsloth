@@ -123,7 +123,6 @@ export interface FlowPlan {
   cached_nodes: number;
   errors: ValidationIssue[];
   warnings: ValidationIssue[];
-  /** Advice about this computer's settings (absent from older Studios). */
   hints?: PlanHint[];
 }
 
@@ -201,7 +200,6 @@ export interface ImportReport {
   author?: string | null;
   replication?: string[];
   live_note?: string | null;
-  /** Notebook imports: why Studio cannot run it, and where it runs instead. */
   unsupported?: string[];
   colab_url?: string | null;
 }
@@ -311,7 +309,6 @@ export function mediaPath(media: MediaValue): string | null {
   if (media.ref.startsWith("sha256:") || media.ref.startsWith("flowasset:")) {
     return `${FLOWS_API}/assets/${encodeURIComponent(media.ref)}`;
   }
-  // Generated audio carries a /v1/ gallery URL; its authenticated copy lives under /api/ like images and video.
   const colon = media.ref.indexOf(":");
   const gallery = GALLERY_ROUTES[media.ref.slice(0, colon)];
   const id = media.ref.slice(colon + 1);

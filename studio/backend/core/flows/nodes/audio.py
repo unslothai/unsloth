@@ -65,7 +65,6 @@ async def transcribe(ctx: NodeContext) -> dict:
         except FlowNodeError as exc:
             if exc.status != 409 or NOT_DOWNLOADED not in str(exc):
                 raise
-        # A fresh install has no speech-to-text model yet: fetch the default once, as the MCP transcribe tool does.
         ctx.progress(phase = "Downloading the speech-to-text model")
         await _download_then_retry(_caller(ctx), None, None)
         return await ctx.call("POST", path, files = files, data = form)
@@ -73,7 +72,6 @@ async def transcribe(ctx: NodeContext) -> dict:
     try:
         answer = await send(form)
     except FlowNodeError as exc:
-        # Some local engines only time segments when told the language; plain text still works there.
         if exc.status != 501:
             raise
         answer = await send({"response_format": "json"})

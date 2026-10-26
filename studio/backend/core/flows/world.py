@@ -286,7 +286,6 @@ def _view3d(raw: Any) -> dict:
 
 
 PROP_KINDS = ("house", "tree", "lamp", "fence", "well", "crate", "rock", "bench", "stall", "model")
-# Lamps and benches are small enough to walk past; everything else blocks its tile unless the editor says otherwise.
 OPEN_PROPS = ("lamp", "bench")
 MAX_PROPS = 400
 _PROP_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
@@ -360,7 +359,6 @@ def apply_play_view(
         n for n in doc.get("nodes") or [] if n["type"] == "world.play" and not n.get("disabled")
     ]
     fed = {e["target"] for e in doc.get("edges") or [] if source and e.get("source") == source}
-    # The player itself can be the source (once it has run output); then it wins over players it feeds.
     players.sort(key = lambda n: (n["id"] != source, n["id"] not in fed))
     for n in players:
         p = n.get("params") or {}
@@ -660,7 +658,6 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
     text = re.sub(r"\s+", " ", str(raw.get("text") or "")).strip()[:1200] or "..."
     out: dict[str, Any] = {"text": text}
     give = str(raw.get("give_item") or "").strip()
-    # A giver never hands over the item their own open quest asks the player to find.
     wanted = {
         q.get("requires_item")
         for q in world.get("quests") or []
@@ -680,7 +677,6 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
             if need:
                 out["take_item"] = need
     if "complete_quest" not in out:
-        # Small chat models often forget the effect: bringing a quest's item back to its giver completes it.
         for q in world.get("quests") or []:
             need = q.get("requires_item")
             if q["giver"] == npc["id"] and q["id"] not in done and need and need in inventory:
@@ -699,8 +695,6 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
     action = str(raw.get("action") or "").strip()
     place = str(raw.get("place") or "").strip()
     asked = str(state.get("player_message") or "").lower()
-    # Small chat models mix these up ("follow me" becomes the NPC leading somewhere), so the player's own words
-    # decide following, and an NPC only heads to a place the player named.
     named = {
         p["id"]
         for p in world_places(world)
@@ -900,7 +894,6 @@ def validate_director(raw: Any, state: dict) -> dict:
     need = find(items, asked)
     if need in used:
         need = None
-    # Small models often name a fresh item in `item` instead of `new_item_name`: an unknown name is the new item.
     new_item_name = text("new_item_name", 60) or (
         asked[:60] if asked and find(items, asked) is None else ""
     )

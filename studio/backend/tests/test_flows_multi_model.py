@@ -96,7 +96,6 @@ def test_off_replaces_the_primary_and_names_the_default_model(monkeypatch):
     asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}))
     assert "alongside" not in loads[0] and state["serving"] == [SMALL]
     assert asyncio.run(_body(ctx))["model"] == "default"
-    # An older Studio without the setting in its status behaves the same.
     loads, _ = _fakes(monkeypatch, None, [BIG])
     asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}))
     assert "alongside" not in loads[0]
@@ -108,14 +107,11 @@ def test_a_second_model_loads_alongside_and_requests_name_it(monkeypatch, mode):
     ctx = _Ctx()
     asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL, "variant": "Q4_K_M"}))
     assert len(loads) == 1 and loads[0]["alongside"] is True
-    # The primary (the decoy here) still serves; the request names the model kept alongside.
     assert state["serving"] == [BIG, SMALL]
     assert asyncio.run(_body(ctx))["model"] == f"{SMALL}:Q4_K_M"
-    # A step on the primary model names the default one, and nothing reloads.
     primary = _Ctx()
     asyncio.run(_common.ensure_model(primary, "chat", {"repo": BIG}))
     assert asyncio.run(_body(primary))["model"] == "default"
-    # Next time the kept model is reused, not loaded again.
     again = _Ctx()
     asyncio.run(_common.ensure_model(again, "chat", {"repo": SMALL, "variant": "Q4_K_M"}))
     assert len(loads) == 1 and asyncio.run(_body(again))["model"] == f"{SMALL}:Q4_K_M"
@@ -160,7 +156,6 @@ def test_each_kept_model_has_its_own_slots_in_the_lease():
             asyncio.create_task(call("big2", None)),
         ]
         await asyncio.sleep(0.02)
-        # One slot each: the two models run side by side, the second call on the primary waits.
         assert sorted(inside) == ["big", "small"]
         done.set()
         await asyncio.gather(*tasks)
@@ -179,7 +174,6 @@ def test_the_lease_key_and_slot_count_follow_the_kept_model(monkeypatch):
     monkeypatch.setattr(model_slots, "visible", lambda: [kept])
     assert engine_mod.chat_model_key({"model": {"repo": SMALL}}) == SMALL.lower()
     assert engine_mod.chat_slots(SMALL.lower()) == 2
-    # A model not kept alongside (the primary, or none named) shares the primary's key.
     assert engine_mod.chat_model_key({"model": {"repo": BIG}}) is None
     assert engine_mod.chat_model_key({}) is None
 
@@ -205,14 +199,12 @@ def test_a_call_queued_behind_an_alongside_load_counts_against_the_new_model():
 
         loader = asyncio.create_task(load())
         await asyncio.sleep(0.01)
-        # Queued while the small model is still loading: then it is not kept yet.
         first = asyncio.create_task(call("first", key))
         await asyncio.sleep(0.01)
         loading.set()
         await asyncio.sleep(0.02)
         second = asyncio.create_task(call("second", SMALL.lower()))
         await asyncio.sleep(0.02)
-        # One slot on the small model: the second call waits for the first.
         assert inside == ["first"]
         done.set()
         await asyncio.gather(loader, first, second)

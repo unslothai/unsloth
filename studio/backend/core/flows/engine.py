@@ -62,9 +62,7 @@ MODEL_SLOT = {
 }
 JOIN_TYPES = ("logic.merge",)
 LOAD_KIND = {"chat": "llm", "vision": "llm", "tts": "tts", "audio": "audio"}
-# Model kinds a run may load ahead of the step that needs them, while CPU steps still run.
 PREFETCH_KINDS = ("chat", "vision", "tts", "audio", "image", "video")
-# Blocks whose untaken branch skips what follows: a step behind one may never run, so nothing loads for it early.
 BRANCH_TYPES = ("logic.if", "logic.switch")
 RESIDENT_PROBE_S = 5.0
 
@@ -211,14 +209,11 @@ class RunState:
     key_id: Optional[int] = None
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
-    # What each slot held at the start: "unload when the run ends" frees only what this run loaded.
     initial_resident: dict[str, list[str]] = field(default_factory = dict)
-    # Cacheable nodes that computed this run: a step behind one will not be a cache hit, so loading ahead pays off.
     fresh: set[str] = field(default_factory = set)
     prefetch_task: Optional[asyncio.Task] = field(default = None, repr = False)
     prefetched: int = 0
     prefetch_load: Optional[tuple[str, str]] = None
-    # (slot, lower-cased repo) -> the step that loaded it: what "unload when the run ends" may free.
     loaded: dict[tuple[str, str], str] = field(default_factory = dict)
     gpu_ops: int = 0
     gpu_parent: Optional["RunState"] = field(default = None, repr = False)
@@ -229,7 +224,6 @@ class RunState:
     _pending_text: dict[tuple[str, str], list[str]] = field(default_factory = dict)
     _pending_partial: dict[tuple, dict] = field(default_factory = dict)
     executed: set[str] = field(default_factory = set)
-    # Every node that failed at least once; a later For Each iteration succeeding must not hide it.
     ever_failed: set[str] = field(default_factory = set)
     input_overrides: dict[str, dict] = field(default_factory = dict)
     finished_at: Optional[float] = None
@@ -391,7 +385,6 @@ class NodeContextImpl:
         self.flow_params = rs.options.get("params") or {}
         self.iteration = iteration
         self.gpu_shared = False
-        # The chat model this step's requests name when it is kept alongside the primary one (None = the primary).
         self.chat_model: Optional[str] = None
         self.doc = rs.doc
         self.origin = dict(rs.origin)
@@ -689,7 +682,6 @@ class GpuLease:
         self._waiting = 0
         self._shared = 0
         self._background = 0
-        # Holders per model: each model kept loaded serves up to its own slots.
         self._by_model: dict[Optional[str], list[int]] = {}
 
     def locked(self) -> bool:
@@ -728,10 +720,8 @@ class GpuLease:
 
         def admit() -> bool:
             nonlocal key
-            # Read on every check: an exclusive holder may have loaded or swapped models (and slot counts) meanwhile.
             key = model() if callable(model) else model
             n = max(1, int(slots() if callable(slots) else slots))
-            # One slot stays free for the player unless there is only one.
             cap = max(1, n - 1) if background else n
             held, held_bg = self._by_model.get(key, (0, 0))
             return (
@@ -1012,7 +1002,6 @@ class FlowEngine:
             if timing is not None:
                 timing.update(found)
             logger.info("flows: invoke %s of %s timing %s", entry, flow_id, json.dumps(found))
-            # Before the key goes: stopping an early load still in flight unloads through it.
             await self._stop_prefetch(rs)
             await asyncio.to_thread(self.revoke_key, key_id)
 
@@ -1361,7 +1350,6 @@ class FlowEngine:
                 elif task.exception() is not None:
                     env.values[nid] = SKIPPED
                     logger.error("flows: node %s crashed", nid, exc_info = task.exception())
-                    # Outside its handler's own error path: still a failed step, so the run cannot end completed.
                     rs.node(nid).error = (
                         rs.node(nid).error or f"Unexpected error: {task.exception()}"
                     )
@@ -1419,7 +1407,6 @@ class FlowEngine:
             return False
         if not rs.plan.specs[nid]["cacheable"]:
             return True
-        # A cacheable step is only certain to miss when something upstream computed fresh output this run.
         return bool((rs.plan.ancestors([nid]) - {nid}) & rs.fresh)
 
     def _prefetchable(self, rs: RunState, nid: str) -> bool:
@@ -1450,7 +1437,6 @@ class FlowEngine:
         running_ids = set(running.values())
         owners = {o for o in plan.owner.values() if o is not None}
         pending_set = set(pending)
-        # A pending "use the loaded model" step: any early load (any slot) could evict what it runs on.
         if any(plan.specs[n]["lane"] == "gpu" and self._uses_loaded(plan, n) for n in pending):
             return
         for nid in plan.order:
@@ -1475,7 +1461,6 @@ class FlowEngine:
                 for src in plan.waits.get(nid, ())
                 if src in plan.executable and not env.has(src)
             }
-            # One hop away: it waits only on running CPU steps, never a branch or a For Each (its body may use the GPU).
             if not unmet or not all(
                 src in running_ids
                 and plan.specs[src]["lane"] != "gpu"
@@ -1496,7 +1481,6 @@ class FlowEngine:
         params = plan.nodes[nid].get("params") or {}
         ctx = _PrefetchContext(self, rs, nid, spec, params, {}, 0, None)
         try:
-            # Held for the load only: the step itself takes the lock again when its inputs arrive.
             async with self.gpu_lock():
                 slot, repo = self._model_of(plan, nid)
                 if (
@@ -1531,7 +1515,6 @@ class FlowEngine:
         load, rs.prefetch_load = rs.prefetch_load, None
         if load is None or rs.caller is None:
             return
-        # Cancelling the wait leaves the load job running; unloading is what stops it.
         from studio_mcp import loading
 
         slot, repo = load
@@ -1552,12 +1535,10 @@ class FlowEngine:
         """The flow's "Unload models when the run ends": free what this run loaded, never what was loaded before."""
         if not (rs.doc.get("meta") or {}).get("unload_after_run") or rs.caller is None:
             return
-        # Only models this run (or a flow it called) loaded itself; repo -> the step whose log says it was let go.
         wanted = {repo: nid for (_slot, repo), nid in rs.loaded.items()}
         if not wanted:
             return
         try:
-            # Under the GPU lock: unloading a media model cancels a generation another flow runs on it.
             async with self.gpu_lock():
                 await self._unload_loaded(rs, wanted)
         except Exception:
@@ -1567,7 +1548,6 @@ class FlowEngine:
         from studio_mcp import loading
         slots = await asyncio.wait_for(loading.resident_slots(rs.caller), RESIDENT_PROBE_S)
         for slot, names in (slots or {}).items():
-            # A slot the start-of-run probe could not read may hold a model the user loaded: leave it.
             if slot not in rs.initial_resident:
                 continue
             before = {n.lower() for n in rs.initial_resident[slot]}
@@ -1705,7 +1685,6 @@ class FlowEngine:
             and not forced
             and not rs.options.get("bake")
             and not rs.options.get("ignore_baked")
-            # A baked value was made without this call's flow params (a chat turn); recompute, as the cache would.
             and not rs.options.get("params")
         ):
             self._finish(rs, nid, env, dict(baked), "cached", iteration, message = "Baked")
@@ -1718,7 +1697,6 @@ class FlowEngine:
         ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
         key = None
         choice = params.get("model")
-        # "Use the loaded model" can change under the node (another run or page swaps it), so it is never cached.
         cacheable = spec["cacheable"] and not (
             spec.get("model_kind") and not (isinstance(choice, dict) and choice.get("repo"))
         )
@@ -1816,7 +1794,6 @@ class FlowEngine:
             env.values[nid] = SKIPPED
             rs.flush(nid)
             if rs.cancelled:
-                # Stop aborted the request in flight, so its error is the stop itself, not a failure.
                 rs.set_status(nid, "cancelled")
                 self._record(rs, nid, "cancelled", None, None, iteration)
                 return
@@ -1987,7 +1964,6 @@ class FlowEngine:
                     nid, {"fraction": i / max(1, len(items)), "step": i, "total": len(items)}
                 )
                 gathered.append(await one(i, item))
-        # Only skipped iterations drop out: a body may legitimately produce null.
         results = [] if collect is None else [r for r in gathered if r is not SKIPPED]
         if rs.cancelled:
             env.values[nid] = SKIPPED

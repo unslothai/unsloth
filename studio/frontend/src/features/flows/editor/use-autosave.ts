@@ -48,7 +48,6 @@ export function endSaveSession(): void {
     clearTimeout(current.timer);
     current.timer = null;
   }
-  // Snapshot now: a save queued behind an in-flight one is skipped once the next flow loads into the store.
   const state = useDocStore.getState();
   const doc = state.flowId === current.flowId ? documentFromState(state) : null;
   if (doc) {
@@ -91,7 +90,6 @@ async function performSave(force = false): Promise<boolean> {
   useUiStore.getState().setSaveState("saving");
   try {
     const record = await saveFlow(current.flowId, doc, current.baseUpdatedAt);
-    // Recorded even after the editor moved on: the closing save queued behind this one builds on it.
     current.baseUpdatedAt = record.updatedAt;
     current.savedSignature = signature;
     if (session !== current) return true;

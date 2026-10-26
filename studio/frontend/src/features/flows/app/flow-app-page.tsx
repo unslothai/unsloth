@@ -179,7 +179,6 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
   const [runId, setRunId] = useState<string | null>(null);
   const [uploads, setUploads] = useState<Record<string, boolean>>({});
   const follower = useRef<AbortController | null>(null);
-  // Bumped on every flow load: a request or upload begun for the last flow must not land in this one.
   const generation = useRef(0);
   const loaded = generation.current;
 
@@ -330,7 +329,6 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
               type="button"
               className={`${BUTTON} bg-primary text-primary-foreground hover:bg-primary/90`}
               onClick={() => void start()}
-              // A run started mid-upload would use the field's previous media.
               disabled={uploadingAny}
               data-testid="flows-app-run"
             >

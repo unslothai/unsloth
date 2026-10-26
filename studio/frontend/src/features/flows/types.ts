@@ -437,7 +437,6 @@ export interface WorldSimulation {
   places: WorldPlace[];
   chat_cooldown_min: number;
   calls_per_minute: number;
-  /** On unless false. */
   needs?: boolean;
 }
 
@@ -463,14 +462,10 @@ export interface WorldSpec {
   style?: string | null;
   entry_points?: Record<string, string>;
   simulation?: WorldSimulation;
-  /** Absent means on. */
   summarise?: boolean;
-  /** False when the NPC Reply node's "Keep generating quests" is off; absent means on. */
   new_quests?: boolean;
   autonomy?: WorldAutonomy | null;
-  /** Action play in the 3D view (World Player "Gameplay"); absent keeps walking as it was. */
   action?: WorldAction | null;
-  /** Which player draws the world; the top-down map when unset. */
   render?: "2d" | "3d";
   view3d?: World3dView;
   props3d?: WorldProp3d[];
@@ -511,20 +506,15 @@ export interface WorldProp3d {
 export interface World3dView {
   time_of_day?: "dawn" | "day" | "dusk" | "night";
   sky?: string;
-  /** 0 = clear, 1 = thick. */
   fog?: number;
-  /** Eye height in tiles. */
   camera_height?: number;
-  /** Tiles per second. */
   walk_speed?: number;
   terrain?: number;
   ambient?: MediaValue;
 }
 
 export interface WorldAction {
-  /** Gravity, jumping, sprint, crouch and collisions with scenery. */
   movement?: boolean;
-  /** A hitscan weapon, health and ammo; hostile villagers fight back. */
   shooter?: boolean;
 }
 

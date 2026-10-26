@@ -576,7 +576,6 @@ export function StoryPlayer({
               });
             else dispatch({ type: "linesFailed", sceneId: scene.id, rev });
           })
-          // Without lines the scene still plays on, so the reader is never stuck on "...".
           .catch(() =>
             dispatch({ type: "linesFailed", sceneId: scene.id, rev }),
           );
@@ -619,7 +618,6 @@ export function StoryPlayer({
   const instant = reduced || skip;
   const pause = state.status === "reading" ? pauseOf(line) : null;
 
-  // Sound cues play once per stop; re-renders and loading a save never replay them.
   const cued = useRef("");
   const quietCue = useRef(false);
   useEffect(() => {

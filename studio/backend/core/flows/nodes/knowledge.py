@@ -36,7 +36,6 @@ async def _upload(ctx: NodeContext) -> tuple[str, bytes, str]:
     ext = asset_store.MIME_EXT.get(mime.split(";", 1)[0])
     if ext is None or mime.split(";", 1)[0] not in asset_store.DOCUMENT_MIMES:
         raise FlowNodeError("Load Document reads PDF, Word (.docx), Markdown, HTML and text files")
-    # The parsers choose by extension: keep the upload's base name but always the sniffed type's extension.
     stem = re.sub(r"[^\w .-]+", "_", PurePath(str(value.get("name") or "")).stem).strip(" ._")[:100]
     return f"{stem or 'document'}.{ext}", data, mime
 
@@ -63,7 +62,6 @@ async def load_document(ctx: NodeContext) -> dict:
 
 
 async def _knowledge_base(ctx: NodeContext, create: bool) -> tuple[str, str]:
-    # The route keeps at most 200 characters, so look up and create the same truncated name.
     name = str(ctx.params.get("knowledge_base") or "").strip()[:200].strip()
     if not name:
         raise FlowNodeError("Name the knowledge base")

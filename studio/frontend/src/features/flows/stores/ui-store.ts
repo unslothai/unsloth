@@ -6,11 +6,8 @@ import type { FlowPlan } from "../api";
 import type { EdgeKind, PortSpec } from "../types";
 
 export interface QuickAddState {
-  /** Screen position the popover opens at. */
   screen: { x: number; y: number };
-  /** Flow position a new node lands at. */
   flow: { x: number; y: number };
-  /** Set when the user dropped a dangling connection: the new node is auto-connected. */
   from?: {
     nodeId: string;
     handleId: string;

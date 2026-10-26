@@ -171,7 +171,6 @@ export function createPropLayer(
 
   const templates = new Map<string, three.Object3D>();
   const loading = new Map<string, Promise<void>>();
-  // Model files stay here after their GPU copy is released, so undoing a delete can draw the model again.
   const pending: Record<string, ArrayBuffer> = { ...models };
   const fresh = new Set<string>();
   let last: readonly WorldProp3d[] = [];
@@ -246,8 +245,6 @@ export function createPropLayer(
             if (!tpl && pending[ref])
               void load(ref, pending[ref]).catch(() => undefined);
           } else shape = build(p.kind);
-          // Each prop keeps one outer object for its life; only what it holds is swapped (a model replacing its
-          // placeholder), so the gizmo stays attached to what the player sees.
           let obj = cur?.obj;
           if (obj) obj.clear();
           else {

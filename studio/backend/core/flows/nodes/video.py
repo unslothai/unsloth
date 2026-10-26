@@ -67,7 +67,6 @@ async def generate(ctx: NodeContext) -> dict:
         raise FlowNodeError("Unsloth Studio did not start the video")
 
     async def cancel() -> None:
-        # Named, so a Stop after this render finished never cancels a newer one started elsewhere.
         await ctx.call("POST", "/api/inference/video/generate/cancel", json = {"video_id": video_id})
 
     ctx.on_cancel(cancel)
@@ -144,7 +143,6 @@ def concat_clips(clips: list[bytes]) -> bytes:
                     rate = Fraction(source.average_rate or 24)
                     step = 1 / rate
                     stream = dst.add_stream("libx264", rate = rate)
-                    # yuv420p needs even sides.
                     stream.width = source.codec_context.width // 2 * 2
                     stream.height = source.codec_context.height // 2 * 2
                     stream.pix_fmt = "yuv420p"
@@ -164,7 +162,6 @@ def concat_clips(clips: list[bytes]) -> bytes:
                             raise FlowNodeError(
                                 f"The joined video would pass {MAX_CONCAT_FRAMES} frames"
                             )
-                        # Frames are numbered across clips at the output rate; None would stamp them all at 0.
                         frame.pts = frames - 1
                         frame.time_base = step
                         for packet in stream.encode(frame):

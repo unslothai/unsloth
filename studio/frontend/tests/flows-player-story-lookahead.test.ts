@@ -265,7 +265,6 @@ test("load and restart cancel everything written ahead", async () => {
 test("a writer closed by an effect cleanup works again once reopened", async () => {
   const { calls, write } = fakeWriter();
   const wa = new L.WriteAhead(write);
-  // React replays cleanup then setup on mount in development.
   wa.close();
   wa.open();
   wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));

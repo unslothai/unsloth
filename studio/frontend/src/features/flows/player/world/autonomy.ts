@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Village life with no model call, seeded per world, villager and beat so a run replays.
 
 import { seedFrom } from "../../expr";
 import type { WorldSpec } from "../../types";
@@ -246,7 +245,6 @@ export function playerSell(
 export const buyBackPrice = (s: WorldState) =>
   Math.min(ITEM_PRICE, s.auto?.coins[PLAYER] ?? 0);
 
-/** A lost race always has a way through: the holder sells the item back for whatever the player can pay. */
 export function buyBack(
   spec: WorldSpec,
   s: WorldState,
@@ -629,7 +627,6 @@ export function resolveEncounter(
         : `You stood up to ${name}, who backs off`,
     };
   }
-  // Lost: coins first, else one good. Quest items are never taken.
   const took = next.stolen[id] ?? { coins: 0, goods: {} };
   const coins = Math.min(5, next.coins[PLAYER] ?? 0);
   if (coins) {

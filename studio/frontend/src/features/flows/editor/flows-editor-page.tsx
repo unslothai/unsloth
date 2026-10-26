@@ -78,7 +78,6 @@ function EditorBody({
     >
       <Toolbar
         onBack={() =>
-          // A failed save keeps the editor open: leaving would drop the only copy of the edits.
           void flushSave().then((saved) => {
             if (saved) void navigate({ to: "/flows" });
           })
@@ -139,7 +138,6 @@ export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
         if (!alive) return;
         useDocStore.getState().load(record.doc);
         usePinsStore.getState().load(record.id);
-        // A flow from a newer Studio is never saved back, so its unknown or newer blocks survive until an update.
         const readOnly = record.doc.nodes.some(needsNewerStudio);
         if (!readOnly) {
           beginSaveSession(

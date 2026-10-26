@@ -120,7 +120,6 @@ def first_json(text: str) -> Any:
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if fence:
         text = fence.group(1)
-    # Whichever comes first: a list of objects is the list, not its first object.
     pairs = sorted((("{", "}"), ("[", "]")), key = lambda p: (text.find(p[0]) < 0, text.find(p[0])))
     for opener, closer in pairs:
         start = text.find(opener)
@@ -253,7 +252,6 @@ async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[di
         return None
     serving = [s for s in status.get("serving") or [] if isinstance(s, str)]
     if not serving or loading._same_id(serving[0], repo):
-        # Nothing loaded yet, or the primary already is this repo: the primary slot path handles it.
         return None
     name = f"{repo}:{variant}" if variant else repo
     if any(loading._same_id(s, repo) for s in serving[1:]):
@@ -299,7 +297,6 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
     from studio_mcp import loading
 
     slot = MODEL_SLOT.get(model_kind, model_kind)
-    # Always ask Studio: another run or page can swap the model between two steps of this one.
     try:
         slots = await loading.resident_slots(_caller(ctx))
     except Exception:
@@ -364,7 +361,6 @@ async def _check_backend(ctx: Any, model_kind: str, requires: list[str]) -> None
         _slots, status = await loading._resident(_caller(ctx))
     except Exception:
         status = None
-    # Unverified is not a pass: a GGUF behind a failed status read would break the step later, less clearly.
     if not isinstance(status, dict) or not isinstance(status.get("is_gguf"), bool):
         raise FlowNodeError(
             f"{title} could not check which backend the model loaded on; try again", retryable = True
@@ -415,7 +411,6 @@ async def _ensure_model(
     from core.inference import gpu_arbiter
 
     loaded_with = _LOADED_OPTIONS.get(slot)
-    # Any other load since then (another caller may have reloaded this repo with defaults) voids the record.
     if loaded_with is not None and loaded_with[2] != gpu_arbiter.load_count(gpu_arbiter.CHAT):
         _LOADED_OPTIONS.pop(slot, None)
         loaded_with = None
@@ -898,13 +893,11 @@ async def generate_image(
     control: Optional[dict] = None,
     options: Optional[dict] = None,
 ) -> list[dict]:
-    # Wiring errors first, so a cold run never downloads or loads a model just to report them.
     if not (prompt or "").strip():
         raise FlowNodeError("The image prompt is empty")
     if mask is not None and init_image is None:
         raise FlowNodeError("Inpainting needs a source image: connect one to Init image")
     if control is not None and not float(control.get("strength") or 0) > 0:
-        # Strength 0 is ControlNet off: Studio skips it, so do not reload the model in bf16 for it.
         control = None
     if control is not None and (init_image is not None or mask is not None or references):
         raise FlowNodeError(
@@ -1105,7 +1098,6 @@ async def ensure_segmenter(ctx: Any) -> None:
     except FlowNodeError as exc:
         if "installation owner" not in str(exc):
             raise
-        # Managed accounts cannot download models; only the owner can provision it once.
         raise FlowNodeError(
             "The mask segmenter is not downloaded yet, and only the installation owner can download it. "
             "Ask them to run Find Mask once, or download it from the mask tool in Images."

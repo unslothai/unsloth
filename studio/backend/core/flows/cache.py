@@ -10,7 +10,6 @@ import hashlib
 import json
 from typing import Any, Optional
 
-# Bump to invalidate every cached output after a handler changes what it produces.
 CACHE_VERSION = 1
 
 

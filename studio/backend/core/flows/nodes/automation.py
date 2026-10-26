@@ -108,7 +108,6 @@ def guarded_request(
     except (urllib.error.URLError, OSError) as exc:
         raise FlowNodeError(f"The request failed: {getattr(exc, 'reason', exc)}") from None
     with response:
-        # The socket timeout bounds each read, not the whole body: a server trickling bytes is cut at the deadline.
         chunks, size = [], 0
         while True:
             if time.monotonic() > deadline:

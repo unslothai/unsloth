@@ -94,7 +94,6 @@ def composite_images(
     top = _open(overlay)
     width = max(1, round(page.width * scale))
     height = max(1, round(top.height * width / max(1, top.width)))
-    # A big base at scale 4, or a very tall overlay, would allocate gigabytes; keep both sides within MAX_SIDE.
     fit = min(1.0, MAX_SIDE / max(width, height))
     width, height = max(1, round(width * fit)), max(1, round(height * fit))
     top = top.resize((width, height), Image.LANCZOS)
@@ -107,7 +106,6 @@ def composite_images(
     top.putalpha(alpha)
     left = round(x * page.width - width / 2)
     upper = round(y * page.height - height / 2)
-    # Paste through a full-size layer so an overlay hanging off the edge is clipped, not refused.
     layer = Image.new("RGBA", page.size, (0, 0, 0, 0))
     layer.paste(top, (left, upper))
     page.alpha_composite(layer)
@@ -166,7 +164,6 @@ def _upright(frame: Any) -> Any:
     import numpy as np
 
     array = frame.to_ndarray(format = "rgb24")
-    # PyAV gives the display matrix angle counterclockwise; older PyAV has no `rotation` and gets the coded pixels.
     turns = round(float(getattr(frame, "rotation", 0) or 0) / 90) % 4
     return np.ascontiguousarray(np.rot90(array, k = turns)) if turns else array
 
@@ -323,7 +320,6 @@ def _slice_audio(data: bytes, start_s: float, end_s: float) -> Optional[bytes]:
     if not chunks or first is None:
         return None
     pcm = np.concatenate(chunks).astype(np.int16)
-    # Sound that starts after the trim point keeps its offset: pad the gap with silence instead of shifting it.
     gap = int((first - start_s) * 44100)
     if gap > 0:
         pcm = np.concatenate([np.zeros(gap * 2, dtype = np.int16), pcm])

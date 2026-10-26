@@ -13,7 +13,6 @@ const A = await import("../src/features/flows/player/world/action3d.ts");
 type Prop = import("../src/features/flows/types.ts").WorldProp3d;
 
 const flat = () => 0;
-// A 20 x 20 field with a wall column at x = 10 (rows 0..19 except a gap at y = 18).
 const wallAt = (x: number, y: number) =>
   x < 0 || y < 0 || x >= 20 || y >= 20 || (x === 10 && y !== 18);
 const world = (props: Prop[] = [], solid = (x: number, y: number) => x < 0 || y < 0 || x >= 20 || y >= 20) =>
@@ -57,7 +56,6 @@ test("a jump needs the ground (or a moment after leaving it), and gravity brings
     peak = Math.max(peak, b.z);
   }
   const vz = b.vz;
-  // A second press mid-air does nothing.
   A.advance(w, b, { ...still, jump: true }, A.STEP_S, 3);
   assert.ok(b.vz < vz, "no jump in mid-air");
   for (let i = 0; i < 120; i++) A.advance(w, b, still, A.STEP_S, 3);
@@ -69,7 +67,6 @@ test("a jump needs the ground (or a moment after leaving it), and gravity brings
 test("a jump pressed on a short frame that runs no physics step still jumps", () => {
   const w = world();
   const b = A.newBody(w, 5.5, 5.5);
-  // At 144 fps the first frame is shorter than one step: nothing runs yet.
   assert.equal(A.advance(w, b, { ...still, jump: true }, 1 / 144, 3), 0);
   for (let i = 0; i < 3; i++) A.advance(w, b, still, 1 / 144, 3);
   assert.ok(b.vz > 0 && !b.grounded, "the press was kept for the next step");
@@ -81,7 +78,6 @@ test("sprinting into a wall never passes through it, and the body slides along i
   run(w, b, 20, 3, { ...still, dx: 1, dy: 0.3, sprint: true });
   assert.ok(b.x < 10 - A.RADIUS + 1e-6, `${b.x}`);
   assert.ok(b.y > 6.5, "slid along the wall");
-  // Even with long frames (stalls) the fixed step does not tunnel.
   const c = A.newBody(w, 9.5, 2.5);
   for (let i = 0; i < 30; i++) A.advance(w, c, { ...still, dx: 1, sprint: true }, 0.25, 3);
   assert.ok(c.x < 10, `${c.x}`);
@@ -96,7 +92,6 @@ test("a low step is climbed, a tall box blocks, and a jump gets onto a crate", (
   const c = A.newBody(tall, 4.5, 5.5);
   run(tall, c, 60, 2);
   assert.ok(c.x < 6.5 - 0.52 - A.RADIUS + 0.05, `${c.x}`);
-  // A 0.51 crate is too high to step but a jump lands on top of it.
   const box = world([crate(6.5, 5.5)]);
   const d = A.newBody(box, 4.5, 5.5);
   run(box, d, 60, 1);
@@ -109,7 +104,6 @@ test("a low step is climbed, a tall box blocks, and a jump gets onto a crate", (
 });
 
 test("crouching passes under a low roof, and standing up waits for headroom", () => {
-  // A slab from 1.0 to 1.4 overhead: too low to stand under, fine crouched.
   const slab = A.buildActionWorld(20, 20, flat, (x, y) => x < 0 || y < 0 || x >= 20 || y >= 20, []);
   const roof: import("../src/features/flows/player/world/action3d.ts").Box = {
     cx: 7.5,
@@ -129,7 +123,6 @@ test("crouching passes under a low roof, and standing up waits for headroom", ()
   run(slab, b, 60, 0.6, { ...east, crouch: true });
   assert.ok(b.x > 7, `crouched under at ${b.x}`);
   assert.ok(b.crouched);
-  // Letting go of crouch under the roof keeps the body crouched.
   run(slab, b, 60, 0.1, still);
   assert.ok(b.crouched);
   run(slab, b, 60, 1.5, east);
@@ -138,12 +131,10 @@ test("crouching passes under a low roof, and standing up waits for headroom", ()
 
 test("rotated props block along their rotated footprint", () => {
   const fence = (rot: number) => world([{ ...crate(6.5, 5.5), kind: "fence", rot }]);
-  // A fence along x (rot 0) is thin in y: walking south across it at x = 7.2 is blocked.
   const south = { ...still, dy: 1 };
   const a = A.newBody(fence(0), 7.2, 4.5);
   run(fence(0), a, 60, 1, south);
   assert.ok(a.y < 5.5, `${a.y}`);
-  // Turned 90 degrees it runs along y and leaves x = 7.2 open.
   const b = A.newBody(fence(90), 7.2, 4.5);
   run(fence(90), b, 60, 1, south);
   assert.ok(b.y > 6.5, `${b.y}`);
@@ -152,10 +143,8 @@ test("rotated props block along their rotated footprint", () => {
 test("a prop's collider turns the same way three.js turns the rendered prop", async () => {
   const three = await import("three");
   const fence = A.propBox({ ...crate(5, 5), kind: "fence", rot: 45, scale: 3 }, () => 0)!;
-  // Where three.js puts the fence's local +x end after a 45 degree Y rotation (z is tile y).
   const end = new three.Vector3(1.2, 0, 0).applyAxisAngle(new three.Vector3(0, 1, 0), Math.PI / 4);
   assert.ok(A.circleHitsBox(fence, 5 + end.x, 5 + end.z, 0.05));
-  // The mirror diagonal is open.
   assert.ok(!A.circleHitsBox(fence, 5 + end.x, 5 - end.z, 0.05));
 });
 
@@ -166,20 +155,16 @@ test("shots hit the first hostile in line, walls stop them, friendlies are never
   const dir = { x: 1, y: 0, z: -0.12 };
   const grim = { id: "grim", x: 6.5, y: 5.5, z: 0, hostile: true };
   const tom = { id: "tom", x: 4.5, y: 5.5, z: 0, hostile: false };
-  // A friendly in the way stops the shot and takes nothing.
   assert.deepEqual(A.shoot(w, c, eye, dir, [grim, tom]), { fired: true, hit: null, downed: false });
   assert.equal(c.enemies.tom, undefined);
   A.tick(c, 1);
   const hit = A.shoot(w, c, eye, dir, [grim]);
   assert.equal(hit.hit, "grim");
   assert.equal(c.enemies.grim.health, A.ENEMY_HEALTH - A.SHOT_DAMAGE);
-  // Cooldown, then ammo.
   assert.equal(A.shoot(w, c, eye, dir, [grim]).fired, false);
-  // Behind the wall at x = 10: missed.
   A.tick(c, 1);
   const behind = { ...grim, x: 12.5 };
   assert.equal(A.shoot(w, c, eye, dir, [behind]).hit, null);
-  // Three more hits knock him out; he is up again after the knockout.
   let downed = false;
   for (let i = 0; i < 3; i++) {
     A.tick(c, 1);
@@ -196,7 +181,6 @@ test("shots hit the first hostile in line, walls stop them, friendlies are never
 });
 
 test("level aim still hits a hostile a little below or above, not one far overhead", () => {
-  // Ground falling away to the east: the hostile stands 1.5 lower, down the slope.
   const slope = (x: number) => -Math.max(0, x - 2.5) * 0.25;
   const w = A.buildActionWorld(20, 20, slope, (x, y) => x < 0 || y < 0 || x >= 20 || y >= 20, []);
   const level = { x: 1, y: 0, z: 0 };
@@ -219,7 +203,6 @@ test("hostiles shoot back only in range, in sight and outside safe places; defea
   A.tick(c, A.ENEMY_COOLDOWN_S + 0.01);
   assert.deepEqual(A.enemiesAct(w, c, { ...me, x: 12.5 }, [grim], none), [], "wall in between");
   assert.deepEqual(A.enemiesAct(w, c, { ...me, x: 5.5 + A.ENEMY_RANGE + 1, y: 18.5 }, [{ ...grim, y: 18.5 }], none), [], "out of range");
-  // The player in a safe place, or the hostile standing in one: no shot either way.
   assert.deepEqual(A.enemiesAct(w, c, me, [grim], (x) => x > 8), [], "player safe");
   assert.deepEqual(A.enemiesAct(w, c, me, [grim], (x) => x < 6), [], "hostile in a safe place");
   assert.deepEqual(A.enemiesAct(w, c, me, [{ ...grim, hostile: false }], none), []);
@@ -270,7 +253,6 @@ test("action play is wired only when the world turns it on", () => {
   );
   assert.match(src, /const action = spec\.action\?\.movement === true;/);
   assert.match(src, /const shooter = action && spec\.action\?\.shooter === true;/);
-  // Without it, walking is the tile slide it always was.
   assert.match(src, /if \(action && body && aw\) \{/);
   assert.match(src, /\[me\.x, me\.y\] = slide\(map, me\.x, me\.y, nx - me\.x, ny - me\.y\);/);
 });
@@ -298,7 +280,6 @@ test("a save keeps action state only for a world with action play on; old saves 
   const action = { combat: { health: 40, ammo: 3 }, pose: { z: 0.6 } };
   const saved = { ...W.serialize(W.initialWorldState(armed)), action };
   assert.deepEqual(W.deserialize(armed, JSON.parse(JSON.stringify(saved)))?.action, action);
-  // The same save in a world without action play, and an old save, carry none.
   assert.equal(W.deserialize(spec, saved)?.action, undefined);
   const old = W.serialize(W.initialWorldState(armed)) as unknown as Record<string, unknown>;
   delete old.action;
@@ -319,12 +300,10 @@ test("switching views keeps scenery edits and villager positions, and pickups st
   const read = (f: string) =>
     readFileSync(new URL(`../src/features/flows/player/world/${f}`, import.meta.url), "utf8");
   const player = read("world-player.tsx");
-  // The renderer's map copy is read back on teardown; the next renderer starts from it.
   assert.match(player, /carried\.current = \{\s*map,\s*props: world\.props,\s*blocked: world\.blocked,/);
   assert.match(player, /npcs: loads\.current === bootedFor \? handle\.npcTiles\(\) : undefined/);
   assert.match(player, /const kept = carried\.current\?\.map === map \? carried\.current : null;/);
   assert.match(player, /\(switched && kept\?\.npcs\) \|\| wsRef\.current\.npcAt/);
-  // Pickup spots avoid the fixed spawn, not wherever the player stood when the view opened.
   assert.match(read("three-world.ts"), /Math\.hypot\(x - map\.spawn\.x, y - map\.spawn\.y\) > 3/);
 });
 
@@ -336,7 +315,6 @@ test("a prop dropped on the player stays passable for them, director hostiles fi
   assert.match(three, /all\.filter\(\(p\) => !over\.has\(p\.id\)\)/);
   assert.match(three, /addNpc\(npc: WorldNpc, at: Point\) \{\s*if \(npc\.role === "hostile"\) hostile\.add\(npc\.id\);/);
   assert.match(read("world-player.tsx"), /\(\(kept \? kept\.props : map\.props\) \?\? \[\]\)/);
-  // The house the player stands in is the one a box test finds.
   const house = A.propBox({ id: "h", kind: "house", x: 5, y: 5, rot: 0, scale: 1, solid: true } as Prop, flat);
   assert.ok(house && A.circleHitsBox(house, 5.2, 5.1, A.RADIUS));
   assert.ok(house && !A.circleHitsBox(house, 8, 8, A.RADIUS));
@@ -353,7 +331,6 @@ test("a knocked-out hostile is never the interaction target", () => {
 
 test("a fast sprint cannot pass through a thin fence between two steps", () => {
   const fence = world([{ ...crate(5, 5), kind: "fence", rot: 90 }]);
-  // Walk speed 20, sprinting: about 0.58 tiles a step, so one step would go from just before to just past it.
   const b = A.newBody(fence, 4.709, 5);
   for (let i = 0; i < 30; i++) A.advance(fence, b, { ...east, sprint: true }, A.STEP_S, 20);
   assert.ok(b.x < 5, `${b.x}`);
@@ -397,7 +374,6 @@ test("safe places hold for the player's shots as well as the hostiles'", () => {
 });
 
 test("crouching behind cover hides the player from hostile fire", () => {
-  // A crate about 0.95 tall between a hostile and the player.
   const w = world([{ ...crate(8, 5.5), scale: 1.86 }]);
   const me = { x: 9.5, y: 5.5, z: 0 };
   const grim = { id: "grim", x: 5.5, y: 5.5, z: 0, hostile: true };

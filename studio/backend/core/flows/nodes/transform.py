@@ -13,7 +13,6 @@ from typing import Any
 from core.flows.expr import ExprError, eval_expr, truthy
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
-# A list transform walks at most this many items; each expression is itself step-capped by the evaluator.
 MAX_ITEMS = 10_000
 
 
@@ -61,7 +60,6 @@ def _edit(ctx: NodeContext, fields: dict, keep_only: bool, item: Any, index: int
     base: dict = {} if keep_only or not isinstance(item, dict) else json.loads(json.dumps(item))
     if not isinstance(item, dict) and not keep_only and item is not None:
         base["value"] = item
-    # One generator per item, so two random fields draw in turn instead of repeating the same first draw.
     rng = random.Random(ctx.seed + index)
     for name, expr in fields.items():
         _set_path(base, name, _eval(ctx, expr, item, index, rng))
@@ -180,7 +178,6 @@ async def merge_data(ctx: NodeContext) -> dict:
         if len(left) > MAX_ITEMS or len(right) > MAX_ITEMS:
             raise FlowNodeError(f"Each side takes at most {MAX_ITEMS} items")
         keep = ctx.params.get("keep_unmatched", True)
-        # Every right row per key: an order joined with its line items keeps all of them.
         index: dict[str, list[dict]] = {}
         keyless: list[dict] = []
         for row in right:

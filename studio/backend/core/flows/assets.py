@@ -91,7 +91,6 @@ def sniff_mime(data: bytes) -> Optional[str]:
             else "video/mp4"
         )
     if head[:4] == b"\x1aE\xdf\xa3":
-        # Read WebM codecs from the header only (before the first Cluster), so frame bytes never look like a codec id.
         cluster = data.find(b"\x1fC\xb6u", 0, 1 << 20)
         tracks = data[: cluster if cluster > 0 else 65536]
         audio_only = (b"A_OPUS" in tracks or b"A_VORBIS" in tracks) and b"V_" not in tracks

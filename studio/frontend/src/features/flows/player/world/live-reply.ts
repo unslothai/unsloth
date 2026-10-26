@@ -7,7 +7,6 @@ export interface LiveReply {
   text: string;
 }
 
-/** A piece whose `generation` is behind `current` predates the last save load and is dropped. */
 export function appendReplyDelta(
   live: LiveReply | null,
   npcId: string,
@@ -22,7 +21,6 @@ export function appendReplyDelta(
   return { ...live, text: live.text + delta };
 }
 
-/** No chat model can answer (none loaded, not downloaded, none picked); any other load failure stays an error. */
 export function isNoChatModelError(message: string): boolean {
   if (/could not load/i.test(message)) {
     return /not downloaded|connect|offline|outgoing traffic|cannot find the requested files|not found|\b404\b/i.test(

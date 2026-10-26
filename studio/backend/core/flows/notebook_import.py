@@ -43,7 +43,6 @@ _UNSUPPORTED = {
     "KTOTrainer": "KTO preference training",
     "PPOTrainer": "PPO reinforcement learning",
 }
-# Trainers with the Fine-tune block's supervised loss; any other *Trainer is reported, not imported as SFT.
 _SFT_TRAINERS = {
     "SFTTrainer",
     "Trainer",
@@ -65,7 +64,6 @@ _QUANTS = {"q4_k_m", "q5_k_m", "q8_0", "f16"}
 _MAGIC = re.compile(r"^\s*[!%]")
 
 
-# Hugging Face's packaged builders: the first argument names a file format, not a Hub dataset.
 _PACKAGED_BUILDERS = frozenset(
     {
         "json",
@@ -98,7 +96,6 @@ class NotebookImportError(ValueError):
 def _source(cell: dict) -> str:
     src = cell.get("source", "")
     text = "".join(src) if isinstance(src, list) else str(src)
-    # Shell and IPython magics are not Python: keep the block shape with a `pass` at the same indent.
     return "\n".join(
         line[: len(line) - len(line.lstrip())] + "pass" if _MAGIC.match(line) else line
         for line in text.splitlines()
@@ -143,7 +140,6 @@ class _Reader(ast.NodeVisitor):
         return None
 
     def visit_If(self, node: ast.If) -> None:
-        # `if False: model.save_pretrained_gguf(...)` is the notebooks' way of switching a step off.
         if isinstance(node.test, ast.Constant):
             for child in node.body if node.test.value else node.orelse:
                 self.visit(child)
@@ -177,7 +173,6 @@ class _Reader(ast.NodeVisitor):
                 if self.kw(node, "load_in_4bit") is False:
                     self.tune["load_in_4bit"] = False
                 if self.kw(node, "trust_remote_code") is True:
-                    # The Fine-tune block never sends trust_remote_code, so the run could not load this model.
                     self.unsupported.add("a model that needs trust_remote_code")
         elif fn == "train_on_responses_only":
             self.tune["train_on_completions"] = True
@@ -186,14 +181,12 @@ class _Reader(ast.NodeVisitor):
             and not (isinstance(k.value, ast.Constant) and k.value.value is None)
             for k in node.keywords
         ):
-            # Plain LoRA would drop the fake-quantized layers the notebook trains with.
             self.unsupported.add("quantization-aware training (qat_scheme)")
         elif fn == "get_peft_model":
             self.found["peft"] = True
             r = self.kw(node, "r")
             if isinstance(r, int):
                 self.tune["lora_r"] = r
-            # Alpha scales the adapter; dropping it would train with Studio's default instead.
             alpha = self.kw(node, "lora_alpha")
             if isinstance(alpha, int) and not isinstance(alpha, bool):
                 self.tune["lora_alpha"] = alpha
@@ -203,7 +196,6 @@ class _Reader(ast.NodeVisitor):
             repo = self.kw(node, "path", 0)
             subset = self.kw(node, "name", 1)
             subset = subset if isinstance(subset, str) else ""
-            # A second Hub dataset or subset (the Multiple Datasets recipe) would be silently dropped by a one-dataset flow.
             if (
                 isinstance(repo, str)
                 and _REPO.match(repo)
@@ -286,7 +278,6 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         reader.unsupported.add("classification fine-tuning (open it in Colab)")
     elif _category(name) == "cpt":
         reader.unsupported.add("continued pretraining on raw text (open it in Colab)")
-    # Studio's embedding trainer always uses MultipleNegativesRankingLoss; another loss is a different objective.
     if reader.found.get("task") == "embedding":
         for loss in sorted(reader.losses - _EMBEDDING_LOSSES):
             reader.unsupported.add(f"embedding training with {loss}")
@@ -311,12 +302,10 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
     if report["unsupported"]:
         return None, report
 
-    # max_steps = 0 (or below) means "train by epochs", so a positive count wins only when it is set.
     if (tune.get("max_steps") or 0) > 0:
         tune.pop("num_epochs", None)
     else:
         tune.pop("max_steps", None)
-        # Neither set: the trainer's own default is 3 epochs, not the block's 60 steps.
         tune.setdefault("num_epochs", 3)
     epochs = tune.get("num_epochs")
     if isinstance(epochs, float) and not epochs.is_integer():
@@ -337,7 +326,6 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
     elif tune.get("dataset_streaming") and (
         tune.get("train_on_completions") or not tune.get("max_steps") or _on_mlx()
     ):
-        # The training route refuses streaming with responses-only loss, without a step count, or on MLX.
         tune.pop("dataset_streaming")
         why = (
             "responses-only training"

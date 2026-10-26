@@ -37,7 +37,6 @@ const DOCUMENT_MIMES = new Set([
 ]);
 const DOCUMENT_EXT = new Set(["pdf", "docx"]);
 
-/** The input block for an uploaded asset's kind (the server sniffs the bytes; the browser's MIME can be wrong). */
 export function inputForAssetKind(kind: string): FileTarget["type"] | null {
   if (kind === "image" || kind === "audio" || kind === "video")
     return `input.${kind}`;

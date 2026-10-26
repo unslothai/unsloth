@@ -234,7 +234,6 @@ function useRemoteOptions(spec: ParamSpec): string[] | null {
   const path = spec.options_path;
   useEffect(() => {
     if (!source) return;
-    // Per login session: routes are account-scoped, so a new sign-in never reuses the last account's answers.
     const key = `${getAuthSessionEpoch()}|${source}|${path ?? ""}`;
     if (source === "/api/flows") remoteOptions.delete(key);
     let request = remoteOptions.get(key);

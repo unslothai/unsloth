@@ -83,7 +83,6 @@ const isMatrix = (m: unknown) => Array.isArray(m) && m.every(Array.isArray);
 
 export function structuredKind(value: unknown): StructuredKind | null {
   if (!isObject(value)) return null;
-  // Element shapes are checked too: a lookalike JSON value falls back to the JSON view instead of breaking a viewer.
   switch (value.kind) {
     case "table":
       return Array.isArray(value.columns) &&
@@ -146,7 +145,6 @@ export function sortRows(
   const sign = descending ? -1 : 1;
   const asNumber = (v: unknown): number =>
     typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
-  // One ordering per column: numeric when every cell is a number (numbers stored as text included), else text.
   const numeric = rows.every((row) => {
     const v = row[column];
     return v === null || v === undefined || Number.isFinite(asNumber(v));
@@ -169,7 +167,6 @@ export function sortRows(
 }
 
 function csvCell(value: unknown): string {
-  // Exports keep full precision; only the on-screen table rounds.
   const text =
     typeof value === "number"
       ? Number.isFinite(value)

@@ -40,9 +40,7 @@ class NodeContext(Protocol):
     node_id: str
     spec: dict
     params: dict[str, Any]
-    # Connected inputs by port id. A `multi` port is always a list; an unconnected port is absent.
     inputs: dict[str, Any]
-    # Effective seed: param `seed` if set, else input `seed`, else derived from the flow seed and node id.
     seed: int
     flow_params: dict[str, Any]
 

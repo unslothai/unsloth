@@ -19,7 +19,6 @@ export const NOTE_PREFIX = NOTE_KEY;
 
 type Positions = Record<string, { x: number; y: number }>;
 
-/** Reuses the previous object for every unchanged element, so memo'd React Flow nodes skip re-rendering. */
 export class RfDeriver {
   private nodeCache = new Map<
     string,

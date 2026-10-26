@@ -114,7 +114,6 @@ async def finish_table(ctx: Any, table: dict) -> dict:
         return table
     media = await ctx.save_asset(data, "application/json", kind = "json")
     preview = rows[:INLINE_ROWS]
-    # Wide cells can make even a short preview big; keep halving it until the inline value fits.
     while (
         preview
         and len(json.dumps({**table, "rows": preview}, default = str).encode()) > INLINE_MAX_BYTES
@@ -175,7 +174,6 @@ def concat(tables: list[dict]) -> dict:
                 seen.add(col["id"])
                 columns.append(col)
         rows.extend(table["rows"])
-    # Settings carry over only when every table has the same ones; an unknown one must not pass as a match.
     metas = [t.get("meta") or None for t in tables]
     meta = metas[0] if all(m == metas[0] for m in metas) else None
     return make_table(rows, columns, meta)
@@ -247,7 +245,6 @@ def compare(
                 "The two tables were measured with different settings "
                 f"({', '.join(differ)}); turn on 'Allow different settings' to compare anyway"
             )
-        # 4096 in one table and "4096" in the other are the same key when the column is numeric.
         numeric = {
             c["id"] for t in (table, baseline) for c in t["columns"] if c.get("type") == "number"
         }
@@ -443,7 +440,6 @@ async def table_compare(ctx: NodeContext) -> dict:
         stderr = str(ctx.params.get("stderr") or "").strip() or None,
         allow_mismatch = bool(ctx.params.get("allow_mismatch")),
     )
-    # A metric or key named "delta" pushes the generated column to "delta_2": read it by role.
     col = next((c["id"] for c in out["columns"] if c.get("role") == "delta"), "delta")
     deltas = [r[col] for r in out["rows"] if _number(r.get(col)) is not None]
     return {
