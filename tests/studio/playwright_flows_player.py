@@ -450,6 +450,75 @@ def play_verbs_3d(page: Page) -> None:
     toast_seen(page, "The chest is empty")
 
 
+def brute(page: Page) -> dict:
+    return page.evaluate(
+        "(() => { const a = window.__flowsWorldPerf.ai.agents.find((x) => x.id === 'brute');"
+        " return { state: a.state, seen: a.seen, x: a.x, y: a.y }; })()"
+    )
+
+
+def walk_tile(
+    page: Page,
+    x: int,
+    y: int,
+    timeout: int = 30_000,
+) -> None:
+    page.evaluate(f"window.__flowsPlayerSmoke.world.walkTo({{x: {x}, y: {y}}})")
+    page.wait_for_function(
+        f"(() => {{ const t = window.__flowsPlayerSmoke.world.playerTile(); return t.x === {x} && t.y === {y}; }})()",
+        timeout = timeout,
+    )
+
+
+def look_at_brute(page: Page) -> None:
+    page.evaluate("window.__flowsPlayerSmoke.world.faceNpc('brute')")
+    page.wait_for_timeout(700)
+    page.evaluate("window.__flowsPlayerSmoke.world.faceNpc(null)")
+
+
+def play_ai_3d(page: Page) -> None:
+    """Hostile AI v2: a shot wakes the guard, it hunts the player, and loses them once they slip behind the
+    houses and crouch away; it then walks back to its post."""
+    page.goto(f"{BASE}?flow=world&render=3d&action=shooter&ai=v2&time=day&props=reset")
+    page.wait_for_selector("[data-testid=world-start]", timeout = 120_000)
+    arm(page)
+    page.wait_for_selector("[data-testid=world3d-canvas]")
+    page.click("[data-testid=world-start]")
+    page.wait_for_function("window.__flowsPlayerSmoke.world !== null && window.__flowsWorldPerf.ai")
+    page.wait_for_timeout(800)
+    assert brute(page)["state"] == "idle", brute(page)
+    spawn = page.evaluate("window.__flowsPlayerSmoke.map.spawn")
+    sx, sy = spawn["x"], spawn["y"]
+    walk_tile(page, sx + 5, sy + 2)
+    walk_tile(page, sx + 4, sy + 3)
+    page.wait_for_timeout(500)
+    assert brute(page)["state"] == "idle", "the guard noticed the player before any noise"
+    page.keyboard.press("f")
+    page.wait_for_function(
+        "['alert', 'chase', 'attack'].includes(window.__flowsWorldPerf.ai.agents[0].state)",
+        timeout = 5_000,
+    )
+    look_at_brute(page)
+    shot(page, "ai_spotted")
+    engaged = brute(page)
+    assert engaged["state"] in ("alert", "chase", "attack"), engaged
+    page.keyboard.down("c")
+    try:
+        walk_tile(page, sx + 4, sy + 1, 20_000)
+        walk_tile(page, sx - 5, sy - 1, 60_000)
+        page.wait_for_function(
+            "['return', 'idle'].includes(window.__flowsWorldPerf.ai.agents[0].state)",
+            timeout = 20_000,
+        )
+        lost = brute(page)
+        assert not lost["seen"], lost
+        look_at_brute(page)
+        shot(page, "ai_lost")
+    finally:
+        page.keyboard.up("c")
+    page.wait_for_function("window.__flowsWorldPerf.ai.agents[0].state === 'idle'", timeout = 30_000)
+
+
 STAMP: dict[str, float] = {}
 
 
@@ -496,7 +565,14 @@ def main() -> int:
             page.wait_for_timeout(3_000)
             page.on("pageerror", lambda e: errors.append(str(e)))
             only = os.environ.get("FLOWS_SCENARIOS")
-            scenarios = (play_story, play_world, play_world_3d, edit_world_3d, play_verbs_3d)
+            scenarios = (
+                play_story,
+                play_world,
+                play_world_3d,
+                edit_world_3d,
+                play_verbs_3d,
+                play_ai_3d,
+            )
             for scenario in scenarios:
                 if only and scenario.__name__ not in only.split(","):
                     continue

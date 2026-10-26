@@ -230,8 +230,41 @@ const keep = (spec: WorldSpec): WorldSpec => {
     props3d: props,
   };
 };
+// `?ai=v2`: hostile AI v2 with a row of houses south of the spawn to hide behind and a brute guarding beyond it.
+const hideout = (spec: WorldSpec): WorldSpec => {
+  const m = generateMap(spec);
+  const s = m.spawn;
+  const props: WorldProp3d[] = [];
+  for (let dx = -6; dx <= 3; dx++)
+    if (!isSolid(m, s.x + dx, s.y + 2))
+      props.push({
+        id: `wall-${dx + 6}`,
+        kind: "house",
+        x: s.x + dx + 0.5,
+        y: s.y + 2.5,
+        solid: true,
+      });
+  return {
+    ...spec,
+    npcs: [
+      ...spec.npcs,
+      {
+        id: "brute",
+        name: "Brute",
+        persona: "a camp raider",
+        greeting: "Grr.",
+        role: "hostile",
+        wander: false,
+        x: s.x,
+        y: s.y + 5,
+      },
+    ],
+    props3d: props,
+  };
+};
 const verbs = params.get("verbs") === "1";
-const ACTED: WorldSpec = verbs ? keep(LIVED) : LIVED;
+const ai = params.get("ai") === "v2";
+const ACTED: WorldSpec = ai ? hideout(LIVED) : verbs ? keep(LIVED) : LIVED;
 // `&clutter=N`: N non-solid props spread over open tiles, to load the renderers.
 const clutter = (spec: WorldSpec, n: number): WorldProp3d[] => {
   const m = generateMap(spec);
@@ -271,13 +304,14 @@ const PLAYED_BASE: WorldSpec =
           movement: true,
           shooter: gameplay === "shooter",
           ...(verbs ? { verbs: true } : {}),
+          ...(ai ? { ai: "v2" as const } : {}),
         },
         ...(params.get("course") ? { props3d: course(LIVED) } : {}),
       }
     : params.get("course")
       ? { ...ACTED, props3d: course(LIVED) }
       : ACTED;
-if (verbs)
+if (verbs || ai)
   (window as unknown as { __flowsWorldPerf?: unknown }).__flowsWorldPerf = {
     frame: [],
     sim: [],

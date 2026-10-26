@@ -97,6 +97,29 @@ def test_props_without_item_context_keep_well_formed_ids():
     assert out["box"]["contents"] == ["key", "ghost"]
 
 
+def test_hostile_ai_v2_is_opt_in_with_clean_barks_and_survives_the_gameplay_setting():
+    old = normalize_world({**RAW, "action": {"shooter": True}}, seed = 1)
+    assert "ai" not in old["action"] and "barks" not in old["action"]
+    assert action_of({"shooter": True, "ai": "v3"}) == {"movement": True, "shooter": True}
+    raw = {
+        "shooter": True,
+        "ai": "v2",
+        "barks": {"see": ["Raider spotted!", 3, "  ", "x" * 200], "bogus": ["no"], "lose": "nope"},
+    }
+    world = normalize_world({**RAW, "action": raw}, seed = 1)
+    assert world["action"] == {
+        "movement": True,
+        "shooter": True,
+        "ai": "v2",
+        "barks": {"see": ["Raider spotted!", "x" * 80]},
+    }
+    WorldSpec.model_validate(world)
+    played = apply_play_view(dict(world), _doc(gameplay = "shooter"))["action"]
+    assert played["ai"] == "v2" and played["barks"] == {"see": ["Raider spotted!", "x" * 80]}
+    assert played["verbs"] is True
+    assert "action" not in apply_play_view(dict(world), _doc(gameplay = "explore"))
+
+
 def test_new_action_and_prop_fields_round_trip_through_normalize_save_and_the_player_node():
     raw = {
         **RAW,
@@ -111,3 +134,21 @@ def test_new_action_and_prop_fields_round_trip_through_normalize_save_and_the_pl
     assert again["props3d"] == world["props3d"]
     played = apply_play_view(dict(world), _doc(props3d = json.loads(json.dumps(world["props3d"]))))
     assert played["props3d"] == world["props3d"]
+
+
+def test_hostile_ai_fields_round_trip_and_take_a_raids_bark_list():
+    import json
+
+    raid_barks = [
+        {"event": "spot", "text": "Over here, lads!"},
+        {"event": "lost", "text": "Keep looking."},
+        {"event": "dance", "text": "no"},
+        {"event": "hurt", "text": 5},
+    ]
+    world = normalize_world(
+        {**RAW, "action": {"shooter": True, "ai": "v2", "barks": raid_barks}}, seed = 1
+    )
+    assert world["action"]["barks"] == {"see": ["Over here, lads!"], "lose": ["Keep looking."]}
+    again = normalize_world(json.loads(json.dumps(world)), seed = 1)
+    assert again["action"] == world["action"]
+    WorldSpec.model_validate(again)
