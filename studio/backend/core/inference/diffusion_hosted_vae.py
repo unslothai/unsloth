@@ -170,15 +170,19 @@ def hosted_vae_pipe_kwargs(
         )
     repo_id, filename = src
     try:
-        from huggingface_hub import hf_hub_download
+        from .diffusion_te_prequant import te_prequant_mirror_path
 
-        path = hf_hub_download(
-            repo_id,
-            filename,
-            cache_dir = cache_dir,
-            token = hf_token or None,
-            local_files_only = local_files_only,
-        )
+        # The plan leaves a mirrored file out of staging, so read it in place.
+        path = te_prequant_mirror_path(repo_id, filename)
+        if path is None:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(
+                repo_id,
+                filename,
+                cache_dir = cache_dir,
+                token = hf_token or None,
+                local_files_only = local_files_only,
+            )
         config = _vae_config(
             source, hf_token = hf_token, local_files_only = local_files_only, cache_dir = cache_dir
         )

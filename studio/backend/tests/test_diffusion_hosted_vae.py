@@ -206,6 +206,22 @@ def test_kill_switch(fam, tiny, monkeypatch):
     assert seen == []
 
 
+def test_a_mirrored_file_is_read_in_place_not_downloaded(fam, tiny, monkeypatch):
+    from safetensors.torch import load_file, save_file
+
+    from core.inference.diffusion_te_prequant import TE_PREQUANT_MIRROR_ENV
+
+    mirror = tiny.tmp / "mirror"
+    dest = mirror / REPO / FILE
+    dest.parent.mkdir(parents = True)
+    save_file(load_file(tiny.hosted), str(dest))
+    monkeypatch.setenv(TE_PREQUANT_MIRROR_ENV, str(mirror))
+    seen = _hub(monkeypatch, None)
+    got = hv.hosted_vae_pipe_kwargs(fam, BASE, **_kwargs(fam, tiny))
+    assert seen == []
+    assert "vae" in got
+
+
 def test_a_missing_file_leaves_the_staged_vae(fam, tiny, monkeypatch, caplog):
     _hub(monkeypatch, None)
     with caplog.at_level(logging.WARNING):
