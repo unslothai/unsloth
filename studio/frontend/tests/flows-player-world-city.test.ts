@@ -418,6 +418,16 @@ test("the district to name is always in the report, however many zones come firs
   assert.equal(d.unnamed, "late");
   assert.equal(d.zones.length, 24);
   assert.ok(d.zones.some((z) => z.id === "late"));
+  const home = c.zones.find((z) => z.id === c.residents.ada)!;
+  c.zones.splice(c.zones.indexOf(home), 1);
+  c.zones.push(home);
+  const again = A.cityDigest(s, c, "month");
+  assert.equal(again.zones.length, 24);
+  assert.ok(again.residents.some((r) => r.id === "ada"));
+  assert.ok(
+    again.residents.every((r) => again.zones.some((z) => z.id === r.zone)),
+    "every resident's home is reported",
+  );
 });
 
 test("a mayor reply only lands what the digest supports", () => {

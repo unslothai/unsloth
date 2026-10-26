@@ -103,9 +103,13 @@ export function cityDigest(
     kind === "month"
       ? sim.zones.find((z) => !z.name && z.kind !== "P" && z.pop > 0)
       : undefined;
-  const shown = sim.zones.slice(0, MAX_ZONES);
-  // The naming candidate must be in the report, or the backend drops its name.
-  if (unnamed && !shown.includes(unnamed)) shown[MAX_ZONES - 1] = unnamed;
+  // The backend drops a name or a resident whose zone is not in the report: those zones go in first.
+  const must = new Set<string>(residents.map((r) => r.zone));
+  if (unnamed) must.add(unnamed.id);
+  let room = MAX_ZONES - must.size;
+  const shown = sim.zones.filter(
+    (z) => must.has(z.id) || (room > 0 && room-- > 0),
+  );
   return {
     title: spec.title,
     kind,
