@@ -368,13 +368,21 @@ def _case_destructive(rank, world, tmp):
     out = {}
     for method in ("merged_4bit_forced", "merged_4bit"):
         out[method] = _raised(
-            lambda: save.unsloth_save_model(model, None, os.path.join(tmp, f"m4_{rank}"), save_method = method)
+            lambda: save.unsloth_save_model(
+                model, None, os.path.join(tmp, f"m4_{rank}"), save_method = method
+            )
         )
     out["tree_after_refusal"] = _tree(model) == before
     # A writer that changes the module tree anyway (merge_and_unload) leaves rank 0 as it found it.
-    out["probe"] = _raised(lambda: tp_replica.tp_collective(model, "probe", lambda: model.merge_and_unload() and None))
+    out["probe"] = _raised(
+        lambda: tp_replica.tp_collective(model, "probe", lambda: model.merge_and_unload() and None)
+    )
     out["tree_after_merge"] = _tree(model) == before
-    out["merged_flags"] = [m.merged_adapters for m in model.modules() if hasattr(m, "merged_adapters") and m.merged_adapters]
+    out["merged_flags"] = [
+        m.merged_adapters
+        for m in model.modules()
+        if hasattr(m, "merged_adapters") and m.merged_adapters
+    ]
     with torch.no_grad():
         out["logits_err"] = float((model(input_ids = ids).logits - logits).abs().max())
     out["still_sharded"] = not _all_plain(model)
@@ -419,7 +427,9 @@ def _case_processor(rank, world, tmp):
         directory = os.path.join(tmp, label)
         out[f"{label}_return"] = proc.save_pretrained(directory)
         out[f"{label}_writers"] = list(proc.writers)
-        out[f"{label}_written_on_return"] = os.path.isfile(os.path.join(directory, "processor_config.json"))
+        out[f"{label}_written_on_return"] = os.path.isfile(
+            os.path.join(directory, "processor_config.json")
+        )
     return out
 
 
@@ -606,7 +616,10 @@ def test_tp2_replica_that_does_not_fit_is_refused_on_every_rank():
 def test_tp2_destructive_merges_are_refused_and_rank0_tree_is_kept():
     for rank, res in enumerate(_spawn("destructive", 2)):
         for method in ("merged_4bit_forced", "merged_4bit"):
-            assert res[method] and "merges the LoRA weights into the 4-bit base in place" in res[method], (
+            assert (
+                res[method]
+                and "merges the LoRA weights into the 4-bit base in place" in res[method]
+            ), (
                 rank,
                 method,
                 res[method],
@@ -623,4 +636,6 @@ def test_tp2_processor_saves_once_per_world():
             # Only rank 0 writes; every rank returns rank 0's result once the file exists.
             assert res[f"{label}_writers"] == ([0] if rank == 0 else []), (rank, label, res)
             assert res[f"{label}_written_on_return"], (rank, label)
-            assert res[f"{label}_return"] and res[f"{label}_return"][0].endswith("processor_config.json"), res
+            assert res[f"{label}_return"] and res[f"{label}_return"][0].endswith(
+                "processor_config.json"
+            ), res

@@ -1295,7 +1295,9 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
     import inspect
 
     try:
-        save_method = inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get("save_method")
+        save_method = (
+            inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get("save_method")
+        )
     except (TypeError, ValueError):
         save_method = kwargs.get("save_method")
     if isinstance(save_method, str) and save_method.lower().strip() in _TP_IN_PLACE_MERGES:

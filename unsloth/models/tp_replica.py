@@ -572,7 +572,12 @@ def _restore_tree(kept):
             module.merged_adapters[:] = merged
 
 
-def _on_rank0(key, what, call, model = None):
+def _on_rank0(
+    key,
+    what,
+    call,
+    model = None,
+):
     """Rank 0 runs `call`; the others wait for it on the store and return its result or raise its error."""
     if _rank() == 0:
         _ACTIVE.append(what)
@@ -639,7 +644,9 @@ def mark_world_save(obj):
     if callable(save) and getattr(save, "__name__", "") != "unsloth_tokenizer_save_pretrained":
 
         def save_pretrained(*args, **kwargs):
-            return tp_world_save(f"{type(obj).__name__}.save_pretrained", lambda: save(*args, **kwargs))
+            return tp_world_save(
+                f"{type(obj).__name__}.save_pretrained", lambda: save(*args, **kwargs)
+            )
 
         save_pretrained.__name__ = "unsloth_tp_world_save_pretrained"
         d["save_pretrained"] = save_pretrained

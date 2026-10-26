@@ -1234,7 +1234,6 @@ def _mark_tokenizers(chain):
         tokenizer = level.__dict__.get("_saved_temp_tokenizer")
         if tokenizer is not None and hasattr(tokenizer, "__dict__"):
             from .tp_replica import mark_world_save
-
             mark_world_save(tokenizer)
 
 
