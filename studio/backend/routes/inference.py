@@ -9368,9 +9368,6 @@ async def _reap_exited_workers() -> None:
     exited = [slot for slot in (None, *model_slots.slots) if _worker_exited(slot)]
     if exited:
         await asyncio.to_thread(_reap_dead_workers, exited)
-    # A kept GGUF the terminal Metal strike unloaded while a request still held its slot.
-    if any(model_slots.released_after_oom(slot) for slot in list(model_slots.slots)):
-        await asyncio.to_thread(_release_after_terminal_retirement)
 
 
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
@@ -12864,15 +12861,22 @@ def reap_dead_managed_engine(backend) -> None:
         account_access.clear_resident("chat")
 
 
-def _release_after_terminal_retirement(_backend = None) -> None:
+def _release_after_terminal_retirement(backend) -> None:
     """A llama-server stopped for good by a second Metal out-of-memory strike unloads itself
-    (llama_cpp._retire_device_lost_server): drop its kept slot once no request holds it and the
-    CHAT claim it left, as a crashed worker's reap does. Outside every backend lock."""
-    from core.inference.gpu_arbiter import CHAT, holds
-
-    model_slots.reap_released_after_oom()
-    if release_chat_after_kept_models() or not holds(CHAT):
+    (llama_cpp._retire_device_lost_server); finish it as a manual unload would, outside every
+    backend lock. A kept slot is dropped at once (dead, it holds nothing a request could still
+    use, so its refs do not keep it) and leaves the primary's residency alone; the primary
+    clears its own sharers. CHAT goes once nothing else holds it."""
+    for slot in [s for s in list(model_slots.slots) if s.llama is backend]:
+        try:
+            model_slots.drop(slot)
+        except Exception as exc:  # noqa: BLE001 -- drop() keeps a stuck slot for retry
+            logger.warning("Could not drop a kept model after its Metal out-of-memory: %s", exc)
+    if backend is _llama_cpp_backend:
         account_access.clear_resident("chat")
+        release_chat_gpu_claim()
+    else:
+        release_chat_after_kept_models()
 
 
 _TERMINAL_RETIREMENT_HOOKS.append(_release_after_terminal_retirement)

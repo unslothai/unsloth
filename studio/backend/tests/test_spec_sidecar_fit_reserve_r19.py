@@ -60,7 +60,6 @@ def test_the_terminal_strike_unloads_the_backend(harness, monkeypatch):
     assert backend.is_active is False and backend.is_loaded is False
     assert fh.closed and "pid" in calls and "codec" in calls
     assert not backend._planned_vram_mib
-    assert backend._released_after_oom is True
     assert backend._respawn_if_dead() is False
 
 
@@ -70,7 +69,6 @@ def test_a_first_strike_still_respawns_with_the_same_settings(harness, monkeypat
     monkeypatch.setattr(_lc, "_TERMINAL_RETIREMENT_HOOKS", [seen.append], raising = False)
     backend._retire_device_lost_server(first, metal_poison = {"draft": False})
     assert backend._model_identifier is not None
-    assert getattr(backend, "_released_after_oom", False) is False
     assert backend._respawn_if_dead() is True
     assert loads == [_OFF] and seen == []
 
@@ -91,32 +89,44 @@ class _Orchestrator:
         pass
 
 
-def _released_slot(refs):
-    llama = _lc.LlamaCppBackend()
-    llama._released_after_oom = True
-    return model_slots.ExtraSlot(llama = llama, orchestrator = _Orchestrator(), account = "a", refs = refs)
+def _kept_slot(refs):
+    return model_slots.ExtraSlot(
+        llama = _lc.LlamaCppBackend(), orchestrator = _Orchestrator(), account = "a", refs = refs
+    )
 
 
-def test_the_routes_release_the_slot_and_the_chat_claim(monkeypatch):
+def _routes(monkeypatch):
     import routes.inference as inf
 
     assert inf._release_after_terminal_retirement in _lc._TERMINAL_RETIREMENT_HOOKS
-    held, idle = _released_slot(refs = 1), _released_slot(refs = 0)
-    monkeypatch.setattr(model_slots, "slots", [held, idle])
-    cleared = []
-    monkeypatch.setattr(inf, "release_chat_after_kept_models", lambda: True)
-    monkeypatch.setattr(inf.account_access, "clear_resident", cleared.append)
-    inf._release_after_terminal_retirement(idle.llama)
-    # A request still holds the other: reaped on a later routed request.
-    assert model_slots.slots == [held] and cleared == ["chat"]
-    held.refs = 0
-    assert model_slots.reap_released_after_oom() == [held]
-    assert model_slots.slots == []
+    calls = []
+    monkeypatch.setattr(inf, "release_chat_after_kept_models", lambda: calls.append("kept") or True)
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: calls.append("claim") or True)
+    monkeypatch.setattr(
+        inf.account_access, "clear_resident", lambda modality: calls.append(f"clear:{modality}")
+    )
+    return inf, calls
 
 
-def test_runtime_teardown_includes_a_released_slot(monkeypatch):
-    slot = _released_slot(refs = 0)
-    monkeypatch.setattr(model_slots, "slots", [slot])
+def test_a_retired_kept_slot_is_dropped_and_keeps_the_primarys_residency(monkeypatch):
+    """Dead, it holds nothing a request could still use, so a held one goes too; the chat
+    residency is the primary's, which may be a live zero-VRAM model."""
+    inf, calls = _routes(monkeypatch)
+    retired, other = _kept_slot(refs = 1), _kept_slot(refs = 0)
+    monkeypatch.setattr(model_slots, "slots", [retired, other])
     monkeypatch.setattr(model_slots, "stuck", [])
-    assert model_slots.unload_llama_slots() == 1
-    assert model_slots.slots == []
+    inf._release_after_terminal_retirement(retired.llama)
+    assert model_slots.slots == [other]
+    assert calls == ["kept"]
+    # Nothing dead is left for a later teardown to count as an unload.
+    monkeypatch.setattr(model_slots, "slots", [])
+    assert model_slots.unload_llama_slots() == 0
+
+
+def test_a_retired_primary_clears_its_own_residency(monkeypatch):
+    inf, calls = _routes(monkeypatch)
+    kept = _kept_slot(refs = 0)
+    monkeypatch.setattr(model_slots, "slots", [kept])
+    inf._release_after_terminal_retirement(inf._llama_cpp_backend)
+    assert model_slots.slots == [kept]
+    assert calls == ["clear:chat", "claim"]

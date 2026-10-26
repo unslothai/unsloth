@@ -9324,8 +9324,6 @@ class LlamaCppBackend:
         # respawning after the second (_after_metal_poisoned_server).
         self._metal_oom_strikes = None
         self._metal_oom_terminal_key = None
-        # Unloaded by the terminal strike: a kept slot still holding it is reaped once idle.
-        self._released_after_oom = False
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # Wakes the health probe on subprocess readiness/exit, so a ready or crashed
@@ -37176,7 +37174,6 @@ class LlamaCppBackend:
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery
                 # re-resolves the file instead of trusting a path this request verified.
                 self._last_load_intent = replace(intent, verified_gguf = None)
-                self._released_after_oom = False
                 if not getattr(_AUTO_RECOVERY_LOAD, "active", False):
                     # A caller's load (same settings or changed, after one strike or the
                     # terminal two) starts a fresh OOM episode; only automatic recovery
@@ -41508,7 +41505,6 @@ class LlamaCppBackend:
                 # the next load is the user's. Still under _serial_load_lock, so no
                 # explicit load can land between the strike and the teardown.
                 self.unload_model()
-                self._released_after_oom = True
         if metal_poison is not None:
             # Outside every backend lock (gpu_arbiter._lock comes before them): the routes
             # drop its kept slot and the CHAT claim it held, as for a crashed worker.
