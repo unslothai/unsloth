@@ -82,6 +82,23 @@ def _in_nonreentrant_checkpoint():
     return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
 
 
+def _no_ddp_graph_split():
+    """Inside DDP.forward dynamo hands a block's graph to DDPOptimizer, which splits it at gradient
+    bucket boundaries. A checkpoint recompute runs from backward, outside DDP.forward, so a block
+    graph compiled there is not split and saves a different number of tensors than the forward
+    (CheckpointError under DDP's non-reentrant checkpointing, DeepSeek-OCR). Each block is its own
+    region already, so its gradients still reach DDP's buckets block by block."""
+    try:
+        from torch.nn.parallel import DistributedDataParallel
+
+        active = DistributedDataParallel._get_active_ddp_module() is not None
+    except Exception:
+        return contextlib.nullcontext()
+    if not active or not getattr(torch._dynamo.config, "optimize_ddp", False):
+        return contextlib.nullcontext()
+    return torch._dynamo.config.patch(optimize_ddp = False)
+
+
 def _isolate_supported():
     # torch 2.13+: per-call recompile_limit and isolate_recompiles (own cache bucket per region).
     try:
@@ -836,7 +853,7 @@ def _wrap(
         packed[0] = True
         try:
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
-            with capture_scratch():
+            with capture_scratch(), _no_ddp_graph_split():
                 if graphs and not graphs_off[0]:
                     shape = tuple(hidden_states.shape)
                     if shape not in graph_shapes:
