@@ -1078,6 +1078,28 @@ def test_compatible_queued_jobs_start_as_one_batch(batch_queue):
     assert live["status"].job_id not in {openai_fine_tuning._run_id(i) for i in listed_ids}
 
 
+def test_batch_members_stay_validating_until_their_first_step(batch_queue):
+    client, _calls, live, gpu, _backend = batch_queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = [await _create(client, uploaded.id, suffix = s) for s in "ab"]
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        seen = []
+        # The batch's setup messages move its phase through all of these before any member has a row.
+        for phase in ("loading_model", "training", "configuring", "loading_dataset", "training"):
+            live["status"].phase = phase
+            seen.append([(await client.fine_tuning.jobs.retrieve(j.id)).status for j in jobs])
+        live["status"].phase = "error"
+        failed = [(await client.fine_tuning.jobs.retrieve(j.id)).status for j in jobs]
+        return seen, failed
+
+    seen, failed = _run(flow())
+    assert seen == [["validating_files"] * 2] * 5
+    assert failed == ["failed"] * 2
+
+
 def test_a_single_or_incompatible_job_starts_exactly_as_before(batch_queue):
     client, calls, _live, gpu, _backend = batch_queue
 

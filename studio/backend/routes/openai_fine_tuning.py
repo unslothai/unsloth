@@ -339,6 +339,10 @@ async def _job(run_id: str, current_subject: str, via_api_key: bool) -> dict[str
         message = _status_field(status, "error") or _status_field(status, "message")
         config, created_at = _STARTED.get(run_id, ({}, None))
         state = _PHASE_STATUS.get(phase, "queued")
+        if run_id in _BATCH_OF and state in ("queued", "running"):
+            # A member's row appears with its first step; until then the batch's phase (read from its
+            # setup messages) would flip it between running and validating_files.
+            state = "validating_files"
         if failed:
             state = "failed"
         elif run_id in _CANCELLING:
