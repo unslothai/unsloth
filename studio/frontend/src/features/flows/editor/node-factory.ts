@@ -112,13 +112,22 @@ export function addNodeConnected(
     node.group = recipe;
   } else if (type === GENERATE_TYPE) {
     const generate = insertStarterRecipe(pos, node.params);
-    if (from && port && from.side === "in" && from.kind === "data") {
-      tryConnect({
-        source: generate.id,
-        sourceHandle: outHandle(port),
-        target: from.nodeId,
-        targetHandle: from.handleId,
-      });
+    if (from && port && from.kind === "data") {
+      tryConnect(
+        from.side === "in"
+          ? {
+              source: generate.id,
+              sourceHandle: outHandle(port),
+              target: from.nodeId,
+              targetHandle: from.handleId,
+            }
+          : {
+              source: from.nodeId,
+              sourceHandle: from.handleId,
+              target: generate.id,
+              targetHandle: inHandle(port),
+            },
+      );
     }
     return generate;
   }
