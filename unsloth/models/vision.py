@@ -54,6 +54,15 @@ def _apply_user_rope_scaling(config, rope_scaling):
                 "Unsloth: this model keeps one RoPE setting per layer type "
                 f"({sorted(current)}); pass rope_scaling as a dict keyed by those layer types."
             )
+        # Map legacy "type": this branch bypasses transformers' normalisation; Gemma 3 reads "rope_type".
+        scaling = {
+            k: (
+                {"rope_type": v["type"], **v}
+                if isinstance(v, dict) and "rope_type" not in v and "type" in v
+                else v
+            )
+            for k, v in scaling.items()
+        }
         # Gemma 3's rotary init indexes rope_parameters[layer_type]["rope_theta"]: keep each base.
         target.rope_parameters = {
             k: (
@@ -268,7 +277,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
-from ._utils import _refuse_tensor_parallel_for_inference
+from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
@@ -2786,6 +2795,14 @@ def _target_parameters_in_layers(
     return [key for key in keys if _in_layers(key, layers_to_transform, layers_pattern)] or None
 
 
+def _mamba_ssm_importable():
+    import importlib.util
+    try:
+        return importlib.util.find_spec("mamba_ssm") is not None
+    except (ImportError, ValueError):
+        return True  # unknown: keep the dense weights the fused kernel needs
+
+
 def _architecture_skip_modules(model_types):
     """Extra modules kept out of bitsandbytes; shared by the device-map planner and the load."""
     model_types = model_types or []
@@ -2796,6 +2813,9 @@ def _architecture_skip_modules(model_types):
     # Mamba's transformers 5 slow path does dt_proj.weight @ time_step, which fails on Params4bit; dt_proj is tiny.
     if any(mt == "mamba" for mt in model_types):
         skip.append("dt_proj")
+    # mamba_ssm's fused mamba_inner_fn reads these .weight as dense matrices; the slow path is fine with 4-bit.
+    if any(mt in ("mamba", "falcon_mamba") for mt in model_types) and _mamba_ssm_importable():
+        skip.extend(m for m in ("dt_proj", "x_proj", "out_proj") if m not in skip)
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
@@ -4090,12 +4110,26 @@ class FastBaseModel:
                         f"Unsloth: transformers cannot load this `{quant_method}` checkpoint in process."
                     )
                 quantizer_kwargs = {}
+                # Full finetuning must dequantize fp8 on load, else training casts fp8 storage without its scales.
+                _fp8_full_finetune = full_finetuning and str(quant_method).lower() == "fp8"
+                if (
+                    _fp8_full_finetune
+                    and user_quantization_config is None
+                    and quantizer is not None
+                    and "dequantize" not in inspect.signature(quantizer).parameters
+                ):
+                    raise RuntimeError(
+                        "Unsloth: full finetuning an FP8 checkpoint needs it dequantized on load, which this "
+                        "transformers version cannot do (its FineGrainedFP8Config has no `dequantize`). "
+                        "Upgrade transformers, use the BF16 version of the model, or train LoRA instead."
+                    )
                 if quant_method == "compressed-tensors" or quantizer is None:
                     pass
                 else:
                     # Cannot dequantize (MXFP4 would become BF16), except LoRA with zoo's packed experts.
                     if (
                         load_in_16bit
+                        or _fp8_full_finetune
                         or _mxfp4_lora_keeps_experts_packed(
                             quant_method,
                             full_finetuning,
@@ -4289,7 +4323,7 @@ class FastBaseModel:
                     prepare_fsdp2_qlora(model, bnb_compute_dtype)
                 # Any dequantizing fp8 load (explicit config, pre-sm89 / CPU fallback); else a no-op.
                 _drop_fp8_dequantize_conversions(model)
-                if load_in_16bit and not load_in_4bit and not load_in_8bit:
+                if (load_in_16bit or full_finetuning) and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
                         model_name,
@@ -5599,7 +5633,7 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
-        _refuse_tensor_parallel_for_inference(model)
+        _tensor_parallel_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5645,6 +5679,7 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        _tensor_parallel_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(

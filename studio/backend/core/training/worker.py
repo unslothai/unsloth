@@ -4701,6 +4701,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         return
 
+    if config.get("batch_members"):
+        try:
+            from core.training.multi_lora_trainer import run_multi_lora_training
+            return run_multi_lora_training(event_queue, stop_queue, config)
+        except Exception as exc:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(exc),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
+        return
+
     # Embedding models use a different pipeline (FastSentenceTransformer + SentenceTransformerTrainer +
     # MultipleNegativesRankingLoss), so branch early.
     if config.get("is_embedding", False):

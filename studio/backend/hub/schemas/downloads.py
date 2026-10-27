@@ -152,6 +152,7 @@ class TransportStatusResponse(BaseModel):
 
 
 class DownloadProgressResponse(BaseModel):
+    progress_scope: Optional[Literal["active_files"]] = None
     downloaded_bytes: int
     # Finalized-blob bytes only, so a partial is not mistaken for finished.
     completed_bytes: int = 0

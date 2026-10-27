@@ -1999,10 +1999,11 @@ def native_fsdp2_unsharded(model):
     saved = {}
     try:
         _rebind_swapped_modules(root, units)
-        for unit in units:
-            saved[id(unit)] = _reshard_after_forward_off(unit)
+        # Unshard before clearing reshard_after_forward: FSDP2 all-gathers a post-forward sharded unit over that mesh.
         for unit in units:
             unit.unshard()
+        for unit in units:
+            saved[id(unit)] = _reshard_after_forward_off(unit)
         yield model
     finally:
         root.__dict__["_unsloth_unsharded_depth"] = 0
@@ -2357,11 +2358,18 @@ def native_save_optimizer(
     from .fsdp2_save import _dist, _wait_for_writer, mesh_writer_rank
 
     writer_rank = mesh_writer_rank(model)
-    state = get_optimizer_state_dict(
-        model,
-        optimizer,
-        options = StateDictOptions(full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0),
-    )
+    export = contextlib.nullcontext()
+    if writer_rank == 0:
+        from .fsdp2_bnb_optim import full_cpu_state_export
+        export = full_cpu_state_export(optimizer)
+    with export:
+        state = get_optimizer_state_dict(
+            model,
+            optimizer,
+            options = StateDictOptions(
+                full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0
+            ),
+        )
     if writer_rank != 0:
         state = _gather_to_writer(state, writer_rank)
     dist = _dist()
@@ -3329,6 +3337,15 @@ def install_native_fsdp2_hooks():
     return a and t
 
 
+def _has_cpu_tensors(optimizer, grads = False):
+    for group in optimizer.param_groups:
+        for p in group["params"]:
+            t = p.grad if grads else p
+            if t is not None and t.device.type == "cpu":
+                return True
+    return False
+
+
 def _scaler_for_native(trainer):
     """float16: the GradScaler's inf check must agree over ranks, or one rank skips a step the
     others take. ShardedGradScaler all-reduces it."""
@@ -3337,6 +3354,7 @@ def _scaler_for_native(trainer):
     if scaler is None:
         return False
     try:
+        import torch.distributed as dist
         from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
     except ImportError:
         return False
@@ -3350,12 +3368,80 @@ def _scaler_for_native(trainer):
             super().unscale_(optimizer)
             if not self.is_enabled():
                 return
-            # The all-reduce SUMS found_inf: it is the number of ranks that overflowed. Fused
-            # optimizers skip the step only on found_inf == 1 (and subtract it from their step
-            # counts), so 2+ ranks overflowing stepped on inf / NaN gradients. Clamp to 0 / 1.
+            self._one_flag(optimizer)
+
+        def _check_inf_per_device(self, optimizer):
+            # Fused step() without unscale_ (no clipping) lands here; ShardedGradScaler does not
+            # all-reduce here, so ranks diverged on overflow skips. Agree over ranks.
+            super()._check_inf_per_device(optimizer)
             state = self._per_optimizer_states[id(optimizer)]
+            works, copies = [], []
+            for found_inf in state["found_inf_per_device"].values():
+                if self._device != "cpu" and found_inf.device.type == "cpu":
+                    on_device = found_inf.to(self._device)
+                    copies.append((found_inf, on_device))
+                    found_inf = on_device
+                works.append(dist.all_reduce(found_inf, async_op = True, group = self.process_group))
+            for work in works:
+                work.wait()
+            for found_inf, on_device in copies:
+                found_inf.copy_(on_device)
+            self._one_flag(optimizer)
+            return state["found_inf_per_device"]
+
+        def _unscale_grads_(
+            self,
+            optimizer,
+            inv_scale,
+            found_inf,
+            allow_fp16 = True,
+        ):
+            # CPU grads get non_blocking copies of CUDA inv_scale / found_inf, read before they land.
+            if inv_scale.device.type != "cpu" and _has_cpu_tensors(optimizer, grads = True):
+                inv_scale, found_inf = inv_scale.cpu(), found_inf.cpu()
+            return super()._unscale_grads_(optimizer, inv_scale, found_inf, allow_fp16)
+
+        def step(self, optimizer, *args, **kwargs):
+            # Same race for a fused optimizer's grad_scale / found_inf on CPU parameters: use host copies.
+            if not (
+                self.is_enabled()
+                and self._device != "cpu"
+                and getattr(optimizer, "_step_supports_amp_scaling", False)
+                and _has_cpu_tensors(optimizer)
+            ):
+                return super().step(optimizer, *args, **kwargs)
+            had = "step" in optimizer.__dict__
+            previous = optimizer.__dict__.get("step")
+            real = optimizer.step
+
+            def step_with_host_flags(*a, **k):
+                for name in ("grad_scale", "found_inf"):
+                    t = getattr(optimizer, name, None)
+                    if isinstance(t, torch.Tensor) and t.device.type != "cpu":
+                        setattr(optimizer, name, t.cpu())
+                return real(*a, **k)
+
+            optimizer.step = step_with_host_flags
+            try:
+                return super().step(optimizer, *args, **kwargs)
+            finally:
+                if had:
+                    optimizer.step = previous
+                else:
+                    del optimizer.step
+
+        def _one_flag(self, optimizer):
+            # found_inf is summed over ranks and devices, but fused kernels skip only on == 1.
+            # One 0 / 1 flag on the first device, zeros elsewhere (consumers sum them).
+            state = self._per_optimizer_states[id(optimizer)]
+            found = state["found_inf_per_device"]
+            if not found:
+                return
+            first = next(iter(found.values()))
+            total = sum(t.reshape(()).to(first.device) for t in found.values()).clamp(max = 1.0)
             state["found_inf_per_device"] = {
-                d: t.clamp(max = 1.0).reshape(()) for d, t in state["found_inf_per_device"].items()
+                d: total if i == 0 else torch.zeros((), dtype = t.dtype, device = t.device)
+                for i, (d, t) in enumerate(found.items())
             }
 
     kwargs = {}

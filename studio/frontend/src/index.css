@@ -291,6 +291,8 @@
 	--destructive-button: #ce4035;
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
+	/* Full access in permission menus: ChatGPT's orange, a touch yellower. */
+	--full-access: #eb6702;
 	--border-base: oklch(0.9208 0 0);
 	--input-base: oklch(0.9208 0 0);
 	--ring: #262626;
@@ -470,6 +472,7 @@
 	--destructive-button: #ed716a;
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
+	--full-access: #ff8f30;
 	/* One step lighter than --muted so outlines stay visible on muted surfaces; matches the hover tone. */
 	--border-base: #3a3a3a;
 	--input-base: #3a3a3a;
@@ -1967,6 +1970,7 @@ html[data-chat-font] .aui-root {
 	--color-border: var(--border);
 	--color-destructive: var(--destructive);
 	--color-bypass: var(--bypass);
+	--color-full-access: var(--full-access);
 	--color-accent-foreground: var(--accent-foreground);
 	--color-accent: var(--accent);
 	--color-muted-foreground: var(--muted-foreground);
@@ -2939,6 +2943,13 @@ html[data-chat-font] .aui-root {
 	.sidebar-more-menu :is([data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-sub-trigger"]) {
 		border-radius: 9999px;
 	}
+	/* Gutter inside the viewport: snapping the w-max width shaved the pill's round end. */
+	.sidebar-more-menu[data-slot] {
+		padding-inline: 0 !important;
+	}
+	.sidebar-more-menu > [data-slot="dropdown-menu-viewport"] {
+		padding-inline: var(--spacing);
+	}
 
 	/* On <html> so --accent can be reassigned without a cycle. */
 	.dark {
@@ -3862,6 +3873,14 @@ html[data-chat-font] .aui-root {
 	}
 	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"]:is(:hover, :focus, :focus-visible, [data-highlighted]) {
 		background-color: color-mix(in oklab, var(--destructive) 10%, transparent) !important;
+	}
+	/* After the hover ink's color: inherit, so the row stays orange highlighted. The unscoped pair
+	   covers menus without .unsloth-plus-menu (Run settings), over Radix's focus ink. */
+	:is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).menu-item-full-access,
+	:is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).menu-item-full-access *,
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).menu-item-full-access,
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).menu-item-full-access * {
+		color: var(--full-access) !important;
 	}
 
 	/* nowrap so the menu sizes to "Preserve thinking". */
@@ -4935,11 +4954,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 /* Scales the container query's em with the UI size; children reset to the inherited 1rem. */
-.browser-panel {
+.browser-panel-body {
 	font-size: calc(1rem * var(--ui-space-scale, 1));
 }
 
-.browser-panel > * {
+.browser-panel-body > * {
 	font-size: 1rem;
 }
 
@@ -5183,6 +5202,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .aui-thread-viewport {
 	/* both-edges: a one-sided gutter pushes the centred column off-centre. */
 	scrollbar-gutter: stable both-edges;
+}
+
+/* thread-gutter.ts. Padding, not a border: WebKit snaps borders at fractional zoom and the column drifts off the composer. */
+.aui-thread-viewport[data-gutter-shift] {
+	scrollbar-gutter: stable;
+	padding-left: calc(var(--spacing) * 5 + var(--thread-gutter-shift));
 }
 
 .aui-thread-host[data-aui-following] + .aui-thread-root .aui-thread-viewport {
@@ -5766,6 +5791,10 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	padding-right: calc(1rem * var(--ui-space-scale, 1));
 }
 
+.chat-full-view-dock .aui-thread-viewport[data-gutter-shift] {
+	padding-left: calc(1rem * var(--ui-space-scale, 1) + var(--thread-gutter-shift));
+}
+
 .chat-full-view-dock[data-expanded="false"] :is(.chat-thread-pane, .aui-thread-root) {
 	flex: none;
 }
@@ -5887,8 +5916,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 
 .unsloth-files-panel {
-	/* pt-2: the 28px Add files pill sits in the 32px header row, so this keeps it 10px from the top edge. */
-	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-2xl px-4 pt-2 pb-4;
+	/* The 28px Add files pill sits in the 32px header row: pt-2 and gap-2 leave it 10px from the top edge and from the cards. */
+	@apply relative mb-2 flex w-full flex-col gap-2 overflow-hidden rounded-2xl px-4 pt-2 pb-4;
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;

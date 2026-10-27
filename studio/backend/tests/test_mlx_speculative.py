@@ -95,6 +95,22 @@ def test_auto_takes_every_cached_kind_in_preference_order(cache):
     assert _resolve("ngram-mod").speculative
 
 
+def test_an_auto_offload_plan_makes_room_for_a_modes_first_drafter(cache, tmp_path):
+    cache({"a/Qwen3.5-4B-DFlash": _DFLASH, "g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
+    target = str(tmp_path / "org--Qwen3.5-4B-4bit")
+    drafter = lambda mode, named = None: spec.offload_drafter(
+        mode, named, model_dir = target, target_name = _TARGET
+    )
+    assert drafter("mtp") == (target, True)  # the head, before the cached assistant
+    assert drafter("mtp", "g/Qwen3.5-4B-assistant") == (
+        str(tmp_path / "g--Qwen3.5-4B-assistant"),
+        False,
+    )
+    assert drafter("dflash") == (str(tmp_path / "a--Qwen3.5-4B-DFlash"), False)
+    assert drafter("auto") == (target, True)
+    assert [drafter(mode) for mode in ("off", "ngram", "dspark")] == [None] * 3
+
+
 def test_cached_drafters_are_matched_by_shape_and_weights_then_marked_by_name(cache, tmp_path):
     shaped = {**_DFLASH, "hidden_size": 8, "num_target_layers": 4}
     narrow = {"target_hidden_size": 8, "transformer_layer_config": {"hidden_size": 2}}
