@@ -20,6 +20,7 @@ world-size-independent checkpoint. load_state_dict() re-quantizes it: the invers
 blocks are unchanged (same world size), so a resume restores the same 8-bit state.
 """
 
+import contextlib
 import functools
 import os
 
@@ -27,6 +28,7 @@ import torch
 
 __all__ = [
     "bnb_local_shards_enabled",
+    "full_cpu_state_export",
     "is_local_shard_bnb_optimizer",
     "localize_bnb_optimizer",
     "supports_local_shards",
@@ -301,6 +303,35 @@ class _LocalShardMixin:
             if work is not local:
                 local.copy_(work)
 
+    @torch.no_grad()
+    def step(self, closure = None):
+        """bitsandbytes' Optimizer8bit.step, but per-parameter device syncs only for paged optimizers
+        (async prefetches) or off the default stream."""
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        if not self.initialized:
+            self.check_overrides()
+            self.to_gpu()
+            self.initialized = True
+        paged = bool(getattr(self, "is_paged", False))
+        fence = paged or _off_default_stream(self)
+        p = None
+        for gindex, group in enumerate(self.param_groups):
+            for pindex, p in enumerate(group["params"]):
+                if p.grad is None:
+                    continue
+                if len(self.state[p]) == 0:
+                    self.init_state(group, p, gindex, pindex)
+                self.prefetch_state(p)
+                self.update_step(group, p, gindex, pindex)
+                if fence:
+                    _sync_device(p)
+        if fence and p is not None:
+            _sync_device(p)
+        return loss
+
     def init_state(self, group, p, gindex, pindex):
         return self._shard_call("init_state", group, p, gindex, pindex, with_grad = False)
 
@@ -386,10 +417,12 @@ class _LocalShardMixin:
             for gindex, group in enumerate(self.param_groups)
             for pindex, p in enumerate(group["params"])
         ]
-        state_dict["state"] = {
-            index: self._export_state(slots[index][0], raw, slots[index][1])
-            for index, raw in state_dict["state"].items()
-        }
+        to_cpu = getattr(self, "_unsloth_full_cpu_export", False)
+        exported = {}
+        for index, raw in state_dict["state"].items():
+            out = self._export_state(slots[index][0], raw, slots[index][1])
+            exported[index] = _gather_to_cpu(out) if to_cpu else out
+        state_dict["state"] = exported
         return state_dict
 
     def _import_state(self, group, p, gindex, pindex, saved):
@@ -440,9 +473,83 @@ class _LocalShardMixin:
                     self._import_state(*slot_of[saved_id], saved)
 
 
+def _gather_to_cpu(entry):
+    """Mirrors torch _gather_state_dict + cpu_offload for one parameter: CPU on rank 0, None elsewhere."""
+    DTensor = _dtensor_class()
+    dist = torch.distributed
+    keep = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+    out = {}
+    for key, value in entry.items():
+        if DTensor is not None and isinstance(value, DTensor):
+            from torch.distributed.tensor import Replicate
+
+            mesh = value.device_mesh
+            if value.device.type != mesh.device_type:
+                value = value.to(mesh.device_type)
+            value = value.redistribute(
+                device_mesh = mesh, placements = [Replicate() for _ in value.placements]
+            ).to_local()
+            try:
+                from torch.distributed._functional_collectives import AsyncCollectiveTensor
+            except ImportError:
+                AsyncCollectiveTensor = None
+            if AsyncCollectiveTensor is not None and isinstance(value, AsyncCollectiveTensor):
+                value = value.wait()
+        if torch.is_tensor(value):
+            value = value.to("cpu") if keep else None
+        out[key] = value
+    return out
+
+
+@contextlib.contextmanager
+def full_cpu_state_export(optimizer):
+    """Gather + offload each parameter's dequantized state as it is exported, instead of holding all
+    float32 moments on the device until torch gathers. Every rank must enter it (collectives)."""
+    if not is_local_shard_bnb_optimizer(optimizer):
+        yield
+        return
+    optimizer._unsloth_full_cpu_export = True
+    try:
+        yield
+    finally:
+        optimizer._unsloth_full_cpu_export = False
+
+
+def _off_default_stream(optimizer):
+    devices = {p.device for group in optimizer.param_groups for p in group["params"]}
+    for device in devices:
+        if device.type == "cpu":
+            continue
+        if device.type != "cuda":
+            return True
+        if torch.cuda.current_stream(device) != torch.cuda.default_stream(device):
+            return True
+    return False
+
+
+def _sync_device(p):
+    try:
+        from bitsandbytes.utils import sync_gpu
+    except ImportError:
+        sync_gpu = None
+    if sync_gpu is not None:
+        return sync_gpu(p)
+    if p.device.type == "cuda":
+        torch.cuda.synchronize()
+    elif p.device.type == "xpu":
+        torch.xpu.synchronize()
+
+
 @functools.lru_cache(maxsize = None)
 def _local_shard_class(cls):
-    return type(cls.__name__, (_LocalShardMixin, cls), {"__module__": cls.__module__})
+    namespace = {"__module__": cls.__module__}
+    hook_step = getattr(torch.optim.Optimizer, "profile_hook_step", None)
+    if hook_step is not None:
+        # The mixin's step shadows torch's hooked step: re-wrap so step hooks still run once.
+        step = hook_step(_LocalShardMixin.step)
+        step.hooked = True
+        namespace["step"] = step
+    return type(cls.__name__, (_LocalShardMixin, cls), namespace)
 
 
 def localize_bnb_optimizer(optimizer):
@@ -458,7 +565,28 @@ def localize_bnb_optimizer(optimizer):
             "parameters; build it after `shard_model(model)` and before training."
         )
     optimizer.__class__ = _local_shard_class(type(optimizer))
+    _rebind_scheduler_step(optimizer)
     return True
+
+
+def _rebind_scheduler_step(optimizer):
+    """A scheduler built before localization wrapped the old class step on the instance; repoint it."""
+    wrapped = vars(optimizer).get("step")
+    if wrapped is None or not getattr(wrapped, "_wrapped_by_lr_sched", False):
+        return
+    import weakref
+
+    opt_ref = weakref.ref(optimizer)
+    func = type(optimizer).step
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        opt = opt_ref()
+        opt._opt_called = True
+        return func.__get__(opt, opt.__class__)(*args, **kwargs)
+
+    wrapper._wrapped_by_lr_sched = True
+    optimizer.step = wrapper
 
 
 def rename_optimizer_state_for(optimizer, full_state):
