@@ -199,10 +199,7 @@ def _assert_webkit_runtime(
         if wrong:
             raise RuntimeError(f"bundled mode did not exec {bundled_exe}: " + ", ".join(wrong))
         webkit = [
-            path
-            for info in apps
-            for path in info["maps"]
-            if "libwebkit2gtk-4.1" in str(path)
+            path for info in apps for path in info["maps"] if "libwebkit2gtk-4.1" in str(path)
         ]
         if not any(str(path).startswith(bundled_lib) for path in webkit):
             raise RuntimeError(

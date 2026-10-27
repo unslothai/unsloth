@@ -553,7 +553,11 @@ _FAKE_HOST_BINARY = (
 
 
 def _apprun_mount(
-    tmp_path: Path, name: str = "AppDir", *, host_copy: bool = False, hooked: bool = False
+    tmp_path: Path,
+    name: str = "AppDir",
+    *,
+    host_copy: bool = False,
+    hooked: bool = False,
 ) -> Path:
     """An AppDir holding just what AppRun itself touches.
 
@@ -854,7 +858,12 @@ _HOOK_PINNED = (
 _MODE_LINE = re.compile(r"^unsloth-studio: AppImage WebKitGTK runtime=(host|bundled) \((.*)\)$")
 
 
-def _launch(appdir: Path, tmp_path: Path, args = (), **env):
+def _launch(
+    appdir: Path,
+    tmp_path: Path,
+    args = (),
+    **env,
+):
     """Run the mount like the AppImage runtime does: APPDIR set, AppRun as the entry point."""
 
     base = {
@@ -951,9 +960,7 @@ def test_apprun_host_mode_keeps_an_explicit_theme_and_survives_a_relaunch(tmp_pa
     assert run["env"]["XDG_DATA_DIRS"] == "/a:/b"
     assert run["env"]["GTK_THEME"] == "Breeze:dark"
 
-    stray = _launch(
-        appdir, tmp_path, XDG_DATA_DIRS = f"/a:{appdir}/usr/share/extra:/b:{appdir}"
-    )
+    stray = _launch(appdir, tmp_path, XDG_DATA_DIRS = f"/a:{appdir}/usr/share/extra:/b:{appdir}")
     assert stray["env"]["XDG_DATA_DIRS"] == "/a:/b"
 
 
@@ -974,8 +981,18 @@ def test_apprun_host_mode_keeps_an_explicit_theme_and_survives_a_relaunch(tmp_pa
         ),
         ({"FAKE_PROBE_OUTPUT": ""}, "reason: unrecognized probe output"),
     ],
-    ids = ["2.52.6", "1.x", "exit-3", "exit-127", "two-part", "suffix", "huge", "garbage",
-           "two-lines", "empty"],
+    ids = [
+        "2.52.6",
+        "1.x",
+        "exit-3",
+        "exit-127",
+        "two-part",
+        "suffix",
+        "huge",
+        "garbage",
+        "two-lines",
+        "empty",
+    ],
 )
 def test_apprun_falls_back_to_the_bundle_when_the_probe_does_not_prove_the_host(
     tmp_path, knobs, reason
@@ -1068,7 +1085,13 @@ def test_bundled_mode_matches_the_launcher_before_host_mode(tmp_path, host_copy,
     """Bundled mode adds only UNSLOTH_APPIMAGE_WEBKIT_MODE and its one stderr line."""
 
     shown = subprocess.run(
-        ["git", "-C", REPO_ROOT, "show", f"{MAIN_APPRUN_REVISION}:studio/src-tauri/linux/appimage-apprun.sh"],
+        [
+            "git",
+            "-C",
+            REPO_ROOT,
+            "show",
+            f"{MAIN_APPRUN_REVISION}:studio/src-tauri/linux/appimage-apprun.sh",
+        ],
         capture_output = True,
     )
     if shown.returncode != 0:
@@ -1110,9 +1133,7 @@ def _verify(appdir: Path):
     )
 
 
-def test_complete_appimage_verifier_accepts_a_host_capable_runtime_and_the_shipped_layout(
-    tmp_path,
-):
+def test_complete_appimage_verifier_accepts_a_host_capable_runtime_and_the_shipped_layout(tmp_path):
     result = _verify(_host_capable_appdir(tmp_path / "host"))
     assert result.returncode == 0, result.stderr
 

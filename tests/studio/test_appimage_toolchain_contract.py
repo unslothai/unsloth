@@ -151,9 +151,9 @@ def test_finalizer_keeps_the_host_copy_out_of_the_runpath_loop() -> None:
     text = FINALIZER.read_text(encoding = "utf-8")
     loop_start = text.index("patched=0")
     loop_end = text.index("((patched > 0))")
-    assert "usr/bin/host" in text[loop_start:loop_end], (
-        "the RUNPATH loop must skip usr/bin/host so the copy keeps $ORIGIN/../lib"
-    )
+    assert (
+        "usr/bin/host" in text[loop_start:loop_end]
+    ), "the RUNPATH loop must skip usr/bin/host so the copy keeps $ORIGIN/../lib"
     shell_vars = dict(re.findall(r'^\s*([a-z_][a-z0-9_]*)="([^"]*)"', text, re.MULTILINE))
 
     def expand(word: str) -> str:
@@ -168,9 +168,9 @@ def test_finalizer_keeps_the_host_copy_out_of_the_runpath_loop() -> None:
         None,
     )
     assert install, "finalizer must install the host copy of the main binary"
-    assert install.start() > text.index("patchelf --set-rpath"), (
-        "the host copy must be made after the RUNPATH loop"
-    )
+    assert install.start() > text.index(
+        "patchelf --set-rpath"
+    ), "the host copy must be made after the RUNPATH loop"
     assert "usr/bin/lib" in text, "finalizer must reject a usr/bin/lib the host copy would reach"
 
 
