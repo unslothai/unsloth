@@ -7967,6 +7967,16 @@ def _apply_streaming_offload(
         )
         # an up-front pin packs into slabs (_apply_group_offloading_packed); a deferred one pins per tensor
         pin_mib = _module_host_mib if defer else _module_pin_mib
+        # Video loads defer into registered copies here too: price them at page-rounded bytes, as the group tier does.
+        exact_defer = defer and _video_exact_pins(pipe)
+        if exact_defer:
+            _host_price = pin_mib
+
+            def pin_mib(module: Any) -> int:
+                if _torchao_weight_classes(module):
+                    return _host_price(module)
+                return _module_registered_mib(module)
+
         encoders_defer = not defer and prefetch and _encoder_background_pin_wanted(pipe)
 
         def _encoder_defers(name: Any, module: Any, offload_type: str) -> bool:
@@ -7989,6 +7999,20 @@ def _apply_streaming_offload(
                 leaf_pin_mib(n, m, t) for n, (m, t) in streamed.items() if t != "block_level"
             )
             pin_dits, pin_encoders = _streamed_pin_plan(dit_pin_mib, leaf_mib, logger)
+        # Video: an encoder that does not fit whole pins the prefix that fits, its cap read once the load has returned
+        late_prefix = (
+            exact_defer
+            and prefetch
+            and not pin_encoders
+            and not getattr(pipe, "_unsloth_small_host", None)
+            and not _env_off(PARTIAL_ENCODER_PIN_ENV)
+            and host_pinning_allowed()
+        )
+        if late_prefix and logger is not None:
+            logger.info(
+                "diffusion.memory: streamed encoders pin the prefix of their offload groups that fits the host RAM "
+                "free when the load returns"
+            )
         encoder_left_mib = 0
         if encoders_defer and not pin_encoders:
             encoder_left_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_dits)
@@ -8029,6 +8053,23 @@ def _apply_streaming_offload(
             _apply_group_offloading_packed(apply_group_offloading, module, kwargs, logger)
             if pin and defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
                 _defer_pinning(pipe, module, onload, logger)
+            elif (
+                late_prefix
+                and not pin
+                and offload_type != "block_level"
+                and str(comp_name).startswith("text_encoder")
+                and not _torchao_weight_classes(module)
+                and kwargs.get("use_stream")
+                and kwargs.get("low_cpu_mem_usage")
+            ):
+                _defer_pinning(
+                    pipe,
+                    module,
+                    onload,
+                    logger,
+                    fast = True,
+                    byte_cap = _late_encoder_pin_cap(pipe, module),
+                )
             elif enc_defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
                 cap = None if pin else int(encoder_left_mib) << 20
                 _defer_pinning(pipe, module, onload, logger, fast = True, byte_cap = cap)

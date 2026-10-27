@@ -177,3 +177,79 @@ def test_the_kill_switch_keeps_the_power_of_two_price_and_no_prefix(host, monkey
     )
     assert dm.start_background_pins(pipe) == 0
     assert not any(t.is_pinned() for t in _host_copies(pipe.text_encoder))
+
+
+class _Blocks(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj_in = torch.nn.Linear(8, 8)
+        self.blocks = torch.nn.ModuleList(torch.nn.Linear(8, 8) for _ in range(2))
+
+    def forward(self, x):
+        x = self.proj_in(x)
+        for block in self.blocks:
+            x = x + block(x)
+        return x
+
+
+def _streaming_video_pipe():
+    pipe = _Pipe()
+    pipe.transformer = _Blocks().to(torch.bfloat16)
+    pipe.text_encoder = _encoder()
+    pipe.components = {"transformer": pipe.transformer, "text_encoder": pipe.text_encoder}
+    dm.request_background_pins(pipe)
+    dm.request_fast_pins(pipe)
+    return pipe
+
+
+@pytest.mark.skipif(not _CUDA, reason = "needs a CUDA device")
+def test_the_streaming_tier_pins_a_video_encoder_that_fits_its_registered_bytes(host, monkeypatch):
+    pytest.importorskip("diffusers")
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_STREAMING_PREFETCH", raising = False)
+    x = torch.randn(4, 1500, dtype = torch.bfloat16, device = "cuda")
+    with torch.no_grad():
+        ref = _encoder().to("cuda")(x)
+    host(20)  # 18 MiB registered + a few KiB of blocks fit; the 32 MiB power-of-two price did not
+    pipe = _streaming_video_pipe()
+    dm._apply_streaming_offload(pipe, "cuda", None)
+    assert dm.start_background_pins(pipe) == 2
+    dm.finish_background_pins(pipe)
+    assert all(t.is_pinned() for t in _host_copies(pipe.text_encoder))
+    with torch.no_grad():
+        assert torch.equal(pipe.text_encoder(x), ref)
+    dm.stop_background_pins(pipe)
+
+
+@pytest.mark.skipif(not _CUDA, reason = "needs a CUDA device")
+def test_the_streaming_tier_pins_the_prefix_free_at_pin_start(host, monkeypatch):
+    pytest.importorskip("diffusers")
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_STREAMING_PREFETCH", raising = False)
+    x = torch.randn(4, 1500, dtype = torch.bfloat16, device = "cuda")
+    with torch.no_grad():
+        ref = _encoder().to("cuda")(x)
+    host(2)  # the plan: the blocks fit, the encoder does not
+    pipe = _streaming_video_pipe()
+    dm._apply_streaming_offload(pipe, "cuda", None)
+    assert not any(t.is_pinned() for t in _host_copies(pipe.text_encoder))
+    host(10)  # once the load returned: two 4.3 MiB weight groups (and their bias pages) fit
+    assert dm.start_background_pins(pipe) == 2
+    dm.finish_background_pins(pipe)
+    pinned = [t.is_pinned() for t in _host_copies(pipe.text_encoder)]
+    assert pinned == [True] * 4 + [False] * 4
+    with torch.no_grad():
+        assert torch.equal(pipe.text_encoder(x), ref)
+    dm.stop_background_pins(pipe)
+
+
+@pytest.mark.skipif(not _CUDA, reason = "needs a CUDA device")
+def test_the_streaming_tier_kill_switch_pins_no_encoder(host, monkeypatch):
+    pytest.importorskip("diffusers")
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_STREAMING_PREFETCH", raising = False)
+    monkeypatch.setenv(_EXACT_ENV, "0")
+    host(20)
+    pipe = _streaming_video_pipe()
+    dm._apply_streaming_offload(pipe, "cuda", None)
+    dm.start_background_pins(pipe)
+    dm.finish_background_pins(pipe)
+    assert not any(t.is_pinned() for t in _host_copies(pipe.text_encoder))
+    dm.stop_background_pins(pipe)
