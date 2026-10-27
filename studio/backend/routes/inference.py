@@ -10003,13 +10003,30 @@ def _matches_any(requested: str, candidates) -> bool:
     return False
 
 
+_TRAINED_CHECKPOINT = re.compile(r"checkpoint-\d+")
+
+
 def _trained_run_dir(model: Optional[str]) -> Optional[str]:
+    """The outputs folder a fine-tuning job names as ``<run>`` or ``<run>/checkpoint-<step>``."""
     from utils.paths import outputs_root
 
-    if not model or model in (".", "..") or model != os.path.basename(model) or "\\" in model:
+    if not isinstance(model, str) or "\\" in model:
         return None
-    run_dir = outputs_root() / model
-    return str(run_dir) if run_dir.is_dir() else None
+    parts = model.split("/")
+    if len(parts) > 2 or (len(parts) == 2 and not _TRAINED_CHECKPOINT.fullmatch(parts[1])):
+        return None
+    if any(part in ("", ".", "..") or part != os.path.basename(part) for part in parts):
+        return None
+    try:
+        run_dir = outputs_root().joinpath(*parts)
+        return str(run_dir) if run_dir.is_dir() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _trained_run_is_resident(run_dir: str) -> bool:
+    active = getattr(get_inference_backend(), "active_model_name", None)
+    return bool(active) and _norm_path(active) == _norm_path(run_dir)
 
 
 def _looks_like_local_path(value: str) -> bool:
@@ -10317,9 +10334,13 @@ async def _reject_unservable_model(
             and base.strip().count("/") == 1
             and await asyncio.to_thread(local_gguf_torn_only, base)
         )
-        trained = (
-            not here and await asyncio.to_thread(_trained_run_dir, requested_model) is not None
-        )
+        trained_dir = None if here else await asyncio.to_thread(_trained_run_dir, requested_model)
+        # a checkpoint loads by path, so its "<run>/checkpoint-N" name never matches the resident id
+        if trained_dir is not None and await asyncio.to_thread(
+            _trained_run_is_resident, trained_dir
+        ):
+            return
+        trained = trained_dir is not None
         here = here or torn or trained
         switchable = downloaded and get_openai_auto_switch_enabled()
     except HTTPException:
@@ -10903,8 +10924,13 @@ async def _maybe_auto_switch_model(
                     include_companion_scope = True,
                 )
         if resolved is None:
+            # A "<run>/checkpoint-N" name looks like a Hub id; the reject below refuses it instead.
+            trained = (
+                not reload_only
+                and await asyncio.to_thread(_trained_run_dir, requested_model) is not None
+            )
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
-            if auto_switch_on and not reload_only:
+            if auto_switch_on and not reload_only and not trained:
                 await _maybe_auto_download_model(
                     requested_model,
                     fastapi_request,

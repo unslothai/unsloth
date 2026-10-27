@@ -31,7 +31,7 @@ def _run_dir():
     return run_dir
 
 
-def _reject(model, active, monkeypatch):
+def _wire(active, monkeypatch):
     idle = type("B", (), {"is_loaded": False, "model_identifier": None, "hf_variant": None})()
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: idle)
     monkeypatch.setattr(
@@ -49,6 +49,10 @@ def _reject(model, active, monkeypatch):
         return f"The model '{model}' is not downloaded on this server."
 
     monkeypatch.setattr(inference_route, "_unavailable_model_message", _unavailable)
+
+
+def _reject(model, active, monkeypatch):
+    _wire(active, monkeypatch)
     return asyncio.run(inference_route._reject_unservable_model(model, _Req()))
 
 
@@ -99,3 +103,64 @@ def test_loading_a_fine_tuned_model_by_name_loads_its_run_folder(monkeypatch):
 
     assert loaded == [str(run_dir), BASE]
     assert [answer["model"] for answer in answers] == [RUN, BASE]
+
+
+CHECKPOINT = f"{RUN}/checkpoint-5"
+
+
+def test_a_checkpoint_name_is_refused_until_that_checkpoint_is_loaded(monkeypatch):
+    checkpoint_dir = _run_dir() / "checkpoint-5"
+    checkpoint_dir.mkdir()
+    with pytest.raises(HTTPException) as excinfo:
+        _reject(CHECKPOINT, BASE, monkeypatch)
+    assert excinfo.value.status_code == 404
+    assert CHECKPOINT in excinfo.value.detail["error"]["message"]
+    assert _reject(CHECKPOINT, str(checkpoint_dir), monkeypatch) is None
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["..", ".", "", f"{RUN}/..", f"{RUN}/other", f"../{RUN}", f"{RUN}\\checkpoint-5", "a/b/c"],
+)
+def test_only_run_and_checkpoint_names_map_into_outputs(name):
+    run_dir = _run_dir()
+    (run_dir / "other").mkdir()
+    assert inference_route._trained_run_dir(name) is None
+    assert inference_route._trained_run_dir(RUN) == str(run_dir)
+
+
+async def _never_held_back(_request):
+    return False
+
+
+def test_switch_by_request_never_fetches_a_checkpoint_name_from_the_hub(monkeypatch):
+    from utils import openai_auto_switch_settings as settings
+    from core.inference import local_model_resolver as resolver
+
+    checkpoint_dir = _run_dir() / "checkpoint-5"
+    checkpoint_dir.mkdir()
+    downloads = []
+
+    async def _download(model, *_args, **_kwargs):
+        downloads.append(model)
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(resolver, "resolve_local_gguf_for_switch", lambda *_a, **_kw: None)
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *_a, **_kw: None)
+    monkeypatch.setattr(inference_route, "_audio_cpp_switch_target", lambda _m: None)
+    monkeypatch.setattr(inference_route, "_maybe_auto_download_model", _download)
+    monkeypatch.setattr(inference_route, "_keyless_caller_held_back", _never_held_back)
+
+    def _switch(active):
+        _wire(active, monkeypatch)
+        return asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                CHECKPOINT, _Req(), "test", claim_resident = False
+            )
+        )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch(BASE)
+    assert excinfo.value.status_code == 404
+    assert _switch(str(checkpoint_dir)) is None
+    assert downloads == []
