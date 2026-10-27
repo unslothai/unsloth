@@ -199,7 +199,9 @@ def test_whole_model_compile_keeps_flex(routed, monkeypatch, compiled):
     assert config._attn_implementation == "flex_attention"
 
 
-@pytest.mark.parametrize("batch,max_length,switched", [(2, 4096, True), (8, 4096, False), (1, 32768, False)])
+@pytest.mark.parametrize(
+    "batch,max_length,switched", [(2, 4096, True), (8, 4096, False), (1, 32768, False)]
+)
 def test_long_flattened_rows_keep_flex(routed, monkeypatch, batch, max_length, switched):
     # SDPA builds a dense [T, T] mask for the whole flattened row before the varlen wrapper runs.
     from unsloth.utils import packing

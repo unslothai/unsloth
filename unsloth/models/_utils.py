@@ -777,7 +777,11 @@ def _packed_varlen_takes_model(model, config, target, head_dim, device_count):
 _PACKED_SDPA_MAX_ROW_TOKENS = 16384
 
 
-def use_sdpa_for_packed_head_dim_flex(model, max_length = None, row_tokens = None):
+def use_sdpa_for_packed_head_dim_flex(
+    model,
+    max_length = None,
+    row_tokens = None,
+):
     """Packed / padding-free rows: a decoder on flex only for its head dim (<= 256) moves to "sdpa",
     whose packed varlen wrapper runs them through torch's varlen flash kernel exactly (B200 head_dim
     256: 6-10% faster at a fixed packed length, 15-24% with varying lengths, and no flex compile).

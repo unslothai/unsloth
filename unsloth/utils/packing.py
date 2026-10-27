@@ -219,7 +219,11 @@ def _packed_row_tokens(model, trainer) -> Optional[int]:
     batch = getattr(getattr(trainer, "args", None), "per_device_train_batch_size", None)
     if longest is None:
         return None
-    return longest * batch if isinstance(batch, int) and not isinstance(batch, bool) and batch > 0 else longest
+    return (
+        longest * batch
+        if isinstance(batch, int) and not isinstance(batch, bool) and batch > 0
+        else longest
+    )
 
 
 def _enable_hf_packed_attention(model = None, trainer = None) -> None:
