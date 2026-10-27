@@ -70,9 +70,7 @@ def _wide_tiles_enabled() -> bool:
     return os.environ.get(WIDE_TILES_ENV, "").strip().lower() not in ("0", "false", "no", "off")
 
 
-# Untiled, wide and stock tiles blend differently, so a route picked from free memory per call made the same seed decode
-# to different frames once free memory moved between renders (a CUDA graph kept or dropped, another tenant). The first
-# decode of a latent shape fixes its route for the load; later ones reuse it while it fits. "0" re-picks every call.
+# Routes blend differently, so a shape keeps its first decode's route while it fits (same seed, same frames). "0" disables.
 ROUTE_LATCH_ENV = "UNSLOTH_VIDEO_VAE_ROUTE_LATCH"
 
 
@@ -290,7 +288,6 @@ def install_untiled_decode(
         need = untiled_decode_bytes(family, shape, itemsize = itemsize)
         free = _free_bytes(_decode_device(vae, z))
         ratio = int(getattr(vae, "spatial_compression_ratio", 0) or 0)
-        # What free memory alone picks (the per-call rule, with its fixed headroom).
         if (
             need is not None
             and free is not None
@@ -310,7 +307,7 @@ def install_untiled_decode(
                 fresh = "stock"
             else:
                 fresh = tuple(fresh)
-        # The latch only blocks downgrades: a better pick is taken (and latched), a kept route that still fits stays.
+        # Latch only blocks downgrades: a better pick replaces it.
         latched = routes.get(key) if _route_latch_enabled() else None
         note = ""
         if latched is None:

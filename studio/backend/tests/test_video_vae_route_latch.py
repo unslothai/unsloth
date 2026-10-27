@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One seed, one clip: a latent shape keeps the VAE route (untiled / wide plan / stock tiles) of its first decode.
-
-The three routes blend tiles differently, so picking from free memory on every call made Wan2.2-TI2V-5B render 2
-decode to other frames than render 1 once a CUDA graph was dropped (the denoiser then held ~4.8 GB at decode on a
-12 GiB card: wide tiles 704x704 -> 704x496)."""
+"""A latent shape keeps the VAE route of its first decode (Wan2.2-TI2V-5B render 2 differed from render 1)."""
 
 import types
 
@@ -77,7 +73,6 @@ def _mib(free_mib):
     return int(free_mib * 2**20)
 
 
-# The B200 12 GiB run: render 1 decoded with 10695 MiB free, render 2 with 6577 MiB.
 RENDER_FREES = (_mib(10695), _mib(6577), _mib(6577), _mib(10695))
 
 
