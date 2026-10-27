@@ -59,6 +59,8 @@ export type WireRouterOptions = {
   /** Per px for running out on the ring around the whole graph. */
   ringPenalty?: number;
   hopRadius?: number;
+  /** Hard gap between a wire and any card it doesn't start or end on. */
+  hardClearance?: number;
   /** Above this many grid cells each wire is routed on its own local grid. */
   cellBudget?: number;
 };
@@ -292,6 +294,7 @@ function markRects(
   point: Uint8Array | null,
   horizontal: Uint8Array,
   vertical: Uint8Array,
+  value = 1,
 ): void {
   const ny = ys.length;
   for (const rect of rects) {
@@ -305,13 +308,13 @@ function markRects(
         const insideX = i > i0 && i < i1;
         const insideY = j > j0 && j < j1;
         if (point && insideX && insideY) {
-          point[p] = 1;
+          point[p] = value;
         }
         if (insideY && i < i1) {
-          horizontal[p] = 1;
+          horizontal[p] = value;
         }
         if (insideX && j < j1) {
-          vertical[p] = 1;
+          vertical[p] = value;
         }
       }
     }
@@ -339,8 +342,9 @@ function markZones(
     for (let i = i0; i <= i1; i += 1) {
       for (let j = j0; j <= j1; j += 1) {
         const p = i * ny + j;
-        const insideX = i > i0 && i < i1;
-        const insideY = j > j0 && j < j1;
+        // Borders count as inside, so a wire that may not enter can't run along the frame either.
+        const insideX = i >= i0 && i <= i1;
+        const insideY = j >= j0 && j <= j1;
         if (insideX && insideY) {
           point[p] = index;
         }
@@ -371,6 +375,7 @@ function buildGrid(
   let minY = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;
+  const outer = margins.map((rect) => inflate(rect, OUTER_BAND));
   for (const rect of [...cards, ...margins, ...zones]) {
     rawXs.push(rect.x, rect.x + rect.width);
     rawYs.push(rect.y, rect.y + rect.height);
@@ -378,6 +383,10 @@ function buildGrid(
     minY = Math.min(minY, rect.y);
     maxX = Math.max(maxX, rect.x + rect.width);
     maxY = Math.max(maxY, rect.y + rect.height);
+  }
+  for (const rect of outer) {
+    rawXs.push(rect.x, rect.x + rect.width);
+    rawYs.push(rect.y, rect.y + rect.height);
   }
   for (const x of extraXs) {
     minX = Math.min(minX, x);
@@ -402,7 +411,10 @@ function buildGrid(
   const softH = new Uint8Array(size);
   const softV = new Uint8Array(size);
   markRects(cards, xs, ys, blockedPoint, blockedH, blockedV);
-  markRects(margins, xs, ys, null, softH, softV);
+  // Two bands: close to a card costs most, the outer band a little, so a run takes the middle
+  // of a gap between cards rather than either edge of it.
+  markRects(outer, xs, ys, null, softH, softV, 1);
+  markRects(margins, xs, ys, null, softH, softV, 2);
   const zonePoint = new Int32Array(size).fill(-1);
   const zoneH = new Int32Array(size).fill(-1);
   const zoneV = new Int32Array(size).fill(-1);
@@ -602,33 +614,36 @@ function searchPath(
       if (grid.blockedPoint[q] && q !== goal && !inExempt(exempt, xs[ni], ys[nj])) {
         continue;
       }
-      if (walled(grid.zonePoint[q])) {
+      // A stub that starts inside a closed zone may leave it, never enter another.
+      const here = q === goal ? grid.zonePoint[q] : grid.zonePoint[p];
+      if (walled(grid.zonePoint[q]) && grid.zonePoint[q] !== here) {
         continue;
       }
       const midX = (xs[ni] + xs[i]) / 2;
       const midY = (ys[nj] + ys[j]) / 2;
       let segNet: number;
       let segSink: number;
-      let soft: boolean;
+      let soft: number;
       if (nd === 0 || nd === 2) {
         const left = nd === 0 ? p : q;
-        if ((grid.blockedH[left] && !inExempt(exempt, midX, midY)) || walled(grid.zoneH[left])) {
+        if ((grid.blockedH[left] && !inExempt(exempt, midX, midY)) || (walled(grid.zoneH[left]) && grid.zoneH[left] !== here)) {
           continue;
         }
         segNet = grid.netH[left];
         segSink = grid.sinkH[left];
-        soft = grid.softH[left] === 1;
+        soft = grid.softH[left];
       } else {
         const upper = nd === 1 ? p : q;
-        if ((grid.blockedV[upper] && !inExempt(exempt, midX, midY)) || walled(grid.zoneV[upper])) {
+        if ((grid.blockedV[upper] && !inExempt(exempt, midX, midY)) || (walled(grid.zoneV[upper]) && grid.zoneV[upper] !== here)) {
           continue;
         }
         segNet = grid.netV[upper];
         segSink = grid.sinkV[upper];
-        soft = grid.softV[upper] === 1;
+        soft = grid.softV[upper];
       }
       const length = Math.abs(xs[ni] - xs[i]) + Math.abs(ys[nj] - ys[j]);
-      let cost = soft ? length * 2 + costs.clearancePenalty : length;
+      let cost =
+        soft === 2 ? length * 2 + costs.clearancePenalty : soft === 1 ? length * 1.3 : length;
       const horizontal = nd === 0 || nd === 2;
       const { inner } = grid;
       const onRing = horizontal
@@ -643,7 +658,7 @@ function searchPath(
       if (segNet !== -1 && sharesWith(segNet, segSink, owner)) {
         cost *= SHARED_DISCOUNT;
       } else if (usedByOther(segNet, segSink, owner)) {
-        cost += costs.overlapPenalty + length * 2;
+        cost += costs.overlapPenalty + length * 0.5;
       }
       if (nd !== dir) {
         cost += costs.bendPenalty;
@@ -876,7 +891,7 @@ function assignLanes(
   paths: WirePoint[][],
   owners: Owner[],
   laneGap: number,
-  maxOffset: number,
+  roomFor: (segment: Segment) => number,
 ): WirePoint[][] {
   const groups = byLine(collectSegments(paths, owners));
 
@@ -890,7 +905,6 @@ function assignLanes(
     let cluster: Segment[] = [];
     let clusterHi = Number.NEGATIVE_INFINITY;
     const flush = (): void => {
-      // Segments sharing an output or an input are one bundle and keep one lane.
       const bundle = cluster.map((_, index) => index);
       const find = (index: number): number => {
         let root = index;
@@ -905,7 +919,8 @@ function assignLanes(
           const sa = cluster[a];
           const sb = cluster[b];
           const touch = Math.min(sa.hi, sb.hi) - Math.max(sa.lo, sb.lo) > EPS;
-          if (touch && (sa.net === sb.net || sa.sink === sb.sink)) {
+          // Only one output's fan-out shares a lane; joining on inputs too chains unrelated wires.
+          if (touch && sa.net === sb.net) {
             bundle[find(a)] = find(b);
           }
         }
@@ -925,6 +940,7 @@ function assignLanes(
         return;
       }
       const movable = order.filter((root) => !fixedBundles.has(root));
+      const maxOffset = Math.max(0, Math.min(...cluster.map(roomFor)));
       const slots = fixedBundles.size > 0 ? movable.length + 1 : movable.length;
       const gap = Math.min(laneGap, slots > 1 ? (maxOffset * 2) / (slots - 1) : laneGap);
       const bundleOffset = new Map<number, number>();
@@ -966,13 +982,28 @@ function assignLanes(
     const points = out[segment.edgeIndex];
     const a = points[segment.index];
     const b = points[segment.index + 1];
-    if (segment.vertical) {
-      a.x += offset;
-      b.x += offset;
-    } else {
-      a.y += offset;
-      b.y += offset;
+    const key = segment.vertical ? "x" : "y";
+    // Never shift a run so far that the run before or after it turns back on itself.
+    let shift = offset;
+    for (const [end, step] of [
+      [a, -1],
+      [b, 1],
+    ] as const) {
+      // Look past a zero-length jog to the port leg it continues.
+      let at = step < 0 ? segment.index - 1 : segment.index + 2;
+      let length = 0;
+      while (points[at] && Math.abs(length) < EPS && Math.abs(at - segment.index) < 5) {
+        length = end[key] - points[at][key];
+        at += step;
+      }
+      if (length > EPS) {
+        shift = Math.max(shift, Math.min(0, 4 - length));
+      } else if (length < -EPS) {
+        shift = Math.min(shift, Math.max(0, -4 - length));
+      }
     }
+    a[key] += shift;
+    b[key] += shift;
   }
   return out;
 }
@@ -1101,15 +1132,206 @@ function findJunctions(paths: WirePoint[][], owners: Owner[]): WirePoint[][] {
   return junctions;
 }
 
+type Walls = { cards: WireRect[]; zones: WireRect[] };
+
+/** Free gap across a segment: the nearest card or frame edge on either side over its span. */
+function channelAround(
+  walls: Walls,
+  vertical: boolean,
+  coord: number,
+  lo: number,
+  hi: number,
+): { low: number; high: number } | null {
+  let low = Number.NEGATIVE_INFINITY;
+  let high = Number.POSITIVE_INFINITY;
+  const across = (rect: WireRect): [number, number] =>
+    vertical ? [rect.x, rect.x + rect.width] : [rect.y, rect.y + rect.height];
+  const along = (rect: WireRect): [number, number] =>
+    vertical ? [rect.y, rect.y + rect.height] : [rect.x, rect.x + rect.width];
+  for (const rect of walls.cards) {
+    const [a0, a1] = along(rect);
+    if (a1 <= lo + EPS || a0 >= hi - EPS) {
+      continue;
+    }
+    const [c0, c1] = across(rect);
+    if (coord > c0 + EPS && coord < c1 - EPS) {
+      // Already crossing a card it is allowed through; leave it be.
+      return null;
+    }
+    if (c1 <= coord + EPS) {
+      low = Math.max(low, c1);
+    } else {
+      high = Math.min(high, c0);
+    }
+  }
+  for (const zone of walls.zones) {
+    const [a0, a1] = along(zone);
+    if (a1 <= lo + EPS || a0 >= hi - EPS) {
+      continue;
+    }
+    for (const edge of across(zone)) {
+      if (Math.abs(edge - coord) < EPS) {
+        continue;
+      }
+      if (edge < coord) {
+        low = Math.max(low, edge);
+      } else {
+        high = Math.min(high, edge);
+      }
+    }
+  }
+  return { low, high };
+}
+
+/** Runs a few px apart that overlap become one line, which the lanes then spread evenly. */
+function snapNearRuns(
+  paths: WirePoint[][],
+  owners: Owner[],
+  tolerance: number,
+  fits: (segment: Segment, coord: number) => boolean,
+): WirePoint[][] {
+  const out = paths.map((points) => points.map((point) => ({ ...point })));
+  for (const vertical of [true, false]) {
+    const runs = collectSegments(out, owners)
+      .filter((segment) => !segment.fixed && segment.vertical === vertical)
+      .sort((a, b) => a.coord - b.coord);
+    const key = vertical ? "x" : "y";
+    for (let a = 0; a < runs.length; a += 1) {
+      for (let b = a + 1; b < runs.length && runs[b].coord - runs[a].coord < tolerance; b += 1) {
+        const ra = runs[a];
+        const rb = runs[b];
+        if (
+          Math.abs(rb.coord - ra.coord) < EPS ||
+          Math.min(ra.hi, rb.hi) - Math.max(ra.lo, rb.lo) <= EPS ||
+          !fits(rb, ra.coord)
+        ) {
+          continue;
+        }
+        const points = out[rb.edgeIndex];
+        points[rb.index][key] = ra.coord;
+        points[rb.index + 1][key] = ra.coord;
+        rb.coord = ra.coord;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Parallel runs sharing one free channel between cards become a bus: kept in their order,
+ * packed at lane pitch around the channel's middle instead of strung out across it.
+ */
+function runSpan(runs: Segment[]): { lo: number; hi: number } {
+  return {
+    lo: Math.min(...runs.map((run) => run.lo)),
+    hi: Math.max(...runs.map((run) => run.hi)),
+  };
+}
+
+function gatherChannels(
+  paths: WirePoint[][],
+  owners: Owner[],
+  walls: Walls,
+  pitch: number,
+  hard: number,
+  stub: number,
+): WirePoint[][] {
+  const out = paths.map((points) => points.map((point) => ({ ...point })));
+  const blocks = walls.cards.map((rect) => inflate(rect, hard - 1));
+  for (const vertical of [true, false]) {
+    const key = vertical ? "x" : "y";
+    const groups = new Map<string, Segment[]>();
+    const all = collectSegments(out, owners);
+    for (const run of all) {
+      if (run.fixed || run.vertical !== vertical) {
+        continue;
+      }
+      const gap = channelAround(walls, vertical, run.coord, run.lo, run.hi);
+      if (!gap || !Number.isFinite(gap.low) || !Number.isFinite(gap.high)) {
+        continue;
+      }
+      const id = `${Math.round(gap.low)}:${Math.round(gap.high)}`;
+      groups.set(id, [...(groups.get(id) ?? []), run]);
+    }
+    for (const [id, runs] of groups) {
+      const [low, high] = id.split(":").map(Number);
+      runs.sort((a, b) => a.lo - b.lo);
+      // Split into bundles whose spans overlap, so runs at opposite ends of a long channel stay apart.
+      const bundles: Segment[][] = [];
+      let reach = Number.NEGATIVE_INFINITY;
+      for (const run of runs) {
+        if (run.lo < reach - EPS) {
+          bundles[bundles.length - 1].push(run);
+        } else {
+          bundles.push([run]);
+        }
+        reach = Math.max(reach, run.hi);
+      }
+      for (const bundle of bundles) {
+        const coords = sortedUnique(bundle.map((run) => run.coord));
+        if (coords.length < 2 || high - low - 2 * hard < (coords.length - 1) * pitch) {
+          continue;
+        }
+        const first = (low + high) / 2 - ((coords.length - 1) * pitch) / 2;
+        const target = new Map(coords.map((coord, k) => [coord, Math.round((first + k * pitch) * 2) / 2]));
+        const moves = bundle.map((run) => ({ run, to: target.get(run.coord) as number }));
+        const crowds = all.some(
+          (other) =>
+            other.vertical === vertical &&
+            !bundle.includes(other) &&
+            Math.min(other.hi, runSpan(bundle).hi) - Math.max(other.lo, runSpan(bundle).lo) > EPS &&
+            moves.some(({ to }) => Math.abs(other.coord - to) < pitch - EPS),
+        );
+        const keeps = !crowds && moves.every(({ run, to }) => {
+          const points = out[run.edgeIndex];
+          const before = points[run.index];
+          const after = points[run.index + 1];
+          const prev = points[run.index - 1];
+          const next = points[run.index + 2];
+          const legOk = (from: WirePoint, at: WirePoint, k: number): boolean => {
+            const was = at[key] - from[key];
+            const now = to - from[key];
+            if (Math.abs(was) < EPS || Math.sign(was) !== Math.sign(now)) {
+              return false;
+            }
+            const isPortLeg = k === 0 || k + 2 === points.length;
+            if (isPortLeg && Math.abs(now) < stub - EPS) {
+              return false;
+            }
+            const moved = { ...at, [key]: to };
+            // The leg into the moved run grows; it must not reach into a card it used to clear.
+            return blocks.every(
+              (rect) =>
+                (isPortLeg && contains(rect, from)) || !segmentHitsRect(from, moved, rect),
+            );
+          };
+          return legOk(prev, before, run.index - 1) && legOk(next, after, run.index + 1);
+        });
+        if (!keeps) {
+          continue;
+        }
+        for (const { run, to } of moves) {
+          out[run.edgeIndex][run.index][key] = to;
+          out[run.edgeIndex][run.index + 1][key] = to;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+const OUTER_BAND = 20;
+
 const DEFAULT_OPTIONS: Required<WireRouterOptions> = {
-  clearance: 20,
-  laneGap: 6,
+  clearance: 24,
+  hardClearance: 18,
+  laneGap: 9,
   bendPenalty: 40,
   crossingPenalty: 60,
-  overlapPenalty: 200,
+  overlapPenalty: 40,
   // Per grid step in a card's clearance band; small, since a tight channel splits into many steps.
   clearancePenalty: 12,
-  nearPenalty: 1,
+  nearPenalty: 0,
   ringPenalty: 2,
   hopRadius: 4,
   cellBudget: 400_000,
@@ -1176,6 +1398,7 @@ export function routeWires(
 ): WireRouterResult {
   const costs = { ...DEFAULT_OPTIONS, ...options };
   const clearance = costs.clearance;
+  const hard = Math.min(costs.hardClearance, clearance - 2);
   const rectById = new Map(rects.map((rect) => [rect.id, rect] as const));
   const obstacles = rects.map((rect) => inflate(rect, clearance));
   const near = bucketIndex(obstacles);
@@ -1274,7 +1497,7 @@ export function routeWires(
         x1: Math.max(...ends.map((p) => p.x)),
         y1: Math.max(...ends.map((p) => p.y)),
       })
-        .map((k) => rects[k])
+        .map((k) => inflate(rects[k], hard))
         .filter(
           (rect) =>
             rect.id !== edge.source &&
@@ -1366,63 +1589,69 @@ export function routeWires(
     sortedUnique([...extraXs, ...obstacles.flatMap((r) => [r.x, r.x + r.width])]).length *
     sortedUnique([...extraYs, ...obstacles.flatMap((r) => [r.y, r.y + r.height])]).length;
 
+  // A windowed grid of just the cards around one wire.
+  const localRoute = (item: Prepared, by: number): WirePoint[] | null => {
+    let points: WirePoint[] | null = null;
+    for (const pad of [SEARCH_WINDOW_PAD, SEARCH_WINDOW_PAD * 4]) {
+      const box = {
+        x0: Math.min(item.sourceStub.x, item.targetStub.x) - pad,
+        x1: Math.max(item.sourceStub.x, item.targetStub.x) + pad,
+        y0: Math.min(item.sourceStub.y, item.targetStub.y) - pad,
+        y1: Math.max(item.sourceStub.y, item.targetStub.y) + pad,
+      };
+      const local: WireRect[] = [];
+      const localObstacles: WireRect[] = [];
+      for (const k of near(box)) {
+        if (intersects(obstacles[k], box)) {
+          local.push(rects[k]);
+          localObstacles.push(obstacles[k]);
+        }
+      }
+      const localZones: WireRect[] = [];
+      const itemZones: number[] = [];
+      zones.forEach((zone, k) => {
+        if (intersects(zone, box)) {
+          if (item.zones.includes(k)) {
+            itemZones.push(localZones.length);
+          }
+          localZones.push(zone);
+        }
+      });
+      const ends = [item.sourcePort, item.sourceStub, item.targetPort, item.targetStub];
+      const grid = buildGrid(
+        local.map((rect) => inflate(rect, by)),
+        localObstacles,
+        localZones,
+        ends.map((p) => p.x),
+        ends.map((p) => p.y),
+        clearance * 2,
+      );
+      points = searchOn(
+        grid,
+        item,
+        [{ i0: 0, i1: grid.nx - 1, j0: 0, j1: grid.ny - 1 }],
+        itemZones,
+        costs,
+      );
+      if (points) {
+        break;
+      }
+    }
+    return points;
+  };
+
   if (lineCount * 2 > costs.cellBudget) {
     // Too big for one grid: each wire gets a grid of just the cards around it. Wires no longer see
     // each other while searching; lanes, hops and junctions below still apply to all of them.
     for (const index of order) {
       const item = prepared[index];
-      let points: WirePoint[] | null = null;
-      for (const pad of [SEARCH_WINDOW_PAD, SEARCH_WINDOW_PAD * 4]) {
-        const box = {
-          x0: Math.min(item.sourceStub.x, item.targetStub.x) - pad,
-          x1: Math.max(item.sourceStub.x, item.targetStub.x) + pad,
-          y0: Math.min(item.sourceStub.y, item.targetStub.y) - pad,
-          y1: Math.max(item.sourceStub.y, item.targetStub.y) + pad,
-        };
-        const local: WireRect[] = [];
-        const localObstacles: WireRect[] = [];
-        for (const k of near(box)) {
-          if (intersects(obstacles[k], box)) {
-            local.push(rects[k]);
-            localObstacles.push(obstacles[k]);
-          }
-        }
-        const localZones: WireRect[] = [];
-        const itemZones: number[] = [];
-        zones.forEach((zone, k) => {
-          if (intersects(zone, box)) {
-            if (item.zones.includes(k)) {
-              itemZones.push(localZones.length);
-            }
-            localZones.push(zone);
-          }
-        });
-        const ends = [item.sourcePort, item.sourceStub, item.targetPort, item.targetStub];
-        const grid = buildGrid(
-          local.map((rect) => inflate(rect, 1)),
-          localObstacles,
-          localZones,
-          ends.map((p) => p.x),
-          ends.map((p) => p.y),
-          clearance * 2,
-        );
-        points = searchOn(
-          grid,
-          item,
-          [{ i0: 0, i1: grid.nx - 1, j0: 0, j1: grid.ny - 1 }],
-          itemZones,
-          costs,
-        );
-        if (points) {
-          break;
-        }
-      }
+      const points = localRoute(item, hard);
       raw[index] = points ? { key: item.key, points, blocked: false } : blockedRoute(item);
     }
   } else {
-    // Cards grow a pixel so no wire runs exactly along a card's border.
+    // Cards grow by the hard clearance: no wire may run closer than that to one.
     const grid = buildGrid(
-      rects.map((rect) => inflate(rect, 1)),
+      rects.map((rect) => inflate(rect, hard)),
       obstacles,
       zones,
       extraXs,
@@ -1500,13 +1729,40 @@ export function routeWires(
     }
   }
 
+  // Cards packed closer than twice the clearance leave no legal gap; squeeze through rather than
+  // draw a blocked wire straight over them.
+  for (const index of order) {
+    if (raw[index].blocked) {
+      const points = localRoute(prepared[index], 0);
+      if (points) {
+        raw[index] = { key: prepared[index].key, points, blocked: false };
+      }
+    }
+  }
+
   const owners = prepared.map((item) => item.owner);
-  const laned = assignLanes(
-    raw.map((route) => withPortJogs(route.points, clearance)),
-    owners,
-    costs.laneGap,
-    clearance - 6,
-  ).map(simplify);
+  const walls: Walls = { cards: rects, zones };
+  const jogged = raw.map((route) => withPortJogs(route.points, clearance));
+  const roomFor = (segment: Segment): number => {
+    if (segment.fixed) {
+      return 0;
+    }
+    const gap = channelAround(walls, segment.vertical, segment.coord, segment.lo, segment.hi);
+    if (!gap) {
+      return costs.laneGap;
+    }
+    const room = Math.min(segment.coord - gap.low, gap.high - segment.coord) - hard;
+    return Math.min(room, costs.laneGap * 4);
+  };
+  // Twice: spreading one set of runs can stretch the runs between them into a new overlap.
+  let laned = snapNearRuns(jogged, owners, costs.laneGap, (segment, coord) => {
+    const gap = channelAround(walls, segment.vertical, coord, segment.lo, segment.hi);
+    return !gap || Math.min(coord - gap.low, gap.high - coord) >= hard - EPS;
+  });
+  for (let pass = 0; pass < 2; pass += 1) {
+    laned = assignLanes(laned, owners, costs.laneGap, roomFor).map(simplify);
+  }
+  laned = gatherChannels(laned, owners, walls, costs.laneGap, hard, clearance).map(simplify);
   const hops = findHops(laned, owners, costs.hopRadius);
   const junctions = findJunctions(laned, owners);
 

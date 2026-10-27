@@ -295,7 +295,7 @@ test("a 50-card recipe routes cleanly and fast enough to run on drop", () => {
 });
 
 test("a wire stays out of a group frame it has no end in, and runs freely inside its own", () => {
-  const rects = [card("a", 0, 0), card("b", 900, 0), card("in1", 360, 260), card("in2", 640, 260)];
+  const rects = [card("a", 0, 0), card("b", 940, 0), card("in1", 360, 260), card("in2", 640, 260)];
   const frame = { id: "g", x: 320, y: -120, width: 560, height: 560 };
   const edges = [wire("a", "b"), wire("in1", "in2")];
   const { routes } = routeWires(rects, edges, {}, undefined, [frame]);
@@ -398,4 +398,77 @@ test("Comic Strip Machine: wires into a loop frame take the short way, not a lap
   for (const [a, b] of segments((routes.get("captions->page") as Route).points)) {
     assert.ok(!hitsInterior(a, b, frame), "captions->page goes round the loop frame");
   }
+});
+
+function gapTo(a: Point, b: Point, rect: Rect): number {
+  const dx = Math.max(rect.x - Math.max(a.x, b.x), Math.min(a.x, b.x) - (rect.x + rect.width), 0);
+  const dy = Math.max(rect.y - Math.max(a.y, b.y), Math.min(a.y, b.y) - (rect.y + rect.height), 0);
+  return Math.max(dx, dy);
+}
+
+test("no wire runs closer than the hard clearance to a card, its own included past the port leg", () => {
+  const hard = 18;
+  const dense = bigRecipe(10, 5);
+  const tight = {
+    // Columns 100 px apart and rows 60 px apart, like a cramped story graph.
+    rects: [
+      card("a", 0, 0, 220, 160),
+      card("b", 320, 80, 220, 160),
+      card("c", 320, 300, 220, 120),
+      card("d", 640, 0, 220, 160),
+      card("e", 640, 220, 220, 160),
+    ],
+    edges: [wire("a", "d"), wire("a", "e"), wire("b", "e"), wire("c", "d"), wire("a", "c")],
+  };
+  for (const { rects, edges } of [dense, tight]) {
+    const { routes } = routeWires(rects, edges, { hardClearance: hard });
+    for (const edge of edges) {
+      const points = (routes.get(edge.id) as Route).points;
+      segments(points).forEach(([a, b], k, all) => {
+        const portLeg = k === 0 || k === all.length - 1;
+        for (const rect of rects) {
+          if (portLeg && (rect.id === edge.source || rect.id === edge.target)) {
+            continue;
+          }
+          assert.ok(
+            gapTo(a, b, rect) >= hard - 0.5,
+            `${edge.id} runs ${gapTo(a, b, rect)} px from ${rect.id}`,
+          );
+        }
+      });
+      // The port legs go straight out at least the clearance before turning.
+      const legs = segments(points);
+      const [first, last] = [legs[0], legs[legs.length - 1]];
+      assert.ok(Math.abs(first[1].x - first[0].x) >= hard, `${edge.id} turns too close to its output`);
+      assert.ok(Math.abs(last[1].x - last[0].x) >= hard, `${edge.id} turns too close to its input`);
+    }
+  }
+});
+
+test("wires crossing the same gap share it as parallel lanes, centred between the columns", () => {
+  const rects = [
+    card("s1", 0, 0, 220, 100),
+    card("s2", 0, 140, 220, 100),
+    card("s3", 0, 280, 220, 100),
+    card("t1", 420, 600, 220, 100),
+    card("t2", 420, 740, 220, 100),
+    card("t3", 420, 880, 220, 100),
+  ];
+  const edges = [wire("s1", "t1"), wire("s2", "t2"), wire("s3", "t3")];
+  const { routes } = routeWires(rects, edges);
+  assertWireRules(rects, edges, routes);
+  const runs = edges.map((edge) => {
+    const vertical = segments((routes.get(edge.id) as Route).points).find(
+      ([a, b]) => Math.abs(a.x - b.x) < 0.01 && a.x > 220 && a.x < 420,
+    );
+    assert.ok(vertical, `${edge.id} runs down the gap`);
+    return (vertical as [Point, Point])[0].x;
+  });
+  const xs = [...runs].sort((a, b) => a - b);
+  assert.equal(new Set(xs).size, 3, "three separate lanes");
+  for (let k = 1; k < xs.length; k += 1) {
+    assert.ok(Math.abs(xs[k] - xs[k - 1] - 9) < 0.6, `lane pitch ${xs[k] - xs[k - 1]}`);
+  }
+  const mid = (xs[0] + xs[2]) / 2;
+  assert.ok(Math.abs(mid - 320) <= 12, `bundle centred near the gap's middle (at ${mid})`);
 });

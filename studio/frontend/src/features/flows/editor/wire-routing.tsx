@@ -27,7 +27,7 @@ import {
 const HOP_RADIUS = 4;
 const CORNER_RADIUS = 10;
 const DIM_OPACITY = 0.3;
-const ZONE_MARGIN = 6;
+const ZONE_MARGIN = 12;
 // Handles sit a few px outside the card; more than this means the route is from before a move.
 const ENDPOINT_TOLERANCE = 2;
 
