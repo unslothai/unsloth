@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useT } from "@/i18n";
 import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ActivationRecord } from "@/features/training";
@@ -63,6 +64,7 @@ function TrendChartBody({
   onStepChange,
   bottomMargin = 18,
 }: TrendChartBodyProps): ReactElement {
+  const t = useT();
   const tooltipStyle = {
     fontSize: "calc(0.6875rem * var(--ui-font-scale, 1))",
     borderRadius: 8,
@@ -89,7 +91,7 @@ function TrendChartBody({
           tick={{ fontSize: "calc(0.625rem * var(--ui-font-scale, 1))" }}
           className="fill-muted-foreground"
           label={{
-            value: "Step →",
+            value: t("studio.interpretability.health.stepAxis"),
             position: "insideBottom",
             offset: -2,
             fontSize: "calc(0.625rem * var(--ui-font-scale, 1))",
@@ -108,9 +110,9 @@ function TrendChartBody({
           wrapperStyle={{ outline: "none" }}
           formatter={(value: number | undefined, name: string | undefined) => [
             `${(value ?? 0).toFixed(1)}%`,
-            name === "deadPct" ? "Dead" : "Constant",
+            name === "deadPct" ? t("studio.interpretability.dead") : t("studio.interpretability.constant"),
           ]}
-          labelFormatter={(label: unknown) => `Step ${label}`}
+          labelFormatter={(label: unknown) => t("studio.interpretability.step", { step: String(label) })}
         />
         {/* Cursor line at current step */}
         <ReferenceLine
@@ -145,15 +147,16 @@ function TrendChartBody({
 // ── Legend row ────────────────────────────────────────────────────────────────
 
 function TrendLegend(): ReactElement {
+  const t = useT();
   return (
     <span className="flex gap-3 text-ui-10 font-normal text-muted-foreground">
       <span className="flex items-center gap-1">
         <span className="inline-block h-2 w-3 rounded-sm" style={{ backgroundColor: DEAD_COLOR }} />
-        Dead
+        {t("studio.interpretability.dead")}
       </span>
       <span className="flex items-center gap-1">
         <span className="inline-block h-2 w-3 rounded-sm" style={{ backgroundColor: CONSTANT_COLOR }} />
-        Constant
+        {t("studio.interpretability.constant")}
       </span>
     </span>
   );
@@ -166,6 +169,7 @@ export function NeuronHealthTrend({
   stepIndex,
   onStepChange,
 }: NeuronHealthTrendProps): ReactElement {
+  const t = useT();
   const isDark = useIsDark();
   const [expanded, setExpanded] = useState(false);
 
@@ -176,11 +180,11 @@ export function NeuronHealthTrend({
     return (
       <Card className="flex flex-col h-full">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">Neuron Health Trend</CardTitle>
+          <CardTitle className="text-sm font-medium">{t("studio.interpretability.health.trendTitle")}</CardTitle>
         </CardHeader>
         <CardContent className="flex-1 flex items-center justify-center">
           <p className="text-xs text-muted-foreground text-center max-w-[calc(180px*var(--ui-space-scale,1))]">
-            Need at least 2 captured steps to show trend
+            {t("studio.interpretability.health.trendNeedSteps")}
           </p>
         </CardContent>
       </Card>
@@ -193,15 +197,15 @@ export function NeuronHealthTrend({
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium flex items-center justify-between">
             <span className="flex items-center gap-3">
-              Neuron Health Trend
+              {t("studio.interpretability.health.trendTitle")}
               <TrendLegend />
             </span>
             <button
               type="button"
               onClick={() => setExpanded(true)}
               className="rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100"
-              title="Expand chart"
-              aria-label="Expand Neuron Health Trend chart"
+              title={t("studio.interpretability.expandChart")}
+              aria-label={t("studio.interpretability.health.trendExpandAria")}
             >
               <HugeiconsIcon icon={ArrowExpandDiagonal01Icon} className="size-3.5" />
             </button>
@@ -222,7 +226,7 @@ export function NeuronHealthTrend({
         <DialogContent className="w-[90vw] max-w-none sm:max-w-none">
           <DialogHeader>
             <DialogTitle className="font-bold flex items-center gap-3">
-              Neuron Health Trend
+              {t("studio.interpretability.health.trendTitle")}
               <TrendLegend />
             </DialogTitle>
           </DialogHeader>

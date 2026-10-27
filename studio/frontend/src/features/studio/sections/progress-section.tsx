@@ -433,10 +433,9 @@ export function ProgressSection({
                 </div>
               </TooltipTrigger>
               <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] p-3">
-                <p className="font-medium mb-1 text-xs">Training Loss</p>
+                <p className="font-medium mb-1 text-xs">{t("studio.charts.trainingLoss")}</p>
                 <p className="text-xs/relaxed font-normal text-muted-foreground">
-                  Cross-entropy loss over the current training batch. Lower is better.
-                  A sudden spike may indicate a bad batch, an unstable learning rate, or a data quality issue.
+                  {t("studio.progress.trainingLossTooltip")}
                 </p>
               </TooltipContent>
             </Tooltip>
@@ -457,7 +456,7 @@ export function ProgressSection({
               {data.modelName || "--"}
             </MetricStat>
             {data.datasetName && (
-              <MetricStat label="Dataset" valueClassName="truncate" title={data.datasetName}>
+              <MetricStat label={t("studio.progress.dataset")} valueClassName="truncate" title={data.datasetName}>
                 {data.datasetName}
               </MetricStat>
             )}

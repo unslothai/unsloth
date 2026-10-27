@@ -10,6 +10,7 @@ import {
 import type { TrainingViewData } from "@/features/training";
 import { activationCaptureApplies } from "@/features/training/api/mappers";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -116,6 +117,7 @@ function activeRunOverride(
 }
 
 export function LiveTrainingView(): ReactElement {
+  const t = useT();
   const runtime = useTrainingRuntimeStore(
     useShallow((state) => ({
       jobId: state.jobId,
@@ -256,6 +258,9 @@ export function LiveTrainingView(): ReactElement {
     runtime.isStarting ||
     isPreparingPhase ||
     (isWaitingForFirstStep && runtime.currentStep <= 0);
+  const [captureHintBefore, captureHintAfter] = t(
+    "studio.interpretability.captureDisabledHint",
+  ).split("{setting}");
 
   return (
     <div className={cn("relative", showOverlay && "min-h-[72dvh]")}>
@@ -276,8 +281,8 @@ export function LiveTrainingView(): ReactElement {
         <OffloadPanel isTrainingRunning={viewData.isTrainingRunning} />
         <Tabs defaultValue="training">
           <TabsList className="mb-2">
-            <TabsTrigger value="training">Training</TabsTrigger>
-            <TabsTrigger value="interpretability">Interpretability</TabsTrigger>
+            <TabsTrigger value="training">{t("studio.interpretability.tabTraining")}</TabsTrigger>
+            <TabsTrigger value="interpretability">{t("studio.interpretability.tabInterpretability")}</TabsTrigger>
           </TabsList>
 
           <TabsContent value="training">
@@ -302,10 +307,11 @@ export function LiveTrainingView(): ReactElement {
               />
             ) : (
               <div className="flex flex-col items-center justify-center min-h-[calc(300px*var(--ui-space-scale,1))] gap-3 text-center text-muted-foreground">
-                <p className="text-sm">Neuron activation capture is disabled.</p>
+                <p className="text-sm">{t("studio.interpretability.captureDisabled")}</p>
                 <p className="text-xs max-w-sm">
-                  Enable <span className="font-medium text-foreground">Neuron activation capture</span> in
-                  training parameters before starting training to see interpretability data here.
+                  {captureHintBefore}
+                  <span className="font-medium text-foreground">{t("studio.params.activationCapture")}</span>
+                  {captureHintAfter}
                 </p>
               </div>
             )}

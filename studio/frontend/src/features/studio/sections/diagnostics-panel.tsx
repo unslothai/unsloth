@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { ActivationMetadata, ActivationRecord } from "@/features/training";
 import { type ReactElement, useMemo, useState } from "react";
@@ -46,63 +47,63 @@ interface InfoDialogProps {
 }
 
 export function InterpretabilityInfoDialog({ open, onOpenChange }: InfoDialogProps): ReactElement {
+  const t = useT();
+  const [xBefore, xAfter] = t("studio.interpretability.guide.activationsBody").split("{x}");
+  const overlays: Array<{ label: TranslationKey; color: string; latex: string; desc: TranslationKey }> = [
+    {
+      label: "studio.interpretability.dead",
+      color: "rgb(96,165,250)",
+      latex: String.raw`\max_t(\bar{a}_t) < \varepsilon, \quad \varepsilon = 0.01`,
+      desc: "studio.interpretability.guide.deadDescription",
+    },
+    {
+      label: "studio.interpretability.constant",
+      color: "rgb(251,146,60)",
+      latex: String.raw`CV \equiv \frac{\sigma}{\mu} < 0.05`,
+      desc: "studio.interpretability.guide.constantDescription",
+    },
+    {
+      label: "studio.interpretability.onsetDead",
+      color: "rgb(147,51,234)",
+      latex: String.raw`\bar{a}_0 \geq \varepsilon \;\wedge\; \max_{t>0}(\bar{a}_t) < \varepsilon`,
+      desc: "studio.interpretability.guide.onsetDeadDescription",
+    },
+  ];
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[min(92vw,900px)] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="font-bold">How to read Interpretability</DialogTitle>
+          <DialogTitle className="font-bold">{t("studio.interpretability.guide.title")}</DialogTitle>
         </DialogHeader>
 
         <div className="flex flex-col gap-6 text-sm mt-2">
 
           {/* Heatmap */}
           <section className="flex flex-col gap-2">
-            <h3 className="font-semibold text-foreground">Neuron Activations heatmap</h3>
+            <h3 className="font-semibold text-foreground">{t("studio.interpretability.guide.heatmapTitle")}</h3>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Each cell is one neuron channel in one layer. Columns = channels, rows = layers.
-              Color encodes mean absolute activation at the current step.
-              Bright green = strongly firing. Dark/dim = barely firing. Red = outlier above p99.
+              {t("studio.interpretability.guide.heatmapBody")}
             </p>
             <div className="border-l-2 border-border/60 pl-3 mt-1">
-              <p className="text-xs font-medium text-foreground mb-1">Activations</p>
+              <p className="text-xs font-medium text-foreground mb-1">{t("studio.interpretability.heatmap.activations")}</p>
               <KatexDisplay latex={String.raw`\bar{a}_c \equiv \frac{1}{N}\sum_{n=1}^{N}|x_{n,c}| \;\equiv\; \texttt{mean\_abs}[c]`} />
               <p className="text-xs text-muted-foreground leading-relaxed">
-                N = batch × seq tokens, x<sub>n,c</sub> = activation at token n, channel c.
-                The average absolute firing magnitude per channel.
+                {xBefore}x<sub>n,c</sub>{xAfter}
               </p>
             </div>
           </section>
 
           {/* Overlays */}
           <section className="flex flex-col gap-3">
-            <h3 className="font-semibold text-foreground">Overlays</h3>
+            <h3 className="font-semibold text-foreground">{t("studio.interpretability.guide.overlaysTitle")}</h3>
             <p className="text-xs text-muted-foreground">
-              Highlight neuron health issues on top of the heatmap. Multiple can be active at once.
+              {t("studio.interpretability.guide.overlaysBody")}
             </p>
-            {[
-              {
-                label: "Dead",
-                color: "rgb(96,165,250)",
-                latex: String.raw`\max_t(\bar{a}_t) < \varepsilon, \quad \varepsilon = 0.01`,
-                desc: "Channel never exceeded ε across all captured steps. Dead neurons contribute nothing to model output.",
-              },
-              {
-                label: "Constant",
-                color: "rgb(251,146,60)",
-                latex: String.raw`CV \equiv \frac{\sigma}{\mu} < 0.05`,
-                desc: "Neuron fires but barely changes over training (CV < 5%). Limits the model's expressive capacity.",
-              },
-              {
-                label: "Onset Dead",
-                color: "rgb(147,51,234)",
-                latex: String.raw`\bar{a}_0 \geq \varepsilon \;\wedge\; \max_{t>0}(\bar{a}_t) < \varepsilon`,
-                desc: "Was alive at step 0 but died mid-training — the critical red flag. Suggests unstable learning rate or corrupted batch.",
-              },
-            ].map(({ label, color, latex, desc }) => (
+            {overlays.map(({ label, color, latex, desc }) => (
               <div key={label} className="flex flex-col gap-0.5 border-l-2 pl-3" style={{ borderColor: color }}>
-                <p className="text-xs font-medium" style={{ color }}>{label}</p>
+                <p className="text-xs font-medium" style={{ color }}>{t(label)}</p>
                 <KatexDisplay latex={latex} />
-                <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
+                <p className="text-xs text-muted-foreground leading-relaxed">{t(desc)}</p>
               </div>
             ))}
           </section>
@@ -116,6 +117,7 @@ export function InterpretabilityInfoDialog({ open, onOpenChange }: InfoDialogPro
 // ── Finding computation ───────────────────────────────────────────────────────
 
 type Severity = "red" | "orange" | "grey";
+type StudioT = ReturnType<typeof useT>;
 
 interface Finding {
   id: string;
@@ -130,6 +132,7 @@ function computeFindings(
   records: ActivationRecord[],
   stepIndex: number,
   metadata: ActivationMetadata | null,
+  t: StudioT,
 ): Finding[] {
   const findings: Finding[] = [];
   if (records.length === 0) return findings;
@@ -164,8 +167,13 @@ function computeFindings(
     findings.push({
       id: "onset_dead",
       severity: "red",
-      title: "Onset-dead neurons detected",
-      detail: `${total} channel${total !== 1 ? "s" : ""} were alive at step 0 but died mid-training. Check learning rate and batch quality.`,
+      title: t("studio.interpretability.diagnostics.onsetDeadTitle"),
+      detail: t(
+        total === 1
+          ? "studio.interpretability.diagnostics.onsetDeadDetailOne"
+          : "studio.interpretability.diagnostics.onsetDeadDetail",
+        { count: total },
+      ),
       stepIndex: firstOnsetStep,
       layers: topLayers,
     });
@@ -194,8 +202,11 @@ function computeFindings(
       findings.push({
         id: "dead_spike",
         severity: "red",
-        title: "Dead neuron spike",
-        detail: `${spikeDelta.toFixed(1)}% of channels in ${spikeLayer} died in a single step. Check for batch anomalies or a learning rate spike.`,
+        title: t("studio.interpretability.diagnostics.deadSpikeTitle"),
+        detail: t("studio.interpretability.diagnostics.deadSpikeDetail", {
+          percent: spikeDelta.toFixed(1),
+          layer: spikeLayer,
+        }),
         stepIndex: spikeStep,
         layers: spikeLayer ? [spikeLayer] : undefined,
       });
@@ -209,8 +220,8 @@ function computeFindings(
     findings.push({
       id: "high_dead",
       severity: avgDead > 40 ? "red" : "orange",
-      title: `High dead neuron rate (avg ${avgDead.toFixed(1)}%)`,
-      detail: "A large fraction of channels are permanently inactive. Consider lowering the learning rate or checking weight initialisation.",
+      title: t("studio.interpretability.diagnostics.highDeadTitle", { percent: avgDead.toFixed(1) }),
+      detail: t("studio.interpretability.diagnostics.highDeadDetail"),
       layers: badLayers.slice(0, 4),
     });
   }
@@ -222,8 +233,8 @@ function computeFindings(
     findings.push({
       id: "high_constant",
       severity: "orange",
-      title: `High constant neuron rate (avg ${avgConst.toFixed(1)}%)`,
-      detail: "Many channels fire but never change over training. These neurons carry no dynamic information, limiting model expressivity.",
+      title: t("studio.interpretability.diagnostics.highConstantTitle", { percent: avgConst.toFixed(1) }),
+      detail: t("studio.interpretability.diagnostics.highConstantDetail"),
       layers: badLayers.slice(0, 4),
     });
   }
@@ -239,8 +250,18 @@ function computeFindings(
     findings.push({
       id: "born_dead",
       severity: "grey",
-      title: `Born-dead neurons (${bornDead.length} channel${bornDead.length !== 1 ? "s" : ""})`,
-      detail: `${layerCounts.size} layer${layerCounts.size !== 1 ? "s" : ""} had channels inactive from step 0. This can be expected for some architectures — watch for the count increasing over training.`,
+      title: t(
+        bornDead.length === 1
+          ? "studio.interpretability.diagnostics.bornDeadTitleOne"
+          : "studio.interpretability.diagnostics.bornDeadTitle",
+        { count: bornDead.length },
+      ),
+      detail: t(
+        layerCounts.size === 1
+          ? "studio.interpretability.diagnostics.bornDeadDetailOne"
+          : "studio.interpretability.diagnostics.bornDeadDetail",
+        { count: layerCounts.size },
+      ),
     });
   }
 
@@ -249,16 +270,16 @@ function computeFindings(
     findings.push({
       id: "no_gradients",
       severity: "grey",
-      title: "Gradient capture disabled",
-      detail: "Enable capture_gradients to unlock the Gradients view mode and richer diagnostics.",
+      title: t("studio.interpretability.diagnostics.noGradientsTitle"),
+      detail: t("studio.interpretability.diagnostics.noGradientsDetail"),
     });
   }
   if (metadata && !metadata.capture_lora_norms) {
     findings.push({
       id: "no_lora",
       severity: "grey",
-      title: "LoRA norm capture disabled",
-      detail: "Enable capture_lora_norms to unlock the LoRA Norms view and adapter health tracking.",
+      title: t("studio.interpretability.diagnostics.noLoraTitle"),
+      detail: t("studio.interpretability.diagnostics.noLoraDetail"),
     });
   }
 
@@ -290,11 +311,12 @@ export function DiagnosticsPanel({
   metadata,
   onStepChange,
 }: DiagnosticsPanelProps): ReactElement {
+  const t = useT();
   const [infoOpen, setInfoOpen] = useState(false);
 
   const findings = useMemo(
-    () => computeFindings(records, stepIndex, metadata),
-    [records, stepIndex, metadata],
+    () => computeFindings(records, stepIndex, metadata, t),
+    [records, stepIndex, metadata, t],
   );
 
   return (
@@ -302,13 +324,13 @@ export function DiagnosticsPanel({
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium flex items-center justify-between">
-            Diagnostics
+            {t("studio.interpretability.diagnostics.title")}
             <button
               type="button"
               onClick={() => setInfoOpen(true)}
               className="rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100 text-xs font-normal leading-none"
-              title="How to read interpretability"
-              aria-label="Open interpretability guide"
+              title={t("studio.interpretability.diagnostics.howToRead")}
+              aria-label={t("studio.interpretability.openGuide")}
             >
               <KatexInline latex="?" />
             </button>
@@ -321,7 +343,7 @@ export function DiagnosticsPanel({
               <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5 shrink-0 text-emerald-500" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M13.5 4.5L6 12 2.5 8.5" />
               </svg>
-              No issues detected
+              {t("studio.interpretability.diagnostics.noIssues")}
             </div>
           ) : (
             <div className="flex flex-col gap-1.5">
@@ -351,7 +373,9 @@ export function DiagnosticsPanel({
                         </span>
                         {f.stepIndex !== undefined && (
                           <span className="text-ui-10 text-muted-foreground/60 tabular-nums">
-                            step {records[f.stepIndex]?.step ?? f.stepIndex}
+                            {t("studio.interpretability.diagnostics.step", {
+                              step: records[f.stepIndex]?.step ?? f.stepIndex,
+                            })}
                           </span>
                         )}
                       </div>

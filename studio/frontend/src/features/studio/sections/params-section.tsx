@@ -437,7 +437,7 @@ export function ParamsSection({
                 htmlFor="enableActivationCapture"
                 className="text-xs cursor-pointer text-muted-foreground"
               >
-                Neuron activation capture
+                {t("studio.params.activationCapture")}
               </label>
               <Tooltip>
                 <TooltipTrigger asChild={true}>
@@ -446,8 +446,7 @@ export function ParamsSection({
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Captures per-layer neuron activation statistics during training for the
-                  Interpretability tab. Adds ~0.03% training overhead. Off by default.
+                  {t("studio.params.activationCaptureTooltip")}
                 </TooltipContent>
               </Tooltip>
             </div>

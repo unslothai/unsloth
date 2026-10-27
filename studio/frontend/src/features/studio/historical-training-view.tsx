@@ -115,6 +115,7 @@ function mapToViewData(
 }
 
 function InterpretabilitySection({ runId }: { runId: string }): ReactElement {
+  const t = useT();
   const { metadata, records, loading } = useActivationData({ isTraining: false, jobId: runId });
   const [stepIndex, setStepIndex] = useState(0);
 
@@ -136,12 +137,14 @@ function InterpretabilitySection({ runId }: { runId: string }): ReactElement {
   const record = records[stepIndex] ?? null;
 
   if (!loading && records.length === 0) {
+    const [hintBefore, hintAfter] = t("studio.interpretability.noRunDataHint").split("{setting}");
     return (
       <div className="flex flex-col items-center justify-center min-h-[calc(300px*var(--ui-space-scale,1))] gap-3 text-center text-muted-foreground">
-        <p className="text-sm">No activation data for this run.</p>
+        <p className="text-sm">{t("studio.interpretability.noRunData")}</p>
         <p className="text-xs max-w-sm">
-          Enable <span className="font-medium text-foreground">Neuron activation capture</span> in
-          training parameters before starting training to capture interpretability data.
+          {hintBefore}
+          <span className="font-medium text-foreground">{t("studio.params.activationCapture")}</span>
+          {hintAfter}
         </p>
       </div>
     );
@@ -313,8 +316,8 @@ export function HistoricalTrainingView({
       />
       <Tabs defaultValue="training">
         <TabsList className="mb-2">
-          <TabsTrigger value="training">Training</TabsTrigger>
-          <TabsTrigger value="interpretability">Interpretability</TabsTrigger>
+          <TabsTrigger value="training">{t("studio.interpretability.tabTraining")}</TabsTrigger>
+          <TabsTrigger value="interpretability">{t("studio.interpretability.tabInterpretability")}</TabsTrigger>
         </TabsList>
         <TabsContent value="training">
           <ChartsSection

@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -85,10 +86,11 @@ interface NeuronHealthTableProps {
 }
 
 function NeuronHealthTable({ stats }: NeuronHealthTableProps): ReactElement {
+  const t = useT();
   if (stats.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
-        No activation data yet
+        {t("studio.interpretability.noDataYet")}
       </div>
     );
   }
@@ -101,12 +103,12 @@ function NeuronHealthTable({ stats }: NeuronHealthTableProps): ReactElement {
       <table className="w-full text-xs border-separate border-spacing-0">
         <thead className="sticky top-0 bg-card z-10">
           <tr>
-            <th className="text-left font-normal text-muted-foreground pb-1 pr-2 w-8">Layer</th>
+            <th className="text-left font-normal text-muted-foreground pb-1 pr-2 w-8">{t("studio.interpretability.layer")}</th>
             <th className="text-left font-normal text-muted-foreground pb-1 pr-1 w-[50%]">
-              <span className="text-red-500/70">Dead</span>
+              <span className="text-red-500/70">{t("studio.interpretability.dead")}</span>
             </th>
             <th className="text-left font-normal text-muted-foreground pb-1 w-[50%]">
-              <span className="text-amber-500/70">Constant</span>
+              <span className="text-amber-500/70">{t("studio.interpretability.constant")}</span>
             </th>
           </tr>
         </thead>
@@ -178,6 +180,7 @@ interface DeadNeuronPanelProps {
 }
 
 export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }: DeadNeuronPanelProps): ReactElement {
+  const t = useT();
   const [expanded, setExpanded] = useState(false);
 
   // Only consider records up to the current step so the table stays in sync with the heatmap
@@ -203,7 +206,7 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium flex items-center justify-between">
           <div className="flex items-center gap-3">
-            Neuron Health
+            {t("studio.interpretability.health.title")}
             {totalDead !== null && (
               <span className="flex gap-2 items-center text-xs font-normal text-muted-foreground">
                 <span className="flex items-center gap-1">
@@ -214,15 +217,13 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
                         type="button"
                         className="inline-flex cursor-default items-center rounded-full border px-1.5 py-0.5 text-ui-10 font-medium select-none border-red-500/40 bg-red-500/10 text-red-500"
                       >
-                        dead (avg)
+                        {t("studio.interpretability.health.deadAvg")}
                       </button>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-[calc(240px*var(--ui-space-scale,1))]">
-                      <p className="font-medium mb-1">Dead neurons</p>
+                      <p className="font-medium mb-1">{t("studio.interpretability.health.deadTitle")}</p>
                       <p className="text-xs/relaxed font-normal">
-                        A channel is dead when its mean absolute activation stays below 0.01 across all
-                        captured steps. Dead neurons contribute nothing to model output — often caused
-                        by too-high learning rates, poor initialisation, or excessive regularisation.
+                        {t("studio.interpretability.health.deadBody")}
                       </p>
                     </TooltipContent>
                   </Tooltip>
@@ -235,15 +236,13 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
                         type="button"
                         className="inline-flex cursor-default items-center rounded-full border px-1.5 py-0.5 text-ui-10 font-medium select-none border-amber-500/40 bg-amber-500/10 text-amber-500"
                       >
-                        constant (avg)
+                        {t("studio.interpretability.health.constantAvg")}
                       </button>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-[calc(240px*var(--ui-space-scale,1))]">
-                      <p className="font-medium mb-1">Constant neurons</p>
+                      <p className="font-medium mb-1">{t("studio.interpretability.health.constantTitle")}</p>
                       <p className="text-xs/relaxed font-normal">
-                        A channel is constant when its activation barely changes over training steps
-                        (coefficient of variation &lt; 5%). Unlike dead neurons these do fire, but carry
-                        no dynamic information — limiting the model&apos;s expressive capacity.
+                        {t("studio.interpretability.health.constantBody")}
                       </p>
                     </TooltipContent>
                   </Tooltip>
@@ -255,8 +254,8 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
             type="button"
             onClick={() => setExpanded(true)}
             className="rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100"
-            title="Expand"
-            aria-label="Expand Neuron Health"
+            title={t("studio.interpretability.health.expand")}
+            aria-label={t("studio.interpretability.health.expandAria")}
           >
             <HugeiconsIcon icon={ArrowExpandDiagonal01Icon} className="size-3.5" />
           </button>
@@ -269,7 +268,7 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
       <Dialog open={expanded} onOpenChange={setExpanded}>
         <DialogContent className="w-[90vw] max-w-none sm:max-w-none">
           <DialogHeader>
-            <DialogTitle className="font-bold">Neuron Health</DialogTitle>
+            <DialogTitle className="font-bold">{t("studio.interpretability.health.title")}</DialogTitle>
           </DialogHeader>
           <div className="mt-2 w-full flex flex-col gap-3">
             <div style={{ height: Math.min(window.innerHeight * 0.65, 520) }}>

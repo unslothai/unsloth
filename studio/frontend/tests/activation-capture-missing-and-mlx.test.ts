@@ -21,7 +21,7 @@ test("a null heatmap sample is drawn and shown as missing", () => {
   );
   assert.match(
     HEATMAP,
-    /tooltip\.value === null \? "missing \(NaN or inf\)" : tooltip\.value\.toFixed\(4\)/,
+    /tooltip\.value === null \? t\("studio\.interpretability\.heatmap\.missingValue"\) : tooltip\.value\.toFixed\(4\)/,
   );
   assert.doesNotMatch(HEATMAP, /\{tooltip\.value\.toFixed\(4\)\}/);
 });

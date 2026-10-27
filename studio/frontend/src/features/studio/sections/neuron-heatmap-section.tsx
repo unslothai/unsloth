@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -165,6 +166,8 @@ const OVERLAY_DEFS: Array<[OverlayKey, string]> = [
 
 // ── Canvas drawing ────────────────────────────────────────────────────────────
 
+type AxisLabels = { layer: string; neuron: string; channelAxis: string; layerAxis: string };
+
 function drawHeatmap(
   canvas: HTMLCanvasElement,
   values: Record<string, number[]>,
@@ -173,6 +176,7 @@ function drawHeatmap(
   palette: Uint8ClampedArray,
   activeOverlays: Set<OverlayKey>,
   overlaySets: OverlaySets,
+  axisLabels: AxisLabels,
   transposed = false,
   scale = 1,
 ): HeatmapLayout | null {
@@ -289,7 +293,7 @@ function drawHeatmap(
   ctx.font         = `${11 * s}px sans-serif`;
   ctx.textAlign    = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(transposed ? "Layer" : "Neuron", 0, 0);
+  ctx.fillText(transposed ? axisLabels.layer : axisLabels.neuron, 0, 0);
   ctx.restore();
 
   // ── X-axis tick labels ──
@@ -314,7 +318,7 @@ function drawHeatmap(
   ctx.font         = `${11 * s}px sans-serif`;
   ctx.textAlign    = "center";
   ctx.textBaseline = "bottom";
-  ctx.fillText(transposed ? "Channel →" : "Layer →", lMargin + gridW / 2, canvas.height);
+  ctx.fillText(transposed ? axisLabels.channelAxis : axisLabels.layerAxis, lMargin + gridW / 2, canvas.height);
 
   return { cellSlot: cSlot, leftMargin: lMargin, topMargin: tMargin, numLayers, numChannels, layerKeys, capturedChannels, globalMax, clampMax, transposed };
 }
@@ -357,49 +361,49 @@ function KatexDisplay({ latex }: { latex: string }): ReactElement {
 
 interface ViewModeConfig {
   key: ViewMode;
-  label: string;
+  label: TranslationKey;
   latex: string;
-  description: string;
+  description: TranslationKey;
 }
 
 const VIEW_MODES: ViewModeConfig[] = [
   {
     key: "activations",
-    label: "Activations",
+    label: "studio.interpretability.heatmap.activations",
     latex: String.raw`\bar{a}_c \equiv \frac{1}{N}\sum_{n=1}^{N}|x_{n,c}| \;\equiv\; \texttt{mean\_abs}[c]`,
-    description: "N = batch × seq tokens, x_{n,c} = activation at token n, channel c. This is the mean_abs value from the activation log — how strongly each channel fires on average.",
+    description: "studio.interpretability.heatmap.activationsDescription",
   },
 ];
 
 interface OverlayConfig {
   key: OverlayKey;
-  label: string;
+  label: TranslationKey;
   color: string;
   latex: string;
-  description: string;
+  description: TranslationKey;
 }
 
 const OVERLAY_CONFIGS: OverlayConfig[] = [
   {
     key: "dead",
-    label: "Dead",
+    label: "studio.interpretability.dead",
     color: "rgb(96,165,250)",
     latex: String.raw`\max_t(\bar{a}_t) < \varepsilon,\quad \varepsilon = 0.01`,
-    description: "Channel never exceeded ε — contributes nothing to model output.",
+    description: "studio.interpretability.heatmap.deadDescription",
   },
   {
     key: "constant",
-    label: "Constant",
+    label: "studio.interpretability.constant",
     color: "rgb(251,146,60)",
     latex: String.raw`CV \equiv \sigma/\mu < 0.05`,
-    description: "Fires but barely changes over training. Limits expressive capacity.",
+    description: "studio.interpretability.heatmap.constantDescription",
   },
   {
     key: "onset_dead",
-    label: "Onset Dead",
+    label: "studio.interpretability.onsetDead",
     color: "rgb(147,51,234)",
     latex: String.raw`\bar{a}_0 \geq \varepsilon \;\wedge\; \max_{t>0}(\bar{a}_t) < \varepsilon`,
-    description: "Was alive at step 0, died mid-training — the critical red flag.",
+    description: "studio.interpretability.heatmap.onsetDeadDescription",
   },
 ];
 
@@ -495,6 +499,16 @@ function HeatmapCanvas({
   const layoutRef         = useRef<HeatmapLayout | null>(null);
   const imperativeDrawRef = useRef<(() => void) | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const t = useT();
+  const axisLabels = useMemo<AxisLabels>(
+    () => ({
+      layer: t("studio.interpretability.layer"),
+      neuron: t("studio.interpretability.heatmap.axisNeuron"),
+      channelAxis: t("studio.interpretability.heatmap.axisChannel"),
+      layerAxis: t("studio.interpretability.heatmap.axisLayer"),
+    }),
+    [t],
+  );
   const isDark = useIsDark();
   const palette        = isDark ? PALETTE_DARK         : PALETTE_LIGHT;
   const tooltipPalette = isDark ? TOOLTIP_PALETTE_DARK : TOOLTIP_PALETTE_LIGHT;
@@ -525,12 +539,12 @@ function HeatmapCanvas({
 
       layoutRef.current = drawHeatmap(
         canvas, values, capturedChannels, outlierColor, palette,
-        activeOverlays, overlaySets, true, physicalScale,
+        activeOverlays, overlaySets, axisLabels, true, physicalScale,
       );
     }
     imperativeDrawRef.current = draw;
     draw();
-  }, [values, capturedChannels, outlierColor, palette, activeOverlays, overlaySets, expanded]);
+  }, [values, capturedChannels, outlierColor, palette, activeOverlays, overlaySets, expanded, axisLabels]);
 
   useEffect(() => {
     const el = wrapperRef.current;
@@ -585,7 +599,7 @@ function HeatmapCanvas({
   if (!values) {
     return (
       <div className="flex h-[calc(120px*var(--ui-space-scale,1))] w-full items-center justify-center rounded border border-border/40 px-4 text-center">
-        <p className="text-xs text-muted-foreground">No activation data yet</p>
+        <p className="text-xs text-muted-foreground">{t("studio.interpretability.noDataYet")}</p>
       </div>
     );
   }
@@ -615,20 +629,20 @@ function HeatmapCanvas({
         >
           <div className="flex flex-col gap-0.5 text-ui-11">
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Layer</span>
+              <span className="text-muted-foreground">{t("studio.interpretability.layer")}</span>
               <span className="font-mono font-medium tabular-nums">{tooltip.layerKey}</span>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Channel</span>
+              <span className="text-muted-foreground">{t("studio.interpretability.heatmap.channel")}</span>
               <span className="font-mono font-medium tabular-nums">{tooltip.channelIdx}</span>
             </div>
             <div className="mt-0.5 border-t border-border/40 pt-1 flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Value</span>
+              <span className="text-muted-foreground">{t("studio.interpretability.heatmap.value")}</span>
               <span
                 className="font-mono font-semibold tabular-nums"
                 style={{ color: tooltip.value === null ? undefined : tooltip.normalized < 0 ? outlierColor : paletteColor(tooltip.normalized, tooltipPalette) }}
               >
-                {tooltip.value === null ? "missing (NaN or inf)" : tooltip.value.toFixed(4)}{tooltip.normalized < 0 ? " ↑" : ""}
+                {tooltip.value === null ? t("studio.interpretability.heatmap.missingValue") : tooltip.value.toFixed(4)}{tooltip.normalized < 0 ? " ↑" : ""}
               </span>
             </div>
           </div>
@@ -649,8 +663,11 @@ function ColorLegend({
   onToggleBlend?: () => void;
 }): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const t = useT();
   const isDark = useIsDark();
   const palette = isDark ? PALETTE_DARK : PALETTE_LIGHT;
+  const outlierBody = t("studio.interpretability.heatmap.outlierBody").split("{p99}");
+  const [blendBefore, blendAfter] = t("studio.interpretability.heatmap.outlierBlendHint").split("{click}");
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -671,9 +688,9 @@ function ColorLegend({
 
   return (
     <div className="flex items-center gap-2">
-      <span className="text-ui-10 text-muted-foreground">Low</span>
+      <span className="text-ui-10 text-muted-foreground">{t("studio.interpretability.heatmap.low")}</span>
       <canvas ref={canvasRef} className="h-2 flex-1 rounded-full" />
-      <span className="text-ui-10 text-muted-foreground">High</span>
+      <span className="text-ui-10 text-muted-foreground">{t("studio.interpretability.heatmap.high")}</span>
       <span className="mx-1 text-ui-10 text-muted-foreground/50">·</span>
       <span
         className="inline-block h-2 w-2 rounded-sm flex-shrink-0"
@@ -691,22 +708,23 @@ function ColorLegend({
                 : "border-current/20 bg-muted text-muted-foreground hover:text-foreground",
             )}
           >
-            Outlier (&gt;p99)
+            {t("studio.interpretability.heatmap.outlier")}
           </button>
         </TooltipTrigger>
         <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))]">
-          <p className="font-medium mb-1">Outlier detection</p>
+          <p className="font-medium mb-1">{t("studio.interpretability.heatmap.outlierTitle")}</p>
           <p className="text-xs/relaxed font-normal">
-            All neuron values are sorted and the 99th percentile
-            (<code className="font-mono">p99</code>) is used as the colour-scale
-            ceiling. Any cell whose activation exceeds <code className="font-mono">p99</code> is
-            classified as an outlier and rendered in the accent colour instead
-            of the normal gradient.
+            {outlierBody.map((part, i) => (
+              <span key={i}>
+                {i > 0 && <code className="font-mono">p99</code>}
+                {part}
+              </span>
+            ))}
           </p>
           <p className="text-xs/relaxed font-normal mt-1.5 border-t border-border/40 pt-1.5">
-            <span className="font-medium">Click the pill</span> to toggle blend mode — when active
-            (orange) outliers use the same colour as the high end of the scale so they blend in,
-            making fine gradations easier to spot.
+            {blendBefore}
+            <span className="font-medium">{t("studio.interpretability.heatmap.outlierBlendClick")}</span>
+            {blendAfter}
           </p>
         </TooltipContent>
       </Tooltip>
@@ -730,6 +748,7 @@ export function ReplayControls({
   onStepChange: (index: number) => void;
   currentStep: number;
 }): ReactElement {
+  const t = useT();
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>(1);
   const [loop, setLoop] = useState(false);
@@ -786,7 +805,7 @@ export function ReplayControls({
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <Button size="sm" variant="outline" className="h-6 w-16 text-ui-11" onClick={handleToggle}>
-          {playing ? "⏸ Pause" : "▶ Play"}
+          {playing ? `⏸ ${t("studio.interpretability.replay.pause")}` : `▶ ${t("studio.interpretability.replay.play")}`}
         </Button>
         <input
           type="range"
@@ -797,11 +816,11 @@ export function ReplayControls({
           className="h-1 flex-1 cursor-pointer accent-primary"
         />
         <span className="min-w-[calc(4rem*var(--ui-space-scale,1))] text-right text-ui-11 tabular-nums text-muted-foreground">
-          Step {currentStep}
+          {t("studio.interpretability.step", { step: currentStep })}
         </span>
       </div>
       <div className="flex items-center gap-1.5">
-        <span className="text-ui-10 text-muted-foreground">Speed</span>
+        <span className="text-ui-10 text-muted-foreground">{t("studio.interpretability.replay.speed")}</span>
         {SPEEDS.map((s) => (
           <button
             key={s}
@@ -817,7 +836,7 @@ export function ReplayControls({
         ))}
         <button
           type="button"
-          title={loop ? "Loop on" : "Loop off"}
+          title={loop ? t("studio.interpretability.replay.loopOn") : t("studio.interpretability.replay.loopOff")}
           aria-pressed={loop}
           onClick={() => setLoop((l) => !l)}
           className={cn(
@@ -846,6 +865,7 @@ export function NeuronHeatmapSection({
   stepIndex,
   onStepChange,
 }: SectionProps): ReactElement {
+  const t = useT();
   const numLayers   = metadata?.num_layers ?? (record ? Object.keys(record.layers).length : 0);
   const numChannels = metadata?.captured_channels?.length ?? 0;
   const capturedChannels = metadata?.captured_channels ?? [];
@@ -883,10 +903,10 @@ export function NeuronHeatmapSection({
         {/* Row 1: title + meta + controls */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
-            <CardTitle className="text-sm ml-1">Neuron Activations</CardTitle>
+            <CardTitle className="text-sm ml-1">{t("studio.interpretability.heatmap.title")}</CardTitle>
             {records.length > 0 && (
               <span className="rounded border border-border/60 px-2 py-0.5 text-ui-10 leading-none text-muted-foreground whitespace-nowrap">
-                {numLayers} layers · {numChannels} ch
+                {t("studio.interpretability.heatmap.sizeShort", { layers: numLayers, channels: numChannels })}
               </span>
             )}
           </div>
@@ -897,20 +917,20 @@ export function NeuronHeatmapSection({
                   <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" strokeLinecap="round"/>
                 </svg>
               )}
-              {record?.loss != null && <>loss {record.loss.toFixed(3)}</>}
+              {record?.loss != null && <>{t("studio.interpretability.heatmap.loss", { value: record.loss.toFixed(3) })}</>}
             </span>
             {isTraining && records.length > 0 && (
               <span className="flex items-center gap-1 text-ui-10 text-muted-foreground">
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-                Live
+                {t("studio.interpretability.heatmap.live")}
               </span>
             )}
             <button
               type="button"
               onClick={() => setInfoOpen(true)}
               className="rounded border border-border/60 px-1.5 py-0.5 text-ui-10 font-semibold text-muted-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground hover:border-border focus:text-foreground leading-none"
-              title="How to read this chart"
-              aria-label="Open interpretability guide"
+              title={t("studio.interpretability.heatmap.howToRead")}
+              aria-label={t("studio.interpretability.openGuide")}
             >
               ?
             </button>
@@ -918,8 +938,8 @@ export function NeuronHeatmapSection({
               type="button"
               onClick={() => setExpanded(true)}
               className="rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100"
-              title="Expand chart"
-              aria-label="Expand Neuron Activations chart"
+              title={t("studio.interpretability.expandChart")}
+              aria-label={t("studio.interpretability.heatmap.expandAria")}
             >
               <HugeiconsIcon icon={ArrowExpandDiagonal01Icon} className="size-3.5" />
             </button>
@@ -931,22 +951,22 @@ export function NeuronHeatmapSection({
           {VIEW_MODES.map((mode) => (
             <ModePill
               key={mode.key}
-              label={mode.label}
+              label={t(mode.label)}
               active={mode.key === "activations"}
               onClick={() => {}}
               latex={mode.latex}
-              description={mode.description}
+              description={t(mode.description)}
             />
           ))}
           <span className="mx-1 h-3.5 w-px rounded-full bg-border/60 shrink-0" />
           {OVERLAY_CONFIGS.map((ov) => (
             <ModePill
               key={ov.key}
-              label={ov.label}
+              label={t(ov.label)}
               active={activeOverlays.has(ov.key)}
               onClick={() => toggleOverlay(ov.key)}
               latex={ov.latex}
-              description={ov.description}
+              description={t(ov.description)}
               indicatorColor={ov.color}
               activeColor={ov.color}
             />
@@ -967,7 +987,7 @@ export function NeuronHeatmapSection({
 
         {!loading && records.length === 0 && (
           <p className="text-center text-ui-11 text-muted-foreground">
-            Activation data will appear here during training
+            {t("studio.interpretability.heatmap.emptyHint")}
           </p>
         )}
       </CardContent>
@@ -977,10 +997,10 @@ export function NeuronHeatmapSection({
         <DialogContent className="w-[90vw] max-w-none sm:max-w-none">
           <DialogHeader>
             <DialogTitle className="font-bold">
-              Neuron Activations
+              {t("studio.interpretability.heatmap.title")}
               {records.length > 0 && (
                 <span className="ml-2 text-sm font-normal text-muted-foreground">
-                  {numLayers} layers · {numChannels} channels
+                  {t("studio.interpretability.heatmap.size", { layers: numLayers, channels: numChannels })}
                 </span>
               )}
             </DialogTitle>
@@ -990,22 +1010,22 @@ export function NeuronHeatmapSection({
             {VIEW_MODES.map((mode) => (
               <ModePill
                 key={mode.key}
-                label={mode.label}
+                label={t(mode.label)}
                 active={mode.key === "activations"}
                 onClick={() => {}}
                 latex={mode.latex}
-                description={mode.description}
+                description={t(mode.description)}
               />
             ))}
             <span className="mx-1 h-3.5 w-px rounded-full bg-border/60 shrink-0" />
             {OVERLAY_CONFIGS.map((ov) => (
               <ModePill
                 key={ov.key}
-                label={ov.label}
+                label={t(ov.label)}
                 active={activeOverlays.has(ov.key)}
                 onClick={() => toggleOverlay(ov.key)}
                 latex={ov.latex}
-                description={ov.description}
+                description={t(ov.description)}
                 indicatorColor={ov.color}
                 activeColor={ov.color}
               />
