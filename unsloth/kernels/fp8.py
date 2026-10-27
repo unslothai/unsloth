@@ -2079,7 +2079,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
 
 @torch_compile
-def fbgemm_fp8_linear(
+def _fbgemm_fp8_linear_compiled(
     X,
     weight,
     weight_scale,
@@ -2088,6 +2088,184 @@ def fbgemm_fp8_linear(
     return FbgemmFp8Linear_matmul.apply(
         X, weight, weight_scale, bias, _fp8_rowwise_backend(X.device)
     )
+
+
+# Eager inference path for rowwise FP8. A call into the compiled wrapper costs 75-95 us of host time (Dynamo
+# guards, AOT runtime wrapper, generated Python) while the GPU work at decode / small prefill is 10-80 us, so
+# those linears were launch bound. Outside a trace and without autograd, launch the same kernels Inductor
+# generates directly; outputs are bitwise equal to the compiled path. UNSLOTH_FP8_ROWWISE_DIRECT=0 disables it.
+_FP8_ROWWISE_DIRECT = os.environ.get("UNSLOTH_FP8_ROWWISE_DIRECT", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+@triton.jit
+def _fp8_act_quant_per_row_kernel(
+    x_ptr,
+    y_ptr,
+    s_ptr,
+    ub_ptr,
+    K,
+    stride_xm,
+    HAS_UB: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    # _quantize_fp8_per_row in one launch, with the same fp32 math Inductor emits for it (bitwise equal).
+    row = tl.program_id(0).to(tl.int64)
+    x_row = x_ptr + row * stride_xm
+    y_row = y_ptr + row * K
+    amax = tl.zeros((BLOCK_K,), dtype = tl.float32)
+    nans = tl.zeros((BLOCK_K,), dtype = tl.int32)
+    for k in range(0, K, BLOCK_K):
+        offs = k + tl.arange(0, BLOCK_K)
+        x = tl.load(x_row + offs, mask = offs < K, other = 0.0).to(tl.float32)
+        amax = tl.maximum(amax, tl.abs(x))
+        nans += (x != x).to(tl.int32)
+    row_max = tl.max(amax, axis = 0)
+    # torch.amax / clamp propagate NaN; tl.max and tl.maximum drop it by default.
+    row_max = tl.where(tl.sum(nans, axis = 0) > 0, float("nan"), row_max)
+    if HAS_UB:
+        row_max = tl.minimum(
+            row_max, tl.load(ub_ptr).to(tl.float32), propagate_nan = tl.PropagateNan.ALL
+        )
+    scale = tl.maximum(
+        row_max / 448.0, 1.0 / (448.0 * 512.0), propagate_nan = tl.PropagateNan.ALL
+    )
+    for k in range(0, K, BLOCK_K):
+        offs = k + tl.arange(0, BLOCK_K)
+        mask = offs < K
+        x = tl.load(x_row + offs, mask = mask, other = 0.0).to(tl.float32)
+        y = tl.maximum(x / scale, -448.0, propagate_nan = tl.PropagateNan.ALL)
+        y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
+        tl.store(y_row + offs, y.to(tl.float8e4nv), mask = mask)
+    tl.store(s_ptr + row, scale)
+
+
+@triton.jit
+def _fp8_rowwise_dequant_kernel(w_ptr, s_ptr, y_ptr, numel, K, BLOCK: tl.constexpr):
+    # weight_dequant for a contiguous (N, K) weight with (N, 1) scales: one fp32 multiply, one rounding,
+    # as Inductor fuses it (an eager x.to(dtype) * s.to(dtype) rounds the scale first and differs).
+    offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < numel
+    w = tl.load(w_ptr + offs, mask = mask, other = 0.0).to(tl.float32)
+    s = tl.load(s_ptr + offs // K, mask = mask, other = 0.0).to(tl.float32)
+    tl.store(y_ptr + offs, (w * s).to(y_ptr.dtype.element_ty), mask = mask)
+
+
+def _fp8_rowwise_direct_route(X, weight, weight_scale):
+    """The compiled branch an eager call would take, when the direct path reproduces it; else None."""
+    if not (
+        _FP8_ROWWISE_DIRECT
+        and X.is_cuda
+        and X.dtype in (torch.bfloat16, torch.float16)
+        and weight.dtype == torch.float8_e4m3fn
+        and weight.dim() == 2
+        and weight_scale.dim() == 2
+        and torch.version.hip is None
+    ):
+        return None
+    N, K = weight.shape
+    if (
+        weight_scale.shape[0] != N
+        or weight_scale.shape[1] != 1
+        or X.shape[-1] != K
+        or N <= 1
+        or X.numel() == 0
+        or weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16)
+    ):
+        return None
+    if torch.is_grad_enabled() and (
+        X.requires_grad or weight.requires_grad or weight_scale.requires_grad
+    ):
+        return None
+    if (
+        not weight.is_contiguous()
+        or not weight_scale.is_contiguous()
+        or X.device != weight.device
+        or weight_scale.device != weight.device
+        or _fp8_e4m3fn_unsupported_in_trace(weight)
+    ):
+        return None
+    backend = _fp8_rowwise_backend(X.device)
+    if backend == "fbgemm" and N % 8 == 0 and K % 8 == 0:
+        return None
+    if backend == "scaled_mm" and N % 16 == 0 and K % 16 == 0 and X.numel() > 64 * K:
+        scale_ub = getattr(weight, "input_scale_ub", None)
+        if scale_ub is not None and (
+            not isinstance(scale_ub, torch.Tensor)
+            or scale_ub.numel() != 1
+            or scale_ub.device != X.device
+        ):
+            return None
+        return "scaled_mm"
+    return "dequant"
+
+
+def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
+    K = X.shape[-1]
+    output_shape = (*X.shape[:-1], -1)
+    if route == "scaled_mm":
+        x2 = X.reshape(-1, K)
+        if x2.stride(-1) != 1:
+            x2 = x2.contiguous()
+        M = x2.shape[0]
+        x_quantized = torch.empty((M, K), device = X.device, dtype = torch.float8_e4m3fn)
+        x_scale = torch.empty((M, 1), device = X.device, dtype = torch.float32)
+        scale_ub = getattr(weight, "input_scale_ub", None)
+        block_k = min(triton.next_power_of_2(K), 4096)
+        with _fp8_triton_device_context(X, static_device_count = True):
+            _fp8_act_quant_per_row_kernel[(M,)](
+                x2,
+                x_quantized,
+                x_scale,
+                x_scale if scale_ub is None else scale_ub,
+                K,
+                x2.stride(0),
+                HAS_UB = scale_ub is not None,
+                BLOCK_K = block_k,
+                num_warps = 8 if block_k <= 2048 else 16,
+            )
+        output = torch._scaled_mm(
+            x_quantized,
+            weight.t(),
+            scale_a = x_scale,
+            scale_b = (
+                weight_scale if weight_scale.dtype == torch.float32 else weight_scale.float()
+            ).view(1, -1),
+            out_dtype = X.dtype,
+            use_fast_accum = True,
+        )
+    else:
+        W_deq = torch.empty(weight.shape, device = weight.device, dtype = X.dtype)
+        numel = W_deq.numel()
+        with _fp8_triton_device_context(weight, static_device_count = True):
+            _fp8_rowwise_dequant_kernel[(triton.cdiv(numel, 1024),)](
+                weight, weight_scale, W_deq, numel, K, BLOCK = 1024, num_warps = 4
+            )
+        output = torch_matmul(X, W_deq.t())
+    if bias is not None:
+        output = output + bias
+    # FbgemmFp8Linear keeps its bias in float32; only cast when it promoted (a no-op .to() aliases).
+    if output.dtype != X.dtype:
+        output = output.to(X.dtype)
+    return output.reshape(output_shape) if route == "scaled_mm" else output
+
+
+def fbgemm_fp8_linear(
+    X,
+    weight,
+    weight_scale,
+    bias = None,
+):
+    # Traced (a user's torch.compile) or needing autograd: the compiled wrapper, as before.
+    if not torch.compiler.is_compiling():
+        route = _fp8_rowwise_direct_route(X, weight, weight_scale)
+        if route is not None:
+            return _fp8_rowwise_direct(X, weight, weight_scale, bias, route)
+    return _fbgemm_fp8_linear_compiled(X, weight, weight_scale, bias)
 
 
 class FP8_fbgemm_block_linear(torch.autograd.Function):
