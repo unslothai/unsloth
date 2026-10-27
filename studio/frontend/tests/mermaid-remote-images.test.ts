@@ -121,7 +121,6 @@ test("many `@{` sharing one close are not each parsed to the end", () => {
     const started = performance.now();
     const out = stripRemoteDiagramImages(source);
     assert.ok(performance.now() - started < 1000, `${filler}: ${performance.now() - started} ms`);
-    // The remote image is taken out, or every opener is made inert.
     assert.equal(out.includes("attacker.example") && out.includes("@{"), false);
   }
 });

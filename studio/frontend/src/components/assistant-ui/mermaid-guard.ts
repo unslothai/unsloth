@@ -54,17 +54,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Every `@{` that closes on a block that could name an image, with that block: up to the first `}`
- * outside a "string", as mermaid's lexer ends shape data. Whether a given `@{` is shape data or text
- * (a quoted label, accessibility text, a sequence message) depends on lexer state, so each one is read
- * on its own and the blocks may overlap. A block holding neither `img` nor a `\` escape cannot name
- * one, so it is left out before any parsing.
+ * Every `@{` with its block up to the first `}` outside a "string", read on its own: lexer state decides
+ * whether a `@{` is shape data or text, so blocks may overlap. Blocks without `img` or `\` are skipped.
  */
 function shapeDataBlocks(source: string): { start: number; end: number; body: string }[] {
   const blocks: { start: number; end: number; body: string }[] = [];
   if (!source.includes("@{")) return blocks;
-  // The first `}` outside a string when a scan starts at i outside one (closeFrom) or inside one
-  // (quotedFrom), built once from the end so many `@{` markers still cost linear time.
+  // First `}` outside a string from i, starting outside (closeFrom) or inside (quotedFrom) one: linear.
   const closeFrom = new Int32Array(source.length + 1).fill(-1);
   const quotedFrom = new Int32Array(source.length + 1).fill(-1);
   for (let index = source.length - 1; index >= 0; index--) {
@@ -77,7 +73,6 @@ function shapeDataBlocks(source: string): { start: number; end: number; body: st
       quotedFrom[index] = quotedFrom[index + 1];
     }
   }
-  // Where the first `img` (any case) or `\` at or after i ends, so the check costs O(1) per `@{`.
   const hintEnd = new Int32Array(source.length + 1).fill(-1);
   for (let index = source.length - 1; index >= 0; index--) {
     if (source[index] === "\\") hintEnd[index] = index + 1;
@@ -97,15 +92,12 @@ function shapeDataBlocks(source: string): { start: number; end: number; body: st
 // Mermaid's own entity for `@`: it shows as `@` in text and never opens shape data.
 const INERT_OPENER = "#64;{";
 
-// Characters of block text parsed per diagram. Blocks may share a close, so their lengths can sum to
-// the square of the source; past this every `@{` is made inert instead of parsed.
+// Overlapping blocks can sum to the source's square; past this every `@{` is made inert unparsed.
 const PARSE_BUDGET = 1 << 20;
 
 /**
- * Each `@{` read as a block that would name a remote image gets that image taken out. When such
- * readings overlap, which one mermaid takes depends on lexer state, so every opener in that run of
- * overlapping blocks is made inert; a block overlapping none is rewritten in place. A rewrite can
- * change how a neighbouring `@{` reads, so the result is vetted again until it is stable.
+ * Remote images taken out of every block: a lone block is rewritten, a run of overlapping ones has all
+ * its openers made inert (which reading wins depends on lexer state). Repeats until stable.
  */
 function withoutRemoteShapeImages(source: string): string {
   let current = source;
@@ -124,7 +116,6 @@ function withoutRemoteShapeImages(source: string): string {
     let out = "";
     let at = 0;
     for (let first = 0; first < fetching.length; ) {
-      // Blocks come in start order; a run lasts while the next one starts before the run ends.
       let last = first;
       let runEnd = fetching[first].end;
       while (last + 1 < fetching.length && fetching[last + 1].start < runEnd) {
