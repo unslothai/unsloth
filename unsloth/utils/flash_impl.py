@@ -75,7 +75,6 @@ def _log_once(message, level = logging.INFO):
 
 
 def _warn_explicit(requested):
-    """An explicit fa3 / fa4 request that falls back says why; auto stays quiet."""
     if requested not in (None, "auto"):
         _log_once(
             f"Unsloth: {_ENV}={requested.lower()} not used: {FLASH_IMPL_STATE['reason']}",

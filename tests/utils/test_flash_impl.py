@@ -803,8 +803,6 @@ def test_hidden_size_follows_get_text_config():
 @pytest.mark.parametrize("value", ["fa3", "fa4"])
 @pytest.mark.parametrize("case", ["device", "registry"])
 def test_explicit_request_that_falls_back_warns(fake, monkeypatch, caplog, value, case):
-    """UNSLOTH_FLASH_ATTENTION_IMPL=fa3 / fa4 on an A100 / L4 (or a torch without the registry) fell
-    back to bundled flash without a word; only a failed probe or a missing package warned."""
     import logging
 
     monkeypatch.setitem(fi.FLASH_IMPL_STATE, "logged", set())
