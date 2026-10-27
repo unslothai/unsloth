@@ -5,6 +5,7 @@ flash-attn) instead of SDPA over a dense block-causal mask; heads past flash's 2
 layers, 512) and shapes an FA4 / FA3 impl refuses run SDPA's memory-efficient kernel over the same
 cu_seqlens. Anything else reaches the wrapped "sdpa"."""
 
+import contextlib
 import inspect
 import logging
 import os
@@ -691,26 +692,41 @@ def _varlen_in_graph_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, w
     return _VARLEN_IN_GRAPH[key]
 
 
+def _no_saved_tensor_hooks():
+    # Only the innermost pair applies. Pushing raises while torch has hooks disabled: keep the ambient state.
+    enabled = getattr(torch._C._autograd, "_saved_tensors_hooks_is_enabled", lambda: True)
+    if enabled():
+        return torch.autograd.graph.saved_tensors_hooks(_identity, _identity)
+    return contextlib.nullcontext()
+
+
+def _identity(tensor):
+    return tensor
+
+
 def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
     """aten's flash varlen takes this shape on this device: one real forward and backward (a build
     that refuses at run time would otherwise fail inside the compiled graph)."""
-    try:
-        from .flash_impl import flash_impl_allows
+    # Cached for all grad modes; first trace may be no_grad (reentrant checkpoint), where backward raises.
+    # Identity hooks: a non-reentrant checkpoint's pack hooks would make the probe's backward recompute the block.
+    with torch.inference_mode(False), torch.enable_grad(), _no_saved_tensor_hooks():
+        try:
+            from .flash_impl import flash_impl_allows
 
-        device = torch.device("cuda", device_index)
-        query = torch.zeros(1, n_heads, 16, head_dim, device = device, dtype = dtype)
-        key = torch.zeros(1, n_kv_heads, 16, head_dim, device = device, dtype = dtype)
-        torch_varlen = _torch_varlen(device)
-        # Hardware and build only: the sdpa policy can change, block_varlen_kwargs checks it each step.
-        if torch_varlen is None or not flash_impl_allows(head_dim, window, device):
+            device = torch.device("cuda", device_index)
+            torch_varlen = _torch_varlen(device)
+            # Hardware and build only: the sdpa policy can change, block_varlen_kwargs checks it each step.
+            if torch_varlen is None or not flash_impl_allows(head_dim, window, device):
+                return False
+            query = torch.zeros(1, n_heads, 16, head_dim, device = device, dtype = dtype)
+            key = torch.zeros(1, n_kv_heads, 16, head_dim, device = device, dtype = dtype)
+            query.requires_grad_()
+            cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
+            out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
+            out.float().sum().backward()
+            return True
+        except Exception:
             return False
-        query.requires_grad_()
-        cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
-        out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
-        out.float().sum().backward()
-        return True
-    except Exception:
-        return False
 
 
 _varlen_in_graph = torch._dynamo.assume_constant_result(_varlen_in_graph_eager)

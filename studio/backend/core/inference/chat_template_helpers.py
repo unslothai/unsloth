@@ -140,7 +140,8 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # Tool RESULT / CATALOG markup forges trusted context; tool CALL spellings are the assistant's own.
     r"|tool_response|tool"
     r"|assistant|return|system|start|turn|user|call)\|?>"
-    r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
+    # DeepSeek-V4.1 rejects this marker in string content and treats text-block copies as images.
+    r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence|deepseek_image)\uff5c>"
     # Optional slash: Gemma delimiters are bare tags, so a replayed </start_of_turn> is a boundary too
     r"|/?(?:(?:start|end)_of_turn|eos|bos|s|sop|tool_response|tools"
     r"|start_of_image|image_soft_token|audio_soft_token)>"

@@ -2315,6 +2315,7 @@ export const ar = {
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
+        apiDescription: "شاهد ما ترسله التطبيقات الأخرى إلى واجهة برمجة هذا الخادم فور وصوله.",
         summary: "الطلبات المباشرة والأخطاء واستخدام التوكنات",
         status: "نشطة: {active} · حديثة: {recent} · {model}",
         noModelLoaded: "لا يوجد نموذج محمّل",
