@@ -23,6 +23,7 @@ import functools
 import math
 import os
 import sys
+import types
 from typing import Callable, Optional, Union
 
 import torch
@@ -3346,6 +3347,34 @@ def _has_cpu_tensors(optimizer, grads = False):
     return False
 
 
+def _local_grads_if_mixed(optimizer):
+    """`optimizer`, or a stand-in whose DTensor grads are their local shards when DTensor and plain grads mix.
+
+    One foreach unscale takes one kind: a tensor parallel language model (DTensor LoRA grads) beside an
+    unsharded vision tower (plain grads) raised "got mixed torch.Tensor and DTensor" in every float16
+    step. The unscale is elementwise, so the local shard (same storage) is the same result; found_inf is
+    all-reduced over the scaler's process group afterwards, which covers the DTensor mesh."""
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        return optimizer
+    groups, dtensor, plain = [], False, False
+    for group in optimizer.param_groups:
+        params = []
+        for p in group["params"]:
+            grad = p.grad
+            if isinstance(grad, DTensor):
+                dtensor = True
+                grad = grad._local_tensor
+            elif grad is not None:
+                plain = True
+            params.append(types.SimpleNamespace(grad = grad))
+        groups.append({"params": params})
+    if not (dtensor and plain):
+        return optimizer
+    return types.SimpleNamespace(param_groups = groups)
+
+
 def _scaler_for_native(trainer):
     """float16: the GradScaler's inf check must agree over ranks, or one rank skips a step the
     others take. ShardedGradScaler all-reduces it."""
@@ -3399,7 +3428,9 @@ def _scaler_for_native(trainer):
             # CPU grads get non_blocking copies of CUDA inv_scale / found_inf, read before they land.
             if inv_scale.device.type != "cpu" and _has_cpu_tensors(optimizer, grads = True):
                 inv_scale, found_inf = inv_scale.cpu(), found_inf.cpu()
-            return super()._unscale_grads_(optimizer, inv_scale, found_inf, allow_fp16)
+            return super()._unscale_grads_(
+                _local_grads_if_mixed(optimizer), inv_scale, found_inf, allow_fp16
+            )
 
         def step(self, optimizer, *args, **kwargs):
             # Same race for a fused optimizer's grad_scale / found_inf on CPU parameters: use host copies.
