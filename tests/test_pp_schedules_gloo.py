@@ -40,7 +40,19 @@ from test_pp_native_gloo import (  # noqa: E402
 
 ARCHS = {"llama": LLAMA, "qwen3": QWEN3, "gemma3": GEMMA3, "mistral": MISTRAL}
 MULTI = ["interleaved1f1b", "loopedbfs", "interleavedzerobubble", "zbvzerobubble", "dualpipev"]
+V_SCHEDULES = ("zbvzerobubble", "dualpipev")
 N_LAYERS = 8
+
+
+def _v_supported():
+    import importlib
+
+    return importlib.import_module("unsloth.models.pp_schedules").v_schedules_supported()
+
+
+def _skip_v(schedule):
+    if schedule in V_SCHEDULES and not _v_supported():
+        pytest.skip(f"V schedules need torch >= 2.13 (refused on {torch.__version__}, see the refusal test)")
 
 
 def _stage_map(pp, schedule, v = 2):
@@ -261,7 +273,8 @@ def _case_refusals(rank, world, tmp):
 
     reentrant = build(LLAMA)
     _enable_reentrant_gc(reentrant)
-    attempt("zb_reentrant_gc", reentrant, schedule = "zbvzerobubble", n_microbatches = 4)
+    attempt("zb_reentrant_gc", reentrant, schedule = "interleavedzerobubble", n_microbatches = 4)
+    attempt("v_schedule", build(LLAMA), schedule = "zbvzerobubble", n_microbatches = 4)
 
     fake = types.ModuleType("unsloth_zoo.gradient_checkpointing")  # pre-#2071 zoo: no slot leases
     saved = sys.modules.get("unsloth_zoo.gradient_checkpointing")
@@ -355,6 +368,7 @@ def _spawn(case, world = 2, keep = None, **kwargs):
 
 @pytest.mark.parametrize("schedule", MULTI)
 def test_pp2_multi_stage_schedules_match_one_process(schedule):
+    _skip_v(schedule)
     saved = {}
     results = _spawn("multi", 2, keep = saved, arch = "llama", schedule = schedule)
     _check_multi(results, saved, 2, schedule)
@@ -362,6 +376,7 @@ def test_pp2_multi_stage_schedules_match_one_process(schedule):
 
 @pytest.mark.parametrize("schedule", ["interleaved1f1b", "zbvzerobubble"])
 def test_pp4_multi_stage_schedules_match_one_process(schedule):
+    _skip_v(schedule)
     saved = {}
     results = _spawn("multi", 4, keep = saved, arch = "mistral", schedule = schedule, n_mb = 4)
     _check_multi(results, saved, 4, schedule)
@@ -376,6 +391,7 @@ def test_pp2_interleaved1f1b_other_archs_match_one_process(arch):
 
 def test_pp2_dualpipev_tied_embeddings_both_ends_on_rank0():
     # V placement puts the first and the last stage on rank 0: the tied embedding / lm_head stay there only.
+    _skip_v("dualpipev")
     saved = {}
     results = _spawn("multi", 2, keep = saved, arch = "gemma3", schedule = "dualpipev", tie = True)
     _check_multi(results, saved, 2, "dualpipev")
@@ -390,10 +406,12 @@ def test_pp2_multi_stage_reentrant_gradient_checkpointing_matches_one_process(sc
     _check_multi(results, saved, 2, schedule)
 
 
-def test_pp2_zero_bubble_with_non_reentrant_checkpointing_matches_one_process():
+@pytest.mark.parametrize("schedule", ["interleavedzerobubble", "zbvzerobubble"])
+def test_pp2_zero_bubble_with_non_reentrant_checkpointing_matches_one_process(schedule):
+    _skip_v(schedule)
     saved = {}
-    results = _spawn("multi", 2, keep = saved, arch = "llama", schedule = "zbvzerobubble", gc = "non_reentrant")
-    _check_multi(results, saved, 2, "zbvzerobubble")
+    results = _spawn("multi", 2, keep = saved, arch = "llama", schedule = schedule, gc = "non_reentrant")
+    _check_multi(results, saved, 2, schedule)
 
 
 def test_pp4_interleaved1f1b_x_tp2_matches_one_process():
@@ -409,18 +427,26 @@ def test_pp4_interleaved1f1b_x_tp2_matches_one_process():
 def test_multi_stage_refusals_leave_the_model_uncut():
     res = _spawn("refusals", 2)[0]
     for key in [k for k in res if not k.endswith(":uncut")]:
-        if key == "loopedbfs_old_zoo":
+        if key == "loopedbfs_old_zoo" or (key == "v_schedule" and _v_supported()):
             continue
         assert res[key + ":uncut"], (key, res[key])
     assert "pipeline schedule must be one of" in res["unknown"]
     assert "runs one stage per rank" in res["gpipe_two_stages"]
     assert "exactly 2 stages per rank" in res["zbv_three_stages"]
-    assert "DualPipeV requires at least as many microbatches as stages" in res["dualpipev_few_microbatches"]
+    assert (
+        "DualPipeV requires at least as many microbatches as stages"
+        if _v_supported()
+        else "needs torch >= 2.13"
+    ) in res["dualpipev_few_microbatches"]
     assert "multiple of the number of rounds" in res["interleaved_rounds"]
     assert "cannot split 3 decoder layers into 4 pipeline stages" in res["too_many_stages"]
     assert "splits each backward into an input and a weight pass" in res["zb_reentrant_gc"]
     assert "interleaves forwards and backwards" in res["interleaved_old_zoo"]
     assert res["loopedbfs_old_zoo"] is None
+    if _v_supported():
+        assert res["v_schedule"] is None
+    else:
+        assert "needs torch >= 2.13" in res["v_schedule"]
 
 
 def test_multi_stage_on_a_pp_x_dp_mesh_is_refused_before_the_cut():

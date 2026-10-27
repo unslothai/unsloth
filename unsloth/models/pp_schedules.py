@@ -122,6 +122,16 @@ class _NoParams(nn.Module):
         return x
 
 
+def v_schedules_supported():
+    """torch's PipelineStage handles two adjacent stages on one rank (V placement) from torch 2.13
+    (PipelineStage._is_same_rank); torch 2.10's stage setup fails there (ZBVZeroBubble / DualPipeV)."""
+    try:
+        from torch.distributed.pipelining import PipelineStage
+    except ImportError:
+        return False
+    return hasattr(PipelineStage, "_is_same_rank")
+
+
 def validate_schedule(spec, group, pp, stages_per_rank, n_microbatches, rank):
     """Build the torch schedule on parameter-free placeholder stages (no communication) so its own checks run
     before the model is cut. Returns {"interleaved": bool, "split_backward": bool} for the compute order of
@@ -129,6 +139,12 @@ def validate_schedule(spec, group, pp, stages_per_rank, n_microbatches, rank):
     from torch.distributed.pipelining import PipelineStage
 
     cls = torch_schedule_class(spec)
+    if spec.style == "v" and not v_schedules_supported():
+        raise ValueError(
+            f"Unsloth: the {spec.name} pipeline schedule (V placement: two adjacent stages on one rank) needs "
+            f"torch >= 2.13; on torch {torch.__version__} torch's stage setup between them fails. Use "
+            "'interleaved1f1b' or 'interleavedzerobubble'."
+        )
     num_stages = pp * stages_per_rank
     local = stage_indices(spec, rank, pp, stages_per_rank)
     example = torch.empty((1, 1), device = "meta")
@@ -165,12 +181,13 @@ def validate_schedule(spec, group, pp, stages_per_rank, n_microbatches, rank):
         for action in actions:
             if action is None:
                 continue
-            kind = str(getattr(action.computation_type, "value", action.computation_type))
-            if kind == "F":
+            # By name: the enum's values are ints on torch 2.10, letters later.
+            kind = getattr(action.computation_type, "name", str(action.computation_type))
+            if kind == "FORWARD":
                 interleaved = interleaved or seen_backward
-            elif kind in ("B", "I", "W"):
+            elif kind in ("FULL_BACKWARD", "BACKWARD_INPUT", "BACKWARD_WEIGHT"):
                 seen_backward = True
-                split = split or kind in ("I", "W")
+                split = split or kind != "FULL_BACKWARD"
     return {"interleaved": interleaved, "split_backward": split}
 
 
