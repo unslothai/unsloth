@@ -241,6 +241,9 @@ def _cudnn_length_bucketed_sdpa(
         and torch.is_grad_enabled()
         and (Q.requires_grad or K.requires_grad or V.requires_grad)
         and not torch.compiler.is_compiling()
+        # A replay must re-pad an updated static mask, and inference tensors have no version counter.
+        and not torch.is_inference(attn_mask)
+        and not (torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())
     ):
         padded = _shared_padded_mask(attn_mask, pad)
     else:

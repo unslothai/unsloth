@@ -528,3 +528,32 @@ def test_masked_bucket_additive_mask_saved_once_on_cudnn():
             outs.append(ad._cudnn_length_bucketed_sdpa(q, k, v, attn_mask = mask))
     assert len(saved) == 1, saved
     sum(o.float().sum() for o in outs).backward()
+
+
+def _cpu_bucketed_masks(monkeypatch, mask, q_len, layers = 2):
+    seen = []
+    monkeypatch.setattr(
+        ad, "scaled_dot_product_attention", lambda Q, K, V, attn_mask = None, **kw: (seen.append(attn_mask), Q)[1]
+    )
+    for _ in range(layers):
+        q = torch.randn(2, 4, q_len, 8, requires_grad = True)
+        ad._cudnn_length_bucketed_sdpa(q, q, q, attn_mask = mask)
+    return seen
+
+
+def test_masked_bucket_skips_the_shared_mask_under_cuda_graph_capture(monkeypatch):
+    """A captured graph must record the padding: a cached copy from warmup would freeze the static mask."""
+    mask = torch.zeros(2, 1, 200, 200)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    seen = _cpu_bucketed_masks(monkeypatch, mask, 200)
+    assert len({m.data_ptr() for m in seen}) == len(seen)
+    assert mask not in ad._PADDED_ADDITIVE_MASKS
+
+
+def test_masked_bucket_takes_an_inference_mode_mask(monkeypatch):
+    """Inference tensors have no version counter: a mask built under inference_mode is padded per call."""
+    with torch.inference_mode():
+        mask = torch.zeros(2, 1, 200, 200)
+    seen = _cpu_bucketed_masks(monkeypatch, mask, 200)
+    assert len(seen) == 2 and seen[0].shape == (2, 1, 256, 256)
