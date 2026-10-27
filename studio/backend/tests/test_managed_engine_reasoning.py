@@ -193,12 +193,13 @@ def test_load_flags_come_from_the_engine_template():
     assert _detect_safetensors_features(backend, None)["supports_reasoning"] is False
 
 
-def test_managed_engine_chat_is_fitted_to_the_engine_window():
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_managed_engine_chat_is_fitted_to_the_engine_window(engine):
     from core.inference.orchestrator import InferenceOrchestrator
 
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
     orchestrator.active_model_name = "m"
-    orchestrator.models = {"m": {"engine": "vllm", "context_length": 2048}}
+    orchestrator.models = {"m": {"engine": engine, "context_length": 2048}}
     calls = []
 
     def count(
@@ -233,38 +234,39 @@ def test_managed_engine_chat_is_fitted_to_the_engine_window():
     assert unchanged["messages"] == messages
 
 
-def test_sglang_chat_is_fitted_by_estimate_within_the_engine_window():
-    from core.inference.orchestrator import InferenceOrchestrator
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_both_managed_engines_count_the_prompt_with_their_tokenize_route(monkeypatch, engine):
+    # SGLang's /tokenize renders messages through its chat template like vLLM's.
+    from core.inference import managed_engine
 
-    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
-    orchestrator.active_model_name = "m"
-    orchestrator.models = {"m": {"engine": "sglang", "context_length": 2048}}
-    orchestrator._managed_engine = SimpleNamespace(adapter = ADAPTERS["sglang"])
+    sent = []
 
-    def count(*args, **kwargs):
-        raise RuntimeError("Exact prompt token counting is unavailable for this engine.")
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
 
-    orchestrator.count_chat_tokens = count
-    turn = "word " * 400
-    messages = []
-    for index in range(10):
-        messages += [
-            {"role": "user", "content": f"q{index} {turn}"},
-            {"role": "assistant", "content": f"a{index} {turn}"},
-        ]
-    messages.append({"role": "user", "content": "latest"})
-    fitted = orchestrator.compact_chat_context(
-        messages, context_overflow = "truncate_oldest", max_tokens = 256
-    )
-    assert fitted["messages"][-1]["content"] == "latest"
-    truncation = next(e for e in fitted["events"] if e.get("type") == "context_truncated")
-    assert truncation["fits"] and truncation["prompt_tokens_after"] <= 2048 * 3 // 4 - 256
-    # SGLang refuses prompt + cap past the window, so a cap above a quarter is reserved whole.
-    fitted = orchestrator.compact_chat_context(
-        messages, context_overflow = "truncate_oldest", max_tokens = 1024
-    )
-    truncation = next(e for e in fitted["events"] if e.get("type") == "context_truncated")
-    assert truncation["fits"] and truncation["prompt_tokens_after"] <= (2048 - 1024) * 3 // 4
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(
+            self,
+            url,
+            headers = None,
+            json = None,
+        ):
+            sent.append((url, json))
+            return SimpleNamespace(raise_for_status = lambda: None, json = lambda: {"count": 11})
+
+    monkeypatch.setattr(managed_engine.httpx, "Client", _Client)
+    managed = ManagedEngine(engine)
+    managed.base_url, managed.model = "http://engine", "m"
+    assert managed.count_tokens([{"role": "user", "content": "hi"}], "Be brief.")[0] == 11
+    url, body = sent[-1]
+    assert url == "http://engine/tokenize"
+    assert body["messages"][0] == {"role": "system", "content": "Be brief."}
 
 
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():

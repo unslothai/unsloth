@@ -53,9 +53,6 @@ def __getattr__(name: str):
 
 logger = get_logger(__name__)
 
-# Matches routes.inference._EXTERNAL_COMPACTION_HEADROOM.
-_ESTIMATED_FIT_HEADROOM = 0.25
-
 # Delimited, not a whitelist: a whitelist stopped at the apostrophe in `/home/o'connor/`.
 _PATH_COMPONENT = r"[^\s\\/](?:(?:(?![A-Za-z]:[\\/])[^\\/\n\",;])*[^\s\\/])?"
 # Second alternative: the root-level case (`/model.gguf`, `\\server\share`) has no trailing separator.
@@ -2784,15 +2781,6 @@ class InferenceOrchestrator:
         ):
             return unchanged
 
-        managed = getattr(self, "_managed_engine", None)
-        estimated = managed is not None and not managed.adapter.exact_token_count
-        if estimated:
-            window = context_length
-            context_length = int(window * (1 - _ESTIMATED_FIT_HEADROOM))
-            # SGLang refuses prompt + cap past the window; the fit reserves at most a quarter for it.
-            if max_tokens and 0 < max_tokens < window:
-                context_length = min(context_length, window - max_tokens)
-
         conversation = []
         if system_prompt:
             conversation.append({"role": "system", "content": system_prompt})
@@ -2801,7 +2789,6 @@ class InferenceOrchestrator:
         try:
             from core.inference.chat_template_helpers import trailing_assistant_resume_kind
             from core.inference.context_window import (
-                estimate_messages_tokens_conservative,
                 messages_without_unpriced_media,
                 retrieval_budget,
             )
@@ -2839,10 +2826,6 @@ class InferenceOrchestrator:
             def _count(fitted):
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("Context compaction cancelled")
-                if estimated:
-                    return estimate_messages_tokens_conservative(
-                        messages_without_unpriced_media(fitted)
-                    )
                 return self.count_chat_tokens(
                     fitted,
                     "",

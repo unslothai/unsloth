@@ -304,6 +304,7 @@ ADAPTERS = {
         "--context-length",
         "--mem-fraction-static",
         ("--attention-backend", "triton", "--sampling-backend", "pytorch"),
+        True,
     ),
 }
 
