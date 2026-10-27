@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# A staged update (or a moved Studio home) puts NODE_DIR somewhere other than the managed Node
-# on PATH. The installer's metadata beside that Node must still route it through the pin check.
+# Installer metadata beside the PATH Node routes it through the pin check when NODE_DIR differs.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

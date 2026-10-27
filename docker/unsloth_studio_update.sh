@@ -496,9 +496,7 @@ if ! studio_tree_ok; then
     log "If a new dependency is missing, re-run with --with-deps."
     exit 1
 fi
-# Studio's managed Node follows the new package's pin, as `unsloth studio update` does through
-# setup; an unchanged pin downloads nothing. Only the image's own Node dir (the installer's
-# metadata), never a user's; a failure keeps the current Node and does not fail the update.
+# Move the image's managed Node (never a user's) to the new pin; failure keeps the old Node.
 refresh_managed_node() {
     local node_dir="$STUDIO_HOME/node" installer
     [ "${UNSLOTH_SKIP_NODE_INSTALL:-0}" = "1" ] && return 0

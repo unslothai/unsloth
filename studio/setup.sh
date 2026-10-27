@@ -2135,8 +2135,7 @@ _node_on_path="$(command -v node || true)"
 if [ -n "$_node_on_path" ] && [ "$_node_on_path" -ef "$NODE_DIR/bin/node" ]; then
     _NODE_ON_PATH_IS_MANAGED=1
 elif [ -n "$_node_on_path" ]; then
-    # A staged update or a moved Studio home puts NODE_DIR elsewhere; the installer's
-    # metadata beside the Node on PATH still marks it as the one Unsloth manages.
+    # Staged update / moved home: installer metadata beside the PATH Node marks it managed.
     _node_on_path_root="$(cd "$(dirname "$_node_on_path")/.." 2>/dev/null && pwd -P)" || _node_on_path_root=""
     if [ -n "$_node_on_path_root" ] && [ -f "$_node_on_path_root/UNSLOTH_NODE_PREBUILT_INFO.json" ]; then
         _NODE_ON_PATH_IS_MANAGED=1
