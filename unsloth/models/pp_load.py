@@ -1,0 +1,276 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Per-stage loading for pipeline parallelism: each rank reads only the decoder layers its stages keep.
+
+Without it every rank loads the whole model and apply_pipeline_parallel drops the other stages' layers, so the
+load peak is the full model on every GPU and a model larger than one GPU cannot be split at all. Inside
+`pipeline_sharded_loading(pp_mesh, schedule, config)` every transformers `from_pretrained` (FastLanguageModel,
+FastModel and plain transformers loaders all end there) builds the model on meta, derives the same split
+apply_pipeline_parallel will use (weights only, so LoRA added later does not move it), then reads from the
+safetensors checkpoint:
+
+* the decoder layers of this rank's stages, the final norm and the other non-layer modules whole;
+* the input embedding only on the rank holding the first stage and the output head only on the rank
+  holding the last one (a tied pair is read where either end lives);
+* every other weight as a storage-free placeholder of the right shape, dtype and device (zero stride).
+
+get_peft_model then attaches full-size LoRA everywhere with the 1-GPU initialization, and
+apply_pipeline_parallel (which must use the same mesh, schedule and stage split, checked) replaces the
+placeholder layers, embedding and head by its pass-throughs and stubs. A forward before that is refused.
+16-bit checkpoints only.
+
+    mesh = init_device_mesh("cuda", (pp,), mesh_dim_names = ("pp",))
+    with pipeline_sharded_loading(mesh["pp"], schedule = "1f1b"):
+        model, tokenizer = FastLanguageModel.from_pretrained(name, load_in_4bit = False, ...)
+    model = FastLanguageModel.get_peft_model(model, ...)
+    pp = apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 4, schedule = "1f1b")
+"""
+
+from __future__ import annotations
+
+import contextlib
+
+import torch
+import torch.nn as nn
+
+__all__ = [
+    "pipeline_sharded_loading",
+    "load_pipeline_parallel",
+    "check_preloaded_split",
+]
+
+_MARK = "_unsloth_pp_preload"
+_GUARDS = "_unsloth_pp_preload_guards"
+_PLACEHOLDER = "_unsloth_pp_placeholder"
+_QUANTIZED_HINT = (
+    "4-bit / 8-bit QLoRA loads the full quantized model and is split by apply_pipeline_parallel: drop "
+    "pipeline_sharded_loading for it, or pass load_in_4bit = False."
+)
+
+
+def _placeholder_param(old, device):
+    value = torch.zeros((), dtype = old.dtype, device = device).expand(old.shape)
+    new = nn.Parameter(value, requires_grad = old.requires_grad)
+    setattr(new, _PLACEHOLDER, True)
+    return new
+
+
+def is_placeholder(t):
+    return bool(getattr(t, _PLACEHOLDER, False))
+
+
+def _refuse_unsplit_forward(module, args, kwargs = None):
+    raise RuntimeError(
+        "Unsloth: this model was loaded with pipeline_sharded_loading (each rank holds only its stages' "
+        "layers); call apply_pipeline_parallel(model, pp_mesh, ...) with the same mesh, schedule and split "
+        "after get_peft_model and before running it."
+    )
+
+
+def _split_for(model, mesh, schedule, config):
+    from .pp_native import PPConfig, _find_parts, _refuse_unsupported, derive_pp_split
+    from .pp_schedules import resolve_stages_per_rank, schedule_spec, stage_indices
+
+    config = config or PPConfig()
+    spec = schedule_spec(schedule)
+    v = resolve_stages_per_rank(spec, config.stages_per_rank)
+    pp, rank = mesh.size(), mesh.get_local_rank()
+    parts = _find_parts(model)
+    # The structural refusals (MoE, MLA, ...) before anything is read. Every weight of a fresh load is
+    # trainable until get_peft_model freezes it: those refusals run again at apply_pipeline_parallel.
+    flags = [(p, p.requires_grad) for p in model.parameters()]
+    for p, _ in flags:
+        p.requires_grad_(False)
+    try:
+        _refuse_unsupported(model, parts)
+    finally:
+        for p, flag in flags:
+            p.requires_grad_(flag)
+    bounds = derive_pp_split(model, pp * v, config)
+    local = stage_indices(spec, rank, pp, v)
+    return parts, spec, v, bounds, tuple(local)
+
+
+def _materialize(model, name, kwargs, mesh, plan, device):
+    from .tp_native import _fill_from_checkpoint
+
+    schedule, config = plan
+    parts, spec, v, bounds, local = _split_for(model, mesh, schedule, config)
+    total = len(bounds)
+    owned = {i for k in local for i in range(*bounds[k])}
+    holds_first, holds_last = 0 in local, total - 1 in local
+    skip = set()
+    for i, layer in enumerate(parts.layers):
+        if i not in owned:
+            skip.update(id(p) for p in layer.parameters())
+    keep = set()
+    if holds_first:
+        keep.update(id(p) for p in parts.embed.parameters())
+    if holds_last:
+        keep.update(id(p) for p in parts.lm_head.parameters())
+    for module in (parts.embed, parts.lm_head):
+        skip.update(id(p) for p in module.parameters() if id(p) not in keep)
+    placeholders = []
+
+    def read_local(old, reader, key):
+        if id(old) not in skip:
+            return None
+        new = _placeholder_param(old, device)
+        placeholders.append(new)
+        return new
+
+    reader, skipped_numel, full_numel = _fill_from_checkpoint(
+        model,
+        name,
+        kwargs,
+        device,
+        read_local,
+        label = "pipeline parallel",
+        fallback = "a full load, then apply_pipeline_parallel",
+    )
+    guards = [model.register_forward_pre_hook(_refuse_unsplit_forward, with_kwargs = True)]
+    for i, layer in enumerate(parts.layers):
+        if i not in owned:
+            guards.append(layer.register_forward_pre_hook(_refuse_unsplit_forward, with_kwargs = True))
+    model.__dict__[_GUARDS] = guards
+    stats = {
+        "pp": mesh.size(),
+        "rank": mesh.get_local_rank(),
+        "ranks": mesh.mesh.tolist(),
+        "schedule": spec.name,
+        "stages_per_rank": v,
+        "bounds": [tuple(b) for b in bounds],
+        "local_stages": local,
+        "placeholder_tensors": len(placeholders),
+        "placeholder_numel": skipped_numel,
+        "loaded_numel": full_numel,
+        "read_bytes": reader.full_bytes,
+    }
+    model.__dict__[_MARK] = stats
+    return stats
+
+
+def _preload_info(model):
+    from .pp_native import _model_chain
+
+    for level in _model_chain(model) if isinstance(model, nn.Module) else ():
+        for module in level.modules():
+            info = module.__dict__.get(_MARK)
+            if info is not None:
+                return module, info
+    return None, None
+
+
+def check_preloaded_split(model, pp_mesh, schedule, stages_per_rank, bounds, local_stages, parts):
+    """Called by apply_pipeline_parallel before it cuts the model: a model loaded by pipeline_sharded_loading
+    must be split exactly as it was loaded (its other layers are placeholders), and its placeholder embedding
+    / head must not be trainable (pp rank 0's copy would be broadcast). Returns the loaded module or None."""
+    holder, info = _preload_info(model)
+    if info is None:
+        return None
+    want = {
+        "ranks": pp_mesh.mesh.tolist(),
+        "schedule": schedule,
+        "stages_per_rank": stages_per_rank,
+        "bounds": [tuple(b) for b in bounds],
+        "local_stages": tuple(local_stages),
+    }
+    got = {k: info[k] for k in want}
+    if got != want:
+        diff = {k: (got[k], want[k]) for k in want if got[k] != want[k]}
+        raise ValueError(
+            "Unsloth: this model was loaded with pipeline_sharded_loading for another split (loaded, now): "
+            f"{diff}. Pass apply_pipeline_parallel the mesh, schedule and PPConfig pipeline_sharded_loading "
+            "used; the layers other stages own were never read."
+        )
+    # A trainable copy (modules_to_save) of a placeholder is a plain zero tensor: judge by where it lives.
+    holds = (0 in info["local_stages"], len(info["bounds"]) - 1 in info["local_stages"])
+    trainable = [
+        n
+        for module, held in zip((parts.embed, parts.lm_head), holds)
+        if not held
+        for n, p in module.named_parameters()
+        if p.requires_grad
+    ]
+    # Only the ranks without that stage see it: decide together, or the others would enter the split's
+    # collectives alone.
+    import torch.distributed as dist
+
+    flag = torch.tensor([1.0 if trainable else 0.0], device = pp_mesh.device_type)
+    if pp_mesh.size() > 1:
+        dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = pp_mesh.get_group())
+    if float(flag) > 0:
+        where = f"{trainable[:2]} are" if trainable else "the embedding / lm_head of another rank is"
+        raise ValueError(
+            f"Unsloth: {where} trainable but not loaded on every rank (pipeline_sharded_loading reads the "
+            "embedding / lm_head only where their stage lives); train them with a full load, or keep them "
+            "frozen."
+        )
+    return holder
+
+
+def release_preload_guards(holder):
+    for handle in holder.__dict__.pop(_GUARDS, ()):
+        handle.remove()
+
+
+@contextlib.contextmanager
+def pipeline_sharded_loading(pp_mesh = None, schedule = "gpipe", config = None):
+    """Every transformers `from_pretrained` inside reads only this rank's pipeline stages (see the module
+    docstring). Pass apply_pipeline_parallel the same pp_mesh, schedule and config afterwards."""
+    from .pp_schedules import schedule_spec
+    from .tp_native import _sharded_from_pretrained
+
+    schedule_spec(schedule)  # refuse an unknown schedule before loading anything
+    if pp_mesh is None:
+        pp_mesh = _default_load_mesh()
+    if pp_mesh.ndim != 1:
+        raise ValueError("Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).")
+    state = {
+        "mesh": pp_mesh,
+        "plan": (schedule, config),
+        "materialize": _materialize,
+        "label": "pipeline parallel",
+        "quantized_hint": _QUANTIZED_HINT,
+        "prequantized_hint": _QUANTIZED_HINT,
+        "mesh_hint": "Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).",
+    }
+    with _sharded_from_pretrained(state) as live:
+        yield live
+
+
+def _default_load_mesh():
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    if not dist.is_initialized():
+        raise RuntimeError(
+            "Unsloth: pipeline_sharded_loading needs an initialized process group (torchrun) or a pp mesh."
+        )
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    return init_device_mesh(device_type, (dist.get_world_size(),), mesh_dim_names = ("pp",))
+
+
+def load_pipeline_parallel(
+    model_name,
+    pp_mesh = None,
+    schedule = "gpipe",
+    config = None,
+    loader = None,
+    **kwargs,
+):
+    """`loader(model_name, **kwargs)` under pipeline_sharded_loading (default FastLanguageModel.from_pretrained,
+    16-bit). Returns what the loader returns; raises if no model went through the sharded path."""
+    if loader is None:
+        from unsloth import FastLanguageModel
+        loader = FastLanguageModel.from_pretrained
+        kwargs.setdefault("load_in_4bit", False)
+    with pipeline_sharded_loading(pp_mesh, schedule, config) as state:
+        out = loader(model_name, **kwargs)
+    if not state["models"]:
+        raise RuntimeError(
+            "Unsloth: load_pipeline_parallel's loader did not call transformers from_pretrained; nothing was "
+            "loaded sharded."
+        )
+    return out

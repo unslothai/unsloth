@@ -1579,6 +1579,18 @@ def apply_pipeline_parallel(
     tuple_format = _layer_call_format(parts.decoder, parts.layers_name) == "tuple"
     bounds = derive_pp_split(model, total_stages, config)
     _refuse_shared_across_stages(parts, bounds)
+    from .pp_load import check_preloaded_split, release_preload_guards
+
+    # pipeline_sharded_loading read only this rank's stages: the split must be the one it loaded.
+    preloaded = check_preloaded_split(
+        model,
+        pp_mesh,
+        schedule,
+        stages_per_rank,
+        bounds,
+        stage_indices(spec, rank, pp, stages_per_rank),
+        parts,
+    )
     dtype = config.activation_dtype or parts.embed.weight.dtype
     if config.sync_trainable and pp > 1:
         _sync_trainable(model, pp_mesh.get_group(), dist.get_global_rank(pp_mesh.get_group(), 0))
@@ -1631,6 +1643,8 @@ def apply_pipeline_parallel(
     if stages_per_rank > 1:
         pp_stage.stage_modules = _local_stage_modules(pp_stage, parts, owned)
         pp_stage.module = pp_stage.stage_modules[0]
+    if preloaded is not None:
+        release_preload_guards(preloaded)  # the placeholder layers / embedding / head are gone now
     info = {
         "size": pp,
         "rank": rank,
