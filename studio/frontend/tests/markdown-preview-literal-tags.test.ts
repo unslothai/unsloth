@@ -8,11 +8,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import * as jsxRuntime from "react/jsx-runtime";
 import * as streamdown from "streamdown";
 import * as streamdownMath from "@streamdown/math";
-import * as streamdownMermaid from "@streamdown/mermaid";
 import ts from "@typescript/typescript6";
 
 import type * as ComposerDraftPreviewModule from "../src/components/assistant-ui/composer-draft-preview.tsx";
 import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
+import * as mermaidPlugin from "../src/components/assistant-ui/mermaid-plugin.ts";
 import * as inertComponents from "../src/components/markdown/inert-components.ts";
 import type * as MarkdownPreviewModule from "../src/components/markdown/markdown-preview.tsx";
 import * as markdownDataImages from "../src/lib/markdown-data-images.ts";
@@ -24,6 +24,18 @@ import { readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import { openingTag } from "./helpers/tsx-ast.ts";
 
+// The real tables pull in the app's dialog; these surfaces only need the <table> through.
+const plainTable = ({
+  children,
+  node: _node,
+  ...props
+}: { children?: React.ReactNode; node?: unknown }) =>
+  React.createElement("table", props, children);
+const markdownTable = {
+  MARKDOWN_TABLE_ICONS: {},
+  MarkdownTable: plainTable,
+  StaticMarkdownTable: plainTable,
+};
 const shared = {
   react: React,
   "react/jsx-runtime": jsxRuntime,
@@ -38,13 +50,14 @@ const { MarkdownPreview } = loadWithStubs<typeof MarkdownPreviewModule>(
       codePlugin: createCodePlugin(),
     },
     "@streamdown/math": streamdownMath,
-    "@streamdown/mermaid": streamdownMermaid,
+    "@/components/assistant-ui/mermaid-plugin": mermaidPlugin,
     "@/lib/markdown-plugins": markdownPlugins,
     "@/lib/open-link": { openLink: () => false },
     "@/lib/safe-markdown-url": safeMarkdownUrl,
     "@/lib/schedule-idle-task": scheduleIdleTask,
     "@/lib/utils": utils,
     "./inert-components": inertComponents,
+    "@/components/assistant-ui/markdown-table": markdownTable,
     "katex/dist/katex.min.css": {},
   },
 );
@@ -62,6 +75,7 @@ const { ComposerDraftPreview } = loadWithStubs<
         select({ plainTextComposer: false }),
     },
     "@/i18n": { useT: () => (key: string) => key },
+    "./markdown-table": markdownTable,
   },
 );
 
@@ -183,8 +197,8 @@ test("Hub model cards are wired to the literal-tag pipeline", () => {
     ts.forEachChild(node, visit);
   })(source);
   assert.ok(rehypePlugins, `${path}: Streamdown has no rehypePlugins`);
-  assert.equal(
+  assert.match(
     initializers.get(rehypePlugins) ?? rehypePlugins,
-    "withLiteralUnknownTags(README_ALLOWED_TAGS)",
+    /withLiteralUnknownTags\(\s*README_ALLOWED_TAGS,/,
   );
 });

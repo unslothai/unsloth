@@ -2573,9 +2573,9 @@ class TestTheFallbackFollowsTheReusedCheckpoint:
         def __init__(self, directory):
             self.config = type("cfg", (), {"_name_or_path": directory})()
 
-    def test_the_reused_checkpoint_is_the_input_folder(self, tmp_path):
+    def test_the_reused_checkpoint_is_staged_inside_the_gguf_folder(self, tmp_path):
         model = self._NonPeftFromDisk(str(tmp_path))
-        assert S._gguf_model_input_directory(model, "model") == str(tmp_path)
+        assert S._gguf_model_input_directory(model, "model") == "model_gguf"
 
     def test_a_merged_model_still_reads_the_output(self, tmp_path, monkeypatch):
         """A PEFT merge writes the checkpoint into `save_directory` and converts it."""
@@ -2589,8 +2589,8 @@ class TestTheFallbackFollowsTheReusedCheckpoint:
     def test_a_model_with_no_config_reads_the_output(self):
         assert S._gguf_model_input_directory(_FakeModel(), "model") == "model"
 
-    def test_the_probe_measures_the_checkpoints_filesystem(self, tmp_path, monkeypatch):
-        """End to end: the refusal names the checkpoint, not the requested output."""
+    def test_the_probe_measures_the_staged_inputs_filesystem(self, tmp_path, monkeypatch):
+        """End to end: the refusal names the GGUF folder holding the staged copy, never the checkpoint."""
         checkpoint = tmp_path / "base"
         checkpoint.mkdir()
         model = self._NonPeftFromDisk(str(checkpoint))
@@ -2603,7 +2603,7 @@ class TestTheFallbackFollowsTheReusedCheckpoint:
         monkeypatch.setattr(
             S,
             "free_bytes",
-            lambda path: 1 * GB if str(path) == str(checkpoint) else 1000 * GB,
+            lambda path: 1 * GB if str(path) == "output_gguf" else 1000 * GB,
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: (a[0], None))
         monkeypatch.setattr(
@@ -2617,8 +2617,8 @@ class TestTheFallbackFollowsTheReusedCheckpoint:
                 model, "output", "q4_k_m", first_conversion = "bf16", needs_merge = False
             )
         message = str(error.value)
-        assert str(checkpoint) in message
-        assert "1.0GB free" in message and "20.0GB" in message
+        assert "output_gguf" in message and str(checkpoint) not in message
+        assert "1.0GB free" in message
 
     def test_the_converter_really_falls_back_to_its_input_folder(self):
         """The redirect is only worth following while llama_cpp does this."""

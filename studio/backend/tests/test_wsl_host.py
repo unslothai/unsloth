@@ -69,7 +69,6 @@ def test_wsl_state_across_a_restart(wsl, monkeypatch):
     monkeypatch.setenv("FAKE_WSL_STATUS", "1")
     assert wsl_host.wsl_state() == "missing"
     wsl_host.write_state(state = "restart_required", boot = 1000)
-    # A Studio restart in the same Windows boot is not the restart WSL needs.
     assert wsl_host.wsl_state() == "restart_required"
     monkeypatch.setattr(wsl_host, "boot_id", lambda: 2000)
     assert wsl_host.wsl_state().startswith("blocked: ")
@@ -106,7 +105,6 @@ def test_restart_leaves_a_waiting_job_not_an_interrupted_one(wsl, monkeypatch):
     monkeypatch.setattr(wsl_host, "prepare", prepare)
     install.start_install("vllm")
     deadline = time.monotonic() + 30
-    # status() reads the job file, written just after the in-memory state.
     while install.status("vllm")["job"]["state"] == "running" and time.monotonic() < deadline:
         time.sleep(0.05)
     job = install.status("vllm")["job"]
@@ -206,7 +204,6 @@ def test_gpus_are_selected_by_uuid(monkeypatch):
     assert wsl_host.gpu_uuids([1, 0]) == ["GPU-bbbb", "GPU-aaaa"]
     with pytest.raises(RuntimeError):
         wsl_host.gpu_uuids([2])
-    # The guest enumerates the same two cards the other way round.
     monkeypatch.setattr(wsl_host, "guest", lambda *a, **k: "0, GPU-bbbb\n1, GPU-aaaa\n")
     assert wsl_host.guest_gpu_indices([0, 1]) == [1, 0]
 
@@ -224,7 +221,6 @@ def test_installed_wsl_record_never_boots_the_distro(wsl, tmp_path):
     assert install.installed("vllm") is None
 
 
-# The runner is the WSL guest's bash script (setsid, Linux process groups); it never runs elsewhere.
 _GUEST_RUNNER = pytest.mark.skipif(sys.platform != "linux", reason = "WSL guest runner is Linux only")
 
 
@@ -260,7 +256,6 @@ def test_runner_stops_the_engine_group_when_studio_closes_the_pipe(tmp_path):
     engine_pid, grandchild = map(int, pids.read_text().split())
     proc.stdin.close()
     assert proc.wait(timeout = 15) != 0
-    # The engine and what it spawned both go: the whole process group is signalled.
     assert _gone(engine_pid, 5) and _gone(grandchild, 5)
 
 
@@ -316,7 +311,6 @@ def test_runner_stops_the_engine_when_studio_is_killed(tmp_path):
 
 
 def test_wsl_launch_command(wsl, monkeypatch):
-    # Windows GPU 1 and 3 are guest GPUs 0 and 2.
     monkeypatch.setattr(wsl_host, "guest_gpu_indices", lambda ids: [{1: 0, 3: 2}[i] for i in ids])
     monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.5)
     monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
@@ -349,14 +343,12 @@ def test_wsl_launch_command(wsl, monkeypatch):
     assert "LIBRARY_PATH=/usr/lib/wsl/lib" in command
     assert "VLLM_USE_DEEP_GEMM=0" in command and "CUDA_HOME=/env/cuda" in command
     assert f"HF_HOME={wsl_host.GUEST_ROOT}/hf" in command
-    # Windows paths and secrets never reach the guest command line.
     assert "hf_secret" not in joined and "C:\\" not in joined
     assert env["HF_TOKEN"] == "hf_secret" and "HF_TOKEN/u" in env["WSLENV"]
     assert "unsloth/Qwen3-0.6B" in command and "--port" in command
-    # The engine key rides WSLENV too: on the guest command line any local user could read it.
+    # The engine key rides WSLENV: any local user could read the guest command line.
     assert engine.key not in joined
     assert env["VLLM_API_KEY"] == engine.key and "VLLM_API_KEY/u" in env["WSLENV"]
-    # vLLM's route-guarding launcher is a Studio source file the guest reads through /mnt.
     assert "/mnt/c/vllm_server.py" in command
 
 
@@ -372,13 +364,11 @@ def test_a_logged_in_token_file_reaches_the_guest(wsl, monkeypatch, tmp_path):
     engine = managed_engine.ManagedEngine("vllm")
     engine.context = 2048
     info = {"path": str(guest.parent), "host": "wsl"}
-    # `hf auth login` stores the token under the host HF_HOME, which the guest does not share.
     command, env = engine._wsl_command(
         info, {"HF_HOME": str(tmp_path)}, [0], None, False, "m", None, 8123
     )
     assert env["HF_TOKEN"] == "hf_from_login" and "HF_TOKEN/u" in env["WSLENV"]
     assert "hf_from_login" not in " ".join(command)
-    # An explicit token wins, and an anonymous load sends none.
     _, env = engine._wsl_command(
         info,
         {"HF_HOME": str(tmp_path), "HF_TOKEN": "hf_explicit"},
@@ -430,7 +420,6 @@ def test_a_failed_unregister_keeps_the_distro_recorded(wsl, monkeypatch):
     with pytest.raises(RuntimeError, match = "Could not remove"):
         wsl_host.unregister()
     assert wsl_host.read_state().get("state") != "removed"
-    # Already gone: a failing exit code is not an error.
     monkeypatch.setenv("FAKE_WSL_DISTROS", "Ubuntu")
     wsl_host.unregister()
     assert wsl_host.read_state()["state"] == "removed"
@@ -526,7 +515,7 @@ def test_a_failed_reset_never_deletes_the_disk_of_a_registered_distro(wsl, monke
     (host / "distro").mkdir(parents = True)
     (host / "distro" / "ext4.vhdx").write_text("a live distro's disk")
     monkeypatch.setattr(wsl_host, "host_dir", lambda: host)
-    monkeypatch.setattr(wsl_host, "distro_ready", lambda: False)  # e.g. the probe timed out
+    monkeypatch.setattr(wsl_host, "distro_ready", lambda: False)
     monkeypatch.setattr(wsl_host, "download", lambda *a, **k: tmp_path / "rootfs.tar.gz")
     monkeypatch.setenv("FAKE_WSL_UNREGISTER", "1")
     monkeypatch.setenv("FAKE_WSL_DISTROS", "Unsloth-Engines-test")
@@ -986,6 +975,43 @@ def test_an_amd_distro_checks_for_the_dxg_device(wsl, monkeypatch, tmp_path):
     assert probed[-1] == ["test", "-e", "/usr/lib/wsl/lib/libcuda.so"]
 
 
+@pytest.mark.parametrize(
+    "answer, fetched",
+    [
+        ("uv 0.12.19 (x86_64-unknown-linux-gnu)", True),
+        (None, True),
+        ("hang", True),
+        ("uv {pin} (x)", False),
+    ],
+)
+def test_an_existing_guest_uv_is_replaced_unless_it_is_the_pin(
+    monkeypatch, tmp_path, answer, fetched
+):
+    monkeypatch.setattr(wsl_host, "host_dir", lambda: tmp_path / "host")
+    monkeypatch.setattr(wsl_host, "distro_ready", lambda: True)
+    monkeypatch.setattr(wsl_host, "put", lambda *a, **k: None)
+    monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/uv.tar.gz")
+    downloads, ran = [], []
+    monkeypatch.setattr(
+        wsl_host, "download", lambda spec, *a, **k: downloads.append(spec) or "uv.tgz"
+    )
+
+    def guest(argv, **kwargs):
+        ran.append(argv[0])
+        if argv[-1] == "--version":
+            if answer is None:
+                raise RuntimeError("missing")
+            if answer == "hang":
+                raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+            return answer.format(pin = wsl_host.UV["version"]) + "\n"
+        return ""
+
+    monkeypatch.setattr(wsl_host, "guest", guest)
+    wsl_host.ensure_distro()
+    assert downloads == ([wsl_host.UV] if fetched else [])
+    assert ("tar" in ran) is fetched
+
+
 def test_rocm_setup_script_is_idempotent_and_pinned():
     script = wsl_host.ROCM_SETUP
     assert "https://repo.radeon.com/rocm/apt/7.2.1 noble main" in script
@@ -1059,3 +1085,24 @@ def test_amd_wsl_capacity_follows_the_windows_adapter(monkeypatch):
     # No registry record that names this GPU: Windows cannot say.
     monkeypatch.setattr(hardware, "_windows_amd_adapter_records_or_none", lambda: None)
     assert managed_engine._wsl_amd_usable_mib([0]) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "Windows answers from IsWow64Process2")
+@pytest.mark.parametrize(
+    "environment, machine, expected",
+    [
+        ({"PROCESSOR_ARCHITECTURE": "ARM64"}, "", "arm64"),
+        ({"PROCESSOR_ARCHITEW6432": "AMD64", "PROCESSOR_ARCHITECTURE": "x86"}, "", "x86_64"),
+        ({}, "aarch64", "arm64"),
+        ({}, "x86_64", "x86_64"),
+    ],
+)
+def test_native_machine_fallbacks(monkeypatch, environment, machine, expected):
+    import platform
+
+    for name in ("PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    assert wsl_host.native_machine() == expected

@@ -323,33 +323,60 @@ def test_the_cache_key_inputs_exist():
         ).exists(), f"key-files names {rel}, which does not exist"
 
 
+# CUDA-only wheels by NAME SHAPE, not by a list of names: Colab's CUDA 12 -> 13 rotation renamed the RAPIDS
+# wheels (-cu12 -> -cu13) and dropped the suffix from the nvidia-* runtime wheels, so a fixed list matched none
+# of the new names and passed while the seed installed all of them. nvidia-ml-py is pure Python NVML bindings.
+_CUDA_ONLY = re.compile(
+    r"(-cu\d+$|^cupy-cuda\d+x$|^jax-cuda\d+-|^nvidia-(?!ml-py$)|^cuda-|^numba-cuda$|^dask-cuda$|^triton$)"
+)
+
+
 def test_the_cuda_only_wheels_are_skipped():
     """CUDA-only wheels cannot run without a GPU, so caching them only spends the pip cache budget."""
     skip = set(_mapping()["skip"])
-    cuda_only = {
-        "libcudf-cu12",
-        "libcuml-cu12",
-        "cudf-cu12",
-        "cuml-cu12",
-        "rmm-cu12",
-        "pylibcudf-cu12",
-        "pylibraft-cu12",
-        "raft-dask-cu12",
-        "ucxx-cu12",
-        "dask-cuda",
-        "numba-cuda",
-        "cuda-bindings",
-        "cupy-cuda12x",
-        "jax-cuda12-pjrt",
-        "jax-cuda12-plugin",
-        "nvidia-nvshmem-cu12",
-        "nvidia-cuda-nvcc-cu12",
-        "nvidia-nccl-cu13",
-    }
-    missing = sorted((cuda_only & _freeze_names()) - skip)
+    cuda_only = {name for name in _freeze_names() if _CUDA_ONLY.search(name)}
+    assert (
+        len(cuda_only) > 20
+    ), "the freeze no longer looks like a CUDA image; is this the GPU snapshot?"
+    missing = sorted(cuda_only - skip)
     assert not missing, (
         f"these are CUDA-only wheels the CPU runner can never load, so they are pure "
         f"cache weight: {missing}"
+    )
+
+
+@pytest.mark.parametrize(
+    "name, cuda_only",
+    [
+        ("cudf-cu13", True),
+        ("libcuml-cu12", True),
+        ("cupy-cuda13x", True),
+        ("jax-cuda13-plugin", True),
+        ("nvidia-cublas", True),
+        ("nvidia-cudnn-cu13", True),
+        ("cuda-toolkit", True),
+        ("triton", True),
+        ("nvidia-ml-py", False),
+        ("jax", False),
+        ("cupy", False),
+        ("tensorflow", False),
+    ],
+)
+def test_the_cuda_only_name_shapes(name, cuda_only):
+    assert bool(_CUDA_ONLY.search(name)) is cuda_only
+
+
+def test_every_skip_entry_is_a_pin_in_the_freeze():
+    """A skip entry the freeze no longer has means the map was not refreshed with the snapshot.
+
+    The skip list is derived from one freeze (see _skip_closure_comment). When Colab rotates and only the
+    freeze is refreshed, the old entries stop matching and the new names go straight to pip, which is how a
+    -cu12 skip list once sat beside a -cu13 freeze.
+    """
+    stale = sorted(set(_mapping()["skip"]) - _freeze_names())
+    assert not stale, (
+        f"these skip entries are not in colab_pip_freeze.gpu.txt, so the skip list was derived from an older "
+        f"freeze: re-derive it (and its dependency closure) for this one. Stale: {stale}"
     )
 
 
@@ -376,21 +403,37 @@ def test_the_skip_list_is_closed_under_the_freezes_dependencies():
     """A skipped package must not be required by any kept pin, or pip re-downloads it unpinned."""
     skip = set(_mapping()["skip"])
     names = _freeze_names()
+    # Requires-Dist edges from PyPI metadata for this freeze (Linux x86_64, CPython 3.13, no extras),
+    # child -> the retained-if-not-skipped parents that require it. torch is absent on purpose: it is
+    # rewritten to the CPU wheel index, whose torch requires none of these.
     edges = {
-        "cupy-cuda12x": {"cudf-cu12", "cuml-cu12", "dask-cudf-cu12"},
-        "libcudf-cu12": {"pylibcudf-cu12"},
-        "pylibcudf-cu12": {"cudf-polars-cu12"},
-        "libcuml-cu12": {"cuml-cu12"},
-        "rmm-cu12": {"ucxx-cu12"},
-        "ucxx-cu12": {"distributed-ucxx-cu12"},
-        "numba-cuda": {"dask-cuda", "distributed-ucxx-cu12"},
-        "cuda-bindings": {"numba-cuda"},
-        "pylibraft-cu12": {"cuml-cu12", "raft-dask-cu12"},
+        "cupy-cuda13x": {
+            "cucim-cu13",
+            "cudf-cu13",
+            "cuml-cu13",
+            "dask-cudf-cu13",
+            "nx-cugraph-cu13",
+        },
+        "libcudf-cu13": {"cudf-cu13", "librapidsmpf-cu13", "pylibcudf-cu13"},
+        "pylibcudf-cu13": {"cudf-cu13", "cudf-polars-cu13", "rapidsmpf-cu13"},
+        "libcuml-cu13": {"cuml-cu13"},
+        "rmm-cu13": {"cudf-cu13", "pylibraft-cu13", "rapidsmpf-cu13", "ucxx-cu13"},
+        "ucxx-cu13": {"distributed-ucxx-cu13", "rapidsmpf-cu13"},
+        "numba-cuda": {"cudf-cu13", "cuml-cu13"},
+        "cuda-bindings": {"cuda-python", "numba-cuda"},
+        "pylibraft-cu13": {"cuml-cu13", "cuvs-cu13", "raft-dask-cu13"},
+        "rapids-dask-dependency": {"dask-cuda", "dask-cudf-cu13", "raft-dask-cu13"},
+        "nvidia-cublas": {"nvidia-cudnn-cu13", "nvidia-cusolver"},
         "pyspark": {"dataproc-spark-connect"},
         "intel-openmp": {"mkl"},
         "tbb": {"mkl"},
-        "nvidia-nccl-cu13": {"xgboost"},
+        "nvidia-nccl-cu13": {"xgboost", "libraft-cu13"},
     }
+    # Edges naming pins this freeze lacks are left over from an older one and check nothing.
+    stale = sorted(
+        n for child, parents in edges.items() for n in {child} | parents if n not in names
+    )
+    assert not stale, f"the edge table names pins this freeze does not have; re-derive it: {stale}"
     leaks = {
         child: sorted(parents & names - skip)
         for child, parents in edges.items()
@@ -564,3 +607,27 @@ def test_loading_the_stub_helper_leaves_sys_path_alone():
     needle = "sys.path" + ".insert(0, str(REPO / " + chr(34) + "tests" + chr(34) + "))"
     source = Path(__file__).read_text(encoding = "utf-8")
     assert needle not in source, "a sys.path insert of the tests dir is back in this file"
+
+
+def test_the_install_cell_runs_the_way_colab_does():
+    """The install cell sees what Colab gives it: a COLAB_* key and UV_SYSTEM_PYTHON.
+
+    The notebooks take their Colab branch on any environment key containing "COLAB_", and their
+    `!uv pip install` lines need UV_SYSTEM_PYTHON (Colab sets it) to install into the system
+    interpreter. With neither, Nemotron-3-Nano and Qwen3_5 Vision took the non-Colab branch, uv
+    stopped with "No virtual environment found", and `!unsloth install-kernels` failed as a missing
+    command (2026-10-17 cron). With only UV_SYSTEM_PYTHON, the non-Colab branch left
+    transformers 4.57.6 beside huggingface_hub 1.x and gpt-oss lost triton.
+    """
+    steps = [step for step in _job()["steps"] if "_smoke.py" in str(step.get("run", ""))]
+    assert steps, "no step runs the converted install cell any more; update this guard"
+    for step in steps:
+        env = {**(_job().get("env") or {}), **(step.get("env") or {})}
+        name = step.get("name")
+        assert any(
+            "COLAB_" in key for key in env
+        ), f"step {name!r} runs the install cell without a COLAB_* key"
+        assert str(env.get("UV_SYSTEM_PYTHON", "")).lower() in (
+            "1",
+            "true",
+        ), f"step {name!r} runs the install cell without UV_SYSTEM_PYTHON, which Colab sets"

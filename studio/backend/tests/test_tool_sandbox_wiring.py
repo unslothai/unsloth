@@ -31,8 +31,7 @@ _SESSION = "__LOCALID_sandbox_wiring"
 
 class _PassthroughAccountConfinement:
     preexec = None
-    # Stands in for a real account boundary. tools.py only takes the managed
-    # path when `confines` is true, so an owner placeholder cannot pass as one.
+    # tools.py only takes the managed path when `confines` is true.
     confines = True
 
     @staticmethod

@@ -931,6 +931,15 @@ def test_a_moe_named_model_that_is_not_fused_still_loads():
         assert stand_in.get(model_type, "fallback") == "fallback", model_type
 
 
+def test_a_not_fused_class_name_alias_loads_in_its_own_case():
+    """Upstream keys the Qwen3-Omni MoE thinker aliases by class name, mapped to the dense
+    Qwen2.5-Omni thinker. Matching the carve-out only in lowercase refused them on the "moe" hint."""
+    stand_in = F._UnavailableConversionPatternMap()
+    for alias in ("Qwen3OmniMoeThinkerModel", "Qwen3OmniMoeThinkerForConditionalGeneration"):
+        assert alias in F._PEFT_MOE_NAMED_NOT_FUSED, alias
+        assert stand_in.get(alias) is None, alias
+
+
 def test_a_fused_moe_model_is_still_refused():
     """The carve-out must not reach the types that really do need the rewrite."""
     stand_in = F._UnavailableConversionPatternMap()

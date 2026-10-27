@@ -93,6 +93,7 @@ function loadExporters(
     messageToText: (message: StoredMessage) => message.content,
     csvEscape: (value: string) => value,
     exportTs: () => "ts",
+    conversationBasename: async () => "conversation",
     downloadBlob: async (body: string) => {
       downloads.push(body);
     },

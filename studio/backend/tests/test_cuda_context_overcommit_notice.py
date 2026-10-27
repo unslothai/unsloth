@@ -45,9 +45,9 @@ QWEN3VL_8B = {
 }
 
 REPORTED_CTX = 65536
-MEASURED_KV_MIB = 9216.0  # the single allocation llama-server asks for
-WEIGHTS_BYTES = int(4.80 * GIB)  # UD-Q4_K_XL on disk
-MMPROJ_BYTES = int(1.40 * GIB)  # mmproj-F16, loaded because -ngl 99 puts it on GPU
+MEASURED_KV_MIB = 9216.0
+WEIGHTS_BYTES = int(4.80 * GIB)
+MMPROJ_BYTES = int(1.40 * GIB)  # mmproj-F16, on GPU because -ngl 99
 CARD_16GIB_MIB = 16.0 * 1024
 
 

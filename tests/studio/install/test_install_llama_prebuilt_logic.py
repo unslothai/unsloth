@@ -4179,6 +4179,124 @@ def _run_validate_prebuilt_choice(
     return calls
 
 
+def _run_vulkan_device_gate(
+    monkeypatch,
+    tmp_path,
+    *,
+    required,
+    listed,
+    install_kind = "linux-vulkan",
+):
+    """validate_prebuilt_choice on a stubbed install; `listed` is what the bundle's --list-devices finds."""
+    src = INSTALL_LLAMA_PREBUILT
+    server_path = tmp_path / "install" / "build" / "bin" / "llama-server"
+    listings = []
+
+    def fake_listing(*_a, **_k):
+        listings.append(True)
+        return listed
+
+    monkeypatch.setattr(
+        src, "preferred_source_archive", lambda *a, **k: ("repo", "ref", None, False)
+    )
+    monkeypatch.setattr(src, "hydrate_source_tree", lambda *a, **k: None)
+    monkeypatch.setattr(src, "install_from_archives", lambda *a, **k: (server_path, server_path))
+    monkeypatch.setattr(src, "runtime_payload_is_healthy", lambda *a, **k: True)
+    monkeypatch.setattr(src, "preflight_linux_installed_binaries", lambda *a, **k: None)
+    monkeypatch.setattr(src, "preflight_macos_installed_binaries", lambda *a, **k: None)
+    monkeypatch.setattr(src, "ensure_repo_shape", lambda *a, **k: None)
+    monkeypatch.setattr(src, "write_prebuilt_metadata", lambda *a, **k: None)
+    monkeypatch.setattr(src, "bundle_lists_vulkan_device", fake_listing)
+    monkeypatch.setattr(src, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+    bundle_name = f"app-b9998-{install_kind}.tar.gz"
+    source_archive = tmp_path / "source.tar.gz"
+    bundle_archive = tmp_path / "bundle.tar.gz"
+    source_archive.write_bytes(b"source")
+    bundle_archive.write_bytes(b"bundle")
+    choice = asset_choice(
+        name = bundle_name,
+        url = "file://bundle",
+        repo = "local",
+        tag = "b9998",
+        source_label = "local",
+        is_ready_bundle = True,
+        install_kind = install_kind,
+        expected_sha256 = "ab" * 32,
+    )
+    src.validate_prebuilt_choice(
+        choice,
+        linux_host(has_intel_gpu = True, vulkan_routed = True, vulkan_device_required = required),
+        tmp_path / "install",
+        tmp_path / "work",
+        tmp_path / "stories260K.gguf",
+        requested_tag = "b9998",
+        llama_tag = "b9998",
+        release_tag = "b9998",
+        approved_checksums = approved_checksums_for(
+            "b9998",
+            source_archive = source_archive,
+            bundle_archive = bundle_archive,
+            bundle_name = bundle_name,
+        ),
+        prebuilt_fallback_used = False,
+        quantized_path = tmp_path / "stories260K-q4.gguf",
+    )
+    return listings
+
+
+def test_probe_routed_vulkan_bundle_that_lists_no_gpu_falls_back(tmp_path, monkeypatch):
+    with pytest.raises(PrebuiltFallback, match = "lists no Vulkan GPU"):
+        _run_vulkan_device_gate(monkeypatch, tmp_path, required = True, listed = False)
+
+
+def test_probe_routed_vulkan_bundle_that_lists_a_gpu_is_kept(tmp_path, monkeypatch):
+    assert _run_vulkan_device_gate(monkeypatch, tmp_path, required = True, listed = True) == [True]
+
+
+@pytest.mark.parametrize(
+    "required, install_kind",
+    [(False, "linux-vulkan"), (True, "linux-arm64")],
+    ids = ["intel-or-forced-route", "cpu-bundle"],
+)
+def test_vulkan_device_gate_only_checks_probe_routed_vulkan_bundles(
+    tmp_path, monkeypatch, required, install_kind
+):
+    assert (
+        _run_vulkan_device_gate(
+            monkeypatch, tmp_path, required = required, listed = False, install_kind = install_kind
+        )
+        == []
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "fake server is a POSIX shell script")
+@pytest.mark.parametrize(
+    "output, code, expected",
+    [
+        ("Available devices:\n  Vulkan0: Adreno X1-85 (16000 MiB, 15000 MiB free)\n", 0, True),
+        ("Available devices:\n  (none)\n", 0, False),
+        ("Available devices:\n  RPC0: host:50052 (0 MiB, 0 MiB free)\n", 0, False),
+        ("Available devices:\n  Vulkan0: Adreno\n", 1, False),
+    ],
+    ids = ["vulkan-device", "none", "other-device", "nonzero-exit"],
+)
+def test_bundle_lists_vulkan_device_reads_list_devices(tmp_path, output, code, expected):
+    server = tmp_path / "llama-server"
+    server.write_text(f"#!/bin/sh\nprintf '{output}'\nexit {code}\n", encoding = "utf-8")
+    server.chmod(0o755)
+    assert (
+        INSTALL_LLAMA_PREBUILT.bundle_lists_vulkan_device(server, tmp_path, linux_host())
+        is expected
+    )
+
+
+def test_bundle_lists_vulkan_device_missing_binary_is_no_gpu(tmp_path):
+    missing = tmp_path / "llama-server"
+    assert (
+        INSTALL_LLAMA_PREBUILT.bundle_lists_vulkan_device(missing, tmp_path, linux_host()) is False
+    )
+
+
 def test_validate_prebuilt_choice_approved_validation_skipped_when_flag_off(tmp_path, monkeypatch):
     calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
     assert calls == {"quantize": 0, "server": 0}

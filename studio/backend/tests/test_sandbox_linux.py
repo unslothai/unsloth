@@ -22,6 +22,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import textwrap
 import threading
 import time
 
@@ -196,7 +197,6 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     if sandbox_linux.shutil.which("bwrap") is None:
         pytest.skip("bubblewrap is not installed on this host")
     etc = tmp_path / "etc"
-    # Debian, Fedora (conf/ and lib/), and Arch layouts.
     fedora = etc / "java" / "java-25-openjdk" / "java-25-openjdk"
     roots = (etc / "java-21-openjdk", fedora / "conf", fedora / "lib", etc / "java21-openjdk")
     secrets = []
@@ -211,13 +211,11 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     outside = tmp_path / "outside"
     outside.mkdir()
     secrets.append(outside / "private-key")
-    # A non-JDK tree the glob also matches.
     service = etc / "java-service"
     (service / "security").mkdir(parents = True)
     secrets += [service / "security" / "token", service / "app.properties"]
     for secret in secrets:
         secret.write_text("SECRET", encoding = "utf-8")
-    # Bind-source symlinks could expose host secrets; each target carries a marker.
     (outside / "java.security").write_text("", encoding = "utf-8")
     linked = etc / "java-8-openjdk"
     linked.mkdir()
@@ -260,7 +258,6 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     java = shutil.which("java")
     if sandbox_linux.shutil.which("bwrap") is None or java is None:
         pytest.skip("needs bubblewrap and a Java runtime")
-    # Force Java to load java.security.
     payload = (java, "-XshowSettings:security:properties", "-version")
     if subprocess.run(payload, capture_output = True).returncode != 0:
         pytest.skip("this JVM does not support -XshowSettings:security")
@@ -285,7 +282,6 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     completed = run(payload)
     assert completed.returncode == 0, completed.stderr
     assert "Error loading java.security" not in completed.stderr
-    # Distro JDKs reach cacerts through /etc links.
     keytool = os.path.join(os.path.dirname(os.path.realpath(java)), "keytool")
     if os.access(keytool, os.X_OK):
         completed = run((keytool, "-list", "-cacerts", "-storepass", "changeit"))
@@ -1082,12 +1078,15 @@ def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
 
     assert sandbox_probe._PR_SET_NO_NEW_PRIVS == 38
     source = inspect.getsource(sandbox_probe._run_probe)
-    assert "preexec_fn = _no_new_privs" in source
-    assert not [
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(sandbox_probe._no_new_privs)))
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    ]
+    assert "preexec_fn = _probe_preexec" in source
+    assert "_no_new_privs()" in inspect.getsource(sandbox_probe._probe_preexec)
+    for hook in (sandbox_probe._no_new_privs, sandbox_probe._probe_preexec):
+        # Runs between fork and exec: an import there can deadlock on the import lock.
+        assert not [
+            node
+            for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(hook))))
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
 
 
 def test_the_pip_targets_script_directory_is_last_on_path(prepared):
@@ -1316,7 +1315,11 @@ def _share_cache_paths(monkeypatch, cache):
 
     module = types.ModuleType("utils.hf_cache_settings")
     module.get_hf_cache_paths = lambda: _Paths()
+    module.effective_cache_home = lambda: cache
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+    # The resolver prefers these over cache_home; a caller's own settings must not leak in.
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
 
 
 def test_a_symlinked_runtime_entry_inside_the_workdir_is_protected_by_name(tmp_path, monkeypatch):
@@ -1354,10 +1357,7 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     session = str(tmp_path / "session")
     assert sandbox_linux._model_cache_binds(session) == {}
     assert sandbox_linux._model_cache_binds(session) == {}
-    # `started` is filled from the scan workers, which a loaded runner can schedule after
-    # the launch that started them has returned, so counting it between the two launches
-    # reads a slow first-launch worker as a second one. Wait until every worker either
-    # launch started has reached the scan, then compare workers to paths.
+    # Scan workers may run late, so wait for each launched worker to reach the scan before counting.
     workers = [
         t
         for t in threading.enumerate()
@@ -1455,7 +1455,7 @@ def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, mo
     link.symlink_to(real)
     monkeypatch.setattr(sys, "executable", str(link))
 
-    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Studio"):
+    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Unsloth"):
         sandbox_linux._runtime_paths_under(str(workdir))
 
 
@@ -1558,11 +1558,15 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
         path.mkdir(parents = True)
     import utils.hf_cache_settings as cache_settings
 
+    # datasets/assets follow the real HF home, which a Studio-selected folder leaves in place.
+    monkeypatch.setenv("HF_HOME", str(home))
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
     monkeypatch.setattr(
         cache_settings,
         "get_hf_cache_paths",
         lambda: cache_settings.HuggingFaceCachePaths(
-            cache_home = home, hub_cache = hub, xet_cache = xet, source = "studio"
+            cache_home = hub.parent, hub_cache = hub, xet_cache = xet, source = "studio"
         ),
     )
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
@@ -1579,7 +1583,10 @@ def _real_cache(monkeypatch, home):
     paths = types.SimpleNamespace(cache_home = home, hub_cache = home / "hub", xet_cache = home / "xet")
     module = types.ModuleType("utils.hf_cache_settings")
     module.get_hf_cache_paths = lambda: paths
+    module.effective_cache_home = lambda: home
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
 
 
 def test_a_cache_component_holding_an_ipc_node_is_not_shared(tmp_path, monkeypatch):
@@ -2051,6 +2058,7 @@ def test_the_cache_bind_itself_drops_a_component_holding_studio_state(monkeypatc
         hub_cache = str(state),
         xet_cache = str(elsewhere / "xet"),
     )
+    settings.effective_cache_home = lambda: elsewhere
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
     monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
 
@@ -2080,6 +2088,7 @@ def test_a_cache_configured_as_a_home_directory_is_not_shared(monkeypatch, tmp_p
         hub_cache = str(home),
         xet_cache = str(models / "xet"),
     )
+    settings.effective_cache_home = lambda: models
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
     monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
 

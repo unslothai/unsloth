@@ -20,14 +20,16 @@ import {
   RESIZE_FALLBACK,
   bridgeShim,
   cspFrameQuery,
+  forReview,
   newBridgeToken,
   toolApprovalScope,
+  toolArgsForReview,
   toolResultParams,
   withBridgeShim,
 } from "./mcp-ui";
 
 const MAX_PENDING_TOOL_CALLS = 8;
-// Each backend call can hold a server worker for up to a minute; a widget polling a slow tool must not pile them up.
+// Each call can hold a server worker for a minute, so cap in-flight calls.
 const MAX_IN_FLIGHT_SERVER_CALLS = 8;
 const SERVER_METHODS = new Set(["tools/call", "resources/read"]);
 const DEFAULT_HEIGHT = 320;
@@ -68,23 +70,13 @@ interface PendingToolCall {
   argsPreview: string;
   scope: string;
   toolKey: string;
-  /** A ui/open-link request: opened from the Open click itself, so the browser sees a user gesture. */
+  /** Opened from the Open click itself so the browser sees a user gesture. */
   link?: string;
   decide: (allow: boolean, always: boolean) => void;
 }
 
 const clampHeight = (h: number) =>
   Math.min(Math.max(h, MIN_HEIGHT), MAX_HEIGHT);
-
-function argsPreview(args: Record<string, unknown>): string {
-  if (Object.keys(args).length === 0) return "";
-  try {
-    const text = JSON.stringify(args, null, 2);
-    return text.length > 600 ? `${text.slice(0, 600)}…` : text;
-  } catch {
-    return "";
-  }
-}
 
 // The shell's CSP is fixed at request time, so declared domains ride the URL; never the auth token.
 function frameSrc(csp: McpUiResource["ui"]["csp"] | null): string {
@@ -93,7 +85,7 @@ function frameSrc(csp: McpUiResource["ui"]["csp"] | null): string {
 }
 
 export interface McpAppFrameProps {
-  /** The host's, from the tool part that drew the frame; never taken from the widget. */
+  /** From the host's tool part; never taken from the widget. */
   serverId: string;
   toolName: string;
   ui: McpUiEnvelope;
@@ -108,14 +100,12 @@ export function McpAppFrame(props: McpAppFrameProps) {
   const { serverId, toolName, ui, threadId, sessionId, className } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const { resolved: theme } = useTheme();
-  // Fetch scope rides with the template: new props must not redirect the old widget's requests.
   const [resource, setResource] = useState<
     (McpUiResource & { scope: FrameScope }) | null
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [pendingCalls, setPendingCalls] = useState<PendingToolCall[]>([]);
-  // The bridge reads props through refs, so a parent re-render never rebuilds it.
   const latest = useRef({ props, theme });
   latest.current = { props, theme };
   const pendingRef = useRef<PendingToolCall[]>([]);
@@ -154,7 +144,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
     };
   }, [resource]);
 
-  // Layout, not passive: the listener must be armed before the iframe's onLoad and first message.
+  // Layout effect: the listener must be armed before the iframe's onLoad.
   useLayoutEffect(() => {
     const setQueue = (queue: PendingToolCall[]) => {
       pendingRef.current = queue;
@@ -205,7 +195,8 @@ export function McpAppFrame(props: McpAppFrameProps) {
       if (pendingRef.current.length >= MAX_PENDING_TOOL_CALLS) {
         throw new RpcError("Too many tool requests are waiting");
       }
-      const preview = argsPreview(args);
+      // The card shows what an Allow will post; a very long call says how much is not shown.
+      const preview = toolArgsForReview(args);
       const [allow, always] = await new Promise<[boolean, boolean]>((done) =>
         setQueue([
           ...pendingRef.current,
@@ -222,7 +213,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
         return { content: [{ type: "text", text: DECLINED }], isError: true };
       }
       const result = await send(true);
-      // After the call, as the model's confirm flow does: a failed press must not auto-approve later calls.
+      // After the call: a failed press must not auto-approve later calls.
       if (always) {
         useChatRuntimeStore.getState().allowToolAlways(scope, toolKey);
       }
@@ -280,7 +271,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
           if (pendingRef.current.length >= MAX_PENDING_TOOL_CALLS) {
             throw new RpcError("Too many requests are waiting");
           }
-          // Asked like a tool call: the widget is untrusted and Desktop has no popup blocker.
+          // Widget is untrusted and Desktop has no popup blocker, so ask first.
           const opened = await new Promise<boolean>((done) =>
             setQueue([
               ...pendingRef.current,
@@ -305,7 +296,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
 
     let inFlight = 0;
     const handler = (event: MessageEvent) => {
-      // Replies go down the port the request came up, never contentWindow: the window survives navigation.
+      // Reply on the port, never contentWindow: the window survives navigation.
       const port = event.target as MessagePort;
       const data = event.data;
       if (typeof data?.mcpAppHeight === "number") {
@@ -344,7 +335,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
             }),
         );
       } else if (data.method === "ui/notifications/initialized") {
-        // Nothing may be sent before `initialized`, and tool-input precedes the result.
+        // Nothing may be sent before `initialized`; tool-input precedes the result.
         initializedRef.current = true;
         let args: unknown = {};
         try {
@@ -374,7 +365,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
       }
     };
 
-    // Only the token-checked handshake is read off the window: source and origin survive navigation.
+    // Only the token-checked handshake is read off the window.
     const onHandshake = (event: MessageEvent) => {
       const data = event.data;
       const port = event.ports[0];
@@ -410,7 +401,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
     });
   }, [theme]);
 
-  // Only the parent-initiated first load is fed, so a self-navigated frame is never re-seeded.
+  // Only the first parent-initiated load is seeded.
   const onLoad = () => {
     if (!frame || frame.fed) return;
     frame.fed = true;
@@ -428,7 +419,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
       : null);
   if (failure) {
     return (
-      <div className="mt-2 rounded border border-border bg-muted/30 px-3 py-2 text-ui-12p5 text-muted-foreground">
+      <div className="mt-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-ui-12p5 text-muted-foreground">
         Could not load this MCP app's interface: {failure}
       </div>
     );
@@ -436,7 +427,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
   if (!frame) {
     return (
       <div
-        className="mt-2 animate-pulse rounded border border-border bg-muted/30"
+        className="mt-2 animate-pulse rounded-xl border border-border bg-muted/30"
         style={{ height: MIN_HEIGHT }}
       />
     );
@@ -457,14 +448,14 @@ export function McpAppFrame(props: McpAppFrameProps) {
       <iframe
         ref={iframeRef}
         src={frame.src}
-        // No allow-same-origin (app storage/cookies), no allow-downloads.
+        // No allow-same-origin or allow-downloads.
         sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         onLoad={onLoad}
         style={{ height }}
         title={`${toolName} app`}
         className={cn(
-          "mt-2 block w-full rounded border border-border bg-background",
+          "mt-2 block w-full rounded-xl border border-border bg-background",
           className,
         )}
       />
@@ -472,11 +463,13 @@ export function McpAppFrame(props: McpAppFrameProps) {
         <div
           role="group"
           aria-label="Tool request from this app"
-          className="mt-1 rounded border border-border bg-muted/30 px-3 py-2 text-ui-12p5"
+          className="mt-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-ui-12p5"
         >
           <div>
             {asking.link ? "This app wants to open " : "This app wants to run "}
-            <span className="font-mono break-all">{asking.name}</span>
+            <span className="font-mono break-all">
+              {forReview(asking.name)}
+            </span>
             {pendingCalls.length > 1
               ? ` (+${pendingCalls.length - 1} more waiting)`
               : ""}

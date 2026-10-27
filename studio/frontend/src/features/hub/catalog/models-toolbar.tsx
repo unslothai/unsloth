@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -22,7 +23,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import type {
   HubUploader,
@@ -42,11 +43,14 @@ import type {
   ResourceTypeFilter,
 } from "../types";
 import { type HubOption, HubOptionMenu } from "./hub-option-menu";
-import { ModelSearchFiltersControl } from "./model-search-filters";
+import {
+  ModelSearchFiltersControl,
+  type OnDeviceFilters,
+} from "./model-search-filters";
+import type { InventorySort } from "./models-table";
 import { RecentSearches } from "./recent-searches";
 
-// Widened so the format dropdown can carry the "Fine-tune ready" pseudo-option,
-// which opens the curated channel instead of becoming the active format filter.
+// Includes the "Fine-tune ready" pseudo-option, which opens a channel rather than filtering.
 type FormatMenuValue = ModelFormatFilter | "finetune";
 
 const SORT_OPTIONS: ReadonlyArray<{
@@ -59,6 +63,13 @@ const SORT_OPTIONS: ReadonlyArray<{
   { value: "downloads", label: "Most downloads" },
   { value: "lastModified", label: "Recently updated" },
   { value: "likes", label: "Most likes" },
+];
+
+const INVENTORY_SORT_OPTIONS: HubOption<InventorySort>[] = [
+  { value: "recent", label: "Recent" },
+  { value: "name", label: "Name" },
+  { value: "size", label: "Size" },
+  { value: "format", label: "Format" },
 ];
 
 export const ModelsToolbar = memo(function ModelsToolbar({
@@ -90,6 +101,12 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   uploadersChanged,
   onUploadersChange,
   onResetFilters,
+  inventorySort,
+  onInventorySortChange,
+  inventoryCapabilities,
+  onInventoryCapabilitiesChange,
+  isolateFirstInventoryCapability,
+  onResetInventoryFilters,
 }: {
   searchFilters: ModelSearchFilters;
   onSearchFiltersChange: (value: ModelSearchFilters) => void;
@@ -98,6 +115,12 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   uploadersChanged: boolean;
   onUploadersChange: (value: HubUploader[]) => void;
   onResetFilters: () => void;
+  inventorySort: InventorySort;
+  onInventorySortChange: (value: InventorySort) => void;
+  inventoryCapabilities: HubCapabilityFilter[];
+  onInventoryCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
+  isolateFirstInventoryCapability: boolean;
+  onResetInventoryFilters: () => void;
   tab: ModelsTab;
   onTabChange: (tab: ModelsTab) => void;
   query: string;
@@ -122,11 +145,11 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFitOnDeviceOnlyChange: (value: boolean) => void;
   onManageLocalFolders: () => void;
   onFreeUpSpace: () => void;
-  /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
-   *  format-dropdown option rather than a standalone feed section. */
+  /** Opens the curated "Fine-tune ready" channel (discover only). */
   onOpenFineTune: () => void;
   npuAvailable?: boolean;
 }) {
+  const viewPillId = useId();
   // Recent searches surface while the empty search field is focused, only on
   // Discover (on-device search is a local filter and isn't recorded).
   const recentSearches = useRecentSearches();
@@ -138,7 +161,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     query.trim() === "" &&
     recentSearches.length > 0;
 
-  // Anchored to the toolbar bottom so wrapped filter rows stay clickable.
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
   const [recentPanelTop, setRecentPanelTop] = useState<number | undefined>();
@@ -164,14 +186,14 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   }, [showRecentSearches]);
 
   const isDataset = resourceType === "datasets";
-  // The NPU catalog is short and has no Hub metadata to filter or sort by.
   const npuList = formatFilter === "npu" && !isDataset;
   const hasTrailing = Boolean(query) || (isDiscover && isLoading);
   const formatOptions = useMemo<HubOption<FormatMenuValue>[]>(() => {
     const options: HubOption<FormatMenuValue>[] = FORMAT_FILTER_OPTIONS.filter(
       (option) =>
-        (option.value !== "mlx" && option.value !== "recommended") ||
-        tab === "discover",
+        option.value === "unsloth"
+          ? tab === "downloaded"
+          : option.value !== "recommended" || tab === "discover",
     ).map((option) => ({
       value: option.value,
       triggerLabel: option.label,
@@ -194,6 +216,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             {option.value === "mlx" && (
               <span className="size-1.5 rounded-full bg-format-mlx" />
             )}
+            {option.value === "unsloth" && (
+              <span className="size-1.5 rounded-full bg-primary" />
+            )}
           </span>
           {option.label}
         </>
@@ -213,8 +238,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         ),
       });
     }
-    // "Fine-tune ready" is a curated channel (bnb-4bit checkpoints), not a
-    // format: it opens the channel rather than setting the filter (onValueChange).
     if (tab === "discover") {
       options.push({
         value: "finetune",
@@ -233,6 +256,24 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     }
     return options;
   }, [tab, npuAvailable]);
+  const onDeviceFilters = useMemo<OnDeviceFilters | undefined>(
+    () =>
+      tab === "downloaded"
+        ? {
+            capabilities: inventoryCapabilities,
+            onCapabilitiesChange: onInventoryCapabilitiesChange,
+            isolateFirstCapability: isolateFirstInventoryCapability,
+            onReset: onResetInventoryFilters,
+          }
+        : undefined,
+    [
+      tab,
+      inventoryCapabilities,
+      onInventoryCapabilitiesChange,
+      isolateFirstInventoryCapability,
+      onResetInventoryFilters,
+    ],
+  );
   const hubSource = useHubSource();
   const showCapabilities = isDiscover && !isDataset && !npuList;
   // The size and context limits read Hugging Face metadata, so only there.
@@ -268,26 +309,19 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         role="radiogroup"
         aria-label="View"
       >
-        <span
-          aria-hidden="true"
-          className={cn(
-            "hub-tab-toggle-pill",
-            "pointer-events-none absolute inset-y-0 left-0 w-1/2 rounded-full transition-transform duration-200 ease-out",
-            tab === "downloaded" ? "translate-x-full" : "translate-x-0",
-          )}
-        />
         <button
           type="button"
           role="radio"
           aria-checked={tab === "discover"}
           onClick={() => onTabChange("discover")}
           className={cn(
-            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
+            "relative inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
             tab === "discover"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
+          {tab === "discover" && <SegmentedPill group={viewPillId} />}
           Discover
         </button>
         <button
@@ -296,12 +330,13 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           aria-checked={tab === "downloaded"}
           onClick={() => onTabChange("downloaded")}
           className={cn(
-            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
+            "relative inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
             tab === "downloaded"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
+          {tab === "downloaded" && <SegmentedPill group={viewPillId} />}
           On Device
         </button>
       </div>
@@ -317,8 +352,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
-          // `type="search"` plus these flags stop password managers and noisy
-          // text assistance from acting on this field.
+          // Stops password managers and text assistance from acting on this field.
           type="search"
           name="hub-search"
           autoComplete="off"
@@ -361,8 +395,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           <button
             type="button"
             aria-label="Clear search"
-            // Keep focus on the input so clearing reveals recent searches
-            // rather than dismissing the field.
+            // Keep focus on the input so clearing reveals recent searches.
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => onQueryChange("")}
             className="absolute right-2.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground"
@@ -410,6 +443,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           onDatasetsChange={(on) =>
             onResourceTypeChange(on ? "datasets" : "models")
           }
+          onDevice={onDeviceFilters}
           className={cn(
             triggerBase,
             "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
@@ -421,21 +455,21 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               <button
                 type="button"
                 onClick={onManageLocalFolders}
+                aria-label="Model folders"
                 className={cn(
                   triggerBase,
-                  "field-filter inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-12p5",
+                  "field-filter relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
                 )}
               >
                 <HugeiconsIcon
                   icon={FolderSearchIcon}
                   strokeWidth={1.75}
-                  className="size-3.5"
+                  className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />
-                Add folder
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              Manage local model folders
+              Model folders
             </TooltipContent>
           </Tooltip>
         )}
@@ -447,21 +481,21 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 type="button"
                 onClick={onFreeUpSpace}
                 data-testid="free-up-space-trigger"
+                aria-label="Free up space"
                 className={cn(
                   triggerBase,
-                  "field-filter inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-12p5",
+                  "field-filter relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
                 )}
               >
                 <HugeiconsIcon
                   icon={Delete02Icon}
                   strokeWidth={1.75}
-                  className="size-3.5"
+                  className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />
-                Free up space
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              Remove shared model assets no installed model needs
+              Free up space: remove shared assets no installed model needs
             </TooltipContent>
           </Tooltip>
         )}
@@ -482,6 +516,33 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               triggerBase,
               "w-[calc(160px*var(--ui-space-scale,1))]",
             )}
+          />
+        )}
+
+        {tab === "downloaded" && (
+          <HubOptionMenu<InventorySort>
+            value={inventorySort}
+            options={INVENTORY_SORT_OPTIONS}
+            onValueChange={onInventorySortChange}
+            ariaLabel="Sort on-device models"
+            className={cn(
+              triggerBase,
+              "w-[calc(160px*var(--ui-space-scale,1))]",
+            )}
+            triggerContent={
+              <span className="flex items-center gap-1">
+                <HugeiconsIcon
+                  icon={ArrowUpDownIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5 shrink-0"
+                />
+                <span className="truncate">
+                  {INVENTORY_SORT_OPTIONS.find(
+                    (option) => option.value === inventorySort,
+                  )?.label ?? inventorySort}
+                </span>
+              </span>
+            }
           />
         )}
 

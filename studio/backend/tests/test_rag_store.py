@@ -49,7 +49,7 @@ def test_lexical_returns_only_matching_docs(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
     _add_doc(rag_conn, "kb_a", "d2", "d2.txt", "h2", ["golf hotel india"])
     hits = store.search_lexical(rag_conn, "kb_a", "alpha", 10)
-    assert [cid for cid, _ in hits] == ["d1:0"]  # d2 not returned (score 0)
+    assert [cid for cid, _ in hits] == ["d1:0"]
 
 
 def test_scope_isolation(rag_conn):
@@ -64,7 +64,6 @@ def test_match_query_sanitizes_special_chars():
 
 def test_lexical_does_not_crash_on_punctuation(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo"])
-    # Must not raise on FTS operators in the query.
     store.search_lexical(rag_conn, "kb_a", 'NEAR("x" AND', 5)
 
 
@@ -107,7 +106,6 @@ def test_dense_knn_binds_k_rather_than_limit(rag_conn):
 
 
 def test_dense_empty_before_any_ingest(rag_conn):
-    # No chunks_vec table yet -> [], no crash.
     assert store.search_dense(rag_conn, "kb_a", embed("alpha"), 10) == []
 
 
@@ -127,7 +125,6 @@ def test_delete_document_purges_all_tables(rag_conn):
 
 
 def test_incremental_add_is_flat(rag_conn):
-    # Adding doc2 must not touch doc1's fts rowids (append, not rebuild).
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo charlie"])
     before = rag_conn.execute(
         "SELECT rowid, chunk_id FROM chunks_fts WHERE scope='kb_a'"
@@ -228,7 +225,6 @@ def test_lexical_hides_retired_scope_and_unmapped_linked_document(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
     _add_doc(rag_conn, "kb_a", "d2", "d2.txt", "h2", ["alpha delta echo"])
     _link_folder(rag_conn, "f1", "kb_a")
-    # d2 belongs to a folder but has no mapping row yet, so it is not searchable.
     rag_conn.execute("UPDATE documents SET linked_folder_id='f1' WHERE id='d2'")
     rag_conn.commit()
     assert [cid for cid, _ in store.search_lexical(rag_conn, "kb_a", "alpha", 10)] == ["d1:0"]
@@ -259,17 +255,13 @@ def test_lexical_results_match_across_both_query_forms(rag_conn):
             rag_conn, "kb_a", f"d{i}", f"d{i}.txt", f"h{i}", [f"alpha bravo {'charlie ' * (i % 4)}"]
         )
     fast = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
-    _link_folder(rag_conn, "f1", "kb_b")  # another scope, so nothing is excluded
+    _link_folder(rag_conn, "f1", "kb_b")
     filtered = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
     assert fast == filtered
 
 
 def test_lexical_gate_and_read_share_one_snapshot(rag_conn, monkeypatch):
-    """A scope retired between the gate and the FTS read must not reach the read.
-
-    Otherwise the gate decides against a state the read no longer sees, and rows from the
-    retired scope take slots the caller loses at hydration.
-    """
+    """Gate and FTS read must share one snapshot, so a scope retired in between cannot leak rows."""
     from storage import rag_db
 
     _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
@@ -294,10 +286,8 @@ def test_lexical_gate_and_read_share_one_snapshot(rag_conn, monkeypatch):
     hits = store.search_lexical(rag_conn, "kb_a", "alpha", 10)
 
     assert observed["gate"] is False
-    # Same connection, same call, after another connection committed the retirement.
     assert observed["after_commit"] is False
     assert [cid for cid, _ in hits] == ["d1:0"]
-    # The snapshot is released, so the next call sees the retirement and hides the row.
     monkeypatch.setattr(store, "linked_folder_rows_exist", real)
     assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
 
@@ -312,11 +302,7 @@ def test_lexical_reuses_a_transaction_the_caller_already_opened(rag_conn):
 
 
 def test_gate_ignores_a_purged_tombstone(rag_conn):
-    """Deleting a knowledge base must not disable the fast path for good.
-
-    delete_retired_scope keeps the tombstone and only stamps purged_at, so a gate that
-    counted it would take the filtered query forever after the first ordinary delete.
-    """
+    """The gate must ignore purged tombstones, or every delete would disable the fast path for good."""
     _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
     rag_conn.execute(
         "INSERT INTO linked_folder_retired_scopes(scope, retired_at) "
@@ -334,11 +320,7 @@ def test_gate_ignores_a_purged_tombstone(rag_conn):
 
 
 def test_gate_counts_a_folder_document_that_outlived_its_folder(rag_conn):
-    """An orphan left by a crash before _install_mapping stays hidden after unlink.
-
-    Unlink collects only mapped documents, so the folder row goes and this one does not;
-    the gate has to see the document itself or unlinked content becomes searchable.
-    """
+    """The gate must count an orphan document that outlived its folder, so unlinked content stays hidden."""
     _link_folder(rag_conn, "f1", "kb_a")
     store.create_document(
         rag_conn,
@@ -360,12 +342,8 @@ def test_gate_counts_a_folder_document_that_outlived_its_folder(rag_conn):
 
 
 def _pasted_prose(words: int) -> str:
-    """Distinct ordinary words, as a pasted log or source file supplies them.
-
-    Purely alphabetic on purpose: a token mixing letters and digits short-circuits the
-    identifier test on its first clause and never reaches the scan being measured, so a
-    synthetic `tok1 tok2 ...` paste hides the cost that real prose pays.
-    """
+    """Pasted prose must be purely alphabetic; mixed letters and digits short-circuit the identifier
+    test."""
     letters = "abcdefghijklmnopqrstuvwxyz"
     return " ".join(
         letters[index % 26]
@@ -378,20 +356,7 @@ def _pasted_prose(words: int) -> str:
 
 
 def test_a_pasted_log_does_not_make_the_archive_query_quadratic(monkeypatch):
-    """Shaping the archive query must not re-tokenize the question once per token.
-
-    `conversation_match_queries` runs on the LATEST USER MESSAGE, and the message that
-    forces a compaction is very often a pasted log or source file. Re-scanning the whole
-    question inside the per-token identifier test made the shaping cost grow with the
-    square of the question's length: 48 KB of pasted prose measured at 4.6s and 96 KB at
-    17.7s of pure CPU, against 2.3ms for the same text through `_match_query`. The recall
-    path can run the shaping several times per request -- once per widening iteration in
-    `conversation_archive.recall`, and again for each rung of the over-budget top_k
-    backoff -- so the multiplier lands on the one turn that compacts the thread.
-
-    Counted rather than timed, so the guard is deterministic: the number of full scans of
-    the question is what has to stay bounded, not the wall clock on one machine.
-    """
+    """Query shaping must scan the question once, not per token, or the cost grows quadratically."""
     scans = {"n": 0}
     real = store._TOKEN
 
@@ -406,18 +371,12 @@ def test_a_pasted_log_does_not_make_the_archive_query_quadratic(monkeypatch):
     expressions = store.conversation_match_queries(question)
 
     assert expressions and expressions[0].startswith('"zqxvara123"')
-    # Once for the lower-cased tokens, once for the raw ones. Anything that grows with the
-    # token count is the quadratic coming back.
+    # Anything growing with token count means the quadratic is back.
     assert scans["n"] <= 2, f"tokenized the question {scans['n']} times"
 
 
 def test_query_shaping_stays_cheap_on_a_pasted_log():
-    """The wall-clock companion to the scan count, with a wide margin.
-
-    6000 pasted words is roughly a 48 KB paste, which is one source file. Unfixed this
-    takes about 4.6s of CPU; linear it takes about 6ms. A 1.0s ceiling is unreachable by
-    a linear implementation on any machine that can run this suite at all.
-    """
+    """Wall-clock companion to the scan count: pasted-log query shaping must stay under 1.0s."""
     expressions = assert_linear(
         store.conversation_match_queries,
         lambda n: f"what is the current value of ZQXVARA123\n{_pasted_prose(n)}",
@@ -428,35 +387,17 @@ def test_query_shaping_stays_cheap_on_a_pasted_log():
 
 
 def test_a_quoted_function_word_survives_the_stopword_filter():
-    """Quotes are how a user names a word instead of using it.
-
-    `What did I say about "this"?` reduced to '"say"' once the stopword list had it, and
-    an archived `Use this endpoint` was then unreachable: it never contains "say", and if
-    unrelated chunks fill the fetch window `_candidates` never reaches its hybrid
-    fallback. Unquoted, the same word stays a stopword.
-    """
+    """Quoted words are not stopwords: a quoted word must survive the filter that drops it unquoted."""
     quoted = store.conversation_match_queries('What did I say about "this"?')
     plain = store.conversation_match_queries("What did I say about this?")
 
     assert quoted == ['"say" OR "this"']
     assert plain == ['"say"']
-    # A quoted function word is not an identifier, so only the permissive pass widens.
     assert len(quoted) == 1
 
 
 def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
-    """Ordering the candidates cannot rescue a candidate the SELECT never returned.
-
-    Past `_BRANCH_FILTER_MAX_CANDIDATES` the archive takes two windows, one from each end
-    of the tied run, and the LIMIT that cuts them runs in SQL: this ORDER BY chooses which
-    rows exist for the rest of recall. On a legacy archive the run is one flat tie (FTS5
-    floors the IDF of the scope's shared term, every ordinal NULL, one clock tick over every
-    `created_at`), so cutting at the chunk id cut at a `uuid4` and both true ends could go.
-
-    The ids are rotated half a turn against conversation order, putting the conversation's
-    ends dead centre of the id space: cut by id neither end survives, cut in conversation
-    order both must. Cut by id the windows held conversation positions 50-92 and 7-49.
-    """
+    """Candidate windows are cut in conversation order; cutting by chunk id could drop both true ends."""
     import types
 
     from core.rag import store
@@ -479,7 +420,6 @@ def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
             archive_messages = 2,
             archive_ordinal = None,
             document_id = document_id,
-            # One tick for the whole archive, the way a Windows host stamps a compaction.
             created_at = "2026-01-01T00:00:00+00:00",
             commit = False,
         )
@@ -497,7 +437,6 @@ def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
         store.add_chunks(conn, scope, document_id, chunks, [[0.0] * 4] * per_document)
     conn.commit()
 
-    # The premise: one score across the whole run, and more of it than the cap allows.
     everything = store.search_lexical(conn, scope, "ZQXTIEBREAK", documents * per_document + 10)
     assert len(everything) == documents * per_document
     assert len({score for _, score in everything}) == 1
@@ -512,30 +451,16 @@ def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
     in_oldest = sorted({position_of[chunk.rsplit(":", 1)[0]] for chunk in oldest})
     in_newest = sorted({position_of[chunk.rsplit(":", 1)[0]] for chunk in newest})
 
-    # Both true ends survive the cut, which is the whole point of taking two windows.
     assert 0 in in_oldest, in_oldest
     assert documents - 1 in in_newest, in_newest
-    # And each window really is an END of the conversation, not a slice out of its middle.
     assert in_oldest[0] == 0 and in_oldest == list(range(len(in_oldest))), in_oldest
     assert in_newest[-1] == documents - 1, in_newest
     assert in_newest == list(range(documents - len(in_newest), documents)), in_newest
-    # The two windows are disjoint, so the pair spans strictly more than either alone.
     assert not set(in_oldest) & set(in_newest)
 
 
 def test_the_candidate_order_survives_a_re_embed(rag_home, rag_conn):
-    """The rowid this ORDER BY sorts on has to outlive a re-embed, so hold one and check.
-
-    A re-embed deletes and re-inserts, the one operation that scrambles insertion order,
-    and it survives only because `create_document` takes a `rowid` and the archive hands
-    back the one it just deleted. A property of another module, asserted here because this
-    query is what breaks if it stops holding.
-
-    Rewritten in REVERSE, positions 4 then 3 then 2, so a fresh rowid would be wrongly
-    ordered rather than merely different; rewriting in conversation order would renumber
-    ascending and pass even with the carry deleted. Document ids descend as the
-    conversation advances, so an id-space answer is the exact reverse of the right one.
-    """
+    """A re-embed must keep the rowid that the candidate ORDER BY sorts on, else order silently changes."""
     import types
 
     from core.rag import store
@@ -566,8 +491,7 @@ def test_the_candidate_order_survives_a_re_embed(rag_home, rag_conn):
             archive_messages = 2,
             archive_ordinal = ordinal,
             document_id = _document_id(position),
-            # One tick for every turn, so `created_at` cannot separate them and the rowid
-            # is the only record left of which was said first.
+            # One tick for every turn, so only rowid records order.
             created_at = created or "2026-01-01T00:00:00+00:00",
             rowid = rowid,
             commit = False,
@@ -619,25 +543,16 @@ def test_the_candidate_order_survives_a_re_embed(rag_home, rag_conn):
         row[0]
         for row in conn.execute("SELECT embedding_model FROM documents WHERE scope=?", (scope,))
     } == {"old-model", "new-model"}
-    # The rowid the ORDER BY sorts on came across the rewrite unchanged.
     assert (
         dict(conn.execute("SELECT id, rowid FROM documents WHERE scope=?", (scope,)).fetchall())
         == rowids_before
     )
-    # And so the window is still cut in conversation order, from either end.
     assert _positions(oldest_first = True) == list(range(turns))
     assert _positions(newest_first = True) == list(reversed(range(turns)))
 
 
 def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
-    """Every ordinal NULL made both halves of the two-ended fetch the same query.
-
-    FTS5 floors the IDF of a term the whole index shares, so a per-thread archive's own
-    subject scores identically on every hit, and on an archive written before
-    `archive_ordinal` existed every later ordering term was constant too. Both windows
-    then returned the same arbitrary rows, `_both_ends` deduplicated them, and the later
-    legacy revisions were unreachable at any candidate count.
-    """
+    """Legacy NULL-ordinal archives must still give two distinct window ends, not one repeated query."""
     import types
 
     from core.rag import store

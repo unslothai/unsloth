@@ -48,8 +48,7 @@ STUDIO_ALPACA_CHAT_TEMPLATE = (
 
 _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 
-# Rows per batch when scanning or filtering the error column, so neither pass
-# materialises the whole column in Python.
+# Rows per batch for error-column scans/filters, so neither pass materialises the whole column.
 _ERROR_SCAN_BATCH = 10_000
 
 _TEMPLATE_PROBE_ROWS = 8
@@ -213,7 +212,7 @@ def _row_tools(tools):
     return normalized
 
 
-def _sharegpt_tool_turns(conversation, content = "", probe = False):
+def _sharegpt_tool_turns(conversation, content = "", probe = False,):
     """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
     markers ``probe`` put in place of each call's arguments and each result; the conversation
     itself when it has neither role."""
@@ -321,7 +320,7 @@ def _one_call_per_message(turns):
     return split if len(split) != len(turns) else turns
 
 
-def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True):
+def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True,):
     candidates = []
     # None content for DeepSeek-style templates; one call per message for Llama 3.x and gpt-oss.
     for content in ("", None):
@@ -344,9 +343,30 @@ def _render_conversation(tokenizer, conversation, tools = None, fallback_without
     return _render_messages(tokenizer, conversation, tools, fallback_without_tools)
 
 
+def _thinking_as_reasoning_content(tokenizer, conversation):
+    def wants_alias(message):
+        return (
+            isinstance(message, dict)
+            and message.get("thinking")
+            and message.get("reasoning_content") is None
+            and "</think>" not in str(message.get("content") or "")
+        )
+
+    # Rows are checked first: stringifying a named-template catalog per row is costly.
+    if not any(wants_alias(message) for message in conversation):
+        return conversation
+    if "reasoning_content" not in str(getattr(tokenizer, "chat_template", None) or ""):
+        return conversation
+    return [
+        {**message, "reasoning_content": message["thinking"]} if wants_alias(message) else message
+        for message in conversation
+    ]
+
+
 def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
+    conversation = _thinking_as_reasoning_content(tokenizer, conversation)
     attempts = []
     for messages in (_drop_none_values(conversation), conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
@@ -391,7 +411,7 @@ def _template_render_stats(tokenizer, rows):
     return rendered, advertised, tool_rows
 
 
-def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS,):
     """sample finite datasets evenly, adding one missed sparse tool row; stream from the front."""
     n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
     sampled = []
@@ -529,10 +549,7 @@ def apply_chat_template_to_dataset(
     num_proc = None,
     progress_callback = None,
 ):
-    """Apply the chat template to a dataset based on its format, returning a dict with the dataset, success status, warnings and errors.
-
-    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends the tokenizer's eos_token to each ChatML text (Alpaca text always gets one), ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
-    """
+    """Rejects a non-None custom_prompt_template: Studio cannot persist a matching inference template."""
     dataset = dataset_info["dataset"]
     final_format = dataset_info["final_format"]
     chat_column = dataset_info["chat_column"]
@@ -654,8 +671,13 @@ def apply_chat_template_to_dataset(
 
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
+        preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
+
         def _format_alpaca(examples):
             texts = []
+            systems = examples.get("system")
+            if systems is None:
+                systems = [None] * len(examples["instruction"])
             for i in range(len(examples["instruction"])):
                 fields = {
                     "instruction": examples["instruction"][i],
@@ -663,8 +685,11 @@ def apply_chat_template_to_dataset(
                     "output": examples["output"][i]
                 }
                 fields = {key: cell_text(value) for key, value in fields.items()}
+                system = systems[i]
+                if not (isinstance(system, str) and system.strip()):
+                    system = preamble
 
-                text = DEFAULT_ALPACA_TEMPLATE.format(
+                text = system + "\n\n" + alpaca_body.format(
                     fields["instruction"], fields["input"], fields["output"]
                 )
                 if not text.endswith(eos_token):
@@ -827,11 +852,7 @@ def apply_chat_template_to_dataset(
                     _keep_streamed_row, input_columns = [error_column]
                 ).remove_columns(error_column)
             elif len(formatted_dataset):
-                # Everything here stays Arrow-side and batched. Reading the error column
-                # into a Python list, or building one index per surviving row, costs a
-                # measured 85 MB at 2M rows (70 MB of it the index list) and scales
-                # linearly, so a dataset of tens of millions of mostly valid rows could be
-                # killed during formatting.
+                # Stay Arrow-side and batched: Python lists here OOM on huge datasets.
                 n_total = len(formatted_dataset)
                 kept = formatted_dataset.filter(
                     lambda row_errors: [not row_error for row_error in row_errors],

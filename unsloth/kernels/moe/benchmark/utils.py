@@ -184,21 +184,27 @@ def save_autotune_results(autotune_cache, mode, ref_time, fused_time, results_di
 
 
 def get_autotuner(mode):
+    # The benchmark runs on the current card; on several GPUs that card tunes its own copy.
+    from grouped_gemm.interface import _autotuner_for
+    device = torch.device("cuda", torch.cuda.current_device())
     if mode == "forward":
         from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
-        return _autotuned_grouped_gemm_forward_kernel
+        return _autotuner_for(_autotuned_grouped_gemm_forward_kernel, device)
     elif mode == "dW":
         from grouped_gemm.kernels.backward import _autotuned_grouped_gemm_dW_kernel
-        return _autotuned_grouped_gemm_dW_kernel
+        return _autotuner_for(_autotuned_grouped_gemm_dW_kernel, device)
     elif mode == "dX":
         from grouped_gemm.kernels.backward import _autotuned_grouped_gemm_dX_kernel
-        return _autotuned_grouped_gemm_dX_kernel
+        return _autotuner_for(_autotuned_grouped_gemm_dX_kernel, device)
     elif mode == "backward":
         from grouped_gemm.kernels.backward import (
             _autotuned_grouped_gemm_dW_kernel,
             _autotuned_grouped_gemm_dX_kernel,
         )
-        return _autotuned_grouped_gemm_dW_kernel, _autotuned_grouped_gemm_dX_kernel
+        return (
+            _autotuner_for(_autotuned_grouped_gemm_dW_kernel, device),
+            _autotuner_for(_autotuned_grouped_gemm_dX_kernel, device),
+        )
     else:
         raise ValueError(f"Invalid mode: {mode}")
 

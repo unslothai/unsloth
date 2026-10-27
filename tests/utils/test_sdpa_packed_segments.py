@@ -110,6 +110,8 @@ def test_peak_memory_is_linear_in_tokens(monkeypatch):
         _run(monkeypatch, segments, (2048, 2048), total, n_heads, n_kv, qkv)
         torch.cuda.synchronize()
         peaks[segments] = (torch.cuda.max_memory_allocated() - base) / 2**20
-    # The dense path holds (16, 4096, 4096) fp32 scores (1 GiB).
+    # Neither path holds (16, 4096, 4096) fp32 scores (1 GiB): the segments never build the dense
+    # mask, and the dense-mask path expands K/V rather than passing enable_gqa, which would leave
+    # SDPA only its math kernel next to a mask flash cannot take.
     assert peaks[True] < 256, peaks
-    assert peaks[False] > 4 * peaks[True], peaks
+    assert peaks[False] < 512, peaks

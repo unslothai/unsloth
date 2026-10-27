@@ -123,13 +123,25 @@ def _write_json(path: Path, meta: dict[str, Any]) -> None:
         raise
 
 
-def _av_open(av, source: str):
+def _protocol_options(source) -> dict:
+    # A probed concat or HLS playlist opens the files or URLs it names: a path may read
+    # files only, a buffer nothing.
+    local = isinstance(source, (str, os.PathLike))
+    return {"protocol_whitelist": "file" if local else "none"}
+
+
+def _av_open(av, source):
+    from utils.media_playlist import refuse_playlist
+
+    # `file` stays allowed for a path, so a playlist that names local files is refused here.
+    refuse_playlist(source)
+    options = _protocol_options(source)
     try:
-        return av.open(source, mode = "r", metadata_errors = "ignore")
+        return av.open(source, mode = "r", metadata_errors = "ignore", options = options)
     except TypeError as exc:
         if "metadata_errors" not in str(exc):
             raise
-        return av.open(source, mode = "r", format = None)
+        return av.open(source, mode = "r", format = None, options = options)
 
 
 def _decoded_frames(av, container):
@@ -151,11 +163,7 @@ def transcode(
     max_seconds: Optional[float] = None,
     cut: bool = False,
 ) -> dict[str, Any]:
-    """Decode ``src`` into a 16-bit WAV at ``dst``: at ``rate`` (default the source's), mono, two
-    channels (``stereo``) or at most two channels. Past ``max_seconds`` it is cut when ``cut``, else refused with 413.
-
-    Streams frame by frame through FFmpeg's resampler (a voice reference must not alias) into a
-    temporary file renamed in at the end."""
+    """Streams through the FFmpeg resampler so a voice reference does not alias; past max_seconds it is cut if cut is set, else refused with 413."""
     import av
 
     max_seconds = MAX_SECONDS if max_seconds is None else max_seconds
@@ -181,7 +189,7 @@ def transcode(
         try:
             container = _av_open(av, str(src))
         except Exception as exc:  # noqa: BLE001 - not a container PyAV knows
-            raise AudioInputError(400, "This file is not audio Studio can read.") from exc
+            raise AudioInputError(400, "This file is not audio Unsloth can read.") from exc
         with container:
             if not container.streams.audio:
                 raise AudioInputError(400, "This file has no audio stream.")
@@ -214,7 +222,7 @@ def transcode(
                 raise
             except Exception as exc:  # noqa: BLE001 - a corrupt stream mid-file keeps what decoded
                 if not frames:
-                    raise AudioInputError(400, "This file is not audio Studio can read.") from exc
+                    raise AudioInputError(400, "This file is not audio Unsloth can read.") from exc
                 logger.info("audio_inputs: decode stopped early after %d frames: %s", frames, exc)
         if out is not None:
             out.close()
@@ -297,10 +305,7 @@ async def save_stream(
     *,
     max_bytes: Optional[int] = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Stream an upload to disk, then decode it; ``(record, created)``.
-
-    The byte cap is checked as each chunk lands, so an oversize body is refused without being read
-    whole. The same audio (sha256) uploaded again within the TTL returns the existing record."""
+    """The byte cap is checked per chunk, so an oversize upload is refused before it is read whole."""
     import asyncio
 
     cap = AUDIO_INPUT_MAX_BYTES if max_bytes is None else max_bytes
@@ -325,6 +330,49 @@ async def save_stream(
         )
     finally:
         tmp.unlink(missing_ok = True)
+
+
+def save_from_media(
+    src: Path,
+    name: Optional[str],
+    start_s: float = 0.0,
+    end_s: Optional[float] = None,
+) -> tuple[dict[str, Any], bool]:
+    """Register the audio track of a media file (a gallery video), cut to ``[start_s, end_s)``,
+    as an input; ``(record, created)``. The same cut again returns the existing record."""
+    directory = inputs_dir()
+    full = directory / f".{uuid.uuid4().hex}.upload.tmp"
+    cut = directory / f".{uuid.uuid4().hex}.upload.tmp"
+    try:
+        try:
+            info = transcode(src, full)
+        except AudioInputError as exc:
+            if exc.status == 400 and "no audio" in exc.detail:
+                raise AudioInputError(400, "This video has no audio track.") from None
+            raise
+        rate = info["sample_rate"]
+        with wave.open(str(full), "rb") as reader:
+            total = reader.getnframes()
+            first = int(start_s * rate)
+            if first >= total:
+                raise AudioInputError(
+                    400,
+                    f"start_s is past the end of the audio ({total / rate:.2f} s); "
+                    "Unsloth Studio can only cut inside the track.",
+                )
+            last = total if end_s is None else min(total, max(first + 1, int(end_s * rate)))
+            reader.setpos(first)
+            data = reader.readframes(last - first)
+            with wave.open(str(cut), "wb") as writer:
+                writer.setparams(reader.getparams())
+                writer.writeframes(data)
+        payload = cut.read_bytes()
+        return _finish_upload(
+            directory, cut, hashlib.sha256(payload).hexdigest(), _clean_name(name), len(payload)
+        )
+    finally:
+        full.unlink(missing_ok = True)
+        cut.unlink(missing_ok = True)
 
 
 def _find_by_sha(directory: Path, sha: str) -> Optional[tuple[str, dict[str, Any]]]:
@@ -573,11 +621,7 @@ def prepared_path(
     max_seconds: Optional[float] = None,
     stereo: bool = False,
 ) -> Path:
-    """A cached copy of ``source`` at ``rate`` (mono, or stereo for music edits), cut to
-    ``max_seconds``, in this account's inputs.
-
-    An input's copies sit beside it as ``{id}.{rate}.{mono|stereo}[.m{n}].wav`` and go when it
-    goes; a clip's or voice's as ``c-``/``v-`` files the sweep removes after the TTL."""
+    """Input copies go with their input; clip and voice copies (c-/v- files) are swept after the TTL."""
     prefix = {"input": "", "clip": "c-", "voice": "v-"}[source.kind]
     cap = f".m{max_seconds:g}" if max_seconds is not None else ""
     layout = "stereo" if stereo else "mono"

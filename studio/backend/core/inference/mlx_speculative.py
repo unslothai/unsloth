@@ -200,11 +200,7 @@ def _cached_repos():
 
 
 def cached_drafters(target_name: str, target_config: dict) -> list:
-    """``(repo, source, named)`` for each cached drafter with weights whose config fits the target's shape.
-
-    ``named`` drafters carry the target's model name and come first, in auto's order; the rest fit
-    by shape alone (another generation or fine-tune of the same architecture) and follow.
-    """
+    """Drafters named for the target come first, then same-architecture ones that fit by shape alone."""
     from utils.utils import hf_cache_snapshot_dir_for_repo
 
     target, found = _alnum(target_name), []
@@ -248,8 +244,13 @@ def has_builtin_head(model_dir: Optional[str]) -> bool:
     if not model_dir:
         return False
     try:
-        from mlx_vlm.speculative.drafters.mtp_split import detect_mtp_splitter
-        return detect_mtp_splitter(Path(model_dir)) is not None
+        try:
+            # Also finds heads MLX conversions keep under the language model (``language_model.mtp.*``).
+            from unsloth_zoo.mlx.speculative import has_native_mtp_head
+        except ImportError:
+            from mlx_vlm.speculative.drafters.mtp_split import detect_mtp_splitter
+            return detect_mtp_splitter(Path(model_dir)) is not None
+        return has_native_mtp_head(model_dir)
     except Exception as exc:
         logger.debug("MLX speculative: no MTP splitter check for %s: %s", model_dir, exc)
         return False

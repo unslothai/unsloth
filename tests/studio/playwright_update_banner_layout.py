@@ -181,7 +181,6 @@ LLAMA_CHANGELOG = {
     "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/b10333-mix-e34b418",
     "error": None,
 }
-# whisper.cpp renames the shared runtime card instead of adding a banner.
 WHISPER_STATUS = dict(
     LLAMA_STATUS,
     llama_update_available = False,
@@ -192,6 +191,19 @@ WHISPER_STATUS = dict(
         "installed_tag": "v1.9.1",
         "latest_tag": "v1.9.2",
         "update_size_bytes": 11 * 1024 * 1024,
+        "skip_reason": None,
+    },
+)
+AUDIO_STATUS = dict(
+    LLAMA_STATUS,
+    llama_update_available = False,
+    update_component = "audio",
+    component = "audio.cpp",
+    audio = {
+        "update_available": True,
+        "installed_tag": "v0.9.0-unsloth.1",
+        "latest_tag": "v0.9.1-unsloth.1",
+        "update_size_bytes": None,
         "skip_reason": None,
     },
 )
@@ -206,6 +218,17 @@ BUNDLE_STATUS = dict(
         "update_size_bytes": None,
         "skip_reason": None,
     },
+)
+# a backend switch for llama.cpp bundled with a whisper.cpp update; one skip dismisses both.
+MIGRATION_BUNDLE_STATUS = dict(
+    LLAMA_STATUS,
+    update_available = False,
+    llama_update_available = False,
+    latest_tag = LLAMA_STATUS["installed_tag"],
+    backend_migration_available = True,
+    from_backend = "rocm",
+    to_backend = "vulkan",
+    whisper = WHISPER_STATUS["whisper"],
 )
 
 # 921x534 and 768x500 reproduce the issue; taller viewports guard roomy layouts.
@@ -883,7 +906,7 @@ LLAMA_CHANGELOG_GEOMETRY = """
   const list = q('[data-testid="llama-update-changelog-list"]');
   const toggle = q('[data-testid="llama-update-changelog-toggle"]');
   const update = q('[data-testid="llama-update-button"]');
-  const footer = update ? update.closest('div').parentElement : null;
+  const footer = update ? update.closest('div') : null;
   return {
     surface: rect(surface), list: rect(list), toggle: rect(toggle),
     update: rect(update), footer: rect(footer),
@@ -927,6 +950,119 @@ def settle_llama_changelog(page, timeout_s: float = 3.0) -> None:
             return
         last = height
     info(f"WARN the open llama.cpp changelog never held one height for 3 frames (last={last})")
+
+
+# Matches SKIPPED_NOTICE_MS in llama-update-banner.tsx, plus slack.
+SKIPPED_NOTICE_WAIT_MS = 6_000 + 1_500
+
+
+def exercise_skip_undo(page, label: str) -> None:
+    """Undo restores a card past its notification-frequency gate, and focus holds the notice open."""
+    card = page.locator('[data-testid="llama-update-banner"]')
+    notice = page.locator('[data-testid="llama-update-skipped"]')
+    toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
+    skip = page.locator('[data-testid="llama-update-skip-button"]')
+    undo = page.locator('[data-testid="llama-update-undo-skip"]')
+    check(f"{label}: the card is up before skipping", card.count() == 1)
+    if card.count() != 1:
+        return
+    toggle.click()
+    skip.click()
+    notice.wait_for(state = "visible", timeout = 5_000)
+    # audio.cpp defaults to biweekly, so the card was recorded as shown and is no longer due.
+    undo.click()
+    try:
+        card.wait_for(state = "visible", timeout = 5_000)
+    except PlaywrightTimeoutError:
+        pass
+    check(
+        f"{label}: Undo brings back a card the frequency gate would hide",
+        card.count() == 1 and notice.count() == 0,
+        f"cards={card.count()} notices={notice.count()}",
+    )
+    if card.count() != 1:
+        return
+
+    # keyboard activation moves focus to Undo, and focus keeps the notice up.
+    skip.focus()
+    page.keyboard.press("Enter")
+    notice.wait_for(state = "visible", timeout = 5_000)
+    focused = page.evaluate("document.activeElement?.getAttribute('data-testid') ?? null")
+    check(
+        f"{label}: a keyboard skip moves focus to Undo",
+        focused == "llama-update-undo-skip",
+        f"focused={focused!r}",
+    )
+    page.mouse.move(0, 0)
+    page.wait_for_timeout(SKIPPED_NOTICE_WAIT_MS)
+    check(
+        f"{label}: the notice stays while Undo has focus",
+        notice.count() == 1,
+        f"notices={notice.count()}",
+    )
+    page.keyboard.press("Enter")
+    try:
+        card.wait_for(state = "visible", timeout = 5_000)
+    except PlaywrightTimeoutError:
+        pass
+    check(
+        f"{label}: Enter on the focused Undo restores the card",
+        card.count() == 1,
+        f"cards={card.count()}",
+    )
+    if toggle.count() == 1 and toggle.get_attribute("aria-expanded") == "true":
+        toggle.click()
+
+
+# Signs out locally and follows a client-side route change, which keeps the banner mounted.
+LEAVE_FOR_LOGIN = """
+() => {
+  localStorage.removeItem('unsloth_auth_token');
+  localStorage.removeItem('unsloth_refresh_token');
+  const index = (history.state?.__TSR_index ?? 0) + 1;
+  history.pushState({ ...history.state, __TSR_index: index }, '', '/login');
+  dispatchEvent(new PopStateEvent('popstate'));
+}
+"""
+
+
+def exercise_skip_on_auth_route(page, label: str) -> None:
+    """A skip notice must not follow the user onto a route that hides the update cards."""
+    card = page.locator('[data-testid="llama-update-banner"]')
+    notice = page.locator('[data-testid="llama-update-skipped"]')
+    check(f"{label}: the card is up before skipping", card.count() == 1)
+    if card.count() != 1:
+        return
+    page.locator('[data-testid="llama-update-changelog-toggle"]').click()
+    page.locator('[data-testid="llama-update-skip-button"]').focus()
+    page.keyboard.press("Enter")
+    notice.wait_for(state = "visible", timeout = 5_000)
+    page.evaluate(LEAVE_FOR_LOGIN)
+    page.wait_for_url("**/login", timeout = 10_000)
+    page.wait_for_timeout(500)
+    check(
+        f"{label}: the skip notice does not follow onto /login",
+        notice.count() == 0,
+        f"notices={notice.count()}",
+    )
+    page.evaluate("localStorage.removeItem('unsloth_llama_update_offer_suppression')")
+
+
+def check_bundled_skip_label(page, label: str) -> None:
+    """A skip dismisses the whole offer, so a bundle with a backend switch names it in the plural."""
+    toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
+    check(f"{label}: the card is up", toggle.count() == 1)
+    if toggle.count() != 1:
+        return
+    toggle.click()
+    skip = page.locator('[data-testid="llama-update-skip-button"]')
+    text = skip.text_content() if skip.count() == 1 else None
+    check(
+        f"{label}: the skip action reads plural",
+        text == "Skip these versions",
+        f"text={text!r}",
+    )
+    toggle.click()
 
 
 def exercise_llama_changelog(page, label: str) -> None:
@@ -1114,30 +1250,36 @@ def main() -> int:
                 if path == "/":
                     exercise_llama_changelog(page, f"{size} {name}")
 
-            # whisper.cpp must reuse the shared runtime card.
+            # whisper.cpp rides along with llama.cpp and audio.cpp: alone it never opens the runtime card.
             llama_payload[0] = WHISPER_STATUS
             boot(page, "/")
-            facts = measure(page, f"{width}x{height} new chat whisper")
-            rows = page.locator('[data-testid="llama-update-version-line"]').count()
+            cards = page.locator('[data-testid="llama-update-banner"]').count()
             check(
-                f"{width}x{height}: whisper.cpp reuses the one runtime card",
-                page.locator('[data-testid="llama-update-banner"]').count() <= 1
-                and "whisper.cpp" in facts["llamaText"]
-                and rows == 1,
-                f"rows={rows} text={facts['llamaText']!r}",
+                f"{width}x{height}: a whisper.cpp-only release opens no runtime card",
+                cards == 0,
+                f"cards={cards}",
             )
+            if (width, height) == (VIEWPORTS[2:5] if SPOT else VIEWPORTS)[0]:
+                llama_payload[0] = AUDIO_STATUS
+                boot(page, "/")
+                exercise_skip_undo(page, f"{width}x{height} audio")
+                exercise_skip_on_auth_route(page, f"{width}x{height} audio")
 
-            # pending runtimes add rows without adding cards.
             llama_payload[0] = BUNDLE_STATUS
             boot(page, "/")
             facts = measure(page, f"{width}x{height} new chat bundle")
-            rows = page.locator('[data-testid="llama-update-version-line"]').count()
+            summary = page.locator('[data-testid="llama-update-summary"]').text_content() or ""
             check(
-                f"{width}x{height}: three pending runtimes share the one card, a row each",
-                page.locator('[data-testid="llama-update-banner"]').count() == 1 and rows == 3,
-                f"rows={rows} text={facts['llamaText']!r}",
+                f"{width}x{height}: three pending runtimes share the one card",
+                page.locator('[data-testid="llama-update-banner"]').count() == 1
+                and "llama.cpp, whisper.cpp and audio.cpp" in summary,
+                f"summary={summary!r}",
             )
             exercise_llama_changelog(page, f"{width}x{height} bundle")
+            if (width, height) == (VIEWPORTS[2:5] if SPOT else VIEWPORTS)[0]:
+                llama_payload[0] = MIGRATION_BUNDLE_STATUS
+                boot(page, "/")
+                check_bundled_skip_label(page, f"{width}x{height} migration bundle")
             llama_payload[0] = LLAMA_STATUS
             context.close()
 

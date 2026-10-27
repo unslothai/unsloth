@@ -68,7 +68,7 @@ export function readViewportBox(el: HTMLElement): ViewportBox {
     borderRight: Number.parseFloat(style.borderRightWidth) || 0,
     paddingLeft: Number.parseFloat(style.paddingLeft) || 0,
     paddingRight: Number.parseFloat(style.paddingRight) || 0,
-    bothEdges: style.scrollbarGutter.includes("both-edges"),
+    bothEdges: (style.scrollbarGutter ?? "").includes("both-edges"),
     rtl: style.direction === "rtl",
   };
 }

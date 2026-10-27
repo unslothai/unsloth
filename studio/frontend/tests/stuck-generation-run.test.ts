@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A durable run that never reaches a terminal status used to wedge the whole tab: the
-// reply stayed "running", which unmounts the composer's Send button, the checkpoint
-// schedule kept four requests moving every eight seconds, the follower reconnected
-// forever, and every stop path reported nothing to stop. Two full app reloads changed
-// none of it, because each one rebuilt the running status straight back out of the
-// persisted metadata. These are the frontend halves of that: nothing may derive "still
-// generating" from storage alone, and no loop may run without a bound.
+// Nothing may derive "still generating" from storage alone, and no loop may run unbounded;
+// otherwise a non-terminal run wedges the tab across reloads.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -68,12 +63,8 @@ const run = (
   completedAt: null,
 });
 
-// A. the corroboration gate
-
 test("before the server has answered, a live reply is not demoted", () => {
-  // First load with the backend briefly unreachable: there is no previous answer to
-  // leave standing, so an empty map must read as "never asked", not "nothing is
-  // running". Demoting here would mark a live generation interrupted.
+  // With no previous answer, an empty map means "never asked", not "nothing is running".
   resetServerActiveGenerationRuns();
   assert.equal(serverHasAnsweredActiveRuns("thread-1"), false);
   assert.equal(
@@ -84,7 +75,6 @@ test("before the server has answered, a live reply is not demoted", () => {
     true,
     "silence from the server is not a report that the run is dead",
   );
-  // One successful read, and the gate becomes authoritative for THAT thread.
   syncServerActiveGenerationRuns("thread-1", []);
   assert.equal(serverHasAnsweredActiveRuns("thread-1"), true);
   assert.equal(
@@ -97,8 +87,6 @@ test("before the server has answered, a live reply is not demoted", () => {
 });
 
 test("one thread's successful read does not make another thread's failed read authoritative", () => {
-  // A answers, B's active-run request fails while its history succeeds. With a single
-  // process-wide flag, B's genuinely active reply was restored as interrupted.
   resetServerActiveGenerationRuns();
   syncServerActiveGenerationRuns("thread-A", []);
   assert.equal(serverHasAnsweredActiveRuns("thread-A"), true);
@@ -181,9 +169,7 @@ test("a failed active-run read is reported as unknown, not as an empty list", as
 });
 
 test("the reload path gates the running status on corroboration", () => {
-  // Source-pinned: toThreadMessage needs a MessageRecord and the module's whole import
-  // graph, so the rule is asserted where it sits. Losing the call restores the wedge
-  // while every behavioural test stays green.
+  // Source-pinned: toThreadMessage cannot be imported here, and behavioural tests miss its loss.
   const provider = readText("../src/features/chat/runtime-provider.tsx");
   const gate = provider.indexOf("generationIsCorroboratedLive(custom, m.threadId)");
   assert.ok(gate > 0, "toThreadMessage no longer asks whether the run is live");
@@ -207,8 +193,6 @@ test("the reload path gates the running status on corroboration", () => {
 
 test("the interrupted restore keeps the partial body untouched", () => {
   const provider = readText("../src/features/chat/runtime-provider.tsx");
-  // The only content assignment in toThreadMessage is the clone of the stored parts.
-  // Nothing between the gate and the return may drop or truncate it.
   const start = provider.indexOf("function toThreadMessage(");
   const body = provider.slice(start, provider.indexOf("\n}\n", start));
   assert.ok(start > 0);
@@ -243,9 +227,7 @@ const stalledStreamFetch = (): typeof fetch =>
   }) as typeof fetch;
 
 test("the follower throws on its own deadline instead of returning silently", async () => {
-  // The live durable stream only throws for failed/cancelled. A silent return on our own
-  // deadline let a still-running run be finalized as a complete assistant reply while the
-  // backend kept generating with no follower.
+  // A silent return on our own deadline would finalize a still-running run as complete.
   globalThis.fetch = stalledStreamFetch();
   await assert.rejects(
     async () => {
@@ -264,8 +246,7 @@ test("the follower throws on its own deadline instead of returning silently", as
 });
 
 test("a caller Stop still ends the follow cleanly", async () => {
-  // Only OUR deadline is a failure. The user pressing Stop stays a clean return, so a
-  // deliberate cancel is never reported to the user as an interrupted reply.
+  // Only OUR deadline is a failure; a user Stop stays a clean return.
   globalThis.fetch = stalledStreamFetch();
   const controller = new AbortController();
   globalThis.setTimeout(() => controller.abort(), 30);
@@ -279,12 +260,7 @@ test("a caller Stop still ends the follow cleanly", async () => {
   }
 });
 
-// B. the follower's deadline
-
 test("the follower gives up on a run that makes no progress", async () => {
-  // The stream stays open and sends nothing, which is the shape a stuck durable run
-  // presents. The stub honours the abort signal exactly as fetch does, because that is
-  // the plumbing the deadline relies on to unblock a parked reader.
   let opened = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -340,8 +316,6 @@ test("progress rearms the deadline instead of ending the follow", async () => {
       const snapshot = terminal ? run("completed", seq) : undefined;
       const body = new ReadableStream({
         async start(controller) {
-          // Each stream also pays the reconnect backoff before it, so the run lasts
-          // longer than the deadline in total, but never goes that long without progress.
           await new Promise((resolve) => setTimeout(resolve, 25));
           controller.enqueue(
             encoder.encode(
@@ -388,18 +362,14 @@ test("progress rearms the deadline instead of ending the follow", async () => {
 });
 
 test("the default deadline outlasts any reasonable generation", () => {
-  // The client has to be the more patient of the two. A prefill emits no events while it
-  // runs, the backend allows 1200s for a first token, and the lease sweeper needs another
-  // interval to settle a genuinely dead run. A deadline under roughly 21 minutes would
-  // report "interrupted" over a generation the server is still working on.
+  // Prefill emits no events and the backend allows 1200s for a first token plus a sweep
+  // interval, so the client deadline must exceed ~21 minutes.
   assert.equal(CHAT_GENERATION_STALL_TIMEOUT_MS, 30 * 60_000);
   assert.ok(
     CHAT_GENERATION_STALL_TIMEOUT_MS > 1_200_000 + 60_000,
     "the follow deadline must outlast the backend first-token budget plus a sweep",
   );
 });
-
-// C. the stop path after a reload
 
 test("stopChatThread falls back to the server when the registries are empty", () => {
   const api = readText("../src/features/chat/utils/stop-chat-thread.ts");
@@ -424,9 +394,6 @@ test("stopChatThread falls back to the server when the registries are empty", ()
 });
 
 test("a failed second active-run read leaves the thread unanswered", () => {
-  // Source-pinned for the same reason as the gate above. `missed` proves the first list
-  // predates the run, so keeping it AND recording it as an answer would restore a live
-  // reply as interrupted and re-enable a conflicting send.
   const provider = readText("../src/features/chat/runtime-provider.tsx");
   assert.match(provider, /let answered = true;/);
   assert.match(
@@ -469,7 +436,6 @@ test("a failed refresh retracts this thread's earlier answer", () => {
     false,
     "an answer is a point in time; a failed refresh must retract it",
   );
-  // And a run another tab started since must keep the benefit of the doubt.
   assert.equal(
     generationIsCorroboratedLive({ generationRunId: "run-b" }, "t-1"),
     true,
@@ -494,10 +460,8 @@ test("a locally interrupted follower is not revived by the benefit of the doubt"
     generationRunId: "run-d",
     generationLocallyInterrupted: true,
   };
-  // No answer for this thread, which is normally enough to keep a run running.
   assert.equal(generationIsCorroboratedLive(stalled, "t-3"), false);
   assert.equal(generationNeedsRecovery(stalled), false);
-  // The server still naming it live overrules the marker.
   syncServerActiveGenerationRuns("t-3", ["run-d"]);
   assert.equal(generationIsCorroboratedLive(stalled, "t-3"), true);
 });
@@ -539,11 +503,7 @@ test("a legacy fallback releases the durable claim at once", () => {
 });
 
 test("the initial durable stream marks itself interrupted when it stalls", () => {
-  // The recovery follower is not the only one holding the deadline. The adapter runs its
-  // own follower for the first stream of a turn, and when THAT one gives up the persisted
-  // metadata still reads running and unsettled. Without the marker, generationNeedsRecovery
-  // stays true, the next reload attaches another follower, and the composer is blocked for
-  // another full deadline.
+  // The adapter's own follower also gives up; without the marker the next reload re-follows.
   const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   const stream = adapter.indexOf("const durableStream = async function* () {");
   assert.ok(stream > 0, "the durable stream moved");
@@ -551,7 +511,6 @@ test("the initial durable stream marks itself interrupted when it stalls", () =>
   assert.ok(caught > 0, "the adapter's own follower must catch the stall");
   const marked = adapter.indexOf("generationStalled = true;", caught);
   assert.ok(marked > 0, "catching the stall without recording it changes nothing");
-  // Recording it is only useful if it reaches the metadata that survives a reload.
   const custom = adapter.indexOf("const generationCustom = ()");
   assert.ok(custom > 0 && custom < stream, "the metadata builder moved");
   const persisted = adapter.indexOf(
@@ -562,9 +521,7 @@ test("the initial durable stream marks itself interrupted when it stalls", () =>
     persisted > custom && persisted < stream,
     "the stall marker must be persisted alongside generationSettled",
   );
-  // The marker alone only stops the next reload reviving the run. Without an incomplete
-  // reason the final yield writes `incomplete: undefined`, assistant-ui reads the partial
-  // reply as finished, and there is no Continue until a reload rebuilds the reason.
+  // Without an incomplete reason assistant-ui reads the partial reply as finished.
   const reason = adapter.indexOf('incompleteReason = "interrupted";', caught);
   assert.ok(
     reason > caught && reason < adapter.indexOf("if (generationStatus ===", caught),
@@ -574,9 +531,7 @@ test("the initial durable stream marks itself interrupted when it stalls", () =>
 
 test("a completed run overrides the local interruption marker", () => {
   resetServerActiveGenerationRuns();
-  // The backend resumed and finished after the follower gave up. /chat-runs/active
-  // excludes completed runs, so it can never clear the marker for this one: honouring
-  // it here would leave the reply running forever with its event tail never imported.
+  // /chat-runs/active excludes completed runs, so it can never clear the marker here.
   const finished = {
     generationRunId: "run-e",
     generationStatus: "completed",
@@ -585,7 +540,6 @@ test("a completed run overrides the local interruption marker", () => {
   };
   assert.equal(generationNeedsRecovery(finished), true);
   assert.equal(generationIsCorroboratedLive(finished, "t-4"), true);
-  // Still non-terminal, so the marker still holds.
   assert.equal(
     generationNeedsRecovery({ ...finished, generationStatus: "running" }),
     false,
@@ -614,8 +568,7 @@ test("the lease is renewed while the model is being prepared", () => {
     /def _renew_interval_seconds\(\)/,
     "the cadence must derive from the configured lease, not a constant that can exceed it",
   );
-  // The heartbeat has to span the lifecycle gate too: a run waiting on it is still
-  // queued and ages from created_at with nothing renewing it.
+  // A run waiting on the lifecycle gate ages from created_at with nothing renewing it.
   const guard = runs.indexOf("async with self._lease_heartbeat(run_id):");
   const gate = runs.indexOf("await activity.start(cancel_event)", guard);
   const produce = runs.indexOf("await produce_openai_chat_completions(", guard);
@@ -632,25 +585,17 @@ test("retracting an answer also drops that thread's stale run mappings", () => {
     generationStatus: "running",
     generationLocallyInterrupted: true,
   };
-  // While the answer stands, the server's word wins and the message is live.
   assert.equal(generationIsCorroboratedLive(stalled, "t-5"), true);
   markServerActiveGenerationRunsUnknown("t-5");
-  // Once retracted it must not keep winning from the leftover mapping: that pairs a
-  // running message with generationNeedsRecovery=false, so nothing would ever settle it.
+  // A leftover mapping must not keep winning, or nothing ever settles the message.
   assert.equal(generationIsCorroboratedLive(stalled, "t-5"), false);
   assert.equal(generationNeedsRecovery(stalled), false);
   assert.equal(threadHasDurableGenerationRun("t-5"), false);
 });
 
 test("advancing keep-alive stamps hold the follower open through a long preparation", async () => {
-  // The stream stays open and sends only comments for the whole of a model load. Before
-  // this, the loop never advanced, so the snapshot poll that would have seen the lease
-  // move never ran, and a healthy run was reported interrupted at the deadline.
-  //
-  // The stamp is what makes them progress. This test used to send BARE keep-alives, which
-  // pinned the wrong rule: the server emits one every 15s for as long as the socket holds,
-  // so a follower that rearmed on arrival could never settle a wedged run. See the
-  // companion test below for that half.
+  // Comment keep-alives count as progress only via the stamp; the server sends bare ones
+  // every 15s forever, so rearming on arrival could never settle a wedged run.
   const api = await import("../src/features/chat/api/chat-generation-api");
   let push: ((chunk: Uint8Array) => void) | undefined;
   let close: (() => void) | undefined;
@@ -684,8 +629,6 @@ test("advancing keep-alive stamps hold the follower open through a long preparat
         if (update.run.status !== "running") break;
       }
     })();
-    // Only comments, spaced so the deadline would have fired twice without them. The
-    // stamp advances, which is what a renewing lease looks like on the wire.
     for (let i = 0; i < 4; i += 1) {
       await new Promise((r) => setTimeout(r, 120));
       push?.(encoder.encode(`: keep-alive ${1000 + i}\n\n`));
@@ -704,9 +647,6 @@ test("advancing keep-alive stamps hold the follower open through a long preparat
 });
 
 test("a run finished between the two reads never reaches the durable registry", () => {
-  // The registry sync runs BEFORE the overlay, so skipping only at the overlay left the
-  // thread reading as durable. In another tab nothing removes that mapping, and the next
-  // subscriber-owned stream on the thread would be capped and lose its tail.
   const provider = readText("../src/features/chat/runtime-provider.tsx");
   const filter = provider.indexOf("terminalMessageRuns");
   const sync = provider.indexOf("syncServerActiveGenerationRuns(", filter);
@@ -721,15 +661,11 @@ test("a run finished between the two reads never reaches the durable registry", 
 
 test("a pre-admission claim does not make the thread bounded yet", () => {
   resetServerActiveGenerationRuns();
-  // The claim is taken before the create POST so a recovery trigger during that await
-  // cannot start a second follower. It must not also cap the checkpoints: until the POST
-  // lands there is no server-side run, so those checkpoints are the only persistence, and
-  // createChatGenerationRun retries transient failures until aborted, so the await can
-  // outlast the 30 minute cap. A capped thread is dropped from the schedule for good.
+  // The provisional claim blocks a second follower but must not cap checkpoints: until the
+  // POST lands they are the only persistence, and the await can outlast the cap.
   claimLiveGenerationRun("run-1", "thread-1", { provisional: true });
   assert.equal(threadHasDurableGenerationRun("thread-1"), false);
 
-  // Admission succeeded: the second, non-provisional claim confirms it.
   claimLiveGenerationRun("run-1", "thread-1");
   assert.equal(threadHasDurableGenerationRun("thread-1"), true);
   releaseLiveGenerationRun("run-1");
@@ -738,8 +674,6 @@ test("a pre-admission claim does not make the thread bounded yet", () => {
 
 test("releasing a provisional claim clears it rather than leaving it bounded", () => {
   resetServerActiveGenerationRuns();
-  // The legacy fallback path releases without ever admitting. A stale provisional entry
-  // would then make the NEXT claim of the same id read as unbounded.
   claimLiveGenerationRun("run-2", "thread-2", { provisional: true });
   releaseLiveGenerationRun("run-2");
   claimLiveGenerationRun("run-2", "thread-2");
@@ -748,9 +682,6 @@ test("releasing a provisional claim clears it rather than leaving it bounded", (
 });
 
 test("a repeated keep-alive stamp does NOT hold the follower open", async () => {
-  // The other half of the rule above, and the case the whole frontend fallback exists for:
-  // a wedged producer with a healthy socket. The server keeps sending keep-alives, but the
-  // run's progress stamp is frozen, so the deadline must still fire.
   const api = await import("../src/features/chat/api/chat-generation-api");
   let push: ((chunk: Uint8Array) => void) | undefined;
   const encoder = new TextEncoder();
@@ -785,10 +716,7 @@ test("a repeated keep-alive stamp does NOT hold the follower open", async () => 
         stalled = error instanceof api.ChatGenerationStalledError;
       }
     })();
-    // The same stamp, forever, and STILL ARRIVING while we wait. Stopping the pushes
-    // would make this vacuous: the deadline fires on its own once the stream goes quiet,
-    // so a version that rearmed on every keep-alive would pass too. The pump only stops
-    // when the deadline aborts the stream and closes the controller.
+    // Keep pushing: if the stream went quiet a rearm-on-keep-alive version would pass too.
     const pump = setInterval(() => {
       try {
         push?.(encoder.encode(": keep-alive 1\n\n"));
@@ -814,10 +742,7 @@ test("a repeated keep-alive stamp does NOT hold the follower open", async () => 
 });
 
 test("a frozen stamp does not rearm across SSE reconnects", async () => {
-  // The stream generator is re-invoked on every reconnect, so a per-connection memory of
-  // the last stamp treats the FIRST keep-alive of each connection as progress. Behind a
-  // flapping proxy that reconnects more often than the deadline, a wedged run would rearm
-  // the follower forever. The memory therefore lives in the follower, not the stream.
+  // The stream generator restarts per reconnect, so the last-stamp memory lives in the follower.
   const api = await import("../src/features/chat/api/chat-generation-api");
   const encoder = new TextEncoder();
   const original = globalThis.fetch;
@@ -825,8 +750,6 @@ test("a frozen stamp does not rearm across SSE reconnects", async () => {
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     if (String(url).includes("/events")) {
       connections += 1;
-      // Each connection: one keep-alive carrying the SAME frozen stamp, then EOF, which
-      // sends the follower around the reconnect loop again.
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(encoder.encode(": keep-alive 7\n\n"));
@@ -839,7 +762,6 @@ test("a frozen stamp does not rearm across SSE reconnects", async () => {
         headers: { "content-type": "text/event-stream" },
       });
     }
-    // The snapshot re-read between reconnects: still running, still frozen.
     return new Response(
       JSON.stringify({ id: "r", status: "running", lastEventSeq: 0, updatedAt: 7 }),
       { status: 200, headers: { "content-type": "application/json" } },
@@ -852,8 +774,6 @@ test("a frozen stamp does not rearm across SSE reconnects", async () => {
       try {
         for await (const _u of api.followChatGenerationRun("r", {
           initialRun: { id: "r", status: "running", lastEventSeq: 0, updatedAt: 7 } as never,
-          // Long enough for the 500ms-and-doubling reconnect backoff to produce several
-          // connections inside one deadline, which is the situation being tested.
           stallTimeoutMs: 2_500,
         })) {
           // Never terminal; only the deadline can end this.
@@ -876,9 +796,7 @@ test("a frozen stamp does not rearm across SSE reconnects", async () => {
 });
 
 test("a stalled follower fences the server run before offering Continue", () => {
-  // Settling only in this tab leaves the row queued/running/cancelling, and create_run
-  // refuses a thread that already has an active generation, so Continue and the next
-  // message would both 409 against a reply the UI had just declared finished.
+  // create_run refuses a thread with an active generation, so the server row must settle too.
   const provider = readText("../src/features/chat/runtime-provider.tsx");
   const settle = provider.indexOf("followStalled || generationNeedsRecovery(currentMetadata)");
   assert.ok(settle > 0, "the stall settle branch moved");

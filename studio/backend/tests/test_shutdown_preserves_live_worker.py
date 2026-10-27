@@ -1,13 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""_shutdown_subprocess returns whether the worker actually died, and preserves the
-live handle when it survives terminate/kill.
-
-A GPU worker wedged in an uninterruptible CUDA syscall can outlive SIGKILL. If shutdown
-nulled its handle anyway, is_worker_alive() would report False and the pre-swap liveness
-guard would let the destructive .venv_t5_latest rename proceed while a live worker still
-holds sidecar transformers modules (breaking the rename on Windows). The methods must keep
-the handle and return False so callers can refuse the swap.
-"""
+"""A worker that survives kill must keep its handle, so is_worker_alive() still guards the swap."""
 
 import threading
 
@@ -22,7 +14,7 @@ class _FakeProc:
 
     def __init__(self, dies_on = None):
         self._alive = True
-        self._dies_on = dies_on  # None | "join" | "terminate" | "kill"
+        self._dies_on = dies_on
         self.pid = 424242
 
     def is_alive(self):
@@ -58,7 +50,6 @@ def _bare_inference():
     o._resp_queue = _Q()
     o._cancel_event = None
     o._drain_event = None
-    # Worker-scoped bookkeeping the teardown clears (see _reset_worker_scoped_state).
     o._active_cancel_lock = threading.Lock()
     o._active_cancel_events = []
     o._executing_cancel_events = []
@@ -99,10 +90,9 @@ class TestInferenceShutdownReturn:
 
     def test_survivor_returns_false_and_keeps_handle(self):
         o = _bare_inference()
-        o._proc = _FakeProc(dies_on = None)  # outlives terminate AND kill
+        o._proc = _FakeProc(dies_on = None)
         assert o._shutdown_subprocess(timeout = 0.01) is False
         assert o._proc is not None
-        # is_worker_alive stays truthful, so the pre-swap guard can refuse the swap.
         assert o.is_worker_alive() is True
 
     def test_already_dead_returns_true(self):
@@ -213,5 +203,4 @@ class TestSpawnPathsHonorFailedShutdown:
 
         assert ok is False
         assert "did not exit" in msg
-        # The finally cleared the op flags even though we returned early.
         assert o._export_active is False

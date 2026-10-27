@@ -29,6 +29,7 @@ from ._utils import (
     is_bfloat16_supported,
 )
 from .loader_utils import is_distributed
+from ..device_type import xpu_keeps_explicit_bf16
 from ._decision_fast import compiled_encoder, pad_length
 from ._decision_common import *  # noqa: F401,F403
 
@@ -92,9 +93,9 @@ def _pin_device_map(kwargs) -> None:
 
 
 def _amp_dtype(device):
-    if device.type == "cuda":
+    if device.type in ("cuda", "xpu"):
         return torch.bfloat16 if is_bfloat16_supported() else torch.float16
-    return torch.bfloat16 if device.type == "xpu" else None
+    return None
 
 
 def _no_cudnn_attention():
@@ -630,7 +631,9 @@ def _clef_bnb_config(dtype):
     from transformers import BitsAndBytesConfig
     from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 
-    float16 = dtype == torch.float16 or not is_bfloat16_supported()
+    # XPU keeps an explicit bf16 request in bf16 (emulated if need be), as the loaders do.
+    keep_bf16 = dtype == torch.bfloat16 and _device().type == "xpu" and xpu_keeps_explicit_bf16()
+    float16 = dtype == torch.float16 or (not is_bfloat16_supported() and not keep_bf16)
     return BitsAndBytesConfig(
         load_in_4bit = True,
         bnb_4bit_use_double_quant = True,
@@ -646,8 +649,18 @@ def _clef_forced_float32(model) -> bool:
 
 def _clef_amp_dtype(model, device):
     # As _clef_mixed_precision trains (serving uses it too): the float32 path runs as loaded (Qwen3.5's
-    # gated delta net overflows in fp16); anything else autocasts, fp16 on a T4.
-    return None if _clef_forced_float32(model) else _amp_dtype(device)
+    # gated delta net overflows in fp16); anything else autocasts, fp16 on a T4. XPU keeps an
+    # explicit bf16 load in bf16, so its autocast follows the weights.
+    if _clef_forced_float32(model):
+        return None
+    if device.type == "xpu":
+        backbone = model._backbone() if hasattr(model, "_backbone") else model
+        dtype = getattr(backbone, "dtype", None)
+        if dtype is None:
+            dtype = next((p.dtype for p in backbone.parameters() if p.is_floating_point()), None)
+        if dtype == torch.bfloat16:
+            return torch.bfloat16
+    return _amp_dtype(device)
 
 
 def _load_clef(
@@ -1068,6 +1081,46 @@ def _attach_gguf_saving(model) -> None:
     model.push_to_hub_gguf = types.MethodType(push_to_hub_gguf, model)
 
 
+def _install_clef_loss_scaler(accelerator, scaler, get_optimizer):
+    accelerator.scaler = scaler
+    # Accelerate unscales before clipping only when it runs native fp16 itself (a prior fp16 Trainer in
+    # this process can leave that state); unscaling twice raises in GradScaler.
+    if getattr(accelerator, "native_amp", False) and accelerator.mixed_precision == "fp16":
+        return
+    clip = accelerator.clip_grad_norm_
+
+    def _clip_grad_norm(
+        parameters,
+        max_norm,
+        norm_type = 2,
+    ):
+        scaler.unscale_(get_optimizer())
+        return clip(parameters, max_norm, norm_type)
+
+    accelerator.clip_grad_norm_ = _clip_grad_norm
+
+
+def _clef_loss_scaler(model, args):
+    """A GradScaler for the float32 path, whose float16 backward loses Gemma 3's gradients unscaled
+    (#14439); not fp16 = True, which also means autocast, Apex and DeepSpeed / FSDP fp16 engines."""
+    from .loader_utils import deepspeed_zero_stage, fsdp_version_requested
+
+    device = next(model.parameters()).device
+    if (
+        not _clef_forced_float32(model)
+        or device.type not in ("cuda", "xpu")
+        or getattr(args, "deepspeed", None)
+        or getattr(args, "fsdp", None)
+        or deepspeed_zero_stage() is not None
+        or fsdp_version_requested()
+    ):
+        return None
+    if hasattr(torch.amp, "GradScaler"):
+        return torch.amp.GradScaler(device.type)
+    # torch < 2.3 has only the CUDA scaler.
+    return torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+
+
 def _clef_mixed_precision(model, args) -> None:
     # Unsloth's rule for Qwen3.5 (rl.py): on its float32 path a model never autocasts, since
     # float16 NaNs the gated delta net; bfloat16 weights pair with bf16 only; an fp16 load (T4) keeps fp16.
@@ -1212,6 +1265,13 @@ class DecisionTrainer(Trainer):
                 return backward(loss, **backward_kwargs)
 
         self.accelerator.backward = _backward
+        scaler = _clef_loss_scaler(model, self.args) if clef else None
+        if scaler is not None:
+            _install_clef_loss_scaler(
+                self.accelerator,
+                scaler,
+                lambda: getattr(self.optimizer, "optimizer", self.optimizer),
+            )
 
     @contextlib.contextmanager
     def _dataset_field_order(self):

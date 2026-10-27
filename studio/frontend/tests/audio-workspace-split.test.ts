@@ -28,7 +28,6 @@ test("the host calls its hooks in the order their effects ran in the single page
 });
 
 test("only the page commits a workflow; the sidebar's request goes through the same gate", () => {
-  // A refused request is kept and retried when busy settles; the commit is what clears it.
   assert.match(
     host,
     /if \(!active \|\| requestedWorkflow === null\) return;\s*transitionWorkflow\(requestedWorkflow\);\s*\}, \[active, busy, requestedWorkflow, transitionWorkflow\]\);/,
@@ -54,7 +53,6 @@ test("a loaded model opens the page that fits it", () => {
 });
 
 test("?workflow= names the page ahead of ?task=, and both go through the workflow gate", () => {
-  // Task-only links take the same gate as ?workflow=, so a Speak/Music switch never skips the busy check.
   assert.match(
     handoff,
     /const urlWorkflow = audioRouteIntent\(routeSearch\);[\s\S]*?const action = audioWorkflowUrlAction\(\{\s*urlWorkflow,/,
@@ -81,7 +79,6 @@ test("?workflow= names the page ahead of ?task=, and both go through the workflo
   assert.doesNotMatch(handoff, /search: \{\}/);
   assert.doesNotMatch(handoff, /replace: false/);
   assert.doesNotMatch(handoff, /commitWorkflow\(/);
-  // A Library clip asks for its page through ?workflow=, so a busy page retries it later.
   assert.match(
     handoff,
     /search: \(prev\) => \(\{ \.\.\.prev, workflow: clipWorkflow\(clip\) \}\)/,
@@ -132,7 +129,6 @@ test("each page tours its own model and settings", () => {
 });
 
 test("the rail heading switches pages from a menu of every workflow", () => {
-  // A tab row of 5-7 pages truncated every label in the default rail; the title menu lists them all.
   const host = readSrc("features/audio/audio-page.tsx");
   assert.doesNotMatch(host, /ariaLabel="Audio workflow"/);
   assert.match(
@@ -143,7 +139,6 @@ test("the rail heading switches pages from a menu of every workflow", () => {
   assert.match(menu, /data-tour="audio-mode"/);
   assert.match(menu, /AUDIO_WORKFLOWS\.map\(\(tab\) =>/);
   assert.match(menu, /\{tab\.hint\}/);
-  // Radio items: the current page is ticked and announced as checked.
   assert.match(menu, /<DropdownMenuRadioGroup\s+value=\{current\.id\}/);
 });
 

@@ -532,7 +532,7 @@ from unsloth import FastLanguageModel
 from unsloth.models import llama
 from unsloth.models._utils import get_quant_type
 seen = []
-llama.verify_fp8_support_if_applicable = lambda config: seen.append(get_quant_type(config))
+llama.verify_fp8_support_if_applicable = lambda config, **kw: seen.append(get_quant_type(config))
 try:
     FastLanguageModel.from_pretrained({str(tmp_path)!r}, load_in_4bit = False, max_seq_length = 64)
 except Exception:

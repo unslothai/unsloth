@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Event-fenced prefetch for block-streamed denoisers (``diffusion_offload_prefetch.py``).
-
-The order / depth / window logic runs on CPU with the copies stubbed. The CUDA cases build real diffusers block-level
-stream group offload through Studio's ``_apply_group_offload`` and check: no host synchronization per group (torch's
-sync debug mode), bit-identical outputs against the resident model, device memory bounded by the window while the host
-runs ahead of a slow GPU, no copy landing in a block the compute stream still reads, and a dropped prefetch never
-landing in a reused block.
-"""
+"""Event-fenced prefetch: CPU checks order and window; CUDA checks bit identity, no host sync."""
 
 from __future__ import annotations
 
@@ -114,10 +107,9 @@ def test_later_forwards_keep_depth_groups_in_flight_ahead():
     _forward(pf, groups)
     log.clear()
     pf.begin()
-    # nothing at the forward start: a top-level upload on the compute stream must reach the copy engine first
+    # no copy at forward start: the top-level upload must reach the copy engine first
     assert not log
     pf.onload(groups[0])
-    # the first block queues itself first; running a, b and c are in flight: depth 2 ahead
     assert [n for k, n in log if k == "copy"] == ["a", "b", "c"]
     for g in groups:
         if g is not groups[0]:
@@ -143,6 +135,129 @@ def test_one_group_larger_than_the_window_still_progresses():
     assert pf.stats["forwards"] == 2 and pf.inflight_bytes == 0
 
 
+class _FrozenGpu:
+    """Card whose events complete only when the host waits; tracks pinned staging buffers whose copy has not run."""
+
+    def __init__(self):
+        self.outstanding = 0
+        self.peak = 0
+        self.unattributed = 0
+        self.waits = 0
+        gpu = self
+
+        class Event:
+            def __init__(self):
+                self.staged = 0
+                self.done = False
+
+            def record(self, stream = None):
+                self.staged, gpu.unattributed = gpu.unattributed, 0
+
+            def query(self):
+                return self.done
+
+            def synchronize(self):
+                gpu.waits += 1
+                if not self.done:
+                    self.done = True
+                    gpu.outstanding -= self.staged
+
+        class HostTensor:
+            def __init__(
+                self,
+                nbytes: int,
+                pinned: bool = False,
+            ):
+                self.nbytes = nbytes
+                self.pinned = pinned
+
+            def is_pinned(self):
+                return self.pinned
+
+            def numel(self):
+                return self.nbytes
+
+            def element_size(self):
+                return 1
+
+            def pin_memory(self):
+                gpu.outstanding += self.nbytes
+                gpu.unattributed += self.nbytes
+                gpu.peak = max(gpu.peak, gpu.outstanding)
+                return HostTensor(self.nbytes, pinned = True)
+
+            def to(
+                self,
+                device,
+                non_blocking = False,
+            ):
+                return self
+
+        self.Event = Event
+        self.HostTensor = HostTensor
+
+
+class _Param:
+    data = None
+
+
+def _frozen_gpu_prefetcher(
+    monkeypatch,
+    pinned: bool,
+    groups_n: int = 10,
+    tensors: int = 3,
+):
+    import contextlib
+
+    gpu = _FrozenGpu()
+    monkeypatch.setattr(torch.cuda, "Event", gpu.Event)
+    monkeypatch.setattr(torch.cuda, "stream", lambda s: contextlib.nullcontext())
+    monkeypatch.setattr(op, "_go", lambda: types.SimpleNamespace())
+    groups = []
+    for _ in range(groups_n):
+        params = [_Param() for _ in range(tensors)]
+        groups.append(
+            types.SimpleNamespace(
+                modules = [],
+                parameters = params,
+                buffers = [],
+                cpu_param_dict = {p: gpu.HostTensor(100, pinned) for p in params},
+                stream = object(),
+            )
+        )
+    pf = op.GroupPrefetcher(None, groups, "cpu", depth = 1)
+    return pf, groups, gpu
+
+
+def test_unpinned_staging_stays_in_the_window_on_a_slow_card(monkeypatch):
+    """Host a whole forward ahead of the card: unbounded, staging held the whole denoiser in pinned RAM."""
+    pf, groups, gpu = _frozen_gpu_prefetcher(monkeypatch, pinned = False)
+    group_bytes = 300
+    assert pf.window == 2 * group_bytes
+    for g in groups:
+        pf._issue(g)
+    assert gpu.peak <= pf.window, (gpu.peak, pf.window)
+    assert gpu.waits > 0
+    assert pf.stats["copies"] == len(groups)
+    assert all(p.data is not None for g in groups for p in g.parameters)
+
+
+def test_landed_copies_free_staging_without_a_wait(monkeypatch):
+    pf, groups, gpu = _frozen_gpu_prefetcher(monkeypatch, pinned = False)
+    for g in groups:
+        pf._issue(g)
+        for event, _n in list(pf.staged):
+            event.done = True
+    assert gpu.waits == 0
+
+
+def test_pinned_host_copies_never_wait(monkeypatch):
+    pf, groups, gpu = _frozen_gpu_prefetcher(monkeypatch, pinned = True)
+    for g in groups:
+        pf._issue(g)
+    assert gpu.waits == 0 and gpu.peak == 0
+
+
 def test_resident_groups_are_skipped_and_not_counted():
     pf, groups, log = _cpu_prefetcher("abcdef", depth = 2)
     _forward(pf, groups)
@@ -152,7 +267,6 @@ def test_resident_groups_are_skipped_and_not_counted():
     pf.begin()
     assert not log
     pf.kick()
-    # the streamed tail is queued while the resident head runs
     assert [n for k, n in log if k == "copy"] == ["d", "e"]
     pf.kick()
     assert [n for k, n in log if k == "copy"] == ["d", "e"]
@@ -162,8 +276,7 @@ def test_resident_groups_are_skipped_and_not_counted():
 def test_off_order_forward_stops_prefetch_and_rerecords():
     pf, groups, log = _cpu_prefetcher("abcdef", depth = 2)
     _forward(pf, groups)
-    _forward(pf, groups, skip = "c")  # a conditional block did not run
-    # the copied-ahead c was freed at the end, and the order now omits it
+    _forward(pf, groups, skip = "c")
     assert ("free", "c") in log
     assert pf.order == [id(g) for g in groups if g.name != "c"]
     assert pf.inflight_bytes == 0 and not pf.ready
@@ -196,9 +309,7 @@ def test_depth_env(monkeypatch):
 
 
 def test_resident_onload_skips_the_copy_stream_wait_when_fenced(monkeypatch):
-    pytest.importorskip(
-        "diffusers.hooks"
-    )  # _keep_groups_resident imports it and leaves the groups alone without it
+    pytest.importorskip("diffusers.hooks")  # _keep_groups_resident is a no-op without this import
 
     class Stream:
         waits = 0
@@ -230,9 +341,7 @@ def test_resident_onload_skips_the_copy_stream_wait_when_fenced(monkeypatch):
     module._unsloth_stream_state["kick"] = lambda: kicks.append(1)
     for g in groups:
         g.onload_()
-    assert (
-        Stream.waits == 0 and len(kicks) == 2
-    )  # each resident onload may start the forward's prefetch
+    assert Stream.waits == 0 and len(kicks) == 2
     del module._unsloth_stream_state["kick"]
     module._unsloth_stream_state["fenced"] = False
     for g in groups:
@@ -269,7 +378,7 @@ class _Net(torch.nn.Module):
             if upto is not None and i >= upto:
                 break
             if self.sleep_cycles:
-                # a slow GPU: the host runs ahead and later copies are queued long before this block reads its weights
+                # simulate a slow GPU so the host queues later copies before this block reads
                 torch.cuda._sleep(self.sleep_cycles)
             x = torch.nn.functional.gelu(block(x))
         return self.proj_out(x)
@@ -405,12 +514,12 @@ def test_slow_gpu_keeps_memory_in_the_window_and_reads_the_right_weights(monkeyp
         got = net(x)
         host_ahead = not torch.cuda.current_stream().query()
         torch.cuda.synchronize()
-        # reserved, not allocated: a block freed under record_stream leaves the allocated count but stays reserved
+        # reserved, not allocated: record_stream frees drop allocated bytes but stay reserved
         peak = torch.cuda.max_memory_reserved() - base
     assert torch.equal(got, want)
-    assert host_ahead  # the forward returned while the GPU was still running its blocks
+    assert host_ahead
     block_bytes = 2048 * 2048 * 4 + 2048 * 4
-    # window (2 groups) + activations + top-level group; diffusers' record_stream path reserved 204 vs 44 MiB here
+    # window (2 groups) + activations + top-level group
     assert peak <= pf.window + 2 * block_bytes, (peak, pf.window)
 
 
@@ -510,6 +619,35 @@ def test_unpinned_host_copies_stream_bit_identical(monkeypatch):
     assert op.module_prefetcher(net).stats["prefetched"] > 0
 
 
+def test_slow_gpu_unpinned_staging_stays_in_the_window(monkeypatch):
+    """Unpinned host copies on a card slower than the host thread: pinned staging is capped, outputs bit-identical."""
+    _cuda()
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", "0")
+    monkeypatch.setenv(op.PREFETCH_DEPTH_ENV, "1")
+    torch.manual_seed(0)
+    # ~0.1 s per block on any card: the host queues the whole forward before the first blocks have run
+    net = _Net(width = 2048, blocks = 12, sleep_cycles = 200_000_000)
+    ref = copy.deepcopy(net).cuda()
+    _streamed(net, stream_text_encoders = True)
+    pf = op.module_prefetcher(net)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.no_grad():
+        want = ref(x)
+        net(x)
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_host_memory_stats()
+        before = torch.cuda.host_memory_stats().get("allocated_bytes.current", 0)
+        got = net(x)
+        host_ahead = not torch.cuda.current_stream().query()
+        torch.cuda.synchronize()
+    peak = torch.cuda.host_memory_stats().get("allocated_bytes.peak", 0) - before
+    assert torch.equal(got, want)
+    assert host_ahead
+    block_bytes = 2048 * 2048 * 4 + 2048 * 4
+    # window (2 groups) + the group being staged; unbounded it was every block of the forward
+    assert peak <= pf.window + 2 * block_bytes, (peak, pf.window)
+
+
 @pytest.mark.parametrize("version", [None, 2])
 def test_torchao_int8_weights_stream_bit_identical(version):
     """torchao's default int8 weight (v1 on 0.17) and ``Int8Tensor`` (version 2), whose 0.17 ``to`` drops
@@ -533,7 +671,6 @@ def test_torchao_int8_weights_stream_bit_identical(version):
     _streamed(net)
     pf = op.module_prefetcher(net)
     assert pf is not None
-    # the torchao top-level group (proj_in / proj_out) is driven too, from pinned copies on the copy stream
     top = net._diffusers_hook.get_hook("group_offloading").group
     assert top.stream is not None and pf.owns(top)
     assert all(c.is_pinned() for c in top.cpu_param_dict.values())
@@ -542,15 +679,15 @@ def test_torchao_int8_weights_stream_bit_identical(version):
         ref(x)
         want, ref_syncs = _count_syncs(
             lambda: ref(x)
-        )  # whatever the resident int8 op itself syncs (torchao 0.17: 1)
+        )  # syncs the resident int8 op does itself (torchao 0.17: 1)
         net(x)
         for _ in range(3):
             got, syncs = _count_syncs(lambda: net(x))
             torch.cuda.synchronize()
             assert torch.equal(got, want)
-            # offload adds none: torchao 0.17's v1 int8 ``to`` drops non_blocking (6 waits per block without the fix)
+            # torchao 0.17 int8 `to` drops non_blocking; offload must add no syncs
             assert syncs == ref_syncs
     assert pf.stats["prefetched"] > 0
     go = pytest.importorskip("diffusers.hooks.group_offloading")
-    # judged by the inner tensors: the torchao wrapper keeps reporting the device it was onloaded to
+    # the torchao wrapper reports its onload device, so check the inner tensors
     assert dm._placed_on(net.proj_in.weight, "cpu", go._is_torchao_tensor)

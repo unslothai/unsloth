@@ -34,9 +34,14 @@ def _load():
         n
         for n in tree.body
         if isinstance(n, ast.FunctionDef)
-        and n.name in ("_unsloth_grpo_sample_weight_mode", "_unsloth_grpo_sample_weight")
+        and n.name
+        in (
+            "_unsloth_grpo_sample_weight_mode",
+            "_unsloth_grpo_sample_weight",
+            "_unsloth_trl_masks_unscorable",
+        )
     ]
-    assert len(nodes) == 2
+    assert len(nodes) in (2, 3)
     ns = {"torch": torch}
     exec(compile(ast.Module(nodes, []), str(SOURCE), "exec"), ns)
     return ns["_unsloth_grpo_sample_weight"]
@@ -283,3 +288,16 @@ def test_group_with_one_scored_completion_is_kept(monkeypatch):
         trainer = _trainer("dapo", None)
         trainer.multi_objective_aggregation = aggregation
         assert _kept_groups(trainer, rpf, monkeypatch) == [True, True]
+
+
+def test_unscored_completion_counts_as_zero_on_trl_before_1_6(monkeypatch):
+    # TRL < 1.6 sums an unscored completion's rewards to 0, so [None, 1, 1, 1] has std 0.5 and real
+    # advantages; excluding the group would drop that signal. TRL >= 1.6 leaves it out: zero variance.
+    import trl
+
+    rpf = torch.tensor([[float("nan")] * 2, [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
+    trainer = _trainer("dapo", None)
+    monkeypatch.setattr(trl, "__version__", "1.5.1")
+    assert _kept_groups(trainer, rpf, monkeypatch) == [True]
+    monkeypatch.setattr(trl, "__version__", "1.6.0")
+    assert _kept_groups(trainer, rpf, monkeypatch) == [False]

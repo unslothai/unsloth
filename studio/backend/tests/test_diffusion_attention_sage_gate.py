@@ -51,7 +51,6 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
     monkeypatch.setattr(att, "_sage_version_too_old", lambda: None, raising = False)
-    # The pip SageAttention 2 path; the hub path is in test_diffusion_attention_install.py.
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: True, raising = False)
     backends = dispatch._AttentionBackendRegistry._backends
     saved = backends[dispatch.AttentionBackendName.SAGE]
@@ -151,12 +150,10 @@ def test_servable_call_reaches_the_sage_kernel(monkeypatch):
     backends[dispatch.AttentionBackendName.SAGE] = _fake_sage
     assert att._install_sage_dispatch_guard() is True
     q, k, v = _qkv(head_dim = 128, dtype = torch.bfloat16)
-    # Only the device reason fires on CPU ...
     assert att._sage_reroute_reason(q, k, v, None) == "device"
     torch.testing.assert_close(_dispatch_sage(q, k, v), _native(q, k, v))
     assert calls == []
 
-    # ... and the same call on a CUDA tensor is the one Sage takes.
     class _OnCuda(torch.Tensor):
         @property
         def device(self):
@@ -471,7 +468,6 @@ def test_engaged_backend_is_tagged_on_every_dit(monkeypatch):
     pipe = types.SimpleNamespace(transformer = t, transformer_2 = t2)
     assert apply_attention_backend(pipe, "sage", target = _target()) == "sage"
     assert t._unsloth_attention_backend == "sage" and t2._unsloth_attention_backend == "sage"
-    # A later load on the same modules that falls back clears the tag.
     monkeypatch.setattr(
         att,
         "_run_sage_probe",
@@ -504,7 +500,6 @@ def test_sage_version_floor(monkeypatch, installed, refused):
 
 
 def test_old_sageattention_is_ignored_for_the_hub_build(monkeypatch):
-    # sageattention 1.0.6 is never probed; with no hub build the load keeps the default backend and says why.
     seen: list = []
     monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128, **k: seen.append(hd) or "")
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)

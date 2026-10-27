@@ -575,6 +575,70 @@ def test_the_uv_cache_goes_with_the_code_and_cache_stays_data():
     ), "the build must prove the uv cache did not land in the home"
 
 
+def test_agents_skills_in_the_container_point_at_the_skills_on_the_volume(tmp_path):
+    app, home, root = _app(tmp_path), tmp_path / "home", tmp_path / "root"
+    env = {"UNSLOTH_STUDIO_SKILLS_HOME": str(home / "skills"), "HOME": str(root)}
+    for _ in range(2):
+        res = _link(app, home, env = env)
+        assert res.returncode == 0, res.stderr
+        assert (home / "skills").is_dir() and not (home / "skills").is_symlink()
+        assert os.readlink(root / ".agents" / "skills") == str(home / "skills")
+
+    (home / "skills" / "notes").mkdir()
+    assert (root / ".agents" / "skills" / "notes").is_dir()
+
+
+def test_a_skills_home_set_at_run_time_retargets_the_baked_link(tmp_path):
+    app, home, root = _app(tmp_path), tmp_path / "home", tmp_path / "root"
+    (root / ".agents").mkdir(parents = True)
+    (root / ".agents" / "skills").symlink_to(home / "skills")
+    res = _link(
+        app, home, env = {"UNSLOTH_STUDIO_SKILLS_HOME": str(tmp_path / "mine"), "HOME": str(root)}
+    )
+    assert res.returncode == 0, res.stderr
+    assert os.readlink(root / ".agents" / "skills") == str(tmp_path / "mine")
+    assert (tmp_path / "mine").is_dir()
+
+
+def test_a_users_own_agents_skills_link_is_left_alone(tmp_path):
+    app, home, root = _app(tmp_path), tmp_path / "home", tmp_path / "root"
+    (root / ".agents").mkdir(parents = True)
+    (root / ".agents" / "skills").symlink_to(tmp_path / "dotfiles")
+    res = _link(
+        app, home, env = {"UNSLOTH_STUDIO_SKILLS_HOME": str(home / "skills"), "HOME": str(root)}
+    )
+    assert res.returncode == 0, res.stderr
+    assert os.readlink(root / ".agents" / "skills") == str(tmp_path / "dotfiles")
+    assert str(home / "skills") in res.stderr
+
+
+def test_a_mounted_agents_skills_folder_is_left_alone_and_named(tmp_path):
+    app, home, root = _app(tmp_path), tmp_path / "home", tmp_path / "root"
+    (root / ".agents" / "skills" / "mine").mkdir(parents = True)
+    res = _link(
+        app, home, env = {"UNSLOTH_STUDIO_SKILLS_HOME": str(home / "skills"), "HOME": str(root)}
+    )
+    assert res.returncode == 0, res.stderr
+    assert (root / ".agents" / "skills" / "mine").is_dir()
+    assert not (root / ".agents" / "skills").is_symlink()
+    assert str(home / "skills") in res.stderr
+
+
+def test_without_a_skills_home_the_agents_folder_is_not_touched(tmp_path):
+    app, home, root = _app(tmp_path), tmp_path / "home", tmp_path / "root"
+    env = dict(os.environ, HOME = str(root))
+    env.pop("UNSLOTH_STUDIO_SKILLS_HOME", None)
+    res = subprocess.run(
+        ["bash", str(LINKER)],
+        env = dict(env, UNSLOTH_STUDIO_APP = str(app), UNSLOTH_STUDIO_HOME = str(home)),
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert not (root / ".agents").exists() and not (home / "skills").exists()
+
+
 def test_the_entrypoint_relinks_before_it_touches_the_studio_venv_and_stops_on_failure():
     """A half-linked home must not reach Studio: the hook exits instead of warning."""
     body = ENTRYPOINT.read_text(encoding = "utf-8")

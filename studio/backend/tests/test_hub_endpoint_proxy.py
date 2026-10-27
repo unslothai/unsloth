@@ -30,6 +30,16 @@ def _mirror(request: httpx.Request) -> httpx.Response:
     if request.url.host == "down.test":
         raise httpx.ConnectError("refused", request = request)
     headers = {"Set-Cookie": "s=1", "Link": f'<{MIRROR}/api/models?cursor=2>; rel="next"'}
+    if "missing" in request.url.path:
+        return httpx.Response(
+            404,
+            content = b"<h1>Not found on hub.internal.corp:8443</h1>",
+            headers = {
+                "Content-Type": "text/html",
+                "X-Error-Code": "EntryNotFound",
+                "X-Error-Message": "hub.internal.corp:8443 has no such file",
+            },
+        )
     kinds = {".png": "image/png", ".svg": "image/svg+xml", ".html": "text/html"}
     for suffix, kind in kinds.items():
         if request.url.path.endswith(suffix):
@@ -177,3 +187,18 @@ def test_a_signed_out_relay_refuses_large_files(proxy, monkeypatch):
     monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset({MIRROR}), raising = False)
     monkeypatch.setattr(endpoint_proxy, "ANONYMOUS_ASSET_LIMIT", 1)
     assert client.get(f"{HUB}/org/m/resolve/main/big.png").status_code == 413
+
+
+@pytest.mark.parametrize("path", ["/org/m/resolve/main/missing.png", "/org/missing/raw/main/a.png"])
+def test_a_signed_out_relay_never_streams_an_upstream_error(proxy, monkeypatch, path):
+    import utils.hub_settings as hub_settings
+
+    client, seen, state = proxy
+    state["session"] = False
+    monkeypatch.setattr(endpoint_proxy, "client_ip", lambda _request: "203.0.113.9")
+    monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset({MIRROR}), raising = False)
+    page = client.get(f"{HUB}{path}", follow_redirects = False)
+    assert len(seen) == 1 and page.status_code == 404
+    assert b"internal" not in page.content
+    assert "x-error-code" not in page.headers
+    assert "internal" not in page.headers.get("x-error-message", "")

@@ -7,8 +7,7 @@ import test from "node:test";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 test("currency inside inline code survives unrelated later code spans", () => {
-  // An inline span containing a `~~~...~~~` pair used to yield overlapping
-  // spans, so the binary search hit the inner one and missed the outer.
+  // A `~~~...~~~` pair inside an inline span once produced overlapping spans.
   const span = "`~~~a~~~ $5`";
   assert.equal(preprocessLaTeX(span), span);
 
@@ -26,7 +25,6 @@ test("currency inside inline code survives unrelated later code spans", () => {
 });
 
 test("a code span's own text decides its escaping, whatever follows it", () => {
-  // Appending an unrelated code span must never change an earlier one.
   const heads = [
     "`~~~a~~~ $5`",
     "`~~~ $5 ~~~`",
@@ -50,7 +48,6 @@ test("a code span's own text decides its escaping, whatever follows it", () => {
 });
 
 test("LaTeX inside inline code stays literal whatever follows it", () => {
-  // The same lookup guards `convertLatexDelimiters`.
   const span = "`~~~a~~~ \\(x\\)`";
   assert.equal(preprocessLaTeX(span), span);
   assert.equal(preprocessLaTeX(`${span}\n\n\`x\``), `${span}\n\n\`x\``);
@@ -67,7 +64,6 @@ test("thematic and setext breaks stop cross-block code spans", () => {
 });
 
 test("ordinary code spans and fences are unchanged", () => {
-  // Nothing that was already non-overlapping may move.
   const cases: [string, string][] = [
     ["`costs $5`", "`costs $5`"],
     ["``a ` \\$x\\$ b``", "``a ` \\$x\\$ b``"],
@@ -143,8 +139,6 @@ test("a fence's backticks do not stand in for an inline span", () => {
   // with the scan it replaces in both directions, so pin both.
   const fence = "```python\ndef step(lr):\n    return lr\n```";
 
-  // All backticks inside the fence: nothing is an inline span, so currency in
-  // prose is still escaped and currency inside the fence is still left alone.
   assert.equal(
     preprocessLaTeX(`${fence}\n\ncosts $5 a run\n`),
     `${fence}\n\ncosts \\$5 a run\n`,
@@ -154,15 +148,11 @@ test("a fence's backticks do not stand in for an inline span", () => {
     "```sh\nrun --seed $1\n```\n",
   );
 
-  // One backtick outside the fence, so the scan still has to run: the inline
-  // span protects its own currency while prose currency is escaped.
   assert.equal(
     preprocessLaTeX(`${fence}\n\n\`cost $5\` and $6 in prose\n`),
     `${fence}\n\n\`cost $5\` and \\$6 in prose\n`,
   );
 
-  // An inline span before the fence, which the region scan reaches only after
-  // the fence has been masked out.
   assert.equal(
     preprocessLaTeX(`\`keep $7\` then\n\n${fence}\n\nand $8\n`),
     `\`keep $7\` then\n\n${fence}\n\nand \\$8\n`,

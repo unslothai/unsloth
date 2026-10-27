@@ -11,9 +11,11 @@ Kill switch: ``UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE=0``.
 from __future__ import annotations
 
 import functools
+import logging
 import os
 import threading
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 FLUX2_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE"
 _MODULE = "diffusers.models.transformers.transformer_flux2"
@@ -22,6 +24,8 @@ _LOCK = threading.Lock()
 _STOCK: dict = {}
 # Survives uninstall so a forward that looked up the patch just before teardown still reaches stock.
 _ORIGINAL: list = [None]
+# Set by the first failed launch (JIT / driver / PTX): the rest of the load runs stock, not one failing JIT per call.
+_FAILED = [False]
 
 
 def disabled() -> bool:
@@ -42,7 +46,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
         return False
     if dtype is not torch.float16 or not str(device).startswith("cuda"):
         return False
-    if getattr(torch.version, "hip", None):
+    if is_rocm_torch(torch):
         return False
     return _kernel() is not None
 
@@ -162,6 +166,17 @@ def _eligible(
     return True
 
 
+def _log_failed(exc: BaseException) -> None:
+    try:
+        logging.getLogger(__name__).warning(
+            "diffusion.flux2_rope: fused fp16 RoPE launch failed (%s: %s); stock RoPE for the rest of this load",
+            type(exc).__name__,
+            exc,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _fused_apply_rotary_emb(
     x,
     freqs_cis,
@@ -181,12 +196,13 @@ def _fused_apply_rotary_emb(
             use_real_unbind_dim = use_real_unbind_dim,
             sequence_dim = sequence_dim,
         )
-    launch = _kernel()
+    launch = None if _FAILED[0] else _kernel()
     if launch is not None and _eligible(x, freqs_cis, use_real, use_real_unbind_dim, sequence_dim):
         try:
             return launch(x, freqs_cis[0], freqs_cis[1])
-        except Exception:  # noqa: BLE001 -- never fail a render over the fast path
-            pass
+        except Exception as exc:  # noqa: BLE001 -- never fail a render over the fast path
+            _FAILED[0] = True
+            _log_failed(exc)
     return stock(
         x,
         freqs_cis,
@@ -208,6 +224,7 @@ def install(
     import importlib
 
     with _LOCK:
+        _FAILED[0] = False
         if _ATTR in _STOCK:
             return True
         try:
@@ -245,6 +262,7 @@ def install_for_pipe(
 def uninstall() -> None:
     import sys
     with _LOCK:
+        _FAILED[0] = False
         stock = _STOCK.pop(_ATTR, None)
         if stock is None:
             return

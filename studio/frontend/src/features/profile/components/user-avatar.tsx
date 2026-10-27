@@ -13,18 +13,15 @@ type UserAvatarProps = {
   imageUrl: string | null;
   size: "sm" | "md" | "lg";
   className?: string;
-  /** Override the stored shape preference (defaults to the user's setting). */
   shape?: AvatarShape;
 };
 
 const SIZE: Record<"sm" | "md" | "lg", string> = {
   sm: "size-9 text-xs",
   md: "size-11 text-sm",
-  /** ~10% larger than `size-24` / `text-2xl` for the edit-profile dialog. */
   lg: "size-[calc(106px*var(--ui-space-scale,1))] text-[calc(1.65rem*var(--ui-font-scale,1))]",
 };
 
-// Percentage radius keeps the rounded-rectangle proportional across sizes.
 const SHAPE: Record<AvatarShape, string> = {
   circle: "rounded-full",
   rounded: "rounded-[22%]",

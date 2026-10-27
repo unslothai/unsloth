@@ -486,11 +486,7 @@ def _gguf_has_classifier_head(path: str) -> Optional[bool]:
 
 
 def _parse_gguf_has_named_tensor(path: str, wanted_name: str) -> Optional[bool]:
-    """Whether the GGUF tensor table lists exactly ``wanted_name``.
-
-    Same stream and bounds as ``_parse_gguf_has_classifier_head``, which matches a
-    prefix; this matches a full name, without mapping the tensor data in.
-    """
+    """Exact full-name match against the GGUF tensor table, without mapping the tensor data in."""
     try:
         with open(path, "rb") as f:
             head = f.read(24)
@@ -564,21 +560,7 @@ def _gguf_shard_has_named_tensor(path: str, wanted_name: str) -> Optional[bool]:
 
 
 def mtp_drafter_loads_standalone(path: str) -> bool:
-    """Can llama-server open *path* as a ``--model-draft``?
-
-    A draft head is opened as a complete model unless it can borrow the target's
-    embeddings, so one carrying neither its own ``token_embd.weight`` nor
-    ``<arch>.nextn_shared_target_tensors`` ends the launch with
-    ``check_tensor_dims: tensor 'token_embd.weight' not found``. Measured against the
-    shipped llama.cpp: the metadata flag is what admits a head into
-    ``borrow_shared_tensor``. Only that one tensor decides, since the rest of the
-    borrowable set is per-architecture (``qwen4exp`` creates no ``output_norm``), so a
-    stricter refusal would reject heads that work.
-
-    Split-aware like ``_gguf_has_classifier_head``: llama-server opens sibling shards
-    implicitly, so a tensor absent from shard 1 may live in shard 2. Fails open on
-    anything it cannot see, leaving the verdict to llama-server.
-    """
+    """False for a head lacking both token_embd.weight and nextn_shared_target_tensors, checked across shards; it would fail at launch; fails open if unseen."""
     from utils.models.model_config import colocated_split_shards
 
     try:
@@ -1004,11 +986,7 @@ def mmproj_accepts_image(path: str) -> bool:
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
-    """True/False from ``general.type``; None means fall back to filename.
-
-    ``general.architecture == "clip"`` is llama.cpp's projector arch and wins: older
-    converters wrote ``general.type`` values like ``clip-vision`` (#9286).
-    """
+    """True/False from general.type, None to fall back to filename; architecture clip wins, as older converters wrote general.type as clip-vision."""
     if not meta:
         return None
     if (meta.get("general.architecture") or "").lower() == "clip":

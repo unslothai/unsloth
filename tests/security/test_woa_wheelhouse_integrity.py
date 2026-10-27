@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -78,3 +79,46 @@ def test_publishing_is_off_by_default():
     publish = _dispatch_inputs(_workflow())["publish"]
     assert publish["type"] == "boolean"
     assert publish["default"] is False
+
+
+@pytest.mark.parametrize(
+    "job,path,tag_input,commit_input,step",
+    [
+        (
+            "build-pyarrow",
+            "arrow",
+            "arrow_tag",
+            "arrow_commit",
+            "Confirm the Arrow tag is the pinned commit",
+        ),
+        (
+            "build-sqlite-vec",
+            "sv",
+            "sqlite_vec_tag",
+            "sqlite_vec_commit",
+            "Confirm the sqlite-vec tag is the pinned commit",
+        ),
+    ],
+)
+def test_upstream_tags_are_checked_against_a_pinned_commit(
+    job, path, tag_input, commit_input, step
+):
+    # A third-party tag can be moved, and these sources are built into wheels we sign and publish.
+    inputs = _dispatch_inputs(_workflow())
+    assert COMMIT_SHA.match(str(inputs[commit_input]["default"])), inputs[commit_input]
+    steps = _steps(_workflow(), job)
+    names = [s.get("name") for s in steps]
+    assert step in names, names
+    checkout = next(
+        i
+        for i, s in enumerate(steps)
+        if s.get("with", {}).get("path") == path
+        and s.get("with", {}).get("ref") == f"${{{{ inputs.{tag_input} }}}}"
+    )
+    guard = names.index(step)
+    assert guard == checkout + 1, "the pin must be confirmed straight after the checkout"
+    body = steps[guard]["run"]
+    # Through the environment, never interpolated into the script.
+    assert steps[guard]["env"]["PINNED_COMMIT"] == f"${{{{ inputs.{commit_input} }}}}"
+    assert "${{" not in body
+    assert "$env:PINNED_COMMIT" in body and "rev-parse HEAD" in body and "[0-9a-f]{40}" in body

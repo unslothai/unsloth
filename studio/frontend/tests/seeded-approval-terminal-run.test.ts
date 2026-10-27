@@ -1,19 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// generation-tool-recovery-approvals.test.ts holds the rule that a call parked before the tab
-// closed gets its Approve/Deny back. This holds the BOUND on that rule, at the one place it can be
-// expressed: the run has to still be answerable.
-//
-// A run that settled while it was parked (a backend restart terminalises surviving rows as
-// interrupted) has no in-memory _pending slot left. The saved assistant message still carries the
-// unresolved card, and no tool_end is ever coming to disarm it, so arming from the seed puts
-// Approve/Deny in front of the user whose confirm can only ever return 404. Buttons that cannot
-// work are worse than the missing buttons this feature exists to restore.
-//
-// The guard lives in the follow loop, which no behavioural test reaches without a live EventSource,
-// so the call site is pinned here rather than trusted: deleting the guard leaves every other test
-// green.
+// Bounds the seeded-approval rule: a run that settled while parked can only 404 on confirm.
+// The guard is in the follow loop, unreachable without EventSource, so pin the call site.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -34,7 +23,6 @@ const parsed = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 
-/** Every call to `<something>.armSeededApprovals(...)` in the file. */
 const seededApprovalCalls = (): ts.CallExpression[] => {
   const found: ts.CallExpression[] = [];
   const walk = (node: ts.Node): void => {
@@ -51,7 +39,6 @@ const seededApprovalCalls = (): ts.CallExpression[] => {
   return found;
 };
 
-/** Walk up from a node collecting the text of every enclosing `if` condition. */
 const enclosingConditions = (node: ts.Node): string[] => {
   const conditions: string[] = [];
   let current: ts.Node | undefined = node.parent;
@@ -65,8 +52,7 @@ const enclosingConditions = (node: ts.Node): string[] => {
 };
 
 test("the seeded approvals call exists at all", () => {
-  // If this fails the test below would pass vacuously, which is the failure mode that makes a
-  // call-site test worthless.
+  // Guards against the test below passing vacuously.
   assert.ok(
     seededApprovalCalls().length > 0,
     "no armSeededApprovals call site found in runtime-provider.tsx",
@@ -100,27 +86,14 @@ test("the terminal check is imported, not invented locally", () => {
   );
 });
 
-// ── Arming must not hold the event stream closed ────────────────────────────
-// followChatGenerationRun yields its snapshot BEFORE it opens /events
-// (chat-generation-api.ts: `yield { run, source: "snapshot" }` precedes the
-// streamChatGenerationEvents loop), so the consumer is what decides when that stream opens.
-// /events is also the only thing that marks the run attended server-side
-// (state/run_subscribers.py), and attendance is what stops the park ceiling denying an
-// approval. Awaiting the seeded-approval check at the call site therefore serialises the
-// "is it still pending?" request AHEAD of the stream that says someone is watching, so a tab
-// returning near the ceiling can have its approval expire during that very request and be
-// handed buttons that can only 404.
-//
-// Pinned on the call site for the same reason as the guard above: the follow loop needs a live
-// EventSource, so no behavioural test in this suite reaches it.
+// The follow loop yields the snapshot before opening /events, which marks the run attended.
+// Awaiting the check here delays attendance so an approval can expire near the ceiling.
 
-/** Walk up from a node looking for an `await` that directly wraps it. */
 const isDirectlyAwaited = (node: ts.Node): boolean => {
   let current: ts.Node | undefined = node.parent;
   while (current) {
     if (ts.isAwaitExpression(current)) return true;
-    // Stop at the first construct that is not a transparent wrapper: anything further up
-    // awaits a different expression, not this call.
+    // Stop at the first non-transparent wrapper: anything higher awaits a different expression.
     if (
       ts.isExpressionStatement(current) ||
       ts.isVariableDeclaration(current) ||
@@ -149,12 +122,8 @@ test("the seeded-approval check does not block the event stream from opening", (
 });
 
 
-// ── The disarm has to cover every exit, not just the terminal one ───────────
-// A permanent follower error -- another tab deletes the thread, the run row cascades, the next
-// request 404s -- throws straight past the terminal branch and is swallowed by the outer catch. A
-// card armed from the seed would then sit in the global toolConfirmations store for the rest of the
-// session. Nothing renders buttons over a finished part, but `soleRequest` counts entries, so a
-// later real approval reads as non-sole and silently loses its Enter and Escape chords.
+// A permanent follower error skips the terminal branch, leaving a seeded card armed.
+// soleRequest counts entries, so a stale card steals later approvals' Enter/Escape chords.
 
 test("disarmAll runs in the recovery's finally, not only on the terminal path", () => {
   const text = readFileSync(SOURCE, "utf8");
@@ -165,7 +134,6 @@ test("disarmAll runs in the recovery's finally, not only on the terminal path", 
     "expected exactly one disarmAll call site; more than one means the terminal-path copy came " +
       "back and the two can disagree about ordering against the seed join",
   );
-  // The call must sit inside a `finally {`, which is the only block every exit reaches.
   const before = text.slice(0, disarms[0]!.index!);
   const lastFinally = before.lastIndexOf("} finally {");
   const lastTerminalIf = before.lastIndexOf("isTerminalChatGenerationRun(update.run)");

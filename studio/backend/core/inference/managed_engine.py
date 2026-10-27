@@ -56,6 +56,33 @@ def _offline(env) -> bool:
     )
 
 
+def _mig_rows(gpu_ids: list[int]):
+    """R570+ MIG rows for these ids, or None (untranslatable: keep the physical-id behaviour)."""
+    try:
+        from utils.hardware import mig
+
+        from .engine_install import gpu_platform
+
+        if gpu_platform() == "rocm":
+            return None
+        rows = mig.rows_for(gpu_ids)
+        if rows is None or mig.mask_for(gpu_ids) is None:
+            return None
+        return rows
+    except Exception:
+        return None
+
+
+def _child_cuda_mask(gpu_ids: list[int]) -> str:
+    """Instance UUIDs on an R570+ MIG host (numeric ids would name the whole host), else the numeric mask."""
+    try:
+        from utils.hardware import mig
+        pinned = mig.mask_for(gpu_ids)
+    except Exception:
+        pinned = None
+    return pinned or ",".join(str(i) for i in gpu_ids)
+
+
 def validate_load(engine: str, request) -> list[int]:
     """Returns the physical GPU ids to launch on, all inside the GPUs Studio may use."""
     profile(engine)
@@ -65,7 +92,7 @@ def validate_load(engine: str, request) -> list[int]:
     # The engine's CUDA_VISIBLE_DEVICES replaces Studio's, so an omitted selection is the first GPU Studio sees.
     gpu_ids = resolve_requested_gpu_ids(gpu_ids) if gpu_ids else resolve_requested_gpu_ids(None)[:1]
     if not gpu_ids:
-        raise ValueError("Studio has no GPU it can assign to this engine.")
+        raise ValueError("Unsloth has no GPU it can assign to this engine.")
     from . import wsl_host
 
     if len(gpu_ids) > 1 and wsl_host.active() and profile(engine)["platform"] == "rocm":
@@ -85,11 +112,13 @@ def validate_load(engine: str, request) -> list[int]:
             mask = None
         if mask:
             raise ValueError(
-                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Studio runs with {mask}. "
+                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Unsloth runs with {mask}. "
                 "Use only HIP_VISIBLE_DEVICES or only ROCR_VISIBLE_DEVICES instead."
             )
-    for gpu_id in gpu_ids:
-        reason = support_reason(engine, gpu_id)
+    mig_rows = _mig_rows(gpu_ids)
+    for position, gpu_id in enumerate(gpu_ids):
+        checked = int(mig_rows[position]["physical_index"]) if mig_rows else gpu_id
+        reason = support_reason(engine, checked)
         if reason:
             raise ValueError(f"GPU {gpu_id}: {reason}")
     info = installed(engine)
@@ -99,7 +128,7 @@ def validate_load(engine: str, request) -> list[int]:
         )
     if stale(info):
         raise ValueError(
-            f"Studio's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
+            f"Unsloth's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
         )
     if info.get("profile_digest") != profile_digest(engine) and not (
         info.get("restored") and built_for_this_gpu(engine, info)
@@ -682,7 +711,7 @@ class ManagedEngine:
                             child_env.get("PATH", os.defpath),
                         ]
                     )
-                    child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
+                    child_env["CUDA_VISIBLE_DEVICES"] = _child_cuda_mask(gpu_ids or [0])
                     rocm = info.get("platform") == "rocm"
                     if rocm:
                         child_env.update(_rocm_visibility(child_env, gpu_ids or [0]))
@@ -756,7 +785,7 @@ class ManagedEngine:
                 )
                 adopt_pid(self.process.pid)
                 if is_process_shutting_down():
-                    raise RuntimeError("Studio is shutting down")
+                    raise RuntimeError("Unsloth is shutting down")
                 self._reader = threading.Thread(
                     target = self._drain, args = (self.process,), daemon = True
                 )
@@ -1076,7 +1105,7 @@ class ManagedEngine:
             )
         if params.get("video"):
             raise ValueError(
-                "Video input is not yet supported by the Studio managed engine transport."
+                "Video input is not yet supported by the Unsloth managed engine transport."
             )
         from .orchestrator import _encoded_images, InferenceOrchestrator
 

@@ -11,8 +11,8 @@ ASSERT_SH="$REPO_ROOT/.github/scripts/clean-machine-assert.sh"
 SHIPPED_PIN="$REPO_ROOT/studio/backend/requirements/diffusers-main.txt"
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
-# The shipped pin is commented out while a Diffusers release carries every family, so the
-# allowance is exercised on the same file with its requirement line uncommented.
+# The shipped pin is commented out whenever a Diffusers release carries every family, so the
+# allowance is exercised on the same file with its requirement line uncommented (a no-op when active).
 PIN="$ROOT/diffusers-main.txt"
 sed 's/^# diffusers @ git+/diffusers @ git+/' "$SHIPPED_PIN" > "$PIN"
 PASS=0
@@ -65,12 +65,32 @@ git\tsubmodule update --recursive --init
 xcode-select\t-p
 "
 
+# uv 0.13 (the pinned release): git-v1, and the pinned commit fetched by its own refspec.
+CACHE1=$UV_CACHE/git-v1
+UV13_CLONE="git\t--version
+git\t-c remote.origin.url=$REMOTE submodule update --init
+git\tclone --local $CACHE1/db/76e25d04238765dd $CACHE1/checkouts/76e25d04238765dd/${SHA:0:9}
+git\tfetch --force --update-head-ok $REMOTE +$SHA:refs/commit/$SHA
+git\tinit
+git\treset --hard $SHA
+git\trev-parse
+git\trev-parse --short $SHA
+git\trev-parse $SHA^0
+git\trev-parse HEAD
+git\tsubmodule update --recursive --init
+xcode-select\t-p
+"
+
 echo "=== pinned git+ remotes ==="
 expect_rc "uv cloning the pinned Diffusers build passes" 0 "$PIN" "$UV_CLONE"
+expect_rc "uv 0.13 cloning it through git-v1 passes" 0 "$PIN" "$UV13_CLONE" "$CACHE1/checkouts/76e25d04238765dd/${SHA:0:9}"
+expect_rc "the uv 0.13 trace fails with no allowance" 1 "" "$UV13_CLONE" "$CACHE1/checkouts/76e25d04238765dd/${SHA:0:9}"
 expect_rc "the same trace fails with no allowance, as before" 1 "" "$UV_CLONE"
 expect_rc "an allowance file that does not exist allows nothing" 1 "$ROOT/missing.txt" "$UV_CLONE"
 expect_rc "the installer's git --version probe alone passes" 0 "$PIN" "git\t--version\n"
-expect_rc "the shipped, commented-out pin allows no clone" 1 "$SHIPPED_PIN" "$UV_CLONE"
+COMMENTED_PIN="$ROOT/commented-diffusers-main.txt"
+sed 's/^diffusers @ git+/# diffusers @ git+/' "$SHIPPED_PIN" > "$COMMENTED_PIN"
+expect_rc "a commented-out pin allows no clone" 1 "$COMMENTED_PIN" "$UV_CLONE"
 # An overlay-free leg installs the released wheel, which can pin an older commit than this
 # checkout's file; uv's checkout is named after the commit it installs.
 OLDER=1111111111111111111111111111111111111111

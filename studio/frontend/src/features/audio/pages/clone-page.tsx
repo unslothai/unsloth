@@ -5,13 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
-import { FloppyDiskIcon, SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { ClosedCaptionIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useState } from "react";
 import type { AudioGalleryClip } from "../api";
-import { audioCppModelFor, audioCppWorkflowsFor } from "../audio-cpp-catalog";
 import type { AudioSourceSelection } from "../audio-run-request";
-import { macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { CLONE_TEXT_EXAMPLES } from "../clone-policy";
 import {
   AudioHistoryProvider,
@@ -28,33 +26,6 @@ import { useAudioCloneStore } from "../stores/audio-clone-store";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
-
-const CLONE_MODEL_ORDER = [
-  "Qwen3-TTS-12Hz-0.6B-Base-GGUF",
-  "VoxCPM2-GGUF",
-  "Chatterbox-GGUF",
-];
-
-function cloneRank(id: string): number {
-  const index = CLONE_MODEL_ORDER.findIndex((name) => id.endsWith(`/${name}`));
-  return index === -1 ? CLONE_MODEL_ORDER.length : index;
-}
-
-export function clonePageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models
-    .filter((model) => {
-      const entry = audioCppModelFor(model.id);
-      return (
-        entry !== null &&
-        audioCppWorkflowsFor(entry).includes("clone") &&
-        (!isMac || macTtsCatalogChoiceIsRunnable(model.id))
-      );
-    })
-    .sort((a, b) => cloneRank(a.id) - cloneRank(b.id));
-}
 
 type RailProps = Omit<
   ComponentProps<typeof TtsRailFields>,
@@ -96,6 +67,7 @@ function CloneInputs({
           id="clone-reference"
           label="Reference"
           hint="5 to 15 s of one clear voice works best."
+          idealSeconds={[5, 15]}
           value={reference}
           onChange={adoptReference}
           disabled={disabled}
@@ -126,7 +98,7 @@ function CloneInputs({
               }
               onClick={() => void transcriber.transcribe(reference)}
             >
-              <HugeiconsIcon icon={SpeechToTextIcon} className="size-3.5" />
+              <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
               {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
             </Button>
           </div>
@@ -203,13 +175,15 @@ function CloneInputs({
           </div>
         )}
       </div>
-      <LanguageSelect
-        id="clone-language"
-        label="Language"
-        value={clone.language}
-        onChange={setLanguage}
-        hint="The language of the text to speak. Auto lets the model tell."
-      />
+      {clone.languageShown ? (
+        <LanguageSelect
+          id="clone-language"
+          label="Language"
+          value={clone.language}
+          onChange={setLanguage}
+          hint="The language of the text to speak. Auto lets the model tell."
+        />
+      ) : null}
     </AudioHistoryProvider>
   );
 }
@@ -293,11 +267,10 @@ export function CloneFooter({
             <Button
               type="button"
               variant="outline"
-              className="h-11 px-5"
+              className="text-ui-13"
               disabled={!canSave}
               onClick={() => setSaving(true)}
             >
-              <HugeiconsIcon icon={FloppyDiskIcon} className="size-4" />
               Save voice…
             </Button>
           )

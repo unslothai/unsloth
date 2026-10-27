@@ -316,7 +316,7 @@ def test_pin_floor_is_revisited_whenever_the_pins_move():
     assert _repair_specs() == {
         "mlx": "==0.32.4",
         "mlx-lm": ">=0.31.3,<=0.32.2",
-        "mlx-vlm": ">=0.4.4,<=0.7.8",
+        "mlx-vlm": ">=0.4.4,<=0.7.9",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 
@@ -488,7 +488,7 @@ def test_mlx_image_engine_pins_leave_the_mlx_stack_alone():
     assert stack._MLX_PINS == ("mlx==0.32.4", "mlx-metal==0.32.4")
     names = {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_PINS}
     names |= {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_DEPS}
-    assert names == {"mflux", "piexif", "platformdirs", "toml"}
+    assert names == {"mflux", "pillow", "piexif", "platformdirs", "toml"}
     # The heavy declared deps of mflux stay out: --no-deps plus this list is the whole install.
     assert not names & {
         "opencv-python",
