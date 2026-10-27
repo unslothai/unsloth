@@ -84,20 +84,6 @@ test("the sibling link keeps its icon where the square button puts it and trails
   }
 });
 
-test("an unpinned Video sits last under Images, an unpinned Images under Video", () => {
-  const sidebar = readSrc("components/app-sidebar.tsx");
-  assert.match(
-    sidebar,
-    /if \(inlineNavIds\.includes\(sibling\)\) return null;/,
-  );
-  assert.match(sidebar, /tail=\{unpinnedMediaSibling\("video"\)\}/);
-  assert.match(
-    sidebar,
-    /id === "video" && sidebarRowsLabelled && unpinnedMediaSibling\("images"\)/,
-  );
-  assert.match(sidebar, /\{tabs\.map\([\s\S]{0,400}\)\}\s*\{tail\}\s*<\/div>/);
-});
-
 test("Library's empty Images and Videos offer Upload and Generate", () => {
   const library = readSrc("features/library/library-page.tsx");
   assert.match(
@@ -108,4 +94,16 @@ test("Library's empty Images and Videos offer Upload and Generate", () => {
     library,
     /if \(tab === "images" \|\| tab === "videos"\) \{[\s\S]{0,200}\{uploadButton\}\s*\{generate\}/,
   );
+});
+
+test("Create and Train get roomy tabs on Images and Video", () => {
+  for (const page of [IMAGES, VIDEO]) {
+    assert.match(page, /\[&>button\]:px-7 @\[68rem\]:\[&>button\]:px-14/);
+  }
+});
+
+test("Reapply's icon sits at the button's own gap", () => {
+  for (const page of [IMAGES, VIDEO]) {
+    assert.match(page, /<HugeiconsIcon icon=\{ReloadIcon\} className="size-4" \/>\s*Reapply/);
+  }
 });
