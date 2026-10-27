@@ -350,7 +350,7 @@ export function DecisionApiSection({
   const header = (
     <div className="flex items-start justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex min-w-0 items-baseline gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           {showHeading && (
             <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
               <HugeiconsIcon
