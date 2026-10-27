@@ -285,7 +285,7 @@ def validate_model(
             template,
             # The detector reads DeepSeek's `thinking` toggle off the id; a renamed local directory loses it.
             f"deepseek {config.identifier}"
-            if reasoning_parser == "deepseek_v3"
+            if reasoning_parser in ("deepseek_v3", "deepseek-v3")
             else config.identifier,
             log_source = "managed engine",
         )
@@ -1037,8 +1037,8 @@ class ManagedEngine:
         messages,
         preserve_thinking = None,
     ):
-        """vLLM reads a past turn's thinking from ``reasoning``, Studio keeps it as ``reasoning_content``."""
-        if not (self.reasoning_parser and preserve_thinking):
+        """vLLM reads a past turn's thinking from ``reasoning``; SGLang and Studio keep ``reasoning_content``."""
+        if self.engine != "vllm" or not (self.reasoning_parser and preserve_thinking):
             return messages
         # Moved, not copied: the context fit prices the whole message, so a copy charges the thought twice.
         return [
