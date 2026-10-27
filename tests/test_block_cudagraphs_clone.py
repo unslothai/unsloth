@@ -277,3 +277,59 @@ def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
         assert len(seen) == 2 and set(seen) == want
         assert x.grad is not None
     assert not bc._in_nonreentrant_checkpoint()
+
+
+class FakeMoeExperts(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(4, 8, 8) / 8)
+
+    def forward(self, x):
+        return torch.einsum("btd,ed->bte", x, self.weight.sum(0))
+
+
+class FakeSparseMoeBlock(torch.nn.Module):
+    # transformers 4.57 style: a ModuleList of experts and num_experts, no *Experts class.
+    def __init__(self):
+        super().__init__()
+        self.num_experts = 2
+        self.experts = torch.nn.ModuleList([torch.nn.Linear(8, 8) for _ in range(2)])
+
+    def forward(self, x):
+        return sum(e(x) for e in self.experts)
+
+
+@pytest.mark.parametrize("moe", [None, FakeMoeExperts, FakeSparseMoeBlock])
+def test_moe_layers_run_without_graphs(monkeypatch, moe):
+    """Qwen3-MoE under UNSLOTH_BLOCK_CUDAGRAPHS=1 failed on 1 GPU and FSDP2 alike: a host copy in the
+    grouped GEMM during capture (GC off) or routing outputs overwritten by the next replay (GC on)."""
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        tag = "graphs" if kwargs.get("options", {}).get("triton.cudagraphs") else "plain"
+
+        def inner(*args, **kw):
+            seen.append(tag)
+            return fn(*args, **kw)
+
+        return inner
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class MoeDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+            self.mlp = moe() if moe is not None else torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.mlp(self.proj(hidden_states))
+
+    bc._wrap(MoeDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = MoeDecoderLayer().train()
+    for _ in range(2):
+        x = torch.randn(2, 16, 8, requires_grad = True)
+        layer(x).sum().backward()
+        assert x.grad is not None
+    assert set(seen) == ({"graphs"} if moe is None else {"plain"})
+    assert not layer.__dict__.get("_unsloth_block_grad_hooks") or moe is None

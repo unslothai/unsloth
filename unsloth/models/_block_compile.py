@@ -82,6 +82,26 @@ def _in_nonreentrant_checkpoint():
     return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
 
 
+def _graphs_unsafe_moe(layer):
+    """MoE layers run compiled without graphs: routing and grouped GEMMs read token counts or
+    offsets the capture cannot hold (Qwen3-MoE: host copy during capture on sm80 / sm89, routing
+    outputs overwritten by the next replay with experts outside the graph)."""
+    moe = layer.__dict__.get("_unsloth_block_graphs_moe")
+    if moe is None:
+        moe = any(
+            _experts_of(m) is not None or (hasattr(m, "num_experts") and hasattr(m, "experts"))
+            for m in layer.modules()
+        )
+        layer.__dict__["_unsloth_block_graphs_moe"] = moe
+        if moe and not _GRAPHS_MOE_LOGGED[0]:
+            _GRAPHS_MOE_LOGGED[0] = True
+            print("Unsloth: block CUDA graphs skip MoE layers; they run compiled without graphs.")
+    return moe
+
+
+_GRAPHS_MOE_LOGGED = [False]
+
+
 def _ddp_optimizer_mode():
     # optimize_ddp also takes "python_reducer" / "no_optimization" strings: only "ddp_optimizer"
     # (or True) makes dynamo split graphs (convert_frame.py checks == "ddp_optimizer").
@@ -888,7 +908,9 @@ def _wrap(
                     if shape not in graph_shapes:
                         graph_shapes.add(shape)
                         graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
-                if graphs and (graphs_off[0] or _in_nonreentrant_checkpoint()):
+                if graphs and (
+                    graphs_off[0] or _in_nonreentrant_checkpoint() or _graphs_unsafe_moe(self)
+                ):
                     return plain(self, hidden_states, *args, **kwargs)
                 if graphs:
                     _param_grads_out_of_pool(self)
