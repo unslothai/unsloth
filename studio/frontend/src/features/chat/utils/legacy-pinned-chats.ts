@@ -18,6 +18,9 @@ export function readLegacyPinnedChatIds(
   try {
     const saved = JSON.parse(storage.getItem("unsloth_pinned_chats") ?? "null");
     const pinned = ids(saved?.state?.pinnedIds);
+    if (saved?.state?.manualOrderIncluded === true) {
+      return pinned;
+    }
     let order: string[] = [];
     try {
       const organization = JSON.parse(
@@ -34,3 +37,31 @@ export function readLegacyPinnedChatIds(
     return [];
   }
 }
+
+/** Older servers: keep the full order in one browser write, read back as-is. */
+export function writeLocalPinnedChatIds(
+  storage: Pick<Storage, "setItem">,
+  pinnedIds: string[],
+): void {
+  storage.setItem(
+    "unsloth_pinned_chats",
+    JSON.stringify({
+      state: { pinnedIds, manualOrderIncluded: true },
+      version: 0,
+    }),
+  );
+}
+
+/** Sign-out clears the session-scoped journal; keep what an older backend saved only there. */
+export function preserveFallbackPins(
+  storage: Pick<Storage, "setItem">,
+  readFallback: () => { pinnedIds: string[] } | undefined,
+): void {
+  try {
+    const saved = readFallback();
+    if (saved) writeLocalPinnedChatIds(storage, saved.pinnedIds);
+  } catch {
+    // A damaged journal holds nothing worth keeping.
+  }
+}
+

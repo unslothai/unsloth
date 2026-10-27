@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   readLegacyPinnedChatIds,
+  writeLocalPinnedChatIds,
 } from "../src/features/chat/utils/legacy-pinned-chats.ts";
 
 function storage(pins: unknown, order?: unknown) {
@@ -83,4 +84,12 @@ test("legacy migration filters malformed UTF-16 IDs without losing valid pins", 
     ),
     ["a", "\ud83d\udcac", "b"],
   );
+});
+
+test("local compatibility writes retain new order without reapplying legacy order", () => {
+  const saved = storage(["a", "b"], ["b", "a"]);
+  writeLocalPinnedChatIds(saved, ["a", "b"]);
+  assert.deepEqual(readLegacyPinnedChatIds(saved), ["a", "b"]);
+  writeLocalPinnedChatIds(saved, []);
+  assert.deepEqual(readLegacyPinnedChatIds(saved), []);
 });

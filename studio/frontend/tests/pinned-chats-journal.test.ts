@@ -8,6 +8,10 @@ import {
   createPinnedChatsJournal,
 } from "../src/features/chat/utils/pinned-chats-journal.ts";
 import {
+  preserveFallbackPins,
+  readLegacyPinnedChatIds,
+} from "../src/features/chat/utils/legacy-pinned-chats.ts";
+import {
   type PinOperation,
   applyPinOperation,
 } from "../src/features/chat/utils/pinned-chats-sync.ts";
@@ -266,3 +270,16 @@ test("corrupted pending and fallback entries are rejected rather than published"
     assert.equal(storage.length, 1);
   }
 });
+
+test("sign-out keeps an older backend's local saves for the next session's baseline", () => {
+  const storage = new MemoryStorage();
+  const before = createPinnedChatsJournal(storage, "server|session-1");
+  before.writeFallback(fallback(["legacy"], [pin("01", "new"), pin("02", "legacy", false)]));
+  preserveFallbackPins(storage, before.readFallback);
+  before.clear();
+  assert.equal(before.readFallback(), undefined);
+  assert.deepEqual(readLegacyPinnedChatIds(storage), ["new"]);
+  const after = createPinnedChatsJournal(storage, "server|session-2");
+  assert.equal(after.readFallback(), undefined);
+});
+

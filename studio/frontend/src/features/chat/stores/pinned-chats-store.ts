@@ -18,10 +18,16 @@ export interface PinnedChatsState extends PinnedChatsActions {
 }
 
 let actions: PinnedChatsActions | null = null;
+// Edits made while the lazy sync runtime is still loading; replayed when it binds.
+let unbound: Array<[string[], boolean]> = [];
 
 /** Bind persistence at runtime without pulling API/auth modules into this state store. */
 export function setPinnedChatsActions(next: PinnedChatsActions | null): void {
   actions = next;
+  const queued = unbound;
+  unbound = [];
+  // Unbinding is a session boundary: never replay one session's edits into the next.
+  if (next) for (const [ids, pinned] of queued) next.setPinned(ids, pinned);
 }
 
 export const usePinnedChatsStore = create<PinnedChatsState>((set, get) => ({
@@ -33,6 +39,7 @@ export const usePinnedChatsStore = create<PinnedChatsState>((set, get) => ({
       actions.setPinned(ids, pinned);
       return;
     }
+    unbound.push([ids, pinned]);
     set((state) => {
       if (!pinned) {
         const dropping = new Set(ids);

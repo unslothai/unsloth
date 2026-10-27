@@ -9,7 +9,10 @@ import {
   setPinnedChatsActions,
   usePinnedChatsStore,
 } from "./stores/pinned-chats-store";
-import { readLegacyPinnedChatIds } from "./utils/legacy-pinned-chats";
+import {
+  preserveFallbackPins,
+  readLegacyPinnedChatIds,
+} from "./utils/legacy-pinned-chats";
 import { createPinnedChatsJournal } from "./utils/pinned-chats-journal";
 import { createPinnedChatsSync } from "./utils/pinned-chats-sync";
 import { createPinnedChatsTransport } from "./utils/pinned-chats-transport";
@@ -74,7 +77,10 @@ function createRuntime(sessionScope: string) {
       transport.reset();
       sync.reset();
       setPinnedChatsActions(null);
-      if (clearPending) journal.clear();
+      if (clearPending) {
+        preserveFallbackPins(localStorage, journal.readFallback);
+        journal.clear();
+      }
     },
   };
 }

@@ -22,7 +22,12 @@ export function usePinnedChatsSync(): void {
     const refresh = () => {
       if (hasAuthToken() && document.visibilityState === "visible") {
         void loadRuntime()
-          .then((sync) => sync.refreshPinnedChats())
+          .then((sync) => {
+            const refreshed = sync.refreshPinnedChats();
+            // Its synchronous scope() may have just backfilled the mark of a pre-mark session.
+            sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
+            return refreshed;
+          })
           .catch(() => undefined);
         sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
       }
