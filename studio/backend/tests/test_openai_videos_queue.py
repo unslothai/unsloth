@@ -123,9 +123,7 @@ def test_deleting_a_queued_video_removes_it_before_it_ever_starts(client, backen
 def test_cancelling_a_queued_video_by_id_keeps_it_from_starting(client, backend):
     first = _render_one(client, backend)
     queued = client.post("/v1/videos", json = {"prompt": "never"}).json()
-    cancelled = client.post(
-        "/api/inference/video/generate/cancel", json = {"video_id": queued["id"]}
-    )
+    cancelled = client.post("/api/inference/video/generate/cancel", json = {"video_id": queued["id"]})
     assert cancelled.status_code == 200 and cancelled.json() == {"cancelled": True}
     assert video_routes._VIDEO_QUEUE == []
 
