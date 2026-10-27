@@ -415,9 +415,14 @@ export function RewardsSection(): ReactElement {
   const setWeight = (name: string, weight: number) =>
     setRewards(rewards.map((r) => (r.name === name ? { ...r, weight } : r)));
 
-  // An overwrite keeps the selection but changes the rule, so the scores must rerun.
+  // An overwrite keeps the selection but changes the rule or code, so the scores must rerun.
   const selectedRules = JSON.stringify(
-    rewards.map((r) => active.find((a) => a.name === r.name)?.rule ?? null),
+    rewards.map((r) => {
+      const entry = active.find((a) => a.name === r.name);
+      return entry
+        ? [entry.rule ?? null, entry.entry ?? null, entry.code ?? null]
+        : null;
+    }),
   );
   const previewRequest = useRef(0);
   const runPreview = useCallback(async () => {
