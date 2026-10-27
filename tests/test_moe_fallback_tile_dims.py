@@ -271,8 +271,13 @@ def test_smem_limit_follows_the_current_device(ac, monkeypatch):
 
 @pytest.mark.parametrize(
     "available,hip,capability,ok",
-    [(True, None, (7, 5), False), (True, None, (8, 0), True), (True, None, (10, 0), True),
-     (True, "7.1", (11, 5), False), (False, None, (8, 0), False)],
+    [
+        (True, None, (7, 5), False),
+        (True, None, (8, 0), True),
+        (True, None, (10, 0), True),
+        (True, "7.1", (11, 5), False),
+        (False, None, (8, 0), False),
+    ],
 )
 def test_wide_dw_tile_only_on_sm80_plus_nvidia(ac, monkeypatch, available, hip, capability, ok):
     # T4 (sm75): the 128-wide dW tile was 7-9x slower than 64 x 64 (fp16, torch 2.14); ROCm unmeasured.
