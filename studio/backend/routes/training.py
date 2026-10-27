@@ -1510,8 +1510,14 @@ def _stored_reward_specs(stored: dict) -> dict[str, dict]:
     return {
         spec["name"]: spec
         for spec in specs
-        if isinstance(spec, dict) and isinstance(spec.get("name"), str) and spec.get("rule")
+        if isinstance(spec, dict) and isinstance(spec.get("name"), str) and _is_complete_spec(spec)
     }
+
+
+def _is_complete_spec(spec: dict) -> bool:
+    if spec.get("kind") == "python":
+        return isinstance(spec.get("code"), str) and isinstance(spec.get("entry"), str)
+    return bool(spec.get("rule"))
 
 
 def _resume_reward_mismatch(stored_specs: dict[str, dict], selections) -> bool:
