@@ -270,6 +270,18 @@ def _exact_model_name_for_load(config: ModelConfig, load_in_4bit: bool) -> Optio
     return config.path
 
 
+def _decodes_by_concatenation(tokenizer) -> bool:
+    """True when decode(a + b) == decode(a) + decode(b) whenever decode(a) ends on a whole character:
+    a byte-level BPE (bytes joined, then lossy UTF-8) with no clean-up pass."""
+    if getattr(tokenizer, "clean_up_tokenization_spaces", True) is not False:
+        return False
+    try:
+        from tokenizers import decoders
+        return type(tokenizer.backend_tokenizer.decoder) is decoders.ByteLevel
+    except Exception:
+        return False
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for the gpt-oss harmony channel protocol.
 
@@ -313,6 +325,16 @@ class HarmonyTextStreamer:
         self._analysis_emitted: int = 0
         self._final_emitted: int = 0
 
+        # Incremental decode: text of the first _settled_n generated ids, ending on a whole character.
+        self._concat_decode: bool = _decodes_by_concatenation(tokenizer)
+        self._settled_text: str = ""
+        self._settled_n: int = 0
+        # Incremental parse of the cumulative text (see _process_incremental).
+        self._scan_raw: str = ""
+        self._scan_pos: int = 0
+        self._open_match = None
+        self._stable_final: bool = False
+
     def put(self, value):
         import torch
 
@@ -331,8 +353,17 @@ class HarmonyTextStreamer:
 
         self._token_ids.extend(ids)
 
-        gen_ids = self._token_ids[self._prompt_len :]
-        raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
+        if self._concat_decode:
+            # Re-decoding the whole reply each token is quadratic; only ids after the settled text are decoded.
+            start = self._prompt_len + self._settled_n
+            tail = self.tokenizer.decode(self._token_ids[start:], skip_special_tokens = False)
+            raw = self._settled_text + tail
+            if tail and not tail.endswith("\ufffd"):
+                self._settled_text = raw
+                self._settled_n = len(self._token_ids) - self._prompt_len
+        else:
+            gen_ids = self._token_ids[self._prompt_len :]
+            raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
         # A trailing U+FFFD may be a character whose bytes are still arriving; end() emits it.
         self._process_incremental(raw.rstrip("\ufffd"))
 
@@ -366,39 +397,72 @@ class HarmonyTextStreamer:
             return val
 
     def _process_incremental(self, raw: str) -> None:
-        """Parse harmony channels and emit per-channel deltas (tracked by length, not whole-text diff)."""
-        has_channel_token = "<|channel|>" in raw
-        matches = list(self._HARMONY_RE.finditer(raw))
+        """Parse harmony channels and emit per-channel deltas (tracked by length, not whole-text diff).
 
-        if has_channel_token and not matches:
-            return
+        Equivalent to re-matching every channel of ``raw`` each call, but resumes where the last call
+        stopped: a channel closed by ``<|end|>``/``<|channel|>`` never changes once fully processed, and
+        replaying it can only close ``<think>`` (a final channel), so only the open channel is rescanned.
+        """
+        if not raw.startswith(self._scan_raw):
+            # Not an extension of the last text: re-match everything.
+            self._scan_pos = 0
+            self._open_match = None
+            self._stable_final = False
+            old_len = 0
+        else:
+            old_len = len(self._scan_raw)
+        self._scan_raw = raw
+        if self._stable_final and self._emitted_think_open and not self._emitted_think_close:
+            self._queue.put("</think>")
+            self._emitted_think_close = True
 
-        if not has_channel_token and not matches:
-            return
+        pos = self._scan_pos
+        if self._open_match is not None:
+            channel, start = self._open_match
+            # The open channel ran to the old end, so a terminator can only start in the new tail.
+            end = len(raw)
+            for marker in ("<|end|>", "<|channel|>"):
+                found = raw.find(marker, max(start, old_len - len(marker) + 1))
+                if 0 <= found < end:
+                    end = found
+            self._emit_channel(channel, raw, start, end)
+            if end == len(raw):
+                return
+            self._close_channel(channel, end)
+            pos = end
 
-        for m in matches:
+        for m in self._HARMONY_RE.finditer(raw, pos):
             channel = m.group(1).lower()
-            content = m.group(2)
+            self._emit_channel(channel, raw, m.start(2), m.end(2))
+            if m.end() == len(raw):
+                self._open_match = (channel, m.start(2))
+            else:
+                self._close_channel(channel, m.end())
 
-            if channel == "analysis":
-                if not self._emitted_think_open:
-                    self._queue.put("<think>")
-                    self._emitted_think_open = True
+    def _close_channel(self, channel: str, end: int) -> None:
+        self._open_match = None
+        self._scan_pos = end
+        if channel in ("final", "assistant"):
+            self._stable_final = True
 
-                new_content = content[self._analysis_emitted :]
-                if new_content:
-                    self._analysis_emitted = len(content)
-                    self._queue.put(new_content)
+    def _emit_channel(self, channel: str, raw: str, start: int, end: int) -> None:
+        if channel == "analysis":
+            if not self._emitted_think_open:
+                self._queue.put("<think>")
+                self._emitted_think_open = True
 
-            elif channel in ("final", "assistant"):
-                if self._emitted_think_open and not self._emitted_think_close:
-                    self._queue.put("</think>")
-                    self._emitted_think_close = True
+            if end - start > self._analysis_emitted:
+                self._queue.put(raw[start + self._analysis_emitted : end])
+                self._analysis_emitted = end - start
 
-                new_content = content[self._final_emitted :]
-                if new_content:
-                    self._final_emitted = len(content)
-                    self._queue.put(new_content)
+        elif channel in ("final", "assistant"):
+            if self._emitted_think_open and not self._emitted_think_close:
+                self._queue.put("</think>")
+                self._emitted_think_close = True
+
+            if end - start > self._final_emitted:
+                self._queue.put(raw[start + self._final_emitted : end])
+                self._final_emitted = end - start
 
 
 class ReasoningTextIteratorStreamer(TextIteratorStreamer):
