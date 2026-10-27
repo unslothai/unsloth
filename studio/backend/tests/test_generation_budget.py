@@ -195,6 +195,21 @@ def test_generate_stream_passes_a_fitting_budget_through(monkeypatch):
     assert model.calls[0]["max_new_tokens"] == 512
 
 
+def test_generate_stream_refuses_a_prompt_longer_than_the_window(monkeypatch):
+    from core.inference.context_refusal import ContextBudgetExceeded
+
+    backend, model = _streaming_backend(monkeypatch, window = _PROMPT_LEN - 1)
+
+    with pytest.raises(ContextBudgetExceeded) as refused:
+        _run(backend, 64)
+
+    assert (refused.value.request_tokens, refused.value.context_tokens) == (
+        _PROMPT_LEN,
+        _PROMPT_LEN - 1,
+    )
+    assert not model.calls
+
+
 def _vision_backend(monkeypatch, window = _WINDOW):
     try:
         from core.inference.inference import InferenceBackend

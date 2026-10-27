@@ -30,6 +30,7 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 from core.inference.audio_codecs import AudioCodecManager
+from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.runtime_context import (
     generation_budget_within_context,
     runtime_context_length,
@@ -2738,6 +2739,9 @@ class InferenceBackend:
             )
 
             prompt_len = int(inputs["input_ids"].shape[1])
+            window = runtime_context_length(model)
+            if window and prompt_len > window:
+                raise ContextBudgetExceeded(prompt_len, window)
             max_new_tokens = generation_budget_within_context(model, prompt_len, max_new_tokens)
 
             generation_kwargs = dict(
