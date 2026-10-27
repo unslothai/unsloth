@@ -11,6 +11,8 @@ import {
   type NodeRuntime,
   useRuntimeStore,
 } from "../stores/runtime-store";
+import { COLUMN_TYPE, columnOf, columnSummary } from "../recipe/recipe-columns";
+import { useColumnSamples } from "../recipe/recipe-panels";
 import type { FlowNode, NodeSpec, PortSpec } from "../types";
 import {
   FLOW_IN_HANDLE,
@@ -61,6 +63,10 @@ function portColorOf(
 }
 
 function summarizeParams(node: FlowNode, spec: NodeSpec): string[] {
+  if (node.type === COLUMN_TYPE) {
+    const { badge, line } = columnSummary(columnOf(node));
+    return line ? [badge, line] : [badge];
+  }
   const lines: string[] = [];
   for (const param of spec.params) {
     if (lines.length >= 2) break;
@@ -198,6 +204,17 @@ function OutputValues({
     );
   }
   return null;
+}
+
+/** The value this column got in the first row of its recipe's last run. */
+function ColumnSample({ node }: { node: FlowNode }) {
+  const [sample] = useColumnSamples(node, 1);
+  if (!sample) return null;
+  return (
+    <p className="flow-detail mx-3 line-clamp-3 whitespace-pre-wrap rounded bg-emerald-500/10 px-2 py-1 text-[11px] leading-snug text-emerald-100/90">
+      {sample}
+    </p>
+  );
 }
 
 function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
@@ -403,6 +420,7 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
               ))}
             </div>
           )}
+          {node.type === COLUMN_TYPE && <ColumnSample node={node} />}
           {(runtime.outputs ||
             runtime.partial ||
             runtime.text ||

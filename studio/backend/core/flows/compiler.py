@@ -17,10 +17,14 @@ from typing import Any, Iterable, Optional
 from pydantic import ValidationError
 
 from core.flows import schema
+from core.flows.recipe_compile import RecipeCompileError, compile_recipe, recipe_graph
+from core.flows.recipe_import import COLUMN_TYPE, GENERATE_TYPE
 from core.flows.specs import SPECS_BY_TYPE
 
 FOR_EACH = "logic.for_each"
 COLLECT_PORT = "collect"
+# The compiled `{recipe, run}` a Recipe Dataset node runs, filled in from its group at compile time.
+RECIPE_PARAM = "_recipe"
 FOR_EACH_INNER_PORTS = ("item", "index")
 FLOW_TARGET_PORT = "in"
 JSON_LIKE = (
@@ -267,6 +271,13 @@ def compile_flow(doc: dict) -> Plan:
         sspec, dspec = specs.get(src), specs.get(dst)
         if sspec is None or dspec is None:
             continue
+        if COLUMN_TYPE in (sspec["type"], dspec["type"]) and (
+            sspec["type"] != dspec["type"] or nodes[src].get("group") != nodes[dst].get("group")
+        ):
+            errors.append(
+                issue("A recipe column only wires to columns of its own recipe", edge_id = eid)
+            )
+            continue
         if edge.get("kind", "data") == "flow":
             if edge["source_port"] not in sspec["flow_out"]:
                 errors.append(
@@ -342,8 +353,23 @@ def compile_flow(doc: dict) -> Plan:
     executable = {
         nid
         for nid, node in nodes.items()
-        if nid in specs and not specs[nid]["player"] and not node.get("disabled")
+        if nid in specs
+        and not specs[nid]["player"]
+        and not specs[nid].get("design")
+        and not node.get("disabled")
     }
+    recipe_groups = {g["id"] for g in doc.get("groups") or [] if g.get("kind") == "recipe"}
+    for nid, node in nodes.items():
+        if node["type"] == COLUMN_TYPE and node.get("group") not in recipe_groups:
+            errors.append(issue("A recipe column belongs inside a Data Recipe group", node_id = nid))
+        if nid not in executable or node["type"] != GENERATE_TYPE:
+            continue
+        try:
+            compiled = compile_recipe(recipe_graph(doc, node.get("group") or ""))
+        except RecipeCompileError as exc:
+            errors.append(issue(str(exc), node_id = nid))
+            continue
+        nodes[nid] = {**node, "params": {**(node.get("params") or {}), RECIPE_PARAM: compiled}}
     for nid in executable:
         spec = specs[nid]
         params = nodes[nid].get("params") or {}
@@ -379,7 +405,12 @@ def compile_flow(doc: dict) -> Plan:
     for nid in nodes:
         if nid not in specs:
             continue
-        if nid not in executable and not specs[nid]["player"] and nodes[nid].get("disabled"):
+        if (
+            nid not in executable
+            and not specs[nid]["player"]
+            and not specs[nid].get("design")
+            and nodes[nid].get("disabled")
+        ):
             warnings.append(issue("Disabled: skipped", node_id = nid))
     waits: dict[str, set[str]] = {}
     for nid, fid in owner.items():
