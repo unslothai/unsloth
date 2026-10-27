@@ -20,6 +20,7 @@ def _gemma(
     head_dim = 256,
     impl = "flex_attention",
     model_type = None,
+    dtype = torch.bfloat16,
 ):
     config = transformers.GemmaConfig(
         vocab_size = 128,
@@ -31,6 +32,7 @@ def _gemma(
         head_dim = head_dim,
     )
     config._attn_implementation = impl
+    config.dtype = dtype
     if model_type is not None:
         config.model_type = model_type
     return config
@@ -47,6 +49,9 @@ def routed(monkeypatch):
     monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    # SDPA backend state for these shapes: flash enabled, flash picked (not math).
+    monkeypatch.setattr(hpa, "_SDPA_MATH", [-1, lambda *args: (True, 0)])
+    monkeypatch.setattr(u, "_EXPLICIT_FLEX_MODEL_TYPES", set(), raising = False)
 
 
 def test_head_dim_flex_moves_to_sdpa(routed):
@@ -98,6 +103,86 @@ def test_every_other_routing_is_left_alone(routed, monkeypatch, why):
     before = config._attn_implementation
     assert not u.use_sdpa_for_packed_head_dim_flex(types.SimpleNamespace(config = config))
     assert config._attn_implementation == before
+
+
+@pytest.fixture
+def deterministic():
+    previous = torch.are_deterministic_algorithms_enabled()
+    torch.use_deterministic_algorithms(True, warn_only = True)
+    yield
+    torch.use_deterministic_algorithms(previous)
+
+
+@pytest.mark.parametrize(
+    "why",
+    [
+        "float32",
+        "float32_embeddings",
+        "dtype_unknown",
+        "deterministic",
+        "flash_sdpa_disabled",
+        "math_first_priority",
+        "softcap_config",
+        "sinks_module",
+        "no_sdpa_model_type",
+    ],
+)
+def test_rows_the_varlen_wrapper_declines_stay_on_flex(routed, monkeypatch, request, why):
+    """The wrapper would send these to dense-mask SDPA (slower than flex, ~2x memory at head_dim 256)."""
+    config = _gemma()
+    model = types.SimpleNamespace(config = config)
+    if why == "float32":
+        config = _gemma(dtype = torch.float32)
+        model = types.SimpleNamespace(config = config)
+    elif why == "float32_embeddings":
+        embedding = torch.nn.Embedding(4, 4)
+        model.get_input_embeddings = lambda: embedding
+    elif why == "dtype_unknown":
+        config = _gemma(dtype = None)
+        model = types.SimpleNamespace(config = config)
+    elif why == "deterministic":
+        request.getfixturevalue("deterministic")
+    elif why == "flash_sdpa_disabled":
+        monkeypatch.setattr(hpa, "_SDPA_MATH", [-1, lambda *args: (False, 0)])
+    elif why == "math_first_priority":
+        monkeypatch.setattr(hpa, "_SDPA_MATH", [-1, lambda *args: (True, -1)])
+    elif why == "softcap_config":
+        config.attn_logit_softcapping = 50.0
+    elif why == "sinks_module":
+        attention = types.SimpleNamespace(sinks = torch.zeros(2))
+        model.modules = lambda: iter([attention])
+    elif why == "no_sdpa_model_type":
+        monkeypatch.setattr(u, "_NO_SDPA_MODEL_TYPES", {"gemma"})
+    assert not u.use_sdpa_for_packed_head_dim_flex(model)
+    assert config._attn_implementation == "flex_attention"
+
+
+def test_explicit_flex_request_stays_flex(routed):
+    config = _gemma(impl = None)
+    u.resolve_attention_implementation(
+        transformers.GemmaForCausalLM,
+        config,
+        requested_attn_implementation = "flex_attention",
+        dtype = torch.bfloat16,
+    )
+    assert config._attn_implementation == "flex_attention"
+    assert not u.use_sdpa_for_packed_head_dim_flex(types.SimpleNamespace(config = config))
+    assert config._attn_implementation == "flex_attention"
+
+
+def test_a_later_unrequested_load_of_the_type_switches_again(routed):
+    u.resolve_attention_implementation(
+        transformers.GemmaForCausalLM,
+        _gemma(impl = None),
+        requested_attn_implementation = "flex_attention",
+        dtype = torch.bfloat16,
+    )
+    u.resolve_attention_implementation(
+        transformers.GemmaForCausalLM, _gemma(impl = None), dtype = torch.bfloat16
+    )
+    config = _gemma()
+    assert u.use_sdpa_for_packed_head_dim_flex(types.SimpleNamespace(config = config))
+    assert config._attn_implementation == "sdpa"
 
 
 def test_padding_free_metadata_makes_the_switch(routed, monkeypatch):

@@ -717,6 +717,68 @@ def _prefers_flex_for_head_dim(config):
 
 
 _PACKED_VARLEN_OVER_FLEX_ENV_VAR = "UNSLOTH_PACKED_VARLEN_OVER_FLEX"
+# Model types whose latest load asked for flex_attention explicitly. Keyed by model_type, not config
+# identity: from_pretrained deep-copies the config it was given.
+_EXPLICIT_FLEX_MODEL_TYPES = set()
+
+
+def _remember_explicit_flex_request(config, requested_attn_implementation):
+    requested = requested_attn_implementation
+    explicit = requested == "flex_attention" or (
+        isinstance(requested, dict) and "flex_attention" in requested.values()
+    )
+    for attention_config in _iter_attention_configs(config):
+        model_type = _config_get(attention_config, "model_type", None)
+        if isinstance(model_type, str) and model_type:
+            if explicit:
+                _EXPLICIT_FLEX_MODEL_TYPES.add(model_type.lower())
+            else:
+                _EXPLICIT_FLEX_MODEL_TYPES.discard(model_type.lower())
+
+
+def _packed_attention_dtype(model, config):
+    """The dtype attention runs in without autocast: the input embeddings, else the config's."""
+    try:
+        dtype = model.get_input_embeddings().weight.dtype
+    except Exception:
+        dtype = None
+    if isinstance(dtype, torch.dtype):
+        return dtype
+    for attention_config in [config] + _text_attention_configs(config):
+        for name in ("dtype", "torch_dtype"):
+            dtype = _config_get(attention_config, name, None)
+            if isinstance(dtype, str):
+                dtype = getattr(torch, dtype.removeprefix("torch."), None)
+            if isinstance(dtype, torch.dtype):
+                return dtype
+    return None
+
+
+def _packed_varlen_takes_model(model, config, target, head_dim, device_count):
+    """The packed varlen wrapper's call-independent checks, at setup: fp16 / bf16, no softcap or
+    sinks, an SDPA-capable class, and no policy asking for SDPA itself (deterministic algorithms, a
+    disabled flash backend, a math-first priority). Positional-arg calls are only known per call."""
+    from ..utils.hf_packed_attention import _sdpa_policy_requested, _softcapped
+
+    dtype = _packed_attention_dtype(model, config)
+    if dtype not in (torch.float16, torch.bfloat16):
+        return False
+    if not _maskless_causal_sdpa_accepts(config):
+        return False
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if _declares_no_sdpa(type(base)) or _native_class_refuses_sdpa(type(base)):
+        return False
+    modules = getattr(model, "modules", None)
+    if callable(modules) and any(_softcapped(module, {}) for module in modules()):
+        return False
+    n_heads = _config_get(target, "num_attention_heads", None)
+    n_kv_heads = _config_get(target, "num_key_value_heads", None) or n_heads
+    if not isinstance(n_heads, int) or not isinstance(n_kv_heads, int):
+        return False
+    return not any(
+        _sdpa_policy_requested(torch.device("cuda", index), dtype, head_dim, n_heads, n_kv_heads)
+        for index in range(device_count)
+    )
 
 
 def use_sdpa_for_packed_head_dim_flex(model):
@@ -724,7 +786,8 @@ def use_sdpa_for_packed_head_dim_flex(model):
     whose packed varlen wrapper runs them through torch's varlen flash kernel exactly (B200 head_dim
     256: 6-10% faster at a fixed packed length, 15-24% with varying lengths, and no flex compile).
     True when switched. Not the gemma3 family, not head_dim 512, not a forced
-    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM, and only where torch's varlen kernel runs."""
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM, not an explicit flex_attention request, only where
+    torch's varlen kernel runs and only when the wrapper would take the rows (else dense-mask SDPA)."""
     if os.environ.get(_PACKED_VARLEN_OVER_FLEX_ENV_VAR, "1").strip().lower() in (
         "0",
         "false",
@@ -736,6 +799,12 @@ def use_sdpa_for_packed_head_dim_flex(model):
         return False
     config = getattr(model, "config", None)
     if config is None or _config_prefers_flex_attention(config):
+        return False
+    if any(
+        (_config_get(attention_config, "model_type", None) or "").lower()
+        in _EXPLICIT_FLEX_MODEL_TYPES
+        for attention_config in _text_attention_configs(config) + [config]
+    ):
         return False
     head_dim = _text_attention_head_dim(config)
     if head_dim is None or head_dim > _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
@@ -750,10 +819,10 @@ def use_sdpa_for_packed_head_dim_flex(model):
         from ..utils.hf_packed_attention import _ORIG_SDPA, _torch_varlen
         if _ORIG_SDPA[0] is None or not torch.cuda.is_available():
             return False
-        if any(
-            _torch_varlen(torch.device("cuda", index)) is None
-            for index in range(torch.cuda.device_count())
-        ):
+        device_count = torch.cuda.device_count()
+        if any(_torch_varlen(torch.device("cuda", index)) is None for index in range(device_count)):
+            return False
+        if not _packed_varlen_takes_model(model, config, target, head_dim, device_count):
             return False
     except Exception:
         return False
@@ -3029,6 +3098,7 @@ def resolve_attention_implementation(
         supports_sdpa = False
     if not supports_sdpa:
         _remember_no_sdpa_config(config)
+    _remember_explicit_flex_request(config, requested_attn_implementation)
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
