@@ -568,12 +568,15 @@ def _is_definition_move(lost: set[str], gained: set[str], moved) -> bool:
         if parts is None:
             return False
         gained_by_name.setdefault(parts[1], []).append(target)
+    used: set[str] = set()
     for target in lost:
         parts = _from_parts(target)
         candidates = gained_by_name.get(parts[1], []) if parts else []
-        if len(candidates) != 1 or not moved(target, candidates[0]):
+        if len(candidates) != 1 or candidates[0] in used or not moved(target, candidates[0]):
             return False
-    return True
+        used.add(candidates[0])
+    # One-to-one: a gained target no lost one paired with is an unexplained re-point.
+    return used == set(gained)
 
 
 def compare(
@@ -842,6 +845,13 @@ _SELF_TESTS = {
         "<local_import_renamed_across_modules_is_blocked>",
         lambda old, new: True,
     ),
+    "two_lost_imports_cannot_share_one_gained_target": (
+        "def f(x):\n    if x:\n        from pkg.old1 import helper\n    else:\n        from pkg.old2 import helper\n    return helper()\n",
+        "def f(x):\n    if x:\n        from pkg.shared import helper\n    else:\n        from pkg.other import other as helper\n    return helper()\n",
+        "BLOCKER",
+        "<two_lost_imports_cannot_share_one_gained_target>",
+        lambda old, new: new == "from:pkg.shared:helper",
+    ),
 }
 
 
@@ -987,9 +997,13 @@ def _top_level_binding(src: str | None, name: str):
                 continue
             if isinstance(node, ast.Assign):
                 found.extend("def" for t in node.targets if name in targets(t))
-            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-                if name in targets(node.target):
+            elif isinstance(node, ast.AnnAssign):
+                # A bare annotation (`helper: int`) declares without binding.
+                if node.value is not None and name in targets(node.target):
                     found.append("def")
+            elif isinstance(node, ast.AugAssign):
+                if name in targets(node.target):
+                    found.append("ambiguous")
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     if (alias.asname or alias.name) == name:
