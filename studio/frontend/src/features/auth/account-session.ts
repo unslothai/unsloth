@@ -14,8 +14,7 @@ import {
 } from "./session";
 
 /** Display policy only; the server validates the token and enforces owner access. */
-// The owner's login id, reserved rather than chosen: validate_account_username
-// rejects it, so no managed account can take it and the owner cannot rename off it.
+// Reserved: validate_account_username rejects it, so no managed account can take it.
 export const OWNER_USERNAME = "unsloth";
 
 export function sessionAccount(
@@ -49,7 +48,6 @@ function subscribeSession(listener: () => void): () => void {
     for (const event of events) window.removeEventListener(event, listener);
   };
 }
-/** Ownership outside a component body, for a callback that cannot call a hook. */
 export function isAccountOwner(): boolean {
   return sessionAccount(getAuthToken())?.isOwner ?? false;
 }

@@ -134,8 +134,7 @@ def _classify_response(response: object | None) -> TokenValidationResult:
 
 def _check_remote(token: str, *, endpoint: str) -> TokenValidationResult:
     try:
-        # HfApi.whoami has no timeout parameter in the pinned Hub client.
-        # Use its session and headers against the same whoami endpoint.
+        # HfApi.whoami has no timeout parameter, so call the endpoint directly.
         response = get_session().get(
             f"{endpoint}/api/whoami-v2",
             headers = build_hf_headers(token = token),

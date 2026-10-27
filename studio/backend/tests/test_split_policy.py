@@ -1074,6 +1074,34 @@ def test_wired_unloaded_nextn_weights_are_not_priced(tmp_path, monkeypatch):
     assert "fits one GPU" in backend._auto_split_decision.reason
 
 
+def _host_lookup_tables(monkeypatch, backend, gib):
+    import core.inference.llama_cpp as llama_cpp_module
+    backend._gguf_tensor_scan = lambda _path: ("gemma3n", {}, 0)
+    monkeypatch.setattr(
+        llama_cpp_module, "_host_pinned_input_bytes", lambda *_a, **_k: int(gib * GIB)
+    )
+
+
+def test_wired_host_lookup_tables_are_not_priced_on_one_gpu(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 16, names = TWO_T4_NAMES
+    )
+    _host_lookup_tables(monkeypatch, backend, 8)
+    _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096, speculative_type = "off")
+    assert backend._auto_split_decision.mode == "tensor"
+    assert "fits one GPU" in backend._auto_split_decision.reason
+
+
+def test_wired_host_lookup_tables_are_not_priced_on_the_pair(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 34, names = TWO_T4_NAMES
+    )
+    _host_lookup_tables(monkeypatch, backend, 10)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096, speculative_type = "off")["cmd"]
+    assert backend._auto_split_decision.mode == "tensor"
+    assert _split_flag(cmd) == "tensor"
+
+
 def test_wired_p2p_diagnostic_reads_the_pair_that_runs(tmp_path, monkeypatch):
     mem = [(0, 13_000, 15_360), (1, 13_000, 15_360), (2, 15_360, 15_360), (3, 15_360, 15_360)]
     backend, gguf = _wired_backend(

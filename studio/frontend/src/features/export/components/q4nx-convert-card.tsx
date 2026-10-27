@@ -14,7 +14,6 @@ import { convertGgufToQ4nx } from "../api/export-api";
 
 type Source = "hub" | "local";
 
-// unsloth/Qwen3-0.6B-GGUF -> unsloth/Qwen3-0.6B, the repo holding config.json and the tokenizer.
 function baseRepoFor(repoId: string): string {
   return repoId.trim().replace(/-GGUF$/i, "");
 }
@@ -145,7 +144,7 @@ export function Q4nxConvertCard() {
           {result?.text ??
             "Runs as a drop-in for a FastFlowLM catalog model of the same family and size."}
         </p>
-        <Button disabled={!canConvert} onClick={handleConvert}>
+        <Button variant="dark" disabled={!canConvert} onClick={handleConvert}>
           {running && <Spinner />}
           Convert
         </Button>

@@ -150,10 +150,11 @@ class TestEveryTestFileLandsInExactlyOneShard:
     @pytest.mark.parametrize(
         "path, expected",
         [
-            ("tests/test_apple.py", "a-k"),
-            ("tests/test_kiwi.py", "a-k"),
-            ("tests/test_lemon.py", "l-r"),
-            ("tests/test_raisin.py", "l-r"),
+            ("tests/test_apple.py", "a-f"),
+            ("tests/test_fig.py", "a-f"),
+            ("tests/test_grape.py", "g-r"),
+            ("tests/test_kiwi.py", "g-r"),
+            ("tests/test_raisin.py", "g-r"),
             ("tests/test_squash.py", _CATCH_ALL),
             ("tests/test_yam.py", _CATCH_ALL),
         ],

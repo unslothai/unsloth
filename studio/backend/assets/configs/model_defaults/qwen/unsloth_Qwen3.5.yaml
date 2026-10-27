@@ -1,5 +1,5 @@
-# Model defaults for every Qwen3.5 size (0.8B to 35B-A3B), mapped in MODEL_NAME_MAPPING.
-# all-linear reaches the GatedDeltaNet projections (3 of every 4 layers), the vision tower and MoE routed experts.
+# Every Qwen3.5 size (0.8B to 35B-A3B), mapped in MODEL_NAME_MAPPING.
+# all-linear reaches the GatedDeltaNet projections, the vision tower and MoE routed experts.
 
 training:
   max_seq_length: 2048

@@ -10,11 +10,7 @@ import {
   webInterfaceScaleFactor,
 } from "@/features/settings/stores/interface-scale-store";
 
-/**
- * The JS twin of --ui-space-scale, for geometry that only exists in JS:
- * virtualizer slot heights and anything measured against them. Everything
- * else scales through the CSS variable. Includes the browser interface scale.
- */
+/** JS twin of --ui-space-scale for virtualizer geometry; includes the browser interface scale. */
 export function useUiSpaceScale(): number {
   const uiFontSize = useAppearanceCustomStore((s) => s.customization.uiFontSize);
   const interfaceScale = useInterfaceScaleStore((s) => s.scale);

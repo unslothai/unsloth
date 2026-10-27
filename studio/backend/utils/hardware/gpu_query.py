@@ -101,10 +101,7 @@ _fresh_mode: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def display_reads(max_stale: float = _DISPLAY_MAX_STALE_S) -> Iterator[None]:
-    """Live reads may be seconds old. Never wrap anything that decides placement or fit.
-
-    ``max_stale`` caps the reading served while one refresh runs; a hung CLI may still get
-    the last good reading up to 60 s old."""
+    """Live reads may be seconds old, so never wrap anything that decides placement or fit."""
     token = _display_mode.set(float(max_stale))
     try:
         yield
@@ -120,6 +117,11 @@ def fresh_reads() -> Iterator[None]:
         yield
     finally:
         _fresh_mode.reset(token)
+
+
+def display_cache_allowed() -> bool:
+    """Gate for Studio's other display-only CLI caches (amd-smi, Vulkan probe): same rules as nvidia-smi."""
+    return enabled() and _display_mode.get() is not None and not _fresh_mode.get()
 
 
 def classify(argv: Sequence[str]) -> str:
@@ -199,6 +201,11 @@ def invalidate_static(reason: str = "") -> None:
         _static_gen += 1
     if reason:
         logger.debug("GPU inventory readings invalidated: %s", reason)
+
+
+def static_generation() -> int:
+    """Bumped by invalidate_static() and reset(): an inventory read before the bump may describe a different host."""
+    return _static_gen
 
 
 def reset() -> None:

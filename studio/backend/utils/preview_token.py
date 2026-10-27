@@ -20,8 +20,7 @@ _ACCOUNT_SEPARATOR = "."
 
 
 def _canonical_payload(ref: str, account_id: Optional[str] = None) -> bytes:
-    # Sign the canonical ref only, never host/path, so links stay portable across localhost / LAN IP
-    # / tunnel host changes.
+    # Sign only the canonical ref, never host/path, so links survive host changes.
     if account_id is None:
         return f"preview:{_PREVIEW_TOKEN_VERSION}:{ref}".encode("utf-8")
     return f"preview:{_ACCOUNT_TOKEN_VERSION}:{account_id}:{ref}".encode("utf-8")
@@ -47,8 +46,7 @@ def preview_token_account(ref: str, token: Optional[str]) -> Optional[AccountCon
     """The account whose outputs ``token`` opens for ``ref``, or None; constant-time on the signature."""
     if not token:
         return None
-    # Compare as bytes: a non-ASCII token (e.g. a %-encoded query value) would make
-    # hmac.compare_digest on two str raise TypeError -> treat it as simply invalid.
+    # Compare as bytes: compare_digest raises on non-ASCII str.
     try:
         provided = token.encode("ascii")
     except UnicodeEncodeError:

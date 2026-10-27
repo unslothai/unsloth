@@ -236,9 +236,8 @@ function formatFamilyOf(
 }
 
 /**
- * Whether `row` can carry a selection currently identified as `provisional`. An unclassified row stays a
- * candidate unless its family can be PROVEN to differ: reading `unknown` as "compatible with anything" let a
- * cancelled GGUF download land on a safetensors fragment deduplication had deliberately kept apart.
+ * Unclassified rows stay candidates unless their family is PROVEN to differ, else a cancelled
+ * GGUF download could land on a safetensors fragment dedup kept apart.
  */
 function isProvisionalFormatCompatible(
   provisional: CachedInventoryRow["modelFormat"],
@@ -249,7 +248,6 @@ function isProvisionalFormatCompatible(
 ): boolean {
   const current = row.modelFormat;
   if (current === "unknown") {
-    // A complete row carries no transport, so there is nothing to disagree with.
     if (!row.partial) {
       return true;
     }
@@ -344,7 +342,6 @@ function resolveFormatTransition(
   ) {
     return null;
   }
-  // Cancel and resume land here: only an unclassified partial is left, and it is the right row only if it is the same family dedup used to keep it.
   return resolveCurrentSelection(
     [],
     matchingLocal.filter(

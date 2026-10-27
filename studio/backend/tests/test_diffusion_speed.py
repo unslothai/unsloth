@@ -636,7 +636,43 @@ def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
 def test_cudnn_benchmark_opt_out_image_families():
     from core.inference.diffusion_families import _FAMILIES
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
-    assert off == {"qwen-image", "flux.1", "flux.2-dev", "z-image", "sdxl"}
+    assert off == {
+        "qwen-image",
+        "qwen-image-edit",
+        "qwen-image-layered",
+        "flux.1",
+        "flux.1-kontext",
+        "flux.2-dev",
+        "flux.2-klein",
+        "z-image",
+        "sdxl",
+        "moss-image",
+    }
+
+
+# Repos whose VAE decode of one latent split across fresh B200 processes with cudnn.benchmark on.
+@pytest.mark.parametrize(
+    "repo, pipeline_class",
+    [
+        ("black-forest-labs/FLUX.2-dev", "Flux2Pipeline"),
+        ("black-forest-labs/FLUX.2-klein-4B", "Flux2KleinPipeline"),
+        ("black-forest-labs/FLUX.2-klein-base-4B", "Flux2KleinPipeline"),
+        ("black-forest-labs/FLUX.2-klein-9B", "Flux2KleinPipeline"),
+        ("black-forest-labs/FLUX.2-klein-base-9B", "Flux2KleinPipeline"),
+        ("unsloth/FLUX.2-klein-base-4B", "Flux2KleinPipeline"),
+        ("black-forest-labs/FLUX.1-Kontext-dev", "FluxKontextPipeline"),
+        ("unsloth/FLUX.1-Kontext-dev", "FluxKontextPipeline"),
+        ("Qwen/Qwen-Image-Edit-2511", "QwenImageEditPlusPipeline"),
+        ("unsloth/Qwen-Image-Edit-2511", "QwenImageEditPlusPipeline"),
+        ("Qwen/Qwen-Image-Layered", "QwenImageLayeredPipeline"),
+    ],
+)
+def test_split_vae_families_hold_cudnn_benchmark_off(repo, pipeline_class):
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family(repo)
+    assert fam is not None and fam.pipeline_class == pipeline_class
+    assert fam.cudnn_benchmark is False
 
 
 @pytest.mark.parametrize(
@@ -647,8 +683,15 @@ def test_cudnn_benchmark_opt_out_image_families():
         ("Tongyi-MAI/Z-Image-Turbo", (9, 0), False),
         ("black-forest-labs/FLUX.2-klein-4B", (10, 0), True),
         ("black-forest-labs/FLUX.2-klein-base-4B", (10, 0), True),
-        ("black-forest-labs/FLUX.2-klein-4B", (8, 9), False),
-        ("black-forest-labs/FLUX.1-schnell", (10, 0), False),
+        ("black-forest-labs/FLUX.2-klein-4B", (8, 9), True),
+        ("black-forest-labs/FLUX.2-klein-4B", (7, 5), True),
+        ("black-forest-labs/FLUX.2-klein-4B", (9, 0), True),
+        ("black-forest-labs/FLUX.1-schnell", (10, 0), True),
+        ("black-forest-labs/FLUX.1-Kontext-dev", (10, 0), True),
+        ("black-forest-labs/FLUX.1-schnell", (9, 0), False),
+        ("Qwen/Qwen-Image-2.1", (10, 0), True),
+        ("Qwen/Qwen-Image-2.1", (8, 9), True),
+        ("Qwen/Qwen-Image-2.1", (9, 0), True),
     ],
 )
 def test_reduction_filter_archs(monkeypatch, repo, cap, pinned):
@@ -780,7 +823,11 @@ def test_fused_vae_keeps_its_channels_last_weights(monkeypatch, tier):
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True)
 
-    def fused(p, logger):
+    def fused(
+        p,
+        logger,
+        encoder = True,
+    ):
         p.vae._unsloth_vae_fused_cl_weights = True
         return True
 
@@ -788,6 +835,30 @@ def test_fused_vae_keeps_its_channels_last_weights(monkeypatch, tier):
     applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = tier)
     assert applied["vae_fused"] is True
     assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+
+
+@pytest.mark.parametrize("opt_out", [False, True])
+def test_fused_vae_leaves_the_encoder_stock_for_a_family_that_opts_out(monkeypatch, opt_out):
+    _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    seen = []
+
+    def fused(
+        p,
+        logger,
+        encoder = True,
+    ):
+        seen.append(encoder)
+        return True
+
+    monkeypatch.setattr(ds_mod, "_install_fused_vae", fused)
+    family = _family()
+    if opt_out:
+        family.vae_fused_encoder = False
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = family, speed_mode = SPEED_DEFAULT
+    )
+    assert seen == [not opt_out]
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,6 @@ export interface MediaGeneratePhaseProgress {
   eta_seconds?: number | null;
 }
 
-/** Spinner label shared by the Images and Video pages. */
 export function generatePhaseLabel(
   p: MediaGeneratePhaseProgress,
   opts: { hasAudio?: boolean; formatEta?: (seconds: number) => string } = {},
@@ -20,11 +19,11 @@ export function generatePhaseLabel(
   if (p.phase === "decode") return opts.hasAudio ? "Decoding video and audio…" : "Decoding…";
   if (p.phase === "export") return "Encoding video…";
   const base = "Denoising please wait…";
-  // Step 0 is the first step still running (compile warmup included), so show no 0/N.
+  // Step 0 is still running (compile warmup included), so no 0/N is shown.
   if (p.step <= 0 || p.total <= 0) return base;
   const fmt = opts.formatEta ?? ((seconds: number) => `${Math.max(0, Math.round(seconds))}s`);
   const eta = p.eta_seconds != null ? fmt(p.eta_seconds) : "";
-  // " \u2022 " = ModelLoadDescription's line split: on one line the 18rem card truncated the ETA.
+  // Bullet separator matches ModelLoadDescription's line split; one line truncated in the 18rem card.
   return `${base} \u2022 Step ${p.step}/${p.total}${eta ? ` · ~${eta}` : ""}`;
 }
 

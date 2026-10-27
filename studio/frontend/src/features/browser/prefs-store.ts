@@ -5,7 +5,6 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { SearchEngineId } from "./address";
 
-/** When the bookmarks toolbar shows, as Firefox offers it. */
 export type BookmarksToolbarMode = "always" | "newtab" | "never";
 
 /** Whether sending annotations also attaches a screenshot of the page. */
@@ -23,9 +22,7 @@ interface BrowserPrefsState {
   searchEngine: SearchEngineId;
   showFullUrl: boolean;
   bookmarksToolbar: BookmarksToolbarMode;
-  /** Whether saving a bookmark opens its name and location editor. */
   showBookmarkEditor: boolean;
-  /** Sites taken off the new tab's Suggested, by host. */
   hiddenSuggestions: string[];
   /** Show ⌘/Ctrl-clicked links' tabs at once instead of in the background. */
   switchToNewTabs: boolean;
