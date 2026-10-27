@@ -3,15 +3,23 @@
 
 from types import SimpleNamespace
 
-from core.training.startup_progress import ACTIVE, STARTING, WAITING_FOR_LOSS, TrainingStartupProgress
+from core.training.startup_progress import (
+    ACTIVE,
+    STARTING,
+    WAITING_FOR_LOSS,
+    TrainingStartupProgress,
+)
 
 
 def _start(step = 0, accumulation = 4):
     progress = TrainingStartupProgress()
-    assert progress.begin(
-        SimpleNamespace(gradient_accumulation_steps = accumulation),
-        SimpleNamespace(global_step = step),
-    ) == STARTING
+    assert (
+        progress.begin(
+            SimpleNamespace(gradient_accumulation_steps = accumulation),
+            SimpleNamespace(global_step = step),
+        )
+        == STARTING
+    )
     return progress
 
 
@@ -58,7 +66,12 @@ def test_callbacks_before_train_begin_do_not_claim_active_training():
     assert progress.step_begin() is None
     assert progress.substep_end() is None
     assert progress.step_end(SimpleNamespace(global_step = 10)) is None
-    assert progress.begin(SimpleNamespace(gradient_accumulation_steps = 4), SimpleNamespace(global_step = 0)) == STARTING
+    assert (
+        progress.begin(
+            SimpleNamespace(gradient_accumulation_steps = 4), SimpleNamespace(global_step = 0)
+        )
+        == STARTING
+    )
     assert "batch 1 of up to 4" in progress.step_begin()
     assert progress.log({"eval_loss": 1.0}) is None
     assert progress.log({"loss": 1.0}) == ACTIVE
