@@ -259,7 +259,11 @@ def test_resident_ltx2_decodes_untiled_when_it_fits(monkeypatch):
     assert U.install_untiled_decode(types.SimpleNamespace(vae = vae), "ltx-2")
     assert vae.decode(z, "t", return_dict = False) == ("untiled",) and vae.calls == [(False, "t")]
     monkeypatch.setattr(U, "_free_bytes", lambda device: int(need * 1.25 + 2 * GIB) - 1)
-    assert vae.decode(z, "t") == ("tiled",)
+    # This shape keeps its first route (one seed, one clip); a first decode this short of room tiles.
+    assert vae.decode(z, "t") == ("untiled",)
+    fresh = _FakeLTX()
+    assert U.install_untiled_decode(types.SimpleNamespace(vae = fresh), "ltx-2")
+    assert fresh.decode(z, "t") == ("tiled",)
 
 
 def test_video_load_installs_wide_tiles_on_every_tiling_load():

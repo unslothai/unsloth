@@ -70,6 +70,16 @@ def _wide_tiles_enabled() -> bool:
     return os.environ.get(WIDE_TILES_ENV, "").strip().lower() not in ("0", "false", "no", "off")
 
 
+# Untiled, wide and stock tiles blend differently, so a route picked from free memory per call made the same seed decode
+# to different frames once free memory moved between renders (a CUDA graph kept or dropped, another tenant). The first
+# decode of a latent shape fixes its route for the load; later ones reuse it while it fits. "0" re-picks every call.
+ROUTE_LATCH_ENV = "UNSLOTH_VIDEO_VAE_ROUTE_LATCH"
+
+
+def _route_latch_enabled() -> bool:
+    return os.environ.get(ROUTE_LATCH_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
 # (longest tile, edge tile) latents a family's wide tiles keep; Cosmos3: the Wan@16x seam audit floor.
 _WIDE_TILE_FLOOR = {"cosmos3-nano": (16, 8), "cosmos3-edge": (16, 8)}
 
@@ -141,6 +151,27 @@ def wide_tile_plan(
     if best[0][0] >= stock_tiles:
         return None
     return tile_h * ratio, stride_h * ratio, tile_w * ratio, stride_w * ratio
+
+
+def wide_plan_bytes(
+    family: str,
+    latent_shape: tuple,
+    ratio: int,
+    plan: tuple,
+    itemsize: int = 2,
+) -> Optional[int]:
+    """Estimated peak of decoding ``latent_shape`` with the wide ``plan`` (as wide_tile_plan prices it), or None."""
+    coef = _BYTES_PER_LATENT_PIXEL.get(family)
+    if coef is None or len(latent_shape) != 5 or ratio <= 0:
+        return None
+    batch, _, latent_frames, height, width = (int(x) for x in latent_shape)
+    spatial, temporal = _OUTPUT_SCALE[family]
+    frames = (max(1, latent_frames) - 1) * temporal + 1
+    itemsize = max(2, itemsize)
+    out_bytes = 2 * max(1, batch) * 3 * frames * height * spatial * width * spatial * itemsize
+    tile_h = min(height, int(plan[0]) // ratio)
+    tile_w = min(width, int(plan[2]) // ratio)
+    return int(coef * itemsize / 2 * max(1, batch) * tile_h * tile_w + out_bytes)
 
 
 def _decoder_itemsize(vae: Any) -> int:
@@ -218,44 +249,80 @@ def install_untiled_decode(
     # Smallest estimates that OOMed, never retried (untiled / wide).
     oom_need: list = []
     oom_wide: list = []
+    # (latent shape, decoder itemsize) -> "untiled" / "stock" / a wide plan: the route its first decode took.
+    routes: dict = {}
+    warned: set = set()
+
+    def remember(key: tuple, route: Any) -> None:
+        if _route_latch_enabled():
+            routes.setdefault(key, route)
+
+    def latched_route(key: tuple, need: Optional[int], free: Optional[int], ratio: int) -> Any:
+        """The route this shape decoded with first while it still fits (25% margin, no fixed headroom: it already ran
+        on this load), else None (pick from free memory as the first decode did)."""
+        route = routes.get(key) if _route_latch_enabled() else None
+        if route is None or route == "stock":
+            return route
+        if route == "untiled":
+            price = need if not (oom_need and need is not None and need >= oom_need[0]) else None
+        elif _wide_tiles_enabled() and not (oom_wide and need is not None and need >= oom_wide[0]):
+            price = wide_plan_bytes(family, key[0], ratio, route, itemsize = key[1])
+        else:
+            price = None
+        if price is not None and free is not None and price * _MARGIN <= free:
+            return route
+        if logger is not None and key not in warned:
+            warned.add(key)
+            logger.warning(
+                "video.vae_untiled: this shape's first route (%s) no longer fits (%s MiB free); this decode picks "
+                "from free memory and its frames can differ from earlier renders",
+                route if isinstance(route, str) else "wide tiles",
+                "?" if free is None else int(free / 2**20),
+            )
+        return None
 
     def gated(z: Any, *args: Any, **kwargs: Any) -> Any:
         if not getattr(vae, "use_tiling", False):
             return decode(z, *args, **kwargs)
-        need = untiled_decode_bytes(
-            family, tuple(getattr(z, "shape", ())), itemsize = _decoder_itemsize(vae)
-        )
+        shape = tuple(getattr(z, "shape", ()))
+        itemsize = _decoder_itemsize(vae)
+        key = (shape, itemsize)
+        need = untiled_decode_bytes(family, shape, itemsize = itemsize)
         free = _free_bytes(_decode_device(vae, z))
-        fits = (
-            need is not None
-            and free is not None
-            and need * _MARGIN + _MARGIN_BYTES <= free
-            and not (oom_need and need >= oom_need[0])
-        )
+        ratio = int(getattr(vae, "spatial_compression_ratio", 0) or 0)
+        latched = latched_route(key, need, free, ratio)
+        if latched is not None:
+            fits = latched == "untiled"
+        else:
+            fits = (
+                need is not None
+                and free is not None
+                and need * _MARGIN + _MARGIN_BYTES <= free
+                and not (oom_need and need >= oom_need[0])
+            )
         if logger is not None:
             logger.info(
-                "video.vae_untiled: decode %s (untiled needs ~%s MiB with margin, %s MiB free)",
+                "video.vae_untiled: decode %s (untiled needs ~%s MiB with margin, %s MiB free)%s",
                 "untiled" if fits else "tiled",
                 "?" if need is None else int((need * _MARGIN + _MARGIN_BYTES) / 2**20),
                 "?" if free is None else int(free / 2**20),
+                "" if latched is None else ", the route of this shape's first decode",
             )
         if not fits:
             stats["tiled"] += 1
             wide = None
-            ratio = int(getattr(vae, "spatial_compression_ratio", 0) or 0)
-            if (
+            if latched is not None:
+                wide = None if latched == "stock" else latched
+            elif (
                 _wide_tiles_enabled()
                 and free is not None
                 and hasattr(vae, "tile_sample_min_height")
             ):
-                wide = wide_tile_plan(
-                    family,
-                    tuple(getattr(z, "shape", ())),
-                    ratio,
-                    free,
-                    itemsize = _decoder_itemsize(vae),
-                )
-            if wide is None or (oom_wide and need is not None and need >= oom_wide[0]):
+                wide = wide_tile_plan(family, shape, ratio, free, itemsize = itemsize)
+            if wide is None or (
+                latched is None and oom_wide and need is not None and need >= oom_wide[0]
+            ):
+                remember(key, "stock")
                 return decode(z, *args, **kwargs)
             stock = (
                 vae.tile_sample_min_height,
@@ -286,6 +353,7 @@ def install_untiled_decode(
             try:
                 out = decode(z, *args, **kwargs)
                 stats["wide"] += 1
+                remember(key, tuple(wide))
                 return out
             except Exception as exc:  # noqa: BLE001
                 if not is_oom_error(exc):
@@ -307,6 +375,7 @@ def install_untiled_decode(
                 logger.warning(
                     "video.vae_untiled: wide tiles ran out of memory; decoding at the stock tile size"
                 )
+            remember(key, "stock")
             return decode(z, *args, **kwargs)
         import torch
 
@@ -316,6 +385,7 @@ def install_untiled_decode(
         try:
             out = decode(z, *args, **kwargs)
             stats["untiled"] += 1
+            remember(key, "untiled")
             return out
         except Exception as exc:  # noqa: BLE001
             if not is_oom_error(exc):
@@ -333,6 +403,7 @@ def install_untiled_decode(
         torch.cuda.empty_cache()
         if logger is not None:
             logger.warning("video.vae_untiled: untiled decode ran out of memory; decoding tiled")
+        remember(key, "stock")
         return decode(z, *args, **kwargs)
 
     def untiled_when_fits(*args: Any, **kwargs: Any) -> Any:
@@ -346,6 +417,7 @@ def install_untiled_decode(
 
     untiled_when_fits._unsloth_untiled_decode = True
     untiled_when_fits._unsloth_untiled_stats = stats
+    untiled_when_fits._unsloth_untiled_routes = routes
     vae.decode = untiled_when_fits
     if logger is not None:
         logger.info("video.vae_untiled: resident %s VAE decodes untiled when it fits", family)
