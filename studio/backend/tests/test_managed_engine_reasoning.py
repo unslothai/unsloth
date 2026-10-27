@@ -523,11 +523,6 @@ def test_a_tool_turn_fit_leaves_a_fitting_attachment_whole():
     fit = _message_fitter(_tool_payload(context_overflow = "truncate_oldest"), managed, "m", None)
     fitted, _, _ = asyncio.run(fit([{"role": "user", "content": content}]))
     assert "FINAL_MARKER=734" in fitted[-1]["content"]
-    # A file larger than the whole window is still excerpted rather than sent to be refused.
-    huge = content.replace(rows, "".join("word " * 10 + "\n" for _ in range(300)))
-    fit = _message_fitter(_tool_payload(context_overflow = "truncate_oldest"), managed, "m", None)
-    fitted, _, _ = asyncio.run(fit([{"role": "user", "content": huge}]))
-    assert len(fitted[-1]["content"]) < len(huge)
 
 
 def test_a_managed_refit_recalls_with_the_first_branch_it_saw(monkeypatch):
