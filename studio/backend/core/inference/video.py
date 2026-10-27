@@ -10189,7 +10189,9 @@ class VideoBackend:
         plan = plan_diffusion_memory(
             target = target,
             device_memory = (
-                device_memory if device_memory is not None else settled_snapshot_device_memory(target)
+                device_memory
+                if device_memory is not None
+                else settled_snapshot_device_memory(target)
             ),
             model_dense_mib = int(
                 (transformer_gb + text_encoder_gb + vae_gb) * dtype_scale * mib_per_gb
