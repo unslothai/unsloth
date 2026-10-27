@@ -1460,7 +1460,12 @@ def _stub_training_stack(monkeypatch):
             monkeypatch.setitem(sys.modules, name, module)
 
 
-def _h3_cache_run(monkeypatch, *, num_clips: int):
+def _h3_cache_run(
+    monkeypatch,
+    *,
+    num_clips: int,
+    on_event = None,
+):
     """Drive _train_h3 through phase 2 with a sentinel _load_transformer, so reaching it is observable."""
     import torch
 
@@ -1504,10 +1509,30 @@ def _h3_cache_run(monkeypatch, *, num_clips: int):
         random.Random(0),
         "cpu",
         torch.float32,
-        lambda *_a, **_k: None,
+        on_event or (lambda *_a, **_k: None),
         lambda: False,
         lambda: True,
     )
+
+
+def test_h3_resumes_model_download_progress_after_latent_preparation(monkeypatch):
+    from core.training.diffusion_download_progress import TrainingDownloadProgress
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", "1")
+    events = []
+    monitor = TrainingDownloadProgress(
+        events.append,
+        sample = lambda: {"bytes_done": 1, "bytes_total": 2, "scope": "active_files"},
+    )
+    monitor.report({"type": "model_load_started"})
+    with pytest.raises(RuntimeError, match = "reached phase 3"):
+        _h3_cache_run(monkeypatch, num_clips = 1, on_event = monitor.report)()
+    monitor.poll()
+    assert any(event["type"] == "preparing" for event in events)
+    assert [event["type"] for event in events[-2:]] == [
+        "model_load_started",
+        "model_download_progress",
+    ]
 
 
 def test_the_h3_latent_cache_is_size_gated_like_the_image_trainers(monkeypatch):

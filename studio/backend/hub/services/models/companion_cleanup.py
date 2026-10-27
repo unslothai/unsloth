@@ -201,7 +201,9 @@ def _delete_impact_blocking(
         )
 
     # companions become reclaimable only when no runnable checkpoint survives
-    removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
+    removes_last_checkpoint = not any(
+        companion_assets.repo_is_install(repo, scans) for repo in surviving
+    )
     if variant:
         for repo_info in repos:
             if _remaining_main_gguf_variants(
