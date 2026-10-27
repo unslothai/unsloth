@@ -139,6 +139,11 @@ export const fr = {
     more: "Plus",
     addressPlaceholder: "Rechercher ou saisir une URL",
     local: "Local",
+    browserUse: {
+      label: "Utilisation du navigateur",
+      description: "Laisser les modèles contrôler le navigateur intégré",
+      unavailable: "Chargez un modèle capable d'appeler des outils pour qu'il utilise le navigateur.",
+    },
     suggested: "Suggestions",
     suggestedMenu: {
       open: "Ouvrir",
@@ -2339,6 +2344,7 @@ export const fr = {
       liveMonitor: {
         title: "Moniteur en direct",
         apiTitle: "Moniteur d’API",
+        apiDescription: "Voyez ce que les autres applications envoient à l'API de ce serveur dès son arrivée.",
         summary: "Requêtes en cours, erreurs et utilisation des jetons",
         status: "{active} actives · {recent} récentes · {model}",
         noModelLoaded: "aucun modèle chargé",

@@ -215,6 +215,17 @@ def legacy_entry(
         else:
             uninstall_patches()
             uninstall_arch_patches()
+        from core.inference.diffusion_eager_patches import (
+            fp16_rmsnorm_wanted,
+            install_fp16_rmsnorm,
+            uninstall_fp16_rmsnorm,
+        )
+
+        if fp16_rmsnorm_wanted(getattr(pipe, "transformer", None), target.dtype, speed):
+            patches["fp16_eager_rmsnorm"] = _engaged(install_fp16_rmsnorm())
+        else:
+            uninstall_fp16_rmsnorm()
+            patches["fp16_eager_rmsnorm"] = False
         from core.inference.diffusion_flux2_rope import install_for_pipe as flux2
         from core.inference.diffusion_qwenimage21 import install_for_pipe as q21
         from core.inference.diffusion_rocm_fused import install_for_pipe as rocm
