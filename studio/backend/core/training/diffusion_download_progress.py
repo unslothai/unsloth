@@ -31,8 +31,7 @@ def download_snapshot(bars: Iterable[Any]) -> dict[str, Any] | None:
         entries.append((label, min(done, total), total))
     if not entries:
         return None
-    # Hub snapshot_download exposes network and reconstruction bars for the SAME bytes.
-    # Prefer reconstructed output; summing those parents would count the download twice.
+    # Network and reconstruction bars cover the SAME bytes: count only reconstruction.
     reconstructed = [entry for entry in entries if "reconstruct" in entry[0].lower()]
     transfers = [entry for entry in entries if entry[0].lower() == "downloading bytes"]
     selected = reconstructed or transfers or entries

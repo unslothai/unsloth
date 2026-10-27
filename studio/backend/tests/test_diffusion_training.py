@@ -2636,10 +2636,10 @@ def test_model_download_progress_clears_before_preparation():
     svc._apply_event(event)
     assert svc.status()["download_progress"]["bytes_done"] == 4
     svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 3, "total": 10})
-    svc._apply_event(event)  # Even a late queued reading cannot replace preparation.
+    svc._apply_event(event)
     assert svc.status()["download_progress"] is None
     assert svc.status()["preparation"]["done"] == 3
-    svc._apply_event({"type": "model_load_started"})  # The denoiser loads after caching.
+    svc._apply_event({"type": "model_load_started"})
     svc._apply_event(event)
     assert svc.status()["preparation"] is None
     assert svc.status()["download_progress"]["bytes_done"] == 4

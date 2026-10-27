@@ -61,7 +61,7 @@ def test_download_progress_clears_when_file_bars_close():
     monitor.report({"type": "model_load_started"})
     monitor.poll()
     monitor.poll()
-    assert len(events) == 2  # Unchanged readings do not flood the queue.
+    assert len(events) == 2
     current.clear()
     monitor.poll()
     assert events[-1] == {"type": "model_download_progress", "download_progress": None}
@@ -75,7 +75,7 @@ def test_byte_progress_cannot_replace_later_training_phases(phase):
     monitor = None
 
     def sample():
-        monitor.report({"type": phase})  # A sample can race with the trainer changing phase.
+        monitor.report({"type": phase})
         return download_snapshot([bar()])
 
     monitor = TrainingDownloadProgress(events.append, sample = sample)

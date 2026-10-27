@@ -48,8 +48,7 @@ export function resolveProgressUpdate(
   madeProgress: boolean;
 } {
   if (progressResp.progress_scope === "active_files") {
-    // These are current Xet files, not a repo-sized plan. New batches can reset
-    // both counters, including to zero between transfers; never hold old bytes.
+    // Current Xet files, not a repo plan: batches reset counters (even to zero).
     const expected = Math.max(0, finiteReading(progressResp.expected_bytes));
     const downloadedBytes = expected > 0
       ? Math.min(expected, Math.max(0, finiteReading(progressResp.downloaded_bytes)))

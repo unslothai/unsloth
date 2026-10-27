@@ -29,7 +29,7 @@ def is_training_variant(variant: Optional[str]) -> bool:
 
 def claim(service, job_id: str, repo_id: Optional[str]) -> Optional[str]:
     if not repo_id or not is_valid_repo_id(repo_id) or not is_training_variant(f"{PREFIX}{job_id}"):
-        return None  # Local models need no network transfer.
+        return None
     registry = download_registry.get_models_registry()
     variant = f"{PREFIX}{job_id}"
     key = download_registry.normalize_job_key(f"{repo_id}::{variant}")

@@ -28,8 +28,7 @@ import {
   TrainingDownloadDiscovery,
 } from "./training-downloads";
 
-/** Discover real registry jobs globally, including after navigation or a reload.
- * The regular manager owns polling, cancellation, persistence and terminal state. */
+/** Discover registry jobs globally; the regular manager owns polling and cancellation. */
 export function useTrainingDownloads(enabled: boolean): void {
   useEffect(() => {
     if (!enabled) return;

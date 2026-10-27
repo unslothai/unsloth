@@ -109,7 +109,6 @@ def _run_diffusion_child(
     except Exception:  # noqa: BLE001 -- progress setup must never stop training
         pass
 
-    # Imported lazily so the route layer stays torch-free.
     from .diffusion_lora_trainer import run_diffusion_training_process
 
     run_diffusion_training_process(
@@ -676,7 +675,7 @@ class DiffusionTrainingService:
             # Test targets take only the three job kwargs.
             if self._target is _default_target:
                 self._download_phase = (self._ctx.Event(), self._ctx.Lock())
-                self._download_phase[0].set()  # Boot/import/setup is still before optimization.
+                self._download_phase[0].set()
                 child_kwargs["download_phase"] = self._download_phase
                 self._open_worker_stderr_capture()
                 if self._stderr_capture is not None:
@@ -751,8 +750,7 @@ class DiffusionTrainingService:
             self._lock,
             self._download_phase[1] if self._download_phase else contextlib.nullcontext(),
         ):
-            # A Downloads row can outlive its transfer or be clicked as a replacement starts.
-            # Check under the same lock as signalling; never cancel a different run or its training.
+            # Check under the signalling lock: never cancel a different run or its training.
             if job_id is not None and self._state.get("job_id") != job_id:
                 return False
             if download_generation is not None:
@@ -777,8 +775,7 @@ class DiffusionTrainingService:
             if self._download_phase is not None:
                 loading = loading and self._download_phase[0].is_set()
             if loading and hasattr(self._proc, "terminate"):
-                # A native Xet call cannot consume the cooperative queue. No optimizer is
-                # running in this phase, so terminate only this worker and settle promptly.
+                # Native Xet ignores the cooperative queue; no optimizer runs yet, so terminate the worker.
                 self._proc.terminate()
                 self._proc.join(timeout = 2.0)
                 if self._proc.is_alive() and hasattr(self._proc, "kill"):
@@ -1091,7 +1088,7 @@ class DiffusionTrainingService:
             if proc is not None and self._proc is not proc:
                 return
             if self._stop_signalled and self._state.get("status") == "stopped":
-                return  # Buffered download events cannot resurrect a terminated load.
+                return
             s = self._state
             s["updated_at"] = time.time()
             if etype == "model_load_started":

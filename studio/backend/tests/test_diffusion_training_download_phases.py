@@ -17,8 +17,7 @@ from core.training.diffusion_train_common import DiffusionLoraConfig
 
 @pytest.mark.parametrize("warm_preview", [False, True])
 def test_dit_resumes_download_progress_after_preparation(monkeypatch, tmp_path, warm_preview):
-    # The cold route caches latents then fetches the denoiser. The warm route can
-    # still need encoders for preview prompts, even with cached training captions.
+    # Warm route can still need encoders for preview prompts.
     monkeypatch.setitem(
         sys.modules, "diffusers", SimpleNamespace(FlowMatchEulerDiscreteScheduler = object)
     )

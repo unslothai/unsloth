@@ -142,7 +142,7 @@ def test_real_child_phase_wins_over_a_delayed_parent_loading_event(rig):
     events = _DownloadPhaseQueue(pending, phase)
     events.put({"type": "model_load_completed"})
     assert not phase[0].is_set()
-    assert service._state["in_model_load"] is True  # The parent has not consumed the event.
+    assert service._state["in_model_load"] is True
     assert service.stop(save = False, job_id = "a" * 32, download_only = True) is False
     assert service.stop(save = True) is True
     assert (
