@@ -183,7 +183,6 @@ def _get_flash_adamw_class():
             _widen_variance(state.get("exp_avg_sq"))
             return state
 
-        # Saving dequantizes the moments when compress_state_dict=False.
         def _state_dict_for_param(self, param_number, *args, **kwargs):
             idx_to_param = kwargs.get("idx_to_param", args[2] if len(args) > 2 else {})
             with _on_param_device(idx_to_param.get(param_number)):
@@ -248,8 +247,7 @@ def _get_flash_adamw_class():
 
 
 def _on_param_device(p):
-    # flashoptim's Triton kernels launch on the current CUDA device, which is not p.device for
-    # a model split across GPUs by device_map; without peer access the pointer is refused.
+    # Triton launches on the current device, not p.device; device_map splits need it switched.
     if p is not None and p.is_cuda:
         return torch.cuda.device(p.device)
     return contextlib.nullcontext()

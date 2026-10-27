@@ -34,7 +34,6 @@ def test_adamw_flash_noncurrent_cuda_device(dtype, quantize, entry):
 
     torch.cuda.set_device(0)
     optimizer_cls = _get_flash_adamw_class()
-    # One optimizer holds tensors on both GPUs, as with device_map = "balanced".
     p0 = torch.nn.Parameter(torch.ones(33, device = "cuda:0", dtype = dtype))
     p1 = torch.nn.Parameter(torch.ones(33, device = "cuda:1", dtype = dtype))
     q0 = torch.nn.Parameter(p0.detach().clone())
