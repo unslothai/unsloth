@@ -50,7 +50,8 @@ export function createChatPinsApi(sessionSignal: AbortSignal) {
             }),
       });
       const data: unknown = await response.json().catch((error: unknown) => {
-        if (signal.aborted) throw error;
+        // A 200 whose body was cut off is a transport failure to retry, not an invalid answer.
+        if (signal.aborted || response.ok) throw error;
         return null;
       });
       if (!response.ok) {
