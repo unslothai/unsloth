@@ -1264,7 +1264,6 @@ def test_qwen_edit_fresh_home_keeps_part_of_the_int8_dit_resident(qedit_pipe, bu
     resident = new.resident_transformer_mib
     assert resident and 0 < resident < 19932
     assert new.estimates["measured_runtime_headroom_mib"] == 7168
-    # the seed's headroom, the base overhead and the VAE stay free beside the resident groups
     assert resident + 7168 + dm.DEFAULT_BASE_OVERHEAD_MIB + 242 <= budget
 
 
@@ -1273,5 +1272,4 @@ def test_qwen_edit_seed_kill_switch(qedit_pipe, monkeypatch):
     assert dm.measured_image_runtime_mib("qwen-image-edit", "default") is None
     plan = _qedit_flat_plan(13638, 16376)
     assert _refine(qedit_pipe, plan, family = "qwen-image-edit") is plan
-    # other families keep their seeds
     assert dm.measured_image_runtime_mib("qwen-image-2.1", "default") == 2304

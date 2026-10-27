@@ -3284,8 +3284,7 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
 # FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
 # MOSS-Image: 2905 MiB worst-phase peak fully streamed (B200 capped at 16 GiB).
-# Qwen-Image-Edit-2511: 6046 MiB whole edit render (1024x1024 output, one 1024x1024 source, 40 steps, true CFG 3,
-# untiled decode, step CUDA graphs), int8 DiT + int8 encoder resident, RTX PRO 6000; recorded on 2 loads.
+# Qwen-Image-Edit-2511: 6046 MiB whole render (1024^2, one 1024^2 source, 40 steps, true CFG 3), int8 DiT + encoder.
 _MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-2.1": 1849,
     "flux.1": 2666,
@@ -3293,7 +3292,7 @@ _MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
     "moss-image": 2976,
     "qwen-image-edit": 6046,
 }
-# "0": Qwen-Image-Edit places from its learned peak alone again (a fresh home streams every int8 DiT group).
+# "0": Qwen-Image-Edit places from its learned peak only.
 MEASURED_ACTIVATION_QWEN_EDIT_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_EDIT"
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
