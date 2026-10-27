@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""After merge_and_unload() / unload() a projection is a plain nn.Linear. If its weight (or bias) is then
-unfrozen for training while X needs no grad (frozen embeddings), the fused Functions used to run and their
-backward dereferenced absent LoRA weights ('NoneType' object has no attribute 'to'). Such a projection
-must run its own forward so the base weight gets its gradient, matching plain nn.Linear."""
+"""An unloaded (plain nn.Linear) projection with a trainable weight and frozen X must skip the fused
+Functions, whose backward crashed on absent LoRA weights."""
 
 from __future__ import annotations
 
@@ -53,7 +51,6 @@ def test_unloaded_projection_routing():
     block = model.merge_and_unload()
     X = torch.randn(2, 5, H, dtype = torch.float64)
     projs = (block.q_proj, block.k_proj, block.v_proj)
-    # Frozen plain Linear: the fused no-grad base forward stays available.
     assert fast_lora._lora_dropout_and_bias(projs, X) is not None
     block.k_proj.weight.requires_grad_(True)
     assert fast_lora._base_weight_requires_grad(block.k_proj)
