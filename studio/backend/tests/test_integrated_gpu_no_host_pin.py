@@ -465,6 +465,10 @@ _REACHED_THROUGH_A_GATE = {
         "pin_module_in_place",
     ): "h3_te_pin_allowed / stream_h3_text_encoder",
     (
+        "core/inference/video_minimax_h3_te.py",
+        "_pinned_arena",
+    ): "pin_module_in_place",
+    (
         "core/inference/video_minimax_h3_residency.py",
         "_pin_host_tensor",
     ): "_H3BlockPinner._run only, built by defer_streamed_block_pins behind _background_pin_enabled / "

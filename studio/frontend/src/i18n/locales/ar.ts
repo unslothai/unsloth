@@ -2553,6 +2553,8 @@ export const ar = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "مدة التشغيل",
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
@@ -3302,6 +3304,7 @@ export const ar = {
       desktopAppVersionUnavailable: "غير متاح",
       llamaCppVersion: "إصدار llama.cpp",
       audioCppVersion: "إصدار audio.cpp",
+      mlxVersion: "إصدار MLX",
       whisperCppVersion: "إصدار whisper.cpp",
       engines: {
         title: "المحركات",

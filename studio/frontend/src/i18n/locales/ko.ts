@@ -2547,6 +2547,8 @@ export const ko = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "가동 시간",
         processMemory: "프로세스 메모리",
         notInstalled: "설치되지 않음",
@@ -3292,6 +3294,7 @@ export const ko = {
       desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
+      mlxVersion: "MLX 버전",
       whisperCppVersion: "whisper.cpp 버전",
       engines: {
         title: "엔진",
