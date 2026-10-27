@@ -53,7 +53,8 @@ def test_settings_monitor_link_can_shrink():
     assert '<span className="truncate text-sm font-semibold text-foreground">' in source
     assert '<span className="min-h-[1lh] truncate text-xs text-muted-foreground">' in source
     # The monitor has a section heading of its own, not a card dropped among other sections.
-    assert '<SettingsSection title={t("settings.resources.liveMonitor.apiTitle")}>' in source
+    assert "<SettingsSection" in source
+    assert 'title={t("settings.resources.liveMonitor.apiTitle")}' in source
 
 
 def test_remote_access_card_can_shrink():

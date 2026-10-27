@@ -153,11 +153,12 @@ def test_api_monitor_renders_lifecycle_rows():
 
 
 def test_auto_switch_section_sits_below_the_monitor_link():
-    # #14455 moved the usage examples up, under the key form (api-settings-tab.test.ts pins that);
-    # the auto-switch section still follows the monitor link.
+    # #14455 moved the usage examples up, under the key form; #15467 put them behind one tab row
+    # (ApiExamplesPanel) and the monitor link under "Access & monitoring" (api-settings-tab.test.ts
+    # pins both). The auto-switch section still follows the monitor link.
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
-    assert tab.index("<UsageExamples") < tab.index("<MonitorLink />")
-    assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
+    assert tab.index("<ApiExamplesPanel") < tab.index("<MonitorLink")
+    assert tab.index("<MonitorLink") < tab.index("<ModelAutoSwitchSection />")
 
 
 AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
