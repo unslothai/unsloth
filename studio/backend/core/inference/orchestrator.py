@@ -2844,13 +2844,19 @@ class InferenceOrchestrator:
             }
             # SGLang 0.5.17's /tokenize returns 500 when model_max_length is the 1e30 sentinel.
             estimated = False
+            fit_max_tokens = max_tokens
             if getattr(self, "_managed_engine", None) is not None:
                 try:
                     self.count_chat_tokens(conversation[-1:], "", **count_kwargs)
                 except Exception as exc:
                     logger.info("Fitting the managed engine prompt by estimate: %s", exc)
                     estimated = True
-                    context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
+                    if max_tokens and 0 < max_tokens < context_length:
+                        # The cap is sent whole and the bound at most halves the count: fit to half what it leaves.
+                        context_length = (context_length - max_tokens) * 2 // 3
+                        fit_max_tokens = None
+                    else:
+                        context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
 
             def _count(fitted):
                 if cancel_event is not None and cancel_event.is_set():
@@ -2888,7 +2894,7 @@ class InferenceOrchestrator:
                 )
             )
             fit_kwargs = dict(
-                max_tokens = max_tokens,
+                max_tokens = fit_max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
                 keeps_boundary = _keeps_compaction_boundary(thread_id),
