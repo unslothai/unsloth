@@ -2350,7 +2350,7 @@ export function AudioPage({
                   announcement,
                 };
                 return ttsWorkflow === "music" ? (
-                  <MusicOutput {...outputProps} modelReady={pageModelLoaded} />
+                  <MusicOutput {...outputProps} modelReady={pageModelLoaded} loading={busy === "loading"} onChooseModel={openSelector} />
                 ) : ttsWorkflow === "edit" ? (
                   <EditOutput
                     {...outputProps}
