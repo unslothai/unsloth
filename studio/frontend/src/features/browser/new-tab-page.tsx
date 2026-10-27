@@ -210,14 +210,14 @@ function BrowserUseToggle() {
     <label
       htmlFor={id}
       className={cn(
-        "flex min-w-0 items-center gap-3 rounded-2xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 py-3",
+        "flex min-w-0 items-center gap-3 rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-5 py-3",
         disabled ? "cursor-default" : "cursor-pointer",
       )}
     >
       <HugeiconsIcon
         icon={CursorInWindowIcon}
         strokeWidth={1.75}
-        className="size-5 shrink-0 text-muted-foreground"
+        className="me-1 size-6 shrink-0 text-muted-foreground"
       />
       <span className="min-w-0 flex-1">
         <span className="block text-ui-15 text-foreground">
