@@ -708,8 +708,7 @@ def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, w
     """aten's flash varlen takes this shape on this device: one real forward and backward (a build
     that refuses at run time would otherwise fail inside the compiled graph)."""
     # Cached for all grad modes; first trace may be no_grad (reentrant checkpoint), where backward raises.
-    # Identity saved-tensor hooks: inside a non-reentrant checkpoint its pack hooks would capture the
-    # probe's tensors, so the probe's backward recomputes the block and the outer recompute miscounts.
+    # Identity hooks: a non-reentrant checkpoint's pack hooks would make the probe's backward recompute the block.
     with torch.inference_mode(False), torch.enable_grad(), _no_saved_tensor_hooks():
         try:
             from .flash_impl import flash_impl_allows

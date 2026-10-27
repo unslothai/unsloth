@@ -1572,8 +1572,6 @@ def test_varlen_in_graph_probe_inside_a_nonreentrant_checkpoint(monkeypatch, com
         torch._dynamo.reset()
         block = torch.compile(block, backend = "eager", fullgraph = True)
     x = torch.randn(4, 4, requires_grad = True)
-    # Through the checkpoint's hooks the probe's backward recomputes the block from inside the probe
-    # (_StopRecomputationError), and compiled the outer recompute then miscounts saved tensors.
     checkpoint(block, x, use_reentrant = False).sum().backward()
     assert seen == [True]
     torch.testing.assert_close(x.grad, 2 * torch.cos(2 * x.detach()))
