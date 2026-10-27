@@ -33,11 +33,15 @@ export function matchesInventoryCapabilities(
     return true;
   }
   const tags = row.tags ?? undefined;
-  const pipelineTag = row.pipelineTag ?? undefined;
+  const pipelineTag = row.pipelineTag ?? row.task ?? undefined;
   const id = rowName(row);
   const view = {
     capabilities: detectCapabilities(tags, pipelineTag, id),
     result: { tags, pipelineTag, id },
   };
-  return picks.some((key) => matchesHubCapability(view, key));
+  return picks.some(
+    (key) =>
+      !(key === "text" && row.capabilities.supportsVision) &&
+      matchesHubCapability(view, key),
+  );
 }
