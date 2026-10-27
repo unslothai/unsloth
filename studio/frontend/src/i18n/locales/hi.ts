@@ -139,6 +139,11 @@ export const hi = {
     more: "और",
     addressPlaceholder: "खोजें या URL डालें",
     local: "लोकल",
+    browserUse: {
+      label: "ब्राउज़र उपयोग",
+      description: "मॉडलों को बिल्ट-इन ब्राउज़र नियंत्रित करने दें",
+      unavailable: "ब्राउज़र इस्तेमाल करने देने के लिए ऐसा मॉडल लोड करें जो टूल कॉल कर सके।",
+    },
     suggested: "सुझाव",
     suggestedMenu: {
       open: "खोलें",
@@ -2316,6 +2321,7 @@ export const hi = {
       liveMonitor: {
         title: "लाइव मॉनिटर",
         apiTitle: "API मॉनिटर",
+        apiDescription: "देखें कि दूसरे ऐप इस सर्वर के API को क्या भेजते हैं, जैसे ही वह आता है।",
         summary: "सक्रिय अनुरोध, त्रुटियाँ और टोकन उपयोग",
         status: "{active} सक्रिय · {recent} हाल के · {model}",
         noModelLoaded: "कोई मॉडल लोड नहीं है",
@@ -4559,6 +4565,7 @@ export const hi = {
       modelsTitle: "अभी कोई फ़ाइन-ट्यून किया गया मॉडल नहीं",
       modelsDescription: "Unsloth में आप जो मॉडल ट्रेन या एक्सपोर्ट करते हैं, वे यहाँ दिखते हैं।",
       createFolder: "फ़ोल्डर बनाएँ",
+      generateImage: "इमेज बनाएँ",
       generateVideo: "वीडियो जनरेट करें",
       generateAudio: "ऑडियो जनरेट करें",
       trainModel: "मॉडल ट्रेन करें",

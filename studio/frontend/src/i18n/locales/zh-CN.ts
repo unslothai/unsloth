@@ -139,6 +139,11 @@ export const zhCN = {
     more: "更多",
     addressPlaceholder: "搜索或输入网址",
     local: "本地",
+    browserUse: {
+      label: "浏览器操作",
+      description: "允许模型控制内置浏览器",
+      unavailable: "请加载支持工具调用的模型，才能让它使用浏览器。",
+    },
     suggested: "推荐",
     suggestedMenu: {
       open: "打开",
@@ -2282,6 +2287,7 @@ export const zhCN = {
       liveMonitor: {
         title: "实时监控",
         apiTitle: "API 监控",
+        apiDescription: "实时查看其他应用发送到此服务器 API 的内容。",
         summary: "实时请求、错误和 token 用量",
         status: "{active} 个进行中 · {recent} 个近期请求 · {model}",
         noModelLoaded: "未加载模型",
@@ -4450,6 +4456,7 @@ export const zhCN = {
       modelsTitle: "还没有微调模型",
       modelsDescription: "你在 Unsloth 中训练或导出的模型会显示在这里。",
       createFolder: "创建文件夹",
+      generateImage: "生成图像",
       generateVideo: "生成视频",
       generateAudio: "生成音频",
       trainModel: "训练模型",

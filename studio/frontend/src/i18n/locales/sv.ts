@@ -137,6 +137,11 @@ export const sv = {
     more: "Mer",
     addressPlaceholder: "Sök eller ange en URL",
     local: "Lokal",
+    browserUse: {
+      label: "Webbläsaranvändning",
+      description: "Låt modeller styra den inbyggda webbläsaren",
+      unavailable: "Läs in en modell som kan anropa verktyg för att låta den använda webbläsaren.",
+    },
     suggested: "Förslag",
     suggestedMenu: {
       open: "Öppna",
@@ -2485,6 +2490,7 @@ export const sv = {
       liveMonitor: {
         title: "Direktövervakning",
         apiTitle: "API-övervakning",
+        apiDescription: "Se vad andra appar skickar till den här serverns API när det kommer in.",
         summary: "Begäranden, fel och tokenanvändning i realtid",
         status: "{active} aktiva · {recent} senaste · {model}",
         noModelLoaded: "ingen modell inläst",
@@ -4831,6 +4837,7 @@ export const sv = {
       modelsDescription:
         "Modeller som du tränar eller exporterar i Unsloth visas här.",
       createFolder: "Skapa mapp",
+      generateImage: "Generera en bild",
       generateVideo: "Generera en video",
       generateAudio: "Generera ljud",
       trainModel: "Träna en modell",

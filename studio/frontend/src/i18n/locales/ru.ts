@@ -139,6 +139,11 @@ export const ru = {
     more: "Ещё",
     addressPlaceholder: "Введите запрос или URL",
     local: "Локальный",
+    browserUse: {
+      label: "Работа с браузером",
+      description: "Разрешить моделям управлять встроенным браузером",
+      unavailable: "Загрузите модель с поддержкой вызова инструментов, чтобы она могла работать с браузером.",
+    },
     suggested: "Рекомендуемые",
     suggestedMenu: {
       open: "Открыть",
@@ -2320,6 +2325,7 @@ export const ru = {
       liveMonitor: {
         title: "Монитор в реальном времени",
         apiTitle: "Монитор API",
+        apiDescription: "Смотрите, что другие приложения отправляют в API этого сервера, по мере поступления.",
         summary: "Активные запросы, ошибки и использование токенов",
         status: "активных: {active} · недавних: {recent} · {model}",
         noModelLoaded: "модель не загружена",
@@ -4580,6 +4586,7 @@ export const ru = {
       modelsTitle: "Дообученных моделей пока нет",
       modelsDescription: "Здесь появляются модели, которые вы обучаете или экспортируете в Unsloth.",
       createFolder: "Создать папку",
+      generateImage: "Создать изображение",
       generateVideo: "Сгенерировать видео",
       generateAudio: "Сгенерировать аудио",
       trainModel: "Обучить модель",

@@ -140,6 +140,11 @@ export const ja = {
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
     local: "ローカル",
+    browserUse: {
+      label: "ブラウザ操作",
+      description: "モデルに内蔵ブラウザを操作させる",
+      unavailable: "ブラウザを使わせるには、ツールを呼び出せるモデルを読み込んでください。",
+    },
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",
@@ -2290,6 +2295,7 @@ export const ja = {
       liveMonitor: {
         title: "リアルタイムモニター",
         apiTitle: "API モニター",
+        apiDescription: "他のアプリがこのサーバーの API に送る内容を、届いたそばから確認できます。",
         summary: "処理中のリクエスト、エラー、トークン使用量",
         status: "処理中 {active} 件 · 最近 {recent} 件 · {model}",
         noModelLoaded: "モデル未読み込み",
@@ -4498,6 +4504,7 @@ export const ja = {
       modelsTitle: "ファインチューニング済みモデルはまだありません",
       modelsDescription: "Unsloth でトレーニングまたはエクスポートしたモデルがここに表示されます。",
       createFolder: "フォルダを作成",
+      generateImage: "画像を生成",
       generateVideo: "動画を生成",
       generateAudio: "音声を生成",
       trainModel: "モデルをトレーニング",

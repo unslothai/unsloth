@@ -179,6 +179,65 @@ def _layer_facts(transformer: Any, spec: dict) -> Optional[dict]:
     return layers or None
 
 
+def _moves_with_offload(tensor: Any) -> bool:
+    """Accelerator storage is what an offload release frees; a host tensor is a stable copy, kept as captured."""
+    return tensor.device.type != "cpu"
+
+
+def _wait_for_transfers(value: Any) -> None:
+    """Group offload onloads on its own stream with non_blocking copies: finish them before the writer reads."""
+    if value.device.type == "cuda":
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        # A device sync inside another thread's CUDA graph capture would invalidate it.
+        synchronize_outside_capture(value.device)
+
+
+def _live_refs(transformer: Any, state: dict) -> dict:
+    """``state`` with module params / buffers swapped for live reads at write time, so a held state_dict does not
+    pin offloaded CUDA storage; hook-built tensors stay captured, a shape / dtype change fails the write."""
+    import torch
+
+    def resolve(name: str) -> Any:
+        prefix, _, attr = name.rpartition(".")
+        owner = transformer.get_submodule(prefix) if prefix else transformer
+        return getattr(owner, attr)
+
+    def getter(name: str, dtype: Any, shape: tuple) -> Any:
+        def get() -> Any:
+            value = resolve(name)
+            if value is None or value.dtype != dtype or tuple(value.shape) != shape:
+                raise RuntimeError(f"native cache write: {name} changed during the write")
+            # Detach before the sync: a later `param.data =` onload must not swap in a buffer still being copied.
+            value = value.detach()
+            _wait_for_transfers(value)
+            return value
+
+        return get
+
+    out: dict = {}
+    for name, tensor in state.items():
+        value = None
+        try:
+            if _moves_with_offload(tensor):
+                value = resolve(name)
+            # Same storage AND same view: a hook that hands back e.g. a transposed view keeps its captured tensor.
+            same = (
+                isinstance(value, torch.Tensor)
+                and value.dtype == tensor.dtype
+                and tuple(value.shape) == tuple(tensor.shape)
+                and value.data_ptr() == tensor.data_ptr()
+                and tuple(value.stride()) == tuple(tensor.stride())
+            )
+        except Exception:  # noqa: BLE001 - not a module attribute (hook-built): keep the captured tensor
+            same = False
+        if same:
+            out[name] = _cache._FlatRef(getter(name, tensor.dtype, tuple(tensor.shape)), tensor)
+        else:
+            out[name] = tensor
+    return out
+
+
 def save(
     transformer: Any,
     fam: Any,
@@ -256,6 +315,9 @@ def save(
                         f"native {component}: skipped ({name} is not a plain tensor)",
                     )
                     return None
+            name = tensor = (
+                None  # the loop's last tensor would otherwise stay referenced through the write
+            )
             nbytes = sum(_cache._tensor_bytes(t) for t in state.values())
             budget = _cache.max_cache_bytes()
             if budget is not None and nbytes > budget:
@@ -299,6 +361,7 @@ def save(
             )
             os.close(fd)
             try:
+                state = _live_refs(transformer, state)
                 hasher = hashlib.sha256()
                 size = _cache.write_streaming_safetensors(
                     tmp, state, header, cancel_check = cancel_check, hasher = hasher

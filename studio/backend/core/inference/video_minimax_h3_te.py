@@ -426,10 +426,11 @@ def h3_te_stream_enabled() -> bool:
     )
 
 
-def h3_te_pin_allowed(payload_bytes: int = 0) -> bool:
+def h3_te_pin_allowed(payload_bytes: int = 0, device: Any = None) -> bool:
     """Whether ``payload_bytes`` (at least one arena) may be pinned. The full payload, not one arena: the hosted
     weights are mmap views already counted as available, so pinning them takes that much. Honours the group offload
-    pin switch and the ~1 GiB pinned cap of Windows / WSL. Never raises."""
+    pin switch and the ~1 GiB pinned cap of Windows / WSL. ``device``: the onload target (None: the current one).
+    Never raises."""
     try:
         import os
 
@@ -438,7 +439,7 @@ def h3_te_pin_allowed(payload_bytes: int = 0) -> bool:
         from .host_pinning import host_pinning_allowed
 
         forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
-        if forced in ("0", "off", "false", "no") or not host_pinning_allowed():
+        if forced in ("0", "off", "false", "no") or not host_pinning_allowed(device):
             return False
         if forced in ("1", "on", "true", "yes"):
             return True
@@ -573,7 +574,7 @@ def stream_h3_text_encoder(
     if not stream:
         pin = False
     elif pin is None:
-        pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder))
+        pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder), onload)
     if pin:
         try:
             pin_module_in_place(text_encoder)

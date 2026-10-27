@@ -139,6 +139,11 @@ export const de = {
     more: "Mehr",
     addressPlaceholder: "Suchen oder URL eingeben",
     local: "Lokal",
+    browserUse: {
+      label: "Browsernutzung",
+      description: "Modelle den integrierten Browser steuern lassen",
+      unavailable: "Lade ein Modell, das Tools aufrufen kann, damit es den Browser nutzen kann.",
+    },
     suggested: "Vorschläge",
     suggestedMenu: {
       open: "Öffnen",
@@ -2340,6 +2345,7 @@ export const de = {
       liveMonitor: {
         title: "Live-Monitor",
         apiTitle: "API-Monitor",
+        apiDescription: "Sieh, was andere Apps an die API dieses Servers senden, sobald es ankommt.",
         summary: "Aktive Anfragen, Fehler und Token-Nutzung",
         status: "Aktiv: {active} · kürzlich: {recent} · {model}",
         noModelLoaded: "kein Modell geladen",
@@ -4623,6 +4629,7 @@ export const de = {
       modelsTitle: "Noch keine feinabgestimmten Modelle",
       modelsDescription: "Modelle, die Sie in Unsloth trainieren oder exportieren, erscheinen hier.",
       createFolder: "Ordner erstellen",
+      generateImage: "Bild generieren",
       generateVideo: "Video generieren",
       generateAudio: "Audio generieren",
       trainModel: "Modell trainieren",

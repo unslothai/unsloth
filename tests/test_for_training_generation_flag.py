@@ -92,6 +92,8 @@ def _for_training(module, class_name):
         node.decorator_list = []
     compiled = ast.Module(body = shared + _helpers_used_by(method, tree) + [method], type_ignores = [])
     namespace = _Namespace(os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools)
+    # No tensor parallel world in these tests (for_training calls the TP guard first since #15368).
+    namespace["_tensor_parallel_for_training"] = lambda model: None
     exec(compile(ast.fix_missing_locations(compiled), str(path), "exec"), namespace)
     return namespace["for_training"]
 

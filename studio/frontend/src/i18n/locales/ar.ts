@@ -139,6 +139,11 @@ export const ar = {
     more: "المزيد",
     addressPlaceholder: "ابحث أو أدخل عنوان URL",
     local: "محلي",
+    browserUse: {
+      label: "استخدام المتصفح",
+      description: "السماح للنماذج بالتحكم في المتصفح المدمج",
+      unavailable: "حمّل نموذجًا يمكنه استدعاء الأدوات ليتمكن من استخدام المتصفح.",
+    },
     suggested: "مقترحات",
     suggestedMenu: {
       open: "فتح",
@@ -2310,6 +2315,7 @@ export const ar = {
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
+        apiDescription: "شاهد ما ترسله التطبيقات الأخرى إلى واجهة برمجة هذا الخادم فور وصوله.",
         summary: "الطلبات المباشرة والأخطاء واستخدام التوكنات",
         status: "نشطة: {active} · حديثة: {recent} · {model}",
         noModelLoaded: "لا يوجد نموذج محمّل",
@@ -4548,6 +4554,7 @@ export const ar = {
       modelsTitle: "لا توجد نماذج مضبوطة بعد",
       modelsDescription: "تظهر هنا النماذج التي تدربها أو تصدّرها في Unsloth.",
       createFolder: "إنشاء مجلد",
+      generateImage: "إنشاء صورة",
       generateVideo: "إنشاء فيديو",
       generateAudio: "إنشاء صوت",
       trainModel: "تدريب نموذج",

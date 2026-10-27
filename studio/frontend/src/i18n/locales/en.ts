@@ -136,6 +136,11 @@ export const en = {
     more: "More",
     addressPlaceholder: "Search or enter a URL",
     local: "Local",
+    browserUse: {
+      label: "Browser use",
+      description: "Let models control the in-built browser",
+      unavailable: "Load a model that can call tools to let it use the browser.",
+    },
     suggested: "Suggested",
     suggestedMenu: {
       open: "Open",
@@ -2373,6 +2378,7 @@ export const en = {
       liveMonitor: {
         title: "Live monitor",
         apiTitle: "API monitor",
+        apiDescription: "See what other apps send to this server's API as it arrives.",
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
         noModelLoaded: "no model loaded",
@@ -4616,6 +4622,7 @@ export const en = {
       modelsTitle: "No fine-tuned models yet",
       modelsDescription: "Models you train or export in Unsloth show up here.",
       createFolder: "Create folder",
+      generateImage: "Generate an image",
       generateVideo: "Generate a video",
       generateAudio: "Generate audio",
       trainModel: "Train a model",

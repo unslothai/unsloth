@@ -393,6 +393,12 @@ const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
   { ...attrs, transform: "translate(0 -0.5)" },
 ]) as unknown as IconSvgElement;
 
+// The header ellipsis has the same half-unit vertical offset as the row kebab.
+const MoreHorizontalCenteredIcon = MoreHorizontalIcon.map(([tag, attrs]) => [
+  tag,
+  { ...attrs, transform: "translate(0 -0.5)" },
+]) as unknown as IconSvgElement;
+
 const PROJECT_CHAT_LIMIT = 4;
 const SIDEBAR_PROJECT_LIMIT = 5;
 const RECENTS_PAGE_SIZE = SIDEBAR_PAGE_SIZE;
@@ -1019,7 +1025,8 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge && <Badge variant="accent">{badge}</Badge>}
+      {/* -my-0.5: a 20px badge would make the row 36px. */}
+      {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
       {newAction && (
         <button
@@ -1094,7 +1101,7 @@ function MediaMoreSubmenu<Id extends string>({
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <Badge variant="accent">{badge}</Badge>}
+        {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
@@ -4555,7 +4562,8 @@ export function AppSidebar() {
             aria-label={options.ariaLabel}
             className="sidebar-header-action"
           >
-            <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+            {/* Share the circle's viewport; the expanded viewBox preserves the original icon size. */}
+            <HugeiconsIcon icon={MoreHorizontalCenteredIcon} strokeWidth={1.75} viewBox="-4 -4 32 32" className="size-full" />
           </button>
         )}
       >
