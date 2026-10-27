@@ -924,6 +924,8 @@ class LlamaServerBackend:
         interval: float = 0.5,
     ) -> bool:
         """Poll /health until 200; bail early if the process exits."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
         deadline = time.monotonic() + timeout
         url = f"{self._base_url}/health"
         while time.monotonic() < deadline:
@@ -934,7 +936,7 @@ class LlamaServerBackend:
             try:
                 # trust_env=False: a proxy that 503s 127.0.0.1 must not block this probe.
                 if httpx.get(url, timeout = 2.0, trust_env = False).status_code == 200:
-                    return True
+                    return LlamaCppBackend._health_listener_is_ours(self._process, self._port)
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
             time.sleep(interval)

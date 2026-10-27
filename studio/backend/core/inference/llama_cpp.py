@@ -17874,7 +17874,8 @@ class LlamaCppBackend:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
 
-    def _health_listener_is_ours(self, process) -> bool:
+    @staticmethod
+    def _health_listener_is_ours(process, port) -> bool:
         """False when the port answering /health is demonstrably not held by our child's tree.
 
         _find_free_port releases the port before llama-server binds it, so another local user could
@@ -17882,7 +17883,6 @@ class LlamaCppBackend:
         on Linux/macOS, so our own (readable) tree not listening counts as foreign. Unreadable
         ownership keeps today's behaviour. On Windows psutil can report our live listener as NONE
         and/or pid 0 (#15022), so only a named foreign pid refuses there."""
-        port = getattr(self, "_port", None)
         pid = getattr(process, "pid", None)
         if not isinstance(pid, int) or not isinstance(port, int):
             return True
@@ -35102,7 +35102,7 @@ class LlamaCppBackend:
                         logger.info("llama-server became healthy while the app was shutting down")
                         self._health_wait_cancelled = True
                         return False
-                    if not self._health_listener_is_ours(process):
+                    if not self._health_listener_is_ours(process, getattr(self, "_port", None)):
                         self._stdout_lines.append(_PORT_OWNER_REFUSED_MARKER)
                         return False
                     return True
