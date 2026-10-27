@@ -1691,6 +1691,15 @@ else:
     _install_native_trainer_init()
     del _install_native_trainer_init
 
+    # UNSLOTH_TP_SIZE is applied (and model_init refused) in the same wrapper: a script whose loads all run
+    # inside Trainer(model_init = ...) would otherwise build them in an unwrapped Trainer, without tensor parallel.
+    if os.environ.get("UNSLOTH_TP_SIZE", "").strip() not in ("", "1"):
+        from .models.tp_env import (
+            install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,
+        )
+        _install_tp_trainer_init()
+        del _install_tp_trainer_init
+
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:

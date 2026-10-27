@@ -31,6 +31,7 @@ __all__ = [
     "TPEnvLayout",
     "env_layout",
     "env_hint",
+    "install_tensor_parallel_env_trainer_init",
     "tensor_parallel_env_load",
     "tensor_parallel_env_peft",
     "tensor_parallel_env_trainer_pre",
@@ -330,6 +331,21 @@ def _levels(model):
         return _tp_chain(model)
     except Exception:
         return [model]
+
+
+def install_tensor_parallel_env_trainer_init():
+    """The Trainer.__init__ wrapper (`_utils.patch_gradient_accumulation_fix`) applies UNSLOTH_TP_SIZE and refuses
+    model_init, but only FastLanguageModel / FastModel loads installed it. A script whose loads all run inside
+    model_init (or that never uses them) built its model in an unwrapped Trainer, which trained it without
+    tensor parallel. `import unsloth` installs the wrapper while UNSLOTH_TP_SIZE is set. Returns whether it applies."""
+    if str(os.environ.get("UNSLOTH_TP_SIZE", "")).strip() in ("", "1"):
+        return False
+    from transformers import Trainer
+
+    from ._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(Trainer)
+    return True
 
 
 def tensor_parallel_env_trainer_pre(model):

@@ -391,6 +391,7 @@ def _case_model_init(
     ckpt,
     hooked,
     with_model = False,
+    import_only = False,
 ):
     """Trainer(model_init = ...) under UNSLOTH_TP_SIZE: model_init runs after the tp setup saw model = None."""
     error = _import_checkout_unsloth()
@@ -403,10 +404,16 @@ def _case_model_init(
     from unsloth.models import tp_env, tp_native
     from unsloth.models._utils import patch_gradient_accumulation_fix
 
-    patch_gradient_accumulation_fix(transformers.Trainer)
+    if not import_only:
+        patch_gradient_accumulation_fix(transformers.Trainer)
 
     def load(name, load_in_4bit = True):
-        return AutoModelForCausalLM.from_pretrained(name, torch_dtype = torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype = torch.float32)
+        if (
+            hooked and import_only
+        ):  # FastLanguageModel.from_pretrained installs the wrapper after loading
+            patch_gradient_accumulation_fix(transformers.Trainer)
+        return model
 
     def peft(model):
         return get_peft_model(model, LoraConfig(r = 4, target_modules = "all-linear"))
@@ -423,7 +430,18 @@ def _case_model_init(
 
     data = _Rows([torch.arange(9)] * 8)
     trainer = []
-    if (
+    if import_only:
+
+        def run():
+            trainer.append(
+                transformers.Trainer(
+                    model_init = model_init, args = _trainer_args(tmp, 2), train_dataset = data
+                )
+            )
+            trainer[0].train()
+
+        refused = _raised(run)
+    elif (
         with_model
     ):  # transformers 4.x accepts both (FutureWarning) and train() rebuilds from model_init
         model = peft(load(ckpt, load_in_4bit = False))
@@ -716,3 +734,12 @@ def test_env_tp_model_and_model_init_is_refused():
     for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = False, with_model = True):
         assert res["refused"] is not None and res["built"] == [], res
         assert "model_init" in res["refused"], res
+
+
+@pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
+def test_env_tp_model_init_is_refused_after_plain_import(hooked):
+    """Only `import unsloth`: nothing installed the Trainer wrapper before model_init ran, so it trained."""
+    env = {"UNSLOTH_TP_SIZE": "2"}
+    for res in _spawn("model_init", 2, env, hooked = hooked, import_only = True):
+        assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
+        assert "model_init" in res["refused"] and res["built"] == [], res
