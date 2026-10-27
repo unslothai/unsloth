@@ -8501,6 +8501,7 @@ for _odpo_trainer in ("bco_trainer", "online_dpo_trainer", "xpo_trainer", "nash_
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
+        _unsloth_global_module_hooks,
         _unsloth_gkd_logit_transforms,
         _unsloth_pref_logit_transforms,
         _unsloth_stock_logps_hook,
