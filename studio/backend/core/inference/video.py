@@ -1035,11 +1035,8 @@ class _CompletedStepTicker:
     point: a ``synchronize()`` per step would give the same honest number and hand back the
     CUDA-graph win that the video speed path exists for.
 
-    MPS runs ahead without any graph: with torch >= 2.13 a Z-Image-Turbo 1024^2 render enqueues all
-    8 steps in 0.12 s and the GPU needs another 48 s, so it gets ``torch.mps.Event`` markers too.
-
-    Falls back to the enqueued count when no event can be recorded: exact on a CPU host, where the
-    work is synchronous, and the best answer left anywhere else.
+    MPS runs ahead without any graph (torch >= 2.13), so it gets ``torch.mps.Event`` markers too.
+    With no event (CPU, where work is synchronous) the enqueued count is the progress.
     """
 
     def __init__(self, total: int) -> None:

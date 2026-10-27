@@ -11060,9 +11060,7 @@ def test_ticker_falls_back_to_the_host_count_without_device_events(monkeypatch):
 
 @pytest.mark.parametrize("has_event, mps_available", [(True, True), (False, True), (True, False)])
 def test_ticker_follows_mps_events(monkeypatch, has_event, mps_available):
-    # MPS runs ahead of the host with no graph (torch >= 2.13 enqueues a whole Z-Image denoise in
-    # 0.1 s), so its events back the ticker and the boundary. A torch without torch.mps.Event, or a
-    # host without MPS, keeps the host count and flips at once.
+    # MPS events back the ticker and boundary; no torch.mps.Event or no MPS keeps the host count.
     import core.inference.video as video_mod
 
     events: list = []
