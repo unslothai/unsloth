@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChatSettingsRequestError } from "./settings-retry.ts";
-import { createNavigationNonce } from "../../../lib/navigation-nonce.ts";
 
 import {
   applyPinOperation,
@@ -32,6 +31,12 @@ interface PinnedChatsTransportOptions {
   onUnsupported?: () => void;
 }
 
+const PIN_OPERATION_FIELDS = new Set([
+  "operationId",
+  "unpinnedChatIds",
+  "cancelledOperationIds",
+]);
+
 function isUnsupported(error: unknown): boolean {
   if (!(error instanceof ChatSettingsRequestError)) return false;
   if (error.status === 404 || error.status === 405) return true;
@@ -53,6 +58,14 @@ function isUnsupported(error: unknown): boolean {
     if (!Array.isArray(loc)) return false;
     if (type === "extra_forbidden" && loc.at(-1) === "pinnedChatIds") {
       rejectsPinField = true;
+      return true;
+    }
+    // A backend downgraded since support was probed also rejects this client's operation metadata.
+    if (
+      type === "extra_forbidden" &&
+      loc.length === 1 &&
+      PIN_OPERATION_FIELDS.has(String(loc[0]))
+    ) {
       return true;
     }
     // Older backends also reject the migration's expectedAbsent naming the new field.
@@ -85,8 +98,9 @@ function compactReplay(operations: PinOperation[]): PinOperation[] {
     }
     unpinFor.get(fenceId)!.cancels.push(operation.operationId);
     const ids = operation.ids.filter((id) => !unpinFor.has(id));
-    // The fenced ID would acknowledge the remainder unapplied: send it under a new one.
-    if (ids.length > 0) kept.push({ ...operation, ids, operationId: createNavigationNonce() });
+    // The fenced ID would acknowledge the remainder unapplied: send it under a derived one,
+    // stable across retries so a replay whose response was lost is still deduplicated.
+    if (ids.length > 0) kept.push({ ...operation, ids, operationId: `${operation.operationId}~rest` });
   }
   return kept
     .reverse()
@@ -222,6 +236,7 @@ export function createPinnedChatsTransport(options: PinnedChatsTransportOptions)
       } catch (error) {
         assertCurrent(epoch);
         const transient = error instanceof TypeError ||
+          (error as { unslothTransportFailure?: unknown })?.unslothTransportFailure === true ||
           (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) ||
           (error instanceof ChatSettingsRequestError &&
             (error.status >= 500 || error.status === 429 || error.status === 408));

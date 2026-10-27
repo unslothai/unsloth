@@ -102,6 +102,10 @@ test("explicit missing routes and combined old-schema errors enable fallback", a
     { type: "extra_forbidden", loc: ["expected", "pinnedChatIds"] },
     { type: "extra_forbidden", loc: ["patch", "pinnedChatIds"] },
   ]), new ChatSettingsRequestError("unsupported", 400, [
+    // Downgraded since operation IDs were probed: the old schema rejects them too.
+    { type: "extra_forbidden", loc: ["patch", "pinnedChatIds"] },
+    { type: "extra_forbidden", loc: ["operationId"] },
+  ]), new ChatSettingsRequestError("unsupported", 400, [
     { type: "value_error", loc: ["expectedAbsent"], msg: "Value error, Unknown chat settings field(s): pinnedChatIds" },
     { type: "extra_forbidden", loc: ["patch", "pinnedChatIds"] },
   ])];
@@ -386,5 +390,52 @@ test("upgrade replay skips a pin whose chat was unpinned (deleted) later in the 
   assert.ok(tombstones.has("pair"));
   // Another tab may already be replaying the dropped pin: the unpin fences its ID.
   assert.deepEqual(sent.find((op) => !op.pinned)?.cancels, ["01"]);
+});
+
+test("saved fallback pins hydrate when authFetch reports the network down", async () => {
+  const f = fixture();
+  await f.sync.setPinned(["new"], true);
+  f.loadFailure = Object.assign(new Error("Failed to fetch"), { unslothTransportFailure: true });
+  assert.deepEqual(await f.transport.load(), ["new", "legacy"]);
+});
+
+test("an upgrade replay retries a trimmed bulk pin under the same ID", async () => {
+  let remote: string[] = [];
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  let loseResponse = true;
+  let fallback: PinnedChatsFallbackState | undefined = {
+    baseIds: [],
+    pinnedIds: ["b"],
+    operations: [pin("01", ["a", "b"]), pin("02", ["a"], false)],
+  };
+  const transport = createPinnedChatsTransport({
+    load: async () => remote.slice(),
+    compareAndSet: async (expected, next, operation) => {
+      if (operation) ids.push(operation.operationId);
+      if (operation && seen.has(operation.operationId)) return { pinnedIds: remote.slice(), applied: true };
+      if (JSON.stringify(expected) !== JSON.stringify(remote)) return { pinnedIds: remote.slice(), applied: false };
+      remote = next.slice();
+      if (operation) seen.add(operation.operationId);
+      if (operation?.pinned && loseResponse) {
+        loseResponse = false;
+        throw new TypeError("connection reset");
+      }
+      return { pinnedIds: remote.slice(), applied: true };
+    },
+    migrateLegacy: async () => remote.slice(),
+    readLegacy: () => [],
+    readFallback: () => fallback && structuredClone(fallback),
+    writeFallback: (value) => { fallback = value && structuredClone(value); },
+  });
+  // The first replay commits ["b"] but its response is lost; the saved state stands in.
+  assert.deepEqual(await transport.load(), ["b"]);
+  assert.deepEqual(remote, ["b"]);
+  // Another client explicitly unpins "b" before this one retries.
+  remote = [];
+  await transport.load();
+  const replays = ids.filter((id) => id !== "02");
+  assert.equal(new Set(replays).size, 1);
+  assert.deepEqual(remote, []);
 });
 
