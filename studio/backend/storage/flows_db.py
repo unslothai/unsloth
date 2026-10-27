@@ -99,6 +99,23 @@ def _summary_from_columns(row: sqlite3.Row) -> dict:
     }
 
 
+def recipe_flows() -> dict[str, str]:
+    """Saved Data Recipe id -> the flow it was brought into (`meta.from_recipe.id`)."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, json_extract(doc_json, '$.meta.from_recipe.id') AS recipe FROM flows"
+            " WHERE json_extract(doc_json, '$.meta.from_recipe.id') IS NOT NULL"
+            " ORDER BY created_at"
+        ).fetchall()
+        found: dict[str, str] = {}
+        for row in rows:
+            found.setdefault(str(row["recipe"]), row["id"])
+        return found
+    finally:
+        conn.close()
+
+
 def get_flow(flow_id: str) -> Optional[dict]:
     conn = get_connection()
     try:

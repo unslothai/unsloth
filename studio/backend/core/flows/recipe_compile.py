@@ -4,7 +4,7 @@
 """A Recipe group of column nodes -> the recipe JSON `POST /api/data-recipe/jobs` takes.
 
 The inverse of `recipe_import.import_recipe`. Columns come out in the group's node order; the recipe
-engine orders them by their references, so those must not form a cycle.
+engine orders them by their references, so they must not form a cycle. Disabled columns stay out.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def compile_recipe(graph: dict) -> dict:
     group_id = group.get("id")
     columns: list[dict] = []
     for node in graph.get("nodes") or []:
-        if node.get("type") != COLUMN_TYPE or node.get("group") != group_id:
+        if node.get("type") != COLUMN_TYPE or node.get("group") != group_id or node.get("disabled"):
             continue
         column = (node.get("params") or {}).get("column")
         if not isinstance(column, dict) or not column.get("name"):
@@ -61,6 +61,19 @@ def compile_recipe(graph: dict) -> dict:
     recipe = copy.deepcopy(group.get("config") or {})
     recipe["columns"] = columns
     return {"recipe": recipe, "run": copy.deepcopy(group.get("run") or {})}
+
+
+def recipe_graph(doc: dict, group_id: str) -> dict:
+    """The recipe graph of one Recipe group in a flow document."""
+    group = next((g for g in doc.get("groups") or [] if g.get("id") == group_id), None)
+    if group is None or group.get("kind") != "recipe":
+        raise RecipeCompileError("This step is not inside a Data Recipe group")
+    return {
+        "kind": "recipe_graph",
+        "version": RECIPE_GRAPH_VERSION,
+        "group": group,
+        "nodes": [n for n in doc.get("nodes") or [] if n.get("group") == group_id],
+    }
 
 
 def normalise(payload: Any) -> dict:

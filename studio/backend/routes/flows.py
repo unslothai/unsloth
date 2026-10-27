@@ -25,6 +25,7 @@ from auth.authentication import get_current_subject
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
 from core.flows import capabilities, compiler, notebook_import, package, replication, triggers
+from core.flows.recipe_import import flow_from_recipe
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -81,6 +82,12 @@ class InvokeBody(BaseModel):
     stream: bool = False
     warm: bool = False
     background: bool = False
+
+
+class RecipeImportBody(BaseModel):
+    recipe_id: Optional[str] = Field(default = None, min_length = 1, max_length = 128)
+    payload: Optional[dict[str, Any]] = None
+    name: Optional[str] = Field(default = None, max_length = 200)
 
 
 class SessionBody(BaseModel):
@@ -245,6 +252,60 @@ async def import_notebook(request: Request, name: str = "notebook.ipynb") -> dic
     record, _report = await asyncio.to_thread(_import_doc, json.dumps(doc).encode())
     report["missing_models"] = await _missing_models(request, record["doc"])
     return {"flow": record, "report": report}
+
+
+def _recipe_flow(payload: Any, name: str, source: Optional[dict]) -> tuple[dict, list[str]]:
+    try:
+        doc, notices = flow_from_recipe(payload, name = name, source = source)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    doc["id"] = uuid.uuid4().hex
+    return _save(_doc_or_400(doc), None), notices
+
+
+def _recipe_source(record: dict) -> dict:
+    return {"id": record["id"], "name": record.get("name"), "updatedAt": record.get("updatedAt")}
+
+
+@router.post("/import/recipe")
+def import_recipe(body: RecipeImportBody) -> dict:
+    """A saved Data Recipe (by id) or recipe JSON as a new flow; the recipe itself is left alone."""
+    from storage import data_recipes_db
+
+    if body.recipe_id:
+        record = data_recipes_db.get_recipe(body.recipe_id)
+        if record is None:
+            raise HTTPException(status_code = 404, detail = "Recipe not found")
+        payload, name, source = record["payload"], record.get("name"), _recipe_source(record)
+    elif body.payload is not None:
+        payload, name, source = body.payload, None, None
+    else:
+        raise HTTPException(status_code = 400, detail = "Send a recipe_id or a recipe payload")
+    flow, notices = _recipe_flow(payload, body.name or name or "Data Recipe", source)
+    return {"flow": flow, "report": {"notices": notices}}
+
+
+@router.post("/import/recipes")
+def import_all_recipes() -> dict:
+    """A flow per saved Data Recipe not in Flows yet. Safe to repeat; recipes are left alone."""
+    from storage import data_recipes_db
+
+    known = flows_db.recipe_flows()
+    created, skipped, failed = [], [], []
+    for record in data_recipes_db.list_recipes():
+        if record["id"] in known:
+            skipped.append({"recipe_id": record["id"], "flow_id": known[record["id"]]})
+            continue
+        name = str(record.get("name") or "Data Recipe")
+        try:
+            flow, notices = _recipe_flow(record["payload"], name, _recipe_source(record))
+        except HTTPException as exc:
+            failed.append({"recipe_id": record["id"], "name": name, "error": str(exc.detail)})
+            continue
+        created.append(
+            {"recipe_id": record["id"], "flow_id": flow["id"], "name": name, "notices": notices}
+        )
+    return {"created": created, "skipped": skipped, "failed": failed}
 
 
 @router.post("/assets")

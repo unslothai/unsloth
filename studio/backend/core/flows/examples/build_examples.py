@@ -9,8 +9,10 @@ from __future__ import annotations
 import copy
 import functools
 import json
+from pathlib import Path
 from typing import Any, Optional
 
+from core.flows.recipe_import import flow_from_recipe
 from core.flows.schema import FlowDocument
 
 CHAT = {"repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF", "variant": "Q4_K_M"}
@@ -1359,17 +1361,7 @@ def dataset_forge() -> B:
     b.e("writer.json", "rows.json")
     b.n("ds", "data.rows_to_dataset", 3, 1, name = "pirate-science")
     b.e("rows.value", "ds.rows")
-    b.n(
-        "recipe",
-        "data.recipe",
-        3,
-        2.2,
-        label = "(Alternative) Data Recipe",
-        recipe_id = "",
-        rows = 200,
-        mode = "full",
-    )
-    b.doc["nodes"][-1]["disabled"] = True
+    _pirate_recipe(b, 3.4)
     b.n(
         "tune",
         "train.finetune",
@@ -1396,14 +1388,107 @@ def dataset_forge() -> B:
     b.e("tune.checkpoint", "gguf.checkpoint")
     b.note(
         "n1",
-        "Training needs a GPU and stops chat models while it runs. Enable the Data Recipe node (and connect it to "
-        "Fine-tune instead of Rows to Dataset) to use one of your saved recipes.",
+        "Training needs a GPU and stops chat models while it runs. The Data Recipe group below is the other way "
+        "to make the rows: enable its Recipe Dataset step and connect it to Fine-tune instead of Rows to Dataset.",
         3,
         -0.2,
         1.6,
         0.9,
     )
     return b
+
+
+PIRATE_RECIPE = {
+    "model_providers": [{"name": "local", "provider_type": "openai", "endpoint": "", "is_local": True}],
+    "model_configs": [
+        {"alias": "writer", "model": "", "provider": "local", "inference_parameters": {"temperature": 0.9}}
+    ],
+    "columns": [
+        {
+            "column_type": "sampler",
+            "name": "topic",
+            "drop": False,
+            "sampler_type": "category",
+            "params": {"values": ["physics", "chemistry", "biology", "astronomy", "weather"]},
+        },
+        {
+            "column_type": "llm-text",
+            "name": "instruction",
+            "drop": False,
+            "model_alias": "writer",
+            "prompt": "Ask one short, curious question a kid might ask about {{ topic }}. Output only the question.",
+        },
+        {
+            "column_type": "llm-text",
+            "name": "output",
+            "drop": False,
+            "model_alias": "writer",
+            "system_prompt": "You are a cheerful pirate who explains science facts correctly.",
+            "prompt": "{{ instruction }}",
+        },
+    ],
+    "processors": [],
+}
+
+
+def _pirate_recipe(b: B, row: float) -> None:
+    """The Data Recipe way to write the same rows: a Recipe group, off until you enable it."""
+    doc, _ = flow_from_recipe({"recipe": PIRATE_RECIPE, "run": {"rows": 40}}, name = "Pirate science recipe")
+    _place_recipe(b, doc, 1, row)
+    generate = next(n for n in b.doc["nodes"] if n["type"] == "recipe.generate")
+    generate["disabled"] = True
+    generate["params"]["mode"] = "full"
+
+
+def _place_recipe(b: B, doc: dict, col: float, row: float, *, preview: bool = False) -> None:
+    dx, dy = round(col * 320), round(row * 190)
+    keep = [n for n in doc["nodes"] if preview or n["type"] != "output.preview"]
+    for node in keep:
+        node["pos"] = [node["pos"][0] + dx, node["pos"][1] + dy]
+        b.doc["nodes"].append(node)
+    ids = {n["id"] for n in keep}
+    b.doc["edges"].extend(e for e in doc["edges"] if e["source"] in ids and e["target"] in ids)
+    for group in doc["groups"]:
+        x, y, w, h = group["rect"]
+        b.doc["groups"].append({**group, "rect": [x + dx, y + dy, w, h]})
+    for note in doc["notes"]:
+        x, y, w, h = note["rect"]
+        b.doc["notes"].append({**note, "rect": [x + dx, y + dy, w, h]})
+
+
+LEARNING_RECIPES = Path(__file__).with_name("learning_recipes")
+# Recipe Studio's learning recipes (frontend/src/features/data-recipes/learning-recipes), same files.
+LEARNING = (
+    ("text-to-sql", "Text to SQL", "Generate SQL tasks and runnable SQL outputs with prompt-driven generation."),
+    ("instruction-from-answer", "Instruction from Answer", "Use seed answer columns to generate high-quality instruction targets."),
+    ("text-to-python", "Text to Python", "Generate instruction-to-code data with category sampling and LLM judging."),
+    ("structured-outputs-jinja", "Structured Outputs + Jinja Expressions", "Support ticket triage with structured JSON outputs and Jinja conditionals."),
+    ("conversation", "Multi-turn Conversation", "Sample a domain and topic, then write a whole user and assistant conversation as structured JSON."),
+    ("pdf-grounded-qa", "PDF Document QA", "Build grounded question-answer examples from PDF chunks."),
+    ("ocr-document-extraction", "OCR Document Extraction", "Use image context to generate OCR-style document extraction output."),
+    ("github-support-bot", "GitHub Crawler", "Crawl real GitHub issues and PRs and turn each thread into a {User, Assistant} training pair."),
+    ("books-and-documents", "Books & Documents to Text", "Extract ebooks, PDFs and Office files into a text dataset for continued pretraining."),
+)  # fmt: skip
+
+
+def learning_recipe(stem: str, title: str, description: str) -> B:
+    payload = json.loads((LEARNING_RECIPES / f"{stem}.json").read_text())
+    b = B(
+        f"recipe-{stem}",
+        title,
+        "pipeline",
+        description + " A Data Recipe as a group: double-click a column to edit it, select Recipe "
+        "Dataset for its models, seed and rows.",
+        tags = ["dataset", "data recipe"],
+    )
+    doc, _ = flow_from_recipe(payload, name = title)
+    _place_recipe(b, doc, 0, 0, preview = True)
+    b.doc["meta"]["learning_recipe"] = stem
+    return b
+
+
+def _learning_builders() -> list:
+    return [functools.partial(learning_recipe, *entry) for entry in LEARNING]
 
 
 def prompt_tournament() -> B:
@@ -4580,7 +4665,7 @@ BUILDERS = (
 
 def build() -> list[dict]:
     docs = []
-    for i, fn in enumerate(BUILDERS):
+    for i, fn in enumerate((*BUILDERS, *_learning_builders())):
         doc = fn().doc
         doc["meta"]["order"] = i
         docs.append(FlowDocument.model_validate(doc).model_dump(mode = "json"))

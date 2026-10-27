@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dataset nodes: Hub datasets, saved Data Recipes (declarative part only) and JSON rows."""
+"""Dataset nodes: Hub datasets, Data Recipes (saved or a Recipe group, declarative only), rows."""
 
 from __future__ import annotations
 
@@ -86,11 +86,39 @@ async def recipe(ctx: NodeContext) -> dict:
         raise FlowNodeError("Pick a saved Data Recipe")
     record = await ctx.call("GET", f"{RECIPES}/recipes/{quote(recipe_id, safe = '')}")
     body = declarative_recipe(record.get("payload") if isinstance(record, dict) else None)
+    return await run_recipe(ctx, body, {})
+
+
+@handler("recipe.generate")
+async def recipe_group(ctx: NodeContext) -> dict:
+    from core.flows.compiler import RECIPE_PARAM
+
+    compiled = ctx.params.get(RECIPE_PARAM)
+    if not isinstance(compiled, dict):
+        raise FlowNodeError("Put this step inside a Data Recipe group")
+    body = declarative_recipe(compiled.get("recipe"))
+    checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
+    if isinstance(checked, dict) and checked.get("valid") is False:
+        problems = [
+            str(e.get("message") or "")
+            for e in checked.get("errors") or []
+            if isinstance(e, dict) and e.get("message")
+        ]
+        raise FlowNodeError(
+            "The recipe is not ready: " + ("; ".join(problems[:3]) or "it did not validate")
+        )
+    saved = compiled.get("run") if isinstance(compiled.get("run"), dict) else {}
+    return await run_recipe(
+        ctx, body, {k: saved[k] for k in ("run_config", "merge_batches") if k in saved}
+    )
+
+
+async def run_recipe(ctx: NodeContext, body: dict, run: dict[str, Any]) -> dict:
+    """One Data Designer job for ``body``: its dataset (parquet if saved, else rows), a preview."""
     seed = ctx.inputs.get("seed")
     if isinstance(seed, dict) and seed.get("kind") == "dataset":
         body["seed_config"] = await seed_config(ctx, seed, body.get("seed_config"))
-    mode = "preview" if ctx.params.get("mode") == "preview" else "full"
-    run: dict[str, Any] = {"execution_type": mode}
+    run = {**run, "execution_type": "preview" if ctx.params.get("mode") == "preview" else "full"}
     rows = int(ctx.params.get("rows") or 0)
     if rows > 0:
         run["rows"] = rows
