@@ -385,6 +385,8 @@ _ACCOUNT_COLUMNS = (
     ("account_jwt_secret", "TEXT"),
     # JSON list of repo ids / ``org/*`` patterns; NULL = every model (#11650).
     ("model_allowlist", "TEXT"),
+    # The owner's optional sign-in name; resolves to the owner at login. NULL = "unsloth" only.
+    ("login_alias", "TEXT"),
 )
 
 
@@ -718,6 +720,7 @@ def _public_account(row) -> dict:
             if "model_allowlist" in row.keys()
             else None
         ),
+        "login_alias": row["login_alias"] if "login_alias" in row.keys() else None,
     }
 
 
@@ -774,6 +777,8 @@ def issue_account_setup_code(
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 if username is not None:
+                    if _login_alias_taken(conn, username):
+                        raise sqlite3.IntegrityError("Username is unavailable")
                     account_id = uuid.uuid4().hex
                     legacy_salt, legacy_hash, legacy_secret = _legacy_dummies()
                     conn.execute(
@@ -809,6 +814,57 @@ def issue_account_setup_code(
         finally:
             conn.close()
     return {"account": account, "setup_code": code, "setup_code_expires_at": expires_at}
+
+
+def _login_alias_taken(conn: sqlite3.Connection, name: str) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM auth_user WHERE login_alias = ?", (name,)).fetchone()
+        is not None
+    )
+
+
+def resolve_login_username(username: str) -> str:
+    """The owner's sign-in name resolves to the owner; every other name is returned unchanged."""
+    if username == DEFAULT_ADMIN_USERNAME:
+        return username
+    conn = get_connection()
+    try:
+        # A real username always wins, should one ever collide with the alias.
+        row = conn.execute(
+            "SELECT username FROM auth_user WHERE login_alias = ? AND role = 'owner' "
+            "AND NOT EXISTS (SELECT 1 FROM auth_user WHERE username = ?)",
+            (username, username),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row["username"] if row else username
+
+
+def set_owner_login_alias(alias: Optional[str]) -> Optional[str]:
+    """Set or clear (None, empty or "unsloth") the owner's sign-in name. "unsloth" always works too."""
+    alias = (alias or "").strip()
+    alias = (
+        None
+        if alias.casefold() in ("", DEFAULT_ADMIN_USERNAME)
+        else validate_account_username(alias)
+    )
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            # Same write lock as account creation, so neither can take a name the other just took.
+            if (
+                alias is not None
+                and conn.execute("SELECT 1 FROM auth_user WHERE username = ?", (alias,)).fetchone()
+            ):
+                raise sqlite3.IntegrityError("Username is unavailable")
+            conn.execute(
+                "UPDATE auth_user SET login_alias = ? WHERE username = ?",
+                (alias, DEFAULT_ADMIN_USERNAME),
+            )
+    finally:
+        conn.close()
+    return alias
 
 
 def authenticate_account_login(

@@ -14,6 +14,11 @@ export interface StudioAccount {
   created_at: string;
   // null = every model; set by the owner per account.
   model_allowlist?: string[] | null;
+  // The owner's sign-in name besides "unsloth"; null for managed accounts.
+  login_alias?: string | null;
+  // From the account's Profile settings.
+  display_name?: string | null;
+  avatar_url?: string | null;
 }
 export interface AccountSetupCode {
   account_id: string;
@@ -100,4 +105,15 @@ export async function setAccountModelAllowlist(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model_allowlist: allowlist }),
   });
+}
+/** Empty clears it; the owner can always sign in as unsloth too. */
+export async function setOwnerLoginAlias(
+  alias: string | null,
+): Promise<string | null> {
+  const response = await accountsRequest("/owner/login-alias", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ login_alias: alias?.trim() || null }),
+  });
+  return ((await response.json()) as { login_alias: string | null }).login_alias;
 }

@@ -792,6 +792,8 @@ export const es = {
       guidedTour: "Recorrido guiado",
       help: "Ayuda",
       logOut: "Cerrar sesión",
+      logOutNeedsPassword: "Define una contraseña en Ajustes > Acceso remoto antes de cerrar sesión para poder volver a entrar.",
+      logOutFailed: "No se pudo cerrar sesión de forma segura. Inténtalo de nuevo en un momento.",
       shutdown: "Apagar",
     },
     commandPalette: {
@@ -937,6 +939,11 @@ export const es = {
   },
   settings: {
     accounts: {
+      signsInAs: "Inicia sesión como {username}",
+      signsInAsOwner: "Inicia sesión como {alias} o {username}",
+      signInName: "Tu nombre de inicio de sesión",
+      signInNameDescription: "El nombre que escribes para iniciar sesión cuando esta instalación tiene más de una cuenta. unsloth también funciona siempre. Déjalo vacío para usar solo unsloth.",
+      signInNameSave: "Guardar nombre",
       title: "Cuentas",
       description: "Crea cuentas privadas de Unsloth. Los nuevos usuarios inician sesión con un código de configuración de un solo uso y eligen una contraseña.",
       username: "Nombre de usuario",
