@@ -24,10 +24,7 @@ _MODEL_LOAD_PREQUANTIZED_4BIT = "prequantized_4bit"
 _MODEL_LOAD_RUNTIME_4BIT = "runtime_4bit"
 _PREQUANTIZED_MODE_RE = re.compile(r"prequantized_(?:1[0-6]|[1-9])(?:_(?:1[0-6]|[1-9])){0,7}bit")
 _REASON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-# Usual Hub shards are ``model-00001-of-00002.safetensors``. Some exporters
-# (including unsloth/Qwen3.5-*) put the extension before the part/total:
-# ``model.safetensors-00001-of-00001.safetensors``. Missing that form made
-# resume treat a complete snapshot as incomplete (#15405).
+# unsloth/Qwen3.5-* shards are named ``model.safetensors-00001-of-00001.safetensors`` (#15405).
 _MODEL_WEIGHT_RE = re.compile(
     r"(?:"
     r"model\.safetensors-\d+-of-\d+(?:\.safetensors)?|"
