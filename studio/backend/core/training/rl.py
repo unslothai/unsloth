@@ -38,6 +38,7 @@ _AUTO_ROLE_NAMES = {
     "system": ("system", "system_prompt"),
 }
 _RL_ROW_KEYS = ("prompt", "answer", "chosen", "rejected")
+_TRL_SCHEMA_KEYS = ("messages", "completion", "label")
 # Names TRL's GRPOTrainer passes to every reward itself (grpo_trainer.py, the reward_func call and
 # the reward_kwargs it adds), so a dataset column with one of them collides or is overwritten.
 _REWARD_CALL_KEYS = (
@@ -254,7 +255,12 @@ def format_rl_dataset(
     # Rewards read their compare_to column by name, so keep it even when it also fills a role.
     # "*": Python rewards can read any column, so keep them all. TRL passes its own reward
     # arguments by name, so a column called one of them would collide.
-    wanted = [c for c in columns if c not in _RL_ROW_KEYS] if "*" in keep_columns else keep_columns
+    # TRL reads these as dataset schema keys and refuses them beside a prompt.
+    wanted = (
+        [c for c in columns if c not in _RL_ROW_KEYS + _TRL_SCHEMA_KEYS]
+        if "*" in keep_columns
+        else keep_columns
+    )
     extra = [
         c
         for c in wanted
