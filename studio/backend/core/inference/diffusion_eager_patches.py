@@ -139,6 +139,9 @@ def install_compile_safe_patches() -> int:
     if not _patches_enabled():
         uninstall_patches()
         return 0
+    if _fp16_rmsnorm_only:
+        # an fp16 eager load left the RMSNorm-only patch: the full set re-installs from the stock classes
+        uninstall_fp16_rmsnorm()
     if _patched:
         return len(_patched)
     for cls, new_fn in _specs():
@@ -168,10 +171,74 @@ def install_compile_safe_patches() -> int:
 def uninstall_patches() -> None:
     """Restore every patched class to its exact original ``forward`` (idempotent)."""
     global _orig_rmsnorm_forward
-    for cls in list(_patched):
+    for cls in list(_patched) + list(_fp16_rmsnorm_only):
         revert_patch(cls, "forward")
     _patched.clear()
+    _fp16_rmsnorm_only.clear()
     _orig_rmsnorm_forward = None
+
+
+# --- fp16 eager tier: the fused RMSNorm alone --------------------------------------------------------------------
+# The ``off`` tier keeps the stock classes (bit-identical to diffusers). On fp16 compute (Turing / Volta, no bf16)
+# Z-Image's eager denoise spends ~4 s per 8-step 1024^2 image in diffusers' decomposed fp32 RMSNorm (pow, mean, rsqrt,
+# two casts per call) where one F.rms_norm kernel does it (Colab T4: 4.4 s of the 29.9 s denoise). This installs
+# only that patch, only for those loads. F.rms_norm rounds once (diffusers twice): nearer fp64, not bit-identical.
+# Kill switch: UNSLOTH_DIFFUSION_FP16_RMSNORM=0.
+FP16_RMSNORM_ENV = "UNSLOTH_DIFFUSION_FP16_RMSNORM"
+FP16_RMSNORM_CLASSES = ("ZImageTransformer2DModel",)
+_fp16_rmsnorm_only: list[type] = []
+
+
+def fp16_rmsnorm_enabled() -> bool:
+    return (os.environ.get(FP16_RMSNORM_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def fp16_rmsnorm_wanted(denoiser: object, dtype: object, speed_mode: Optional[str]) -> bool:
+    """An fp16 ``off``-tier load of a measured family (``FP16_RMSNORM_CLASSES``)."""
+    return (
+        fp16_rmsnorm_enabled()
+        and _patches_enabled()
+        and str(speed_mode or "").strip().lower() == "off"
+        and dtype == torch.float16
+        and type(denoiser).__name__ in FP16_RMSNORM_CLASSES
+    )
+
+
+def install_fp16_rmsnorm() -> bool:
+    """The fused RMSNorm alone (idempotent). False when the full set already holds it or the patch is refused."""
+    global _orig_rmsnorm_forward
+    if _fp16_rmsnorm_only:
+        return True
+    if _patched or _RMSNorm is None or not hasattr(F, "rms_norm"):
+        return False
+    _orig_rmsnorm_forward = _RMSNorm.forward
+    if not apply_patch(_RMSNorm, "forward", _rmsnorm_forward, match_level = "relaxed"):
+        _orig_rmsnorm_forward = None
+        return False
+    _fp16_rmsnorm_only.append(_RMSNorm)
+    logger.info(
+        "eager-patch: fused RMSNorm on the fp16 eager tier (%s)", ", ".join(FP16_RMSNORM_CLASSES)
+    )
+    return True
+
+
+def uninstall_fp16_rmsnorm() -> None:
+    """Revert the RMSNorm-only patch (idempotent; leaves the full set alone)."""
+    global _orig_rmsnorm_forward
+    for cls in list(_fp16_rmsnorm_only):
+        revert_patch(cls, "forward")
+    if _fp16_rmsnorm_only and not _patched:
+        _orig_rmsnorm_forward = None
+    _fp16_rmsnorm_only.clear()
+
+
+def fp16_rmsnorm_installed() -> bool:
+    return bool(_fp16_rmsnorm_only)
 
 
 def is_installed() -> bool:
