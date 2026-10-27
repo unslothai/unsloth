@@ -1038,7 +1038,10 @@ fn with_page_profile<R: Runtime>(
     #[cfg(not(target_os = "macos"))]
     {
         #[cfg(windows)]
-        let builder = builder.additional_browser_args(&page_browser_args(&proxy.to_string()));
+        let builder = builder.additional_browser_args(&page_browser_args(
+            &proxy.to_string(),
+            crate::gpu_rendering::pages_disable_gpu(),
+        ));
         #[cfg(not(windows))]
         let builder = builder
             .proxy_url(Url::parse(&format!("http://{proxy}")).map_err(|error| error.to_string())?);
@@ -1057,11 +1060,17 @@ fn with_page_profile<R: Runtime>(
 /// These replace wry's defaults, so repeat them except SmartScreen (kept on for open-web pages).
 /// Chromium bypasses the proxy for loopback otherwise.
 #[cfg(any(windows, test))]
-fn page_browser_args(proxy: &str) -> String {
-    format!(
+/// `disable_gpu` follows the GPU rendering setting (Off) so pages match the main window.
+fn page_browser_args(proxy: &str, disable_gpu: bool) -> String {
+    let args = format!(
         "--disable-features=msWebOOUI,msPdfOOUI --proxy-server=http://{proxy} \
          --proxy-bypass-list=<-loopback>"
-    )
+    );
+    if disable_gpu {
+        format!("{args} --disable-gpu")
+    } else {
+        args
+    }
 }
 
 /// wry's `url()` panics on macOS while WebKit has none (a failed load).
@@ -2864,10 +2873,18 @@ mod tests {
 
     #[test]
     fn windows_pages_keep_smartscreen_and_the_proxy() {
-        let args = page_browser_args("127.0.0.1:9");
+        let args = page_browser_args("127.0.0.1:9", false);
         assert!(!args.contains("SmartScreen"), "{args}");
         assert!(args.contains("--proxy-server=http://127.0.0.1:9"), "{args}");
         assert!(args.contains("--proxy-bypass-list=<-loopback>"), "{args}");
+        assert!(!args.contains("--disable-gpu"), "{args}");
+    }
+
+    #[test]
+    fn windows_pages_drop_the_gpu_only_when_gpu_rendering_is_off() {
+        let on = page_browser_args("127.0.0.1:9", false);
+        let off = page_browser_args("127.0.0.1:9", true);
+        assert_eq!(off, format!("{on} --disable-gpu"));
     }
 
     #[cfg(target_os = "macos")]

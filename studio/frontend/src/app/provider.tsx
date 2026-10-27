@@ -39,6 +39,7 @@ import {
   applyCustomizationToDocument,
   applyInterfaceScale,
   getAppliedInterfaceZoom,
+  notifyRendererReady,
   subscribeAppliedInterfaceZoom,
   useAppearanceCustomStore,
   useInterfaceScaleStore,
@@ -346,6 +347,7 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   if (await wasLaunchedHidden()) return;
   if (!isCurrent()) return;
   await win.show();
+  void notifyRendererReady();
 }
 
 async function enforceWindowSizeBounds(
@@ -439,6 +441,7 @@ async function applyAppWindowLayout(
         if (hiddenAtLaunch) return false;
         if (!isCurrent()) return false;
         await win.show();
+        void notifyRendererReady();
         return true;
       },
       waitForSettled: hiddenAtLaunch
@@ -470,6 +473,7 @@ async function showWindowFallback(): Promise<void> {
   await win.setResizable(true);
   if (await wasLaunchedHidden()) return;
   await win.show();
+  void notifyRendererReady();
 }
 
 function getTauriWindowMode(

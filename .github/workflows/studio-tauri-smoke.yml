@@ -219,6 +219,64 @@ jobs:
           fi
           echo "10 of 10 launches reached the backend spawn and stayed up"
 
+      # GPU rendering setting: Off must keep a working transport on X11, and a GPU launch that
+      # dies with Wayland Error 71 before the window is ready must relaunch on the CPU path.
+      # UNSLOTH_TEST_GPU_ERROR71 (debug builds only) sends the real GTK message through the hook.
+      - name: GPU rendering Off and the Error 71 fallback under Xvfb
+        run: |
+          set -u
+          BIN="$PWD/studio/src-tauri/target/debug/unsloth-studio"
+          probe() {
+            name="$1"; shift
+            H="$RUNNER_TEMP/gpu-$name"
+            rm -rf "$H"
+            mkdir -p "$H/.unsloth/studio/unsloth_studio/bin" "$H/.config/ai.unsloth.studio" "$H/xdg"
+            cp "$RUNNER_TEMP/stub/unsloth" "$H/.unsloth/studio/unsloth_studio/bin/unsloth"
+            if [ -n "${SETTING:-}" ]; then
+              printf '%s\n' "$SETTING" > "$H/.config/ai.unsloth.studio/gpu-rendering-v1"
+            fi
+            D=$((90 + ${#name}))
+            Xvfb ":$D" -screen 0 1440x900x24 -nolisten tcp > "launch-logs/xvfb-gpu-$name.log" 2>&1 &
+            XV=$!
+            for _ in $(seq 1 40); do [ -e "/tmp/.X11-unix/X$D" ] && break; sleep 0.25; done
+            (
+              export DISPLAY=":$D" HOME="$H" XDG_RUNTIME_DIR="$H/xdg" XDG_CONFIG_HOME="$H/.config"
+              export G_MESSAGES_DEBUG=all RUST_BACKTRACE=full "$@"
+              unset UNSLOTH_STUDIO_HOME STUDIO_HOME
+              exec "$BIN"
+            ) > "launch-logs/app-gpu-$name.log" 2>&1 &
+            APP=$!
+            for _ in $(seq 1 25); do kill -0 "$APP" 2>/dev/null || break; sleep 1; done
+            up=0
+            kill -0 "$APP" 2>/dev/null && up=1
+            kill -TERM "$APP" 2>/dev/null || true
+            wait "$APP" 2>/dev/null || true
+            kill "$XV" 2>/dev/null || true
+            wait "$XV" 2>/dev/null || true
+            LOG="launch-logs/app-gpu-$name.log"
+            if [ "$up" != 1 ] || ! grep -q "start_managed_server spawned" "$LOG"; then
+              echo "::error::GPU rendering $name launch did not stay up"
+              tail -40 "$LOG"
+              return 1
+            fi
+          }
+
+          mkdir -p launch-logs
+          SETTING=off probe off
+          grep -q "GPU rendering: setting=off" launch-logs/app-gpu-off.log
+          grep -q "GPU rendering off (setting); set WEBKIT_DMABUF_RENDERER_FORCE_SHM=1 WEBKIT_DISABLE_COMPOSITING_MODE=1" \
+            launch-logs/app-gpu-off.log || { echo "::error::Off did not take the X11 CPU path"; exit 1; }
+          echo "Off: X11 CPU path, stayed up"
+
+          SETTING= probe crash UNSLOTH_TEST_GPU_ERROR71=1
+          LOG=launch-logs/app-gpu-crash.log
+          grep -q "Error 71 (Protocol error) dispatching to Wayland display" "$LOG"
+          grep -q "fell back to the CPU path after a launch crash" "$LOG" \
+            || { echo "::error::no CPU fallback after the simulated Error 71"; tail -40 "$LOG"; exit 1; }
+          FLAG="$RUNNER_TEMP/gpu-crash/.config/ai.unsloth.studio/gpu-rendering-unsafe-v1"
+          grep -q "reason=error71" "$FLAG" || { echo "::error::fallback flag not written"; exit 1; }
+          echo "Error 71: fell back to the CPU path, flag written, stayed up"
+
       - name: Upload launch logs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -285,6 +343,52 @@ jobs:
       - name: Rust release type check (studio/src-tauri)
         working-directory: studio/src-tauri
         run: cargo check --all-targets --release
+
+      - name: Install pinned Tauri CLI (matches release-desktop.yml)
+        run: npm ci --prefix studio --no-fund --no-audit
+
+      - name: Tauri debug build (Windows, no bundle)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx --prefix studio tauri build --debug --no-bundle
+
+      # GPU rendering Off must reach WebView2 as --disable-gpu without dropping wry's default
+      # flags; Auto must leave the arguments alone. The second launch follows the first at once,
+      # so a WebView2 that cannot switch arguments on a fast relaunch fails here.
+      - name: GPU rendering Off reaches WebView2
+        shell: pwsh
+        run: |
+          $bin = Resolve-Path "studio/src-tauri/target/debug/unsloth-studio.exe"
+          $cfg = Join-Path $env:APPDATA "ai.unsloth.studio"
+          New-Item -ItemType Directory -Force $cfg | Out-Null
+          function Get-Browser {
+            Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" |
+              Where-Object { $_.CommandLine -notmatch '--type=' -and $_.CommandLine -match 'ai\.unsloth\.studio\\EBWebView' }
+          }
+          function Stop-App($app) {
+            Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+            Get-Browser | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          }
+          function Probe($setting) {
+            Set-Content -Path (Join-Path $cfg "gpu-rendering-v1") -Value $setting
+            $app = Start-Process -FilePath $bin -PassThru
+            $browser = $null
+            for ($i = 0; $i -lt 90 -and -not $browser; $i++) { Start-Sleep 1; $browser = Get-Browser }
+            if (-not $browser) { Stop-App $app; throw "no WebView2 browser process for setting=$setting" }
+            $line = ($browser | Select-Object -First 1).CommandLine
+            Write-Host "setting=$setting -> $line"
+            Start-Sleep 20
+            if ($app.HasExited) { throw "app exited (code $($app.ExitCode)) with setting=$setting" }
+            Stop-App $app
+            return $line
+          }
+          $off = Probe "off"
+          if ($off -notmatch '--disable-gpu') { throw "Off: --disable-gpu missing" }
+          if ($off -notmatch 'msSmartScreenProtection') { throw "Off: wry's default --disable-features was dropped" }
+          $auto = Probe "auto"
+          if ($auto -match '--disable-gpu') { throw "Auto: --disable-gpu present" }
+          Write-Host "Off passes --disable-gpu with wry's defaults; Auto leaves the arguments alone"
 
   macos-unit-tests:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
