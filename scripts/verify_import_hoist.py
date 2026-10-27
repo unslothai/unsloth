@@ -1021,7 +1021,9 @@ def _git_moved(before_ref: str, after_ref: str, importer: str):
         return cache[(ref, path)]
 
     def locate(module: str, ref: str, near: str) -> str | None:
-        return next((p for p in _module_paths(module, near) if show(ref, p) is not None), None)
+        # Only a unique match: which root an absolute import reaches depends on sys.path, not on nearness.
+        found = [p for p in _module_paths(module, near) if show(ref, p) is not None]
+        return found[0] if len(found) == 1 else None
 
     def origin(
         ref: str,
@@ -1067,7 +1069,7 @@ def _git_moved(before_ref: str, after_ref: str, importer: str):
         if left == "def":
             return False
         _, module, original = left
-        return original == name and new_path in _module_paths(module, old_path)
+        return original == name and locate(module, after_ref, old_path) == new_path
 
     return moved
 
