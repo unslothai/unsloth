@@ -74,6 +74,15 @@ def _log_once(message, level = logging.INFO):
         _logger.log(level, message)
 
 
+def _warn_explicit(requested):
+    """An explicit fa3 / fa4 request that falls back says why; auto stays quiet."""
+    if requested not in (None, "auto"):
+        _log_once(
+            f"Unsloth: {_ENV}={requested.lower()} not used: {FLASH_IMPL_STATE['reason']}",
+            logging.WARNING,
+        )
+
+
 def _registry():
     try:
         from torch.nn.attention import (
@@ -409,6 +418,7 @@ def maybe_activate_flash_attention_impl(model = None, mean_document_length = Non
         FLASH_IMPL_STATE["reason"] = (
             "off" if requested is None else "torch has no flash attention impl registry (< 2.11)"
         )
+        _warn_explicit(requested)
         return None
     if torch.compiler.is_compiling():
         return FLASH_IMPL_STATE["active"]
@@ -422,6 +432,7 @@ def maybe_activate_flash_attention_impl(model = None, mean_document_length = Non
     if not candidates:
         FLASH_IMPL_STATE["reason"] = f"no supported impl for devices sm{sorted(majors or [])}"
         deactivate_flash_attention_impl()
+        _warn_explicit(requested)
         return None
     major = next(iter(majors))
     if requested == "auto" and major == 9:
@@ -472,8 +483,7 @@ def maybe_activate_flash_attention_impl(model = None, mean_document_length = Non
     if error is not None:
         FLASH_IMPL_STATE["reason"] = error
         deactivate_flash_attention_impl()
-        if requested != "auto":
-            _log_once(f"Unsloth: {_ENV}={requested.lower()} not used: {error}", logging.WARNING)
+        _warn_explicit(requested)
         return None
     FLASH_IMPL_STATE["active"] = impl
     FLASH_IMPL_STATE["reason"] = f"{impl} active"
