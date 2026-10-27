@@ -72,7 +72,6 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Restore only Unsloth's own quiet default before Hub caches it at import.
     try:
         from loggers.config import keep_progress_bars_countable, quiet_third_party_progress_bars
-
         quiet_third_party_progress_bars()
         keep_progress_bars_countable()
     except Exception:  # noqa: BLE001 -- progress setup must never stop training

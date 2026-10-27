@@ -349,6 +349,7 @@ def test_the_shared_dataset_loader_quiets_the_bars_it_just_imported():
 
 def test_countable_worker_bars_restore_the_hub_default_cached_before_bootstrap(monkeypatch):
     import importlib
+
     hub_bars = importlib.import_module("huggingface_hub.utils.tqdm")
     hub_constants = importlib.import_module("huggingface_hub.constants")
     monkeypatch.setattr(log_config, "_BARS_RESTORED", False)
@@ -362,6 +363,7 @@ def test_countable_worker_bars_restore_the_hub_default_cached_before_bootstrap(m
     with hub_bars.tqdm(total = 10, unit = "B", desc = "training weights", disable = None) as progress:
         progress.update(4)
         from core.training.diffusion_download_progress import download_snapshot
+
         snapshot = download_snapshot([progress])
         assert snapshot["bytes_done"] == 4
     with hub_bars.tqdm(total = 10, unit = "B", disable = True) as progress:
