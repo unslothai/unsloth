@@ -8,7 +8,7 @@ import { AlertDialog } from "@/components/ui/alert-dialog";
 import { getAuthSessionEpoch } from "@/features/auth";
 import { useFullAccessAllowed } from "@/features/auth/account-session";
 import { FullAccessConfirmContent } from "@/features/chat/permission-mode-select";
-import { hasChatFullAccess } from "@/features/chat/utils/chat-full-access";
+import { hasChatFullAccess, withChatFullAccess } from "@/features/chat/utils/chat-full-access";
 import {
   resolveToolConfirmation,
   ToolApprovalGoneError,
@@ -45,7 +45,9 @@ export function ToolConfirmationControls({
       : undefined,
   );
   const fullAccessAllowed = useFullAccessAllowed();
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const permissionMode = useChatRuntimeStore((s) =>
+    withChatFullAccess(s, s.chatFullAccessGrants, confirmation?.threadId).permissionMode,
+  );
   const grantChatFullAccess = useChatRuntimeStore((s) => s.grantChatFullAccess);
   const chatFullAccess = useChatRuntimeStore((s) =>
     fullAccessAllowed && confirmation && !confirmation.imageDisclosure &&

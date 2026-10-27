@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWithStubs, stubJsxRuntime, type StubElement } from "./helpers/module-stubs.ts";
-import { hasChatFullAccess, type ChatFullAccessGrant } from "../src/features/chat/utils/chat-full-access.ts";
+import { hasChatFullAccess, withChatFullAccess, type ChatFullAccessGrant } from "../src/features/chat/utils/chat-full-access.ts";
 
 type Node = StubElement;
 function descendants(node: unknown): Node[] {
@@ -14,7 +14,7 @@ function descendants(node: unknown): Node[] {
   return [element, ...descendants(element.props.children)];
 }
 
-function harness({ owner = true, disclosure = false, grantedThread = "" } = {}) {
+function harness({ owner = true, disclosure = false, grantedThread = "", scopedFull = false } = {}) {
   const requests: unknown[][] = [], grants: ChatFullAccessGrant[] = [];
   const values: unknown[] = [];
   let index = 0, epoch = 0;
@@ -27,7 +27,11 @@ function harness({ owner = true, disclosure = false, grantedThread = "" } = {}) 
   };
   const state = {
     toolConfirmations: { call: confirmation } as Record<string, typeof confirmation>,
-    permissionMode: "ask",
+    permissionMode: scopedFull ? "full" : "ask",
+    chatFullAccessPreviousMode: scopedFull ? "ask" : null,
+    bypassPermissions: scopedFull,
+    confirmToolCalls: !scopedFull,
+    deepResearchEnabled: false,
     chatPermissionChoiceVersion: 0,
     chatFullAccessGrants: grantedThread ? { other: { runId: "other", threadId: grantedThread, sessionId: "project-shared" } } : {},
     alwaysAllowToolsBySession: new Map(),
@@ -53,7 +57,7 @@ function harness({ owner = true, disclosure = false, grantedThread = "" } = {}) 
       "@/features/auth": { getAuthSessionEpoch: () => epoch },
       "@/features/auth/account-session": { useFullAccessAllowed: () => owner },
       "@/features/chat/permission-mode-select": { FullAccessConfirmContent: "FullAccessWarning" },
-      "@/features/chat/utils/chat-full-access": { hasChatFullAccess },
+      "@/features/chat/utils/chat-full-access": { hasChatFullAccess, withChatFullAccess },
       "@/features/chat/api/chat-api": {
         resolveToolConfirmation: async (...args: unknown[]) => { requests.push(args); return answer(); },
         ToolApprovalGoneError: class Gone extends Error {},
@@ -155,6 +159,12 @@ test("already parked calls upgrade only within the confirmed chat", async () => 
   const image = harness({ grantedThread: "chat-a", disclosure: true });
   image.render(); image.runEffects(); await settle();
   assert.deepEqual(image.requests, [], "Full access cannot auto-share an attached image");
+});
+
+test("a different chat's scoped Full Access does not hide this card's shortcut", () => {
+  const h = harness({ grantedThread: "chat-b", scopedFull: true });
+  assert.ok(h.get(h.render(), "Button", "Full Access"));
+  assert.deepEqual(h.requests, []);
 });
 
 
