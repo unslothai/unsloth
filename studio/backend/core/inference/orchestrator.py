@@ -2942,7 +2942,7 @@ class InferenceOrchestrator:
                 recall_done = recall_done or not truncation["fits"],
                 recall_budget_tokens = retrieval_budget(
                     context_length,
-                    max_tokens,
+                    fit_max_tokens,
                     truncation.get("prompt_tokens_after") or 0,
                     reply_returns = calls_tools,
                 ),
