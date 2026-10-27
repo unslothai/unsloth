@@ -176,6 +176,8 @@ def test_registered_model_root_sees_a_new_scan_folder_on_the_next_scan(tmp_path,
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
+    # macOS tmp_path lives under /private/var, which the scan-folder denylist refuses.
+    monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
     folder = tmp_path / "models"
     (folder / "m").mkdir(parents = True)
     target = str(folder / "m")
