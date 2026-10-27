@@ -36,13 +36,6 @@ def stdio_names(recipe: Any) -> list[str]:
     return [str(p.get("name")) for p in providers or [] if is_stdio(p)]
 
 
-def _hf_repo(path: Any) -> str:
-    parts = [p for p in str(path or "").strip().split("/") if p]
-    if len(parts) >= 3 and parts[0] == "datasets":
-        return f"{parts[1]}/{parts[2]}"
-    return "/".join(parts[:2])
-
-
 def share_recipe(recipe: dict, ui: dict | None = None) -> tuple[dict, dict]:
     """A copy of ``recipe`` (no columns needed) and its Recipe Studio ``ui`` hints that is safe to hand out."""
     recipe = copy.deepcopy(recipe) if isinstance(recipe, dict) else {}
@@ -87,8 +80,7 @@ def share_recipe(recipe: dict, ui: dict | None = None) -> tuple[dict, dict]:
     if isinstance(source, dict):
         source.pop("token", None)
         kind = source.get("seed_type")
-        if kind == "hf" and "path" in source:
-            source["path"] = _hf_repo(source["path"])
+        # An HF path stays whole: `datasets/<owner>/<name>/<config>/**/*.parquet` is what the seed reader loads.
         if kind in _LOCAL_SEEDS:
             if "path" in source:
                 source["path"] = ""

@@ -338,3 +338,20 @@ def test_run_settings_change_the_cache_key_of_the_step():
     before = _compiled(doc)
     doc["groups"][0]["run"] = {"llm_parallel_requests": 2}
     assert _compiled(doc) != before
+
+
+def test_sharing_keeps_a_full_hf_seed_path(client):
+    payload = json.loads((LEARNING / "ocr-document-extraction.json").read_text())
+    path = payload["recipe"]["seed_config"]["source"]["path"]
+    assert path == "datasets/ylecun/mnist/mnist/**/*.parquet"
+    payload["recipe"]["seed_config"]["source"]["token"] = "hf_" + "x" * 30
+    doc = _flow(payload)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("flow.json", json.dumps(doc))
+    imported, _, _ = package.read_package(buffer.getvalue())
+    source = imported["groups"][0]["config"]["seed_config"]["source"]
+    assert source["path"] == path and "token" not in source
+    exported = client.post("/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}).json()
+    assert exported["recipe"]["seed_config"]["source"]["path"] == path
+    assert "hf_xxx" not in json.dumps(exported)
