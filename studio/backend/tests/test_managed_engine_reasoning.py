@@ -269,6 +269,35 @@ def test_both_managed_engines_count_the_prompt_with_their_tokenize_route(monkeyp
     assert body["messages"][0] == {"role": "system", "content": "Be brief."}
 
 
+def test_a_failed_sglang_count_falls_back_to_an_estimated_fit():
+    # SGLang 0.5.17 answers /tokenize 500 for a tokenizer whose model_max_length is the 1e30 sentinel.
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"engine": "sglang", "context_length": 2048}}
+    orchestrator._managed_engine = SimpleNamespace(adapter = ADAPTERS["sglang"])
+
+    def count(*args, **kwargs):
+        raise RuntimeError("500 Server Error: Integer exceeds 64-bit range")
+
+    orchestrator.count_chat_tokens = count
+    turn = "word " * 400
+    messages = []
+    for index in range(10):
+        messages += [
+            {"role": "user", "content": f"q{index} {turn}"},
+            {"role": "assistant", "content": f"a{index} {turn}"},
+        ]
+    messages.append({"role": "user", "content": "latest"})
+    fitted = orchestrator.compact_chat_context(
+        messages, context_overflow = "truncate_oldest", max_tokens = 256
+    )
+    assert fitted["messages"][-1]["content"] == "latest"
+    truncation = next(e for e in fitted["events"] if e.get("type") == "context_truncated")
+    assert truncation["fits"] and truncation["prompt_tokens_after"] <= 2048 * 3 // 4 - 256
+
+
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
     from routes.managed_engine_chat import _with_reasoning_content
 

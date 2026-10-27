@@ -53,6 +53,9 @@ def __getattr__(name: str):
 
 logger = get_logger(__name__)
 
+# Matches routes.inference._EXTERNAL_COMPACTION_HEADROOM.
+_ESTIMATED_FIT_HEADROOM = 0.25
+
 # Delimited, not a whitelist: a whitelist stopped at the apostrophe in `/home/o'connor/`.
 _PATH_COMPONENT = r"[^\s\\/](?:(?:(?![A-Za-z]:[\\/])[^\\/\n\",;])*[^\s\\/])?"
 # Second alternative: the root-level case (`/model.gguf`, `\\server\share`) has no trailing separator.
@@ -2789,6 +2792,7 @@ class InferenceOrchestrator:
         try:
             from core.inference.chat_template_helpers import trailing_assistant_resume_kind
             from core.inference.context_window import (
+                estimate_messages_tokens_conservative,
                 messages_without_unpriced_media,
                 retrieval_budget,
             )
@@ -2823,17 +2827,30 @@ class InferenceOrchestrator:
                 for tool in tools or ()
             )
 
+            count_kwargs = {
+                "tools": tools,
+                "enable_thinking": enable_thinking,
+                "reasoning_effort": reasoning_effort,
+                "preserve_thinking": preserve_thinking,
+            }
+            # SGLang 0.5.17's /tokenize returns 500 when model_max_length is the 1e30 sentinel.
+            estimated = False
+            if getattr(self, "_managed_engine", None) is not None:
+                try:
+                    self.count_chat_tokens(conversation[-1:], "", **count_kwargs)
+                except Exception as exc:
+                    logger.info("Fitting the managed engine prompt by estimate: %s", exc)
+                    estimated = True
+                    context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
+
             def _count(fitted):
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("Context compaction cancelled")
-                return self.count_chat_tokens(
-                    fitted,
-                    "",
-                    tools = tools,
-                    enable_thinking = enable_thinking,
-                    reasoning_effort = reasoning_effort,
-                    preserve_thinking = preserve_thinking,
-                )[0]
+                if estimated:
+                    return estimate_messages_tokens_conservative(
+                        messages_without_unpriced_media(fitted)
+                    )
+                return self.count_chat_tokens(fitted, "", **count_kwargs)[0]
 
             can_reset = _can_reset_epoch(
                 thread_id,
