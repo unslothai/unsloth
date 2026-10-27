@@ -6,7 +6,7 @@
 import json
 from pathlib import Path
 
-from core.inference.llama_cpp import _should_suppress_forced_no_tool_output
+from core.inference.llama_chat import _should_suppress_forced_no_tool_output
 from core.inference.tool_call_parser import is_short_intent_without_action
 
 DATA = Path(__file__).parent / "data" / "plan_vs_answer.jsonl"

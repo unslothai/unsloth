@@ -10,8 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.inference import llama_cpp  # noqa: E402
-from core.inference import chat_compaction
+from core.inference import chat_compaction  # noqa: E402
 from core.inference import tools as tools_mod  # noqa: E402
 from core.rag import conversation_archive  # noqa: E402
 
@@ -730,10 +729,10 @@ def test_recall_is_sized_by_the_room_the_fit_actually_obtained():
 
 def test_a_tool_loop_retrieval_leaves_room_for_the_turn_it_enables():
     """A tool-loop retrieval leaves room for the reply that follows it."""
-    from core.inference import llama_cpp
+    from core.inference import llama_chat
 
-    single_shot = llama_cpp._retrieval_budget(3000, 3000, 747)
-    in_loop = llama_cpp._retrieval_budget(3000, 3000, 747, reply_returns = True)
+    single_shot = llama_chat._retrieval_budget(3000, 3000, 747)
+    in_loop = llama_chat._retrieval_budget(3000, 3000, 747, reply_returns = True)
 
     assert single_shot == 2250 - 747
     assert in_loop == 1125
@@ -741,9 +740,9 @@ def test_a_tool_loop_retrieval_leaves_room_for_the_turn_it_enables():
 
 
 def test_a_retrieval_budget_is_only_capped_where_it_would_take_most_of_the_turn():
-    from core.inference import llama_cpp
-    assert llama_cpp._retrieval_budget(32768, 32768, 18976, reply_returns = True) == 24576 - 18976
-    assert llama_cpp._retrieval_budget(3000, 3000, 9000, reply_returns = True) == 0
+    from core.inference import llama_chat
+    assert llama_chat._retrieval_budget(32768, 32768, 18976, reply_returns = True) == 24576 - 18976
+    assert llama_chat._retrieval_budget(3000, 3000, 9000, reply_returns = True) == 0
 
 
 def test_a_recorded_boundary_is_still_not_a_replayable_one():
@@ -763,9 +762,9 @@ def test_both_local_tool_loops_size_retrieval_with_the_same_policy():
     """GGUF and safetensors loops must share one retrieval sizing policy; a private copy drifts."""
     import inspect
 
-    from core.inference import context_window, llama_cpp, safetensors_agentic
+    from core.inference import context_window, llama_chat, safetensors_agentic
 
-    assert llama_cpp._retrieval_budget is context_window.retrieval_budget
+    assert llama_chat._retrieval_budget is context_window.retrieval_budget
 
     source = inspect.getsource(safetensors_agentic)
     assert "retrieval_budget(" in source
@@ -815,7 +814,7 @@ def test_the_sticky_boundary_is_applied_once_per_request():
     assert reapplied["dropped_messages"] > once["dropped_messages"]
     from pathlib import Path
 
-    source = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
+    source = Path(__file__).resolve().parent.parent / "core/inference/llama_chat.py"
     text = source.read_text(encoding = "utf-8")
     assert "_sticky_boundary_applied = True" in text
     assert "(0, True) if _sticky_boundary_applied" in " ".join(text.split())
@@ -1005,7 +1004,7 @@ def test_both_retrieval_tools_share_the_per_turn_search_cap():
 
     assert RAG_SEARCH_TOOLS == {"search_knowledge_base", "search_conversation"}
     backend = Path(__file__).resolve().parent.parent / "core/inference"
-    for module in ("llama_cpp.py", "safetensors_agentic.py"):
+    for module in ("llama_chat.py", "safetensors_agentic.py"):
         text = (backend / module).read_text(encoding = "utf-8")
         assert "decision.tool_name in RAG_SEARCH_TOOLS" in text, module
         assert 'decision.tool_name == "search_knowledge_base"' not in text, module
@@ -1296,7 +1295,7 @@ def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
     backend = Path(__file__).resolve().parent.parent / "core/inference"
     text = " ".join(
         " ".join((backend / module).read_text(encoding = "utf-8").split())
-        for module in ("llama_cpp.py", "chat_compaction.py")
+        for module in ("llama_cpp.py", "llama_chat.py", "chat_compaction.py")
     )
 
     assert "branch_messages = _extend_live_branch(" in text

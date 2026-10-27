@@ -5560,7 +5560,7 @@ def test_a_count_admitted_while_idle_stands_down_if_a_run_starts(monkeypatch):
         started.append(handle)
         assert should_abort is not None, "the route must give the tokenizer a way to stand down"
         if should_abort():
-            from core.inference.llama_cpp import CountAborted
+            from core.inference.llama_chat import CountAborted
             raise CountAborted()
         counted.update(messages = messages)
         return 1234
@@ -5612,7 +5612,8 @@ def test_count_chat_tokens_stands_down_before_tokenizing(monkeypatch, abort, exp
     """The abort has to escape the template except-block. Swallowed, it would set
     apply_template_failed and the text fallback would tokenize anyway, which is the work
     being declined. The control shows the poll alone does not stop an idle count."""
-    from core.inference.llama_cpp import CountAborted, LlamaCppBackend
+    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_chat import CountAborted
 
     posted: list = []
 

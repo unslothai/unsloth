@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.inference import context_window as cw  # noqa: E402
 from core.inference import llama_cpp  # noqa: E402
+from core.inference import llama_chat
 
 PIL = pytest.importorskip("PIL.Image")
 
@@ -114,7 +115,7 @@ def test_image_max_tokens_caps_the_price():
 
 def test_the_price_never_exceeds_the_admission_ceiling():
     backend = _backend()
-    ceiling = llama_cpp._mcp_image_tokens(backend)
+    ceiling = llama_chat._mcp_image_tokens(backend)
 
     assert llama_cpp._image_token_price(backend, _image(_png(8000, 8000))) == ceiling
 
@@ -123,10 +124,10 @@ def test_an_unreadable_image_or_unknown_projector_is_charged_the_ceiling():
     unknown = _backend(projector = "some_future_projector")
 
     assert llama_cpp._image_token_price(_backend(), _image("https://x/y.png")) == (
-        llama_cpp._mcp_image_tokens(_backend())
+        llama_chat._mcp_image_tokens(_backend())
     )
     assert llama_cpp._image_token_price(unknown, _image(_png(64, 64))) == (
-        llama_cpp._mcp_image_tokens(unknown)
+        llama_chat._mcp_image_tokens(unknown)
     )
 
 
@@ -247,7 +248,7 @@ def test_image_min_tokens_charges_the_ceiling():
 
     price = llama_cpp._image_token_price(backend, _image(_png(256, 256)))
 
-    assert price == llama_cpp._mcp_image_tokens(backend)
+    assert price == llama_chat._mcp_image_tokens(backend)
 
 
 def test_a_tall_screenshot_is_never_priced_below_its_patch_grid():

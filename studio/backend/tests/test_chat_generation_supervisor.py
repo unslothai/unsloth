@@ -479,7 +479,7 @@ async def test_native_gguf_prefill_progress_holds_the_lease(
     durable_run, monkeypatch, tools, reports_progress, reaped
 ):
     """Native GGUF generators are silent until the first token; advancing progress must still renew the lease."""
-    from core.inference.llama_cpp import _report_live_llama_timings
+    from core.inference.llama_chat import _report_live_llama_timings
 
     entered, release = threading.Event(), threading.Event()
 
@@ -581,7 +581,7 @@ async def test_native_gguf_prefill_progress_holds_the_lease(
 
 
 def test_prefill_signal_counts_only_moving_progress():
-    from core.inference.llama_cpp import _perf_callback_wants_timings
+    from core.inference.llama_chat import _perf_callback_wants_timings
 
     forwarded = []
     bare = inference._PrefillProgressSignal(None)

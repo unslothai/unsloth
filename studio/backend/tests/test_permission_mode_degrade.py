@@ -882,8 +882,8 @@ def test_a_strict_launch_is_refused_when_the_sandbox_stopped_working(monkeypatch
 def test_every_loop_launches_strictly_through_the_mode_parameter():
     import inspect
 
-    from core.inference import llama_cpp, safetensors_agentic, studio_tool_loop
-    for module in (studio_tool_loop, llama_cpp, safetensors_agentic):
+    from core.inference import llama_chat, safetensors_agentic, studio_tool_loop
+    for module in (studio_tool_loop, llama_chat, safetensors_agentic):
         source = inspect.getsource(module)
         assert "requires_os_isolation(" in source, module.__name__
         assert 'kwargs["tool_execution_mode"] = "required"' in source, module.__name__

@@ -1172,9 +1172,9 @@ def test_the_final_answer_pass_never_starts_an_epoch_behind_the_tools_it_does_no
     """The epoch gate must check the request's own tools, since the final answer sends none."""
     import inspect
 
-    from core.inference import chat_compaction, llama_cpp
+    from core.inference import chat_compaction, llama_chat
 
-    source = inspect.getsource(llama_cpp)
+    source = inspect.getsource(llama_chat)
     final_pass = source[source.index("# Final streaming pass with the full conversation") :]
 
     assert (

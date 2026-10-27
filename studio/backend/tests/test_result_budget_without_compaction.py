@@ -156,7 +156,7 @@ def test_compaction_off_keeps_the_reserve_without_an_exact_count(monkeypatch):
 
 @pytest.mark.parametrize("tool_name", [_MCP_TOOL, "view_image", "browser_screenshot"])
 def test_compaction_off_reserves_the_images_a_result_can_add(monkeypatch, tool_name):
-    from core.inference.llama_cpp import _FALLBACK_IMAGE_TOKENS
+    from core.inference.llama_chat import _FALLBACK_IMAGE_TOKENS
     from core.inference.mcp_images import MAX_MODEL_IMAGES
 
     reserve = _reply_floor(_CTX) + MAX_MODEL_IMAGES * _FALLBACK_IMAGE_TOKENS

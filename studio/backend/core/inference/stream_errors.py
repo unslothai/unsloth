@@ -9,7 +9,7 @@ handled it badly:
 
 - ``core.research_runs`` raised ``RuntimeError("Local model stream failed")``, discarding
   whatever the server said. The user saw a generic failure with no cause and no remedy.
-- ``core.inference.llama_cpp``'s chat loops only ever read ``finish_reason`` out of
+- ``core.inference.llama_chat``'s chat loops only ever read ``finish_reason`` out of
   ``choices``. An error chunk carries no ``choices``, so nothing was recorded: the reply
   was emitted with whatever text had accumulated and no ``incomplete`` stamp, which reads
   to the user as the model stopping mid-sentence for no reason.

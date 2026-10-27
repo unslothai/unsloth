@@ -59,7 +59,6 @@ from core.inference.llama_cpp import (
     LlamaCppBackend,
     _GPU_OFFLOAD_OVERRIDE_FLAGS,
     _THREAD_OVERRIDE_FLAGS,
-    _backfill_usage_from_timings,
     _build_ngram_mod_flags,
     _build_reasoning_budget_flags,
     _canonicalize_spec_mode,
@@ -72,6 +71,7 @@ from core.inference.llama_cpp import (
     _mla_mtp_auto_enabled,
     _swa_full_from_args_or_env,
 )
+from core.inference.llama_chat import _backfill_usage_from_timings
 from core.inference import llama_cpp as mod
 import subprocess as _subprocess
 

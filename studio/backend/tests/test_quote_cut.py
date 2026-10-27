@@ -18,11 +18,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.llama_cpp import (
-    LlamaCppBackend,
-    _ends_inside_quote,
-    _quote_cut_event,
-)
+from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_chat import _ends_inside_quote, _quote_cut_event
 from routes.inference import _quote_cut_sse_chunk, produce_openai_chat_completions
 
 _CUT_TAILS = [
