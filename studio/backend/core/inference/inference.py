@@ -277,6 +277,17 @@ def _decodes_by_concatenation(tokenizer) -> bool:
         return False
     try:
         from tokenizers import decoders
+        from transformers import PreTrainedTokenizerFast
+
+        if not isinstance(tokenizer, PreTrainedTokenizerFast):
+            return False
+        # A subclass or instance that overrides decode / _decode may post-process the whole text.
+        for name in ("decode", "_decode"):
+            method = getattr(tokenizer, name, None)
+            if getattr(method, "__func__", None) is not getattr(
+                PreTrainedTokenizerFast, name, None
+            ):
+                return False
         return type(tokenizer.backend_tokenizer.decoder) is decoders.ByteLevel
     except Exception:
         return False

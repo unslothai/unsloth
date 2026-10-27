@@ -107,6 +107,43 @@ def test_byte_level_tokenizer_takes_the_incremental_decode():
     assert not inf._decodes_by_concatenation(object())
 
 
+def _stripping_tokenizers():
+    """decode / _decode overrides that post-process the whole text, which per-suffix decoding would change."""
+    base = _byte_level_tokenizer()
+
+    class StripDecode(transformers.PreTrainedTokenizerFast):
+        def decode(self, *args, **kwargs):
+            return super().decode(*args, **kwargs).lstrip()
+
+    class StripPrivateDecode(transformers.PreTrainedTokenizerFast):
+        def _decode(self, *args, **kwargs):
+            return super()._decode(*args, **kwargs).lstrip()
+
+    out = []
+    for cls in (StripDecode, StripPrivateDecode):
+        out.append(cls(tokenizer_object = base.backend_tokenizer, clean_up_tokenization_spaces = False))
+    instance = _byte_level_tokenizer()
+    plain = instance.decode
+    instance.decode = lambda *args, **kwargs: plain(*args, **kwargs).lstrip()
+    out.append(instance)
+    return out
+
+
+def test_overridden_decode_takes_the_whole_reply_path():
+    rng = random.Random(11)
+    for tokenizer in _stripping_tokenizers():
+        assert not inf._decodes_by_concatenation(tokenizer), type(tokenizer).__name__
+        for _ in range(40):
+            ids = tokenizer.encode(_harmony_text(rng), add_special_tokens = False)
+            reference = _Reference(tokenizer)
+            streamer = inf.HarmonyTextStreamer(tokenizer, skip_prompt = False)
+            for token in ids:
+                reference.put([token])
+                streamer.put(torch.tensor([token]))
+            streamer.end()
+            assert _drain(streamer) == reference.end()
+
+
 @pytest.mark.parametrize("seed", range(4))
 def test_stream_matches_whole_reply_decode(seed):
     tokenizer = _byte_level_tokenizer()
