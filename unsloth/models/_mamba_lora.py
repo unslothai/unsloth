@@ -20,6 +20,7 @@ applies warns once. Mixers without raw-weight adapters are unchanged.
 import functools
 import inspect
 import sys
+import threading
 import warnings
 
 import torch
@@ -36,9 +37,17 @@ _FUSED_FNS = (
     "mamba2_split_conv1d_scan_combined",
 )
 _MARK = "_unsloth_mamba_fused_lora"
-_force_slow = [0]
-# One _Frame per mixer forward in flight.
-_merged_stack = []
+
+
+class _Routing(threading.local):
+    # Per thread: nn.DataParallel replicas run their forwards concurrently.
+    def __init__(self):
+        self.force_slow = 0
+        # One _Frame per mixer forward in flight.
+        self.stack = []
+
+
+_routing = _Routing()
 _warned = set()
 
 
@@ -128,11 +137,12 @@ def _gate(fn):
 
     @functools.wraps(fn)
     def gated(*args, **kwargs):
-        if _force_slow[0]:
+        if _routing.force_slow:
             return None
-        if not _merged_stack or not _merged_stack[-1].merged:
+        stack = _routing.stack
+        if not stack or not stack[-1].merged:
             return fn(*args, **kwargs)
-        frame, used = _merged_stack[-1], []
+        frame, used = stack[-1], []
         args = tuple(_swap(value, frame.merged, used) for value in args)
         kwargs = {key: _swap(value, frame.merged, used) for key, value in kwargs.items()}
         out = fn(*args, **kwargs)
@@ -205,9 +215,20 @@ def _keywords_taken(fn):
     return {p.name for p in params if p.kind is not p.VAR_POSITIONAL}
 
 
+def _gate_module_fns(cls):
+    # Both lines look the fused function up in the modeling module's globals at call time, and
+    # transformers 5.5 / 5.10 MambaMixer.__init__ reassigns them: re-gate on every use.
+    module_globals = getattr(sys.modules.get(cls.__module__), "__dict__", {})
+    names = [name for name in _FUSED_FNS if callable(module_globals.get(name))]
+    for name in names:
+        module_globals[name] = _gate(module_globals[name])
+    return names
+
+
 def _patch_class(cls):
     forward = cls.forward
     if getattr(forward, _MARK, False):
+        _gate_module_fns(cls)
         return True
     params = list(inspect.signature(forward).parameters)
     if "cache_params" not in params or len(params) < 2:
@@ -232,13 +253,8 @@ def _patch_class(cls):
         if not _calls_fused(forward):
             return False
         legacy = False
-    # Both lines look the fused function up in the modeling module's globals at call time.
-    module_globals = getattr(sys.modules.get(cls.__module__), "__dict__", {})
-    names = [name for name in _FUSED_FNS if callable(module_globals.get(name))]
-    if not names and not legacy:
+    if not _gate_module_fns(cls) and not legacy:
         return False
-    for name in names:
-        module_globals[name] = _gate(module_globals[name])
     called = _leaves_called(slow if legacy else forward)
 
     def non_fused(self, hidden_states, *args, **kwargs):
@@ -246,11 +262,11 @@ def _patch_class(cls):
             if slow_takes is not None:
                 kwargs = {k: v for k, v in kwargs.items() if k in slow_takes}
             return slow(self, hidden_states, *args, **kwargs)
-        _force_slow[0] += 1
+        _routing.force_slow += 1
         try:
             return forward(self, hidden_states, *args, **kwargs)
         finally:
-            _force_slow[0] -= 1
+            _routing.force_slow -= 1
 
     @functools.wraps(forward)
     def forward_keep_adapters(self, hidden_states, *args, **kwargs):
@@ -261,6 +277,7 @@ def _patch_class(cls):
                 cache_params = args[cache_index] if 0 <= cache_index < len(args) else None
             leaves = mamba_raw_weight_adapters(self) if cache_params is None else None
             if leaves:
+                names = _gate_module_fns(cls)
                 modules = {leaf: self._modules[leaf] for leaf in leaves}
                 weights = {leaf: _merged_weight(modules[leaf]) for leaf in leaves} if names else {}
                 fused_cover = [leaf for leaf in leaves if weights.get(leaf) is not None]
@@ -278,7 +295,7 @@ def _patch_class(cls):
                     )
                     for leaf, module in modules.items()
                 ]
-                _merged_stack.append(frame)
+                _routing.stack.append(frame)
                 try:
                     if use_slow:
                         out = non_fused(self, hidden_states, *args, **kwargs)
@@ -286,7 +303,7 @@ def _patch_class(cls):
                         # Fused kernel kept; it receives W + delta in place of each adapted W.
                         out = forward(self, hidden_states, *args, **kwargs)
                 finally:
-                    _merged_stack.pop()
+                    _routing.stack.pop()
                     for hook in hooks:
                         hook.remove()
                 _warn_not_applied(cls, [leaf for leaf in leaves if leaf not in frame.applied])

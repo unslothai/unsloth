@@ -14,6 +14,7 @@ import importlib
 import importlib.util
 import inspect
 import pathlib
+import threading
 import warnings
 
 import pytest
@@ -267,6 +268,53 @@ def test_dispatching_forward_with_trailing_kwargs_is_patched(monkeypatch, arch, 
     for kind in ("A", "B"):
         grads = [p.grad for p in _lora_param(model, "x_proj", kind)]
         assert grads and all(g is not None and g.abs().sum() > 0 for g in grads), kind
+
+
+def _assert_fused_with_merged_x_proj(model, calls, ids):
+    calls.clear()
+    _loss(model, ids).backward()
+    assert len(calls) == 2, "fused kernel must stay on for plain LoRA"
+    for mixer, seen in zip(_mixers(model), calls):
+        assert seen["x_proj"] is not mixer.x_proj.get_base_layer().weight
+    grads = [p.grad for p in _lora_param(model, "x_proj", "B")]
+    assert grads and all(g is not None and g.abs().sum() > 0 for g in grads)
+
+
+@pytest.mark.parametrize("arch", list(ARCHS))
+def test_kernel_global_reassigned_after_patching_is_gated_again(monkeypatch, arch):
+    # transformers 5.5 / 5.10 MambaMixer.__init__ reassigns the module's mamba_inner_fn, e.g. when a
+    # second model is built after the first was patched.
+    model, calls = _build(monkeypatch, arch, ["in_proj", "x_proj"])
+    modeling = importlib.import_module(f"transformers.models.{arch}.modeling_{arch}")
+    modeling.mamba_inner_fn = inspect.unwrap(modeling.mamba_inner_fn)
+    _assert_fused_with_merged_x_proj(model, calls, torch.randint(0, 64, (2, 8)))
+
+
+@pytest.mark.parametrize("arch", list(ARCHS))
+def test_routing_state_is_per_thread(monkeypatch, arch):
+    # nn.DataParallel replicas run concurrently: another thread's frame or force-slow must not leak in.
+    model, calls = _build(monkeypatch, arch, ["in_proj", "x_proj"])
+    routing = type(_mixers(model)[0]).forward.__globals__["_routing"]
+    routing.force_slow += 1
+    routing.stack.append(None)
+    errors = []
+
+    def run():
+        try:
+            _assert_fused_with_merged_x_proj(model, calls, torch.randint(0, 64, (2, 8)))
+        except BaseException as e:
+            errors.append(e)
+
+    try:
+        thread = threading.Thread(target = run)
+        thread.start()
+        thread.join(120)
+    finally:
+        routing.force_slow -= 1
+        routing.stack.pop()
+    assert not thread.is_alive()
+    if errors:
+        raise errors[0]
 
 
 def test_merged_weight_grads_match_non_fused_path(monkeypatch):
