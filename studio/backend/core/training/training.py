@@ -324,7 +324,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
             values.get("cast_norm_output_to_input_dtype"), True
         ),
         "random_seed": _coerce_seed(values.get("random_seed")),
-        "packing": values.get("packing", False),
+        "packing": values.get(
+            "packing", not (values.get("is_embedding") or values.get("is_decision"))
+        ),
         "optim": optimizer,
         "lr_scheduler_type": values.get("lr_scheduler_type", "linear"),
         "use_lora": values.get("use_lora", True),
@@ -340,7 +342,16 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "use_rslora": values.get("use_rslora", False),
         "use_loftq": values.get("use_loftq", False),
         "use_dora": values.get("use_dora", False),
-        "train_on_completions": values.get("train_on_completions", False),
+        "train_on_completions": values.get(
+            "train_on_completions",
+            not (
+                values.get("is_embedding")
+                or values.get("is_decision")
+                or values.get("dataset_streaming")
+                or values.get("training_type") == "Continued Pretraining"
+                or values.get("format_type") in ("raw", "raw_text")
+            ),
+        ),
         "finetune_vision_layers": values.get("finetune_vision_layers", True),
         "finetune_language_layers": values.get("finetune_language_layers", True),
         "finetune_attention_modules": values.get("finetune_attention_modules", True),
