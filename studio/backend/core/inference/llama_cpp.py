@@ -25203,6 +25203,26 @@ class LlamaCppBackend:
 
                         _scope = gpus if subset is None else subset
                         _tp = tensor_parallel if tp is None else tp
+                        _cuda_integrated = set(
+                            LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                                LlamaCppBackend._integrated_cuda_mask_key(), ()
+                            )
+                        )
+                        # CUDA ordinals name planner ids only where the two orders agree; a subset elsewhere
+                        # cannot clear an integrated GPU, so any one voids the credit.
+                        _cuda_integrated_hit = (
+                            bool(_cuda_integrated)
+                            if _scope_ids is not None
+                            and not (
+                                LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
+                                or (
+                                    (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
+                                    == "PCI_BUS_ID"
+                                    and not self._visibility_mask_is_unmappable()
+                                )
+                            )
+                            else bool(_cuda_integrated.intersection(i for i, _f in _scope))
+                        )
                         if not (
                             _scope
                             and not _touches(_integrated_gpus)
@@ -25210,11 +25230,7 @@ class LlamaCppBackend:
                             and not _touches(_shared_pool_gpus)
                             and not _metal_capable_host()
                             and not self._amd_apu_wants_unified_memory([i for i, _f in _scope])
-                            and not set(
-                                LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
-                                    LlamaCppBackend._integrated_cuda_mask_key(), ()
-                                )
-                            ).intersection(i for i, _f in _scope)
+                            and not _cuda_integrated_hit
                         ):
                             return 0
                         # A streamed table stays on the host whatever -ot says.
@@ -25229,13 +25245,12 @@ class LlamaCppBackend:
                         if _gpu_ids_own_device_flags:
                             self._clear_device_placement_env(_inp_env)
                         self._reconcile_split_mode_env(_inp_env, tensor_parallel = _tp)
-                        _inp_indices = (
-                            gpu_indices
-                            if gpu_indices is not None or not gpu_ids
-                            else [int(i) for i in gpu_ids]
-                        )
-                        if _inp_indices is None and _scope_ids is not None:
+                        if gpu_indices is not None:
+                            _inp_indices = gpu_indices
+                        elif _scope_ids is not None:
                             _inp_indices = sorted(_scope_ids)
+                        else:
+                            _inp_indices = [int(i) for i in gpu_ids] if gpu_ids else None
                         try:
                             _inp_lazy = "off"
                             if server_caps.get("supports_lazy_mode"):
