@@ -179,6 +179,52 @@ def _layer_facts(transformer: Any, spec: dict) -> Optional[dict]:
     return layers or None
 
 
+def _live_refs(transformer: Any, state: dict) -> dict:
+    """``state`` with every entry that IS a module parameter / buffer swapped for a read of that attribute at write
+    time. A held ``state_dict`` keeps resident offload groups' CUDA storage alive after the residency code moves them
+    back to host, so a background write would block that VRAM from being reclaimed until the whole file is written.
+    Anything else (a hook-built tensor) keeps the captured tensor. A live tensor that changed shape / dtype fails the
+    write (the temp file is dropped), never a corrupt entry."""
+    live: dict = {}
+    try:
+        for named in (transformer.named_parameters, transformer.named_buffers):
+            for name, value in named(remove_duplicate = False):
+                if value is not None:
+                    live[name] = value
+    except Exception:  # noqa: BLE001 - no live view: write the captured tensors, as before
+        return state
+
+    def getter(name: str, dtype: Any, shape: tuple) -> Any:
+        prefix, _, attr = name.rpartition(".")
+
+        def get() -> Any:
+            owner = transformer.get_submodule(prefix) if prefix else transformer
+            value = getattr(owner, attr)
+            if value is None or value.dtype != dtype or tuple(value.shape) != shape:
+                raise RuntimeError(f"native cache write: {name} changed during the write")
+            return value
+
+        return get
+
+    out: dict = {}
+    for name, tensor in state.items():
+        value = live.get(name)
+        try:
+            same = (
+                value is not None
+                and value.dtype == tensor.dtype
+                and tuple(value.shape) == tuple(tensor.shape)
+                and value.data_ptr() == tensor.data_ptr()
+            )
+        except Exception:  # noqa: BLE001
+            same = False
+        if same:
+            out[name] = _cache._FlatRef(getter(name, tensor.dtype, tuple(tensor.shape)), tensor)
+        else:
+            out[name] = tensor
+    return out
+
+
 def save(
     transformer: Any,
     fam: Any,
@@ -256,6 +302,7 @@ def save(
                         f"native {component}: skipped ({name} is not a plain tensor)",
                     )
                     return None
+            name = tensor = None  # the loop's last tensor would otherwise stay referenced through the write
             nbytes = sum(_cache._tensor_bytes(t) for t in state.values())
             budget = _cache.max_cache_bytes()
             if budget is not None and nbytes > budget:
@@ -299,6 +346,7 @@ def save(
             )
             os.close(fd)
             try:
+                state = _live_refs(transformer, state)
                 hasher = hashlib.sha256()
                 size = _cache.write_streaming_safetensors(
                     tmp, state, header, cancel_check = cancel_check, hasher = hasher
