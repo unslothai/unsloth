@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import {
   CloudIcon,
   CpuIcon,
@@ -9,7 +10,6 @@ import {
   HelpCircleIcon,
   Logout05Icon,
   Moon02Icon,
-  PaintBrush02Icon,
   PowerIcon,
   Settings02Icon,
   UserCircleIcon,
@@ -33,7 +33,7 @@ const ITEM_META: Record<
   darkMode: { icon: Moon02Icon, labelKey: "settings.appearance.sidebarMenu.darkModeToggle" },
   guidedTour: { icon: CursorInfo02Icon, labelKey: "shell.navigation.guidedTour" },
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
-  appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
+  appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
@@ -41,7 +41,7 @@ const ITEM_META: Record<
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
   return (
-    <div className="flex h-9 items-center gap-2.5 rounded-lg px-2 text-muted-foreground/70">
+    <div className="flex h-9 items-center gap-2.5 rounded-md px-2 text-muted-foreground/70">
       {/* Spacer where the drag handle sits on movable rows. */}
       <span className="size-4" aria-hidden="true" />
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
@@ -64,14 +64,12 @@ function MovableRow({ item }: { item: SidebarMenuItemPref }) {
       dragListener={false}
       dragControls={controls}
       layout="position"
-      // Rows sit flat on the dialog surface; the dragged row lifts above its
-      // siblings so it stays readable while crossing them.
       whileDrag={{
         backgroundColor: "var(--popover)",
         boxShadow: "0 4px 16px rgb(0 0 0 / 0.18)",
         zIndex: 10,
       }}
-      className="relative flex h-9 items-center gap-2.5 rounded-lg px-2"
+      className="relative flex h-9 items-center gap-2.5 rounded-md px-2"
     >
       <button
         type="button"
@@ -109,11 +107,6 @@ function MovableRow({ item }: { item: SidebarMenuItemPref }) {
   );
 }
 
-/**
- * Show/hide and reorder the optional sidebar profile menu items. The pinned
- * entries (Settings on top; Help, Log out, Shutdown below) are rendered as
- * static rows so the final menu layout is obvious.
- */
 export function SidebarMenuCustomizer() {
   const t = useT();
   const sidebarMenu = useAppearanceCustomStore(
@@ -121,7 +114,7 @@ export function SidebarMenuCustomizer() {
   );
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <div className="flex flex-col rounded-xl border border-border/70 p-1.5">
+    <div className="flex flex-col rounded-lg border border-border/70 p-1">
       <FixedRow icon={Settings02Icon} label={t("shell.navigation.settings")} />
       <Reorder.Group
         axis="y"

@@ -42,10 +42,17 @@ def test_examples_never_print_a_hardcoded_model_id():
     assert re.search(r'"unsloth/[^"]+"', src) is None
     assert "function useExampleModelName(keylessOnly: boolean): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
-    assert "(model ? buildSnippets(base, key, toolsKey, model, os) : null)" in src
-    assert "if (!snippets) return;" in src
-    assert "{snippets ? (" in src
-    assert 't("settings.apiKeys.usageNoModel")' in src
+    # No servable model: the snippet names an obvious placeholder (#14914) instead of a repo id,
+    # and the note under the pickers says why, so a copied curl cannot silently 404.
+    assert 'const MODEL_PLACEHOLDER = "YOUR_MODEL";' in src
+    assert "buildSnippets(base, key, toolsKey, model ?? MODEL_PLACEHOLDER, os)" in src
+    assert len(re.findall(r"\bbuildSnippets\(", src)) == 2, "one definition, one call site"
+    note = src.find('t("settings.apiKeys.usageNoModel")')
+    assert note != -1
+    gate = src.rfind("{model ? null : (", 0, note)
+    assert (
+        gate != -1 and note - gate < 200
+    ), "the no-model note must render exactly when the example shows the placeholder"
 
     en = EN_TS.read_text(encoding = "utf-8")
     assert "usageNoModel:" in en
@@ -119,6 +126,9 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
 API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 # Own module: the overlay mounts from __root.tsx, so importing the page made it eager.
 API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
+API_MODEL_LOAD_CONTROLS_TSX = (
+    REPO / "studio/frontend/src/features/api-monitor/components/api-model-load-controls.tsx"
+)
 MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
@@ -142,10 +152,19 @@ def test_api_monitor_renders_lifecycle_rows():
     assert 'from "./lifecycle"' in src
 
 
-def test_auto_switch_section_sits_above_the_usage_examples():
+def test_auto_switch_section_sits_below_the_monitor_link():
+    # #14455 moved the usage examples up, under the key form (api-settings-tab.test.ts pins that), and
+    # #15467 put them behind ApiExamplesPanel's tab row; the auto-switch section still follows the
+    # monitor link, whatever props the link takes.
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
-    assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
-    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<UsageExamples")
+
+    def at(pattern):
+        match = re.search(pattern, tab)
+        assert match, f"{pattern} not found in {API_KEYS_TAB_TSX.name}"
+        return match.start()
+
+    assert at(r"<(?:UsageExamples|ApiExamplesPanel)\b") < at(r"<MonitorLink\b")
+    assert at(r"<MonitorLink\b") < at(r"<ModelAutoSwitchSection\b")
 
 
 AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
@@ -161,17 +180,18 @@ def test_api_monitor_renders_download_rows():
 
 def test_monitor_can_unload_the_loaded_model():
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "unloadActiveModel" in src
-    # Always rendered so the manual release stays discoverable; disabled, not hidden. Read the
-    # button's own disabled= as a set of || terms: #11223 added `modelLoading` (no unload while a
-    # model loads), and the guard is that these two stay among them, not the exact spelling.
-    click = "onClick={() => void unloadActiveModel()}"
-    button = src[src.index(click) + len(click) :]
-    disabled = re.match(r"\s*disabled=\{([^}]*)\}", button)
-    assert disabled, "the unload button no longer sits next to its disabled= prop"
-    terms = {term.strip() for term in disabled.group(1).split("||")}
-    assert {"unloading", "!data?.active_model"} <= terms, terms
-    assert "{data?.active_model ? (" not in src
+    controls = API_MODEL_LOAD_CONTROLS_TSX.read_text(encoding = "utf-8")
+    # The redesigned page (#14455) unloads through the model picker's eject, wired to the page's
+    # unloadActiveModel; the standalone always-visible button went with it.
+    assert "const unloadActiveModel = async" in src
+    assert "onUnloadActive={unloadActiveModel}" in src
+    assert "onUnloadActive();" in controls
+    # #11223: no unload while a model loads, or while one is already unloading. Read busy= as a set
+    # of || terms, so the guard is that both stay among them, not the exact spelling.
+    busy = re.search(r"const busy = ([^;]+);", controls)
+    assert busy, "the load controls no longer compute busy"
+    assert {"modelLoading", "unloading"} <= {term.strip() for term in busy.group(1).split("||")}
+    assert "onEject={busy ? undefined : handleEject}" in controls
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
     assert "resolveInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src
@@ -219,7 +239,8 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert "!(useTunnel && cloudflareUrl)" in src
     assert 'keylessBase && !apiKey && keylessScope === "inference"' in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
-    assert "[cloudflareUrl, onSettingsChange]" in section
+    assert "[cloudflareUrl, notify]" in section
+    assert "[onSettingsChange]" in section
     assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]
     assert "disabled on localhost" in section
     assert "read the files and settings in Unsloth" not in section

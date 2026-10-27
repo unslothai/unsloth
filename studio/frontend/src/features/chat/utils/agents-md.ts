@@ -5,6 +5,17 @@ export type AgentsMdRecord = { text: string };
 
 export const EMPTY_AGENTS_MD: AgentsMdRecord = { text: "" };
 
+let agentsMdEdits = 0;
+
+/** Bumped when Settings saves memory, so a cached read from before the save is not sent. */
+export function forgetAgentsMd(): void {
+  agentsMdEdits += 1;
+}
+
+export function agentsMdEditCount(): number {
+  return agentsMdEdits;
+}
+
 /** System prompt for one request. AGENTS.md first, so project instructions and the typed system prompt
  *  have the last word; with no AGENTS.md this is byte-identical to the prompt before AGENTS.md support. */
 export function composeChatInstructions(parts: {

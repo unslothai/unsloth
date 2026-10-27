@@ -400,7 +400,7 @@ function RecipeGraphNodeBase({
 
     return (
       <BaseNode
-        className="corner-squircle relative w-full min-w-0 overflow-visible rounded-4xl border-border/60 shadow-sm"
+        className="corner-squircle relative w-full min-w-0 overflow-visible rounded-xl border-border/60 shadow-sm"
         style={noteStyle}
       >
         <NodeResizer
@@ -466,7 +466,7 @@ function RecipeGraphNodeBase({
   return (
     <BaseNode
       className={cn(
-        "corner-squircle relative w-full min-w-0 overflow-visible rounded-4xl border-border/60 shadow-sm",
+        "corner-squircle relative w-full min-w-0 overflow-visible rounded-xl border-border/60 shadow-sm",
         runtimeNodeTone,
         hasConnectionIssue &&
           runtimeState === "idle" &&
@@ -474,7 +474,6 @@ function RecipeGraphNodeBase({
       )}
     >
       {runtimeState === "running" && config?.kind === "llm" && (
-        // rounded-full bg-background masks grid lines behind the floating spinner
         <div className="pointer-events-none absolute -top-7 right-2 z-20 rounded-full bg-background">
           <Spinner className="size-6 text-primary/90" />
         </div>
@@ -495,7 +494,7 @@ function RecipeGraphNodeBase({
         <div className="flex min-w-0 items-center gap-2">
           <div
             className={cn(
-              "corner-squircle flex size-7 items-center justify-center rounded-md border",
+              "corner-squircle flex size-7 items-center justify-center rounded-sm border",
               iconTone,
             )}
           >

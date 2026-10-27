@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from typing import Annotated, Any, Literal, Optional, Union
 
+from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,10 +19,19 @@ from studio_mcp.caller import current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
 from studio_mcp.inputs import ImageInput, resolve_images
-from studio_mcp.outputs import ChatResult, DecisionAnswer, EmbedResult, SystemOneResult, Usage
+from studio_mcp.outputs import (
+    ChatResult,
+    DecisionAnswer,
+    EmbedMatch,
+    EmbedResult,
+    SystemOneResult,
+    Usage,
+)
+from studio_mcp.progress import with_heartbeat
 from studio_mcp.tools import READ_ONLY, WRITES, integer, number, opt_text, present, route_json
 
 MAX_EMBED_INPUTS = 2048
+DEFAULT_TOP_K = 10
 LOAD_CHAT_HINT = "Load a chat model with load_model first; list_models shows the downloaded ones."
 NOT_LOADED = "No model loaded"
 # The chat route takes 128 MiB of base64 images per request.
@@ -59,6 +70,7 @@ async def _attach_images(turns: list[dict], images: list[ImageInput]) -> None:
     last_user["content"] = [{"type": "text", "text": last_user["content"]}, *parts]
 
 
+@with_heartbeat("Waiting for the reply")
 async def chat(
     messages: Optional[list[ChatTurn]] = None,
     prompt: Optional[str] = None,
@@ -66,12 +78,42 @@ async def chat(
     images: Optional[list[ImageInput]] = None,
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    enable_thinking: Annotated[
+        Optional[bool],
+        Field(
+            description = "Turn a thinking model's reasoning on or off; unset keeps the model's default."
+        ),
+    ] = None,
+    reasoning_effort: Annotated[
+        Optional[Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]],
+        Field(
+            description = "Reasoning depth on models with effort levels; unset keeps the model's default."
+        ),
+    ] = None,
+    response_format: Annotated[
+        Optional[dict[str, Any]],
+        Field(
+            description = 'Constrain the reply, e.g. {"type": "json_object"} or {"type": "json_schema", "json_schema": {...}}; a backend that cannot constrain it refuses the request.'
+        ),
+    ] = None,
     model: Optional[str] = None,
     cancel_id: Annotated[
         Optional[str], Field(min_length = 8, max_length = 64, pattern = r"^[A-Za-z0-9_-]+$")
     ] = None,
+    ctx: Optional[Context] = None,
 ) -> ChatResult:
-    """Chat with the model loaded in Unsloth Studio and return its reply. Send either ``prompt`` (one user turn) or ``messages`` (the whole conversation), plus an optional ``system`` prompt. ``images`` go with the last user turn and need a vision model. ``model`` names which loaded model should answer; without it the active one does. Load a model with load_model first. A thinking model spends tokens on reasoning before the reply, so leave ``max_tokens`` unset or give it a few hundred or more. Unsloth Studio's server-side tools are not used. To be able to stop a long reply from another call, pass your own ``cancel_id`` (8-64 letters, digits, - or _) and call cancel(kind="chat", id=cancel_id)."""
+    """Chat with the model loaded in Unsloth Studio and return its reply.
+    Send either ``prompt`` (one user turn) or ``messages`` (the whole conversation), plus an optional ``system`` prompt.
+    ``images`` go with the last user turn and need a vision model.
+    ``model`` names which loaded model should answer; without it the active one does.
+    Load a model with load_model first.
+    A thinking model spends tokens on reasoning before the reply, so leave ``max_tokens`` unset or give it a few hundred or more.
+    ``enable_thinking`` turns that reasoning on or off, and ``reasoning_effort`` sets its depth on models with effort levels.
+    ``response_format`` asks for JSON ({"type": "json_object"}) or a JSON schema; a backend that cannot constrain the reply refuses it.
+    Unsloth Studio's server-side tools are not used.
+    While the reply is being written, the call reports progress every few seconds.
+    To be able to stop a long reply from another call, pass your own ``cancel_id`` (8-64 letters, digits, - or _) and call cancel(kind="chat", id=cancel_id).
+    """
     if (messages is None) == (prompt is None):
         raise ToolError("Send either prompt or messages, not both and not neither.")
     turns = (
@@ -94,7 +136,13 @@ async def chat(
         "enable_tools": False,
         # Per-run id (the route scopes it to the caller's account), so only a cancel aimed at this chat stops it.
         "cancel_id": cancel_id,
-        **present(max_tokens = max_tokens, temperature = temperature),
+        **present(
+            max_tokens = max_tokens,
+            temperature = temperature,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            response_format = response_format,
+        ),
     }
     # Beats a CLI --enable-tools too; forward's task copies this context into the route.
     with tools_force_disabled():
@@ -112,28 +160,61 @@ async def chat(
     answered = opt_text(payload.get("model"))
     text = message.get("content") if isinstance(message.get("content"), str) else ""
     finish_reason = opt_text(choices[0].get("finish_reason"))
-    note = None
+    notes = []
     if model and answered and not _same_model(model, answered):
-        note = f"{answered} answered; {model} is not the model that served this request."
-    elif not text.strip() and finish_reason == "length":
-        # Thinking models can spend the whole budget before the visible reply starts.
-        note = "The reply ran out of tokens before any text, likely spent on the model's reasoning; raise max_tokens."
+        notes.append(f"{answered} answered; {model} is not the model that served this request.")
+    if finish_reason == "length":
+        notes.append(
+            # Thinking models can spend the whole budget before the visible reply starts.
+            "The reply ran out of tokens before any text, likely spent on the model's reasoning; raise max_tokens."
+            if not text.strip()
+            else "The reply was cut off at max_tokens; raise max_tokens for the rest."
+        )
     return ChatResult(
         text = text,
         model = answered,
         finish_reason = finish_reason,
         usage = Usage.from_route(usage) if usage else None,
-        note = note,
+        note = " ".join(notes) or None,
         cancel_id = cancel_id,
     )
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return sum(x * y for x, y in zip(a, b)) / norm if norm else 0.0
 
 
 async def embed(
     texts: Annotated[list[str], Field(min_length = 1, max_length = MAX_EMBED_INPUTS)],
     model: Optional[str] = None,
+    query: Annotated[
+        Optional[str],
+        Field(
+            description = "Rank texts by cosine similarity to this text and return the best matches instead of vectors."
+        ),
+    ] = None,
+    top_k: Annotated[
+        Optional[int],
+        Field(
+            ge = 1,
+            le = MAX_EMBED_INPUTS,
+            description = "How many matches to return with query (default 10)",
+        ),
+    ] = None,
 ) -> EmbedResult:
-    """Embed up to 2048 texts and return one vector per text, in order. Uses the embedding GGUF loaded in Unsloth Studio when there is one, else Unsloth Studio's configured embedding model. ``model`` names a specific one; the result names the model that answered. Compare vectors with cosine similarity."""
-    body = {"input": texts}
+    """Embed up to 2048 texts and return one vector per text, in order.
+    Uses the embedding GGUF loaded in Unsloth Studio when there is one, else Unsloth Studio's configured embedding model.
+    ``model`` names a specific one; the result names the model that answered.
+    Compare vectors with cosine similarity.
+    With ``query`` (and at most 2047 texts), the call ranks the texts by cosine similarity to it and returns the ``top_k`` best (default 10) as ``matches``, with no vectors.
+    """
+    if top_k is not None and query is None:
+        raise ToolError("top_k needs query.")
+    if query is not None and len(texts) > MAX_EMBED_INPUTS - 1:
+        raise ToolError(f"With query, texts may hold at most {MAX_EMBED_INPUTS - 1}.")
+    inputs = texts if query is None else [query, *texts]
+    body: dict[str, Any] = {"input": inputs}
     if model:
         body["model"] = model
     payload = await route_json(
@@ -148,11 +229,23 @@ async def embed(
         ),
         key = lambda row: integer(row.get("index")) or 0,
     )
-    if len(rows) != len(texts):
-        raise ToolError(f"Unsloth Studio returned {len(rows)} embeddings for {len(texts)} texts")
+    if len(rows) != len(inputs):
+        raise ToolError(f"Unsloth Studio returned {len(rows)} embeddings for {len(inputs)} texts")
     embeddings = [[float(value) for value in row["embedding"]] for row in rows]
+    model_name = opt_text(payload.get("model"))
+    if query is None:
+        return EmbedResult(model = model_name, dimensions = len(embeddings[0]), embeddings = embeddings)
+    scored = sorted(
+        ((_cosine(embeddings[0], vector), index) for index, vector in enumerate(embeddings[1:])),
+        key = lambda pair: (-pair[0], pair[1]),
+    )
     return EmbedResult(
-        model = opt_text(payload.get("model")), dimensions = len(embeddings[0]), embeddings = embeddings
+        model = model_name,
+        dimensions = len(embeddings[0]),
+        matches = [
+            EmbedMatch(index = index, score = score, text = texts[index])
+            for score, index in scored[: top_k or DEFAULT_TOP_K]
+        ],
     )
 
 

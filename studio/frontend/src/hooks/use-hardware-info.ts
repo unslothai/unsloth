@@ -7,11 +7,17 @@ import { useEffect, useState } from "react";
 export interface GpuDevice {
     name: string | null;
     vramTotalGb: number | null;
+    sharedMemory?: boolean;
+    unifiedMemory?: boolean;
+    sharedMemoryHostBackedGb?: number | null;
 }
 
 interface ApiGpu {
     name?: string | null;
     vram_total_gb?: number | null;
+    shared_memory?: boolean;
+    unified_memory?: boolean;
+    shared_memory_host_backed_gb?: number | null;
 }
 
 export interface HardwareInfo {
@@ -22,8 +28,7 @@ export interface HardwareInfo {
     torch: string | null;
     cuda: string | null;
     rocm: string | null;
-    // Intel XPU (SYCL). The backend always emitted this; without it the About tab shows no
-    // runtime row at all on an Arc host, where cuda and rocm are both null.
+    // Without it an Arc host shows no runtime row, since cuda and rocm are null.
     xpu: string | null;
     transformers: string | null;
     unsloth: string | null;
@@ -37,12 +42,13 @@ export interface HardwareInfo {
     exportUnsupportedMessage: string | null;
     // False only on Windows ROCm without a loadable torchao; absent from older backends = true.
     torchaoExportSupported: boolean;
-    // Whether video generation can run here. Same tri-state as export: `null` until the
-    // authoritative response lands, and `null` too against a backend that predates the field,
-    // so only an explicit `false` hides the generator.
+    // `null` until loaded and on older backends; only an explicit `false` hides the generator.
     videoSupported: boolean | null;
     videoUnsupportedReason: string | null;
     videoUnsupportedMessage: string | null;
+    // True when video is supported only because Developer mode admitted a CPU-only host; the
+    // Video page keeps a warning up while it is. False against an older backend.
+    videoCpuExperimental: boolean;
     loaded: boolean;
 }
 
@@ -66,13 +72,12 @@ const DEFAULT: HardwareInfo = {
     videoSupported: null,
     videoUnsupportedReason: null,
     videoUnsupportedMessage: null,
+    videoCpuExperimental: false,
     loaded: false,
 };
 
-// How long a caller waits before re-probing after a failed read. See useHardwareInfo.
 const RETRY_MS = 3000;
 
-// Module-level cache so multiple components share one fetch.
 let cached: HardwareInfo | null = null;
 let fetchPromise: Promise<HardwareInfo> | null = null;
 let cacheGeneration = 0;
@@ -111,6 +116,9 @@ async function fetchOnce(): Promise<HardwareInfo> {
                     ? data.gpus.map((g: ApiGpu) => ({
                         name: g?.name ?? null,
                         vramTotalGb: g?.vram_total_gb ?? null,
+                        sharedMemory: g?.shared_memory === true,
+                        unifiedMemory: g?.unified_memory === true,
+                        sharedMemoryHostBackedGb: g?.shared_memory_host_backed_gb ?? null,
                     }))
                     : [],
                 torch: data?.versions?.torch ?? null,
@@ -128,6 +136,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 videoSupported: data?.video_supported ?? null,
                 videoUnsupportedReason: data?.video_unsupported_reason ?? null,
                 videoUnsupportedMessage: data?.video_unsupported_message ?? null,
+                videoCpuExperimental: data?.video_cpu_experimental === true,
                 loaded: true,
             };
             if (generation === cacheGeneration) {
@@ -135,12 +144,10 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 notifyHardwareInfo(info);
                 return info;
             }
-            // Superseded by a later invalidate, so it must not become the cache. It is
-            // still a real 200 though: returning DEFAULT tells every caller riding this
-            // promise that a healthy read failed, and load() reads that as a failed probe.
+            // Superseded, so it must not become the cache, but it is still a real 200 for its callers.
             return cached ?? info;
         } catch {
-            // Reset so subsequent calls retry (e.g. backend wasn't ready).
+            // Reset so later calls retry (e.g. backend wasn't ready).
             if (generation === cacheGeneration) fetchPromise = null;
             return DEFAULT;
         }
@@ -149,10 +156,6 @@ async function fetchOnce(): Promise<HardwareInfo> {
     return fetchPromise;
 }
 
-/**
- * Fetch hardware info from `GET /api/system/hardware`. Cached at module level,
- * so only one request is made regardless of how many components call this hook.
- */
 export function useHardwareInfo(): HardwareInfo {
     const [info, setInfo] = useState<HardwareInfo>(cached ?? DEFAULT);
 
@@ -163,9 +166,7 @@ export function useHardwareInfo(): HardwareInfo {
         };
 
         listeners.add(listener);
-        // A failed probe resolves to DEFAULT (loaded false) and clears the in-flight promise,
-        // but nothing re-ran it, so the only retry was another component happening to mount.
-        // Callers that gate a whole page on `loaded` would wait out the session on one blip.
+        // Retry a failed probe, or pages gated on `loaded` wait out the session on one blip.
         let retry: ReturnType<typeof setTimeout> | undefined;
         const load = () => {
             fetchOnce().then((hw) => {
@@ -173,12 +174,7 @@ export function useHardwareInfo(): HardwareInfo {
                 if (!cancelled && !hw.loaded) retry = setTimeout(load, RETRY_MS);
             });
         };
-        // `info` was seeded from `cached` at render time, but this listener only joins the
-        // set now. A probe that resolved in between notified the listeners registered at
-        // the time -- not this one -- and left `cached` set, so `if (!cached) load()` alone
-        // skipped the fetch and nothing was ever going to call setInfo. The component then
-        // sat on DEFAULT with loaded false for its whole life, which on /video is the
-        // capability gate's "Checking this machine for video support..." for the session.
+        // The listener joins after render, so a probe that resolved in between never reached it.
         if (cached) listener(cached);
         else load();
         return () => {

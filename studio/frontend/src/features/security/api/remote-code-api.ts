@@ -43,7 +43,7 @@ interface RemoteCodeScanResponse {
   provider?: string | null;
 }
 
-/** Scan a model's auto_map code for the consent dialog; the token rides in the POST body, never the URL. */
+/** The token rides in the POST body, never the URL. */
 export async function getRemoteCodeScan(
   modelName: string,
   hfToken?: string | null,
@@ -112,7 +112,7 @@ export async function getRemoteCodeScan(
   };
 }
 
-/** Decline cleanup: fire-and-forget purge of the metadata-only cache entry the scan created (never weights or a local path). */
+/** Fire-and-forget purge of the metadata-only cache the scan created, never weights. */
 export async function discardRemoteCodeDownload(
   modelName: string,
 ): Promise<void> {

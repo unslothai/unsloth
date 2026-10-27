@@ -15,6 +15,8 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import ast
+import builtins
+import importlib.util
 from math import sqrt
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +43,22 @@ class _IdentityRope:
         return torch.ones(seq_len, 2), torch.zeros(seq_len, 2)
 
 
+def _decode_graphs_module(source):
+    """The real decode buffer helpers, by file path: importing unsloth needs an accelerator. Its
+    top level is torch and the standard library only. Graph replay is CUDA-only, so it is off."""
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_decode_graphs_cpu", source.with_name("_decode_graphs.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.ENABLED = False
+    return module
+
+
+def _captured_attention_only(*args, **kwargs):
+    raise AssertionError("a captured decode step ran on CPU; the harness keeps graph replay off")
+
+
 @pytest.fixture(params = ["llama", "qwen3"])
 def decoder(request):
     name = f"{request.param.title()}Attention_fast_forward_inference"
@@ -61,6 +79,12 @@ def decoder(request):
         "torch_nn_functional_softmax": F.softmax,
         "scaled_dot_product_attention": F.scaled_dot_product_attention,
         "SDPA_HAS_GQA": True,
+        # The fused decode kernels are CUDA-only; on CPU they decline and the unfused path runs.
+        "decode_rope_inplace": lambda *args, **kwargs: False,
+        "decode_qk_norm_rope": lambda *args, **kwargs: None,
+        # The cache and scratch buffers come from the real helpers; only the captured path is out.
+        "_decode_graphs": _decode_graphs_module(source),
+        "_decode_attention_core": _captured_attention_only,
     }
     # The decode paths share llama.py's grouped KV helpers (qwen3 imports them from there).
     llama_source = source.with_name("llama.py")
@@ -71,6 +95,17 @@ def decoder(request):
         and node.name in ("_gqa_decode_scores", "_gqa_decode_values")
     ]
     exec(compile(ast.Module(body = helpers, type_ignores = []), str(llama_source), "exec"), namespace)
+    bound = {n.arg for n in ast.walk(function) if isinstance(n, ast.arg)}
+    bound |= {
+        n.id
+        for n in ast.walk(function)
+        if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load)
+    }
+    free = {
+        n.id for n in ast.walk(function) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    }
+    missing = sorted(free - bound - set(namespace) - set(dir(builtins)))
+    assert not missing, f"{name} now reads {missing}; give the harness a CPU stand-in for each"
     exec(compile(ast.Module(body = [function], type_ignores = []), str(source), "exec"), namespace)
     return namespace[name]
 

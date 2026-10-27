@@ -12,17 +12,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Slider } from "@/components/ui/slider";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
   Download01Icon,
   HeadphonesIcon,
-  PauseIcon,
-  PlayIcon,
-  SentIcon,
   VolumeHighIcon,
   VolumeOffIcon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -41,6 +39,7 @@ import {
 import type { StemMixerProps } from "./stem-mixer-types";
 import { WaveformBars } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
+import { ArrowUpIcon, PlayIcon } from "lucide-react";
 
 const SEEK_STEP_SECONDS = 5;
 
@@ -122,7 +121,7 @@ export function StemMixer({
       tabIndex={0}
       aria-label="Stem mixer"
       onKeyDown={handleKeyDown}
-      className="@container corner-squircle grid gap-3 rounded-4xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="@container corner-squircle grid gap-3 rounded-2xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <output aria-live="polite" aria-atomic="true" className="sr-only">
         {status}
@@ -149,10 +148,11 @@ export function StemMixer({
           disabled={!ready}
           onClick={toggle}
         >
-          <HugeiconsIcon
-            icon={playing ? PauseIcon : PlayIcon}
-            className="size-3.5"
-          />
+          {playing ? (
+            <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
+          ) : (
+            <PlayIcon className="size-3.5" />
+          )}
         </Button>
         <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
           {formatSeconds(position)} / {formatSeconds(duration)}
@@ -175,14 +175,13 @@ export function StemMixer({
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
               <Button type="button" variant="outline" size="sm">
-                <HugeiconsIcon
-                  icon={SentIcon}
+                <ArrowUpIcon
                   strokeWidth={1.75}
                   data-icon="inline-start"
                 />
                 Send to
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
+                  icon={ChevronDownStandardIcon}
                   strokeWidth={1.75}
                   data-icon="inline-end"
                 />
@@ -256,7 +255,7 @@ export function StemMixer({
                   size="icon-xs"
                   aria-label={`Solo ${stem.label}`}
                   aria-pressed={level.solo}
-                  className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-foreground aria-pressed:text-background"
+                  className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-action aria-pressed:text-background"
                   onClick={() =>
                     dispatch({ type: "toggleSolo", role: stem.role })
                   }
@@ -269,7 +268,7 @@ export function StemMixer({
                   size="icon-xs"
                   aria-label={`Mute ${stem.label}`}
                   aria-pressed={level.muted}
-                  className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-foreground aria-pressed:text-background"
+                  className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-action aria-pressed:text-background"
                   onClick={() =>
                     dispatch({ type: "toggleMute", role: stem.role })
                   }
@@ -280,7 +279,7 @@ export function StemMixer({
                   />
                 </Button>
                 <Slider
-                  className="panel-slider w-[calc(88px*var(--ui-space-scale,1))] px-1"
+                  className="w-[calc(88px*var(--ui-space-scale,1))] px-1"
                   min={0}
                   max={100}
                   step={1}

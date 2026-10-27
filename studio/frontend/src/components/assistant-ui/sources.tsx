@@ -44,7 +44,6 @@ function SourceIcon({
   const SIZE_CLASSES: Record<number, string> = { 3: "size-3", 4: "size-4", 5: "size-5" };
   const sizeClass = SIZE_CLASSES[size] ?? "size-3";
 
-  // When disabled, render the letter fallback instead of fetching a third-party favicon.
   if (hasError || !allowRemoteIcons) {
     return (
       <span
@@ -102,7 +101,7 @@ function Source({
       variant={variant}
       size={size}
       className={cn(
-        "rounded-full cursor-pointer outline-none hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring",
+        "btn-fill rounded-full cursor-pointer border-transparent outline-none hover:text-chat-icon-fg-hover! focus-visible:border-ring",
         className,
       )}
     >
@@ -123,10 +122,7 @@ function Source({
 }
 
 export interface SourceData {
-  /**
-   * Stable per-citation key. Two Anthropic citations into different spans of
-   * the same source share a `url`, so React keys on `id` to keep them distinct.
-   */
+  /** Two citations into the same source share a `url`, so React keys on `id`. */
   id: string;
   url: string;
   title: string;
@@ -153,7 +149,7 @@ const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
       <HoverCardContent
         side="top"
         align="start"
-        className="!bg-black !text-white !w-72 !p-3 !rounded-2xl !shadow-md !ring-0 !duration-0"
+        className="!bg-(--tooltip-bg) !text-(--tooltip-fg) !w-72 !p-3 !rounded-2xl !shadow-(--tooltip-shadow) !ring-0 !duration-0"
         style={{ animation: "none" }}
       >
         <div className="flex gap-2.5">
@@ -167,9 +163,9 @@ const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
             <p className="text-sm font-semibold leading-tight truncate">
               {source.title || domain}
             </p>
-            <p className="text-xs text-white/60 truncate">{domain}</p>
+            <p className="text-xs text-(--tooltip-muted) truncate">{domain}</p>
             {source.description && (
-              <p className="text-xs text-white/70 leading-relaxed line-clamp-3">
+              <p className="text-xs text-(--tooltip-muted) leading-relaxed line-clamp-3">
                 {source.description}
               </p>
             )}
@@ -216,7 +212,6 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
   }
   const sources = suppliedSources ?? messageSources;
 
-  // Measure how many badges fit in 2 rows
   const measure = useCallback(() => {
     const container = containerRef.current;
     if (!container || sources.length === 0) return;
@@ -248,7 +243,6 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
     measure();
   }, [measure]);
 
-  // Re-measure on resize
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -266,12 +260,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
 
   return (
     <div className="relative mt-2 mb-3">
-      {/* Hidden measurement container: renders all badges off-screen to read
-          each child's offsetTop and decide how many fit in two rows. The
-          absolute/h-0/overflow-hidden wrapper clips the pills so they don't add
-          to scrollHeight (~30px per row) and create a phantom empty scroll area
-          below the message. offsetTop reads correctly because the wrapper is
-          positioned (absolute) and the flex-wrapped children measure against it. */}
+      {/* Off-screen measurement; the clipped absolute wrapper keeps pills out of scrollHeight. */}
       <div
         aria-hidden
         className="absolute pointer-events-none overflow-hidden h-0 w-full left-0 top-0"
@@ -291,7 +280,6 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
         </div>
       </div>
 
-      {/* Visible container */}
       <div className="flex flex-wrap gap-1">
         {displayedSources.map((source) => (
           <SourceBadge key={source.id} source={source} allowRemoteIcons={allowRemoteIcons} />
@@ -302,7 +290,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
             onClick={() => setExpanded(true)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
+              "btn-fill rounded-full cursor-pointer border-transparent text-muted-foreground hover:text-chat-icon-fg-hover!",
             )}
           >
             +{hiddenCount} more
@@ -314,7 +302,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
             onClick={() => setExpanded(false)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
+              "btn-fill rounded-full cursor-pointer border-transparent text-muted-foreground hover:text-chat-icon-fg-hover!",
             )}
           >
             Show less

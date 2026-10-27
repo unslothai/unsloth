@@ -30,7 +30,7 @@ from core.systemone import catalog, laya_runtime
 from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
 from utils import systemone_settings
-from utils.account_context import OWNER, arun_as, run_as
+from utils.account_context import OWNER, arun_as, is_owner_context, run_as
 
 MAX_QUESTIONS = 64
 MAX_CHOICES = 255
@@ -155,14 +155,21 @@ async def system_one(
 
     # Same rule as the OpenAI routes: a keyless caller never downloads or swaps in another model.
     # Checked before the unknown-model answer, so it cannot tell which owner fine-tunes exist.
-    if checkpoint != await asyncio.to_thread(
-        catalog.default_checkpoint
-    ) and await asyncio.to_thread(request_admitted_without_credential, request):
-        raise _error(
-            403,
-            "permission_error",
-            "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
-        )
+    if checkpoint != await asyncio.to_thread(catalog.default_checkpoint):
+        if await asyncio.to_thread(request_admitted_without_credential, request):
+            raise _error(
+                403,
+                "permission_error",
+                "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
+            )
+        # Another checkpoint downloads into the shared cache and evicts the owner's resident model,
+        # which the owner-only settings, unload and resolve routes already keep from other accounts.
+        if not is_owner_context():
+            raise _error(
+                403,
+                "permission_error",
+                "Only the Studio owner can pick a Decision API model other than the configured one.",
+            )
     if checkpoint is None:
         raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
     result = await _decide(
@@ -179,7 +186,7 @@ def _require_enabled() -> None:
         raise _error(
             404,
             "api_usage_error",
-            "The Decision API is off. The Studio owner can turn it on in Settings > API.",
+            "The Decision API is off. The Unsloth owner can turn it on in Settings > API.",
         )
 
 
@@ -333,8 +340,7 @@ async def _decide(
 async def _connection_decide(
     connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
 ) -> dict:
-    # The connection and its key are the owner's; the URL check and the request run as the caller,
-    # so a managed account keeps its egress policy.
+    # Connection and key are the owner's; the URL check and request run as the caller (egress policy).
     provider_id = connection.provider_id
     config = await asyncio.to_thread(run_as, OWNER, providers_db.get_provider, provider_id)
     if config is None or catalog.decision_models(config) is None:

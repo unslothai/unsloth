@@ -54,6 +54,11 @@ export default defineConfig({
         target: "http://127.0.0.1:8888",
         changeOrigin: true,
       },
+      // MCP setup snippets use the page's origin.
+      "/mcp": {
+        target: "http://127.0.0.1:8888",
+        changeOrigin: true,
+      },
       "/seed/inspect": {
         target: "http://127.0.0.1:8004",
         changeOrigin: true,
@@ -90,8 +95,8 @@ export default defineConfig({
       include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
     },
     rolldownOptions: {
-      // import() of a module the app already imports statically defers nothing, and it splits
-      // that module's graph into extra startup chunks (#11588). Fail the build rather than warn.
+      // import() of a statically imported module defers nothing and splits extra startup chunks,
+      // so fail the build rather than warn.
       onLog(level, log, handler) {
         if (log.code === "INEFFECTIVE_DYNAMIC_IMPORT") {
           throw new Error(log.message);

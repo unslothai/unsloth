@@ -222,9 +222,9 @@ def main(argv = None) -> int:
             _apply_quant(pipe, quant, print_, args.min_feat)
         if compile:
             _compile(pipe, print_)
-            _gen(pipe, steps, seed, res)  # warmup / compilation
+            _gen(pipe, steps, seed, res)
         else:
-            _gen(pipe, steps, seed, res)  # allocator warmup
+            _gen(pipe, steps, seed, res)
         torch.cuda.reset_peak_memory_stats()
         dts, img = [], None
         for _ in range(iters):
@@ -239,7 +239,6 @@ def main(argv = None) -> int:
 
     print_ = lambda s: print(s, flush = True)  # noqa: E731
 
-    # config table: tag -> (source, quant, compile)
     table = {
         "bf16": ("dense", None, False),
         "bf16_c": ("dense", None, True),

@@ -136,7 +136,6 @@ export function ReferenceImageEditor({
         });
         return;
       }
-      // Browser image dimensions and canvas drawing use the same corrected orientation.
       decodedImage.current = { dataUrl, image };
       setLoadError(null);
       setLoadedSourceSize(size);

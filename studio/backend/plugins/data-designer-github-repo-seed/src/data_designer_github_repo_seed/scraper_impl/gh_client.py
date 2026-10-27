@@ -110,11 +110,7 @@ class GitHubClient:
         )
 
     def _is_auth_failure(self, r: "requests.Response") -> bool:
-        """Tell auth failures apart from rate limiting on 401/403.
-
-        401 is always auth; 403 is auth unless it carries a rate-limit signal
-        (Retry-After, X-RateLimit-Remaining: 0, or abuse/secondary text).
-        """
+        """401 is always auth; 403 is auth unless it carries a rate-limit signal."""
         if r.status_code == 401:
             return True
         if r.status_code == 403:

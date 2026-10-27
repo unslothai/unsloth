@@ -46,12 +46,11 @@ def _download(destination: Path) -> None:
 
 
 def _approved_members() -> dict[str, tuple[str, int]]:
+    exec_member, exec_size, _ = mxc_runtime.artifact("exec")
+    prep_member, prep_size, _ = mxc_runtime.artifact("prep")
     return {
-        mxc_runtime.RELEASE_MEMBER: ("wxc-exec.exe", mxc_runtime.WXC_EXEC_SIZE),
-        mxc_runtime.RELEASE_HOST_PREP_MEMBER: (
-            "wxc-host-prep.exe",
-            mxc_runtime.WXC_HOST_PREP_SIZE,
-        ),
+        exec_member: ("wxc-exec.exe", exec_size),
+        prep_member: ("wxc-host-prep.exe", prep_size),
     }
 
 
@@ -105,8 +104,7 @@ def install_mxc_release(install_dir: Path) -> bool:
     """Install the approved WXC binary; return ``True`` only when files changed."""
     if sys.platform != "win32":
         raise MxcInstallError("the MXC runtime installer is Windows-only")
-    if mxc_runtime._expected_architecture() != "x86_64":
-        raise MxcInstallError("the Microsoft MXC release supports Windows x86-64 only")
+    mxc_runtime._expected_architecture()
 
     install_dir = install_dir.expanduser().resolve()
     install_dir.parent.mkdir(parents = True, exist_ok = True)
@@ -133,7 +131,7 @@ def install_mxc_release(install_dir: Path) -> bool:
             try:
                 with tarfile.open(archive, "r:gz") as bundle:
                     for target, entry in _validate_archive_entries(bundle).items():
-                        # Streamed by name, never tar.extract: the member path is not trusted.
+                        # Never tar.extract: the member path is not trusted.
                         source = bundle.extractfile(entry)
                         if source is None:
                             raise MxcInstallError(f"the approved {target} member is unreadable")
@@ -265,16 +263,15 @@ def _host_prep_script(executable: Path, arguments: list[str]) -> str:
         "  try { $digest = [Security.Cryptography.SHA256]::Create().ComputeHash($stream) } "
         "finally { $stream.Dispose() }",
         "  $hash = [BitConverter]::ToString($digest).Replace('-', '')",
-        f"  if ($hash -ne '{mxc_runtime.WXC_HOST_PREP_SHA256.upper()}') {{ exit 91 }}",
+        f"  if ($hash -ne '{mxc_runtime.artifact('prep')[2].upper()}') {{ exit 91 }}",
         f"  & $exe {' '.join(quote(value) for value in arguments)}",
         "  exit $LASTEXITCODE",
         "} finally {",
         "  try { [IO.Directory]::Delete($dir, $true) } catch { }",
         "}",
     )
-    # One line for -Command: a statement ends in "; ", an opened block in a space.
     script = "".join(line.strip() + (" " if line.endswith("{") else "; ") for line in lines)
-    # Only single-quoted literals: a double quote would be stripped by command-line parsing.
+    # A double quote would be stripped by command-line parsing.
     if '"' in script:
         raise MxcInstallError("the host-prep path cannot be passed to PowerShell")
     return script.rstrip("; ")
@@ -291,10 +288,9 @@ def _run_host_prep(executable: Path, step: str) -> int:
     arguments = [step, "--quiet"] if step == "prepare-null-device" else [step]
     system = _system_directory()
     powershell = os.path.join(system, "WindowsPowerShell", "v1.0", "powershell.exe")
-    # Inline text, never a script file: the elevated process must not read anything a user can rewrite.
+    # Inline text, never a script file: the elevated process must not read user-writable files.
     script = _host_prep_script(executable, arguments)
     launcher = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]
-    # Measured 3 to 7 minutes on a CI runner: it propagates an ACE across the whole system drive.
     print(f"[mxc-prebuilt] running wxc-host-prep {step}; this can take several minutes")
     if _is_elevated():
         code = subprocess.run(

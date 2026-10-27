@@ -3,7 +3,6 @@
 
 import { authFetch, getAuthToken } from "@/features/auth";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
-import { notifyModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
   signalRunningLlamaJob,
   subscribeToLlamaJobStarted,
@@ -12,14 +11,12 @@ import {
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
 } from "@/lib/llama-job-lifecycle";
+import { notifyModelLifecycle } from "@/lib/model-lifecycle-events";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Initial check plus hourly reminders until dismissed or applied.
 const FIRST_CHECK_DELAY_MS = 1000;
-const REMINDER_INTERVAL_MS = 60 * 60 * 1000; // ~1 hour
-// Snooze checks sooner than the hourly reminder.
-const SNOOZE_DELAY_MS = 15 * 60 * 1000; // ~15 minutes
-// Poll fast enough to catch installer progress milestones.
+const REMINDER_INTERVAL_MS = 60 * 60 * 1000;
+const SNOOZE_DELAY_MS = 15 * 60 * 1000;
 const JOB_POLL_INTERVAL_MS = 500;
 
 export interface LlamaUpdateJob {
@@ -31,15 +28,13 @@ export interface LlamaUpdateJob {
   to_tag: string | null;
   reload_required: boolean | null;
   error: string | null;
-  // Download fraction while running, 1 on success.
   progress: number | null;
-  // Identifies the accepted job when notifying other surfaces and tabs.
   started_at: string | null;
-  // Set once the job leaves "running"; identifies a completed job so a
-  // repeated fetch of the same success can be told apart from the next one.
+  // Tells a repeated fetch of the same success apart from the next one.
   finished_at: string | null;
   // The chained phase installing right now, when the backend reports phases.
   runningPhase: "llama" | "whisper" | "audio" | null;
+  whisperFailed: boolean;
 }
 
 export interface ComponentOffer {
@@ -62,18 +57,14 @@ export interface LlamaUpdateStatus {
   audio: ComponentOffer | null;
   installed_tag: string | null;
   latest_tag: string | null;
-  // Prebuilt download size in bytes, if known.
   update_size_bytes: number | null;
-  // The install recorded "auto" and detection now resolves elsewhere, so Update would move
-  // it. Independent of update_available: reported only when the release is current.
+  // Recorded "auto" now resolves elsewhere; reported only when the release is current.
   backend_migration_available: boolean;
   from_backend: string | null;
   to_backend: string | null;
   job: LlamaUpdateJob;
 }
 
-/** Whether the banner has anything to offer: a newer release, or a backend the
- *  install's own recorded "auto" would resolve to today. */
 export function llamaUpdateOffered(status: LlamaUpdateStatus): boolean {
   return status.update_available || status.backend_migration_available;
 }
@@ -104,6 +95,9 @@ function parseJob(value: unknown): LlamaUpdateJob {
     started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
     runningPhase: parseRunningPhase(job.phases),
+    whisperFailed:
+      (job.phases as Record<string, { state?: unknown } | null> | null)?.whisper
+        ?.state === "error",
   };
 }
 
@@ -174,15 +168,14 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       typeof details.update_size_bytes === "number"
         ? details.update_size_bytes
         : null,
-    // The top-level version fields keep their llama meaning whatever `details` is.
     llama: {
-      // Absent from a backend older than the whisper piggyback: there the legacy
-      // union is llama's own answer.
+      // Absent on backends before the whisper piggyback, where the legacy union is llama's answer.
       update_available:
         typeof s.llama_update_available === "boolean"
           ? s.llama_update_available
           : s.update_available === true && component === "llama.cpp",
-      installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
+      installed_tag:
+        typeof s.installed_tag === "string" ? s.installed_tag : null,
       latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
       update_size_bytes:
         typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
@@ -198,13 +191,19 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
   };
 }
 
-// The backend job persists as "success" until the next update starts (it's a single in-memory
-// record, not per-tab), so a fresh mount -- a new tab, or a page reload of a tab that already
-// resynced -- would otherwise replay the same completed job forever. Persist the handled marker
-// outside React state so it survives both, and is shared across tabs in this browser.
+// The backend keeps "success" until the next update, so persist the handled marker across mounts
+// and tabs, or a fresh mount replays it.
 const HANDLED_RELOAD_STORAGE_KEY = "unsloth_llama_update_reload_handled_at";
+// sessionStorage, not localStorage: a skip kept for good stranded the install on that release.
 const OFFER_SUPPRESSION_STORAGE_KEY = "unsloth_llama_update_offer_suppression";
 const OFFER_SUPPRESSION_EVENT = "unsloth:llama-update-offer-suppression";
+
+// Retires the permanent record older builds wrote.
+try {
+  localStorage.removeItem(OFFER_SUPPRESSION_STORAGE_KEY);
+} catch {
+  // Storage can be unavailable in restricted browser contexts.
+}
 
 type OfferSuppression =
   | { kind: "dismissed"; offerKey: string }
@@ -220,9 +219,8 @@ export function offerKey(status: LlamaUpdateStatus): string {
     llama: status.llama.update_available
       ? [status.llama.installed_tag, status.llama.latest_tag]
       : null,
-    whisper: status.whisper?.update_available
-      ? [status.whisper.installed_tag, status.whisper.latest_tag]
-      : null,
+    // whisper.cpp rides along; null matches keys stored before it joined.
+    whisper: null,
     migration: status.backend_migration_available
       ? [
           status.llama.installed_tag,
@@ -236,6 +234,24 @@ export function offerKey(status: LlamaUpdateStatus): string {
       ? { audio: [status.audio.installed_tag, status.audio.latest_tag] }
       : {}),
   });
+}
+
+/** The previous format recorded the whisper.cpp release in the key; ignore it so a new whisper.cpp release keeps the suppression. */
+export function offerKeyMatches(
+  key: string,
+  status: LlamaUpdateStatus,
+): boolean {
+  const current = offerKey(status);
+  if (key === current) return true;
+  try {
+    const stored: unknown = JSON.parse(key);
+    if (!stored || typeof stored !== "object" || !("whisper" in stored)) {
+      return false;
+    }
+    return JSON.stringify({ ...stored, whisper: null }) === current;
+  } catch {
+    return false;
+  }
 }
 
 function parseOfferSuppression(raw: string | null): OfferSuppression | null {
@@ -271,7 +287,7 @@ function getOfferSuppression(): OfferSuppression | null {
   if (!retainedSuppression.persisted) return retainedSuppression.value;
   try {
     const value = parseOfferSuppression(
-      localStorage.getItem(OFFER_SUPPRESSION_STORAGE_KEY),
+      sessionStorage.getItem(OFFER_SUPPRESSION_STORAGE_KEY),
     );
     retainedSuppression = { value, persisted: true };
     return value;
@@ -284,12 +300,12 @@ function publishOfferSuppression(suppression: OfferSuppression | null): void {
   retainedSuppression = { value: suppression, persisted: false };
   try {
     if (suppression) {
-      localStorage.setItem(
+      sessionStorage.setItem(
         OFFER_SUPPRESSION_STORAGE_KEY,
         JSON.stringify({ version: 1, ...suppression }),
       );
     } else {
-      localStorage.removeItem(OFFER_SUPPRESSION_STORAGE_KEY);
+      sessionStorage.removeItem(OFFER_SUPPRESSION_STORAGE_KEY);
     }
     retainedSuppression.persisted = true;
   } catch {
@@ -336,14 +352,10 @@ async function fetchStatus(
 
 interface UseLlamaUpdateCheckOptions {
   enabled?: boolean;
-  /**
-   * Called when a completed update reports `reload_required` (i.e. it unloaded
-   * the active model server-side). Consumers use it to resync the chat runtime
-   * so the model selector drops to "select model" instead of pointing at a
-   * model that now 400s on send. Fires for both this tab's own apply() and a
-   * cross-tab update mirrored through the background poll.
-   */
+  /** The update unloaded the model server-side; resync chat. Also fires for cross-tab updates. */
   onReloadRequired?: () => void;
+  /** Reads the cached status once on mount; only refresh() asks GitHub. For Settings, which remounts on every open. */
+  passive?: boolean;
 }
 
 export interface LlamaApplyResult {
@@ -351,15 +363,14 @@ export interface LlamaApplyResult {
   tag?: string | null;
   reloadRequired?: boolean | null;
   error?: string | null;
-  // What the job says it did: a migration can finish at the release and on the backend it
-  // started from, so "updated to <tag>" fits neither.
+  // A migration can finish at the release and on the old backend; "updated to <tag>" fits neither.
   message?: string;
 }
 
-/** Tracks llama.cpp update visibility and apply progress. */
 export function useLlamaUpdateCheck({
   enabled = true,
   onReloadRequired,
+  passive = false,
 }: UseLlamaUpdateCheckOptions = {}) {
   const [status, setStatus] = useState<LlamaUpdateStatus | null>(null);
   const [visible, setVisible] = useState(false);
@@ -393,7 +404,9 @@ export function useLlamaUpdateCheck({
     if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
     snoozeTimer.current = null;
     const suppression = suppressionRef.current;
-    if (!activeRef.current || suppression?.kind !== "snoozed") return;
+    if (passive || !activeRef.current || suppression?.kind !== "snoozed") {
+      return;
+    }
     const remaining = suppression.until - Date.now();
     if (remaining <= 0) return;
     snoozeTimer.current = setTimeout(() => {
@@ -402,7 +415,7 @@ export function useLlamaUpdateCheck({
         if (activeRef.current) surfaceRef.current(next);
       });
     }, remaining);
-  }, [readStatus]);
+  }, [passive, readStatus]);
 
   const clearSuppression = useCallback(() => {
     if (!suppressionRef.current) return;
@@ -419,7 +432,8 @@ export function useLlamaUpdateCheck({
       );
       const suppression = suppressionRef.current;
       const suppressed =
-        suppression?.offerKey === offerKey(next) &&
+        suppression != null &&
+        offerKeyMatches(suppression.offerKey, next) &&
         (suppression.kind === "dismissed" || suppression.until > Date.now());
       setApplying(presentation.applying);
       setVisible(presentation.visible && (presentation.running || !suppressed));
@@ -446,10 +460,7 @@ export function useLlamaUpdateCheck({
   useEffect(() => {
     onReloadRequiredRef.current = onReloadRequired;
   }, [onReloadRequired]);
-  // Fires the callback once per completed job, whether this tab watched it run or only saw the
-  // persisted "success" after the fact (e.g. another tab applied it). Keyed by finished_at and
-  // seeded from localStorage so a fresh mount (new tab, or a page reload of a tab that already
-  // resynced) doesn't replay a job some tab already handled.
+  // Once per completed job, keyed by finished_at and seeded from localStorage.
   const reloadNotifiedForRef = useRef<string | null>(getHandledReloadAt());
 
   const clearPollTimer = useCallback(() => {
@@ -459,16 +470,12 @@ export function useLlamaUpdateCheck({
     }
   }, []);
 
-  // Shared by the poll path (this tab watched the job run), the surface path (this tab only saw the
-  // persisted success), and apply()'s stale-click path (the job came back embedded in a "not
-  // started" response) so none of them can drop or double-fire the notification.
+  // Shared by the poll, surface and stale-click paths so none drop or double-fire.
   const notifyReloadIfNeeded = useCallback(
     (
       job: Pick<LlamaUpdateJob, "state" | "reload_required" | "finished_at">,
     ) => {
-      // "error" is included for partial chained updates: the llama phase can land (and unload the
-      // server) before a later phase fails, and the backend keeps reload_required set in exactly
-      // that case. Without the resync the chat UI would keep pointing at the unloaded model.
+      // "error" too: a chained update can unload the server before a later phase fails.
       if (
         (job.state === "success" || job.state === "error") &&
         job.reload_required &&
@@ -513,10 +520,7 @@ export function useLlamaUpdateCheck({
         notifySettledOnce(s.job);
         if (s.job.state === "success") {
           void refreshHardwareInfo();
-          // The update unloads the running model server-side, so the chat runtime still points at a
-          // model that now 400s on send. Let the consumer drop the selector to "select model"
-          // instead of waiting for a page reload. Fires here (not just from apply's onDone) so a
-          // cross-tab update mirrored through this poll is covered too.
+          // Fires here, not only in apply's onDone, so cross-tab updates are covered.
           notifyReloadIfNeeded(s.job);
           onDone?.({
             ok: true,
@@ -525,8 +529,7 @@ export function useLlamaUpdateCheck({
             message: s.job.message,
           });
         } else if (s.job.state === "error") {
-          // Keep the banner visible so retry is available. A partial chained
-          // update can still have unloaded the llama server before failing.
+          // Keep the banner for retry; a partial update may still have unloaded the server.
           notifyReloadIfNeeded(s.job);
           onDone?.({ ok: false, error: s.job.error });
         } else {
@@ -552,9 +555,7 @@ export function useLlamaUpdateCheck({
         if (!pollTimer.current) startJobPoll();
         return;
       }
-      // A completed job persists as "success" until the next update starts, so a tab that missed
-      // the running window entirely (mounted, or only checks hourly and misses both the running and
-      // just-finished moments) still needs to resync here, not just from the poll path above.
+      // A tab that missed the running window still needs to resync.
       notifyReloadIfNeeded(next.job);
       notifySettledOnce(next.job);
     },
@@ -567,24 +568,25 @@ export function useLlamaUpdateCheck({
   useEffect(() => {
     activeRef.current = enabled;
     if (!enabled) {
-      // Re-enabling will rediscover any still-running job.
       return;
     }
     let canceled = false;
     if (statusRef.current) presentStatus(statusRef.current);
     else armSnoozeTimer();
 
-    const firstTimer = setTimeout(() => {
-      readStatus(true).then((s) => {
+    const check = (forceRefresh: boolean) => () => {
+      readStatus(forceRefresh).then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
-    }, FIRST_CHECK_DELAY_MS);
-
-    const reminder = setInterval(() => {
-      readStatus(true).then((s) => {
-        if (!canceled) surfaceIfAvailable(s);
-      });
-    }, REMINDER_INTERVAL_MS);
+    };
+    let firstTimer: ReturnType<typeof setTimeout> | undefined;
+    let reminder: ReturnType<typeof setInterval> | undefined;
+    if (passive) {
+      check(false)();
+    } else {
+      firstTimer = setTimeout(check(true), FIRST_CHECK_DELAY_MS);
+      reminder = setInterval(check(true), REMINDER_INTERVAL_MS);
+    }
 
     return () => {
       canceled = true;
@@ -599,6 +601,7 @@ export function useLlamaUpdateCheck({
     };
   }, [
     enabled,
+    passive,
     readStatus,
     surfaceIfAvailable,
     clearPollTimer,
@@ -606,10 +609,7 @@ export function useLlamaUpdateCheck({
     presentStatus,
   ]);
 
-  // Cross-tab nudge: a tab that only checks hourly would otherwise stay pointed at a
-  // server-unloaded model for up to an hour after a DIFFERENT open tab applies an update. The
-  // storage event only fires in other tabs (never the one that wrote it), so this recheck fires
-  // promptly there without this tab redundantly re-triggering itself.
+  // The storage event fires only in other tabs, so they recheck promptly after another tab applies.
   useEffect(() => {
     const acceptSuppression = (suppression: OfferSuppression | null) => {
       if (suppressionRef.current === suppression) return;
@@ -633,7 +633,7 @@ export function useLlamaUpdateCheck({
         event.newValue &&
         event.newValue !== reloadNotifiedForRef.current
       ) {
-        readStatus(true).then(surfaceIfAvailable);
+        readStatus(!passive).then(surfaceIfAvailable);
       }
     };
     window.addEventListener(OFFER_SUPPRESSION_EVENT, onSuppression);
@@ -643,7 +643,14 @@ export function useLlamaUpdateCheck({
       window.removeEventListener(OFFER_SUPPRESSION_EVENT, onSuppression);
       window.removeEventListener("storage", onStorage);
     };
-  }, [enabled, readStatus, surfaceIfAvailable, presentStatus, armSnoozeTimer]);
+  }, [
+    enabled,
+    passive,
+    readStatus,
+    surfaceIfAvailable,
+    presentStatus,
+    armSnoozeTimer,
+  ]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -652,9 +659,9 @@ export function useLlamaUpdateCheck({
     });
   }, [enabled, readStatus, surfaceIfAvailable]);
 
-  const dismiss = useCallback(() => {
+  const dismiss = useCallback((): string | null => {
     const current = statusRef.current;
-    if (!current) return;
+    if (!current) return null;
     const suppression: OfferSuppression = {
       kind: "dismissed",
       offerKey: offerKey(current),
@@ -662,7 +669,22 @@ export function useLlamaUpdateCheck({
     suppressionRef.current = suppression;
     publishOfferSuppression(suppression);
     presentStatus(current);
+    return suppression.offerKey;
   }, [presentStatus]);
+
+  // a later snooze or a skip of another offer is left alone.
+  const undoDismiss = useCallback(
+    (key: string) => {
+      const suppression = suppressionRef.current;
+      if (suppression?.kind !== "dismissed" || suppression.offerKey !== key) {
+        return;
+      }
+      clearSuppression();
+      const current = statusRef.current;
+      if (current) presentStatus(current);
+    },
+    [clearSuppression, presentStatus],
+  );
 
   const snooze = useCallback(() => {
     const current = statusRef.current;
@@ -705,23 +727,16 @@ export function useLlamaUpdateCheck({
     }
 
     const actionJob = parseJob(action?.job);
-    // The response job is authoritative. Signal both a newly accepted update
-    // and an already-running job this tab discovered through the POST, so every
-    // open Settings surface disables and follows the same install immediately.
+    // Signal both a new and a discovered running job so every Settings surface follows it.
     signalRunningLlamaJob(actionJob);
 
-    // Non-started jobs stay idle; an already-running update is tracked below. A backend switch is
-    // not: it shares this job but installs no new release, so following it here would toast an
-    // update that never happened. The shared background listener still follows the switch itself.
+    // Skip backend switches: they share this job but install no release.
     if (
       action &&
       action.started === false &&
       !llamaUpdateAdoptsRunningJob(action.reason, actionJob)
     ) {
-      // A stale banner's click can land after another tab already applied the
-      // update (e.g. "up_to_date"): the response still carries that tab's
-      // completed job, so process reload_required here too, not just from the
-      // poll path -- otherwise this rejection silently drops it.
+      // A stale click's response carries another tab's completed job; process its reload_required here.
       notifyReloadIfNeeded(actionJob);
       setApplying(false);
       return {
@@ -743,12 +758,20 @@ export function useLlamaUpdateCheck({
     );
   }, [applying, startJobPoll, notifyReloadIfNeeded, clearSuppression]);
 
+  const refresh = useCallback(async (): Promise<LlamaUpdateStatus | null> => {
+    const next = await readStatus(true);
+    if (activeRef.current) surfaceIfAvailable(next);
+    return next;
+  }, [readStatus, surfaceIfAvailable]);
+
   return {
     status: enabled ? status : null,
     visible: enabled && visible,
     applying: enabled && applying,
     apply,
+    refresh,
     dismiss,
+    undoDismiss,
     snooze,
   };
 }

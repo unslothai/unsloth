@@ -4,7 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import { cn } from "@/lib/utils";
-import { PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type Ref, useCallback, useEffect, useRef, useState } from "react";
 import { fetchAudioBlob } from "../api";
@@ -16,7 +16,9 @@ import {
   resumeAfterLoad,
   switchSide,
 } from "./ab-compare-state";
-import { WAVEFORM_BARS, computePeaks, formatSeconds } from "./waveform-peaks";
+import { PlaybackTime, WaveformBarGlyphs } from "./waveform";
+import { computePeaks, formatSeconds } from "./waveform-peaks";
+import { PlayIcon } from "lucide-react";
 
 const SEEK_STEP_SECONDS = 5;
 // Decoding holds every sample in memory; past this the bars stay flat.
@@ -114,7 +116,6 @@ export function ABCompare({
   const fraction = duration > 0 ? Math.min(1, ab.position / duration) : 0;
   const barsSrc = ab.side === "original" ? originalBarsSrc : editedBarsSrc;
   const bars = barsSrc ? (peaks[barsSrc] ?? null) : null;
-  const count = bars?.length ?? WAVEFORM_BARS;
   const src = current.src;
 
   // A new pair resets the player; the Original's object URL arriving late does not.
@@ -189,10 +190,11 @@ export function ABCompare({
           disabled={!src}
           onClick={toggle}
         >
-          <HugeiconsIcon
-            icon={ab.playing ? PauseIcon : PlayIcon}
-            className="size-3.5"
-          />
+          {ab.playing ? (
+            <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
+          ) : (
+            <PlayIcon className="size-3.5" />
+          )}
         </Button>
         <div
           role="slider"
@@ -225,42 +227,12 @@ export function ABCompare({
             seekTo(((event.clientX - box.left) / box.width) * duration);
           }}
         >
-          <svg
-            aria-hidden="true"
-            className="size-full"
-            viewBox={`0 0 ${count * 3} 32`}
-            preserveAspectRatio="none"
-          >
-            {Array.from({ length: count }, (_, index) => {
-              const peak = bars ? (bars[index] ?? 0) : 0;
-              // A floor keeps silence visible as a line rather than a gap.
-              const height = Math.max(2, peak * 30);
-              const played = (index + 0.5) / count <= fraction;
-              return (
-                <rect
-                  // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
-                  key={index}
-                  x={index * 3 + 0.5}
-                  y={(32 - height) / 2}
-                  width={2}
-                  height={height}
-                  rx={1}
-                  className={cn(
-                    "fill-current",
-                    played && ab.position > 0
-                      ? "text-foreground"
-                      : "text-muted-foreground",
-                    bars ? "opacity-100" : "opacity-40",
-                  )}
-                />
-              );
-            })}
-          </svg>
+          <WaveformBarGlyphs
+            peaks={bars}
+            isPlayed={(at) => ab.position > 0 && at <= fraction}
+          />
         </div>
-        <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
-          {ab.position > 0 ? `${formatSeconds(ab.position)} / ` : ""}
-          {formatSeconds(duration)}
-        </span>
+        <PlaybackTime position={ab.position} duration={duration} />
       </div>
       {src ? (
         // biome-ignore lint/a11y/useMediaCaption: speech clips have no caption track; the clip's text is shown beside it.
