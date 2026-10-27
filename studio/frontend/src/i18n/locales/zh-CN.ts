@@ -4450,6 +4450,7 @@ export const zhCN = {
       modelsTitle: "还没有微调模型",
       modelsDescription: "你在 Unsloth 中训练或导出的模型会显示在这里。",
       createFolder: "创建文件夹",
+      generateImage: "生成图像",
       generateVideo: "生成视频",
       generateAudio: "生成音频",
       trainModel: "训练模型",

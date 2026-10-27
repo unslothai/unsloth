@@ -4622,6 +4622,7 @@ export const es = {
       modelsTitle: "Aún no hay modelos ajustados",
       modelsDescription: "Los modelos que entrenes o exportes en Unsloth aparecen aquí.",
       createFolder: "Crear carpeta",
+      generateImage: "Generar una imagen",
       generateVideo: "Generar un vídeo",
       generateAudio: "Generar audio",
       trainModel: "Entrenar un modelo",

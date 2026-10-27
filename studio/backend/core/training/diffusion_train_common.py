@@ -1016,6 +1016,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
                 "supports_samples": name in SAMPLE_FAMILIES,
                 "supports_bucketing": name not in UNBUCKETED_FAMILIES,
+                # The images loader refuses video bases, so the panel offers no Deploy to Create for these.
+                "is_video": name in TRAINABLE_VIDEO_FAMILIES,
                 # A batch > 1 is REFUSED for a family whose forward covers one packed sequence, so leaving the control
                 # unrestricted turns a reasonable 2 into a rejected Start with nothing to say why.
                 "max_train_batch_size": 1 if name in SINGLE_SEQUENCE_FAMILIES else None,

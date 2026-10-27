@@ -4539,6 +4539,7 @@ export const ko = {
       modelsTitle: "아직 파인튜닝된 모델이 없습니다",
       modelsDescription: "Unsloth에서 학습하거나 내보낸 모델이 여기에 표시됩니다.",
       createFolder: "폴더 만들기",
+      generateImage: "이미지 생성",
       generateVideo: "동영상 생성",
       generateAudio: "오디오 생성",
       trainModel: "모델 학습",

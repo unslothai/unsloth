@@ -4623,6 +4623,7 @@ export const it = {
       modelsTitle: "Ancora nessun modello con fine-tuning",
       modelsDescription: "I modelli che addestri o esporti in Unsloth compaiono qui.",
       createFolder: "Crea cartella",
+      generateImage: "Genera un'immagine",
       generateVideo: "Genera un video",
       generateAudio: "Genera audio",
       trainModel: "Addestra un modello",

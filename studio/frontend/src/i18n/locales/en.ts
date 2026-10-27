@@ -4616,6 +4616,7 @@ export const en = {
       modelsTitle: "No fine-tuned models yet",
       modelsDescription: "Models you train or export in Unsloth show up here.",
       createFolder: "Create folder",
+      generateImage: "Generate an image",
       generateVideo: "Generate a video",
       generateAudio: "Generate audio",
       trainModel: "Train a model",

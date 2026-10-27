@@ -4580,6 +4580,7 @@ export const ru = {
       modelsTitle: "Дообученных моделей пока нет",
       modelsDescription: "Здесь появляются модели, которые вы обучаете или экспортируете в Unsloth.",
       createFolder: "Создать папку",
+      generateImage: "Создать изображение",
       generateVideo: "Сгенерировать видео",
       generateAudio: "Сгенерировать аудио",
       trainModel: "Обучить модель",

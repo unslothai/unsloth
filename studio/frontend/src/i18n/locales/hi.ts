@@ -4559,6 +4559,7 @@ export const hi = {
       modelsTitle: "अभी कोई फ़ाइन-ट्यून किया गया मॉडल नहीं",
       modelsDescription: "Unsloth में आप जो मॉडल ट्रेन या एक्सपोर्ट करते हैं, वे यहाँ दिखते हैं।",
       createFolder: "फ़ोल्डर बनाएँ",
+      generateImage: "इमेज बनाएँ",
       generateVideo: "वीडियो जनरेट करें",
       generateAudio: "ऑडियो जनरेट करें",
       trainModel: "मॉडल ट्रेन करें",

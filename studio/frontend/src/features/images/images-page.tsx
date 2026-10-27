@@ -124,7 +124,7 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaApiButton } from "@/components/media-api-button";
-import { LibraryPageLink } from "@/components/media-page-link";
+import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
 import {
   chatAboutMedia,
@@ -1765,6 +1765,9 @@ export function ImagesPage({
   );
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  // Mounted on first visit, then hidden rather than unmounted, so switching to Create keeps the training form.
+  const [trainMounted, setTrainMounted] = useState(false);
+  if (pageMode === "train" && !trainMounted) setTrainMounted(true);
   const setPageMode = useImageWorkflowStore((s) => s.setPageMode);
   const tourSteps = useMemo(
     () => buildImagesTourSteps({ pageMode }),
@@ -3194,6 +3197,18 @@ export function ImagesPage({
       // Status is best-effort; a failed poll should not surface an error toast.
     }
   }, [setStatusIfNewest]);
+
+  // Starting a training run unloads the image model, so re-read it on the way back to Create.
+  const leftForTrain = useRef(false);
+  useEffect(() => {
+    if (pageMode === "train") {
+      leftForTrain.current = true;
+      return;
+    }
+    if (!active || !leftForTrain.current) return;
+    leftForTrain.current = false;
+    void refreshStatus();
+  }, [active, pageMode, refreshStatus]);
 
   useEffect(() => {
     isMounted.current = true;
@@ -4693,6 +4708,16 @@ export function ImagesPage({
     },
     [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
   );
+  const deployFromVideo = useImageWorkflowStore((s) => s.pendingDeploy);
+  useEffect(() => {
+    if (!active || !deployFromVideo) return;
+    const request = useImageWorkflowStore.getState().takeDeploy();
+    if (request) handleDeployAdapter(request);
+  }, [active, deployFromVideo, handleDeployAdapter]);
+  const trainingCompletions = useImageWorkflowStore((s) => s.trainingCompletions);
+  useEffect(() => {
+    if (trainingCompletions > 0) setLoraRefreshKey((k) => k + 1);
+  }, [trainingCompletions]);
 
   const handleUnload = useCallback(async (): Promise<boolean> => {
     pendingRecalledGeneration.current = null;
@@ -5932,45 +5957,46 @@ export function ImagesPage({
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
               ]}
             />
           </div>
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+          {/* The chat header's right inset. */}
+          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))] pt-[var(--studio-chat-header-padding-top,11px)]">
+            <div className="pointer-events-auto flex min-w-0 items-center gap-1">
               <MediaApiButton
                 kind="images"
                 model={status?.loaded ? (status.repo_id ?? null) : null}
               />
-              <LibraryPageLink
-                tab="images"
-                labelClassName="hidden @[50rem]:inline"
-                arrowClassName="hidden @[50rem]:block"
-              />
+              <LibraryPageLink tab="images" iconOnly={true} />
+              <SiblingMediaPageLink to="/video" />
             </div>
           </div>
         </div>
       </div>
-      {pageMode === "train" ? (
-        <DiffusionTrainPanel
-          active={active && pageMode === "train"}
-          loadedFamily={status?.family ?? null}
-          loadedBaseRepo={
-            // For a GGUF load repo_id is a checkpoint path, not a trainable base.
-            status?.base_repo ?? status?.repo_id ?? null
-          }
-          onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
-          onDeploy={handleDeployAdapter}
-          familyName={trainFamilyName}
-          onFamilyNameChange={setTrainFamilyName}
-          baseChoice={trainBaseChoice}
-          onBaseChoiceChange={setTrainBaseChoice}
-          onFamiliesChange={setTrainFamilies}
-        />
-      ) : (
+      {trainMounted && (
+        <div className={pageMode === "train" ? "contents" : "hidden"} inert={pageMode !== "train" || undefined}>
+          <DiffusionTrainPanel
+            active={active && pageMode === "train"}
+            loadedFamily={status?.family ?? null}
+            loadedBaseRepo={
+              // For a GGUF load repo_id is a checkpoint path, not a trainable base.
+              status?.base_repo ?? status?.repo_id ?? null
+            }
+            onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
+            onDeploy={handleDeployAdapter}
+            familyName={trainFamilyName}
+            onFamilyNameChange={setTrainFamilyName}
+            baseChoice={trainBaseChoice}
+            onBaseChoiceChange={setTrainBaseChoice}
+            onFamiliesChange={setTrainFamilies}
+          />
+        </div>
+      )}
+      {pageMode !== "train" && (
       /* Settings column + preview canvas. Structural borders stay edge-to-edge; spacing belongs inside each pane.
          The same 50rem page-container breakpoint drives this body and the header above. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
@@ -6950,7 +6976,7 @@ export function ImagesPage({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={ReloadIcon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={ReloadIcon} className="size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>

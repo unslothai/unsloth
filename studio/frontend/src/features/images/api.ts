@@ -826,6 +826,7 @@ export interface DiffusionTrainableFamily {
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.
   supports_samples?: boolean;
+  is_video?: boolean;
   // Undefined on an older backend (control hidden).
   supports_bucketing?: boolean;
   /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */

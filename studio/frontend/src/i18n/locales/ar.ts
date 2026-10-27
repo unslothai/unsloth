@@ -4548,6 +4548,7 @@ export const ar = {
       modelsTitle: "لا توجد نماذج مضبوطة بعد",
       modelsDescription: "تظهر هنا النماذج التي تدربها أو تصدّرها في Unsloth.",
       createFolder: "إنشاء مجلد",
+      generateImage: "إنشاء صورة",
       generateVideo: "إنشاء فيديو",
       generateAudio: "إنشاء صوت",
       trainModel: "تدريب نموذج",
