@@ -16,6 +16,7 @@ export function SettingsRow({
   description,
   hint,
   icon,
+  iconAlign = "center",
   children,
   destructive,
   className,
@@ -26,6 +27,8 @@ export function SettingsRow({
   /** Shown on hover; plain text because it doubles as the trigger's aria-label. */
   hint?: string;
   icon?: ReactNode;
+  /** "top" keeps the icon level with the label when a description wraps under it. */
+  iconAlign?: "center" | "top";
   children?: ReactNode;
   destructive?: boolean;
   className?: string;
@@ -44,7 +47,7 @@ export function SettingsRow({
     >
       <div className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-center gap-2.5">
         {icon ? (
-          <span className="flex shrink-0 items-center text-foreground">
+          <span className={cn("flex shrink-0 items-center text-foreground", iconAlign === "top" && "self-start")}>
             {icon}
           </span>
         ) : null}
