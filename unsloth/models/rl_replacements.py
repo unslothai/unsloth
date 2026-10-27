@@ -6135,7 +6135,6 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         temperature = 1.0,
         **jsd_kwargs,
     )
-    # Traced, the counter would make Dynamo guard (recompile) on its value.
     if not torch.compiler.is_compiling():
         try:
             self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
@@ -6421,7 +6420,6 @@ def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_cho
         nll_loss = torch.tensor(0.0).to(self.accelerator.device)
     else:
         nll_loss = -(nll_per_token * chosen_nll_mask).sum() / chosen_nll_mask.sum()
-    # Traced, the counter would make Dynamo guard (recompile) on its value.
     if not torch.compiler.is_compiling():
         try:
             self._unsloth_pref_chunked_calls = getattr(self, "_unsloth_pref_chunked_calls", 0) + 1
@@ -6680,7 +6678,6 @@ def _unsloth_dpo_hidden_logps(self, chunked, hidden_states, labels, loss_mask):
         lm_head_bias = head.bias,
         return_mean_logits = True,
     )
-    # Traced, the counter would make Dynamo guard (recompile) on its value.
     if not torch.compiler.is_compiling():
         try:
             self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
@@ -6848,7 +6845,6 @@ def _unsloth_dpo_loss_stats(
             return_is_top1 = not ref,
             entropy_requires_grad = False,
         )
-    # Traced, the counter would make Dynamo guard (recompile) on its value.
     if not torch.compiler.is_compiling():
         try:
             self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
@@ -7124,7 +7120,6 @@ def _unsloth_kto_hidden_logps(self, chunked, hidden_states, labels, label_pad_to
             return_mean_logits = True,
         )
         per_token_logps = per_token_logps[:, :-1]
-    # Traced, the counter would make Dynamo guard (recompile) on its value.
     if not torch.compiler.is_compiling():
         try:
             self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
@@ -7347,7 +7342,6 @@ def _unsloth_fused_pass_logps(
             return_mean_logits = stats,
             entropy_requires_grad = False,
         )
-    # Traced, the counter would make Dynamo guard (recompile) on its value.
     if not torch.compiler.is_compiling():
         try:
             self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
@@ -8055,7 +8049,6 @@ def _unsloth_odpo_hidden_logps(
         logit_scale_divide = divide,
         logit_softcapping = softcap,
     )
-    # Traced, the counter would make Dynamo guard (recompile) on its value.
     if not torch.compiler.is_compiling():
         try:
             self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1

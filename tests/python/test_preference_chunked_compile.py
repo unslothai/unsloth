@@ -228,8 +228,7 @@ def test_traces_without_graph_breaks_and_matches_trl(kind, kwargs, split, masked
 
 @pytest.mark.parametrize("dynamic", [False, True, None], ids = ["static", "dynamic", "auto"])
 def test_engagement_counter_compiles_once(dynamic):
-    # The trainer counter is read and written outside traced code: traced, every step guards on its new value and
-    # recompiles until fullgraph=True hits the recompile limit.
+    # A traced counter would recompile every step until fullgraph=True hits the limit.
     from torch._dynamo.testing import CompileCounterWithBackend
 
     forward = _load(True)
