@@ -265,7 +265,7 @@ def candidates(
                 library: _minor(library),
             }
             if class_name == "AutoencoderKL":
-                # Retires entries written from an fp16-decode-rescaled VAE (save() now refuses those).
+                # Retires entries written from an fp16-decode-rescaled VAE.
                 parts["vae_fp16_decode"] = 1
             out.append(
                 CastCandidate(
@@ -739,8 +739,7 @@ def save(
                 f"{cand.component}: not cached (a tensor changed dtype or shape after the load)",
             )
             return None
-        # enable_fp16_vae_decode rescales decoder weights in place and flips force_upcast off; the entry would
-        # keep the source config, so the next load would rescale the stored weights a second time.
+        # Weights were rescaled in place; a cached copy would be rescaled again on the next load.
         if getattr(module, "_unsloth_fp16_decode", False):
             _log(
                 logger, "info", f"{cand.component}: not cached (rescaled in place for fp16 decode)"

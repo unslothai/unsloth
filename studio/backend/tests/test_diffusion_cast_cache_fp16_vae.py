@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A VAE rescaled in place for fp16 decode is never written to the cast cache.
-
-enable_fp16_vae_decode shrinks the decoder weights in place; a cached copy would be shrunk a second
-time on the next load (finite, so no fallback, but every image after the first comes out wrong).
-"""
+"""A VAE rescaled in place for fp16 decode is never cached (a reload would rescale it twice)."""
 
 from __future__ import annotations
 
