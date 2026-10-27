@@ -140,6 +140,11 @@ export const ja = {
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
     local: "ローカル",
+    browserUse: {
+      label: "ブラウザ操作",
+      description: "モデルに内蔵ブラウザを操作させる",
+      unavailable: "ブラウザを使わせるには、ツールを呼び出せるモデルを読み込んでください。",
+    },
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",

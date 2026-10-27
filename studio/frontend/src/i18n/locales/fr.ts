@@ -139,6 +139,11 @@ export const fr = {
     more: "Plus",
     addressPlaceholder: "Rechercher ou saisir une URL",
     local: "Local",
+    browserUse: {
+      label: "Utilisation du navigateur",
+      description: "Laisser les modèles contrôler le navigateur intégré",
+      unavailable: "Chargez un modèle capable d'appeler des outils pour qu'il utilise le navigateur.",
+    },
     suggested: "Suggestions",
     suggestedMenu: {
       open: "Ouvrir",

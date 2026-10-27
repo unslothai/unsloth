@@ -139,6 +139,11 @@ export const ptBR = {
     more: "Mais",
     addressPlaceholder: "Pesquise ou digite um URL",
     local: "Local",
+    browserUse: {
+      label: "Uso do navegador",
+      description: "Permite que os modelos controlem o navegador integrado",
+      unavailable: "Carregue um modelo que chame ferramentas para que ele use o navegador.",
+    },
     suggested: "Sugestões",
     suggestedMenu: {
       open: "Abrir",

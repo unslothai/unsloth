@@ -139,6 +139,11 @@ export const hi = {
     more: "और",
     addressPlaceholder: "खोजें या URL डालें",
     local: "लोकल",
+    browserUse: {
+      label: "ब्राउज़र उपयोग",
+      description: "मॉडलों को बिल्ट-इन ब्राउज़र नियंत्रित करने दें",
+      unavailable: "ब्राउज़र इस्तेमाल करने देने के लिए ऐसा मॉडल लोड करें जो टूल कॉल कर सके।",
+    },
     suggested: "सुझाव",
     suggestedMenu: {
       open: "खोलें",

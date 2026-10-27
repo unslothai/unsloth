@@ -139,6 +139,11 @@ export const ko = {
     more: "더보기",
     addressPlaceholder: "검색어 또는 URL 입력",
     local: "로컬",
+    browserUse: {
+      label: "브라우저 사용",
+      description: "모델이 내장 브라우저를 제어하도록 허용",
+      unavailable: "브라우저를 사용하게 하려면 도구를 호출할 수 있는 모델을 불러오세요.",
+    },
     suggested: "추천",
     suggestedMenu: {
       open: "열기",

@@ -139,6 +139,11 @@ export const es = {
     more: "Más",
     addressPlaceholder: "Busca o escribe una URL",
     local: "Local",
+    browserUse: {
+      label: "Uso del navegador",
+      description: "Permite que los modelos controlen el navegador integrado",
+      unavailable: "Carga un modelo que pueda llamar herramientas para que use el navegador.",
+    },
     suggested: "Sugerencias",
     suggestedMenu: {
       open: "Abrir",
