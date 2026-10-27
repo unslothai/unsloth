@@ -592,7 +592,8 @@ export function SetupPanel({
             </span>
           }
         >
-          <div className="grid grid-cols-3 gap-2">
+          {/* Two per row: number fields reserve room for the stepper, too much for three in this column. */}
+          <div className="grid grid-cols-2 gap-2">
             {(
               [
                 ["Measured", "repetitions", 1, 50, 1],
@@ -600,7 +601,13 @@ export function SetupPanel({
                 ["Max tokens", "maxTokens", 16, 8192, 16],
               ] as const
             ).map(([label, key, min, max, step]) => (
-              <label key={key} className="flex flex-col gap-1">
+              <label
+                key={key}
+                className={cn(
+                  "flex flex-col gap-1",
+                  key === "maxTokens" && "col-span-2",
+                )}
+              >
                 <span className="text-ui-11 text-muted-foreground">
                   {label}
                 </span>
