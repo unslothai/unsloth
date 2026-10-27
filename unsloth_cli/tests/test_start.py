@@ -2934,6 +2934,21 @@ def test_codex_reads_mcp_servers_from_a_config_with_a_bom(fake_studio, tmp_path,
     assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
 
 
+def test_toml_chunks_split_only_at_real_table_headers():
+    text = (
+        'model = "m"\n'
+        '[mcp_servers.notes]\nargs = ["-c", """echo "hi""""]\nm = [\n[1],\n]\ns = """\n[fake]\n"""\n'
+        "[model_providers.unsloth_api]\nname = 'x'\n"
+    )
+    chunks = start._toml_chunks(text)
+    assert "".join(chunks) == text
+    assert [start._toml_table_path(c) for c in chunks] == [
+        None,
+        ("mcp_servers", "notes"),
+        ("model_providers", "unsloth_api"),
+    ]
+
+
 def test_codex_remembers_an_empty_custom_codex_home(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     user_home = tmp_path / "user-home"

@@ -3415,7 +3415,9 @@ def _toml_chunks(text: str) -> list:
         while i < len(line):
             if delim is not None:
                 if line.startswith(delim, i):
-                    delim, i = None, i + 3
+                    # Up to two quotes may end the string just before its closing delimiter.
+                    run = len(line) - i - len(line[i:].lstrip(delim[0]))
+                    delim, i = None, i + min(run, 5)
                 else:
                     i += 2 if delim == '"""' and line[i] == "\\" else 1
                 continue
