@@ -227,7 +227,9 @@ def test_cuda_storage_is_reclaimed_while_the_write_is_in_flight(monkeypatch, bas
 def test_a_hook_built_view_of_a_weight_keeps_its_captured_tensor(monkeypatch, base_dir, cache_root):
     _as_if_on_the_accelerator(monkeypatch)
     model = _native(base_dir)
-    key = next(k for k, v in model.state_dict().items() if v.dim() == 2 and v.shape[0] == v.shape[1] > 1)
+    key = next(
+        k for k, v in model.state_dict().items() if v.dim() == 2 and v.shape[0] == v.shape[1] > 1
+    )
 
     def hook(module, state, prefix, local_metadata):
         state[key] = state[key].t()  # same storage, same shape, different view
