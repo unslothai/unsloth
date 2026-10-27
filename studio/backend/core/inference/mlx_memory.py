@@ -1164,8 +1164,7 @@ def _lazy_checkpoint(model_dir: str, config: dict):
 
 
 def _loader_view(model_dir: str, config: dict) -> tuple:
-    """Where mlx-vlm reads ``model_dir`` with ``config`` as its config.json: unsloth_zoo's temporary
-    view when the two differ, else ``model_dir``; and the view's owner, None without unsloth_zoo."""
+    """``(path, owner)``: unsloth_zoo's config view of ``model_dir`` (owner None without unsloth_zoo)."""
     import io
 
     try:
@@ -1181,8 +1180,7 @@ def _loader_view(model_dir: str, config: dict) -> tuple:
 
 
 def _install_oq_renames(config: dict) -> None:
-    """unsloth_zoo's sanitize renames for DeepSeek-V4.1 oQ quants, which its load installs before
-    mlx-vlm reads one."""
+    """unsloth_zoo's sanitize renames for DeepSeek-V4.1 oQ quants, as its load installs them."""
     try:
         from unsloth_zoo.mlx.loader import _ensure_deepseek_v41_omlx_layout
     except Exception:

@@ -3873,7 +3873,6 @@ def test_a_deepseek_v41_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, mon
     }
     model = v41.Model(ModelConfig.from_dict(json.loads(json.dumps(config))))
 
-    # 2-bit routed experts, 8-bit projections, MXFP8 engram.wkv, a 4-bit Engram table
     def oq2e(path, module):
         if (
             not hasattr(module, "to_quantized")
@@ -3893,7 +3892,7 @@ def test_a_deepseek_v41_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, mon
     )
     names = {"gate_proj": "w1", "down_proj": "w2", "up_proj": "w3"}
 
-    def omlx(key):  # omlx stores its source's names: embed, stacked w1/w2/w3 experts, vision ffn
+    def omlx(key):
         key = key.replace("language_model.embed_tokens.", "language_model.embed.").replace(
             ".switch_mlp.", ".experts."
         )
@@ -3915,8 +3914,7 @@ def test_a_deepseek_v41_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, mon
         (16, 128, 32), mx.uint32
     )  # a DSpark stage
     mx.save_safetensors(str(tmp_path / "model.safetensors"), stored)
-    # As omlx records them: MXFP entries with no group size, the Engram table apart, a DSpark stage, and no
-    # "quantization", which only unsloth_zoo's reading of the config supplies.
+    # No "quantization": only unsloth_zoo's reading of the config supplies it.
     quantized = {
         omlx(f"{p}.weight").removesuffix(".weight"): s
         if s["mode"] == "affine"
@@ -3940,7 +3938,7 @@ def test_a_deepseek_v41_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, mon
 
     model_dir = str(tmp_path)
     priced = mm._snapshot_config(model_dir)
-    # The layout is installed process-wide: unset again between them, each check must install it itself.
+    # Installed process-wide: reset between checks so each must install it itself.
     sanitize = v41.Model.sanitize
     if getattr(sanitize, "_unsloth_omlx_layout", False):
         pytest.skip("an earlier load in this process installed the oQ layout")
