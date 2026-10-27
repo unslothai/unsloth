@@ -4623,6 +4623,7 @@ export const de = {
       modelsTitle: "Noch keine feinabgestimmten Modelle",
       modelsDescription: "Modelle, die Sie in Unsloth trainieren oder exportieren, erscheinen hier.",
       createFolder: "Ordner erstellen",
+      generateImage: "Bild generieren",
       generateVideo: "Video generieren",
       generateAudio: "Audio generieren",
       trainModel: "Modell trainieren",

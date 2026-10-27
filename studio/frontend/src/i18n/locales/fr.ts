@@ -4634,6 +4634,7 @@ export const fr = {
       modelsTitle: "Aucun modèle affiné pour l'instant",
       modelsDescription: "Les modèles que vous entraînez ou exportez dans Unsloth apparaissent ici.",
       createFolder: "Créer un dossier",
+      generateImage: "Générer une image",
       generateVideo: "Générer une vidéo",
       generateAudio: "Générer de l'audio",
       trainModel: "Entraîner un modèle",

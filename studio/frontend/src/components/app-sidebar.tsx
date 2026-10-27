@@ -876,12 +876,14 @@ function MediaWorkflowList<Id extends string>({
   enabled,
   listed,
   onPick,
+  tail,
 }: {
   tabs: ReadonlyArray<{ id: Id; icon: IconSvgElement; label: string }>;
   current: Id | null;
   enabled: (id: Id) => boolean;
   listed: boolean;
   onPick: (id: Id) => void;
+  tail?: ReactNode;
 }) {
   if (!listed) return null;
   return (
@@ -895,6 +897,7 @@ function MediaWorkflowList<Id extends string>({
           onSelect={() => onPick(tab.id)}
         />
       ))}
+      {tail}
     </div>
   );
 }
@@ -915,10 +918,12 @@ function ImagesWorkflowList({
   active,
   collapsed,
   onPick,
+  tail,
 }: {
   active: boolean;
   collapsed: boolean;
   onPick: (id: WorkflowId) => void;
+  tail?: ReactNode;
 }) {
   const workflow = useImageWorkflowStore((s) => s.workflow);
   const supported = useImageWorkflowStore((s) => s.supported);
@@ -932,6 +937,7 @@ function ImagesWorkflowList({
       enabled={(id) => isWorkflowEnabled(id, supported)}
       listed={!collapsed && (active ? pageMode !== "train" : expanded)}
       onPick={onPick}
+      tail={tail}
     />
   );
 }
@@ -3542,6 +3548,19 @@ export function AppSidebar() {
     sidebarRowsLabelled &&
     !(navRows.images.active && imagesPageMode === "train");
   const audioWorkflowsListed = sidebarRowsLabelled;
+  // An unpinned Video sits last under Images, and an unpinned Images under Video.
+  const unpinnedMediaSibling = (sibling: "images" | "video"): ReactNode => {
+    if (inlineNavIds.includes(sibling)) return null;
+    const row = navRows[sibling];
+    return (
+      <WorkflowChoice
+        tab={row}
+        active={false}
+        enabled={!row.disabled && !row.pending}
+        onSelect={row.onClick}
+      />
+    );
+  };
   const pickImagesWorkflow = (workflowId: WorkflowId) => {
     useImageWorkflowStore.getState().setWorkflow(workflowId);
     navigate({ to: "/images" });
@@ -6185,7 +6204,12 @@ export function AppSidebar() {
                         active={row.active}
                         collapsed={!sidebarRowsLabelled}
                         onPick={pickImagesWorkflow}
+                        tail={unpinnedMediaSibling("video")}
                       />
+                    ) : id === "video" && sidebarRowsLabelled && unpinnedMediaSibling("images") ? (
+                      <div className="mt-0.5 flex flex-col gap-px pl-5">
+                        {unpinnedMediaSibling("images")}
+                      </div>
                     ) : id === "audio" ? (
                       <AudioWorkflowList
                         active={row.active}

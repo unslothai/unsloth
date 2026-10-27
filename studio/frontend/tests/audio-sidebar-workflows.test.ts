@@ -28,7 +28,7 @@ test("Images keeps its list and chevron, now thin wrappers over the shared media
   );
   assert.match(
     images,
-    /function ImagesWorkflowList\(\{\s*active,\s*collapsed,\s*onPick,\s*\}/,
+    /function ImagesWorkflowList\(\{\s*active,\s*collapsed,\s*onPick,\s*tail,\s*\}/,
   );
   assert.match(images, /tabs=\{WORKFLOW_TABS\}/);
   assert.match(

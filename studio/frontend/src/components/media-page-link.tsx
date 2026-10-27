@@ -25,7 +25,7 @@ export const HEADER_ICON_BUTTON =
   "flex size-[calc(30px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white";
 
 /** Link to another page's workspace, parked past a divider so it reads as leaving. `iconOnly`
- *  drops the divider and label for a header icon button. */
+ *  drops the divider and label for a header icon button; `iconArrow` keeps the arrow beside it. */
 export function MediaPageLink({
   to,
   libraryTab,
@@ -36,6 +36,7 @@ export function MediaPageLink({
   labelClassName,
   arrowClassName,
   iconOnly = false,
+  iconArrow = false,
 }: {
   to: "/images" | "/video" | "/audio" | "/library";
   libraryTab?: LibraryTab;
@@ -47,6 +48,7 @@ export function MediaPageLink({
   labelClassName?: string;
   arrowClassName?: string;
   iconOnly?: boolean;
+  iconArrow?: boolean;
 }) {
   const navigate = useNavigate();
   const go = () => {
@@ -65,13 +67,21 @@ export function MediaPageLink({
             type="button"
             aria-label={label}
             onClick={go}
-            className={HEADER_ICON_BUTTON}
+            className={cn(
+              HEADER_ICON_BUTTON,
+              // Inset as in the square button, so the icon keeps its place and the arrow trails it.
+              iconArrow &&
+                "w-auto gap-0.5 px-[calc((30px*var(--ui-space-scale,1)-var(--icon-size))/2)]",
+            )}
           >
             <HugeiconsIcon
               icon={icon}
               strokeWidth={1.75}
               className="size-icon"
             />
+            {iconArrow && (
+              <ArrowRightIcon className="size-3.5 shrink-0 opacity-60" />
+            )}
           </button>
         </TooltipTrigger>
         <TooltipContent
@@ -146,7 +156,7 @@ export function LibraryPageLink({
   );
 }
 
-/** Images and Video link to each other beside Library, with the sidebar's icons. */
+/** Images and Video link to each other past Library, with the sidebar's icons and an arrow. */
 export function SiblingMediaPageLink({ to }: { to: "/images" | "/video" }) {
   const t = useT();
   const label = t(
@@ -159,6 +169,7 @@ export function SiblingMediaPageLink({ to }: { to: "/images" | "/video" }) {
       icon={to === "/images" ? Image03Icon : FlimSlateIcon}
       tooltip={label}
       iconOnly={true}
+      iconArrow={true}
     />
   );
 }

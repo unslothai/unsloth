@@ -4582,6 +4582,7 @@ export const ptBR = {
       modelsTitle: "Nenhum modelo ajustado ainda",
       modelsDescription: "Os modelos que você treina ou exporta no Unsloth aparecem aqui.",
       createFolder: "Criar pasta",
+      generateImage: "Gerar uma imagem",
       generateVideo: "Gerar um vídeo",
       generateAudio: "Gerar áudio",
       trainModel: "Treinar um modelo",

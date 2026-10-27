@@ -4689,6 +4689,7 @@ export const he = {
       modelsTitle: "אין עדיין מודלים מכווננים",
       modelsDescription: "מודלים שתאמן או תייצא ב-Unsloth יופיעו כאן.",
       createFolder: "צור תיקייה",
+      generateImage: "יצירת תמונה",
       generateVideo: "צור סרטון",
       generateAudio: "צור אודיו",
       trainModel: "אמן מודל",

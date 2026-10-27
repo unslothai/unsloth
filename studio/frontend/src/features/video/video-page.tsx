@@ -3845,14 +3845,15 @@ function VideoGenerator({
               ]}
             />
           </div>
-          <div className="pointer-events-none col-start-3 row-start-1 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+          {/* Chat header's right inset: its scrollbar gutter plus 0.5rem, window controls included. */}
+          <div className="pointer-events-none col-start-3 row-start-1 flex min-w-0 items-start justify-end pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))] pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-1">
               <MediaApiButton
                 kind="video"
                 model={status?.loaded ? (status.repo_id ?? null) : null}
               />
-              <SiblingMediaPageLink to="/images" />
               <LibraryPageLink tab="videos" iconOnly={true} />
+              <SiblingMediaPageLink to="/images" />
             </div>
           </div>
         </div>

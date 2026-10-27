@@ -4831,6 +4831,7 @@ export const sv = {
       modelsDescription:
         "Modeller som du tränar eller exporterar i Unsloth visas här.",
       createFolder: "Skapa mapp",
+      generateImage: "Generera en bild",
       generateVideo: "Generera en video",
       generateAudio: "Generera ljud",
       trainModel: "Träna en modell",

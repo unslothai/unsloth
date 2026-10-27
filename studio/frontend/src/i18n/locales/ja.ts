@@ -4498,6 +4498,7 @@ export const ja = {
       modelsTitle: "ファインチューニング済みモデルはまだありません",
       modelsDescription: "Unsloth でトレーニングまたはエクスポートしたモデルがここに表示されます。",
       createFolder: "フォルダを作成",
+      generateImage: "画像を生成",
       generateVideo: "動画を生成",
       generateAudio: "音声を生成",
       trainModel: "モデルをトレーニング",
