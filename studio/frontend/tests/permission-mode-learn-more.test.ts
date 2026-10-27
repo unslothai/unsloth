@@ -13,13 +13,15 @@ const SANDBOX_TAB = await readFile(
   new URL("../src/features/settings/tabs/sandbox-tab.tsx", import.meta.url),
   "utf8",
 );
+const CSS = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
 const OLD_GENERAL = await readFile(
   new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
   "utf8",
 );
 
-test("the question mark opens the Permissions section of Settings > Sandbox", () => {
-  assert.match(MENU, /openSettings\("sandbox", \{ scrollTarget: "sandbox-permissions" \}\)/);
+test("the picker's Learn more opens the sandboxing docs; Settings > Sandbox keeps its Permissions target", () => {
+  assert.match(MENU, /onSelect=\{\(\) => openExternalLink\(SANDBOX_DOCS_URL\)\}/);
+  assert.match(SANDBOX_TAB, /href=\{SANDBOX_DOCS_URL\}/);
   assert.match(SANDBOX_TAB, /if \(scrollTarget !== "sandbox-permissions"\) return;/);
   assert.match(SANDBOX_TAB, /ref=\{permissionsRef\}/);
   assert.doesNotMatch(OLD_GENERAL, /permissionsRef|PermissionModeDropdown|general-permissions/);
@@ -105,7 +107,12 @@ test("menu descriptions stay to one short line", () => {
   for (const text of descriptions) assert.ok(text.length <= 60, text);
 });
 
-test("Full access looks like every other level and asks in a short, neutral confirmation", () => {
+test("Full access is orange in the menus and asks in a short, neutral confirmation", () => {
+  assert.match(MENU, /option\.value === "full" && "menu-item-full-access",/);
+  assert.match(CSS, /\.menu-item-full-access \* \{\s*color: var\(--full-access\) !important;/);
+  // Run settings' dropdown has no .unsloth-plus-menu.
+  assert.match(CSS, /^\t:is\(\[data-slot="dropdown-menu-item"\], \[data-slot="context-menu-item"\]\)\.menu-item-full-access,$/m);
+  assert.match(MENU, /<AlertDialogAction variant="destructive" onClick=\{onConfirm\}>\s*Confirm\s*<\/AlertDialogAction>/);
   for (const source of [MENU, SANDBOX_TAB]) assert.doesNotMatch(source, /text-bypass|data-variant=\{fullAccess/);
   assert.match(MENU, /icon: ShieldAlertGlyph,/);
   assert.match(MENU, /Turn on Full access\?/);

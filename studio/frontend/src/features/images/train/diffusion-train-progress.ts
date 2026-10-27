@@ -12,6 +12,7 @@ type Status = Pick<
   | "in_model_load"
   | "message"
   | "preparation"
+  | "download_progress"
 >;
 
 const PHASE_MESSAGE =
