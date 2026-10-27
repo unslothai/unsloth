@@ -81,7 +81,7 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
   }, [catalog, deferred]);
 
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col border-border border-r bg-background">
+    <div className="flex h-full w-64 shrink-0 flex-col border-border border-r bg-background">
       <div className="relative border-border border-b px-3 py-2">
         <HugeiconsIcon
           icon={Search01Icon}
