@@ -327,6 +327,25 @@ def _gguf_backend_supported() -> bool:
     return hasattr(GGUFLM, "_detect_total_slots") and hasattr(GGUFLM, "_post_with_retries")
 
 
+def _run_model_label(model: str) -> str:
+    """A Hub repo holds every quant, so name the loaded one: two quants of a repo stay apart."""
+    try:
+        from core.inference.openai_auto_download import split_model_ref
+        from hub.utils.paths import is_valid_repo_id
+        from routes.inference import get_llama_cpp_backend
+
+        base, variant = split_model_ref(model)
+        if variant is not None or not is_valid_repo_id(base):
+            return model  # already pinned, or a local file whose name carries the quant
+        llama = get_llama_cpp_backend()
+        loaded = llama.is_loaded and split_model_ref(llama.model_identifier or "")[0] == base
+        if loaded and llama.hf_variant:
+            return f"{base}:{llama.hf_variant}"
+    except Exception as e:
+        logger.debug("Could not read the loaded GGUF variant: %s", e)
+    return model
+
+
 def _studio_base_url(http_request: Request) -> Optional[str]:
     """The address this Studio actually listens on, for lm_eval's requests back to it."""
     state = http_request.app.state
@@ -435,6 +454,8 @@ async def run_benchmark(
             lm_eval_kwargs["model_args"]["api_key"] = raw_key
             logger.info("Minted ephemeral API key for benchmark run")
 
+        model_label = _run_model_label(request.checkpoint_path)
+
         # ── Run lm_eval in the orchestrator worker thread ─────────
         backend.clear_logs()
         for line in model_lines:
@@ -480,7 +501,9 @@ async def run_benchmark(
                 insert_benchmark_run(
                     id = run_summary["id"],
                     task = run_summary["task"],
-                    model = run_summary["model"],
+                    model = model_label
+                    if run_summary["model"] == request.checkpoint_path
+                    else run_summary["model"],
                     metrics = run_summary["metrics"],
                     n_samples = run_summary["n_samples"],
                     output_path = output_path or "",

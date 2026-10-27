@@ -65,6 +65,19 @@ function score(
 
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
+// The quant ("repo:Q8_0") never truncates, so two quants of one model stay told apart.
+function ModelLabel({ model }: { model: string }): ReactElement {
+  const cut = model.lastIndexOf(":");
+  const name = cut > 0 ? model.slice(0, cut) : model;
+  const quant = cut > 0 ? model.slice(cut + 1) : null;
+  return (
+    <span className="flex min-w-0 justify-end gap-1 text-ui-12 text-foreground/85">
+      <span className="truncate">{name}</span>
+      {quant && <span className="shrink-0 text-muted-foreground">{quant}</span>}
+    </span>
+  );
+}
+
 function Tile({
   label,
   value,
@@ -195,9 +208,7 @@ export function EvalScoreboard(): ReactElement | null {
                   b.run.num_fewshot ? ` · ${b.run.num_fewshot}-shot` : ""
                 } · ${new Date(b.run.created_at).toLocaleString()}`}
               >
-                <span className="truncate text-right text-ui-12 text-foreground/85">
-                  {b.model}
-                </span>
+                <ModelLabel model={b.model} />
                 <span className="relative h-3 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
                   {[25, 50, 75].map((x) => (
                     <span

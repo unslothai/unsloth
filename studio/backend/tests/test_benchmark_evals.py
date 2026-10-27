@@ -564,3 +564,18 @@ def test_a_new_run_does_not_start_with_the_last_runs_progress(monkeypatch):
     orch._report_progress(21, 400, "Running loglikelihood requests", "00:01", "00:15")
     assert benchmark_routes._live_progress(backend)["current"] == 21
     backend.release(seq)
+
+
+def test_a_hub_run_is_named_with_its_loaded_quant(monkeypatch):
+    import routes.inference as inference_routes
+
+    repo = "unsloth/Llama-3.2-1B-Instruct-GGUF"
+    llama = SimpleNamespace(is_loaded = True, model_identifier = repo, hf_variant = "Q8_0")
+    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: llama)
+    label = benchmark_routes._run_model_label
+    assert label(repo) == f"{repo}:Q8_0"
+    assert label(f"{repo}:Q4_K_M") == f"{repo}:Q4_K_M"  # the request already names one
+    assert label("unsloth/Qwen3-4B-GGUF") == "unsloth/Qwen3-4B-GGUF"  # not the loaded model
+    assert label("/models/Llama-3.2-1B-Instruct-Q8_0.gguf") == "/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+    llama.is_loaded = False
+    assert label(repo) == repo
