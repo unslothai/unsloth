@@ -449,6 +449,10 @@ def test_pp2_zero_bubble_with_non_reentrant_checkpointing_matches_one_process(sc
 @pytest.mark.parametrize("schedule", ["interleavedzerobubble", "zbvzerobubble"])
 def test_pp2_zero_bubble_with_compiled_blocks_matches_one_process(schedule):
     _skip_v(schedule)
+    if not _v_supported():
+        # torch 2.10 / 2.11 split backward reads Function._input_metadata, which compiled (AOTAutograd) nodes
+        # refuse: zero bubble over torch.compile'd layers is a torch limitation there.
+        pytest.skip(f"zero bubble over compiled layers needs torch >= 2.12 (torch {torch.__version__})")
     saved = {}
     results = _spawn("multi", 2, keep = saved, arch = "llama", schedule = schedule, compile_layers = True)
     _check_multi(results, saved, 2, schedule)
