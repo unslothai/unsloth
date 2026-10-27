@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The audio paths must fetch Spark-TTS into the shared HF cache, never a relative dir.
-
-``snapshot_download(repo, local_dir = "Spark-TTS-0.5B")`` resolves against the process
-CWD. Under the desktop shell that is ``studio/src-tauri``, so ~1.5 GB of model landed
-inside the Tauri crate, the dev watcher rebuilt on every downloaded file and killed the
-backend mid-load. It also bypasses hf_cache_settings, so the copy is invisible to the
-inventory and re-downloads once per CWD -- while the cached-start path (``local_files_only``)
-was already reading the cache.
-
-Parsed rather than string-matched: reformatting this call should not fail the suite,
-only reintroducing a download target outside the cache should.
-"""
+"""Spark-TTS must go to the shared HF cache, not a relative local_dir resolved against the CWD."""
 
 from __future__ import annotations
 
@@ -44,7 +33,6 @@ if _REPO_ROOT is None:
         allow_module_level = True,
     )
 
-# Every module that fetches a Spark-TTS repo: TTS inference, the GGUF BiCodec decoder and the trainer.
 _AUDIO_SOURCES = (
     "studio/backend/core/inference/inference.py",
     "studio/backend/core/inference/llama_cpp.py",
@@ -95,9 +83,7 @@ def _is_anchored(
         return source is not None and _is_anchored(source, assigned, depth + 1)
     if isinstance(expr, ast.Call):
         func = expr.func
-        # os.path.join(base, ...) / Path(base) / str(base) anchor to something named.
         if isinstance(func, ast.Attribute):
-            # ...but a repo id sliced into a bare name does not.
             return func.attr not in ("split", "rsplit")
         return True
     return False

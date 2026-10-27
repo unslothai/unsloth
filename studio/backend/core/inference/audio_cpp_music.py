@@ -55,10 +55,20 @@ def timeout_seconds(
     family: Optional[str], seconds: float, variations: int, backend: Optional[str]
 ) -> float:
     music = MUSIC_SPECS.get(str(family or ""))
-    rtf = music.rtf * music.overrun if music is not None else 4.0
+    rtf = music.rtf if music is not None else 4.0
     rtf *= _BACKEND_FACTOR.get(str(backend or "").lower(), 1.0)
+    if music is not None and music.self_ending_s:
+        seconds = music.self_ending_s
     work = rtf * max(0.0, float(seconds)) * max(1, int(variations))
     return max(_TIMEOUT_FLOOR, min(_TIMEOUT_CEILING, _TIMEOUT_FLOOR + work))
+
+
+def self_ending_timeout(family: Optional[str], backend: Optional[str]) -> Optional[float]:
+    """The wait for a model that ends the song itself, whatever length or token count was asked."""
+    music = MUSIC_SPECS.get(str(family or ""))
+    if music is None or not music.self_ending_s:
+        return None
+    return timeout_seconds(family, music.self_ending_s, 1, backend)
 
 
 def frames_for(seconds: float, variations: int = 1) -> int:
@@ -196,11 +206,6 @@ def song_request(
         request["text"] = lyrics
         request_options["style"] = description
         request_options["lyrics"] = lyrics
-        # Length caps the semantic tokens (25 fps); the default 200-frame floor outlasts short asks.
-        frames = int(round(seconds * 25))
-        overrun = MUSIC_SPECS["yue2"].overrun
-        request_options["semantic_max_tokens"] = int(round(seconds * overrun * 25))
-        request_options["semantic_min_tokens"] = min(200, frames)
         return _finish(model, request, request_options, seed)
     if instrumental and music is not None and music.instrumental_lyrics is not None:
         lyrics = music.instrumental_lyrics
@@ -294,8 +299,7 @@ def edit_request(
         elif action == "cover":
             request_options["route"] = "cover"
             if strength is not None:
-                # strength is how much to change; audio_cover_strength is the share of steps
-                # conditioned on the source (diffusion.cpp), so higher keeps more of it.
+                # audio_cover_strength is the share of steps conditioned on the source, so invert.
                 request_options["audio_cover_strength"] = 1.0 - float(strength)
         else:  # continue: ACE-Step's "complete" adds parts across the whole track.
             request_options["route"] = "complete"

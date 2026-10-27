@@ -38,10 +38,8 @@ export async function fetchDefaultChatTemplate(
   signal?: AbortSignal,
   nativePathToken?: string | null,
 ): Promise<string | null> {
-  // A native (picked or drag-dropped) GGUF lives at a path only its signed lease knows, and the
-  // picker chat-template GET has no lease plumbing, so redeem a one-shot validate-model lease and
-  // read the embedded template through the lease-aware /api/inference/validate probe instead.
-  // Non-native models keep the plain GET path.
+  // A native GGUF path is only known to its lease, so read the template via the lease-aware
+  // /api/inference/validate probe.
   if (nativePathToken) {
     let nativePathLease: string | null = null;
     try {
@@ -49,7 +47,6 @@ export async function fetchDefaultChatTemplate(
         await consumeNativePathToken(nativePathToken, "validate-model")
       ).nativePathLease;
     } catch {
-      // Lease expired / revoked: no readable path, so no default template (the subsequent load re-mints its own lease).
       return null;
     }
     const response = await authFetch("/api/inference/validate", {

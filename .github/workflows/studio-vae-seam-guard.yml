@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs test_vae_tile_geometry.py on CPU with the pinned diffusers, which Backend CI does not install
-# (there the guard would only skip).
+# Backend CI does not install the pinned diffusers, so the guard would only skip there.
 
 name: Studio VAE seam guard
 
@@ -34,8 +33,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a main run; superseded PR pushes are cancelled.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Superseded PR pushes are cancelled; on main a running run finishes and a burst runs the tip (see studio-backend-ci.yml).
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

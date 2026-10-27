@@ -10,11 +10,8 @@ import {
 } from "../src/features/chat/utils/parse-assistant-content.ts";
 
 /**
- * The tracker takes deltas, because reading the accumulated buffer at all
- * costs O(reply) per arrival. The cases below are written against the buffer,
- * so this maps a buffer to the calls the adapter makes for it: an arrival
- * appends what it added, and the trailing-fragment strip retracts to what it
- * left behind.
+ * The tracker takes deltas; this maps buffer-written cases to the adapter's calls:
+ * an arrival appends, the trailing-fragment strip retracts.
  */
 function bufferTracker(): { update(text: string): boolean } {
   const tracker = createThinkTagTracker();
@@ -32,11 +29,6 @@ function bufferTracker(): { update(text: string): boolean } {
   };
 }
 
-/**
- * Feed `chunks` in order and assert the tracker agrees with a full rescan
- * after every one of them. `hasUnclosedThinkTag` is the reference: the
- * tracker exists only to give the same answer without rereading the buffer.
- */
 function assertAgreesOnStream(
   chunks: string[],
   label: string,
@@ -59,7 +51,6 @@ function assertAgreesOnStream(
   return { unclosed, closed };
 }
 
-/** Every way of cutting `tag` into `parts` non-empty pieces. */
 function splits(tag: string, parts: number): string[][] {
   if (parts === 1) return [[tag]];
   const out: string[][] = [];
@@ -101,8 +92,6 @@ test("tags delivered one character per arrival are seen", () => {
 });
 
 test("a tag split across arrivals that carry nothing else is seen", () => {
-  // Worst case for too short an overlap: one tag character per arrival, with
-  // empty arrivals in between.
   assertAgreesOnStream(
     ["a", "<", "", "t", "", "h", "i", "", "n", "k", "", ">", "b"],
     "empty arrivals between tag characters",
@@ -147,8 +136,7 @@ test("a stream seeded with a continuation partial is tracked", () => {
 });
 
 test("a suffix removed from the buffer is accounted for", () => {
-  // The adapter strips a trailing ${...} fragment after appending, so its
-  // buffer can be shorter than the one from the arrival before.
+  // The adapter strips a trailing ${...} fragment, so the buffer can shrink.
   const cases: Array<{ steps: string[]; label: string }> = [
     { steps: ["<think>a", "<think>a ${x}", "<think>a"], label: "plain strip" },
     {
@@ -156,18 +144,14 @@ test("a suffix removed from the buffer is accounted for", () => {
       label: "strip after a close",
     },
     {
-      // The suffix takes the closing tag with it, so the buffer is unclosed
-      // again and the tracker has to find the earlier close.
       steps: ["<think>a</think>b</think>", "<think>a</think>b"],
       label: "strip removes the last close tag",
     },
     {
-      // The removed suffix takes the opening tag with it.
       steps: ["<think>a</think>b<think>c", "<think>a</think>b"],
       label: "strip removes the last open tag",
     },
     {
-      // Removed back past a tag that was never scanned on its own.
       steps: ["a<think>b</think>c", "a"],
       label: "strip removes both tags",
     },
@@ -185,8 +169,6 @@ test("a suffix removed from the buffer is accounted for", () => {
 });
 
 test("append then strip within one arrival is tracked", () => {
-  // What the adapter actually does: append the delta, strip a trailing
-  // fragment, then ask once. Only the post-strip buffer is ever seen.
   const tracker = bufferTracker();
   const deltas = [
     "<think>",
@@ -209,11 +191,7 @@ test("append then strip within one arrival is tracked", () => {
   }
 });
 
-/**
- * Deterministic pseudo-random generator. A plain `seed * 1103515245` loop is not
- * usable here: the product runs past 2^53, so the sampled low bits come out
- * constant and half of any alphabet is never drawn.
- */
+/** mulberry32: a `seed * 1103515245` loop exceeds 2^53 and its low bits go constant. */
 function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
@@ -257,8 +235,7 @@ test("tracker agrees with a full rescan on random streams", () => {
     unclosed += seen.unclosed;
     closed += seen.closed;
   }
-  // Both answers have to occur, or the comparison above would hold for a
-  // constant tracker.
+  // Both answers must occur, or a constant tracker would pass.
   assert.equal(unclosed > 1_000, true, `only ${unclosed} unclosed states seen`);
   assert.equal(closed > 1_000, true, `only ${closed} closed states seen`);
 });
@@ -275,7 +252,6 @@ test("tracker agrees with a full rescan on random streams with strips", () => {
     const count = 1 + (next() % 16);
     for (let i = 0; i < count; i += 1) {
       text += alphabet[next() % alphabet.length];
-      // Cut a suffix off, as the trailing-fragment strip does.
       if (next() % 3 === 0) {
         const shorter = text.slice(0, Math.max(0, text.length - (next() % 12)));
         if (shorter.length < text.length) strips += 1;
@@ -297,10 +273,6 @@ test("tracker agrees with a full rescan on random streams with strips", () => {
 });
 
 test("the adapter's own order, append the delta then retract the strip, is tracked", () => {
-  // The wrapper above only ever sees the buffer a strip left behind, so it
-  // hides the two-call sequence the adapter really makes. This drives the
-  // tracker directly: every delta is appended whole, and only then is the
-  // fragment taken back off.
   const random = mulberry32(20260817);
   const alphabet = ["<think>", "</think>", "x", " ", "<thi", "nk>", "}", "${a}"];
   for (let seed = 0; seed < 400; seed += 1) {

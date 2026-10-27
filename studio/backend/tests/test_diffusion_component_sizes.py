@@ -398,10 +398,17 @@ class _Pipe:
         self.transformer = _Module()
 
 
+def _on_card_placement(monkeypatch):
+    # A peak is recorded only under a known placement; the fake pipe's denoiser stays on the card.
+    from core.inference import diffusion_memory
+    monkeypatch.setattr(diffusion_memory, "stream_window_pad_mib", lambda pipe: 0)
+
+
 def test_calibration_records_and_reuses_for_any_family(monkeypatch):
     import torch
 
     monkeypatch.setattr(vsr, "_PEAKS", {})
+    _on_card_placement(monkeypatch)
     allocated = {"now": 1000 << 20, "peak": 0}
     monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda dev = None: None)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda dev = None: allocated["now"])
@@ -1248,12 +1255,14 @@ def test_loaded_role_with_unreadable_size_makes_its_term_unknown(tmp_path, monke
 
 
 def test_no_index_fallback_takes_only_loader_names(tmp_path):
-    for name in (
-        "adapter_model.safetensors",
-        "weights.safetensors",
-        "diffusion_pytorch_model.fp16.safetensors",
-    ):
+    for name in ("adapter_model.safetensors", "weights.safetensors"):
         assert dcs.select_weight_files([name], folder = "transformer") == []
+    # A lone .fp16 twin is read; beside a default it is not.
+    twin = "diffusion_pytorch_model.fp16.safetensors"
+    assert dcs.select_weight_files([twin], folder = "transformer") == [twin]
+    assert dcs.select_weight_files(
+        [twin, "diffusion_pytorch_model.safetensors"], folder = "transformer"
+    ) == ["diffusion_pytorch_model.safetensors"]
     _write_header(tmp_path / "transformer" / "adapter_model.safetensors", {"a": ("BF16", 10)})
     assert dcs.local_component_sizes(tmp_path) is None
     for stem in ("diffusion_pytorch_model", "model", "pytorch_model"):
@@ -1638,6 +1647,7 @@ def test_retagged_peak_is_recorded_under_the_mode_that_ran(monkeypatch):
     import torch
 
     monkeypatch.setattr(vsr, "_PEAKS", {})
+    _on_card_placement(monkeypatch)
     alloc = {"now": 0, "peak": 0}
     monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda dev = None: None)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda dev = None: alloc["now"])
@@ -1727,9 +1737,9 @@ def test_calibration_revision_includes_the_companion_base(monkeypatch):
         )
         return video._calibration_revision(state)
 
-    assert rev("pipeline", "Lightricks/LTX-2") == "g" * 40
+    assert rev("pipeline", "Lightricks/LTX-2") == f"u/ltx-gguf/x.gguf@{'g' * 40}"
     gguf_default = rev("gguf", "Lightricks/LTX-2")
-    assert gguf_default == f"{'g' * 40}|base=Lightricks/LTX-2@{'b' * 40}"
+    assert gguf_default == f"u/ltx-gguf/x.gguf@{'g' * 40}+Lightricks/LTX-2@{'b' * 40}"
     assert rev("gguf", "someone/ltx2-base") != gguf_default
 
 
@@ -1751,3 +1761,19 @@ def test_transformers_folders_recognise_only_transformers_stems(tmp_path):
     _component(tmp_path, "vae", 0.1)
     sizes = dcs.local_component_sizes(tmp_path)
     assert sizes.get("text_encoder") is None and "text_encoder" in sizes.unknown
+
+
+def test_a_cosmos3_snapshot_prices_a_known_zero_text_term(tmp_path):
+    fam = _fam("cosmos3-edge")
+    entry = json.loads(
+        (Path(__file__).parent / "fixtures" / "cosmos3_checkpoints.json").read_text(
+            encoding = "utf-8"
+        )
+    )["nvidia/Cosmos3-Edge@344d602b128d1bbdacb43b08d0a3626f46343e29"]
+    (tmp_path / "model_index.json").write_text(json.dumps(entry["model_index"]), encoding = "utf-8")
+    denoiser_gb, _text_gb, vae_gb = fam.bf16_components_gb
+    _component(tmp_path, "transformer", denoiser_gb)
+    _component(tmp_path, "vae", vae_gb)
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert dcs.video_header_terms(fam, sizes) == pytest.approx((denoiser_gb, 0.0, vae_gb))
+    assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), sizes)[1] is None

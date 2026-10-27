@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF export can also write a FastFlowLM Q4NX folder for the AMD Ryzen AI NPU.
-
-Reuses the harness in test_export_gguf_discovery.py; the converter itself is stubbed.
-"""
+"""FastFlowLM Q4NX export for the AMD NPU, with the converter stubbed."""
 
 from __future__ import annotations
+
+import weakref
 
 import json
 import sys
@@ -36,7 +35,7 @@ class _Tokenizer:
 
 
 class _Model:
-    # Like Phi-4-mini: the chat-turn stop id is only in generation_config.
+    # like Phi-4-mini: the chat-turn stop id is only in generation_config
     generation_config = type("G", (), {"eos_token_id": [7, 9]})()
 
     def __init__(self):
@@ -84,7 +83,7 @@ def test_q4nx_folder_matches_the_flm_layout(monkeypatch, tmp_path):
     assert success is True, message
     assert calls == ["Model.Q4_1.gguf"]
     q4nx = save_dir / "npu-q4nx"
-    # No config.json: copied over a catalog model it would drop FLM's flm_version.
+    # no config.json: copied over a catalog model it would drop FLM's flm_version
     assert sorted(p.name for p in q4nx.iterdir()) == [
         "chat_template.jinja",
         "model.q4nx",
@@ -205,7 +204,6 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path, architecture,
     assert ran["cwd"] == str(tmp_path / converter)
     assert ran["env"]["PYTHONIOENCODING"] == "utf-8"
     if sys.platform.startswith("linux"):
-        # Dies with its parent: cancelling an export must not orphan a converter.
         assert callable(ran["preexec_fn"])
 
 
@@ -329,9 +327,7 @@ def test_existing_gguf_takes_companions_from_the_base_model(monkeypatch, tmp_pat
     assert calls == ["Qwen3-0.6B-Q4_1.gguf"]
     assert (out / "tokenizer.json").read_text() == tokenizer
     assert not (out / "config.json").exists()
-    # FLM exits without an eos_token_id array; the tokenizer's eos comes first, then the configs'.
     assert json.loads((out / "tokenizer_config.json").read_text())["eos_token_id"] == [3, 5, 6]
-    # Neither the base folder nor its tokenizer_config carries a template, so the GGUF's is used.
     assert (out / "chat_template.jinja").read_text() == "{{ gguf }}"
 
 
@@ -419,3 +415,36 @@ def test_existing_gguf_without_tokenizer_config_fails_before_converting(monkeypa
     else:
         raise AssertionError("expected a RuntimeError")
     assert calls == []
+
+
+@pytest.mark.parametrize("pruned", [True, False])
+def test_q4nx_folder_carries_the_current_reap_report(monkeypatch, tmp_path, pruned):
+    # The NPU folder is deployed on its own, so its pruning provenance travels with it; a stale
+    # report from an earlier pruned conversion never survives an unpruned one.
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "core.export.reap", Path(__file__).resolve().parents[1] / "core/export/reap.py"
+    )
+    reap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reap)
+    monkeypatch.setitem(sys.modules, "core.export.reap", reap)
+    model = _Model()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    export_mod, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, model)
+    backend.current_tokenizer = _Tokenizer()
+    backend._reap_key = (0.5, 512, None) if pruned else None
+    backend._reap_model = weakref.ref(model)
+    _fake_converter(export_mod, monkeypatch, [])
+    q4nx = save_dir / "npu-q4nx"
+    q4nx.mkdir(parents = True)
+    (q4nx / "reap_report.json").write_text('{"kept_experts": {"old": [1]}}')
+
+    success, message, _ = backend.export_gguf(str(save_dir), ["q4_1"], npu_q4nx = True)
+
+    assert success is True, message
+    report = q4nx / "reap_report.json"
+    assert report.is_file() is pruned
+    if pruned:
+        assert json.loads(report.read_text())["kept_experts"] == {"model.layers.0.mlp": [0, 2]}

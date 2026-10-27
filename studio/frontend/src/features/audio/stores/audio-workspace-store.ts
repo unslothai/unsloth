@@ -3,18 +3,21 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { AudioFailure } from "../audio-failure-actions";
 import type { AudioWorkflowId } from "../workflows";
 
 export const AUDIO_WORKSPACE_STORAGE_KEY = "unsloth_audio_workspace";
 
-/** Only the page commits `workflow`; the sidebar and deep links put a request in
- *  `requestedWorkflow`, which the page takes once it is free to switch, like an in-page tab click. */
+/** Only the page commits `workflow`; others set `requestedWorkflow` for it to take. */
 interface AudioWorkspaceState {
   workflow: AudioWorkflowId;
   workflowChosen: boolean;
   requestedWorkflow: AudioWorkflowId | null;
   navExpanded: boolean;
   lastModelByWorkflow: Partial<Record<AudioWorkflowId, string>>;
+  /** The structured failure behind the last generation error; never persisted. */
+  failure: { message: string; failure: AudioFailure } | null;
+  setFailure: (failure: AudioWorkspaceState["failure"]) => void;
   commitWorkflow: (workflow: AudioWorkflowId) => void;
   adoptWorkflow: (workflow: AudioWorkflowId) => void;
   requestWorkflow: (workflow: AudioWorkflowId) => void;
@@ -32,6 +35,8 @@ export const useAudioWorkspaceStore = create<AudioWorkspaceState>()(
       requestedWorkflow: null,
       navExpanded: false,
       lastModelByWorkflow: {},
+      failure: null,
+      setFailure: (failure) => set({ failure }),
       // Any committed switch settles a pending request, so a stale one never fires later.
       commitWorkflow: (workflow) =>
         set({ workflow, workflowChosen: true, requestedWorkflow: null }),

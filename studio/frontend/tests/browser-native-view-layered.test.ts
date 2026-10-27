@@ -10,7 +10,11 @@ const frames: (() => void)[] = [];
 const mutations: (() => void)[] = [];
 const rect = (x: number, y: number, width: number, height: number) =>
   ({ left: x, top: y, right: x + width, bottom: y + height, width, height }) as DOMRect;
-type Overlay = { getBoundingClientRect: () => DOMRect; closest: () => null; querySelector: () => object | null };
+type Overlay = {
+  getBoundingClientRect: () => DOMRect;
+  closest: () => null;
+  querySelector: (selector: string) => object | null;
+};
 const overlay = (box: DOMRect): Overlay => ({
   getBoundingClientRect: () => box,
   closest: () => null,
@@ -98,8 +102,8 @@ const calls: Call[] = [];
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 register("./helpers/native-view-resolver.mjs", import.meta.url);
-const { useBrowserStore } = await import("../src/features/browser/store.ts");
-const { startNativeViews } = await import("../src/features/browser/native-view.ts");
+const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
+const { keepInBackground, releaseBackground, startNativeViews } = await import("../src/features/browser/native-view.ts");
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
 async function frame(): Promise<void> {
@@ -192,6 +196,14 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     if (tabId) useBrowserStore.getState().setZoom(tabId, 1.5);
     await frame();
     assert.ok(calls.some(({ command, args }) => command === "browser_view_zoom" && args?.zoom === 1.5));
+    if (tabId) {
+      const before = calls.length;
+      useBrowserStore.getState().navigate(tabId, { url: "http://localhost:7860/" }, { replace: false });
+      await frame();
+      const after = calls.slice(before).map(({ command, args }) => (command === "browser_view_zoom" ? args?.zoom : command));
+      const navigated = after.indexOf("browser_view_navigate");
+      assert.ok(navigated >= 0 && after.indexOf(1.5, navigated) > navigated, JSON.stringify(after));
+    }
 
     // a menu away from the page owns it too, so a click there closes the menu; a hover card doesn't
     blocking.length = 0;
@@ -199,7 +211,19 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     await frame();
     assert.deepEqual(lastInput(), { blocked: true, exclude: [] });
     blocking.length = 0;
-    blocking.push({ ...overlay(rect(0, 600, 200, 100)), querySelector: () => ({}) });
+    blocking.push({
+      ...overlay(rect(0, 600, 200, 100)),
+      querySelector: (selector: string) => (selector.includes("hover-card") ? {} : null),
+    });
+    await frame();
+    assert.deepEqual(lastInput(), { blocked: false, exclude: [] });
+
+    // the dialog the browser opens in (compare, projects, phones) holds the page: it isn't over it
+    blocking.length = 0;
+    blocking.push({
+      ...overlay(rect(0, 0, 1000, 800)),
+      querySelector: (selector: string) => (selector.startsWith("[data-native-page") ? placeholder : null),
+    });
     await frame();
     assert.deepEqual(lastInput(), { blocked: false, exclude: [] });
 
@@ -257,4 +281,163 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
   }
   assert.equal(placeholder.attributes.has("data-native-hole"), false, "closing the panel fills the hole");
   assert.equal(html.vars.has("--native-hole-x"), false);
+});
+
+test("a page at work in a chat off screen opens hidden, follows its tab, and outlives the panel", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:shown");
+  const tabId = store.openTabIn("single:away", "https://away.example/") ?? "";
+  calls.length = 0;
+  keepInBackground(tabId);
+  await settle();
+  const opened = calls.find(({ command }) => command === "browser_view_open_background");
+  assert.deepEqual([opened?.args?.tabId, opened?.args?.url], [tabId, "https://away.example/"]);
+  // The agent moves it on: the hidden page follows, and is never shown over this chat.
+  store.navigate(tabId, { url: "https://away.example/next" }, { replace: false });
+  await settle();
+  assert.ok(calls.some(({ command, args }) => command === "browser_view_navigate" && args?.url === "https://away.example/next"));
+  // A panel opening and closing over this chat leaves it open (closed pages go; a kept one is hidden).
+  store.openUrl("https://mine.example/");
+  const stop = startNativeViews();
+  await frame();
+  await frame();
+  stop();
+  assert.ok(!calls.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId));
+  assert.ok(!calls.some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
+  assert.deepEqual(calls.at(-1), { command: "browser_view_show", args: { tabId: null } });
+  // Let go with no panel up, it closes.
+  releaseBackground(tabId);
+  assert.ok(calls.some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
+});
+
+test("a kept tab that leaves its local origin is closed through the views, so its next page opens a new one", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.newTab();
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  store.navigate(tabId, { url: "http://localhost:7860/" }, { replace: false });
+  const globals = globalThis as { nativeViewGranted?: (tab: string, url: string) => boolean; nativeViewCloseLocal?: (tab: string) => void };
+  globals.nativeViewGranted = (tab, url) => tab === tabId && url.startsWith("http://localhost:7860/");
+  keepInBackground(tabId);
+  await settle();
+  // Back to a new tab page drops the grant, and the views close the page themselves
+  store.goBack(tabId);
+  globals.nativeViewGranted = undefined;
+  calls.length = 0;
+  globals.nativeViewCloseLocal?.(tabId);
+  assert.deepEqual(calls.at(-1), { command: "browser_view_close", args: { tabId, forgetLocal: true } });
+  keepInBackground(tabId);
+  store.navigate(tabId, { url: "https://example.com/" }, { replace: false });
+  await settle();
+  assert.ok(calls.some(({ command, args }) => command === "browser_view_open_background" && args?.url === "https://example.com/"));
+  assert.ok(!calls.some(({ command }) => command === "browser_view_navigate"));
+  releaseBackground(tabId);
+});
+
+test("a background page's popup opens in its own chat, and a page that fails to open isn't retried in a loop", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:viewer");
+  const tabId = store.openTabIn("single:worker", "https://worker.example/") ?? "";
+  // A target=_blank link the agent clicked there: the popup joins that chat, behind its front tab.
+  const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+  listener?.({ payload: { kind: "newTab", tabId, url: "https://popup.example/" } });
+  const popup = useBrowserStore.getState().tabs.find((tab) => {
+    const entry = currentEntry(tab);
+    return entry.kind === "web" && entry.url === "https://popup.example/";
+  });
+  assert.equal(popup?.chat, "single:worker");
+  assert.equal(useBrowserStore.getState().tabs.filter((tab) => tab.chat === "single:viewer").length, 0);
+
+  // Opening it keeps failing: one try per request, not a busy loop.
+  const failing = store.openTabIn("single:worker", "https://broken.example/") ?? "";
+  const call = (globalThis as { nativeViewCall?: unknown }).nativeViewCall;
+  let opens = 0;
+  (globalThis as { nativeViewCall?: unknown }).nativeViewCall = (command: string, args?: Record<string, unknown>) => {
+    if (command === "browser_view_open_background" && args?.tabId === failing) {
+      opens += 1;
+      return Promise.reject(new Error("refused"));
+    }
+    return (call as (command: string, args?: Record<string, unknown>) => Promise<unknown>)(command, args);
+  };
+  keepInBackground(failing);
+  await settle();
+  await settle();
+  assert.equal(opens, 1);
+  assert.match(useBrowserStore.getState().tabs.find((tab) => tab.id === failing)?.nativeError ?? "", /refused/);
+  (globalThis as { nativeViewCall?: unknown }).nativeViewCall = call;
+  // The agent's next action opens it after all: the old failure no longer marks the page broken.
+  keepInBackground(failing);
+  await settle();
+  assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === failing)?.nativeError, null);
+  releaseBackground(failing);
+  releaseBackground(tabId);
+});
+
+test("a temporary page's popup in a chat off screen stays out of history", () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:saved");
+  const tabId = store.openTabIn("single:temporary", "https://worker.example/", { temporary: true }) ?? "";
+  const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+  listener?.({ payload: { kind: "newTab", tabId, url: "https://popup-temp.example/" } });
+  const popup = useBrowserStore.getState().tabs.find((tab) => {
+    const entry = currentEntry(tab);
+    return entry.kind === "web" && entry.url === "https://popup-temp.example/";
+  });
+  assert.equal(popup?.chat, "single:temporary");
+  const entry = popup && currentEntry(popup);
+  assert.equal(entry?.kind === "web" ? entry.temporary : undefined, true);
+});
+
+test("an address a local page can't go to itself is offered, not opened", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:local");
+  const tabId = store.openTabIn("single:local", "http://localhost:7860/") ?? "";
+  const tabs = useBrowserStore.getState().tabs.length;
+  const seen = ((globalThis as { nativeViewSeen?: { message: string }[] }).nativeViewSeen ??= []);
+  const before = seen.length;
+  const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+  listener?.({ payload: { kind: "refused", tabId, url: "https://docs.example/" } });
+  assert.equal(useBrowserStore.getState().tabs.length, tabs);
+  assert.deepEqual(seen.slice(before).map(({ message }) => message), ["browser.native.externalPrompt"]);
+});
+
+test("a page whose protections fail shows an error, and Try again opens a new view instead of reusing it", async () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://unprotected.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId ?? "";
+    assert.ok(calls.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId));
+    const before = calls.length;
+    const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+    // the old view had moved on; its replacement for the typed address is the one that fails
+    listener?.({ payload: { kind: "url", tabId, url: "https://unprotected.example/moved" } });
+    useBrowserStore.getState().navigate(tabId, { url: "http://localhost:7860/" }, { replace: false });
+    await frame();
+    listener?.({ payload: { kind: "failed", tabId, error: "the page's protections couldn't be set up, so it wasn't opened" } });
+    const failed = useBrowserStore.getState().tabs.find((tab) => tab.id === tabId);
+    const shown = failed && currentEntry(failed);
+    assert.equal(shown?.kind === "web" && shown.url, "http://localhost:7860/");
+    assert.equal(failed?.nativeError, "the page's protections couldn't be set up, so it wasn't opened");
+    assert.equal(failed?.loading, false);
+    assert.ok(calls.slice(before).some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
+    await frame();
+
+    const retryFrom = calls.length;
+    useBrowserStore.getState().updateTab(tabId, { nativeError: null });
+    useBrowserStore.getState().reload(tabId);
+    await frame();
+    await frame();
+    const retried = calls.slice(retryFrom).filter(({ args }) => args?.tabId === tabId).map(({ command }) => command);
+    assert.ok(retried.includes("browser_view_show"), retried.join(","));
+    assert.ok(!retried.includes("browser_view_navigate") && !retried.includes("browser_view_action"), retried.join(","));
+  } finally {
+    stop();
+  }
 });

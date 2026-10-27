@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""unsloth/_torchao_nodist.py on a simulated torch without torch.distributed (AMD's Windows ROCm
-wheels): is_available() False, every torch.distributed.* submodule unimportable, and the c10d ops
-absent, as in pytorch/ao#4761's test plus the missing ops. Out of process so the parent's module
-cache is untouched. Verified on real hardware separately (Windows 11, gfx1151, torch 2.11 ROCm)."""
+"""_torchao_nodist must work on a torch without torch.distributed, as on AMD's Windows ROCm wheels."""
 
 import importlib.util
 import json

@@ -77,7 +77,7 @@ test("routed image picks apply and transactionally roll back model defaults", ()
   const routeBlock = source.slice(routeStart, routeEnd);
   assert.match(routeBlock, /imagePresets\.hydrated/);
   assert.match(routeBlock, /quantRevert\.current = revert/);
-  assert.match(routeBlock, /applyImageModelDefaults\(wanted, "auto"\)/);
+  assert.match(routeBlock, /applyImageModelDefaults\(\s*wanted,\s*"auto",/);
   assert.match(routeBlock, /!started[\s\S]*revertPick\(revert\)/);
 });
 
@@ -254,4 +254,94 @@ test("the Images page seeds Default from the resident recipe and drops the pick 
   assert.doesNotMatch(src, /defaultsFor\(residentDefaults\)/);
   const revert = src.slice(src.indexOf("const revertPick = useCallback"), src.indexOf("}, []);", src.indexOf("const revertPick = useCallback")));
   assert.match(revert, /pickDefaults\.current = null/);
+});
+
+test("every FLUX.3 Klein alias the backend registers gets its family recipe", () => {
+  for (const id of [
+    "black-forest-labs/flux-3-image-klein-base",
+    "someone/flux3-image-klein-base-finetune",
+    "someone/flux3_image_klein_base",
+    "someone/flux3-klein-base-merge",
+    "flux.3-klein-base",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 50, guidance: 3.5 }, id);
+  }
+  for (const id of [
+    "black-forest-labs/flux-3-image-klein",
+    "someone/flux3-image-klein-finetune",
+    "someone/flux3_image_klein",
+    "someone/flux3-klein-lora-merge",
+    "flux.3-klein",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 16, guidance: 1 }, id);
+  }
+});
+
+test("an opaque FLUX.3 path keys its defaults by the explicit family", () => {
+  for (const [family, want] of [
+    ["flux.3-klein", { steps: 16, guidance: 1 }],
+    ["flux.3-klein-base", { steps: 50, guidance: 3.5 }],
+  ] as const) {
+    const key = defaultsKeyFor("/models/my-model", family);
+    assert.equal(key, family);
+    assert.deepEqual(defaultsFor(key), want);
+  }
+});
+
+test("an explicit FLUX.3 family decides the recipe over a name that reads as the other variant", () => {
+  // BFL's ComfyUI base file has no "base" in its name; the backend checks it against the family.
+  const comfyBase = "black-forest-labs/flux-3-image-klein-comfy";
+  assert.equal(defaultsKeyFor(comfyBase, "flux.3-klein-base"), "flux.3-klein-base");
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "flux.3-klein-base")), { steps: 50, guidance: 3.5 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "flux.3-klein")), { steps: 16, guidance: 1 });
+  assert.deepEqual(defaultsFor(defaultsKeyFor(comfyBase, "auto")), { steps: 16, guidance: 1 });
+  assert.equal(
+    residentDefaultsKey("/models/flux3_image_klein_bf16.safetensors", "black-forest-labs/flux-3-image-klein", {
+      value: "flux.3-klein-base",
+      source: "explicit",
+    }),
+    "flux.3-klein-base",
+  );
+});
+
+test("MOSS-Image SFT and Base get ComfyUI's MOSS recipe", () => {
+  for (const id of [
+    "OpenMOSS-Team/MOSS-Image-SFT",
+    "OpenMOSS-Team/MOSS-Image-Base",
+    "someone/moss_image_sft_merge",
+    "moss-image",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 50, guidance: 3 }, id);
+  }
+  const key = defaultsKeyFor("/models/my-model", "moss-image");
+  assert.equal(key, "moss-image");
+  assert.deepEqual(defaultsFor(key), { steps: 50, guidance: 3 });
+});
+
+test("a GGUF filename naming Krea 2 Raw outranks its multi-checkpoint repo", () => {
+  const repo = "realrebelai/KREA-2_GGUFs";
+  const raw = { steps: 52, guidance: 3.5 };
+  const turbo = { steps: 8, guidance: 0 };
+  assert.deepEqual(defaultsFor(defaultsKeyFor(repo, "auto", "BASE/Krea-2-Base-Q4_K_M.gguf")), raw);
+  assert.deepEqual(defaultsFor(defaultsKeyFor(repo, "auto", "TURBO/Krea-2-Turbo-Q4_K_M.gguf")), turbo);
+  assert.deepEqual(defaultsFor(defaultsKeyFor("vantagewithai/Krea-2-Raw-GGUF", "auto", "krea2_raw-Q4_K_M.gguf")), raw);
+  // No filename (or one naming nothing) keeps the repo key.
+  assert.deepEqual(defaultsFor(defaultsKeyFor(repo, "auto")), turbo);
+  assert.deepEqual(defaultsFor(defaultsKeyFor("krea/Krea-2-Raw", "auto", "model-Q4_K_M.gguf")), raw);
+  // The resident recipe reads the loaded GGUF the same way.
+  assert.deepEqual(
+    residentRecipeFor(residentDefaultsKey(repo, "krea/Krea-2-Turbo", null, "BASE/Krea-2-Base-Q4_K_M.gguf")),
+    raw,
+  );
+});
+
+test("every GGUF pick path keys its defaults on the selected filename", () => {
+  const src = readSrc("features/images/images-page.tsx");
+  assert.match(src, /applyImageModelDefaults\(repoId, effectiveFamilyOverride, false, filename\)/);
+  assert.match(src, /applyImageModelDefaults\(id, nextFamilyOverride, false, meta\.ggufFilename\)/);
+  assert.match(src, /applyImageModelDefaults\(id, nextFamilyOverride, false, filename\)/);
+  assert.match(src, /pick\.opts\.kind === "gguf" \? \(pick\.opts\.filename \?\? null\) : null/);
+  assert.match(src, /defaultsKeyFor\(repoId, effectiveFamilyOverride, ggufFilename\)/);
+  assert.match(src, /status\?\.resolved\?\.family_override,\s*status\?\.gguf_filename/);
+  assert.match(src, /loaded\.resolved\?\.family_override,\s*loaded\.gguf_filename/);
 });

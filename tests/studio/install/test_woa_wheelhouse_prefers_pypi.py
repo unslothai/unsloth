@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The wheelhouse is for wheels PyPI does not build, and only for those.
-
-The Windows on ARM wheelhouse exists because PyPI publishes no win_arm64 build of pyarrow,
-tiktoken, grpcio, brotli, hf_transfer or sqlite-vec. regex is different: PyPI has shipped
-win_arm64 regex since 2025.7.29, and the staging directory is first in UV_FIND_LINKS, so a
-user asking for regex got our binary rather than the one the project released.
-
-So staging asks PyPI first and skips the copy when PyPI publishes the same project at or
-above the version that would have been staged. The version half matters as much as the
-check: an upstream BEHIND the wheelhouse has to leave ours in place, or the guard turns
-into a downgrade.
-
-Text-level tests, like the rest of the installer suite: install.ps1 is PowerShell, so the
-shape is asserted against its source rather than by running it.
-"""
+"""Skip staging when PyPI has the same project at or above our version; a lower one keeps ours."""
 
 from __future__ import annotations
 
@@ -93,7 +79,6 @@ def test_interpreter_agnostic_wheels_still_count(source):
     exact-tag test would call them foreign and go on shipping ours forever."""
     body = _function_body(source, "Test-WoaWheelTagsUsable")
     assert '"abi3"' in body and '"none"' in body
-    # Free-threaded venvs are the exception the exact-tag helper exists for.
     assert '$AbiTag -like "*t"' in body
 
 
@@ -108,10 +93,7 @@ def test_pyarrow_keeps_its_own_pypi_first_path(source):
     ), "the generic loop must leave pyarrow to Get-WoaPyarrowSource"
 
 
-# The default wheelhouse URL had no test at all: changing it to a working but wrong host left
-# the whole suite green. It is the only source for the pyarrow that gates the native path, so a
-# typo sends every Windows on ARM host back to the emulated x64 stack, and it is fetched over
-# the network, so a wrong host is a wrong download.
+# Only source of the pyarrow gating the native WoA path; a wrong host means a wrong download.
 DEFAULT_WHEELHOUSE = "https://github.com/unslothai/unsloth/releases/download/Windows-ARM64"
 
 PWSH = shutil.which("pwsh")
@@ -130,10 +112,7 @@ def test_the_default_wheelhouse_url_is_exactly_this(source):
 
 
 def test_the_default_is_a_release_download_url_on_this_repo(source):
-    """`releases/download/<tag>` serves the asset bytes; a `releases/tag/<tag>` URL serves an
-    HTML page, which the staging code would happily save as a .whl. It must point at this
-    repository: the wheels are built, signed and published by a workflow that lives here, so
-    anywhere else is a host whose contents nothing in this tree controls."""
+    """Default wheelhouse must be a releases/download URL on this repo; releases/tag serves HTML."""
     assert DEFAULT_WHEELHOUSE.startswith("https://github.com/unslothai/unsloth/releases/download/")
     assert "/releases/tag/" not in DEFAULT_WHEELHOUSE, "that URL is the HTML page, not the asset"
     assert not DEFAULT_WHEELHOUSE.endswith("/"), "Join-UrlPath adds the slash"
@@ -187,8 +166,7 @@ def test_the_wheelhouse_override_is_normalised(source, configured, expected, why
         + _wheelhouse_assignment(source).strip()
         + '; Write-Output "<<<$script:WoaWheelhouse>>>"'
     )
-    # run_pwsh, not subprocess.run: one shared $XDG_CACHE_HOME/powershell startup cache
-    # across xdist workers kills ~1 startup in 500 before it reaches the script.
+    # run_pwsh: a shared powershell startup cache across xdist workers kills ~1 start in 500.
     done = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,

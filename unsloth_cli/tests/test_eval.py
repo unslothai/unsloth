@@ -338,6 +338,28 @@ def test_unsloth_backend_writes_results(env, tmp_path):
     assert saved["results"]["gsm8k"]["exact_match,strict"] == 0.42
 
 
+def test_default_output_keeps_every_run(env, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(evalmod, "time", SimpleNamespace(time = lambda: 1761480000), raising = False)
+    for model in ("org/base", "org/tuned", "org/tuned"):
+        result = _run(model, "--tasks", "gsm8k")
+        assert result.exit_code == 0, result.output
+    saved = sorted(p.parent.name for p in (tmp_path / "eval_results").rglob("results.json"))
+    assert saved == ["org_base_1761480000", "org_tuned_1761480000", "org_tuned_1761480001"], saved
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason = "the Studio backend needs Python 3.10+")
+@pytest.mark.parametrize(
+    "model", ["org/tuned", "./my model/ckpt-100", "/abs/lora/", "C:\\x\\y", "~/", "", "x" * 300]
+)
+def test_run_dir_name_matches_studio(model, monkeypatch):
+    pytest.importorskip("structlog")
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "studio" / "backend"))
+    from utils.paths import default_run_dir_name
+
+    assert evalmod._run_dir_name(model) == default_run_dir_name(model)
+
+
 def _adapter(tmp_path, tokenizer = False):
     adapter = tmp_path / "lora"
     adapter.mkdir()
@@ -401,6 +423,100 @@ def test_unsloth_backend_reports_missing_bitsandbytes(env, tmp_path, monkeypatch
     assert result.exit_code == 0, result.output
     assert "bitsandbytes is not installed" in result.output
     assert env["load_kwargs"]["load_in_4bit"] is False
+
+
+@pytest.mark.parametrize(
+    "run_config, expected",
+    [
+        ({"unsloth_training_method": "lora", "unsloth_load_in_4bit": False}, False),
+        ({"unsloth_training_method": "qlora", "unsloth_load_in_4bit": True}, True),
+        (None, True),
+    ],
+    ids = ["lora_16bit_run", "qlora_run", "unfinished_run"],
+)
+def test_checkpoint_follows_its_run(env, tmp_path, monkeypatch, run_config, expected):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    run = tmp_path / "studio" / "outputs" / "run"
+    checkpoint = run / "checkpoint-15"
+    checkpoint.mkdir(parents = True)
+    base = {"base_model_name_or_path": "org/base"}
+    (checkpoint / "adapter_config.json").write_text(json.dumps(base))
+    if run_config is not None:
+        (run / "adapter_config.json").write_text(json.dumps({**base, **run_config}))
+    result = _run(str(checkpoint), "--tasks", "gsm8k", "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["load_kwargs"]["load_in_4bit"] is expected
+
+
+@pytest.mark.parametrize(
+    "where, expected",
+    [
+        ("outputs", False),
+        ("linked", False),
+        ("accounts/acct1/outputs", False),
+        ("accounts/acct1/exports", True),
+    ],
+)
+def test_full_finetune_in_any_account_outputs_loads_in_16bit(
+    env, tmp_path, monkeypatch, where, expected
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    if where == "linked":
+        (tmp_path / "disk").mkdir()
+        (tmp_path / "studio").mkdir()
+        (tmp_path / "studio" / "outputs").symlink_to(tmp_path / "disk", target_is_directory = True)
+        where = "outputs"
+    run = tmp_path / "studio" / where / "run"
+    run.mkdir(parents = True)
+    (run / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    result = _run(str(run), "--tasks", "gsm8k", "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["load_kwargs"]["load_in_4bit"] is expected
+
+
+@pytest.mark.parametrize(
+    "files, flags, in_outputs, expected",
+    [
+        ({"config.json": {"model_type": "llama"}}, [], True, False),
+        ({"config.json": {"model_type": "llama"}}, [], False, True),
+        ({"config.json": {"text_config": {"quantization_config": {}}}}, [], False, True),
+        ({"config.json": {"quantization_config": {"load_in_4bit": True}}}, [], True, True),
+        ({"adapter_config.json": {"unsloth_load_in_4bit": False}}, [], False, False),
+        ({"adapter_config.json": {"unsloth_training_method": "lora"}}, [], False, False),
+        ({"adapter_config.json": {"unsloth_load_in_4bit": True}}, [], True, True),
+        ({"adapter_config.json": {}}, [], False, True),
+        ({"config.json": {"model_type": "llama"}}, ["--load-in-4bit"], True, True),
+        (
+            {"adapter_config.json": {"unsloth_load_in_4bit": True}},
+            ["--no-load-in-4bit"],
+            True,
+            False,
+        ),
+    ],
+    ids = [
+        "full_finetune",
+        "downloaded_full_model",
+        "downloaded_nested_quantized",
+        "prequantized",
+        "lora_16bit",
+        "lora_method_only",
+        "qlora",
+        "unknown_adapter",
+        "explicit_4bit",
+        "explicit_16bit",
+    ],
+)
+def test_checkpoint_loads_in_the_precision_it_was_trained_in(
+    env, tmp_path, monkeypatch, files, flags, in_outputs, expected
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    run = (tmp_path / "studio" / "outputs" if in_outputs else tmp_path) / "run"
+    run.mkdir(parents = True)
+    for name, data in files.items():
+        (run / name).write_text(json.dumps({"base_model_name_or_path": "org/base", **data}))
+    result = _run(str(run), "--tasks", "gsm8k", *flags, "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["load_kwargs"]["load_in_4bit"] is expected
 
 
 def test_custom_dataset_builds_one_task_manager(env, tmp_path):
@@ -483,7 +599,8 @@ def test_unsafe_code_flag_is_forwarded(env, tmp_path):
         ["--batch-size", "0"],
         ["--batch-size", "-1"],
         ["--batch-size", "big"],
-        ["--backend", "vllm"],
+        ["--backend", "tgi"],
+        ["--backend", "vllm", "--gpu-memory-utilization", "1.5"],
         ["--num-fewshot", "-1"],
         ["--limit", "0"],
         ["--limit", "2.5"],
@@ -515,6 +632,142 @@ def test_unsloth_backend_refuses_multi_process(env, monkeypatch):
     assert result.exit_code == 2 and "--backend hf" in result.output
 
 
+@pytest.fixture
+def vllm_env(env, monkeypatch):
+    sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: True, device_count = lambda: 1)
+    monkeypatch.setattr(evalmod.sys, "platform", "linux")
+    monkeypatch.setattr(evalmod, "version", lambda name: "0.4.13", raising = False)
+    return env
+
+
+def test_vllm_backend_builds_lm_eval_vllm(vllm_env, tmp_path):
+    result = _run(
+        "fake/model",
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "--max-seq-length",
+        "4096",
+        "--gpu-memory-utilization",
+        "0.5",
+        "-o",
+        str(tmp_path),
+    )
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model"] == "vllm"
+    assert vllm_env["model_args"] == {
+        "pretrained": "fake/model",
+        "max_model_len": 4096,
+        "gpu_memory_utilization": 0.5,
+    }
+    assert vllm_env["kwargs"]["batch_size"] == "auto"
+    assert "model_name" not in vllm_env and "hflm" not in vllm_env
+
+
+def test_vllm_backend_serves_adapter_as_lora(vllm_env, tmp_path):
+    adapter = tmp_path / "lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/Qwen3-8B-unsloth-bnb-4bit", "r": 64})
+    )
+    (adapter / "tokenizer.json").write_text("{}")
+    result = _run(
+        str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-b", "8", "-o", str(tmp_path / "o")
+    )
+    assert result.exit_code == 0, result.output
+    args = vllm_env["model_args"]
+    assert args["pretrained"] == "unsloth/Qwen3-8B"
+    assert args["lora_local_path"] == args["tokenizer"] == str(adapter.resolve())
+    assert args["max_lora_rank"] == 64
+    assert vllm_env["kwargs"]["batch_size"] == 8
+
+
+def test_vllm_backend_keeps_default_lora_rank_and_ignores_4bit(vllm_env, tmp_path):
+    adapter = _adapter(tmp_path)
+    result = _run(
+        str(adapter),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "--load-in-4bit",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model_args"]["pretrained"] == "org/base"
+    assert (
+        "max_lora_rank" not in vllm_env["model_args"] and "tokenizer" not in vllm_env["model_args"]
+    )
+    assert "16-bit" in result.output
+
+
+def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")
+    assert result.exit_code == 2 and "--backend hf" in result.output
+    assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize("installed, ok", [("0.4.11", False), ("0.4.12", True)])
+def test_vllm_backend_needs_lm_eval_0_4_12(vllm_env, monkeypatch, tmp_path, installed, ok):
+    monkeypatch.setattr(evalmod, "version", lambda name: installed)
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    if ok:
+        assert result.exit_code == 0, result.output
+    else:
+        assert result.exit_code == 2 and "model" not in vllm_env
+        assert installed in result.output and "pip install -U lm-eval" in result.output
+
+
+def test_vllm_engine_failure_prints_the_engine_log(vllm_env, monkeypatch, tmp_path):
+    def _fail_in_engine(**kwargs):
+        os.write(2, b"ValueError: No available memory for the cache blocks.\n")
+        raise RuntimeError("Engine core initialization failed. See root cause above.")
+
+    monkeypatch.setattr(sys.modules["lm_eval"], "simple_evaluate", _fail_in_engine)
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    assert result.exit_code != 0
+    assert "No available memory for the cache blocks" in result.output
+
+
+def test_vllm_gpu_probe_leaves_cuda_uninitialised(vllm_env, monkeypatch, tmp_path):
+    monkeypatch.delenv("PYTORCH_NVML_BASED_CUDA_CHECK", raising = False)
+    seen = []
+    sys.modules["torch"].cuda = SimpleNamespace(
+        is_available = lambda: seen.append(os.environ.get("PYTORCH_NVML_BASED_CUDA_CHECK")) or True,
+        device_count = lambda: 1,
+    )
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert seen == ["1"]
+
+
+@pytest.mark.parametrize(
+    "platform, cuda, vllm_installed, hint",
+    [
+        ("linux", True, False, "pip install vllm"),
+        ("linux", False, True, "--backend hf"),
+        ("darwin", True, True, "On a Mac use --backend hf"),
+    ],
+)
+def test_vllm_backend_refuses_where_it_cannot_run(
+    env, monkeypatch, platform, cuda, vllm_installed, hint
+):
+    sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: cuda, device_count = lambda: 1)
+    monkeypatch.setattr(evalmod.sys, "platform", platform)
+    monkeypatch.setattr(evalmod, "version", lambda name: "0.4.13", raising = False)
+    monkeypatch.setattr(
+        evalmod,
+        "find_spec",
+        lambda name: None if name == "vllm" and not vllm_installed else object(),
+    )
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")
+    assert result.exit_code == 2, result.output
+    assert hint in result.output and "model" not in env
+
+
 def test_silence_keeps_the_reconfigured_stdout_encoding(tmp_path):
     import subprocess
 
@@ -532,3 +785,23 @@ def test_silence_keeps_the_reconfigured_stdout_encoding(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr.decode(errors = "replace")
     assert "Evaluating gsm8k\u2026" in proc.stdout.decode("utf-8")
+
+
+@pytest.mark.parametrize("backend", ["unsloth", "hf"])
+def test_gpu_memory_utilization_says_it_only_applies_to_vllm(env, monkeypatch, tmp_path, backend):
+    """Only the vllm branch forwards it, so a user capping memory on another backend would
+    otherwise read the dropped cap as an OOM."""
+    result = _run(
+        "org/model",
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        backend,
+        "--gpu-memory-utilization",
+        "0.5",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    assert "--gpu-memory-utilization applies to --backend vllm" in result.output
+    assert "gpu_memory_utilization" not in (env["model_args"] or {})

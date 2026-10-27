@@ -9,7 +9,6 @@ export interface KnowledgeBase {
   documentCount?: number;
 }
 
-/** Index status: pending -> running -> completed | failed. */
 export type DocumentStatus = "pending" | "running" | "completed" | "failed";
 
 export interface RagDocument {
@@ -30,7 +29,6 @@ export function isLinkedFolderManaged(document: RagDocument): boolean {
   return Boolean(document.managed || document.linkedFolderId);
 }
 
-/** RagDocument enriched for the global uploaded-files list (settings Data tab). */
 export interface UploadedDocument extends RagDocument {
   sizeBytes?: number | null;
   kbName?: string | null;
@@ -71,7 +69,6 @@ export interface IndexJob {
   numChunks?: number | null;
 }
 
-/** One SSE frame from /jobs/{jobId}/events. */
 export interface JobEvent {
   type: "progress" | "complete" | "error";
   stage?: string | null;
@@ -89,7 +86,6 @@ export interface LinkedFolderScope {
 
 export type LinkedFolderStatus = "idle" | "syncing" | "error";
 
-/** A local directory whose durable access grant is held by the desktop backend. */
 export interface LinkedFolder {
   id: string;
   displayName: string;
@@ -140,7 +136,6 @@ export function linkedFolderSourcesChanged(
 
 export type FolderSyncMode = "sync" | "rebuild";
 
-/** Aggregate job for discovering and indexing all changes in a linked folder. */
 export interface FolderSyncJob {
   id: string;
   linkedFolderId: string;
@@ -155,6 +150,23 @@ export interface FolderSyncJob {
   renamedFiles?: number;
   failedFiles?: number;
   error?: string | null;
+}
+
+export interface ReembedJob {
+  id: string;
+  status: Exclude<JobStatus, "pending">;
+  done: number;
+  failed: number;
+  remaining: number;
+  clippedChunks: number;
+  progress: number;
+  error: string | null;
+}
+
+export interface ReembedStatus {
+  staleDocuments: number;
+  staleArchived: number;
+  job: ReembedJob | null;
 }
 
 /** Missing counts (older backends) count as a change. */
@@ -190,24 +202,6 @@ export function retainActiveFolderJobs(
 }
 
 /** Coords 0..1, top-left origin. */
-export interface PdfRegion {
-  pageIndex: number;
-  pageNumber: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export interface PreviewTarget {
-  documentId: string;
-  filename: string;
-  mediaKind: "pdf" | "text";
-  targetPage?: number | null;
-  pdfRegions: PdfRegion[];
-  text?: string | null;
-}
-
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
 
 /** Mirrors backend `DOCUMENT_UPLOAD_EXTS`. */

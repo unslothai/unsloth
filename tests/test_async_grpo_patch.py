@@ -47,6 +47,7 @@ NAMES = (
     "_hold_peft_requires_grad",
     "_allow_moe_parameter_lora",
     "_check_async_grpo_adapter_servable",
+    "_async_grpo_masked_compute_loss",
     "patch_trl_async_grpo",
 )
 
@@ -60,6 +61,8 @@ def _load(fast_backbone_types = ()):
     src = open(RL_SOURCE_PATH, encoding = "utf-8").read()
     ns = {
         "copy": __import__("copy"),
+        "inspect": __import__("inspect"),
+        "textwrap": __import__("textwrap"),
         "types": types,
         "torch": torch,
         "functools": functools,
@@ -71,7 +74,10 @@ def _load(fast_backbone_types = ()):
         "importlib_version": __import__("importlib.metadata", fromlist = ["version"]).version,
     }
     for node in ast.parse(src).body:
-        if isinstance(node, ast.FunctionDef) and node.name in NAMES:
+        is_constant = isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id.startswith("_ASYNC_GRPO_") for t in node.targets
+        )
+        if is_constant or (isinstance(node, ast.FunctionDef) and node.name in NAMES):
             exec(compile(ast.Module([node], []), RL_SOURCE_PATH, "exec"), ns)
     assert all(n in ns for n in NAMES)
     ns["_is_unsloth_fast_backbone"] = lambda b: isinstance(b, fast_backbone_types)
@@ -659,3 +665,96 @@ def test_image_check_does_not_consume_an_iterable_dataset():
     assert next(data) == {"prompt": "a"}
     assert ns["_dataset_has_images"]([{"image": object()}]) is True
     assert ns["_dataset_has_images"]([{"prompt": "hi"}]) is False
+
+
+def _ppo_compute_loss(
+    self,
+    model,
+    inputs,
+    return_outputs = False,
+    num_items_in_batch = None,
+):
+    # The policy-loss lines of TRL 1.13 to 1.15 AsyncGRPOTrainer.compute_loss, verbatim.
+    log_probs = model(inputs)
+    advantages = inputs["advantages"]
+    log_ratio = log_probs - inputs["old_log_probs"]
+    coef_1 = torch.exp(log_ratio)
+    coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
+    per_token_loss1 = coef_1 * advantages
+    per_token_loss2 = coef_2 * advantages
+    per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+    with torch.no_grad():
+        is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
+        is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)
+        self.clipped = (is_low_clipped | is_high_clipped).tolist()
+    return per_token_loss.sum()
+
+
+def _loss_grad(trainer, ratio, advantages):
+    log_probs = torch.zeros(len(ratio), dtype = torch.float64, requires_grad = True)
+    inputs = {
+        "old_log_probs": -torch.tensor(ratio, dtype = torch.float64).log(),
+        "advantages": torch.tensor(advantages, dtype = torch.float64),
+    }
+    trainer.compute_loss(lambda _: log_probs, inputs).backward()
+    return log_probs.grad.tolist()
+
+
+def test_importance_sampling_mask_gives_the_sao_gradient(fake_trl):
+    mod, _ = fake_trl
+    mod.AsyncGRPOTrainer.compute_loss = _ppo_compute_loss
+    _load(fast_backbone_types = (FastBackbone,))["patch_trl_async_grpo"]()
+    ratio = [0.5, 0.7, 0.75, 1.0, 1.3, 5.9, 6.0, 9.0, 9.0, 0.5]
+    advantages = [1.0, 1.0, -2.0, 0.5, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0]
+    masked = mod.AsyncGRPOTrainer(
+        Peft(CausalLM(FastBackbone())), None, importance_sampling_mask = True
+    )
+    masked.epsilon_low, masked.epsilon_high = 0.3, 5.0
+    # SAO Eq. 1-3: d/dlog pi of -f(r) A log pi, f(r) = r inside the open window (0.7, 6.0), else 0.
+    expected = [-(r * a if 0.7 < r < 6.0 else 0.0) for r, a in zip(ratio, advantages)]
+    assert _loss_grad(masked, ratio, advantages) == pytest.approx(expected)
+    assert masked.clipped == [True, True, False, False, False, False, True, True, True, True]
+    # Default stays TRL's PPO loss, on TRL's own method: a negative advantage at r = 9 still gets a gradient.
+    plain = mod.AsyncGRPOTrainer(Peft(CausalLM(FastBackbone())), None)
+    plain.epsilon_low, plain.epsilon_high = 0.3, 5.0
+    assert "compute_loss" not in vars(plain)
+    assert _loss_grad(plain, ratio, advantages)[8] == pytest.approx(9.0)
+    assert plain.clipped[8] is False
+
+
+def test_importance_sampling_mask_refuses_an_unknown_loss(fast_inference_trl):
+    mod, _ = fast_inference_trl
+
+    def compute_loss(
+        self,
+        model,
+        inputs,
+        return_outputs = False,
+        num_items_in_batch = None,
+    ):
+        return model(inputs).sum()
+
+    mod.AsyncGRPOTrainer.compute_loss = compute_loss
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    with pytest.raises(ValueError, match = "cannot be masked"):
+        mod.AsyncGRPOTrainer(
+            peft, None, args = mod.AsyncGRPOConfig("o"), importance_sampling_mask = True
+        )
+    # Refused before the in-process server starts or TRL's init runs.
+    assert _FakeServer.started == [] and mod._calls["init"] == []
+
+
+def test_importance_sampling_mask_rewrites_the_installed_trl_loss():
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            from trl.experimental.async_grpo.async_grpo_trainer import AsyncGRPOTrainer
+    except Exception as e:
+        pytest.skip(reason = f"needs TRL >= 1.13, which ships trl.experimental.async_grpo: {e}")
+    ns = _load()
+    masked = ns["_async_grpo_masked_compute_loss"](AsyncGRPOTrainer.compute_loss)
+    code = masked.__code__
+    assert masked is ns["_async_grpo_masked_compute_loss"](AsyncGRPOTrainer.compute_loss)
+    assert code is not AsyncGRPOTrainer.compute_loss.__code__
+    assert "where" in code.co_names and "min" not in code.co_names
+    assert masked.__globals__ is AsyncGRPOTrainer.compute_loss.__globals__

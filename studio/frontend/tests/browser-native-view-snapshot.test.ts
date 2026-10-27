@@ -243,6 +243,30 @@ test("tooltips along the toolbar capture the page once, and it returns when the 
   }
 });
 
+test("the dialog the browser opens in over compare, projects and phones leaves its page live", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/overlay", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    const captures = calls.filter(({ command }) => command === "browser_capture").length;
+    overlays.push({
+      getBoundingClientRect: () => rect(0, 0, 1000, 800),
+      closest: () => null,
+      querySelector: (selector: string) => (selector.startsWith("[data-native-page") ? placeholder : null),
+    });
+    await frame();
+    await frame();
+    const lastShow = calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args;
+    assert.deepEqual([lastShow?.tabId, lastShow?.parked], [tabId, undefined], "shown, not parked");
+    assert.equal(calls.filter(({ command }) => command === "browser_capture").length, captures, "nothing is captured");
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
 test("a capture that never lands keeps the page on screen instead of parking it blank, and tries again", async () => {
   const stop = startNativeViews();
   try {
@@ -703,6 +727,43 @@ test("a native page begun beside a temporary chat keeps it through a redirect an
   } finally {
     useChatRuntimeStore.getState().setIncognito(false);
     stop();
+  }
+});
+
+test("a temporary chat's hidden page stays temporary when it navigates while another chat is shown", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const runtime = useChatRuntimeStore.getState();
+  const store = useBrowserStore.getState();
+  const g = globalThis as { nativeViewListener?: (event: { payload: unknown }) => void; nativeViewVisits?: unknown };
+  const shown = store.chat;
+  runtime.setIncognito(true);
+  store.showChat("single:temporary-hidden");
+  store.openUrl("https://private.example/");
+  const tabId = useBrowserStore.getState().activeTabId as string;
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const visits: { url: string; temporary: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    load("https://private.example/", true);
+    load("https://private.example/", false);
+    store.showChat("single:ordinary-shown");
+    runtime.setIncognito(false);
+    await frame();
+    assert.ok(useBrowserStore.getState().tabs.some((tab) => tab.id === tabId));
+    load("https://private.example/next", true);
+    load("https://private.example/next", false);
+    assert.deepEqual(visits, [
+      { url: "https://private.example/", temporary: true },
+      { url: "https://private.example/next", temporary: true },
+    ]);
+  } finally {
+    runtime.setIncognito(false);
+    delete g.nativeViewVisits;
+    stop();
+    useBrowserStore.getState().showChat(shown);
   }
 });
 

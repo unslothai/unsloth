@@ -8,6 +8,7 @@ import {
   formatApiErrorBody,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
+import type { AudioCatalogResponse } from "./audio-catalog-rows";
 import {
   type AudioRunRequest,
   type AudioSourceRef,
@@ -19,7 +20,7 @@ import {
 
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(await readFastApiError(response));
+    throw await audioApiError(response);
   }
   return (await response.json()) as T;
 }
@@ -28,6 +29,7 @@ export interface GeneratedAudio {
   data: string;
   format: string;
   sample_rate: number;
+  seed?: number | null;
 }
 
 export interface GenerateAudioResponse {
@@ -35,6 +37,10 @@ export interface GenerateAudioResponse {
   audio: GeneratedAudio;
   clip_id?: string | null;
   choices: { finish_reason: string }[];
+  /** The seed the take used; null when the model takes none. */
+  seed?: number | null;
+  /** Option names the model doesn't take, so they weren't sent. */
+  ignored_options?: string[];
 }
 
 export interface GenerateAudioOptions {
@@ -74,6 +80,40 @@ export async function getAudioDownloadPlan(
   return parseJson<AudioDownloadPlan>(response);
 }
 
+/** Every audio.cpp model the backend can place: umbrella folders plus Community repos. */
+export async function fetchAudioCatalog(): Promise<AudioCatalogResponse> {
+  const response = await authFetch("/api/inference/audio/catalog");
+  return parseJson<AudioCatalogResponse>(response);
+}
+
+// The speech model kept beside the chat model (routing id, status name); null when it is the active one.
+let audioSlotModel: string | null = null;
+let audioSlotLabel: string | null = null;
+
+export function setAudioSlotModel(
+  model: string | null,
+  label: string | null = model,
+): void {
+  audioSlotModel = model;
+  audioSlotLabel = model ? label : null;
+}
+
+export function audioSlotRoutingId(
+  model: string | null | undefined,
+): string | null {
+  return model && audioSlotModel && model === audioSlotLabel
+    ? audioSlotModel
+    : null;
+}
+
+export function isAudioSlotModel(model: string | null | undefined): boolean {
+  return audioSlotRoutingId(model) !== null;
+}
+
+function withAudioSlotModel<T extends object>(body: T): T {
+  return audioSlotModel ? { ...body, model: audioSlotModel } : body;
+}
+
 export async function generateAudio(
   text: string,
   options: GenerateAudioOptions = {},
@@ -82,11 +122,13 @@ export async function generateAudio(
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messages: [{ role: "user", content: text }],
-      stream: false,
-      ...sampling,
-    }),
+    body: JSON.stringify(
+      withAudioSlotModel({
+        messages: [{ role: "user", content: text }],
+        stream: false,
+        ...sampling,
+      }),
+    ),
     signal,
   });
   return parseJson<GenerateAudioResponse>(response);
@@ -103,26 +145,20 @@ export interface AudioGalleryClip {
   created_at: string;
   pinned?: boolean;
   archived?: boolean;
-  /** The server's unpinned sort key: the drag key, else the file mtime. */
   order_at?: number | null;
   /** The Audio workflow that made the clip. Older servers omit it; read it through clipWorkflow. */
   workflow?: string | null;
   reference_name?: string | null;
-  /** The history clip an edit changed or a conversion started from. */
   source_clip_id?: string | null;
   source_input_id?: string | null;
   voice_id?: string | null;
-  /** Served at /audio/gallery/{id}/source/file. */
   source_saved?: boolean;
   source_name?: string | null;
   target_builtin?: string | null;
   target_clip_id?: string | null;
   target_input_id?: string | null;
-  /** Clips one run made together share it (a separation's stems, music takes); null for one clip. */
   group_id?: string | null;
-  /** A stem's name (vocals, drums, ...) or an edit's run part ("output" or "source"). */
   role?: string | null;
-  /** The run's settings, e.g. a separation's stem list. */
   settings?: Record<string, unknown> | null;
 }
 
@@ -134,7 +170,6 @@ export interface AudioGalleryListResponse {
   next_before_pin?: number | null;
 }
 
-/** Where the next page starts: the last clip's order key, id and pin rank (null if unpinned). */
 export interface AudioGalleryCursor {
   mtime: number;
   id: string;
@@ -187,7 +222,6 @@ export async function setAudioClipFlags(
   return parseJson<AudioGalleryClip>(response);
 }
 
-/** Move one clip to just after `afterId` (null = top). */
 export async function moveAudioClip(
   id: string,
   afterId: string | null,
@@ -203,7 +237,6 @@ export async function moveAudioClip(
   return parseJson<AudioGalleryClip>(response);
 }
 
-/** Copy one clip into a chat project's folder. */
 export async function addAudioClipToProject(
   id: string,
   projectId: string,
@@ -252,11 +285,15 @@ export async function fetchClipBlob(url: string): Promise<Blob> {
   return response.blob();
 }
 
-export async function fetchClipObjectUrl(
-  url: string,
-): Promise<{ url: string; bytes: number; blob: Blob }> {
-  const blob = await fetchClipBlob(url);
-  return { url: URL.createObjectURL(blob), bytes: blob.size, blob };
+/** Let the media element buffer and seek without downloading the entire WAV first. */
+export async function fetchGalleryAudioSignedUrl(id: string): Promise<string> {
+  const response = await authFetch(
+    `/api/inference/audio/gallery/${encodeURIComponent(id)}/signed-url`,
+  );
+  const body = await parseJson<{ url?: string }>(response);
+  if (!body.url) throw new Error("The server returned no audio link.");
+  // Media elements bypass authFetch; desktop URLs need the backend origin.
+  return apiUrl(body.url);
 }
 
 export async function listTranscripts(
@@ -303,19 +340,34 @@ export async function deleteTranscript(id?: string): Promise<void> {
   );
 }
 
-/** Carries the status so callers can tell an expired upload (404) from a refusal. */
+/** Carries the status so callers can tell an expired upload (404) from a refusal, and `detail` with its `code`. */
 export class AudioApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  readonly code?: string;
+  readonly detail?: unknown;
+  constructor(message: string, status: number, detail?: unknown) {
     super(message);
     this.name = "AudioApiError";
     this.status = status;
+    this.detail = detail;
+    const code = (detail as { code?: unknown } | null | undefined)?.code;
+    if (typeof code === "string") this.code = code;
   }
+}
+
+async function audioApiError(response: Response): Promise<AudioApiError> {
+  const copy = response.clone();
+  const message = await readFastApiError(response);
+  const detail = await copy.json().then(
+    (body: { detail?: unknown } | null) => body?.detail,
+    () => undefined,
+  );
+  return new AudioApiError(message, response.status, detail);
 }
 
 async function parseAudioJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new AudioApiError(await readFastApiError(response), response.status);
+    throw await audioApiError(response);
   }
   return (await response.json()) as T;
 }
@@ -404,8 +456,7 @@ export async function uploadAudioInput(
   return parseAudioJson<AudioInputRecord>(response);
 }
 
-/** Whether an upload is still on the server; anything but a 404 counts as alive.
- * GET, not HEAD: the FastAPI route answers HEAD with 405, which would read as alive. */
+/** Upload alive unless 404. GET, not HEAD: FastAPI answers HEAD with 405. */
 export async function audioInputAlive(inputId: string): Promise<boolean> {
   try {
     const response = await authFetch(
@@ -464,11 +515,12 @@ export interface AudioRunResponse {
     sample_rate: number;
     duration_s: number;
     workflow: string;
+    seed?: number | null;
   }[];
-  /** One separation's stems share it; null for a single clip. */
   group_id: string | null;
   model: string;
   audio: GeneratedAudio | null;
+  ignored_options?: string[];
 }
 
 export async function runAudio(
@@ -478,7 +530,35 @@ export async function runAudio(
   const response = await authFetch("/api/inference/audio/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(buildAudioRunBody(request)),
+    body: JSON.stringify(withAudioSlotModel(buildAudioRunBody(request))),
+    signal,
+  });
+  return parseAudioJson<AudioRunResponse>(response);
+}
+
+export async function runSpeechOnConnection(
+  request: {
+    text: string;
+    providerId: string;
+    model: string;
+    voice: string;
+    instructions: string | null;
+    speed: number;
+  },
+  signal?: AbortSignal,
+): Promise<AudioRunResponse> {
+  const response = await authFetch("/api/inference/audio/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      workflow: "speak",
+      text: request.text,
+      provider_id: request.providerId,
+      model: request.model,
+      voice: request.voice,
+      speed: request.speed,
+      ...(request.instructions ? { instructions: request.instructions } : {}),
+    }),
     signal,
   });
   return parseAudioJson<AudioRunResponse>(response);

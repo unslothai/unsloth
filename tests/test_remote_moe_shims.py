@@ -125,7 +125,7 @@ class DeepseekV3MoE(nn.Module):
         assert before in src, before
         src = src.replace(before, after)
     mod = types.ModuleType(name)
-    # The shim predicate reads forward's source: register the exec'd fixture in linecache.
+    # The shim predicate reads forward's source, so register the exec'd fixture in linecache.
     import linecache
 
     filename = f"<{name}>"
@@ -137,7 +137,7 @@ class DeepseekV3MoE(nn.Module):
     return mod
 
 
-# sarvamai/sarvam-105b: renamed block, `else:` still calls `moe_infer`, `num_shared_experts` key.
+# sarvam-105b: renamed block, `else:` still calls `moe_infer`, `num_shared_experts` key.
 _SARVAM_EDITS = (
     ("class DeepseekV3MoE(nn.Module):", "class SarvamMLAMoE(nn.Module):"),
     (
@@ -175,7 +175,7 @@ def test_training_forward_matches_eval_and_backpropagates():
         block(x)
     patched = prepare_remote_moe_for_training(block, verbose = False)
     assert sorted(patched) == ["DeepseekV3MoE", "MoEGate"]
-    assert prepare_remote_moe_for_training(block, verbose = False) == []  # idempotent
+    assert prepare_remote_moe_for_training(block, verbose = False) == []
     block.eval()
     with torch.no_grad():
         reference = block(x)
@@ -189,7 +189,7 @@ def test_training_forward_matches_eval_and_backpropagates():
     ]
     assert expert_grads and any(g.abs().sum() > 0 for g in expert_grads)
     assert block.shared_experts.down_proj.weight.grad is not None
-    assert block.gate.training and block.training  # the gate flag is restored after the call
+    assert block.gate.training and block.training
 
 
 def test_shims_reach_a_module_behind_an_accelerate_hook():
@@ -209,12 +209,12 @@ def test_shims_reach_a_module_behind_an_accelerate_hook():
     with pytest.raises(AssertionError):
         block(x)
     prepare_remote_moe_for_training(block, verbose = False)
-    out = block(x)  # goes through the hook, which must now reach the shim
+    out = block(x)
     block.eval()
     with torch.no_grad():
         reference = block(x)
     assert torch.allclose(out, reference, atol = 1e-5, rtol = 1e-5)
-    # A hook attached after the classes were shimmed (a second model of the same remote code) is rebound too.
+    # A hook attached after the classes were shimmed is rebound too.
     block2 = mod.DeepseekV3MoE(mod.Cfg())
     add_hook_to_module(block2.gate, ModelHook())
     block2.train()

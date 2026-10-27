@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 const MARKDOWN_TEXT_PATH = new URL(
   "../src/components/assistant-ui/markdown-text.tsx",
@@ -145,16 +145,7 @@ test("stream updates are paint-coalesced with a cost-aware cadence and no length
     "the cost is the render alone, in the task after the frame, so an unrelated long task is not charged to the stream and the text resumes as soon as it ends",
   );
 
-  // A running message can be replaced rather than appended to, as the audio
-  // path does when it swaps its placeholder for the player, so holding the last
-  // painted text has to be gated on the new text extending it.
-  //
-  // The spelling is pinned, not left open. `startsWith` scans a growing reply,
-  // 74 ms against 1.6 ms over a 60,000 character stream, and the two spellings
-  // are behaviourally identical, so no output test can tell them apart and this
-  // source check is the only thing standing between the hot path and a quiet
-  // revert. Written as `slice || startsWith` it accepted both and passed on the
-  // previous code unchanged, which is to say it measured nothing.
+  // Gate on extension since messages can be replaced; slice is pinned over startsWith for speed.
   assert.ok(
     hook.includes("text.length >= displayed.text.length"),
     "the coalescer must reject a shorter replacement on length first",
@@ -180,7 +171,13 @@ test("streaming reparses only the active Markdown tail", () => {
   );
   assert.equal(
     jsxAttribute(streamdown, "remend")?.initializer?.getText(source),
-    "{pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}",
+    "{\n" +
+      "              !cut\n" +
+      "                ? FINISHED_TEXT_REMEND\n" +
+      "                : hasIncompleteLinkRepair(processedText)\n" +
+      "                  ? LITERAL_LINK_REMEND\n" +
+      "                  : undefined\n" +
+      "            }",
   );
   assert.equal(
     jsxAttribute(streamdown, "parseMarkdownIntoBlocksFn")?.initializer?.getText(
@@ -194,12 +191,12 @@ test("streaming reparses only the active Markdown tail", () => {
 });
 
 test("retained block and sandbox changes move Streamdown's render identity", () => {
-  // Streamdown also ignores rehypePlugins changes when memoizing.
+  // Streamdown's memo also ignores rehypePlugins and remend.
   const streamdown = findChatStreamdown();
   assert.ok(streamdown, "chat <Streamdown> is missing");
   assert.equal(
     jsxAttribute(streamdown, "key")?.initializer?.getText(source),
-    "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}",
+    "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${cut}`}",
   );
   assert.match(
     source.getText(),

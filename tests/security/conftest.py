@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 
-# Make `scripts/` importable so tests can grab scanner constants directly.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -61,19 +60,7 @@ class _BlockedSocket(socket.socket):
 
 @pytest.fixture(autouse = True)
 def network_blocker():
-    """Swap socket.socket for the blocker, restored after each test.
-
-    Per test, not per session. A session-scoped fixture in a directory conftest
-    applies only to this directory, but it tears down when the SESSION ends, so
-    the patch outlived the suite that wanted it and every later test that
-    reaches the network died on a socket this file replaced. `security` sorts
-    before `version_compat` and `vllm_compat`, whose pinned-symbol checks fetch
-    upstream sources, so a full run lost about 1300 of them:
-
-        RuntimeError: network access blocked by tests/security/conftest.py
-
-    They passed alone and failed together, in that order only.
-    """
+    """Per test, not per session: a session-scoped patch outlived tests/security and broke later suites."""
     original = socket.socket
     socket.socket = _BlockedSocket  # type: ignore[assignment]
     try:
@@ -92,32 +79,14 @@ def fixtures_dir() -> Path:
     return Path(__file__).resolve().parent / "fixtures"
 
 
-# The wheel and sdist fixtures embed the May-12 IOC literal on purpose, so the scanner tests can
-# prove scan_packages.py trips on it. That makes them true positives for other vendors too: on
-# VirusTotal malicious_sdist.tar.gz scores 2/60 and malicious_wheel.whl 2/65 (Tencent, Rising),
-# and their presence is what makes Panda report Exploit/CVE-2014-6271 against GitHub's
-# unsloth-main.zip. unslothai/unsloth#10060 took the test tree out of the PyPI artifacts, but the
-# repository archive contains tests by construction, so committing the built archives kept the
-# detections alive there and users kept re-reporting them (discussion #9577).
-#
-# _build.py is deterministic (SOURCE_DATE_EPOCH = 0, and zip dates pinned to the 1980 DOS epoch),
-# so building at session start gives the same bytes the committed copies had. Nothing about what
-# the tests assert changes; the archives simply stop existing in git.
+# The fixtures embed the May-12 IOC on purpose, so committed archives trip AV on GitHub's zip.
+# _build.py is deterministic, so building at session start reproduces the same bytes.
 _GENERATED_ARCHIVES = ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz")
 
 
 @pytest.fixture(scope = "session", autouse = True)
 def _build_archive_fixtures() -> None:
-    """Build the wheel/sdist fixtures into `fixtures/` before any test reads them.
-
-    Session-scoped and autouse because roughly a dozen call sites reach for
-    `FIXTURES / "malicious_wheel.whl"` directly, and generating in place keeps every one of them
-    working unchanged. Unlike `network_blocker` above, this patches nothing and has no teardown,
-    so session scope carries none of the leak-past-the-suite risk that docstring describes.
-
-    Idempotent: a rebuild writes identical bytes, so a re-run over a warm checkout is a no-op in
-    content even though it rewrites the files.
-    """
+    """Autouse and session-scoped because many tests read fixtures/ paths directly; it patches nothing."""
     fixtures = Path(__file__).resolve().parent / "fixtures"
     if str(fixtures) not in sys.path:
         sys.path.insert(0, str(fixtures))

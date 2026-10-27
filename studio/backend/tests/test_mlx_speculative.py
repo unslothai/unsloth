@@ -95,6 +95,22 @@ def test_auto_takes_every_cached_kind_in_preference_order(cache):
     assert _resolve("ngram-mod").speculative
 
 
+def test_an_auto_offload_plan_makes_room_for_a_modes_first_drafter(cache, tmp_path):
+    cache({"a/Qwen3.5-4B-DFlash": _DFLASH, "g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
+    target = str(tmp_path / "org--Qwen3.5-4B-4bit")
+    drafter = lambda mode, named = None: spec.offload_drafter(
+        mode, named, model_dir = target, target_name = _TARGET
+    )
+    assert drafter("mtp") == (target, True)  # the head, before the cached assistant
+    assert drafter("mtp", "g/Qwen3.5-4B-assistant") == (
+        str(tmp_path / "g--Qwen3.5-4B-assistant"),
+        False,
+    )
+    assert drafter("dflash") == (str(tmp_path / "a--Qwen3.5-4B-DFlash"), False)
+    assert drafter("auto") == (target, True)
+    assert [drafter(mode) for mode in ("off", "ngram", "dspark")] == [None] * 3
+
+
 def test_cached_drafters_are_matched_by_shape_and_weights_then_marked_by_name(cache, tmp_path):
     shaped = {**_DFLASH, "hidden_size": 8, "num_target_layers": 4}
     narrow = {"target_hidden_size": 8, "transformer_layer_config": {"hidden_size": 2}}
@@ -184,3 +200,23 @@ def test_a_drafter_carrying_its_own_model_module_is_never_found_or_attached(cach
     assert spec.cached_drafters(_TARGET, {"vocab_size": 10}) == []
     assert not _resolve("auto").sources and not _resolve("dflash").sources
     assert _resolve("dflash", "a/Qwen3.5-4B-DFlash").reason == spec.DRAFTER_NOT_FOUND
+
+
+def test_the_built_in_head_is_found_by_the_zoos_detection_or_mlx_vlms_without_it(
+    monkeypatch, tmp_path
+):
+    import sys
+
+    found = lambda name: lambda path: str(path) == str(tmp_path / name)
+    zoo = SimpleNamespace(has_native_mtp_head = found("zoo"))
+    vlm = SimpleNamespace(detect_mtp_splitter = lambda path: found("vlm")(path) or None)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters.mtp_split", vlm)
+    # An unsloth-zoo without has_native_mtp_head leaves detection to mlx-vlm.
+    for module, finder in ((zoo, "zoo"), (SimpleNamespace(), "vlm")):
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.speculative", module)
+        heads = [spec.has_builtin_head(str(tmp_path / name)) for name in ("zoo", "vlm")]
+        assert heads == [finder == "zoo", finder == "vlm"]
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.speculative", zoo)
+    assert not spec.has_builtin_head(None)
+    monkeypatch.setattr(zoo, "has_native_mtp_head", lambda path: 1 / 0)
+    assert not spec.has_builtin_head(str(tmp_path / "zoo"))

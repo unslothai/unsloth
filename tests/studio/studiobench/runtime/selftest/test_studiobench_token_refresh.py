@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The run is longer than the token it was handed.
-
-`ACCESS_TOKEN_EXPIRE_MINUTES` is 60 and this harness authenticated ONCE per arm, at setup, before
-the first install. A standard A/B at four repetitions is 24 cells of the 243 second standard film
--- 97 minutes of film alone -- so the token the seeder holds expires part way through and every
-request after that answers 401. It presents as an intermittent failure and it is not one: it is
-the clock, and it is reproducible to the second.
-
-The fake Unsloth below issues tokens with a six second life instead of an hour's, and the tests drive
-`token()` with a one second margin, so the ratio between the two is the harness's own (15 minutes
-against 60) at a scale a test can wait for. `test_the_token_a_run_was_handed_stops_working` is the
-control that shows the server really does stop accepting an expired token, so the tests underneath
-are not passing for some other reason.
-"""
+"""The harness authenticates once per arm, so any run longer than the token's lifetime gets 401s."""
 
 from __future__ import annotations
 
@@ -42,12 +29,9 @@ from studiobench.runtime.lifecycle import (  # noqa: E402
 )
 from studiobench.runtime.seeder import Seeder  # noqa: E402
 
-#: How long the fake Unsloth's access tokens live. An hour compressed into something a test can sit
-#: through, and long enough that a loaded machine cannot expire one mid-request.
+# Compressed token lifetime, long enough that a loaded machine cannot expire one mid-request.
 TOKEN_TTL_S = 6.0
-#: The margin the tests below drive `token()` with. The REAL ratio matters: a margin far shorter than
-#: the token's life is what the harness runs with (15 minutes against 60), and a margin longer than
-#: the whole life would make every call rotate and prove nothing.
+# Keep the real margin-to-TTL ratio; a margin longer than the TTL would rotate every call.
 TEST_MARGIN_S = 1.0
 PASSWORD = "studiobench-bench-password"
 
@@ -62,8 +46,6 @@ class _State:
         self.logins = 0
         self.login_attempts = 0
         self.rejections = 0
-        #: Set to reject EVERY token once, whatever its `exp` says: an Unsloth restarted underneath the run,
-        #: or a clock this process cannot see.
         self.reject_next = 0
         self.lock = threading.Lock()
 
@@ -161,11 +143,7 @@ def studio():
 
 
 def test_the_token_a_run_was_handed_stops_working(studio):
-    """THE CONTROL, and the defect itself: hold one token and it expires under you.
-
-    This is what the harness did -- authenticate once, then send `auth.access_token` on every
-    request for the rest of the run -- reproduced at six seconds instead of sixty minutes.
-    """
+    """Control: the server rejects an expired token, so a single held token fails once it lapses."""
     base_url, _state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
     frozen = auth.access_token
@@ -178,12 +156,7 @@ def test_the_token_a_run_was_handed_stops_working(studio):
 
 
 def test_the_seeder_keeps_working_after_its_token_expires(studio, monkeypatch):
-    """The fix, at the call site the review named: `Seeder.create_thread` past the expiry.
-
-    The margin is a sixth of the token's life here, so the first cell's thread is created on the
-    token the run was handed -- no rotation -- and only the one after the expiry rotates. That is
-    the shape of a real run: one login per hour, not one per request.
-    """
+    """Seeder.create_thread must keep working after the token expires, by rotating it proactively."""
     monkeypatch.setattr(lifecycle, "TOKEN_REFRESH_MARGIN_S", TEST_MARGIN_S)
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
@@ -194,28 +167,18 @@ def test_the_seeder_keeps_working_after_its_token_expires(studio, monkeypatch):
     logins_after_setup = state.logins
 
     time.sleep(TOKEN_TTL_S + 0.5)
-    # The token the run was handed is dead by now (the control above proves the server refuses it) and
-    # this still has to work.
     assert seeder.create_thread()
     assert auth.rotations == 1
     assert state.logins == logins_after_setup + 1
-    # And it never had to be told: the server was not asked to refuse anything.
     assert state.rejections == 0
     assert (auth.expires_at or 0) > time.time()
 
 
 def test_the_token_is_replaced_before_it_expires_not_after_it_fails(studio, monkeypatch):
-    """PROACTIVE, which is the half a 401 handler alone does not give you.
-
-    A 900 second seeding PUT that is valid when it is written and expired when the server finishes
-    reading it cannot be retried cheaply -- the whole thread goes up the wire again -- so the token
-    is replaced while it still has margin left. Here the margin is the whole of its life, so the
-    request never sees a 401 at all.
-    """
+    """Tokens rotate before they expire: a 900 s seeding PUT cannot be cheaply retried after a 401."""
     monkeypatch.setattr(lifecycle, "TOKEN_REFRESH_MARGIN_S", TEST_MARGIN_S)
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
-    # Inside the margin and NOT yet expired: the server would still accept the old token, and it is replaced anyway.
     time.sleep(TOKEN_TTL_S - TEST_MARGIN_S / 2)
 
     assert auth_request_json(auth, f"{base_url}/api/chat/threads", method = "POST", body = {})
@@ -229,7 +192,6 @@ def test_a_401_that_arrives_anyway_is_recovered(studio):
     refusal is real and is raised."""
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
-    # Fresh by this process's reckoning, and refused by the server regardless.
     auth.expires_at = time.time() + 10_000
     state.reject_next = 1
 
@@ -251,14 +213,7 @@ def test_a_refusal_that_survives_a_fresh_login_is_raised(studio):
 
 
 def test_a_login_that_is_refused_is_not_retried_as_if_it_were_the_request(studio):
-    """ONE login attempt, not two.
-
-    `token()` can itself raise a 401 -- the password is wrong, or the account is locked -- and
-    catching that alongside the request's own 401 would answer it with a SECOND login. The backend
-    locks an account after five failures in a minute (`routes/auth.py`, `_LOGIN_MAX_FAILS`), so
-    burning the bucket at double rate reaches the lockout twice as fast and the run then dies on a
-    429 that says nothing about the password.
-    """
+    """A refused login is not retried, or failed logins count double toward the five-a-minute lockout."""
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
     auth.password = "not-the-password"
@@ -272,13 +227,7 @@ def test_a_login_that_is_refused_is_not_retried_as_if_it_were_the_request(studio
 
 
 def test_a_clock_that_makes_every_token_look_stale_stops_the_proactive_half(studio):
-    """The runaway guard. `needs_refresh` reads the server's `exp` against THIS process's clock.
-
-    An Unsloth 45 minutes behind, or one whose `ACCESS_TOKEN_EXPIRE_MINUTES` is shorter than the
-    margin -- which is exactly this fake studio, six seconds against fifteen minutes -- makes every
-    token ever issued look like it is about to expire, and every request would then log in again
-    and append another init script to the browser context. One rotation is enough to find that out.
-    """
+    """A clock that makes every token look stale must stop proactive refresh, not re-login per request."""
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
     assert auth.proactive is True
@@ -287,7 +236,6 @@ def test_a_clock_that_makes_every_token_look_stale_stops_the_proactive_half(stud
     assert auth.rotations == 1
     assert auth.proactive is False
 
-    # And it does not keep doing it. The token is valid, so the request goes out on it untouched.
     logins = state.logins
     assert auth_request_json(auth, f"{base_url}/api/chat/threads", method = "POST", body = {})
     assert state.logins == logins
@@ -314,12 +262,7 @@ def test_a_failing_rotation_hook_does_not_fail_the_request(studio):
 
 
 def test_the_margin_outlasts_the_longest_authenticated_request():
-    """The invariant the margin exists for, pinned rather than argued.
-
-    Seeding a 1M-token thread is ONE `PUT` with a 900 second timeout, so a token that is merely
-    valid when the request is written is not enough: it has to still be valid when the server
-    finishes reading the body. Lower the margin under that and this fails.
-    """
+    """TOKEN_REFRESH_MARGIN_S must be at least the 900 s seeding PUT timeout, or a token lapses mid-PUT."""
     from studiobench.runtime.lifecycle import TOKEN_REFRESH_MARGIN_S
 
     seed_put_timeout_s = 900
@@ -353,16 +296,7 @@ def test_an_opaque_token_falls_back_to_the_documented_lifetime():
 
 
 def test_the_page_is_seeded_with_the_refresh_key_the_app_actually_reads():
-    """The other half of the same defect, and the one that produced the Playwright symptom.
-
-    The SPA reads its refresh token from `AUTH_REFRESH_TOKEN_KEY`. Seeded under any other name the
-    page has an access token and no way to renew it, so the first 401 after the hour is up sends
-    `authFetch` down the branch that clears the tokens and navigates to the login route -- which
-    Playwright reports as `Execution context was destroyed, most likely because of a navigation`.
-
-    The key is read out of the frontend source rather than copied here, so this fails if the app
-    renames it.
-    """
+    """Seed the refresh token under the key the SPA reads (AUTH_REFRESH_TOKEN_KEY in session.ts)."""
     session_ts = (
         Path(__file__).resolve().parents[5] / "studio/frontend/src/features/auth/session.ts"
     )
@@ -423,12 +357,7 @@ def _run_in_node(scripts: list) -> dict:
 
 
 def test_the_freshest_seed_script_wins_whatever_order_they_run_in():
-    """An init script re-runs on EVERY navigation and Playwright does not define the order that
-    several of them run in, so "the one added last wins" is not a property this can rely on.
-
-    The stale script must not put the token the run started with back over the one the SPA -- or a
-    later re-seed -- rotated to. Both orders, one answer.
-    """
+    """Init scripts run in no defined order on every navigation, so the fresher seed must win regardless."""
     now = time.time()
     stale = _seed_script_for(now - 60, "stale")
     fresh = _seed_script_for(now + 3600, "fresh")

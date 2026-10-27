@@ -369,9 +369,9 @@ def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, m
     workflows.mkdir()
     (workflows / "consolidated-tests-ci.yml").write_text(
         "run: |\n"
-        "  pip install 'trl==0.18.2'\n"  # exact pin: a point, not a cap
-        "  pip install 'trl>=0.18.2,<1.0.0'\n"  # the allowlisted half of the split
-        "  pip install 'trl>=0.22,<0.26'\n",  # stale range cap: must be caught
+        "  pip install 'trl==0.18.2'\n"
+        "  pip install 'trl>=0.18.2,<1.0.0'\n"
+        "  pip install 'trl>=0.22,<0.26'\n",
         encoding = "utf-8",
     )
     monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
@@ -601,7 +601,7 @@ def test_the_ceiling_lane_check_can_fail(tmp_path, monkeypatch) -> None:
     test_a_ceiling_lane_pins_the_declared_ceiling()
 
 
-# Must be resolvable: trl 1.x needs datasets>=4.7.0, else pip backtracks to trl 0.29.1.
+# trl 1.x needs datasets>=4.7.0, else pip backtracks to trl 0.29.1.
 TRL_DATASETS_FLOORS = (
     (Version("0.18.2"), Version("3.0.0")),
     (Version("1.0.0"), Version("4.7.0")),

@@ -36,17 +36,22 @@ from core.inference.audio_cpp_models import (
     AudioCppModelError,
     CloneSpec,
     forget,
+    ignored_options,
     option_matches,
+    filled_options,
     require_runnable,
     resolve,
-    validate_options,
+    takes_seed,
+    workflow_options,
 )
 from core.inference.audio_cpp_server import (
     AudioCppRequestCancelledError,
     AudioCppRequestError,
     AudioCppServer,
     AudioCppStartCancelledError,
+    AudioCppUnavailableError,
 )
+from core.inference.audio_cpp_failures import attach_failure, classify_audio_cpp_failure, failure_of
 from core.inference.audio_cpp_music import music_rules
 from core.inference.audio_task_outputs import task_outputs, wav_header
 from loggers import get_logger
@@ -65,6 +70,24 @@ def _raise_if_cancelled(cancel_event) -> None:
     if cancel_event is not None and cancel_event.is_set():
         from core.inference.audio_errors import AudioGenerationCancelledError
         raise AudioGenerationCancelledError("Audio generation cancelled")
+
+
+def _runtime_stopped(exc: BaseException) -> BaseException:
+    """A runtime that died or went silent mid-request, as a 500 with code runtime_stopped."""
+    from core.inference.audio_cpp_failures import AudioCppFailure
+    from core.inference.audio_errors import AudioRuntimeError, sanitize_runtime_detail
+
+    reason = sanitize_runtime_detail(str(exc)).removeprefix("The audio runtime ")
+    # "stopped while serving the request. Last output: ..." -> "it quit while serving ..."
+    if reason.startswith("stopped "):
+        reason = "it quit " + reason.removeprefix("stopped ")
+    reason = reason.rstrip(".").strip() or "no reason given"
+    message = (
+        f"The audio runtime stopped: {reason}. Try again; if it fails again, load the model again."
+    )
+    return attach_failure(
+        AudioRuntimeError(message, status = 500), AudioCppFailure("runtime_stopped", message, 500)
+    )
 
 
 _inflight_lock = threading.Lock()
@@ -111,11 +134,7 @@ def _wav_sample_rate(wav_bytes: bytes) -> int:
 
 
 def _music_seconds(max_new_tokens: Optional[int]) -> float:
-    """Map the shared speech-token budget onto a clip length.
-
-    The Audio page sends MiniMax's 25-frames-per-second budget for music; the same
-    number here means the same length, so one duration control drives every model.
-    """
+    """Maps the shared speech-token budget to seconds at 25 frames per second, MiniMax's music rate."""
     try:
         frames = int(max_new_tokens or 0)
     except (TypeError, ValueError):
@@ -143,11 +162,83 @@ _SPEAKER_LINE_RE = re.compile(r"^\s*Speaker\s*\d+\s*:", re.IGNORECASE | re.MULTI
 _MIN_SPEED, _MAX_SPEED = 0.5, 2.0
 
 
+def _seed_option(value: Any) -> Optional[int]:
+    """A typed seed option as an int in the seed field's range, else None."""
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        return None
+    try:
+        seed = int(value.strip()) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return seed if 0 <= seed <= 2147483647 else None
+
+
+def _primary_workflow(model: AudioCppModel) -> str:
+    workflows = list(model.workflows)
+    return "speak" if "speak" in workflows or not workflows else workflows[0]
+
+
+def options_by_workflow(model: AudioCppModel, primary: str) -> Optional[dict[str, list[dict]]]:
+    """Each workflow's options where they differ from ``audio_options``; convert always listed."""
+    base = workflow_options(model, primary)
+    out = {
+        name: [dict(option) for option in options]
+        for name in model.workflows
+        if (options := workflow_options(model, name)) != base
+        or (name == "convert" and model.convert is not None)
+    }
+    return out or None
+
+
+def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> AudioCppModel:
+    """``model`` re-resolved from the served file: quants can embed different specs (MagpieTTS
+    ``orig`` says ``speaker``, its Q8_0 ``voice_id``)."""
+    forget(model.id)
+    fresh = resolve(model.id, model.variant.key, hf_token, network = False)
+    if fresh is None or fresh.unsupported or fresh.variant.key != model.variant.key:
+        return model
+    return fresh
+
+
+# Families that read the request's top-level language, not an option (audio.cpp extract_request_language:
+# VoxCPM1 keeps Cantonese text Traditional with zh-HK; Supertonic generation_options_from_request).
+_READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts", "supertonic"})
+# Supertonic's tokenizer refuses anything but a bare ISO code (src/models/supertonic/tokenizer_text.cpp).
+_LANGUAGE_CODE_FAMILIES = frozenset({"supertonic"})
+# English names of the languages Supertonic reads (model_specs/supertonic.json).
+_CODE_LANGUAGE_NAMES = {
+    **_LANGUAGE_NAMES,
+    "ar": "Arabic",
+    "bg": "Bulgarian",
+    "cs": "Czech",
+    "da": "Danish",
+    "el": "Greek",
+    "et": "Estonian",
+    "fi": "Finnish",
+    "hi": "Hindi",
+    "hr": "Croatian",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "lt": "Lithuanian",
+    "lv": "Latvian",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "ro": "Romanian",
+    "sk": "Slovak",
+    "sl": "Slovenian",
+    "sv": "Swedish",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "vi": "Vietnamese",
+}
+
+
 def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
     """What status reports for a loaded audio.cpp model, beyond the common audio fields."""
+    primary = _primary_workflow(model)
     return {
         "audio_family": model.family,
-        "audio_options": [dict(option) for option in model.options],
+        "audio_options": [dict(option) for option in workflow_options(model, primary)],
         "gguf_variant": model.variant.key,
         "audio_workflows": list(model.workflows),
         "audio_reference_text": model.clone.reference_text if model.clone else None,
@@ -155,10 +246,15 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_clone": clone_rules(model),
         "audio_edit": edit_rules(model),
         "audio_music": music_rules(model),
-        "audio_options_by_workflow": (
-            {"convert": [dict(option) for option in model.convert_options]}
-            if model.convert is not None
-            else None
+        "audio_options_by_workflow": options_by_workflow(model, primary),
+        # Null when the spec takes any option; else the request fields it declares.
+        "audio_request_inputs": None
+        if model.request_keys is None
+        else sorted(
+            n
+            for n in ("instruct", "instruction", "language")
+            if n in model.request_keys
+            or (n == "language" and model.family in _READS_TOP_LEVEL_LANGUAGE)
         ),
         "audio_workflow_tasks": audio_cpp_convert.workflow_tasks(model),
         "audio_convert": audio_cpp_convert.convert_caps(model),
@@ -202,8 +298,7 @@ def edit_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
 
 
 def edit_options(model: AudioCppModel) -> tuple[dict, ...]:
-    claims = set(model.edit.claims) if model.edit is not None else set()
-    return tuple(option for option in model.options if option["name"] not in claims)
+    return workflow_options(model, "edit")
 
 
 def edit_request_bodies(
@@ -273,6 +368,17 @@ def language_name(language: Optional[str]) -> Optional[str]:
     return None
 
 
+def language_code(language: Optional[str]) -> Optional[str]:
+    """``de-DE`` or ``German`` -> ``de``; None for Auto."""
+    text = str(language or "").strip()
+    if not text or text.lower() == "auto":
+        return None
+    for code, name in _CODE_LANGUAGE_NAMES.items():
+        if name.lower() == text.lower():
+            return code
+    return text.lower().replace("_", "-").split("-", 1)[0]
+
+
 def speech_input(model: AudioCppModel, text: str) -> str:
     """VibeVoice refuses a script with no ``Speaker N:`` line."""
     if model.family == "vibevoice" and not _SPEAKER_LINE_RE.search(text or ""):
@@ -308,11 +414,22 @@ class AudioCppBackend:
         # Request-raised session options (Stable Audio max_batch); cleared when another model loads.
         self._session_overrides: dict[str, str] = {}
         self._status_patch: Optional[dict[str, Any]] = None
+        # "cpu" once a GPU start failed and the model was restarted on the CPU.
+        self._device_fallback: Optional[str] = None
 
     # Loading
-
     @_invalidates_gpu_memory("audio load")
-    def load_model(
+    def load_model(self, config, *args, **kwargs) -> bool:
+        try:
+            return self._load_model(config, *args, **kwargs)
+        except Exception as exc:
+            # Unsloth Studio's own refusals (runtime missing, eSpeak, newer runtime) are named here.
+            if failure_of(exc) is None:
+                model = getattr(config, "audio_cpp", None)
+                attach_failure(exc, classify_audio_cpp_failure(str(exc), model = model))
+            raise
+
+    def _load_model(
         self,
         config,
         max_seq_length: int = 2048,
@@ -354,9 +471,14 @@ class AudioCppBackend:
             raise RuntimeError(problem)
         self.loading_models.add(model_name)
         try:
-            self._ensure_downloaded(model, hf_token)
+            if self._ensure_downloaded(model, hf_token):
+                model = _reread_after_download(model, hf_token)
             self._session_overrides = {}
             self._status_patch = None
+            from core.inference.audio_device import audio_device_forces_cpu
+
+            self._device_fallback = None
+            self._force_cpu = audio_device_forces_cpu(self.device_preference)
             self._start_server(model)
             self._model = model
             self.models = {
@@ -369,6 +491,7 @@ class AudioCppBackend:
                     "context_length": 0,
                     **model_info_fields(model),
                     "audio_cpp_backend": self._server.backend if self._server else None,
+                    "audio_device_fallback": self._device_fallback,
                 }
             }
             self.active_model_name = model_name
@@ -376,12 +499,79 @@ class AudioCppBackend:
         finally:
             self.loading_models.discard(model_name)
 
-    def _ensure_downloaded(self, model: AudioCppModel, hf_token: Optional[str]) -> None:
-        self._download_missing(model, hf_token)
-        for companion in model.companions:
-            companion_model = _resolve_companion(model, companion, hf_token, network = True)
+    def _ensure_downloaded(self, model: AudioCppModel, hf_token: Optional[str]) -> bool:
+        """Fetch what the model and its companions still lack; True when the model's own files were."""
+        from core.inference.audio_cpp_server import stale_runtime_download_problem
+
+        companions = [
+            (companion, _resolve_companion(model, companion, hf_token, network = True))
+            for companion in model.companions
+        ]
+        # The model itself passed model_runtime_problem; its companions download separately.
+        for _companion, companion_model in companions:
+            problem = stale_runtime_download_problem(companion_model)
+            if problem:
+                raise RuntimeError(problem)
+        fetched = self._download_missing(model, hf_token)
+        for companion, companion_model in companions:
             if self._download_missing(companion_model, hf_token):
                 forget(companion.id)
+        return fetched
+
+    @staticmethod
+    def _rebuild_header_only(
+        model: AudioCppModel,
+        path: str,
+        hf_token: Optional[str],
+        cache_dir: str,
+        cancel_event = None,
+    ) -> bool:
+        """Place a republished GGUF whose tensors are unchanged from the cached older copy, fetching
+        only its new header. False means download it as usual; never raises."""
+        try:
+            from hub.utils import gguf_header_delta as delta
+            from core.inference.audio_cpp_models import hub_offline, snapshot_dirs
+
+            if (
+                hub_offline()
+                or not path.lower().endswith(".gguf")
+                or not delta.delta_enabled()
+                or (cancel_event is not None and cancel_event.is_set())
+            ):
+                return False
+            if not any((s / path).is_file() for s in snapshot_dirs(model.repo_id, Path(cache_dir))):
+                return False
+            from huggingface_hub import get_hf_file_metadata, hf_hub_url
+            from huggingface_hub.file_download import (
+                _cache_commit_hash_for_specific_revision,
+                repo_folder_name,
+            )
+
+            token = hf_token or None
+            meta = get_hf_file_metadata(hf_hub_url(model.repo_id, path), token = token, timeout = 10)
+            etag = (getattr(meta, "etag", None) or "").strip('"').lower()
+            listed = next((f.sha256 for f in model.variant.files if f.path == path), "")
+            commit = getattr(meta, "commit_hash", None) or ""
+            if (listed and listed != etag) or not commit:
+                return False
+            # Pinned to the new commit: refs/main still names the old snapshot, which holds this path.
+            result = delta.prepare_media_gguf(
+                model.repo_id,
+                path,
+                token,
+                revision = commit,
+                cache_dir = cache_dir,
+                cancel_event = cancel_event,
+                metadata_fn = lambda: meta,
+            )
+            if not result.placed:
+                return False
+            repo_dir = Path(cache_dir) / repo_folder_name(repo_id = model.repo_id, repo_type = "model")
+            _cache_commit_hash_for_specific_revision(str(repo_dir), "main", commit)
+            return True
+        except Exception as exc:  # noqa: BLE001 - an optimisation only: the normal download follows
+            logger.info("audio.cpp: header-only rebuild of %s skipped: %s", path, exc)
+            return False
 
     @staticmethod
     def _download_missing(
@@ -397,6 +587,14 @@ class AudioCppBackend:
         from utils.hf_cache_settings import active_hf_hub_cache
 
         cache_dir = str(active_hf_hub_cache())
+        rebuilt = [
+            path
+            for path, _size in missing
+            if AudioCppBackend._rebuild_header_only(model, path, hf_token, cache_dir, cancel_event)
+        ]
+        if rebuilt:
+            # refs/main now names the rebuilt commit; unchanged files link in from blobs on disk.
+            missing = audio_cpp_files.missing_files(model)
         for path, _size in missing:
             if cancel_event is not None and cancel_event.is_set():
                 raise AudioCppRequestCancelledError("Request cancelled.")
@@ -426,15 +624,60 @@ class AudioCppBackend:
             self._stop_server_locked()
             model_path = audio_cpp_files.materialize(model)
             served = _with_session_overrides(_with_companions(model), self._session_overrides)
-            try:
-                self._server = AudioCppServer.start(
-                    served, model_path, force_cpu = self._force_cpu, cancel_event = cancel_event
-                )
-            except AudioCppStartCancelledError as exc:
-                _raise_if_cancelled(cancel_event)
-                raise RuntimeError(str(exc)) from exc
+            force_cpu = self._force_cpu
+            while True:
+                try:
+                    self._server = AudioCppServer.start(
+                        served, model_path, force_cpu = force_cpu, cancel_event = cancel_event
+                    )
+                    break
+                except AudioCppStartCancelledError as exc:
+                    _raise_if_cancelled(cancel_event)
+                    raise RuntimeError(str(exc)) from exc
+                except AudioCppUnavailableError as exc:
+                    if force_cpu or not self._may_retry_on_cpu(exc, cancel_event):
+                        raise
+                    logger.warning(
+                        "audio.cpp: %s could not start on the GPU; retrying once on the CPU",
+                        model.id,
+                    )
+                    force_cpu = True
+            if force_cpu and not self._force_cpu:
+                # Sticks for this model, so a mid-generation restart goes straight to the CPU.
+                self._force_cpu = True
+                self._device_fallback = "cpu"
             self._served_session = dict((served.model_options or {}).get("session_options") or {})
             self.device = "cpu" if self._server.backend == "cpu" else self._server.backend
+
+    def _runtime_error(self, what: str, exc: AudioCppRequestError) -> Exception:
+        """The runtime's refusal as an ``AudioRuntimeError``, with any known failure attached."""
+        from core.inference.audio_errors import AudioRuntimeError
+
+        backend = getattr(self._server, "backend", None)
+        failure = classify_audio_cpp_failure(
+            exc.detail, backend = backend, model = self._model, runtime_status = exc.status
+        )
+        return attach_failure(
+            AudioRuntimeError(
+                f"The audio runtime could not {what}: {exc.detail}", status = exc.status
+            ),
+            failure,
+        )
+
+    def _may_retry_on_cpu(self, exc: BaseException, cancel_event) -> bool:
+        """One CPU retry for a GPU that could not start, unless the user pinned the GPU."""
+        from core.inference.audio_device import audio_device_default, normalize_audio_device
+        from utils.process_lifetime import is_process_shutting_down
+
+        failure = failure_of(exc)
+        pref = self.device_preference
+        return (
+            failure is not None
+            and failure.code == "gpu_unavailable"
+            and (normalize_audio_device(pref) if pref else audio_device_default()) != "gpu"
+            and not (cancel_event is not None and cancel_event.is_set())
+            and not is_process_shutting_down()
+        )
 
     def _stop_server_locked(self) -> None:
         server = self._server
@@ -459,7 +702,6 @@ class AudioCppBackend:
             return self._server
 
     # Generation
-
     def generate_audio_response(
         self,
         text: str,
@@ -485,6 +727,7 @@ class AudioCppBackend:
         output_dir: Optional[str] = None,
     ) -> Tuple[bytes, int]:
         del top_k, min_p, repetition_penalty, use_adapter
+        self.last_generation_stats = None
         if not self.active_model_name or self.active_model_name not in self.models:
             raise RuntimeError("No active audio model")
         model = self._model
@@ -493,8 +736,26 @@ class AudioCppBackend:
         _raise_if_cancelled(cancel_event)
         if model.task == "sep":
             raise RuntimeError(f"{model.display_name} separates audio; open Separate.")
-        if workflow == "music" and music is not None:
-            options = validate_options(model.options, audio_options)
+        audio_options = dict(audio_options or {})
+        typed = _seed_option(audio_options.pop("seed", None))
+        if (workflow == "music" and music is not None) or workflow in ("convert", "edit"):
+            wf = workflow
+        else:
+            wf = "clone" if workflow == "clone" or bool(audio_inputs) else "speak"
+        ignored = ignored_options(model, wf, audio_options)
+        audio_options = {k: v for k, v in audio_options.items() if k not in ignored}
+        seeded = takes_seed(model, wf)
+        if typed is not None and not seeded:
+            # A strict spec refuses an undeclared seed.
+            ignored = sorted({*ignored, "seed"})
+            typed = None
+        seed = seed if seed is not None else typed
+        # Music keeps its own rule (_run_music); a music model's legacy speak path sends none.
+        if seed is None and seeded and wf in ("speak", "clone") and model.task != "music":
+            seed = cm.random_seed()
+        self.last_generation_stats = {"seed": seed, "ignored_options": ignored}
+        if wf == "music":
+            options = filled_options(model, "music", audio_options)
             return self._run_music(
                 model,
                 music,
@@ -517,7 +778,9 @@ class AudioCppBackend:
             mode = str(convert.get("mode") or "speech")
             try:
                 served, options = audio_cpp_convert.served_model(
-                    model, mode, validate_options(model.convert_options, audio_options)
+                    model,
+                    mode,
+                    filled_options(model, "convert", audio_options),
                 )
                 request = audio_cpp_convert.convert_request(
                     model,
@@ -535,15 +798,13 @@ class AudioCppBackend:
             except audio_cpp_convert.ConvertRequestError as exc:
                 raise RuntimeError(str(exc)) from exc
         elif editing:
-            options = validate_options(edit_options(model), audio_options)
+            options = filled_options(model, "edit", audio_options)
             served = _served_for_edit(model)
         else:
             if cloning and model.clone is None:
                 raise RuntimeError(f"{model.display_name} cannot clone a voice.")
             served = model
-            options = validate_options(
-                model.clone_options if cloning else model.options, audio_options
-            )
+            options = filled_options(model, "clone" if cloning else "speak", audio_options)
         server = self._running_server(served, cancel_event)
         try:
             if converting:
@@ -602,10 +863,11 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            from core.inference.audio_errors import AudioRuntimeError
-            raise AudioRuntimeError(
-                f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
-            ) from exc
+            raise self._runtime_error("generate audio", exc) from exc
+        except AudioCppUnavailableError as exc:
+            if failure_of(exc) is not None:  # already named (out of memory, ...)
+                raise
+            raise _runtime_stopped(exc) from exc
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
 
@@ -616,7 +878,15 @@ class AudioCppBackend:
         with self._server_lock:
             server = self._server
             running = server.model if server is not None and server.alive() else None
-        return server_runtime_fields(model, running)
+        fields = server_runtime_fields(model, running)
+        if self._device_fallback:
+            # A restart fell back to the CPU: the parent stops counting VRAM, the page can say so.
+            fields.update(
+                audio_device_fallback = self._device_fallback,
+                audio_cpp_backend = "cpu",
+                audio_cpu = True,
+            )
+        return fields
 
     def _record_runtime(self) -> None:
         entry = self.models.get(self.active_model_name or "")
@@ -673,10 +943,11 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            from core.inference.audio_errors import AudioRuntimeError
-            raise AudioRuntimeError(
-                f"The audio runtime could not separate the track: {exc.detail}", status = exc.status
-            ) from exc
+            raise self._runtime_error("separate the track", exc) from exc
+        except AudioCppUnavailableError as exc:
+            if failure_of(exc) is not None:  # already named (out of memory, ...)
+                raise
+            raise _runtime_stopped(exc) from exc
         except SeparationOutputError as exc:
             logger.warning("audio.cpp: %s answered without decodable stems: %s", model.id, exc)
             return []
@@ -689,8 +960,7 @@ class AudioCppBackend:
         return outputs
 
     def _restart_after_cancel(self) -> None:
-        # The server keeps computing the abandoned request; stopping it frees the GPU now and the next
-        # request starts a fresh one.
+        # Server keeps computing an abandoned request; stopping it frees the GPU for the next request
         with self._server_lock:
             self._stop_server_locked()
             self._record_runtime()
@@ -723,11 +993,32 @@ class AudioCppBackend:
             body["voice"] = voice
         default_options.update(chosen)
         requested: dict[str, Any] = {}
+        # A strict contract refuses undeclared options; the retry would then drop the description too.
+        keys = model.request_keys
         if instructions and str(instructions).strip():
-            # Voice-design and style-capable families read the description as the instruction.
-            requested["instruct"] = str(instructions).strip()
+            # Breeze and Irodori v4 call it instruction, DramaBox has neither.
+            name = next((n for n in ("instruct", "instruction") if keys is None or n in keys), None)
+            if name:
+                requested[name] = str(instructions).strip()
+            else:
+                logger.info(
+                    "audio.cpp: %s declares no instruction option; not sending the description",
+                    model.family,
+                )
+        top_language = None
         if language and str(language).strip():
-            requested["language"] = str(language).strip()
+            if model.family in _READS_TOP_LEVEL_LANGUAGE:
+                top_language = (
+                    language_code(language)
+                    if model.family in _LANGUAGE_CODE_FAMILIES
+                    else str(language).strip()
+                )
+            elif keys is None or "language" in keys:
+                requested["language"] = str(language).strip()
+            else:
+                logger.info("audio.cpp: %s does not declare language; not sending it", model.family)
+        if top_language:
+            body["language"] = top_language
         merged = {**default_options, **requested}
         if merged:
             body["options"] = merged
@@ -743,16 +1034,16 @@ class AudioCppBackend:
         except AudioCppRequestError as exc:
             # 503 is a busy model, not a refused option. The server answers an option a family lacks with a
             # 4xx or a 500 depending on where the family validates it, so both count as a refusal here.
-            if not requested or exc.status == 503 or not 400 <= exc.status < 600:
+            if not (requested or top_language) or exc.status == 503 or not 400 <= exc.status < 600:
                 raise
-            # The request's own description and language are hints; the package's defaults and the
-            # user's options are not.
+            # Retry without description/language hints when rejected, except 503; defaults and user options stay
             logger.info(
                 "audio.cpp: %s rejected %s (%s); retrying without them",
                 model.family,
-                sorted(requested),
+                sorted([*requested, *(["language"] if top_language else [])]),
                 exc.detail,
             )
+            body.pop("language", None)
             if default_options:
                 body["options"] = default_options
             else:
@@ -780,10 +1071,7 @@ class AudioCppBackend:
         options: dict,
         cancel_event,
     ) -> bytes:
-        """Speak ``text`` in the voice of ``audio_inputs["reference"]`` (a server-local WAV path).
-
-        An emotion clip has no field on the speech endpoint, so that request goes to /v1/tasks/run
-        with the clip as top-level ``audio``."""
+        """Speaks text in the voice of audio_inputs reference, a server-local WAV path; an emotion clip goes to /v1/tasks/run as top-level audio"""
         clone = model.clone or CloneSpec()
         reference = audio_inputs.get("reference")
         if not reference:
@@ -889,10 +1177,11 @@ class AudioCppBackend:
             )
         except cm.MusicRequestError as exc:
             raise RuntimeError(str(exc)) from exc
+        own_end = cm.self_ending_timeout(model.family, server.backend)
         ctype, data = server.post_json(
             "/v1/tasks/run",
             {"model": server.model_id, "request": request},
-            timeout = _GENERATE_TIMEOUT_SECONDS,
+            timeout = own_end or _GENERATE_TIMEOUT_SECONDS,
             cancel_event = cancel_event,
         )
         return _audio_from_task_response(ctype, data)
@@ -958,8 +1247,12 @@ class AudioCppBackend:
                 f"{model.display_name} makes at most "
                 f"{MUSIC_MAX_VARIATIONS if mode.variations else 1} variation(s) at a time."
             )
-        if seed is None and model.music.fixed_seed:
+        if seed is None:
             seed = cm.random_seed()
+        if music.get("take"):
+            # One take of a run the page sends take by take.
+            seed = cm.take_seed(seed, int(music["take"]))
+        self.last_generation_stats = {**(self.last_generation_stats or {}), "seed": seed}
         batch = variations if mode.variations == "batch" else 1
         if mode_id == "edit":
             if not source:
@@ -1000,8 +1293,7 @@ class AudioCppBackend:
         except cm.MusicRequestError as exc:
             raise RuntimeError(str(exc)) from exc
         server = self._server_for_batch(model, batch, cancel_event)
-        # The route sizes the wait from the full work (extend, continue length); the orchestrator
-        # outlasts that same budget.
+        # Wait sized from the full work (extend, continue length); the orchestrator outlasts that budget
         timeout = float(music.get("timeout_s") or 0) or cm.timeout_seconds(
             model.family, seconds, variations, server.backend
         )
@@ -1024,10 +1316,11 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            from core.inference.audio_errors import AudioRuntimeError
-            raise AudioRuntimeError(
-                f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
-            ) from exc
+            raise self._runtime_error("generate audio", exc) from exc
+        except AudioCppUnavailableError as exc:
+            if failure_of(exc) is not None:  # already named (out of memory, ...)
+                raise
+            raise _runtime_stopped(exc) from exc
         _raise_if_cancelled(cancel_event)
         if output_dir:
             _write_outputs(output_dir, outputs)
@@ -1035,7 +1328,6 @@ class AudioCppBackend:
         return first, _wav_sample_rate(first)
 
     # Unloading
-
     @_invalidates_gpu_memory("audio unload")
     def unload_model(self, model_name: str) -> bool:
         self.models.pop(model_name, None)
@@ -1060,7 +1352,7 @@ def _resolve_companion(
     found = resolve(companion.id, companion.variant, hf_token, network = network)
     if found is None:
         name = companion.id.rsplit("/", 1)[-1]
-        raise RuntimeError(f"{model.display_name} needs {name}, which Studio could not find.")
+        raise RuntimeError(f"{model.display_name} needs {name}, which Unsloth could not find.")
     return found
 
 

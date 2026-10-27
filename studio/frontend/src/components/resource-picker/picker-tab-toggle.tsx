@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SegmentedControlIndicator } from "@/components/segmented-control";
+import { SegmentedPill } from "@/components/segmented-control";
 import { cn } from "@/lib/utils";
+import { useId } from "react";
 import { PICKER_OPTION_FOCUS_VISIBLE_CLASS } from "./picker-focus";
 import { pickerTabId } from "./picker-tab-state";
 
@@ -40,6 +41,7 @@ export function PickerTabToggle<T extends string>({
   ariaLabel: string;
 }) {
   const [first, second] = options;
+  const pillId = useId();
   return (
     <div
       role="tablist"
@@ -57,11 +59,6 @@ export function PickerTabToggle<T extends string>({
         document.getElementById(pickerTabId(idBase, target))?.focus();
       }}
     >
-      <SegmentedControlIndicator
-        activeIndex={tab === second.value ? 1 : 0}
-        optionCount={options.length}
-        className="inset-y-0 start-0"
-      />
       {options.map((entry) => {
         const selected = tab === entry.value;
         return (
@@ -75,13 +72,14 @@ export function PickerTabToggle<T extends string>({
             tabIndex={selected ? 0 : -1}
             onClick={() => onTabChange(entry.value)}
             className={cn(
-              "relative z-10 inline-flex h-full flex-1 select-none items-center justify-center rounded-full px-3 text-ui-12p5 font-medium transition-colors",
+              "relative inline-flex h-full flex-1 select-none items-center justify-center rounded-full px-3 text-ui-12p5 font-medium transition-colors",
               PICKER_OPTION_FOCUS_VISIBLE_CLASS,
               selected
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {selected && <SegmentedPill group={`${pillId}-pill`} />}
             {entry.label}
           </button>
         );

@@ -1,21 +1,33 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
+import copy
 import functools
 import inspect
 import logging
+import os
+import types
 import warnings
 from typing import Optional
 from dataclasses import asdict
 from unsloth import DEVICE_TYPE
+from unsloth.device_type import cuda_visible_capabilities
+from unsloth.kernels.utils import torch_gpu_device
 
 import torch
 import triton
 
+try:
+    from triton.runtime.errors import OutOfResources
+except ImportError:  # older Triton
+    from triton.runtime import OutOfResources
+
 from .kernels.backward import (
     _autotuned_grouped_gemm_dW_kernel,
+    _autotuned_grouped_gemm_dW_per_expert_kernel,
     _autotuned_grouped_gemm_dX_kernel,
     _grouped_gemm_dW_kernel,
+    _grouped_gemm_dW_per_expert_kernel,
     _grouped_gemm_dX_kernel,
 )
 from .kernels.forward import (
@@ -36,13 +48,16 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 
-# Precompute TMA support (NVIDIA capability >= 9 plus a triton carrying make_tensor_descriptor) to avoid graph breaks.
+# Process-wide, so every visible card must be sm90+ (experts may sit on any); an unreadable card means False.
 def _check_tma_support():
     if DEVICE_TYPE in ("xpu", "hip"):
         return False
     import triton.language as tl
 
-    gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9
+    caps = cuda_visible_capabilities()
+    gpu_supports_tma = (
+        bool(caps) and len(caps) == torch.cuda.device_count() and min(c[0] for c in caps) >= 9
+    )
     triton_has_tma_api = hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
@@ -51,7 +66,132 @@ def _check_tma_support():
 
 _SUPPORTS_TMA = _check_tma_support()
 
-# triton.set_allocator is Triton 3.0+.
+_DEVICE_AUTOTUNERS = {}
+_MODEL_AUTOTUNE_CACHES = {}
+_DEVICE_MODELS = {}
+
+
+def _device_index(device):
+    return device.index if device.index is not None else torch.cuda.current_device()
+
+
+def _device_model(device):
+    index = _device_index(device)
+    model = _DEVICE_MODELS.get(index)
+    if model is None:
+        try:
+            p = torch.cuda.get_device_properties(index)
+            model = (
+                getattr(p, "name", None),
+                getattr(p, "major", None),
+                getattr(p, "minor", None),
+                getattr(p, "multi_processor_count", None),
+            )
+        except Exception:
+            model = index
+        _DEVICE_MODELS[index] = model
+    return model
+
+
+_DEVICE_SM_COUNTS = {}
+
+
+def _num_sms(device):
+    """multi_processor_count of ``device``, read once per card (it cannot change in a process)."""
+    index = _device_index(device)
+    count = _DEVICE_SM_COUNTS.get(index)
+    if count is None:
+        count = _DEVICE_SM_COUNTS[index] = torch.cuda.get_device_properties(
+            index
+        ).multi_processor_count
+    return count
+
+
+_OPERAND_TILE_FITS = {}
+
+
+def _autotune_cache():
+    from .. import autotune_cache
+    return autotune_cache
+
+
+def _fit_tiles_to_operand_device(
+    kind, operand, weight_dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+):
+    """Caller-supplied tiles were fitted to the current card's shared memory when the caller passed no device
+    (unsloth_zoo <= 2026.10.7). If the operands sit on a different GPU model, shrink a copy to fit their card.
+    One GPU, or the same model as the current card: returned unchanged."""
+    tiles = (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    device = operand.device
+    try:
+        if device.type != "cuda" or DEVICE_TYPE != "cuda" or torch.cuda.device_count() <= 1:
+            return tiles
+        current = torch.cuda.current_device()
+        index = _device_index(device)
+        if index == current or _device_model(device) == _device_model(
+            torch.device("cuda", current)
+        ):
+            return tiles
+    except Exception:
+        return tiles
+    key = (kind, index, operand.dtype, weight_dtype, tiles)
+    fitted = _OPERAND_TILE_FITS.get(key)
+    if fitted is None:
+        fitted = tiles
+        try:
+            from types import SimpleNamespace
+
+            autotune_cache = _autotune_cache()
+
+            smem = autotune_cache._device_smem_per_block(device)
+            if smem is not None:
+                config = SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = num_stages,
+                )
+                autotune_cache._fit_config_to_smem(
+                    kind,
+                    config,
+                    operand.dtype.itemsize,
+                    weight_dtype.itemsize,
+                    tuple(torch.cuda.get_device_capability(device)),
+                    smem,
+                )
+                fitted = (
+                    config.BLOCK_SIZE_M,
+                    config.BLOCK_SIZE_N,
+                    config.BLOCK_SIZE_K,
+                    config.num_stages,
+                )
+        except Exception:
+            fitted = tiles
+        _OPERAND_TILE_FITS[key] = fitted
+    return fitted
+
+
+def _autotuner_for(kernel, device):
+    """Triton's autotune key omits the device, so on several GPUs each card runs its own copy. Copies on
+    the same GPU model share one results cache, so identical cards reuse each other's tuning; a run's
+    scratch state (nargs) stays per card, since backward runs one autograd thread per device. No lock:
+    a cached launch never waits on another card's tuning."""
+    if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
+        return kernel
+    key = (id(kernel), _device_index(device))
+    tuner = _DEVICE_AUTOTUNERS.get(key)
+    if tuner is None:
+        tuner = copy.copy(kernel)
+        model_key = (id(kernel), _device_model(device))
+        tuner.cache = _MODEL_AUTOTUNE_CACHES.setdefault(model_key, {})
+        _DEVICE_AUTOTUNERS[key] = tuner
+    # Callers reassign kernel.configs (benchmarks, tests): follow it like the shared tuner would.
+    configs = getattr(kernel, "configs", None)
+    if configs is not None and getattr(tuner, "configs", None) is not configs:
+        tuner.configs = configs
+    return tuner
+
+
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
 
 
@@ -90,6 +230,9 @@ def get_per_device_per_stream_alloc_fn(device):
 def log_kernel_info(
     compiled_kernel: triton.compiler.CompiledKernel, best_config: triton.Config = None
 ):
+    # Runs after every launch: formatting the metadata costs several us per call even when nothing logs.
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     kernel_name = compiled_kernel.name
     nregs = compiled_kernel.n_regs
     nspills = compiled_kernel.n_spills
@@ -109,9 +252,7 @@ def _grouped_gemm_forward_impl(
     permute_x: bool = False,
     permute_y: bool = False,
     fuse_mul_post: bool = False,
-    # Autotuning -- overrides manual kernel params when True
     autotune: bool = False,
-    # Kernel tuning params: must be tuned, else poor performance.
     BLOCK_SIZE_M: int = 32,
     BLOCK_SIZE_N: int = 32,
     BLOCK_SIZE_K: int = 32,
@@ -120,7 +261,6 @@ def _grouped_gemm_forward_impl(
     use_tma_load_w: bool = False,
     use_tma_load_x: bool = False,
     use_tma_store: bool = False,
-    # Software pipelining; no effect until the loop is re-written.
     flatten: bool = True,
     debug: bool = False,
 ) -> torch.Tensor:
@@ -146,7 +286,6 @@ def _grouped_gemm_forward_impl(
     assert not (permute_y and use_tma_store), "Cannot use both TMA store and permute_y"
 
     if use_tma_load_x:
-        # TMA load for activations; TMA gather is Blackwell+ only.
         assert not permute_x, "Cannot use both use_tma_load_x and permute_x"
 
     use_tma = use_tma_load_w or use_tma_load_x or use_tma_store
@@ -214,13 +353,15 @@ def _grouped_gemm_forward_impl(
 
     y = torch.empty((total_tokens, N), device = X.device, dtype = X.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+    NUM_SMS = _num_sms(X.device)
 
     def grid(META):
         return (NUM_SMS,)
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "fwd", X, W.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     if debug:
         print(
@@ -260,11 +401,18 @@ def _grouped_gemm_forward_impl(
             }
         )
 
-    kernel = _autotuned_grouped_gemm_forward_kernel if autotune else _grouped_gemm_forward_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_forward_kernel, X.device)
+        if autotune
+        else _grouped_gemm_forward_kernel
+    )
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        with torch_gpu_device(X.device):
+            compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                **kernel_args, enable_fp_fusion = True
+            )
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
         else:
@@ -309,7 +457,6 @@ def _grouped_gemm_dX_impl(
     assert m_sizes.ndim == 1
 
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
-    # Flipped from the forward pass: a y permuted in the forward must be permuted on load in the backward.
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
     assert not (permute_x and use_tma_store), "Cannot use both TMA store and permute_x"
 
@@ -345,7 +492,6 @@ def _grouped_gemm_dX_impl(
     assert M_total % topk == 0, f"M_total ({M_total}) must be divisible by topk ({topk})"
     num_tokens = M_total // topk
 
-    # The kernel only reads gather_indices under permute_x / permute_y, so it stays optional otherwise.
     if permute_x or permute_y:
         assert (
             gather_indices is not None
@@ -353,17 +499,18 @@ def _grouped_gemm_dX_impl(
     total_tokens = gather_indices.shape[0] if gather_indices is not None else M_total
     assert total_tokens == M_total, f"Total tokens ({total_tokens}) must match M_total ({M_total})"
 
-    # The output stays [NUM_TOKENS * TOPK, K] even under permute_x: gradients accumulate across every expert a token chose, reduced in a post-processing step.
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+    NUM_SMS = _num_sms(dY.device)
 
     def grid(META):
         return (NUM_SMS,)
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "dX", dY, W.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     if debug:
         print(
@@ -400,11 +547,18 @@ def _grouped_gemm_dX_impl(
                 "USE_TMA_STORE": use_tma_store,
             }
         )
-    kernel = _autotuned_grouped_gemm_dX_kernel if autotune else _grouped_gemm_dX_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_dX_kernel, dY.device)
+        if autotune
+        else _grouped_gemm_dX_kernel
+    )
 
     is_fake = _is_tracing(dY, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        with torch_gpu_device(dY.device):
+            compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                **kernel_args, enable_fp_fusion = True
+            )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -413,12 +567,142 @@ def _grouped_gemm_dX_impl(
     return dX
 
 
-def _grouped_gemm_dW_impl(
+def _use_per_expert_dW_kernel():
+    """Per-expert dW grid (one program per (expert, n, k) tile); UNSLOTH_MOE_DW_KERNEL=legacy restores the
+    kernel that walks every expert inside each (n, k) program. Measured faster on every shape, dtype and GPU
+    tried (A100, L4, RTX PRO 6000, B200), so there is no shape routing."""
+    return os.environ.get("UNSLOTH_MOE_DW_KERNEL", "").strip().lower() != "legacy"
+
+
+_PER_EXPERT_DW_FITS = {}
+_DW_CARD_FITS = {}
+
+
+def _card_smem(index):
+    """(shared_memory_per_block_optin, (major, minor)) of cuda:index, else None (ROCm, no CUDA)."""
+    if getattr(torch.version, "hip", None):
+        return None
+    props = torch.cuda.get_device_properties(index)
+    return int(props.shared_memory_per_block_optin), (props.major, props.minor)
+
+
+def _per_expert_dW_stages(
+    device,
+    act_bytes,
+    BLOCK_SIZE_M,
+    BLOCK_SIZE_N,
+    BLOCK_SIZE_K,
+    num_stages,
+    pipelined = False,
+):
+    """Largest num_stages <= the requested one at which the per-expert dW kernel fits ``device`` shared memory, or
+    None (use the legacy kernel). Unpermuted operands (``pipelined``) multi-buffer X per stage, so 4 stages of the
+    heuristic 64x64x256 tile need 106,496 B: only the stage count drops, the tile (and so the bits) stay."""
+    index = _device_index(device)
+    key = (index, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages, pipelined)
+    if key in _PER_EXPERT_DW_FITS:
+        return _PER_EXPERT_DW_FITS[key]
+    stages = num_stages
+    try:
+        card = _card_smem(index)
+        if card is not None:
+            from ..autotune_cache import _estimate_smem
+
+            smem, capability = card
+            stages = None
+            for candidate in range(max(int(num_stages), 1), 0, -1):
+                tile = types.SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = candidate,
+                )
+                need = _estimate_smem("dW", tile, act_bytes, act_bytes, capability, pipelined)
+                if need <= smem:
+                    stages = candidate
+                    break
+                if not pipelined:
+                    break  # stage count does not change a gathered launch's footprint
+            if stages is None:
+                logger.info(
+                    f"Unsloth: MoE dW tile (M, N, K, stages) {key[2:6]} needs ~{need} B shared "
+                    f"memory per-expert, over {smem} B on cuda:{index}; using the legacy dW kernel."
+                )
+            elif stages != num_stages:
+                logger.info(
+                    f"Unsloth: MoE dW tile (M, N, K) {key[2:5]} runs {stages} stages instead of "
+                    f"{num_stages} to fit {smem} B shared memory on cuda:{index}."
+                )
+    except Exception:
+        stages = num_stages
+    _PER_EXPERT_DW_FITS[key] = stages
+    return stages
+
+
+def _per_expert_dW_fits(
+    device,
+    act_bytes,
+    BLOCK_SIZE_M,
+    BLOCK_SIZE_N,
+    BLOCK_SIZE_K,
+    num_stages,
+    pipelined = False,
+):
+    """False when this tile overflows ``device`` shared memory in the per-expert dW kernel at every stage count.
+
+    A caller-supplied tile the legacy kernel launched can raise OutOfResources there (gathered loads double buffer)."""
+    return (
+        _per_expert_dW_stages(
+            device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages, pipelined
+        )
+        is not None
+    )
+
+
+def _fit_dW_tiles_to_card(
+    device, act_bytes, pipelined, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+):
+    """Shrunk copy of a dW tile that raised OutOfResources on ``device`` (an explicit tile sized for a bigger card,
+    e.g. 128x256x256 on a 64 KiB T4, where the legacy kernel overflows too). Only called after a launch failed, so a
+    tile the estimate over-counts but that launches is never touched."""
+    tiles = (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    key = (_device_index(device), act_bytes, pipelined, tiles)
+    fitted = _DW_CARD_FITS.get(key)
+    if fitted is None:
+        fitted = tiles
+        try:
+            card = _card_smem(key[0])
+            if card is not None:
+                config = types.SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = num_stages,
+                )
+                _autotune_cache()._fit_config_to_smem(
+                    "dW", config, act_bytes, act_bytes, card[1], card[0], pipelined
+                )
+                fitted = (
+                    config.BLOCK_SIZE_M,
+                    config.BLOCK_SIZE_N,
+                    config.BLOCK_SIZE_K,
+                    config.num_stages,
+                )
+        except Exception:
+            fitted = tiles
+        _DW_CARD_FITS[key] = fitted
+    return fitted
+
+
+def _launch_grouped_gemm_dW(
     X: torch.Tensor,
     dY: torch.Tensor,
     m_sizes: torch.Tensor,
     gather_indices: torch.Tensor,
     topk: int,
+    dW_out: Optional[torch.Tensor] = None,
+    accumulate: bool = False,
+    dW_dtype: Optional[torch.dtype] = None,
     BLOCK_SIZE_M: int = 32,
     BLOCK_SIZE_N: int = 32,
     BLOCK_SIZE_K: int = 32,
@@ -442,7 +726,7 @@ def _grouped_gemm_dW_impl(
     """
     assert not fuse_mul_pre, "fuse_mul_pre not supported"
     assert not fuse_mul_post, "fuse_mul_post not supported"
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count if not debug else 1
+    NUM_SMS = _num_sms(X.device) if not debug else 1
     X = X.view(-1, X.shape[-1]).contiguous()
     dY = dY.contiguous()
     m_sizes = m_sizes.contiguous()
@@ -486,13 +770,54 @@ def _grouped_gemm_dW_impl(
     M_grad, N = dY.shape
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
-
-    dW = torch.zeros((num_experts, N, K), device = X.device, dtype = X.dtype)
-
+    per_expert = _use_per_expert_dW_kernel()
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "dW", X, X.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
+        legacy_stages = num_stages
+        per_expert_stages = (
+            _per_expert_dW_stages(
+                X.device,
+                X.element_size(),
+                BLOCK_SIZE_M,
+                BLOCK_SIZE_N,
+                BLOCK_SIZE_K,
+                num_stages,
+                pipelined = not (permute_x or permute_y),
+            )
+            if per_expert
+            else None
+        )
+        if per_expert_stages is None:
+            per_expert = False
+        else:
+            num_stages = per_expert_stages
+
+    if accumulate:
+        # Read-modify-write into an existing gradient: one program owns each (expert, n, k) tile.
+        assert not autotune, "autotune benchmarks re-run the kernel and would add dW several times"
+        assert dW_out is not None
+        assert dW_out.numel() == num_experts * N * K, f"{dW_out.shape} != {(num_experts, N, K)}"
+        assert dW_out.is_contiguous() and dW_out.device == X.device
+        dW = dW_out
+    else:
+        # The per-expert kernel writes every tile (zeros for an empty expert); the legacy one skips them.
+        dW = (torch.empty if per_expert else torch.zeros)(
+            (num_experts, N, K), device = X.device, dtype = X.dtype if dW_dtype is None else dW_dtype
+        )
+    if use_tma_store and (dW.element_size() > X.element_size() or dW.data_ptr() % 16 != 0):
+        # TMA needs a 16 byte aligned base (a DDP bucket view may not be), and the tuned tile
+        # sizes assume an output no wider than X.
+        use_tma_store = False
 
     def grid(META):
+        if per_expert:
+            return (
+                num_experts
+                * triton.cdiv(N, META["BLOCK_SIZE_N"])
+                * triton.cdiv(K, META["BLOCK_SIZE_K"]),
+            )
         return (NUM_SMS,)
 
     if debug:
@@ -529,8 +854,16 @@ def _grouped_gemm_dW_impl(
         "NUM_SMS": NUM_SMS,
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        "FLATTEN": flatten,
     }
+    if accumulate:
+        kernel_args["ACCUMULATE"] = True
+    if per_expert:
+        kernel_args["EXPERTS_POW2"] = triton.next_power_of_2(num_experts)
+        if X.element_size() >= 4:
+            # fp32 operands (fp32 RMSNorm outputs in a bf16 full finetune): the tf32 dot reads both tiles
+            # M-major, and a multi-stage pipeline doubles shared memory and halves occupancy; one stage is
+            # faster for every tile measured. The legacy kernel never pipelines this loop either.
+            num_stages = 1
 
     if not autotune:
         kernel_args.update(
@@ -546,11 +879,66 @@ def _grouped_gemm_dW_impl(
             }
         )
 
-    kernel = _autotuned_grouped_gemm_dW_kernel if autotune else _grouped_gemm_dW_kernel
+    if per_expert:
+        kernel = (
+            _autotuner_for(_autotuned_grouped_gemm_dW_per_expert_kernel, X.device)
+            if autotune
+            else _grouped_gemm_dW_per_expert_kernel
+        )
+    else:
+        kernel = (
+            _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device)
+            if autotune
+            else _grouped_gemm_dW_kernel
+        )
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        with torch_gpu_device(X.device):
+            fit_args = None
+            if not autotune:
+                tiles = (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, kernel_args["num_stages"])
+                pipelined = per_expert and not (permute_x or permute_y)
+                fit_args = (X.device, X.element_size(), pipelined, *tiles)
+                if (_device_index(X.device), X.element_size(), pipelined, tiles) in _DW_CARD_FITS:
+                    _set_dW_tiles(kernel_args, _fit_dW_tiles_to_card(*fit_args))  # failed before
+            try:
+                compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                    **kernel_args, enable_fp_fusion = True
+                )
+            except OutOfResources:
+                # Raised before the kernel runs (dW untouched): retry once with a tile fitted to this card.
+                if fit_args is None:
+                    raise
+                tiles = fit_args[3:]
+                fitted = _fit_dW_tiles_to_card(*fit_args)
+                if fitted == tiles:
+                    if not per_expert:
+                        raise
+                    # No smaller tile known for this card (ROCm has no shared memory model here: the
+                    # heuristic 64x64x256 4-stage tile needs ~80 KiB of LDS on gfx1151's 64 KiB): run the
+                    # legacy kernel, which launched this tile before the per-expert kernel, and remember.
+                    logger.info(
+                        f"Unsloth: MoE per-expert dW tile (M, N, K, stages) {tiles} is over the shared "
+                        f"memory of {X.device}; using the legacy dW kernel."
+                    )
+                    _PER_EXPERT_DW_FITS[
+                        (_device_index(X.device), X.element_size(), *tiles[:3], legacy_stages,
+                         not (permute_x or permute_y))
+                    ] = None  # fmt: skip
+                    per_expert = False  # read by grid()
+                    kernel = _grouped_gemm_dW_kernel
+                    kernel_args.pop("EXPERTS_POW2", None)
+                    kernel_args["num_stages"] = legacy_stages
+                    if not accumulate:
+                        dW.zero_()  # the legacy kernel skips empty experts
+                else:
+                    logger.info(
+                        f"Unsloth: MoE dW tile (M, N, K, stages) {tiles} is over the shared memory of "
+                        f"cuda:{_device_index(X.device)}; using {fitted}."
+                    )
+                    _set_dW_tiles(kernel_args, fitted)
+                compiled_kernel = kernel[grid](**kernel_args, enable_fp_fusion = True)
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -558,6 +946,67 @@ def _grouped_gemm_dW_impl(
             log_kernel_info(compiled_kernel)
 
     return dW
+
+
+def _set_dW_tiles(kernel_args, tiles):
+    (
+        kernel_args["BLOCK_SIZE_M"],
+        kernel_args["BLOCK_SIZE_N"],
+        kernel_args["BLOCK_SIZE_K"],
+        kernel_args["num_stages"],
+    ) = tiles
+
+
+def _grouped_gemm_dW_impl(
+    X: torch.Tensor,
+    dY: torch.Tensor,
+    m_sizes: torch.Tensor,
+    gather_indices: torch.Tensor,
+    topk: int,
+    BLOCK_SIZE_M: int = 32,
+    BLOCK_SIZE_N: int = 32,
+    BLOCK_SIZE_K: int = 32,
+    permute_x: bool = False,
+    permute_y: bool = False,
+    use_tma_load_dy: bool = False,
+    use_tma_load_x: bool = False,
+    use_tma_store: bool = False,
+    fuse_mul_pre: bool = False,
+    fuse_mul_post: bool = False,
+    num_warps: int = 4,
+    num_stages: int = 2,
+    flatten: bool = True,
+    autotune: bool = False,
+    debug: bool = False,
+    dW_dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    """dW into a fresh zeroed (E, N, K) buffer of dW_dtype (default X.dtype)."""
+    kwargs = dict(locals())
+    return _launch_grouped_gemm_dW(dW_out = None, accumulate = False, **kwargs)
+
+
+def _grouped_gemm_dW_accumulate_impl(
+    X: torch.Tensor,
+    dY: torch.Tensor,
+    m_sizes: torch.Tensor,
+    gather_indices: torch.Tensor,
+    dW: torch.Tensor,
+    topk: int,
+    BLOCK_SIZE_M: int = 32,
+    BLOCK_SIZE_N: int = 32,
+    BLOCK_SIZE_K: int = 32,
+    permute_x: bool = False,
+    permute_y: bool = False,
+    use_tma_load_dy: bool = False,
+    use_tma_load_x: bool = False,
+    use_tma_store: bool = False,
+    num_warps: int = 4,
+    num_stages: int = 2,
+) -> None:
+    """dW += X^T dY per expert, in place, added in fp32 and rounded once to dW.dtype."""
+    kwargs = dict(locals())
+    dW_out = kwargs.pop("dW")
+    _launch_grouped_gemm_dW(dW_out = dW_out, accumulate = True, **kwargs)
 
 
 # Opaque ops: allow_in_graph let AOT trace the body on fake tensors, keeping torch.empty and dropping the launch.
@@ -576,20 +1025,34 @@ def _dX_fake(dY, W, gather_indices, m_sizes, topk, *args):
 
 
 def _dW_fake(X, dY, m_sizes, *args):
-    return X.new_empty((m_sizes.shape[0], dY.shape[-1], X.shape[-1]))
+    dW_dtype = dict(zip(_DW_PARAM_NAMES[3:], args)).get("dW_dtype")
+    return X.new_empty(
+        (m_sizes.shape[0], dY.shape[-1], X.shape[-1]),
+        dtype = X.dtype if dW_dtype is None else dW_dtype,
+    )
 
 
+def _dW_accumulate_fake(X, dY, m_sizes, gather_indices, dW, *args):
+    return None
+
+
+_DW_PARAM_NAMES = tuple(inspect.signature(_grouped_gemm_dW_impl).parameters)
 _OPTIONAL_TENSORS = ("gather_indices", "topk_weights")
 
 
-def _make_op(name, impl, fake):
+def _make_op(
+    name,
+    impl,
+    fake,
+    mutates_args = (),
+    returns = torch.Tensor,
+):
     """torch.library.custom_op (torch >= 2.4) over impl; torch.compiler.disable where it is missing."""
     custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
     if custom_op is None:
         return torch._dynamo.disable(impl)
     existing = getattr(getattr(torch.ops, "unsloth", None), name, None)
     if existing is not None:
-        # grouped_gemm is also importable as a top-level package (glm4_moe, tests): reuse the registration.
         return existing
     params = [
         p.replace(
@@ -603,9 +1066,9 @@ def _make_op(name, impl, fake):
     def op(*args):
         return impl(**dict(zip(names, args)))
 
-    op.__signature__ = inspect.Signature(params, return_annotation = torch.Tensor)
+    op.__signature__ = inspect.Signature(params, return_annotation = returns)
     op.__name__ = name
-    op = custom_op(f"unsloth::{name}", op, mutates_args = ())
+    op = custom_op(f"unsloth::{name}", op, mutates_args = tuple(mutates_args))
     op.register_fake(fake)
     return op
 
@@ -613,6 +1076,13 @@ def _make_op(name, impl, fake):
 _grouped_gemm_forward_op = _make_op("grouped_gemm_forward", _grouped_gemm_forward_impl, _fwd_fake)
 _grouped_gemm_dX_op = _make_op("grouped_gemm_dX", _grouped_gemm_dX_impl, _dX_fake)
 _grouped_gemm_dW_op = _make_op("grouped_gemm_dW", _grouped_gemm_dW_impl, _dW_fake)
+_grouped_gemm_dW_accumulate_op = _make_op(
+    "grouped_gemm_dW_accumulate",
+    _grouped_gemm_dW_accumulate_impl,
+    _dW_accumulate_fake,
+    mutates_args = ("dW",),
+    returns = None,
+)
 
 
 def _signature(impl):
@@ -624,7 +1094,12 @@ def _signature(impl):
 
 _SIGNATURES = {
     impl: _signature(impl)
-    for impl in (_grouped_gemm_forward_impl, _grouped_gemm_dX_impl, _grouped_gemm_dW_impl)
+    for impl in (
+        _grouped_gemm_forward_impl,
+        _grouped_gemm_dX_impl,
+        _grouped_gemm_dW_impl,
+        _grouped_gemm_dW_accumulate_impl,
+    )
 }
 
 
@@ -633,7 +1108,6 @@ def _dispatch(impl, op, args, kwargs):
     bound = dict(defaults)
     bound.update(zip(names, args))
     bound.update(kwargs)
-    # Eager calls skip the custom-op dispatcher; traced calls (dynamo, or fake tensors under make_fx) need the op.
     if torch.compiler.is_compiling() or _is_tracing(bound[names[0]], bound[names[1]]):
         return op(*[bound[n] for n in names])
     return impl(**bound)
@@ -652,6 +1126,95 @@ def grouped_gemm_dX(*args, **kwargs) -> torch.Tensor:
 @functools.wraps(_grouped_gemm_dW_impl)
 def grouped_gemm_dW(*args, **kwargs) -> torch.Tensor:
     return _dispatch(_grouped_gemm_dW_impl, _grouped_gemm_dW_op, args, kwargs)
+
+
+@functools.wraps(_grouped_gemm_dW_accumulate_impl)
+def grouped_gemm_dW_accumulate(*args, **kwargs) -> None:
+    return _dispatch(_grouped_gemm_dW_accumulate_impl, _grouped_gemm_dW_accumulate_op, args, kwargs)
+
+
+DW_ACCUMULATE_STATS = {"inplace": 0, "fallback": 0}
+
+
+_DW_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
+
+def _dW_accumulate_enabled():
+    return os.environ.get("UNSLOTH_MOE_DW_ACCUMULATE", "1") != "0"
+
+
+def _dW_accumulate_target(ctx, X, autotune):
+    """The leaf parameter whose existing .grad the dW kernel may add into, else None.
+
+    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW,
+    including Node hooks that can rewrite dW: prehooks on W's AccumulateGrad and post hooks on this
+    GroupedGemmBackward. Post hooks on AccumulateGrad only observe (they see None for this dW)."""
+    if torch.compiler.is_compiling() or _is_tracing(X) or torch.is_grad_enabled():
+        return None
+    # Anomaly mode checks the returned gradients for NaN; an in-place add returns None for W.
+    if torch.is_anomaly_enabled():
+        return None
+    if autotune or not _dW_accumulate_enabled():
+        return None
+    try:
+        acc = ctx.next_functions[1][0]
+    except (AttributeError, IndexError, TypeError):
+        return None
+    if acc is None or type(acc).__name__ != "AccumulateGrad":
+        return None
+    param = acc.variable
+    if type(param) not in (torch.Tensor, torch.nn.Parameter):
+        return None  # tensor subclasses (DTensor, quantized) own their gradient layout
+    grad = param.grad
+    if grad is None or grad.layout != torch.strided or type(grad) is not torch.Tensor:
+        return None
+    if (
+        grad.dtype not in _DW_DTYPES
+        or grad.dtype != param.dtype
+        or grad.device != X.device
+        or grad.shape != param.shape
+        or not grad.is_contiguous()
+    ):
+        return None
+    if getattr(param, "_backward_hooks", None) or getattr(
+        param, "_post_accumulate_grad_hooks", None
+    ):
+        return None
+    if getattr(param, "_unsloth_dw_side_stream", False):
+        return None
+    if torch.cuda.current_stream(X.device) != torch.cuda.default_stream(X.device):
+        return None
+    try:
+        if not torch._C._will_engine_execute_node(acc):
+            return None
+    except RuntimeError:
+        return None  # autograd.grad(): W's gradient is captured, never accumulated
+    # Last: the only checks that cost Python work, so they run only for an otherwise eligible weight.
+    if _node_has_python_hooks(acc.register_prehook) or _node_has_python_hooks(ctx.register_hook):
+        return None
+    return param
+
+
+def _node_hook_probe(*args):
+    return None
+
+
+def _node_has_python_hooks(register):
+    """True if the Node behind `register` (register_hook / register_prehook) already holds a Python hook.
+
+    Nodes cannot list their hooks, but every Python hook of one kind shares a single dict, and the
+    handle of a new registration points at it: register a no-op, count, remove it again."""
+    try:
+        handle = register(_node_hook_probe)
+    except Exception:
+        return True
+    try:
+        hooks = handle.hooks_dict_ref()
+        return hooks is None or len(hooks) > 1
+    except Exception:
+        return True
+    finally:
+        handle.remove()
 
 
 class GroupedGemm(torch.autograd.Function):
@@ -685,8 +1248,12 @@ class GroupedGemm(torch.autograd.Function):
         ctx.dX_only = dX_only
         ctx.dW_only = dW_only
 
-        # topk_weights is not saved for backward: training with fused_mul is unsupported.
         ctx.save_for_backward(X, W, m_sizes, gather_indices)
+        if W.requires_grad and X.is_cuda and not torch.compiler.is_compiling():
+            if torch.cuda.current_stream(X.device) != torch.cuda.default_stream(X.device):
+                # A use on a side stream may run its backward concurrently with another use of W:
+                # in-place accumulation would race, so this weight keeps the returned-gradient path.
+                W._unsloth_dw_side_stream = True
 
         fwd_config = {}
         if kernel_config_fwd is not None:
@@ -720,12 +1287,16 @@ class GroupedGemm(torch.autograd.Function):
         topk = ctx.topk
         permute_x = ctx.permute_x
         permute_y = ctx.permute_y
-        fuse_mul_post = ctx.fuse_mul_post
         kernel_config_bwd_dX = ctx.kernel_config_bwd_dX
         kernel_config_bwd_dW = ctx.kernel_config_bwd_dW
         autotune = ctx.autotune
-        dX_only = ctx.dX_only
-        dW_only = ctx.dW_only
+        assert (
+            not ctx.fuse_mul_post
+        ), "fused_mul should only be used for inference, not for training"
+        dX_only = ctx.dX_only or not ctx.needs_input_grad[1]
+        dW_only = ctx.dW_only or not ctx.needs_input_grad[0]
+        if dX_only and dW_only:
+            return (None,) * 15
 
         if not autotune:
             if not dW_only:
@@ -736,8 +1307,6 @@ class GroupedGemm(torch.autograd.Function):
                 assert (
                     kernel_config_bwd_dW is not None
                 ), "kernel_config_bwd_dW must be provided if autotune is False"
-
-        assert not fuse_mul_post, "fused_mul should only be used for inference, not for training"
 
         if not dX_only:
             bwd_dW_config = {}
@@ -752,17 +1321,38 @@ class GroupedGemm(torch.autograd.Function):
                 bwd_dW_config["num_warps"] = kernel_config_bwd_dW.num_warps
                 bwd_dW_config["num_stages"] = kernel_config_bwd_dW.num_stages
 
-            dW = grouped_gemm_dW(
-                X = X,
-                dY = dY,
-                m_sizes = m_sizes,
-                gather_indices = gather_indices,
-                topk = topk,
-                permute_x = permute_x,
-                permute_y = permute_y,
-                autotune = autotune,
-                **bwd_dW_config,
-            )
+            target = _dW_accumulate_target(ctx, X, autotune)
+            if target is not None:
+                grouped_gemm_dW_accumulate(
+                    X = X,
+                    dY = dY,
+                    m_sizes = m_sizes,
+                    gather_indices = gather_indices,
+                    dW = target.grad,
+                    topk = topk,
+                    permute_x = permute_x,
+                    permute_y = permute_y,
+                    **bwd_dW_config,
+                )
+                # Already in param.grad: returning it as well would add it twice.
+                dW = None
+                DW_ACCUMULATE_STATS["inplace"] += 1
+            else:
+                if W.dtype != X.dtype and W.dtype in _DW_DTYPES and _dW_accumulate_enabled():
+                    bwd_dW_config["dW_dtype"] = W.dtype
+                dW = grouped_gemm_dW(
+                    X = X,
+                    dY = dY,
+                    m_sizes = m_sizes,
+                    gather_indices = gather_indices,
+                    topk = topk,
+                    permute_x = permute_x,
+                    permute_y = permute_y,
+                    autotune = autotune,
+                    **bwd_dW_config,
+                )
+                if not torch.compiler.is_compiling():
+                    DW_ACCUMULATE_STATS["fallback"] += 1
         else:
             dW = None
 

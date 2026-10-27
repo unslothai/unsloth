@@ -24,6 +24,7 @@ pygments>=2.0
 # to the exact version pydantic's _ensure_pydantic_core_version check
 # expects. Pinning both under --no-deps used to drift them apart.
 pyyaml==6.0.3
+json5>=0.9.25
 nest-asyncio==1.6.0
 
 # HF ecosystem (from [huggingfacenotorch] extras in pyproject.toml)
@@ -65,7 +66,8 @@ hf_transfer==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
 regex==2026.7.19; python_version >= "3.10"
 regex==2026.1.15; python_version < "3.10"
 typing_extensions==4.16.0
-filelock==3.32.2; python_version >= "3.10"
+filelock==4.2.1; python_version >= "3.11"
+filelock==3.32.2; python_version >= "3.10" and python_version < "3.11"
 filelock==3.19.1; python_version < "3.10"
 httpx==0.28.1
 httpcore==1.0.9
@@ -75,7 +77,10 @@ httpcore==1.0.9
 # security update rather than routine churn, and refresh it on its own schedule.
 # The same applies to idna, h11 and httpcore above and below: they sit on the TLS
 # and HTTP request path, so they belong on that schedule too, not on churn.
-certifi==2026.7.22
+# 2026.10.19: fastmcp-slim (3.4.11, 4.1.3) requires certifi>=2026.10.19, and an older pin here
+# left that unmet after an update, so the next update reinstalled certifi.
+# It is also the CA trust floor (_TRUST_FLOOR_CERTIFI in install_python_stack.py): never below it.
+certifi==2026.10.19
 idna==3.18
 anyio>=3.0,<4.14.0               # 4.14 asyncio cancel-scope RuntimeError on Py3.13 streaming (#6483); 4.13 unaffected
 sniffio==1.3.1
@@ -97,7 +102,10 @@ trl>=0.18.2,!=0.19.0,<=1.15.0
 sentence-transformers==5.2.0; python_version >= "3.10"
 sentence-transformers==5.1.2; python_version < "3.10"
 cut_cross_entropy==25.1.1
-pillow==12.3.0; python_version >= "3.10"
+# Apple Silicon stays below 13 with the MLX image engine: mflux imports PIL._typing, which
+# Pillow 13.0.0 breaks on CPython 3.11 - 3.14 (see _MLX_DIFFUSION_DEPS in install_python_stack.py).
+pillow==13.0.0; python_version >= "3.11" and (sys_platform != "darwin" or platform_machine != "arm64")
+pillow==12.3.0; python_version >= "3.10" and (python_version < "3.11" or (sys_platform == "darwin" and platform_machine == "arm64"))
 pillow==11.3.0; python_version < "3.10"
 
 # RAG store + document parsing, mirroring studio.txt. Pinned here because

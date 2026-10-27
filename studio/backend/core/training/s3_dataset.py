@@ -6,8 +6,7 @@ S3 dataset loader.
 
 Downloads dataset files (parquet / json / jsonl / csv) from an AWS S3 bucket
 to a local temp directory so the existing local-file dataset path can consume
-them. boto3 is an optional dependency and is imported lazily — callers should
-gate on :func:`boto3_available` before invoking the loader.
+them. boto3 is an optional dependency installed on the first S3 load if missing.
 
 Audio keys download too, keeping their prefix-relative layout, and audio values in
 JSON/JSONL/CSV manifests are rewritten to the local paths (``datasets.Audio`` opens path
@@ -36,6 +35,7 @@ from importlib.util import find_spec
 from typing import Callable, Optional
 from utils.datasets.format_detection import _AUDIO_EXTENSIONS
 from utils.paths.path_utils import drop_shadowed_appledouble_names
+from utils.s3_runtime import ensure_boto3
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +77,7 @@ def boto3_available() -> bool:
 
 
 def _build_s3_client(s3_config: dict):
-    """Create a boto3 S3 client from the config dict.
-
-    Uses explicit access keys when provided, otherwise falls back to the
-    default credential chain (IAM role / instance profile / env / shared creds).
-    """
+    """Explicit keys win; otherwise the default credential chain (IAM role, env, shared files)."""
     require_explicit_credentials({"s3_dataset": s3_config})
     import boto3
 
@@ -118,9 +114,7 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
                 continue
             if key.lower().endswith(SUPPORTED_EXTENSIONS + _AUDIO_EXTENSIONS):
                 keys.append(key)
-    # A Mac sync uploads Finder metadata under the shard's own extension and
-    # _validate_single_extension_family cannot see it, so a key is dropped only when the object it
-    # would describe is in the same listing.
+    # Drop an AppleDouble key only when the object it describes is in the same listing.
     return drop_shadowed_appledouble_names(keys)
 
 
@@ -266,14 +260,21 @@ def _rewrite_row(row, resolve) -> None:
     if not isinstance(row, dict):
         return
     for column, value in row.items():
-        replacement = resolve(value)
+        row[column] = _rewritten(value, resolve)
+
+
+def _rewritten(value, resolve):
+    replacement = resolve(value)
+    if replacement is not None:
+        return replacement
+    if isinstance(value, dict):
+        # HF undecoded audio: {"path": ..., "bytes": ...}
+        replacement = resolve(value.get("path"))
         if replacement is not None:
-            row[column] = replacement
-        elif isinstance(value, dict):
-            # HF undecoded audio: {"path": ..., "bytes": ...}
-            replacement = resolve(value.get("path"))
-            if replacement is not None:
-                value["path"] = replacement
+            value["path"] = replacement
+    elif isinstance(value, list):
+        return [_rewritten(item, resolve) for item in value]
+    return value
 
 
 def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
@@ -325,18 +326,17 @@ def prepare_s3_dataset_download(
     Returns the local files plus the owned temporary directory, when one was
     created. Call ``cleanup()`` after the dataset loader has materialized data.
 
-    Raises ``RuntimeError`` if boto3 is missing, and ``ValueError`` if the
+    Raises ``RuntimeError`` if boto3 cannot be installed, and ``ValueError`` if the
     bucket/prefix contains no supported dataset files.
     """
-    if not boto3_available():
-        raise RuntimeError("S3 dataset loading requires boto3. Install it with: pip install boto3")
-
     bucket = s3_config.get("bucket")
     if not bucket:
         raise ValueError("s3_config.bucket is required")
     prefix = s3_config.get("prefix")
 
     _raise_if_cancelled(cancel_callback)
+    if not boto3_available():
+        ensure_boto3()
     client = _build_s3_client(s3_config)
 
     listed = _list_dataset_keys(client, bucket, prefix)

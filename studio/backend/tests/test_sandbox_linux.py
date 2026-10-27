@@ -9,6 +9,7 @@ import ast
 import ctypes
 import errno
 import inspect
+import io
 import json
 import os
 import platform
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import textwrap
 import threading
 import time
 
@@ -195,7 +197,6 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     if sandbox_linux.shutil.which("bwrap") is None:
         pytest.skip("bubblewrap is not installed on this host")
     etc = tmp_path / "etc"
-    # Debian, Fedora (conf/ and lib/), and Arch layouts.
     fedora = etc / "java" / "java-25-openjdk" / "java-25-openjdk"
     roots = (etc / "java-21-openjdk", fedora / "conf", fedora / "lib", etc / "java21-openjdk")
     secrets = []
@@ -210,13 +211,11 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     outside = tmp_path / "outside"
     outside.mkdir()
     secrets.append(outside / "private-key")
-    # A non-JDK tree the glob also matches.
     service = etc / "java-service"
     (service / "security").mkdir(parents = True)
     secrets += [service / "security" / "token", service / "app.properties"]
     for secret in secrets:
         secret.write_text("SECRET", encoding = "utf-8")
-    # Bind-source symlinks could expose host secrets; each target carries a marker.
     (outside / "java.security").write_text("", encoding = "utf-8")
     linked = etc / "java-8-openjdk"
     linked.mkdir()
@@ -259,7 +258,6 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     java = shutil.which("java")
     if sandbox_linux.shutil.which("bwrap") is None or java is None:
         pytest.skip("needs bubblewrap and a Java runtime")
-    # Force Java to load java.security.
     payload = (java, "-XshowSettings:security:properties", "-version")
     if subprocess.run(payload, capture_output = True).returncode != 0:
         pytest.skip("this JVM does not support -XshowSettings:security")
@@ -284,7 +282,6 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     completed = run(payload)
     assert completed.returncode == 0, completed.stderr
     assert "Error loading java.security" not in completed.stderr
-    # Distro JDKs reach cacerts through /etc links.
     keytool = os.path.join(os.path.dirname(os.path.realpath(java)), "keytool")
     if os.access(keytool, os.X_OK):
         completed = run((keytool, "-list", "-cacerts", "-storepass", "changeit"))
@@ -357,6 +354,150 @@ def test_a_path_bwrap_from_a_writable_location_is_never_executed(tmp_path, monke
 
     with pytest.raises(SandboxUnavailableError, match = "trusted system installation"):
         sandbox_linux.prepare(_plan(tmp_path))
+
+
+_NIX_BWRAP = "/nix/store/abc-bubblewrap/bin/bwrap"
+_OVERFLOW = 65534
+
+
+def _fake_tree(
+    monkeypatch,
+    entries,
+    *,
+    found = _NIX_BWRAP,
+    overflow = None,
+):
+    """Point the trust check at `found` over `entries` ({path: (mode, uid)}), in a namespace if `overflow`."""
+    real_stat, real_access = os.stat, os.access
+
+    def fake_stat(path, *args, **kwargs):
+        if os.fspath(path) not in entries:
+            return real_stat(path, *args, **kwargs)
+        mode, uid = entries[os.fspath(path)]
+        return os.stat_result((mode, 1, 1, 1, uid, 0, 0, 0, 0, 0))
+
+    monkeypatch.setattr(sandbox_linux.shutil, "which", lambda _name: found)
+    monkeypatch.setattr(sandbox_linux.os.path, "realpath", lambda path, **_kw: path)
+    monkeypatch.setattr(sandbox_linux.os, "stat", fake_stat)
+    monkeypatch.setattr(
+        sandbox_linux.os, "access", lambda path, mode: path in entries or real_access(path, mode)
+    )
+    monkeypatch.setattr(sandbox_linux, "_unmapped_uid", lambda: overflow)
+    monkeypatch.delenv(sandbox_linux.BWRAP_PATH_ENV, raising = False)
+
+
+def _nix_tree(
+    store_mode = stat.S_ISVTX | 0o775,
+    owner = 0,
+    store_owner = 0,
+):
+    return {
+        "/": (stat.S_IFDIR | 0o755, owner),
+        "/nix": (stat.S_IFDIR | 0o755, owner),
+        "/nix/store": (stat.S_IFDIR | store_mode, store_owner),
+        "/nix/store/abc-bubblewrap": (stat.S_IFDIR | 0o555, owner),
+        "/nix/store/abc-bubblewrap/bin": (stat.S_IFDIR | 0o555, owner),
+        _NIX_BWRAP: (stat.S_IFREG | 0o555, owner),
+    }
+
+
+def test_a_nix_store_bwrap_is_trusted(monkeypatch):
+    # /nix/store is root:nixbld 1775: the sticky bit stops build users from replacing root's entries.
+    _fake_tree(monkeypatch, _nix_tree())
+    assert sandbox_linux._trusted_bwrap_path() == _NIX_BWRAP
+
+
+@pytest.mark.parametrize(
+    "store_mode, store_owner",
+    [(0o775, 0), (0o777, 0), (stat.S_ISVTX | 0o777, 1000)],
+    ids = ["group-writable", "world-writable", "sticky-but-user-owned"],
+)
+def test_a_replaceable_store_is_still_refused(monkeypatch, store_mode, store_owner):
+    _fake_tree(monkeypatch, _nix_tree(store_mode, store_owner = store_owner))
+    with pytest.raises(sandbox_linux.BwrapUntrustedError, match = "replaceable: /nix/store\\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+def _fhs_tree():
+    """An FHS env (appimageTools, nixpkgs wrappers): / is the user's tmpfs, host files show as the overflow uid."""
+    tree = _nix_tree(owner = _OVERFLOW, store_owner = _OVERFLOW)
+    tree["/"] = (stat.S_IFDIR | 0o755, 1000)
+    return tree
+
+
+def test_a_namespace_hidden_owner_names_the_pin_instead_of_an_install(monkeypatch):
+    _fake_tree(monkeypatch, _fhs_tree(), found = "/usr/bin/bwrap", overflow = _OVERFLOW)
+    monkeypatch.setattr(sandbox_linux.os.path, "realpath", lambda _path, **_kw: _NIX_BWRAP)
+    with pytest.raises(sandbox_linux.BwrapUntrustedError) as refused:
+        sandbox_linux._trusted_bwrap_path()
+    assert refused.value.hidden_root and not refused.value.pinned
+    # The stable PATH spelling, not the store path a rebuild would change.
+    assert f"{sandbox_linux.BWRAP_PATH_ENV}=/usr/bin/bwrap" in str(refused.value)
+    assert "package manager" not in str(refused.value)
+
+
+def test_a_pin_vouches_for_the_path_and_the_namespace_overflow_owner(monkeypatch):
+    _fake_tree(monkeypatch, _fhs_tree(), found = None, overflow = _OVERFLOW)
+    monkeypatch.setenv(sandbox_linux.BWRAP_PATH_ENV, _NIX_BWRAP)
+    assert sandbox_linux._trusted_bwrap_path() == _NIX_BWRAP
+
+
+@pytest.mark.parametrize(
+    "owner, overflow",
+    [(_OVERFLOW, None), (1000, _OVERFLOW)],
+    ids = ["real-nobody-outside-a-namespace", "user-owned-in-a-namespace"],
+)
+def test_a_pin_is_still_held_to_the_ownership_checks(monkeypatch, owner, overflow):
+    tree = _nix_tree()
+    tree[_NIX_BWRAP] = (stat.S_IFREG | 0o555, owner)
+    _fake_tree(monkeypatch, tree, overflow = overflow)
+    monkeypatch.setenv(sandbox_linux.BWRAP_PATH_ENV, _NIX_BWRAP)
+    with pytest.raises(
+        sandbox_linux.BwrapUntrustedError, match = sandbox_linux.BWRAP_PATH_ENV
+    ) as refused:
+        sandbox_linux._trusted_bwrap_path()
+    assert refused.value.pinned
+
+
+def test_a_relative_pin_is_refused(monkeypatch):
+    _fake_tree(monkeypatch, _nix_tree())
+    monkeypatch.setenv(sandbox_linux.BWRAP_PATH_ENV, "bin/bwrap")
+    with pytest.raises(sandbox_linux.BwrapUntrustedError, match = "must be an absolute path"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+@pytest.mark.parametrize(
+    "uid_map, euid, expected",
+    [
+        ("         0          0 4294967295\n", 1000, None),
+        ("      1000       1000          1\n", 1000, _OVERFLOW),
+        ("         0       1000          1\n", 0, _OVERFLOW),
+        ("", _OVERFLOW, None),
+        ("         0       1000          1\n         1     100000      65536\n", 0, None),
+        ("         0          0     100000\n", 1000, None),
+    ],
+    ids = [
+        "initial-namespace",
+        "current-user-mapped",
+        "mapped-to-root",
+        "unmapped-itself",
+        "rootless-subuid-range-maps-it",
+        "partial-identity-map-covers-it",
+    ],
+)
+def test_the_overflow_uid_counts_only_inside_a_namespace(monkeypatch, uid_map, euid, expected):
+    files = {"/proc/self/uid_map": uid_map, "/proc/sys/kernel/overflowuid": f"{_OVERFLOW}\n"}
+    real_open = open
+    monkeypatch.setattr(
+        sandbox_linux,
+        "open",
+        lambda path, *a, **kw: io.StringIO(files[path])
+        if path in files
+        else real_open(path, *a, **kw),
+        raising = False,
+    )
+    monkeypatch.setattr(sandbox_linux.os, "geteuid", lambda: euid)
+    assert sandbox_linux._unmapped_uid() == expected
 
 
 def test_the_workdir_is_the_only_writable_bind(prepared, tmp_path):
@@ -937,12 +1078,15 @@ def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
 
     assert sandbox_probe._PR_SET_NO_NEW_PRIVS == 38
     source = inspect.getsource(sandbox_probe._run_probe)
-    assert "preexec_fn = _no_new_privs" in source
-    assert not [
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(sandbox_probe._no_new_privs)))
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    ]
+    assert "preexec_fn = _probe_preexec" in source
+    assert "_no_new_privs()" in inspect.getsource(sandbox_probe._probe_preexec)
+    for hook in (sandbox_probe._no_new_privs, sandbox_probe._probe_preexec):
+        # Runs between fork and exec: an import there can deadlock on the import lock.
+        assert not [
+            node
+            for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(hook))))
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
 
 
 def test_the_pip_targets_script_directory_is_last_on_path(prepared):
@@ -1171,7 +1315,11 @@ def _share_cache_paths(monkeypatch, cache):
 
     module = types.ModuleType("utils.hf_cache_settings")
     module.get_hf_cache_paths = lambda: _Paths()
+    module.effective_cache_home = lambda: cache
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+    # The resolver prefers these over cache_home; a caller's own settings must not leak in.
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
 
 
 def test_a_symlinked_runtime_entry_inside_the_workdir_is_protected_by_name(tmp_path, monkeypatch):
@@ -1209,10 +1357,7 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     session = str(tmp_path / "session")
     assert sandbox_linux._model_cache_binds(session) == {}
     assert sandbox_linux._model_cache_binds(session) == {}
-    # `started` is filled from the scan workers, which a loaded runner can schedule after
-    # the launch that started them has returned, so counting it between the two launches
-    # reads a slow first-launch worker as a second one. Wait until every worker either
-    # launch started has reached the scan, then compare workers to paths.
+    # Scan workers may run late, so wait for each launched worker to reach the scan before counting.
     workers = [
         t
         for t in threading.enumerate()
@@ -1310,7 +1455,7 @@ def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, mo
     link.symlink_to(real)
     monkeypatch.setattr(sys, "executable", str(link))
 
-    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Studio"):
+    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Unsloth"):
         sandbox_linux._runtime_paths_under(str(workdir))
 
 
@@ -1413,11 +1558,15 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
         path.mkdir(parents = True)
     import utils.hf_cache_settings as cache_settings
 
+    # datasets/assets follow the real HF home, which a Studio-selected folder leaves in place.
+    monkeypatch.setenv("HF_HOME", str(home))
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
     monkeypatch.setattr(
         cache_settings,
         "get_hf_cache_paths",
         lambda: cache_settings.HuggingFaceCachePaths(
-            cache_home = home, hub_cache = hub, xet_cache = xet, source = "studio"
+            cache_home = hub.parent, hub_cache = hub, xet_cache = xet, source = "studio"
         ),
     )
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
@@ -1434,7 +1583,10 @@ def _real_cache(monkeypatch, home):
     paths = types.SimpleNamespace(cache_home = home, hub_cache = home / "hub", xet_cache = home / "xet")
     module = types.ModuleType("utils.hf_cache_settings")
     module.get_hf_cache_paths = lambda: paths
+    module.effective_cache_home = lambda: home
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
 
 
 def test_a_cache_component_holding_an_ipc_node_is_not_shared(tmp_path, monkeypatch):
@@ -1906,6 +2058,7 @@ def test_the_cache_bind_itself_drops_a_component_holding_studio_state(monkeypatc
         hub_cache = str(state),
         xet_cache = str(elsewhere / "xet"),
     )
+    settings.effective_cache_home = lambda: elsewhere
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
     monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
 
@@ -1935,6 +2088,7 @@ def test_a_cache_configured_as_a_home_directory_is_not_shared(monkeypatch, tmp_p
         hub_cache = str(home),
         xet_cache = str(models / "xet"),
     )
+    settings.effective_cache_home = lambda: models
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
     monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
 
@@ -2622,6 +2776,36 @@ def test_the_two_proc_layouts_never_share_a_profile_or_a_cached_verdict(monkeypa
     assert {"no_process_filesystem", "no_dev_fd_links"} <= set(seen[True][1])
     assert not {"no_process_filesystem", "no_dev_fd_links"} & set(seen[False][1])
     assert seen[False][2] != seen[True][2]
+
+
+@pytest.mark.parametrize("linked", [True, False], ids = ["fhs-or-nixos", "plain-host"])
+def test_a_launch_binds_the_store_when_system_files_link_into_it(tmp_path, monkeypatch, linked):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    # The interpreter is not a store path, as with Studio's own Python inside an FHS env.
+    nix_true = "/nix/store/abc-coreutils/bin/true" if linked else "/usr/bin/true"
+    real_isdir = os.path.isdir
+    monkeypatch.setattr(sandbox_linux, "_system_true", lambda: nix_true)
+    monkeypatch.setattr(os.path, "isdir", lambda p: p == sandbox_linux._NIX_STORE or real_isdir(p))
+    monkeypatch.setattr(
+        sandbox_linux, "_nixos_current_system", lambda: "/nix/store/xyz-nixos-system"
+    )
+    # A NixOS interpreter's spelling: binding it would turn /run/current-system into a directory.
+    nixos_python = "/run/current-system/sw/bin/python3"
+    real_runtime = sandbox_linux._runtime_read_paths
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_runtime_read_paths",
+        lambda *a, **kw: (*real_runtime(*a, **kw), nixos_python),
+    )
+    launch = sandbox_linux.prepare(_plan(tmp_path))
+    try:
+        assert (("/nix/store", "/nix/store") in _pairs(launch.argv, "--ro-bind-try")) is linked
+        symlinks = _pairs(launch.argv, "--symlink")
+        assert (("/nix/store/xyz-nixos-system", "/run/current-system") in symlinks) is linked
+        assert ((nixos_python, nixos_python) in _pairs(launch.argv, "--ro-bind")) is not linked
+    finally:
+        launch.cleanup()
 
 
 def test_the_preflight_runs_a_nix_store_true_with_the_store_bound(monkeypatch):

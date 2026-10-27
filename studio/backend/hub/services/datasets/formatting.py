@@ -174,8 +174,7 @@ def _serialize_preview_value(value):
             value.keys() - {"bytes", "path"}
         ):
             return _serialize_binary_value(raw)
-        # A decoded Audio cell becomes one float per sample under the soundfile fallback, so ten preview
-        # rows of a few seconds each are tens of MB of JSON and the client dies rendering it.
+        # Decoded audio is a float per sample; tens of MB of JSON kills the client.
         if "sampling_rate" in value and _is_sample_sequence(value.get("array")):
             return _serialize_decoded_audio(value)
         return {str(key): _serialize_preview_value(item) for key, item in value.items()}
@@ -336,11 +335,7 @@ def _load_any_cached_hf_preview_slice(
     preview_size: int,
     hf_token: Optional[str] = None,
 ):
-    # Both paths return real rows off disk without asking the Hub: the raw slice reads the
-    # snapshot, the processed one loads with local_files_only=True and drops the falsy
-    # sentinel. Neither reaches the network, so read first and gate the answer: reading our
-    # own disk is not the leak, handing it back is. Gating first probed /auth-check for a
-    # prefer-local request that had ruled the network out and then missed the cache anyway.
+    # Media task from name and path hints alone, for a GGUF header that settles nothing; cloud files must never be opened, and callers differ on unrecognised names.
     if not _cached_preview_visible(request):
         return None
     cached_preview = _load_cached_hf_preview_slice(request, preview_size)
@@ -356,10 +351,7 @@ def _load_any_cached_hf_preview_slice(
             return None
     if cached_preview is None:
         return None
-    # The shared gate, not the raw check: the outer guard has already let a cached PUBLIC
-    # dataset through for the anonymous sentinel, and vetoing it again here turned that into
-    # a local-cache-miss 404 for a preview the caller was entitled to. is_cached is True
-    # because the rows are in hand by now.
+    # Shared gate, not the raw check: a cached PUBLIC dataset is already allowed.
     if cached_read_refused(
         hf_token,
         repo_id = request.dataset_name,
@@ -370,167 +362,242 @@ def _load_any_cached_hf_preview_slice(
     return cached_preview
 
 
+_VIEWER_MAX_ROWS = 100
+_VIEWER_MEDIA_TYPES = ("Image", "Audio", "Video", "Pdf")
+
+
+def _viewer_rows(request: CheckFormatRequest, hf_token, preview_size: int) -> Optional[list]:
+    """The first rows from the Hub dataset viewer, a ~100 KB answer where streaming reads a whole parquet
+    row group or JSON block. None whenever it cannot stand in for the stream exactly."""
+    import json
+    import os
+
+    import httpx
+
+    from utils.hf_endpoint import _DEFAULT_HF_ENDPOINT, browser_hf_endpoint, get_hf_datasets_server
+    from utils.hub_settings import MODELSCOPE, active_source
+    from utils.utils import hf_env_offline
+
+    split = request.train_split or "train"
+    if (
+        preview_size > _VIEWER_MAX_ROWS
+        or hf_env_offline()
+        or active_source() == MODELSCOPE
+        or (
+            browser_hf_endpoint() != _DEFAULT_HF_ENDPOINT
+            and not os.environ.get("HF_DATASETS_SERVER")
+        )
+        or not re.fullmatch(r"[\w.-]+", split)
+    ):
+        return None
+    try:
+        response = httpx.get(
+            # /rows, not /first-rows: first-rows caps its answer by size and returns as few as 28 rows.
+            f"{get_hf_datasets_server()}/rows",
+            params = {
+                "dataset": request.dataset_name,
+                "config": request.subset or "default",
+                "split": split,
+                "offset": 0,
+                "length": preview_size,
+            },
+            headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else None,
+            timeout = 10,
+        )
+        body = response.json() if response.status_code == 200 else None
+    except Exception as e:
+        logger.info(
+            "Dataset viewer rows unavailable: %s",
+            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+        )
+        return None
+    body = body or {}
+    entries = body.get("rows") or []
+    expected = min(preview_size, body.get("num_rows_total") or preview_size)
+    features = json.dumps(body.get("features") or [])
+    if (
+        not entries
+        or len(entries) < expected
+        or any(entry.get("truncated_cells") for entry in entries)
+        or any(f'"_type": "{kind}"' in features for kind in _VIEWER_MEDIA_TYPES)
+    ):
+        return None
+    return [entry["row"] for entry in entries[:preview_size]]
+
+
+def load_preview_slice(
+    request: CheckFormatRequest,
+    hf_token,
+    preview_size: int,
+    *,
+    allow_unlabeled_tier1_fallback: bool = False,
+    viewer_rows: bool = False,
+):
+    """The first ``preview_size`` rows of a dataset and its total row count (None when unknown), read the
+    way check-format reads them: a local file directly, else the local cache, one data file, or a stream.
+    ``hf_token`` and the request paths must already be resolved for the account. ``viewer_rows`` asks the
+    Hub dataset viewer first."""
+    from itertools import islice
+
+    # An audio column decodes on the first preview row, so this precedes every tier.
+    ensure_audio_decoding()
+
+    try:
+        dataset_path = resolve_dataset_path(request.dataset_name)
+    except ValueError as e:
+        # Malformed path (null bytes, '..', outside roots) is a client error: surface 400, not 500.
+        raise HTTPException(status_code = 400, detail = str(e)) from e
+    total_rows = None
+
+    dataset_exists = dataset_path.exists()
+    if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
+        raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
+
+    # Both streaming tiers run on the default prefer_local_cache=false, ahead of the
+    # guarded cache reader below, so the gate stands in front of them.
+    if not dataset_exists:
+        refuse_unauthorized_dataset_preview(
+            hf_token,
+            request.dataset_name,
+            # A prefer-local request reads the cache or 404s below, either way without
+            # the network, so the probe would be a round trip it had ruled out.
+            offline = bool(request.prefer_local_cache),
+        )
+    if dataset_exists:
+        train_split = request.train_split or "train"
+        preview_slice, total_rows = _load_local_preview_slice(
+            dataset_path = dataset_path,
+            train_split = train_split,
+            preview_size = preview_size,
+        )
+    else:
+        from datasets import Dataset, load_dataset
+
+        # Tier 1: list_repo_files → load only the first data file
+        cached_preview = (
+            _load_any_cached_hf_preview_slice(request, preview_size, hf_token)
+            if request.prefer_local_cache
+            else None
+        )
+        if cached_preview is not None:
+            preview_slice, total_rows = cached_preview
+        elif request.prefer_local_cache:
+            raise HTTPException(
+                status_code = 404,
+                detail = {
+                    "code": _LOCAL_CACHE_MISS_ERROR_CODE,
+                    "message": "Dataset is not available in the local cache.",
+                },
+            )
+        elif viewer_rows and (viewer := _viewer_rows(request, hf_token, preview_size)):
+            preview_slice = Dataset.from_list(viewer)
+        else:
+            preview_slice = None
+
+            try:
+                from huggingface_hub import HfApi
+
+                # No token on the constructor: list_repo_files is given it explicitly
+                # and that argument wins.
+                api = HfApi()
+                repo_files = api.list_repo_files(
+                    request.dataset_name,
+                    repo_type = "dataset",
+                    token = hf_token,
+                )
+                train_split = request.train_split or "train"
+                first_file = _select_tier1_repo_file(
+                    repo_files,
+                    subset = request.subset,
+                    train_split = train_split,
+                    allow_unlabeled_fallback = allow_unlabeled_tier1_fallback,
+                )
+                if first_file:
+                    logger.info(f"Tier 1: loading single file {first_file}")
+                    load_kwargs = {
+                        "path": request.dataset_name,
+                        "data_files": {train_split: [first_file]},
+                        "split": train_split,
+                        "streaming": True,
+                        "token": hf_token,
+                    }
+
+                    # Recorded against the call that can materialise rows, not the
+                    # listing above it: a preview writes into the datasets cache under
+                    # what may be a one-off token, and unrecorded a later tokenless
+                    # caller reads "none needed one". Recording before `list_repo_files`
+                    # left a record for a fetch a 404 or outage never made.
+                    with recording_a_request_token_fetch(hf_token, request.dataset_name, "dataset"):
+                        streamed_ds = load_dataset(**load_kwargs)
+                        rows = list(islice(streamed_ds, preview_size))
+                    if rows:
+                        preview_slice = Dataset.from_list(rows)
+            except Exception as e:
+                logger.warning(
+                    "Tier 1 (single-file) failed: %s",
+                    download_registry.scrub_secrets(str(e), hf_token = hf_token),
+                )
+
+        if preview_slice is None:
+            # Tier 2: full streaming (resolves all files - slow for large repos)
+            logger.info("Tier 2: falling back to full streaming load_dataset")
+            try:
+                load_kwargs = {
+                    "path": request.dataset_name,
+                    "split": request.train_split or "train",
+                    "streaming": True,
+                    "token": hf_token,
+                }
+                if request.subset:
+                    load_kwargs["name"] = request.subset
+
+                # Tier 2 reaches the network on its own, whether or not tier 1 ran, and
+                # takes its record back if it fails having cached nothing.
+                with recording_a_request_token_fetch(hf_token, request.dataset_name, "dataset"):
+                    streamed_ds = load_dataset(**load_kwargs)
+
+                    rows = list(islice(streamed_ds, preview_size))
+                if not rows:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Dataset appears to be empty or could not be streamed",
+                    )
+
+                preview_slice = Dataset.from_list(rows)
+                total_rows = None
+            except Exception:
+                cached_preview = _load_any_cached_hf_preview_slice(
+                    request,
+                    preview_size,
+                    hf_token,
+                )
+                if cached_preview is None:
+                    raise
+                preview_slice, total_rows = cached_preview
+    return preview_slice, total_rows
+
+
 def check_format_response(
     request: CheckFormatRequest,
     hf_token: Optional[str] = None,
     *,
     allow_unlabeled_tier1_fallback: bool = False,
 ) -> CheckFormatResponse:
-    """
-    Check if a dataset requires manual column mapping.
-
-    HF datasets: tier 1 loads a single requested split/subset file (avoids
-    resolving thousands of files); tier 2 falls back to full streaming. Local
-    files load directly. Plain `def` so FastAPI runs the blocking IO in a
-    thread-pool. The deprecated alias opts into the single-file fallback that
-    its previous implementation used, preserving source column order when the
-    only data filename has no split label.
-    """
+    """Plain def so FastAPI runs the blocking dataset IO in a thread pool, not on the event loop."""
     hf_token = account_hf_token(hf_token)
     account_path(request.dataset_name, reference = True)
     visible_cached_path(getattr(request, "local_path", None), "dataset")
     try:
-        from itertools import islice
-
         PREVIEW_SIZE = 10
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
 
-        # An audio column decodes on the first preview row, so this precedes every tier.
-        ensure_audio_decoding()
-
-        try:
-            dataset_path = resolve_dataset_path(request.dataset_name)
-        except ValueError as e:
-            # Malformed path (null bytes, '..', outside roots) is a client error: surface 400, not 500.
-            raise HTTPException(status_code = 400, detail = str(e)) from e
-        total_rows = None
-
-        dataset_exists = dataset_path.exists()
-        if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
-            raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
-
-        # Both streaming tiers run on the default prefer_local_cache=false, ahead of the
-        # guarded cache reader below, so the gate stands in front of them.
-        if not dataset_exists:
-            refuse_unauthorized_dataset_preview(
-                hf_token,
-                request.dataset_name,
-                # A prefer-local request reads the cache or 404s below, either way without
-                # the network, so the probe would be a round trip it had ruled out.
-                offline = bool(request.prefer_local_cache),
-            )
-        if dataset_exists:
-            train_split = request.train_split or "train"
-            preview_slice, total_rows = _load_local_preview_slice(
-                dataset_path = dataset_path,
-                train_split = train_split,
-                preview_size = PREVIEW_SIZE,
-            )
-        else:
-            from datasets import Dataset, load_dataset
-
-            # Tier 1: list_repo_files → load only the first data file
-            cached_preview = (
-                _load_any_cached_hf_preview_slice(request, PREVIEW_SIZE, hf_token)
-                if request.prefer_local_cache
-                else None
-            )
-            if cached_preview is not None:
-                preview_slice, total_rows = cached_preview
-            elif request.prefer_local_cache:
-                raise HTTPException(
-                    status_code = 404,
-                    detail = {
-                        "code": _LOCAL_CACHE_MISS_ERROR_CODE,
-                        "message": "Dataset is not available in the local cache.",
-                    },
-                )
-            else:
-                preview_slice = None
-
-                try:
-                    from huggingface_hub import HfApi
-
-                    # No token on the constructor: list_repo_files is given it explicitly
-                    # and that argument wins.
-                    api = HfApi()
-                    repo_files = api.list_repo_files(
-                        request.dataset_name,
-                        repo_type = "dataset",
-                        token = hf_token,
-                    )
-                    train_split = request.train_split or "train"
-                    first_file = _select_tier1_repo_file(
-                        repo_files,
-                        subset = request.subset,
-                        train_split = train_split,
-                        allow_unlabeled_fallback = allow_unlabeled_tier1_fallback,
-                    )
-                    if first_file:
-                        logger.info(f"Tier 1: loading single file {first_file}")
-                        load_kwargs = {
-                            "path": request.dataset_name,
-                            "data_files": {train_split: [first_file]},
-                            "split": train_split,
-                            "streaming": True,
-                            "token": hf_token,
-                        }
-
-                        # Recorded against the call that can materialise rows, not the
-                        # listing above it: a preview writes into the datasets cache under
-                        # what may be a one-off token, and unrecorded a later tokenless
-                        # caller reads "none needed one". Recording before `list_repo_files`
-                        # left a record for a fetch a 404 or outage never made.
-                        with recording_a_request_token_fetch(
-                            hf_token, request.dataset_name, "dataset"
-                        ):
-                            streamed_ds = load_dataset(**load_kwargs)
-                            rows = list(islice(streamed_ds, PREVIEW_SIZE))
-                        if rows:
-                            preview_slice = Dataset.from_list(rows)
-                except Exception as e:
-                    logger.warning(
-                        "Tier 1 (single-file) failed: %s",
-                        download_registry.scrub_secrets(str(e), hf_token = hf_token),
-                    )
-
-            if preview_slice is None:
-                # Tier 2: full streaming (resolves all files - slow for large repos)
-                logger.info("Tier 2: falling back to full streaming load_dataset")
-                try:
-                    load_kwargs = {
-                        "path": request.dataset_name,
-                        "split": request.train_split or "train",
-                        "streaming": True,
-                        "token": hf_token,
-                    }
-                    if request.subset:
-                        load_kwargs["name"] = request.subset
-
-                    # Tier 2 reaches the network on its own, whether or not tier 1 ran, and
-                    # takes its record back if it fails having cached nothing.
-                    with recording_a_request_token_fetch(hf_token, request.dataset_name, "dataset"):
-                        streamed_ds = load_dataset(**load_kwargs)
-
-                        rows = list(islice(streamed_ds, PREVIEW_SIZE))
-                    if not rows:
-                        raise HTTPException(
-                            status_code = 400,
-                            detail = "Dataset appears to be empty or could not be streamed",
-                        )
-
-                    preview_slice = Dataset.from_list(rows)
-                    total_rows = None
-                except Exception:
-                    cached_preview = _load_any_cached_hf_preview_slice(
-                        request,
-                        PREVIEW_SIZE,
-                        hf_token,
-                    )
-                    if cached_preview is None:
-                        raise
-                    preview_slice, total_rows = cached_preview
+        preview_slice, total_rows = load_preview_slice(
+            request,
+            hf_token,
+            PREVIEW_SIZE,
+            allow_unlabeled_tier1_fallback = allow_unlabeled_tier1_fallback,
+        )
 
         result = check_dataset_format(preview_slice, is_vlm = request.is_vlm)
 
@@ -617,13 +684,7 @@ def check_format_response(
 def ai_assist_mapping_response(
     request: AiAssistMappingRequest, hf_token: Optional[str] = None
 ) -> AiAssistMappingResponse:
-    """
-    Run the LLM-assisted dataset conversion advisor (user-triggered).
-
-    Multi-pass analysis with a 7B helper model: classify dataset type, generate
-    a conversion strategy, then validate it. Falls back to simple column
-    classification if the advisor fails.
-    """
+    """User-triggered 7B-model advisor; on failure it falls back to simple column classification."""
     hf_token = account_hf_token(hf_token)
     account_path(request.dataset_name, reference = True)
     visible_cached_path(getattr(request, "local_path", None), "dataset")

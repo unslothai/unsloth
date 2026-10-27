@@ -1,38 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What every ablation arm must declare before it is allowed to produce a number.
-
-An ablation is a claim of the form "removing X made it faster, therefore X was the cost". That
-claim has exactly two ways of being false, and both of them are silent:
-
-  1. THE ARM CHANGED THE OUTPUT. Turning off the thing also turned off some of the work, so the
-     two sides are not rendering the same page and the difference is not attributable to X. The
-     worst case is not a visible difference; it is a small invisible one. An earlier stub arm in
-     this codebase produced 552 syntax-highlighted spans where the real page produces 2,561, and
-     it read as a clean 4x win. The arm was not fast. It was rendering a fifth of the content.
-  2. THE ARM DID NOT FIRE. The knob was injected, the selector matched nothing, the run completed
-     and the difference was zero. Reported as "no effect", that is evidence AGAINST the mechanism.
-     It is not evidence of anything; the treatment was never applied. Four instrument defects
-     found in a single day were all this shape, which is why the inversion is enforced here:
-     an arm whose potency counter did not move reads NOT RUN, never "no effect".
-
-So every arm declares:
-
-  INVARIANCE -- what proves the rendered output did not change, in one of three classes:
-      EXACT         the output digest is byte-identical. Anything else voids the arm.
-      EQUIVALENT    identical after a declared, reviewed normaliser, AND the observed diff is
-                    EXACTLY the declared diff. An extra difference, however small, voids it.
-      DOM_CHANGING  the output legitimately differs. Usable only as a BOUND, printed as `<= x`,
-                    never as a point estimate.
-  POTENCY -- a counter, read before and after, that proves the arm actually fired, with the
-      minimum movement that counts as fired. The counter must be something the arm CAUSES, not
-      something correlated with it.
-
-The distinction between VOIDED and NOT RUN matters more than either of them: VOIDED means we
-measured something real and cannot attribute it, NOT RUN means we measured nothing. Reporting
-both as "no effect" is how a whole day of work concluded that nothing was slow.
-"""
+"""Arms declare invariance and potency; a counter that did not move reads NOT RUN, not no effect."""
 
 from __future__ import annotations
 
@@ -58,17 +27,12 @@ class ArmStatus(enum.Enum):
     BOUND = "BOUND"  # DOM-changing but potent: an upper bound, printed as `<= x`
     VOIDED = "VOIDED"  # claimed invariance and drifted: measured, unattributable, not quoted
     NOT_RUN = "NOT_RUN"  # potency counter did not move: the treatment never happened
-    UNAVAILABLE = "UNAVAILABLE"  # the arm needs a build that this install is not
+    UNAVAILABLE = "UNAVAILABLE"
 
 
 @dataclass(frozen = True)
 class PotencyCounter:
-    """The proof that the arm fired, and the minimum movement that counts.
-
-    `direction` is `"increase"`, `"decrease"` or `"any"`. A knob that is supposed to REMOVE work
-    usually proves itself by a counter going DOWN, and accepting movement in either direction
-    would let an unrelated regression pass as potency.
-    """
+    """Direction matters: a knob that removes work must show its counter go down, not merely move."""
 
     name: str
     min_delta: float
@@ -96,12 +60,7 @@ class PotencyCounter:
 
 @dataclass(frozen = True)
 class DeclaredDiff:
-    """For EQUIVALENT arms: exactly what is allowed to differ, and nothing else.
-
-    `keys` are the normaliser-visible fields permitted to change. The verification is an equality
-    check against the OBSERVED set, not a subset check: an arm that declares one difference and
-    produces two is voided, because the second one is precisely the thing nobody looked at.
-    """
+    """Observed diff keys must equal the declared set exactly; an extra key voids the arm."""
 
     normaliser: str
     keys: tuple[str, ...]
@@ -180,12 +139,8 @@ class ArmOutcome:
         return self.status in (ArmStatus.QUOTED, ArmStatus.BOUND)
 
     def quote(self) -> str:
-        """Render this arm's cost with the qualifier its status demands.
-
-        A DOM-changing arm is printed as a bound and cannot be printed any other way; that is the
-        entire difference between "this mechanism costs 40 ms" and "this mechanism plus whatever
-        else changed costs at most 40 ms".
-        """
+        """DOM-changing arms print as a bound, since their cost includes whatever else the change
+        altered."""
 
         if self.status is ArmStatus.QUOTED:
             return self.cost.display()
@@ -237,16 +192,7 @@ def judge(
     available: bool = True,
     unavailable_reason: str = "",
 ) -> ArmOutcome:
-    """Apply the manifest to one run of one arm and produce its verdict.
-
-    ORDER MATTERS AND IS DELIBERATE.
-
-    Availability is checked first: an arm that needs an armed bundle and did not get one has no
-    evidence of any kind. Invariance is checked SECOND, before potency, because a voided arm has
-    already produced a number that must not be quoted, and letting a NOT RUN verdict pre-empt it
-    would hide a real drift behind a benign-sounding label. Potency is checked LAST, so the only
-    way to reach QUOTED is: available, invariance held, and the counter moved.
-    """
+    """Order matters: invariance before potency, so a voided arm cannot hide behind NOT RUN."""
 
     counters = dict(potency_counters or {})
 
@@ -292,7 +238,7 @@ def judge(
             return outcome
     elif arm.invariance is Invariance.EQUIVALENT:
         declared = arm.declared_diff
-        assert declared is not None  # enforced in Arm.__post_init__
+        assert declared is not None
         if normalised_before is None or normalised_after is None:
             outcome.status = ArmStatus.VOIDED
             outcome.reason = (

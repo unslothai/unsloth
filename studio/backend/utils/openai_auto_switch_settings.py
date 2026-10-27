@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any, Mapping, Optional
 
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.account_context import OWNER, AccountContext, current_account, is_owner_context, run_as
 
@@ -187,7 +188,7 @@ def _residency_vetoes_unload() -> bool:
 
 def get_auto_unload_idle_seconds() -> int:
     """Effective idle TTL the idle loop runs on (0 = never unload)."""
-    # Model Memory residency vetoes the TTL. Effective reader only, so the stored reader keeps the number the user typed and it returns when they turn it off.
+    # Model Memory residency vetoes the TTL; effective reader only, stored value is kept.
     if _residency_vetoes_unload():
         return 0
     stored = _stored_idle_seconds()
@@ -237,8 +238,8 @@ def set_openai_auto_switch(
     media_auto_switch: Any = None,
 ) -> tuple[bool, int, bool, bool, bool, int, bool]:
     """One-transaction write; ``None`` leaves a stored value untouched."""
-    parsed_enabled = _coerce_bool(enabled)
-    if parsed_enabled is None:
+    parsed_enabled = None if enabled is None else _coerce_bool(enabled)
+    if enabled is not None and parsed_enabled is None:
         raise ValueError("OpenAI auto-switch must be true or false.")
     parsed_idle = None
     if idle_seconds is not None:
@@ -282,7 +283,9 @@ def set_openai_auto_switch(
             raise ValueError("Media auto-switch must be true or false.")
     from storage.studio_db import upsert_app_settings
 
-    updates: dict[str, Any] = {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled}
+    updates: dict[str, Any] = {}
+    if parsed_enabled is not None:
+        updates[OPENAI_AUTO_SWITCH_SETTING_KEY] = parsed_enabled
     if parsed_idle is not None:
         updates[AUTO_UNLOAD_IDLE_SETTING_KEY] = parsed_idle
     if parsed_media_idle is not None:
@@ -296,7 +299,8 @@ def set_openai_auto_switch(
     if parsed_media_auto_switch is not None:
         updates[MEDIA_AUTO_SWITCH_SETTING_KEY] = parsed_media_auto_switch
     upsert_app_settings(updates)
-    _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
+    if parsed_enabled is not None:
+        _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
     if parsed_idle is not None:
         _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
     if parsed_media_idle is not None:
@@ -310,7 +314,7 @@ def set_openai_auto_switch(
     if parsed_media_auto_switch is not None:
         _invalidate(MEDIA_AUTO_SWITCH_SETTING_KEY)
     return (
-        parsed_enabled,
+        parsed_enabled if parsed_enabled is not None else get_openai_auto_switch_enabled(),
         parsed_idle if parsed_idle is not None else get_stored_auto_unload_idle_seconds(),
         parsed_keep_kv if parsed_keep_kv is not None else get_auto_unload_keep_kv(),
         (
@@ -386,12 +390,13 @@ BATCH_SIZE_MIN = 1
 BATCH_SIZE_MAX = 65536
 
 MAX_SEQ_LENGTH_CEILING = 1048576
-MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
+MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = MAX_CHAT_TEMPLATE_BYTES
 # Highest device index a gpu_ids entry may name; also bounds how many ids one entry holds.
 MAX_GPU_ID = 1024
 
 # Which index space a stored gpu_ids belongs to: the same integers are ggml Vulkan ordinals under a Vulkan build and physical device ids elsewhere, so the namespace travels with the ids or a pin addresses another card. Mirrors GpuIndexKind in hooks/gpu-selection.ts, legacy rule included: an absent kind is "physical".
-VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan"})
+# cuda_device: R570+ MIG, one CUDA device per GPU instance.
+VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan", "cuda_device"})
 LEGACY_GPU_INDEX_KIND = "physical"
 
 
@@ -438,8 +443,7 @@ def normalize_model_override(
 ) -> dict[str, Any]:
     """Validate one per-model launch config, dropping anything unusable. Silently drops rather than raising: an override is a convenience mirror of the UI's config, so one stale field (a KV dtype this llama.cpp build lost, a GPU id from another host) must not block persisting the rest or fail the API load that reads it. ``validate_extra_args`` is the caller's job, since it lives in the llama_server_args allow-list module this one must not import. ``keep_empty_extra_args`` keeps an explicit empty list, the difference between "this model has no launch flags" and "nothing is stored for this model": the same thing everywhere except under a fallback, where a quant whose row is gone reads the bare repository row instead and a cleared box would come back holding whatever that legacy row carries."""
     entry: dict[str, Any] = {}
-    # The defaults ("tensor", "auto") are not stored: a default-only row would count as an
-    # override, shadow a repository row in auto-switch, and re-tick Remember.
+    # Defaults are not stored: a default-only row would shadow a repo row and re-tick Remember.
     if payload.get("engine_parallelism") in ("pipeline", "data"):
         entry["engine_parallelism"] = payload["engine_parallelism"]
     if payload.get("engine_precision") in ("bf16", "fp16", "int4", "int8", "fp8"):
@@ -507,8 +511,7 @@ def normalize_model_override(
     reasoning_budget = _bounded_int(
         payload.get("reasoning_budget"), minimum = -1, maximum = 2_147_483_647
     )
-    # Keep defaults as tombstones: a qualified override must remain present after resetting a legacy
-    # passthrough flag, or a bare/legacy fallback can revive it.
+    # Keep defaults as tombstones, or a bare/legacy fallback can revive a reset flag.
     if reasoning_budget is not None:
         entry["reasoning_budget"] = reasoning_budget
     reasoning_budget_message = payload.get("reasoning_budget_message")
@@ -546,6 +549,17 @@ def normalize_model_override(
 
     if _coerce_bool(payload.get("mlx_int8_prefill")):
         entry["mlx_int8_prefill"] = True
+
+    for key in ("mlx_ple_offload", "mlx_expert_offload"):
+        value = payload.get(key)
+        if value == "off" or (
+            isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 1
+        ):
+            entry[key] = value if value == "off" else float(value)
+
+    # Stored only when off: absent is the 4-bit default, so an untouched model follows it.
+    if payload.get("load_in_4bit") is False:
+        entry["load_in_4bit"] = False
 
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
@@ -637,11 +651,7 @@ def resolve_fit_max_seq_length(override: dict[str, Any], *, is_gguf: bool) -> Op
 
 
 def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> dict[str, Any]:
-    """Map remembered settings onto the same load options used by the picker.
-
-    GGUF and optional engines accept explicit GPU selection. The default
-    safetensors backend uses automatic placement and must not inherit that pin.
-    """
+    """Default safetensors loads use automatic placement and must not inherit a remembered GPU pin."""
     if not override:
         return {}
     kwargs: dict[str, Any] = {}
@@ -655,6 +665,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         kwargs["load_in_4bit"] = False
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
+    elif not is_gguf and override.get("load_in_4bit") is False:
+        kwargs["load_in_4bit"] = False
 
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:
@@ -690,6 +702,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
         ("mlx_int8_prefill", "mlx_int8_prefill"),
+        ("mlx_ple_offload", "mlx_ple_offload"),
+        ("mlx_expert_offload", "mlx_expert_offload"),
     ):
         if override.get(source) is not None and source not in gguf_drops:
             kwargs[target] = override[source]
@@ -819,8 +833,7 @@ def get_model_overrides() -> dict[str, dict]:
     raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None, current_account())
     if not isinstance(raw, dict):
         return {}
-    # Rows saved before engine defaults were dropped (see normalize_model_override) read as
-    # what they mean: those fields unset, and a row holding nothing else absent.
+    # Rows saved before engine defaults were dropped read as those fields unset; a row holding nothing else counts as absent.
     cleaned = {}
     for key, entry in raw.items():
         if isinstance(entry, dict):

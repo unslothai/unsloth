@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Windows ARM64 CUDA bundle was the one archive this installer would install unchecked.
-
-Every other prebuilt goes through apply_approved_hashes, which drops an attempt our checksum
-manifest does not cover. The ARM64 CUDA branch could not: we publish no windows-arm64-cuda
-artifact, so nothing covers upstream's zip, and refusing outright would mean no CUDA
-llama.cpp on this hardware at all. It logged that it had no hash and installed anyway.
-
-GitHub's release API now reports a `digest` for every asset (ggml-org/llama.cpp b10853: 27 of
-27, including llama-*-bin-win-cuda-13.4-arm64.zip and its paired cudart archive). That is
-weaker than a manifest we compute ourselves rather than read from the host serving the bytes,
-but it pins the download to what the API listed. An asset GitHub states no digest for is now
-refused, so no path installs an unverified archive.
-"""
+"""Windows ARM64 CUDA zips are pinned to GitHub's asset digest, and digest-less assets are refused."""
 
 from __future__ import annotations
 
@@ -143,12 +131,7 @@ class TestTheFetcherFailsClosed:
 
 
 def test_no_branch_returns_attempts_that_were_never_hash_gated():
-    """The property this file exists for, asserted against the source.
-
-    Every `return` of asset choices in the release-plan resolver goes through
-    apply_approved_hashes or _apply_release_digests. A future branch that returns a bare
-    list would reintroduce exactly the hole this closes.
-    """
+    """Every return of asset choices must go through apply_approved_hashes or _apply_release_digests."""
     source = (REPO_ROOT / "studio" / "install_llama_prebuilt.py").read_text(encoding = "utf-8")
     start = source.index("def resolve_release_asset_choice(")
     end = source.index("\ndef ", start + 1)

@@ -95,7 +95,7 @@ class _Recorder:
 
     def post_json_to_file(self, path, payload, dest, **_kwargs):
         self.calls.append((path, json.loads(json.dumps(payload))))
-        Path(dest).write_bytes(b'{"named_audio_outputs": [')  # a partial answer on disk
+        Path(dest).write_bytes(b'{"named_audio_outputs": [')
         if self.error is not None:
             raise self.error
         Path(dest).write_bytes(self.answer)

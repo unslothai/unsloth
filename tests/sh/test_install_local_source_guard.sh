@@ -1,7 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
 # A piped install's _REPO_ROOT is the caller's cwd: only a --local checkout run may read files there.
 set -e
 

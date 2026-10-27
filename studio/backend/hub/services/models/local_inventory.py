@@ -7,10 +7,13 @@ from __future__ import annotations
 
 
 import asyncio
+import concurrent.futures
+import contextvars
 import os
 import re
 import stat
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import List, NamedTuple, Optional
@@ -44,8 +47,10 @@ from utils.hidden_models import is_hidden_model
 from utils.paths.path_utils import is_appledouble_metadata
 from utils.paths.scan_folder_health import (
     annotate_scan_folders,
+    clear_scan_slow,
     note_scan_folder_scanned,
     record_scan_failure,
+    record_scan_slow,
     refresh_failed_scan_folders,
 )
 
@@ -182,8 +187,7 @@ _NESTED_SCAN_SKIP_NAMES = frozenset({"ollama_links", "node_modules", "__pycache_
 def _is_plain_dir_entry(entry: os.DirEntry) -> bool:
     if not entry.is_dir(follow_symlinks = False):
         return False
-    # A Windows junction is a directory to is_dir(follow_symlinks=False) before 3.12; other reparse
-    # points (OneDrive placeholders) are real folders and stay walkable.
+    # Pre-3.12 junctions look like dirs; OneDrive placeholders are real folders and stay walkable.
     tag = getattr(entry.stat(follow_symlinks = False), "st_reparse_tag", 0)
     return tag != _IO_REPARSE_TAG_MOUNT_POINT
 
@@ -194,9 +198,7 @@ def is_loadable_model_dir(path: Path) -> bool:
 
 
 def nested_scan_roots(folder_path: Path) -> list[Path]:
-    """Sub-folders of a recursive scan folder to scan like the folder itself (#6371). Skips listed models, HF cache
-    repos, hidden folders, symlinks and junctions, so each model is reached once and the walk stays inside."""
-    # Same test _scan_models_dir uses to list the folder as one model; loose GGUFs beside sub-folders are not.
+    """Same test as _scan_models_dir; loose GGUFs beside sub-folders are not one model."""
     if _is_model_directory_for_scan(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES):
         return []
     roots: list[Path] = []
@@ -487,10 +489,7 @@ def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
 
 
 def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
-    """Whether the newest snapshot (the one ``_scan_hf_cache`` classifies) holds a real file.
-    Without symlinks huggingface_hub moves blobs into ``snapshots/<rev>/`` and leaves ``blobs/``
-    empty. Walked with ``scandir``, bounded by entries read (``rglob`` lists a whole directory
-    before yielding); unreadable entries are skipped."""
+    """Without symlinks, huggingface_hub leaves blobs/ empty, so real files live in snapshots/."""
     snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
     if snapshot is None:
         return False
@@ -702,18 +701,119 @@ def _scan_hf_cache(
         )
         # Denoiser-less pipeline (a GGUF's borrowed VAE / encoder): partial so no picker loads it, flagged so the Hub offers no Continue.
         if not snapshot_partial and hf_cache_scan.snapshot_pipeline_missing_denoiser(
-            hf_cache_scan.latest_snapshot_dir(repo_dir)
+            latest_snapshot := hf_cache_scan.latest_snapshot_dir(repo_dir)
         ):
+            # Some denoiser shards on disk is a torn download, not a prefetch: partial, but not flagged.
+            companion_prefetch = not hf_cache_scan.snapshot_denoiser_has_weights(latest_snapshot)
             rows = [
                 row
                 if row.model_format == "gguf"
-                else row.model_copy(update = {"companion_prefetch": True})
+                else row.model_copy(update = {"companion_prefetch": companion_prefetch})
                 for row in _apply_format_aware_partial(
                     rows, snapshot_partial = True, gguf_partial = gguf_partial
                 )
             ]
+        rows = _artifact_mirror_rows(
+            model_id,
+            repo_dir,
+            rows,
+            load_path = load_path,
+            updated_at = updated_at,
+            active_cache = active_cache,
+        )
         found.extend(rows)
     return found
+
+
+def _hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False
+
+
+def _cached_gguf_bytes(repo_dir: Path) -> int:
+    """Bytes of every ``.gguf`` under any cached revision of the repo, each file counted once."""
+    seen: dict[str, int] = {}
+    try:
+        for path in (repo_dir / "snapshots").rglob("*.gguf"):
+            if path.is_file():
+                seen[str(path.resolve())] = path.stat().st_size
+    except OSError:
+        pass
+    return sum(seen.values())
+
+
+def _artifact_mirror_rows(
+    model_id: str,
+    repo_dir: Path,
+    rows: List[LocalModelInfo],
+    *,
+    load_path: Optional[Path] = None,
+    updated_at: Optional[float] = None,
+    active_cache: bool = True,
+) -> List[LocalModelInfo]:
+    """An artifact mirror (a model's own GGUF / FP8 repo that also holds its base's official diffusers folders) never
+    lists those folders as a pipeline row: they are what a pick of the BASE fetches, a pipeline pick of the repo id is
+    refused, and deletes are whole-repo or per-quant, so a separate row's delete would wipe the quants. A GGUF repo's
+    folders fold into its GGUF row's size; the FP8 repo's row stays partial and flagged, so nothing loads or resumes it
+    as a pipeline. A snapshot with no pipeline index is left exactly as released builds listed it."""
+    if not _hosts_artifacts(model_id):
+        return rows
+    snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
+    if snapshot is None or not hf_cache_scan.snapshot_has_pipeline_index(snapshot):
+        return rows
+    gguf_rows = [row for row in rows if row.model_format == "gguf"]
+    if not gguf_rows and (gguf_bytes := _cached_gguf_bytes(repo_dir)):
+        # The quants sit in an OLDER revision than the folders a later base pick added, and only the newest snapshot
+        # was classified: recover the GGUF row from every cached revision rather than drop an installed model.
+        gguf_rows = [
+            _local_model_info(
+                scan_path = repo_dir,
+                load_path = load_path or repo_dir,
+                source = "hf_cache",
+                model_format = "gguf",
+                display_name = model_id.split("/")[-1],
+                model_id = model_id,
+                updated_at = updated_at,
+                partial = False,
+                requires_variant = True,
+                size_bytes = gguf_bytes,
+                active_cache = active_cache,
+            )
+        ]
+    if gguf_rows:
+        from hub.services.models.cache_inventory import artifact_folder_bytes
+        folder_bytes = artifact_folder_bytes(repo_dir)
+        return [
+            row.model_copy(update = {"size_bytes": int(row.size_bytes or 0) + folder_bytes})
+            for row in gguf_rows
+        ]
+    return [row.model_copy(update = {"partial": True, "companion_prefetch": True}) for row in rows]
+
+
+def _merge_artifact_mirror_roots(
+    rows_by_root: list[tuple[Path, List[LocalModelInfo]]],
+) -> List[LocalModelInfo]:
+    """The cross-root half of ``_artifact_mirror_rows``, which sees one cache root at a time. When an artifact
+    mirror's GGUF sits in one root and its diffusers folders in another, each root keeps its own row, because a delete
+    is scoped to one root: the GGUF row counts only its own root, and the folders-only row stays partial and flagged as
+    the GGUF's companion prefetch, never a pick. Every other row passes through unchanged."""
+    gguf_ids = {
+        (row.model_id or "").lower()
+        for _root, rows in rows_by_root
+        for row in rows
+        if row.model_format == "gguf" and row.model_id and _hosts_artifacts(row.model_id)
+    }
+    out: List[LocalModelInfo] = []
+    for _root, rows in rows_by_root:
+        for row in rows:
+            if row.model_format != "gguf" and (row.model_id or "").lower() in gguf_ids:
+                row = row.model_copy(update = {"partial": True, "companion_prefetch": True})
+            out.append(row)
+    return out
 
 
 def _scan_lmstudio_dir(
@@ -1006,6 +1106,104 @@ async def _scan_source(label: str, scanner, path: Path) -> List[LocalModelInfo]:
         return []
 
 
+# A thread per scan under a budget: a fixed pool lets a few hung mounts starve every healthy folder.
+_CUSTOM_FOLDER_SCAN_TIMEOUT_S = 10.0
+_custom_folder_scans: dict[str, tuple[float, concurrent.futures.Future]] = {}
+_custom_folder_scans_lock = threading.Lock()
+
+
+def _run_into(future: concurrent.futures.Future, context: contextvars.Context, work) -> None:
+    if not future.set_running_or_notify_cancel():
+        return
+    try:
+        result = context.run(work)
+    except BaseException as e:  # noqa: BLE001 -- handed to the waiter
+        future.set_exception(e)
+    else:
+        future.set_result(result)
+
+
+def _submit_custom_folder_scan(row_path: str, work) -> Optional[concurrent.futures.Future]:
+    """None when an earlier scan of this folder is still stuck past budget: a second thread would only stall on
+    the same mount. So stuck threads stay at one per folder."""
+    with _custom_folder_scans_lock:
+        started, running = _custom_folder_scans.get(row_path, (0.0, None))
+        if (
+            running is not None
+            and not running.done()
+            and time.monotonic() - started > _CUSTOM_FOLDER_SCAN_TIMEOUT_S
+        ):
+            return None
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        threading.Thread(
+            target = _run_into,
+            args = (future, contextvars.copy_context(), work),
+            name = "scan-folder",
+            daemon = True,
+        ).start()
+        # Keep tracking the oldest scan still running: replacing it would restart the clock on a hung mount.
+        if running is None or running.done():
+            _custom_folder_scans[row_path] = (time.monotonic(), future)
+        return future
+
+
+def _abandon_custom_folder_scan(row_path: str, future: concurrent.futures.Future) -> None:
+    logger.warning(
+        "Scan folder %s took over %.0fs; skipped this listing",
+        short_path_for_log(row_path),
+        _CUSTOM_FOLDER_SCAN_TIMEOUT_S,
+    )
+    record_scan_slow(row_path)
+    future.add_done_callback(lambda _f: clear_scan_slow(row_path))
+
+
+async def _run_custom_folder_bounded(row_path: str, work):
+    """``work()`` for one custom folder, or None when it was skipped for being slow."""
+    future = _submit_custom_folder_scan(row_path, work)
+    if future is None:
+        return None
+    try:
+        return await asyncio.wait_for(asyncio.wrap_future(future), _CUSTOM_FOLDER_SCAN_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        _abandon_custom_folder_scan(row_path, future)
+        return None
+
+
+def run_custom_folder_bounded_sync(row_path: str, work):
+    """``_run_custom_folder_bounded`` for a caller already off the event loop."""
+    future = _submit_custom_folder_scan(row_path, work)
+    if future is None:
+        return None
+    try:
+        return future.result(timeout = _CUSTOM_FOLDER_SCAN_TIMEOUT_S)
+    except concurrent.futures.TimeoutError:
+        _abandon_custom_folder_scan(row_path, future)
+        return None
+
+
+def _discover_custom_folder_hf_caches(folder_path: Path) -> list[tuple[Path, Optional[list]]]:
+    try:
+        cache_dirs = hf_cache_scan.scan_folder_hf_caches(folder_path)
+    except Exception as e:
+        logger.warning(
+            "Skipping HF caches under %s: %s", short_path_for_log(folder_path), scrub_paths(e)
+        )
+        return []
+    hf_caches = []
+    for cache_dir in cache_dirs:
+        try:
+            discovered = _discover_hf_cache(cache_dir, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+        except Exception as e:
+            logger.warning(
+                "Skipping custom HF cache scan for %s: %s",
+                short_path_for_log(cache_dir),
+                scrub_paths(e),
+            )
+            discovered = []
+        hf_caches.append((cache_dir, discovered))
+    return hf_caches
+
+
 async def _collect_models_from_default_sources(
     models_root: Path,
     hf_cache_dir: Path,
@@ -1059,21 +1257,18 @@ async def _collect_models_from_default_sources(
         )
     for folder in custom_folders:
         folder_path = Path(normalize_path(folder["path"])).expanduser()
-        hf_caches = []
-        for cache_dir in await asyncio.to_thread(hf_cache_scan.scan_folder_hf_caches, folder_path):
-            discovered = await _scan_source(
-                "custom HF cache",
-                lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
-                cache_dir,
-            )
-            hf_caches.append((cache_dir, discovered))
+        # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
+        row_path = str(folder["path"])
+        hf_caches = await _run_custom_folder_bounded(
+            row_path, lambda path = folder_path: _discover_custom_folder_hf_caches(path)
+        )
+        if hf_caches is None:
+            continue
+        for cache_dir, discovered in hf_caches:
             state_repositories.extend(
                 ("model", model_id, cache_dir) for _repo, model_id, _updated in discovered
             )
-        # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
-        custom_sources.append(
-            (folder_path, hf_caches, str(folder["path"]), bool(folder.get("recursive")))
-        )
+        custom_sources.append((folder_path, hf_caches, row_path, bool(folder.get("recursive"))))
     try:
         variant_states = await asyncio.to_thread(
             download_manifest.build_variant_state_index,
@@ -1083,18 +1278,25 @@ async def _collect_models_from_default_sources(
     except Exception as e:
         logger.warning("Could not build shared Hub-state index: %s", scrub_paths(e))
         variant_states = None
+    hf_rows_by_root: list[tuple[Path, List[LocalModelInfo]]] = []
     for label, cache_dir, active_cache, discovered in discovered_sources:
-        local_models += await _scan_source(
-            label,
-            lambda path, rows = discovered, active = active_cache: _scan_hf_cache(
-                path,
-                active_cache = active,
-                discovered = rows,
-                variant_states = variant_states,
-                active_hub_cache = hf_cache_dir,
-            ),
-            cache_dir,
+        hf_rows_by_root.append(
+            (
+                cache_dir,
+                await _scan_source(
+                    label,
+                    lambda path, rows = discovered, active = active_cache: _scan_hf_cache(
+                        path,
+                        active_cache = active,
+                        discovered = rows,
+                        variant_states = variant_states,
+                        active_hub_cache = hf_cache_dir,
+                    ),
+                    cache_dir,
+                ),
+            )
         )
+    local_models += _merge_artifact_mirror_roots(hf_rows_by_root)
 
     for lm_dir in lm_dirs:
         local_models += await _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
@@ -1113,32 +1315,40 @@ async def _collect_models_from_default_sources(
         local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
 
     hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
+
+    def scan_folder(folder_path: Path, hf_caches, recursive: bool) -> List[LocalModelInfo]:
+        nested_roots = tuple(nested_scan_roots(folder_path)) if recursive else ()
+        custom_models = _scan_custom_folder(
+            folder_path,
+            hf_caches = hf_caches,
+            variant_states = variant_states,
+            active_hub_cache = hf_cache_dir,
+            nested_roots = nested_roots,
+        )
+        if _inventory_physical_identity(str(folder_path)) in hermes_identities:
+            # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
+            # the walk lists every download a second time under the same id. Anything else kept
+            # in that folder is still the user's custom row.
+            staged = {
+                _inventory_physical_identity(row.path) for row in scan_hermes_dir(folder_path)
+            }
+            custom_models = [
+                model
+                for model in custom_models
+                if _inventory_physical_identity(model.path) not in staged
+            ]
+        return custom_models
+
     for folder_path, hf_caches, row_path, recursive in custom_sources:
         try:
-            nested_roots = (
-                tuple(await asyncio.to_thread(nested_scan_roots, folder_path)) if recursive else ()
+            custom_models = await _run_custom_folder_bounded(
+                row_path,
+                lambda path = folder_path, caches = hf_caches, rec = recursive: scan_folder(
+                    path, caches, rec
+                ),
             )
-            custom_models = await asyncio.to_thread(
-                _scan_custom_folder,
-                folder_path,
-                hf_caches = hf_caches,
-                variant_states = variant_states,
-                active_hub_cache = hf_cache_dir,
-                nested_roots = nested_roots,
-            )
-            if _inventory_physical_identity(str(folder_path)) in hermes_identities:
-                # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
-                # the walk lists every download a second time under the same id. Anything else kept
-                # in that folder is still the user's custom row.
-                staged = {
-                    _inventory_physical_identity(row.path)
-                    for row in await asyncio.to_thread(scan_hermes_dir, folder_path)
-                }
-                custom_models = [
-                    model
-                    for model in custom_models
-                    if _inventory_physical_identity(model.path) not in staged
-                ]
+            if custom_models is None:
+                continue
         except Exception as e:
             logger.warning(
                 "Skipping unreadable scan folder %s: %s",
@@ -1229,18 +1439,24 @@ def _scan_custom_folder(
                 limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
                 entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
             )
-            + [
-                row
-                for cache_dir, discovered in hf_caches
-                for row in _scan_hf_cache(
-                    cache_dir,
-                    entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
-                    active_cache = False,
-                    discovered = discovered,
-                    variant_states = variant_states,
-                    active_hub_cache = active_hub_cache,
-                )
-            ]
+            # Several HF caches under one folder are merged like the top-level roots, so an artifact mirror whose
+            # GGUF and diffusers folders sit in different caches is one GGUF row.
+            + _merge_artifact_mirror_roots(
+                [
+                    (
+                        cache_dir,
+                        _scan_hf_cache(
+                            cache_dir,
+                            entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                            active_cache = False,
+                            discovered = discovered,
+                            variant_states = variant_states,
+                            active_hub_cache = active_hub_cache,
+                        ),
+                    )
+                    for cache_dir, discovered in hf_caches
+                ]
+            )
             + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
         )
         if _is_supported(m)
@@ -1304,9 +1520,28 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
     )
 
 
+def custom_folder_identities(folders: list[dict], identity) -> list[str]:
+    """``identity(path)`` per folder under the scan budget, else the raw path: realpath stats every component, so
+    on a hung mount it parks the caller as long as the scan would."""
+    identities = []
+    for folder in folders:
+        raw = str(folder.get("path", ""))
+        resolved = run_custom_folder_bounded_sync(raw, lambda raw = raw: identity(raw))
+        identities.append(os.path.normcase(raw.strip()) if resolved is None else resolved)
+    return identities
+
+
+def _list_custom_folders_with_identity() -> list[dict]:
+    folders = list_scan_folders()
+    return [
+        {**folder, "_identity": key}
+        for folder, key in zip(folders, custom_folder_identities(folders, _inventory_path_identity))
+    ]
+
+
 async def _load_custom_folders() -> list[dict]:
     try:
-        return await asyncio.to_thread(list_scan_folders)
+        return await asyncio.to_thread(_list_custom_folders_with_identity)
     except Exception as e:
         logger.warning("Could not load custom scan folders: %s", scrub_paths(e))
         return []
@@ -1457,6 +1692,53 @@ async def _scan_local_models_response(
         )
 
 
+def _scan_unsloth_models() -> List[LocalModelInfo]:
+    """Studio's own fine-tunes (outputs/) and exports (exports/), found the way the Library finds them."""
+    from utils.models.model_config import scan_exported_models, scan_trained_models
+    from utils.paths.storage_roots import exports_root, outputs_root
+
+    found = [(name, path) for name, path, _ in scan_trained_models(str(outputs_root()))]
+    found += [(name, path) for name, path, _, _ in scan_exported_models(str(exports_root()))]
+    rows: List[LocalModelInfo] = []
+    for name, raw_path in found:
+        path = Path(raw_path)
+        # A GGUF export is named by its largest quant; its folder lists every quant it holds.
+        if path.suffix.lower() == ".gguf":
+            path = path.parent
+        try:
+            updated_at = path.stat().st_mtime
+        except OSError:
+            continue
+        classified = _classify_local_path(path, "unsloth", display_name = name, updated_at = updated_at)
+        rows.extend(_apply_payload_partial(path, classified))
+    return _classify_unsloth_models(rows)
+
+
+def _classify_unsloth_models(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
+    try:
+        from hub.services.models import catalog_classification
+
+        classified = []
+        for model in models:
+            task, audio_type = catalog_classification._local_model_classification(model)
+            classified.append(model.model_copy(update = {"task": task, "audio_type": audio_type}))
+        return classified
+    except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
+        logger.warning("Could not classify Unsloth model tasks: %s", scrub_paths(e))
+        return models
+
+
+async def list_unsloth_models_response() -> LocalModelListResponse:
+    # Off the loop with the scan: classifying a GGUF reads its header.
+    try:
+        models = await asyncio.to_thread(_scan_unsloth_models)
+    except Exception as e:
+        logger.error("Error listing Unsloth models: %s", scrub_paths(e), exc_info = True)
+        raise _http_error(status_code = 500, detail = f"Failed to list Unsloth models: {str(e)}")
+    response = LocalModelListResponse(models_dir = str(outputs_root()), models = models)
+    return await _account_local_response(response)
+
+
 async def _account_local_response(response):
     if not _account_access().managed_account():
         return response
@@ -1513,7 +1795,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             _inventory_path_identity(models_dir),
             sources,
             tuple(
-                _inventory_path_identity(str(folder.get("path", "")))
+                (folder.get("_identity") or _inventory_path_identity(str(folder.get("path", ""))))
                 + ("\x00r" if folder.get("recursive") else "")
                 for folder in custom_folders
             ),

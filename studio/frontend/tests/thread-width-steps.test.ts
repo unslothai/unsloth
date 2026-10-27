@@ -48,7 +48,6 @@ test("the thread root is no longer a size container, so a width change restyles 
   assert.equal(/@container \((max|min)-width: (31\.5|18\.75)rem\)/.test(css), false);
   assert.equal(css.includes("@container (min-width: 36rem)"), false);
   for (const selector of [
-    ":where(.aui-thread-root[data-thread-narrow]) .unsloth-composer-dock-inner {",
     ":where(.aui-thread-root[data-thread-narrow]) .aui-thread-welcome-message {",
     ":where(.aui-thread-root[data-thread-narrow]) .unsloth-welcome-title {",
     ":where(.aui-thread-root[data-thread-tiny]) .unsloth-welcome-title {",

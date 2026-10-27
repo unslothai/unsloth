@@ -6,26 +6,15 @@ import { create } from "zustand";
 import { rendersAsRow } from "@/components/assistant-ui/thread-message-slot";
 import type { ThreadMessageRole } from "@/components/assistant-ui/thread-message-slot";
 
-/** Where a fork's inherited history ends, and the chat it came from. */
 export interface ForkBoundary {
-  /**
-   * This thread's own copies of every inherited message.
-   *
-   * A set rather than one id because the divider is a fact about the branch on screen, not
-   * about a message: editing an inherited turn starts a sibling branch and keeps the originals,
-   * so the last inherited message on the new branch is an earlier one, and switching back has
-   * to restore the old one.
-   */
+  /** This thread's copies of inherited messages; a set because edits branch and switching restores. */
   messageIds: ReadonlySet<string>;
-  /** The chat the divider links back to, null once it is gone. */
   sourceThreadId: string | null;
 }
 
-// Published on load: message rows render from a propless slot, so they cannot be handed the
-// thread record. A thread missing here shows no divider.
+// Published on load: message rows render from a propless slot and cannot get the thread record.
 export interface ForkBoundaryState {
   boundaryByThreadId: Record<string, ForkBoundary>;
-  /** The message the divider currently follows, resolved against the branch on screen. */
   anchorByThreadId: Record<string, string>;
   setForkBoundary: (threadId: string, boundary: ForkBoundary | null) => void;
   setForkBoundaryAnchor: (threadId: string, anchor: string | undefined) => void;
@@ -46,15 +35,7 @@ function same(a: ForkBoundary | undefined, b: ForkBoundary): boolean {
   );
 }
 
-/**
- * The inherited message the divider follows on this branch, or undefined for none.
- *
- * The inherited chain runs from the root to the fork point, so it is a prefix of whatever
- * branch is selected: this stops at the divergence rather than walking a thread that has grown
- * past it. Only a message that paints a row can carry the divider, and `isEditing` is false
- * here because the branch alone does not say which message is being edited; an edit composer
- * is a row either way, so the only effect is on a system message mid-edit.
- */
+/** Inherited message the divider follows on this branch; the inherited chain is a branch prefix. */
 export function forkBoundaryAnchor(
   messages: readonly { id: string; role: ThreadMessageRole }[],
   inherited: ReadonlySet<string> | undefined,
@@ -80,7 +61,6 @@ export const useForkBoundaryStore = create<ForkBoundaryState>()((set) => ({
         delete next[threadId];
         return { boundaryByThreadId: next };
       }
-      // Same values keep the identity, so the rows subscribed to this do not re-render.
       if (same(current, boundary)) return state;
       return {
         boundaryByThreadId: { ...state.boundaryByThreadId, [threadId]: boundary },

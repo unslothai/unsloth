@@ -120,7 +120,6 @@ def run_sft_training(monkeypatch):
         t.model_name = "unsloth/Qwen2-VL-7B-Instruct"
         t.is_vlm = not (is_audio_vlm or text)
         t.is_audio_vlm = is_audio_vlm
-        # Stands in for the skipped load_model(), which the worker gives the same mode.
         t._use_gradient_checkpointing = tmod.normalize_gradient_checkpointing(
             gradient_checkpointing
         )
@@ -222,7 +221,6 @@ def load_model_run(monkeypatch):
                 error, cls.fail_once_with = cls.fail_once_with, None
                 raise error
             model = _FakeModel()
-            # As post_patch_model does; real text LoRA loads record it in get_peft_model instead.
             seen["stamp"] = kwargs.get("use_gradient_checkpointing")
             model._unsloth_gradient_checkpointing = seen["stamp"]
             model.for_training = _record_for_training
@@ -234,7 +232,6 @@ def load_model_run(monkeypatch):
             use_gradient_checkpointing = "unsloth",
             **kwargs,
         ):
-            # Adding adapters re-records the mode.
             seen["stamp"] = use_gradient_checkpointing
             model._unsloth_gradient_checkpointing = use_gradient_checkpointing
             return model

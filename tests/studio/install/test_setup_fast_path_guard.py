@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""setup.sh / setup.ps1 must not skip the dependency pass on a half-built venv.
-
-Both short-circuit all dependency work when the installed unsloth version equals
-PyPI's latest, which is true on an interrupted install: unsloth goes in early and
-studio.txt never finishes. So update, and the desktop Repair button behind it,
-said "up to date" while the server kept dying on `import structlog`.
-
-That branch only runs for a non-local update, which reinstalls from PyPI and
-clobbers the tree under test, so assert the guard structurally instead.
-"""
+"""The fast path must not skip dependencies when an interrupted install matches PyPI's version."""
 
 from __future__ import annotations
 
@@ -72,13 +63,7 @@ def test_duplicate_core_metadata_cannot_take_the_version_fast_path(script: pathl
 
 
 def test_ps1_drops_the_manifest_before_its_first_install():
-    """Nothing may mutate the venv while the marker still says "install finished".
-
-    install_python_stack.py drops it before its own dependency pass, which is
-    enough for setup.sh: the stack is the first thing that pass runs. setup.ps1
-    replaces pip, torch and triton first, so a run killed there would leave a
-    manifest that still verifies and a venv with half a PyTorch.
-    """
+    """Drop the finished-install manifest before the first mutating install, or a killed run looks done."""
     text = SETUP_PS1.read_text(encoding = "utf-8")
     pass_start = text.index("if (-not $SkipPythonDeps) {")
     removal = text.find("remove_manifest", pass_start)
@@ -124,13 +109,7 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 @pytest.mark.parametrize("script", [INSTALL_SH, INSTALL_PS1], ids = ["install.sh", "install.ps1"])
 def test_the_installer_reports_duplicate_metadata_on_every_platform(script: pathlib.Path):
-    """Both installers print the version they just installed.
-
-    importlib.metadata.version() answers from whichever record the finder
-    yields first, so on a duplicated install it prints an arbitrary one and the
-    run looks clean. Windows and POSIX have to agree here, or the same broken
-    venv is reported differently depending on the host.
-    """
+    """Both installers must use installed_version_probe; importlib.metadata.version() hides duplicates."""
     text = script.read_text(encoding = "utf-8")
     assert "installed_version_probe" in text, (
         f"{script.name} still reports the installed version through "
@@ -150,19 +129,15 @@ def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
     body = text[start : text.index("\n}\n", start)]
     assert "command -v python" in body
     assert '"$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar' in body
-    # Exactly one grep may precede the interpreter search: the guard for a tree that ships no
-    # shim at all. Every other fall back to the grep is a last resort behind `command -v python`,
-    # or Colab (venv-less but with an ambient python) would never reach the shim.
+    # Only the no-shim guard may grep before the interpreter search, or Colab never reaches the shim.
     shim_guard = body.index('[ ! -f "$SCRIPT_DIR/install_manifest.py" ]')
     assert shim_guard < body.index("command -v python")
     assert body.index("command -v python") < body.rindex("_target_has_pkg_version")
 
 
 def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
-    """Two reasons, one mechanism. The shim answers "stale" with exit 1, which a native
-    command turns into a terminating error under $PSNativeCommandUseErrorActionPreference,
-    and the shim's scan budget cannot interrupt a stalled read on a wedged mount. A bounded
-    process has neither problem; a timeout reads as stale."""
+    """Bounded process: a native exit 1 aborts under PowerShell's error preference; a stall must not
+    hang."""
     text = SETUP_PS1.read_text(encoding = "utf-8")
     start = text.index("function Test-SidecarCurrent {")
     body = text[start : text.index("\nfunction ", start + 1)]
@@ -172,7 +147,6 @@ def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
     assert "[Convert]::ToBase64String" in body and "base64.b64decode" in body
     assert "runpy.run_path(sys.argv[0], run_name='__main__')" in body
     assert body.index("$probe.TimedOut") < body.index('$out = "sidecar: audit did not answer')
-    # The shell mirror: the shim call is bounded where a timeout exists and a timeout is stale.
     sh = SETUP_SH.read_text(encoding = "utf-8")
     call = sh.index('install_manifest.py" sidecar "$_sc_dir"')
     window = sh[call - 400 : call + 900]
@@ -182,10 +156,7 @@ def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
 
 
 def test_the_ps1_sidecar_installs_are_isolated_from_uv_override():
-    """setup.sh routes every sidecar install through fast_install_sidecar, which unsets
-    UV_OVERRIDE; an override naming huggingface_hub or hf_xet would otherwise install
-    another version than the exact pin and the audit would rebuild the sidecar to the
-    same wrong answer on every run. The PowerShell helper mirrors it."""
+    """Sidecar installs unset UV_OVERRIDE; an override naming huggingface_hub would pin a wrong version."""
     text = SETUP_PS1.read_text(encoding = "utf-8")
     start = text.index("function Fast-Install-Sidecar {")
     body = text[start : text.index("\nfunction ", start + 1)]
@@ -226,8 +197,7 @@ def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
     assert "PSVersion.Major -ge 7" not in body
 
 
-# The offline rule: "updating to be safe" is wrong under UV_OFFLINE, where every install can only
-# fail; a complete install is kept, on the incomplete-install guard's own evidence.
+# Under UV_OFFLINE every install can only fail, so a complete install is kept.
 
 
 @pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
@@ -317,10 +287,7 @@ def test_the_posix_offline_switch_reads_the_boolish_spellings(tmp_path):
 
 
 def test_the_offline_fast_path_never_wipes_a_sidecar():
-    """The offline rule keeps the install because nothing can be fetched. A sidecar
-    rebuild is a wipe followed by four fetches, so under that rule it would either reach
-    for the network or destroy a usable sidecar and then fail. Both shells flag the
-    offline keep and clear every rebuild flag behind it."""
+    """Offline keeps the verified install and clears rebuild flags: a rebuild wipes before it can fetch."""
     sh = SETUP_SH.read_text(encoding = "utf-8")
     ps1 = SETUP_PS1.read_text(encoding = "utf-8")
     keep_sh = sh.index("keeping the verified install")
@@ -341,8 +308,7 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
         < ps1.index("if ($_NeedT5_530 -or $_NeedT5_550 -or $_NeedT5_510) {")
     )
     assert "Set-Variable -Name $flag -Value $false" in ps1[guard_ps1 : guard_ps1 + 900]
-    # The legacy migration is itself a wipe above the guard: skipped under the offline keep, and
-    # under UV_OFFLINE without the fast path.
+    # The legacy migration is itself a wipe above the guard.
     assert sh.index(
         '[ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then'
     ) < sh.index('rm -rf "$STUDIO_HOME/.venv_t5"')
@@ -357,11 +323,7 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
 
 
 def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
-    """UV_OFFLINE with the core not verified (or PyPI still answering) takes the ordinary
-    path, whose sidecar rebuild is a wipe followed by four fetches from a cache that may
-    be cold, and an absent tier would go through the pip fallback that does not read
-    UV_OFFLINE. Both shells defer every stale or missing tier under the offline request
-    itself, ahead of the fast-path guard; the runtime self-heal covers a missing tier."""
+    """Under UV_OFFLINE, both shells defer stale or missing sidecar tiers before the fast-path guard."""
     sh = SETUP_SH.read_text(encoding = "utf-8")
     ps1 = SETUP_PS1.read_text(encoding = "utf-8")
     offline_sh = sh.index(
@@ -373,8 +335,7 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
         < sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
     )
     block_sh = sh[offline_sh : offline_sh + 1100]
-    # Stale AND missing: an absent tier would reach the pip fallback. No path in the loop's word
-    # list (a space in the Studio home would split it).
+    # No path in the loop's word list: a space in the Studio home would split it.
     assert '[ -d "$' not in block_sh.split("for _ofp in", 1)[1].split("done", 1)[0]
     assert "$VENV_T5_530_DIR" not in block_sh.split("for _ofp in", 1)[1].split("\n", 1)[0]
     assert (
@@ -390,7 +351,6 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
     block_ps1 = ps1[offline_ps1 : offline_ps1 + 1100]
     assert "Test-Path -LiteralPath $tier[2]" not in block_ps1
     assert "Set-Variable -Name $flag -Value $false" in block_ps1
-    # The tiktoken top-up stays home under the offline request too.
     top_up = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
     assert "_uv_offline_requested && return 0" in top_up[:900]
     repair = ps1[ps1.index("function Repair-SidecarTiktoken {") :]
@@ -398,10 +358,7 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
 
 
 def test_the_ps1_offline_flag_is_initialised_before_its_unconditional_reads():
-    """Only the offline keep assigns the flag, and the sidecar block reads it on every
-    update. Under a caller's Set-StrictMode an unassigned script variable is a
-    terminating error, and a dot-sourced rerun would otherwise inherit an earlier
-    offline run's $true."""
+    """Initialise $script:OfflineFastPath: unassigned reads fail under StrictMode; reruns inherit $true."""
     text = SETUP_PS1.read_text(encoding = "utf-8")
     init = text.index("$script:OfflineFastPath = $false")
     assert init < text.index("$script:OfflineFastPath = $true")
@@ -409,11 +366,7 @@ def test_the_ps1_offline_flag_is_initialised_before_its_unconditional_reads():
 
 
 def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
-    """setup.ps1 installs uv into $USERPROFILE\\.local\\bin, and only astral's own installer
-    edits the registry PATH. Probing PATH alone therefore missed it in every fresh update
-    process, so Windows re-downloaded uv on every run: the idempotency harness measured two
-    files.pythonhosted.org connections on an update with nothing to do, where Linux and macOS
-    had none. The probe and the installer must resolve the same directory."""
+    """Probe uv in the installer's own directory: PATH misses it in fresh shells, forcing a re-download."""
     text = SETUP_PS1.read_text(encoding = "utf-8")
     assert "function Get-UvInstallDir" in text, (
         "the install directory is no longer a shared helper; the probe and the installer can "
@@ -424,9 +377,7 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
     assert (
         "Find-InstalledUv" in probe
     ), "the uv probe checks PATH only again; on Windows that reinstalls uv every update"
-    # The finder replaced the inline `Test-Path (Join-Path (Get-UvInstallDir) "uv.exe")`, which
-    # saw one destination and never ran what it found: a uv.exe that could not run was put on
-    # PATH anyway. It must still start from the installer's destination, or the two can disagree.
+    # Must start from the installer's destination and actually run the uv.exe it finds.
     finder = text[text.index("function Find-InstalledUv {") :]
     finder = finder[: finder.index("\n}\n") + 3]
     assert "Get-UvInstallDir" in finder, (
@@ -434,14 +385,12 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
         "the installer can now disagree about where uv lives"
     )
     assert 'Combine($dir, "uv.exe")' in finder, "the probe stopped looking for uv.exe itself"
-    # Join-Path terminates on a missing drive under ErrorActionPreference Stop, and this runs
-    # outside the installation branch's try, so XDG_DATA_HOME=Z:\xdg ended setup.
+    # Join-Path terminates on a missing drive under Stop, outside the install try.
     body = finder[finder.index("$candidates") :]
     assert (
         "Join-Path" not in body
     ), "the candidate paths are built with Join-Path again; one missing drive ends setup"
-    # And the run that installs uv has to use it, or it records a manifest with no uv_version and
-    # the next run rewrites it: a no-op update that is not one.
+    # Otherwise the manifest lacks uv_version and the next run rewrites it.
     install_arm = text[text.index('substep "installing uv package manager..."') :][:2000]
     assert "Get-UvInstallDir" in install_arm, (
         "after installing uv, setup.ps1 relies on Refresh-Environment alone; it rebuilds PATH "
@@ -454,8 +403,7 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
     [
         ("def verify_install(deep = False): return {'ok': True}", 0),
         ("def verify_install(deep = False): return {'ok': False}", 1),
-        # The hole this replaced: `except TypeError` also caught one raised INSIDE a deep
-        # verify, and retried without the payload scan, so real damage read as verified.
+        # `except TypeError` also caught one raised INSIDE a deep verify.
         ("def verify_install(deep = False): raise TypeError('inside')", 1),
         ("def verify_install(): return {'ok': True}", 0),  # older tree, no such keyword
         ("def verify_install(): return {'ok': False}", 1),
@@ -480,14 +428,7 @@ def test_the_deep_verify_only_degrades_on_a_tree_that_lacks_the_keyword(
 
 
 def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, monkeypatch):
-    """A shell that decides "online" while the installer decides "offline" declines a repair
-    with a message contradicting the user. `off` and `no` are the spellings that did it.
-
-    ``_uv_is_offline`` reads ``os.environ``, so the loop below has to set it for real. It
-    does that through ``monkeypatch`` rather than assigning ``os.environ`` directly: a bare
-    assignment survives the test and leaves the LAST value in the loop set for the rest of
-    the session, which is a resolver policy every other suite in this directory inherits.
-    """
+    """Shell and installer must agree on UV_OFFLINE values like off and no; monkeypatch stops env leaks."""
     import ast as _ast
     import os
     import subprocess
@@ -501,10 +442,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
     )
 
     stack = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-    # `_uv_is_offline` is one caller of `_uv_env_flag`, which is where the boolish set
-    # actually lives, so both are lifted. Naming the callee here rather than lifting the
-    # whole module keeps the test reading the real source instead of an import with side
-    # effects, and a callee that goes missing is a NameError, not a wrong answer.
+    # The boolish set lives in _uv_env_flag, so lift both; a missing callee is a NameError.
     wanted = ("_uv_env_flag", "_uv_is_offline")
     nodes = [
         n for n in _ast.parse(stack).body if isinstance(n, _ast.FunctionDef) and n.name in wanted
@@ -535,8 +473,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
         "maybe",
         "2",
     ):
-        # `sh` with a pinned POSIX PATH, as the sibling test above: `bash` on a Windows
-        # runner resolves to the WSL stub, which answers in UTF-16 and runs nothing.
+        # `sh` with a pinned PATH: on Windows `bash` is the WSL stub, which runs nothing.
         shell = (
             subprocess.run(
                 ["sh", str(probe)],
@@ -553,10 +490,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
 
 
 def test_the_installer_pins_come_from_the_audited_pin_list():
-    """The list the audit demands and the list the install performs must be one variable: a
-    pin `sidecar_is_current` requires but `_install_sidecar` never installs reads stale every
-    run, silently wiping and refetching all three tiers on every update.
-    """
+    """Audit and install must share one pin list, or a stale pin wipes and refetches sidecars every run."""
     sh = SETUP_SH.read_text(encoding = "utf-8")
     start = sh.index("_install_sidecar() {")
     body = sh[start : sh.index("\n}\n", start)]
@@ -598,10 +532,7 @@ def test_a_tree_without_the_shim_falls_back_to_the_version_grep():
 
 
 def test_the_sidecar_cleanups_cannot_abort_the_installer():
-    """setup.sh runs under `set -euo pipefail` and these functions are called bare. Every `rm`
-    here is best effort by construction, since the paths that reach them are already
-    undeletable, and an unguarded one turns a skipped rebuild into a silent exit 1.
-    """
+    """Under set -euo pipefail, an unguarded rm in a sidecar cleanup turns a skipped rebuild into exit 1."""
     sh = SETUP_SH.read_text(encoding = "utf-8")
     for fn in ("_sidecar_retire_after_failed_tiktoken() {", "_sidecar_top_up_tiktoken() {"):
         start = sh.index(fn)
@@ -617,10 +548,7 @@ def test_the_sidecar_cleanups_cannot_abort_the_installer():
 
 
 def test_the_ps1_marker_reason_is_parsed_without_substring():
-    """`-like 'sidecar:*'` also matches the bare marker, and Substring past the end throws.
-
-    The sh side uses `${_sc_out#sidecar: }`, which degrades to the empty string; the two must
-    not differ on a malformed answer."""
+    """Avoid .Substring on the marker reason: a bare 'sidecar:' throws, while the sh strip gives empty."""
     ps1 = SETUP_PS1.read_text(encoding = "utf-8")
     start = ps1.index("function Test-SidecarCurrent {")
     body = ps1[start : ps1.index("\nfunction ", start + 1)]

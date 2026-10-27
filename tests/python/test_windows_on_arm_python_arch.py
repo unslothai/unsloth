@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Windows on ARM has to end up on an x64 interpreter, or stop.
-
-PyPI publishes no `win_arm64` wheel for pyarrow (reached through `datasets`) or
-hf-transfer, at any version, so a native ARM64 CPython source-builds both and dies on CMake
-or Rust minutes in. Measured on a windows-11-arm runner with ARM64 CPython 3.12.10:
-
-    ERROR: Could not find a version that satisfies the requirement pyarrow (from versions: none)
-    *** CMake configuration failed
-
-The same probe on x64 resolved both, so it is the interpreter architecture. install.ps1
-already swaps a freshly selected ARM64 interpreter for x64; these tests close what it does
-when that swap CANNOT be made, and the fact that it only looks at a FRESH selection, so a
-migrated environment is reused on whatever built it.
-
-Provenance: #8495, #10875.
-"""
+"""Windows on ARM must end on an x64 interpreter or stop, since PyPI has no win_arm64 pyarrow wheel."""
 
 from __future__ import annotations
 
@@ -36,12 +21,7 @@ POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
 
 
 def _function(name: str) -> str:
-    """The named function's source, verbatim from install.ps1.
-
-    Extracted rather than restated so these cases track the installer instead of a copy of
-    it, and indented-brace delimited rather than marker delimited so rewording a comment
-    cannot silently change what is under test.
-    """
+    """Extracts a function from install.ps1 by indented braces, so rewording a comment cannot change it."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     match = re.search(rf"    function {name} \{{.*?\n    \}}\n", source, flags = re.DOTALL)
     assert match is not None, f"install.ps1 no longer defines {name}"
@@ -53,8 +33,7 @@ def _run(
     script: str,
     env: dict[str, str] | None = None,
 ) -> str:
-    # run_pwsh, not subprocess.run: both shells write UTF-8 while `text = True` alone
-    # decodes with the runner's locale codec. See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh: both shells write UTF-8 while `text = True` decodes with the locale codec.
     result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
@@ -98,21 +77,12 @@ function Get-PythonPlatformTag {{ param([string]$Exe) return "{venv_tag}" }}
 @pytest.mark.parametrize(
     "host_arch,venv_tag,selected_arch,venv_exists,expected",
     [
-        # The reported shape: ARM64 host, x64 interpreter chosen for this run, environment
-        # migrated from an older install and therefore still native ARM64.
         ("arm64", "win-arm64", "x86_64", True, True),
-        # Already x64: nothing to rebuild.
         ("arm64", "win-amd64", "x86_64", True, False),
-        # Not Windows on ARM at all.
         ("x86_64", "win-amd64", "x86_64", True, False),
-        # ARM64 host where the chosen interpreter is ARM64 too. Nothing better is in hand,
-        # so this must NOT fire: it is also the shape a host served by native ARM64 wheels
-        # has, and rebuilding its environment would be a regression rather than a fix.
+        # Must NOT fire: native-ARM64-wheel hosts look like this and a rebuild would regress them.
         ("arm64", "win-arm64", "arm64", True, False),
-        # No environment to reuse: the fresh-venv branch handles this one.
         ("arm64", "win-arm64", "x86_64", False, False),
-        # An interpreter that cannot be launched answers nothing; the managed-Python error
-        # further down install.ps1 is what should report that, not a silent rebuild.
         ("arm64", "", "x86_64", True, False),
     ],
 )
@@ -200,7 +170,6 @@ def test_both_arm64_opt_out_readers_go_through_one_helper():
     other."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     assert source.count("function Test-Arm64PythonOptOut") == 1
-    # The literal comparison lives in the helper and nowhere else.
     assert (
         source.count("$env:UNSLOTH_ALLOW_ARM64_PYTHON -in") == 1
     ), "the opt-out is compared in more than one place"
@@ -210,10 +179,7 @@ def test_both_arm64_opt_out_readers_go_through_one_helper():
 
 
 def test_the_arm64_rebuild_tells_the_user_what_it_does_not_carry_over():
-    """A rebuild on a different architecture cannot reuse the old wheels, so packages the
-    user added to the ARM64 environment are gone from the new one. That is unavoidable; a
-    silent version of it is not. The branch has to name where the old tree went and how to
-    opt out."""
+    """Arch rebuilds unavoidably drop user packages; the branch must name the old tree and how to opt out"""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     start = source.find("Test-StudioVenvArchMismatch -VenvPython")
     assert start != -1
@@ -223,11 +189,7 @@ def test_the_arm64_rebuild_tells_the_user_what_it_does_not_carry_over():
 
 
 def test_the_venv_reuse_path_re_checks_before_it_reuses():
-    """The re-check has to sit ahead of the branch that decides to reuse.
-
-    Ordering is the whole property: placed after `step "venv" "using migrated environment"`
-    it would run once the installer had already committed to the environment.
-    """
+    """The arch re-check must run before the migrated-environment reuse branch, not after it commits."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     recheck = source.find("Test-StudioVenvArchMismatch -VenvPython")
     create = source.find('step "venv" "creating Python')
@@ -235,8 +197,7 @@ def test_the_venv_reuse_path_re_checks_before_it_reuses():
     assert recheck != -1, "install.ps1 no longer re-checks the reused interpreter"
     assert create != -1 and reuse != -1
     assert recheck < create < reuse, "the re-check must precede the create/reuse branch"
-    # And it must clear $_Migrated, or the install step downstream runs --no-deps into the
-    # fresh venv it just created and installs nothing.
+    # $_Migrated must be cleared, or --no-deps installs nothing into the fresh venv.
     tail = source[recheck:create]
     assert "$_Migrated = $false" in tail
 
@@ -341,8 +302,7 @@ def test_the_preserved_tree_leaves_the_swept_rollback_namespace():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     complete = source.index("function Complete-StudioVenvRollback")
     block = source[complete : source.index("\n    }\n", complete)]
-    # Comments out: this function's explain why it does NOT use the rollback name, and a
-    # test that reads them as code would fail on the sentence describing the fix.
+    # Comments stripped: they mention the rollback name while explaining why it is not used.
     code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
     assert "unsloth_studio.arm64." in code, "the preserved copy is not renamed"
     assert (
@@ -356,11 +316,8 @@ def test_the_preserved_tree_leaves_the_swept_rollback_namespace():
     assert "unsloth_studio.arm64" not in sweep_block
 
 
-# ── the interpreter is gone by the time the re-check runs ──
-# An ordinary reinstall moves the whole environment to its rollback path, and that move
-# happens BEFORE the x64 interpreter is chosen. Probing $VenvPython after it answers "no
-# mismatch" for every existing install, so the rebuild proceeds on ARM64 and the tree is
-# deleted with the ordinary rollback instead of being preserved.
+# The reinstall moves the venv to its rollback path before x64 selection, so the platform
+# tag must be read before that move.
 
 
 def test_the_platform_tag_is_read_before_the_rollback_move():
@@ -426,25 +383,16 @@ def test_the_opt_out_message_is_only_printed_for_an_arm64_environment(shell: str
     assert "SUBSTEP" not in out, out
     assert out.splitlines()[-1] == "ANSWER=False", out
 
-    # With a real ARM64 environment the opt-out still says what it is doing, and still
-    # answers no.
     out = _run(shell, _arch_mismatch_preamble("arm64", True, True, "win-arm64", "win-arm64"))
     assert "UNSLOTH_ALLOW_ARM64_PYTHON" in out, out
     assert out.splitlines()[-1] == "ANSWER=False", out
 
 
 def test_the_architecture_rebuild_does_not_move_the_venv_twice():
-    """An ordinary reinstall has already moved $VenvDir into a rollback by the time this
-    branch runs, so a second Start-StudioVenvRollback would move a directory that is no
-    longer there, throw, and take every architecture migration out through
-    Exit-InstallFailure. The tree is already where the branch wants it; only the flag that
-    keeps it from being swept is missing."""
+    """A reinstall already moved $VenvDir to rollback; a second Start-StudioVenvRollback would throw."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     branch = source.index("windows on arm: the existing environment runs native ARM64 Python")
-    # Searched forward from the branch rather than inside a fixed-size window: a byte count
-    # measures how long the branch happens to be today, so adding an arm to the same if/elseif
-    # chain pushes the move out of view and fails this for a reason that has nothing to do with
-    # what it tests.
+    # Search forward from the branch rather than a fixed window that breaks as the chain grows.
     guard = source.index("if ($script:StudioVenvRollbackActive)", branch)
     move = source.index("Start-StudioVenvRollback -ExistingDir $VenvDir", branch)
     assert guard < move, "the rebuild still moves the environment unconditionally"

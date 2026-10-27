@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The streaming-phase metrics, and the ways they are supposed to REFUSE to produce a number.
-
-Half of this file tests the failure direction on purpose. A gate that only ever passes is worse
-than no gate, because it gets cited: the harness has three separate occasions on record where code
-that could never fire was reported as "no effect", and every one of them would have been caught by
-a test that asserted a rejection rather than an acceptance.
-
-The rejections that matter here, each of which corresponds to a real shape in a real payload:
-
-  * a window named `stream:gapN` with no SSE traffic in it. Eighteen of these exist per standard
-    film and only the first four carry streaming, so a metric that trusts the label measures
-    mostly post-stream idle.
-  * `action:send_turn`, which grows the reply by about a dozen characters while spending hundreds
-    of milliseconds opening things. Divided out, that is tens of thousands of ms per thousand
-    characters, and it is a statement about a button.
-  * `action:thread_reopen`, which rebuilds the thread so the last assistant message is REPLACED.
-    Its character count can fall, and a signed delta would subtract from the denominator.
-  * a cell whose timer clamp was never established, where blocked time is a subtraction against a
-    floor that does not exist.
-"""
+"""Tests rejection paths on purpose: a gate that only ever passes gets cited as no effect."""
 
 from __future__ import annotations
 
@@ -101,9 +82,6 @@ def _window(
     }
 
 
-# ── what is selected as "the streaming phase" ────────────────────────────────────────────────
-
-
 def test_a_window_with_traffic_and_growth_is_the_streaming_phase():
     picked, rejected = _stream_windows([_window("stream:gap1")])
     assert len(picked) == 1
@@ -137,20 +115,7 @@ def test_stream_drain_after_the_film_is_refused():
 
 
 def test_the_drain_is_scored_when_the_reply_outlasts_the_film():
-    """The other half of the drain window, and the half `--stream-tail-chars` creates.
-
-    The test above pins the DEFAULT shape: the tail is pinned at 6,000 characters, the reply is
-    finished forty seconds before the film ends, and the drain window is 7 ms of nothing that
-    `_stream_windows` refuses for having seen no traffic. Raise the tail to 96,000 -- the one
-    supported way to vary reply length -- and the reply streams for 291 s at field cadence against
-    a 243 s standard film, so the last 48 s of it lands in the drain window with nothing scripted
-    running in it.
-
-    That is unaided streaming, and it was dropped: `_unaided` selected `kind == "gap"` and the
-    drain window is `kind = "stream"`. The characters and the cost of the last fifth of the reply
-    -- the part streamed into the largest thread -- left every streaming metric, and the worst
-    frame in that stretch was never seen at all.
-    """
+    """Long replies outlast the film, so stream:drain is unaided and must be scored, not dropped."""
     gap = _window("stream:gap3", kind = "gap", delta_task_ms = 900.0, chars_close = 3_000)
     drain = _window(
         "stream:drain",
@@ -169,19 +134,13 @@ def test_the_drain_is_scored_when_the_reply_outlasts_the_film():
     m = _stream_measures([gap, drain])
     assert "2 unaided streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
     assert "12000 streamed characters" in m["stream_delta_cost_ms_per_kchar"].note
-    # 3,600 ms over 12,000 characters, not 900 ms over 3,000: the drain is in the integral.
     assert m["stream_delta_cost_ms_per_kchar"].value == pytest.approx(300.0)
     assert m["stream_cost_ms_per_kchar"].value == pytest.approx(600.0)
-    # A max is not a ratio, so a dropped window is a silently missing worst frame.
     assert m["stream_max_frame_ms"].value == pytest.approx(640.0)
 
 
 def test_an_action_window_is_still_not_unaided():
-    """The kind filter widened by one QUIET kind, and must not have widened to the action windows.
-
-    This is the property `_unaided` exists for. On a fast-tier 100K null, admitting the action
-    windows put a 1,738 ms scroll frame into `stream_max_frame_ms` against a 286 ms unaided peak.
-    """
+    """Widening the unaided filter by a quiet kind must still exclude action windows, such as scrolls."""
     windows = [
         _window("stream:gap3", kind = "gap", max_frame_ms = 286.0),
         _window("stream:drain", kind = "stream", max_frame_ms = 300.0),
@@ -244,12 +203,7 @@ def _unscoreable(window: dict, reason: str = "") -> dict:
 
 
 def test_a_window_the_instrument_marked_unscoreable_is_excluded_from_scoring():
-    """THE DEFECT. The instrument publishes `reply_chars_scoreable: false` when it knows the wire
-    count is short -- an SSE event is dispatched only at the blank line that terminates it, so an
-    unterminated frame at the close is characters delivered and not counted -- and the scoring path
-    summed the delta anyway. Every official cost-per-character was then divided by a denominator
-    the instrument had already disowned, which inflates it by an unknown factor.
-    """
+    """A window marked reply_chars_scoreable false must be excluded: its character count is short."""
     picked, rejected = _stream_windows([_unscoreable(_window("stream:gap1"))])
     assert picked == []
     assert any("short by an unknown amount" in reason for reason in rejected)
@@ -290,9 +244,6 @@ def test_a_window_the_instrument_never_ran_in_is_refused():
     assert any("did not run" in reason for reason in rejected)
 
 
-# ── the numbers themselves ───────────────────────────────────────────────────────────────────
-
-
 def test_the_rate_is_cost_per_thousand_streamed_characters():
     m = _stream_measures([_window("stream:gap1", delta_task_ms = 900.0, chars_close = 3_000)])
     assert m["stream_delta_cost_ms_per_kchar"].value == pytest.approx(300.0)
@@ -305,7 +256,6 @@ def test_cost_integrates_across_several_streaming_windows():
     assert two["stream_delta_cost_ms_per_kchar"].value == pytest.approx(
         one["stream_delta_cost_ms_per_kchar"].value
     )
-    # ... but the integral itself doubled, which is what the note records.
     assert "6000 streamed characters" in two["stream_delta_cost_ms_per_kchar"].note
 
 
@@ -367,14 +317,8 @@ def test_an_action_running_during_generation_does_not_set_the_worst_streaming_fr
     ]
     m = _stream_measures(windows)
     assert m["stream_max_frame_ms"].value == pytest.approx(286.0)
-    # And its SSE task chains are excluded from the targeted numerator too. Measured on a
-    # standard-tier 10K null, an `action:keystroke` chain cost 23.77 ms per burst against 1.69 ms in
-    # the gap windows either side: the chain runs until the event loop drains, so the typing lands
-    # inside it and is billed to the stream.
+    # SSE task chains in action windows absorb the action's own work, so they are excluded too.
     assert "1 unaided streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
-
-
-# ── refusing rather than reporting zero ──────────────────────────────────────────────────────
 
 
 def test_no_clamp_means_null_with_a_reason_not_zero_cost():
@@ -382,7 +326,6 @@ def test_no_clamp_means_null_with_a_reason_not_zero_cost():
     assert m["stream_cost_ms_per_kchar"].value is None
     assert m["stream_cost_ms_per_kchar"].attempted is True
     assert "clamp" in (m["stream_cost_ms_per_kchar"].note or "")
-    # The targeted numerator does not depend on the clamp, so it still reads.
     assert m["stream_delta_cost_ms_per_kchar"].value == pytest.approx(300.0)
 
 
@@ -406,14 +349,7 @@ def test_an_empty_cell_names_that_rather_than_scoring_it():
 
 
 def test_a_frameless_streaming_window_poisons_the_pooled_streaming_frame_metrics():
-    """A stream window the rAF loop never ran in must not be answered for by the one beside it.
-
-    `instruments/frames.js` emits `frames_attempted: true` with `frame_gaps_ms: []` and a null
-    `max_frame_ms` when it saw no callbacks, and rAF stops being scheduled when the renderer
-    stalls -- while SSE keeps arriving, so the window still qualifies as streaming. Skipped, it
-    contributed no deltas, no wall time and no worst frame, and the cell came back with the other
-    window's clean numbers. `_frame_measures` refuses the same shape for the cell-wide metrics.
-    """
+    """A frameless streaming window must poison the pooled metrics, not be answered for by its neighbour."""
     smooth = _window("stream:gap1", frame_gaps = [16.7] * 540, max_frame_ms = 16.7)
     frozen = _window("stream:gap2", duration_ms = 4_000.0, frame_gaps = [], max_frame_ms = None)
 
@@ -423,12 +359,10 @@ def test_a_frameless_streaming_window_poisons_the_pooled_streaming_frame_metrics
         assert m[key].value is None
         assert "no frames at all" in (m[key].note or "")
 
-    # The cost side is untouched: `stream_cost` measured that window perfectly well.
     assert m["stream_cost_ms_per_kchar"].value is not None
     assert m["stream_delta_cost_ms_per_kchar"].value is not None
     assert m["stream_busy_pct"].value is not None
 
-    # The giveaway: without this the three above were byte-identical to the cell with no freeze.
     alone = _stream_measures([smooth])
     assert alone["stream_max_frame_ms"].value == pytest.approx(16.7)
     assert alone["stream_time_in_jank_pct"].value == pytest.approx(0.0)
@@ -445,18 +379,7 @@ def test_a_window_the_frame_recorder_was_never_installed_in_is_still_only_skippe
 
 
 def test_a_recorder_that_died_partway_poisons_every_streaming_metric():
-    """A cell whose page crashed is truncated, and a truncated cell must not report a rate.
-
-    `_stream_windows` records why it rejected each window, but `_stream_measures` reads that only
-    when NOTHING qualified. Once one window has qualified, the rejection that says the page went
-    away is discarded with the rest, and the cell publishes a rate computed over the prefix that
-    ran before the crash. Both halves of the rate lose the same unmeasured stretch, so the error
-    does not show up as a wide interval.
-
-    The shape is not hypothetical: 138 unaided windows in the payload corpus carry
-    `TargetClosedError` or `Target crashed` after a qualifying window, with a median duration of
-    11.0 s.
-    """
+    """A recorder that died partway poisons every streaming metric; a prefix rate hides the gap."""
     good = _window("stream:gap1")
     dead = _window("stream:gap2", duration_ms = 14_000.0, attempted = False)
     dead["instruments"]["stream_cost"]["unavailable"] = (
@@ -473,19 +396,11 @@ def test_a_recorder_that_died_partway_poisons_every_streaming_metric():
         m["stream_cost_ms_per_kchar"].note or ""
     )
 
-    # The giveaway: without this the crashed cell was byte-identical to the one that never crashed, so
-    # nothing downstream could tell a truncated run from a complete one.
     assert _stream_measures([good])["stream_cost_ms_per_kchar"].value is not None
 
 
 def test_a_window_the_instrument_merely_skipped_does_not_poison_the_cell():
-    """The control, and the reason this keys on `unavailable` rather than on not-attempted.
-
-    Windows with no `stream_cost` reading are ordinary -- the instrument is not installed in every
-    window -- and they are already handled by being left out of `picked`. Only a window that was
-    instrumented and reports the recorder going away means the cell is missing a stretch it cannot
-    account for. Poisoning on not-attempted alone would void most of the corpus.
-    """
+    """Only a window reporting the recorder went away poisons the cell; a merely skipped window does not."""
     good = _window("stream:gap1")
     skipped = _window("stream:gap2", duration_ms = 14_000.0, attempted = False)
     assert "unavailable" not in skipped["instruments"]["stream_cost"]
@@ -501,17 +416,8 @@ def test_every_declared_stream_metric_is_produced():
     assert all(v.value is not None for v in m.values())
 
 
-# ── the label that caused this ───────────────────────────────────────────────────────────────
-
-
 def test_a_gap_window_is_not_labelled_stream():
-    """REGRESSION. Every inter-slot gap used to be opened with `kind = "stream"`.
-
-    Eighteen of them exist on the standard film and only the first four contain streaming, so the
-    label sent anyone filtering on it to a pool of mostly post-stream idle. It is now `gap`, and
-    `stream` is left to `stream:drain`, which is the only window the session layer opens that is
-    genuinely about the stream.
-    """
+    """Gap windows must be labelled gap, not stream, so the stream label means only stream:drain."""
     from studiobench.runtime.types import WINDOW_KINDS
     from studiobench.scene.schedule import SceneRunner
 
@@ -545,7 +451,6 @@ def test_a_gap_window_is_not_labelled_stream():
         log = lambda _m: None,
     )
     runner._census = lambda: {}
-    # A gap far enough ahead that the scheduler actually opens a window for it.
     runner._gap_window("stream:gap12", until_ms = 300, t0 = __import__("time").monotonic())
 
     assert opened, "the scheduler opened no window for a gap that was wide enough to need one"

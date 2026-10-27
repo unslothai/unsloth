@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Multi-account browser flow against a disposable Studio: the owner creates an account,
-its setup code is private, and switching accounts in one browser clears account data.
-
-    STUDIO_E2E_URL=http://127.0.0.1:8000 STUDIO_E2E_OWNER_PASSWORD=... \
-        python tests/studio/playwright_multi_account.py
-
-Skips (exit 0) without the owner password. The account it creates is deleted at the end.
-"""
+"""Multi-account flow on a disposable Studio; skips (exit 0) unless STUDIO_E2E_OWNER_PASSWORD is set."""
 
 from __future__ import annotations
 
@@ -21,6 +14,7 @@ from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, expect, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -53,9 +47,21 @@ def api(
             return error.code, {}
 
 
+def open_login(page: Page) -> None:
+    """After a log-out the open chat page's requests start failing with 401 and the app sends itself to
+    /login (redirectToAuth), which can abort this navigation with ERR_ABORTED. Retry that abort once;
+    anything else, or a second abort, is a real failure."""
+    try:
+        page.goto(f"{BASE_URL}/login")
+    except PlaywrightError as error:
+        if "ERR_ABORTED" not in str(error):
+            raise
+        page.wait_for_load_state()
+        page.goto(f"{BASE_URL}/login")
+
+
 def login(page: Page, username: str, password: str) -> None:
-    page.goto(f"{BASE_URL}/login")
-    # Wait for the layout the server's login_mode implies rather than sampling before the page settles.
+    open_login(page)
     _, status = api("GET", "/api/auth/status")
     username_field = page.get_by_role("textbox", name = "Username", exact = True)
     if status.get("login_mode") == "multi":
@@ -124,7 +130,7 @@ def run(page: Page, context) -> None:
         assert after.get("login_mode") == "multi", after
 
         log_out(page)
-        page.goto(f"{BASE_URL}/login")
+        open_login(page)
         second_tab = context.new_page()
         second_tab.goto(f"{BASE_URL}/login")
         expect(second_tab.locator("#username")).to_be_visible(timeout = STEP_TIMEOUT_MS)
@@ -135,12 +141,9 @@ def run(page: Page, context) -> None:
         expect(page).to_have_url(re.compile(r"/change-password"), timeout = STEP_TIMEOUT_MS)
         assert local(page, "unsloth_e2e_private") is None
         assert local(page, "chat-draft:e2e") is None
-        # Appearance survives the switch; its value may have been replaced by the personalization sync.
         assert local(page, "theme") is not None, "the account switch cleared the theme"
         assert local(page, "unsloth_chat_permission_mode") != "full"
-        # wait_for_function, not a loop of evaluate(): the reload being waited for destroys the
-        # execution context, and an evaluate() that lands mid-navigation raises instead of
-        # reporting that the old document is gone. wait_for_function re-runs in the new document.
+        # evaluate() raises when the reload destroys the context; wait_for_function re-runs in the new one.
         try:
             second_tab.wait_for_function(
                 "() => window.oldAccountDocument === undefined", timeout = STEP_TIMEOUT_MS

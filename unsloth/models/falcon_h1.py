@@ -24,6 +24,7 @@ from ..utils.attention_dispatch import (
     SDPA,
 )
 from .llama import (
+    _decode_rotary_seq_len,
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
     _gqa_decode_scores,
@@ -166,6 +167,7 @@ def FalconH1Attention_fast_forward(
         head_dim = head_dim,
         requires_grad = hidden_states.requires_grad,
         seq_info = seq_info,
+        training = self.training,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
     )
@@ -287,8 +289,14 @@ def FalconH1Attention_fast_forward_inference(
     Kn = Kn.transpose(1, 2)
 
     # Must happen 2 steps before hitting full on a short KV cache, or it errors.
-    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # rotary_seq_len (once per step from the decode loop) covers explicit positions past the KV length.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    if rotary_seq_len is not None and rotary_seq_len > kv_seq_len:
+        self.rotary_emb.extend_rope_embedding(Vn, max(seq_len + 2, rotary_seq_len + 1))
+        cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index)
+    else:
+        self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
+        cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
@@ -421,7 +429,7 @@ def FalconH1DecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, reuse_grad = True)
 
         mamba_hidden_states = self.mamba(
             hidden_states = hidden_states,
@@ -451,7 +459,7 @@ def FalconH1DecoderLayer_fast_forward(
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.pre_ff_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.pre_ff_layernorm, hidden_states, reuse_grad = True)
         hidden_states = self.feed_forward(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -514,6 +522,12 @@ def _FalconH1_fast_forward_inference(
         else:
             attention_mask = None
 
+        # Once per step for every layer, never per layer (one host sync at most).
+        rotary_seq_len = _decode_rotary_seq_len(
+            getattr(getattr(self.model.layers[0], "self_attn", None), "rotary_emb", None),
+            seq_len + 1,
+            position_ids,
+        )
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
 
@@ -535,6 +549,7 @@ def _FalconH1_fast_forward_inference(
                 position_ids = position_ids,
                 attention_mask = attention_mask,
                 do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+                rotary_seq_len = rotary_seq_len,
             )
             attention_hidden_states = attention_hidden_states * decoder_layer.attn_out_multiplier
             mamba_hidden_states = decoder_layer.mamba(
@@ -587,8 +602,7 @@ def _FalconH1_fast_forward_inference(
     return FalconH1Model_fast_forward_inference_custom
 
 
-# Separate prepare_inputs_for_generation for Hybrid FalconH1, which has its own cache type
-# FalconHybridMambaAttentionDynamicCache.
+# FalconH1 has its own cache type, FalconHybridMambaAttentionDynamicCache.
 def _fast_prepare_inputs_for_generation(
     self,
     input_ids,
@@ -603,9 +617,7 @@ def _fast_prepare_inputs_for_generation(
     # Overwritten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
     empty_past_kv = past_key_values is None
 
-    # Slice input_ids through cache_position to keep only unprocessed tokens, except: with
-    # input_embeds input_ids may be missing entries; some generation methods slice input_ids
-    # themselves; and with synced GPUs cache_position may go out of bounds.
+    # Slice input_ids to unprocessed tokens, except with input_embeds or synced-GPU overflow.
     if not empty_past_kv:
         if (
             inputs_embeds is not None  # Exception 1
@@ -686,8 +698,7 @@ class FastFalconH1Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(FalconH1ForCausalLM)
 
-        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
-        # huggingface/transformers#27931), so the old rotary embeddings are retained.
+        # Static KV cache (4.38.0) made training slower, so the old rotary embeddings are kept.
         import transformers.models.falcon_h1.modeling_falcon_h1
 
         transformers.models.falcon_h1.modeling_falcon_h1.FalconH1RotaryEmbedding = (

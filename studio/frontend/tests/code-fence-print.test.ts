@@ -38,7 +38,7 @@ test("a print tokenizes what the worker still owes, synchronously and within a b
   const hook = markdown.slice(markdown.indexOf("function useFenceTokens("), markdown.indexOf("function StreamingFenceBlock("));
   assert.equal((hook.match(/awaitWorker\(/g) ?? []).length, 1);
   assert.ok(hook.indexOf("requestFullHighlight(") < hook.indexOf("awaitWorker("));
-  assert.match(hook, /requestFullHighlight\(\s*body,\s*languageToken,\s*\(result\) => \{\s*if \(result === null\) \{[^}]*\}\s*return;\s*\}\s*release\?\.\(\);\s*release = null;/, "the worker's tokens end what the print entry stands for; a failed reply keeps it, so a print still colours the fence");
+  assert.match(hook, /requestFullHighlight\(\s*body,\s*languageToken,\s*\(result\) => \{\s*if \(!current\(\)\) return;\s*if \(result === null\) \{[^}]*return;\s*\}\s*cancelFallback\?\.\(\);\s*cancelFallback = null;\s*release\?\.\(\);\s*release = null;/, "the worker's tokens end what the print entry stands for; a failed reply keeps it, so a print still colours the fence");
   const probes = [...hook.matchAll(/highlight\("", /g)];
   assert.ok(probes.length >= 2);
   for (const probe of probes) {

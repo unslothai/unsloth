@@ -44,21 +44,32 @@ function isTrainingConfigSupportedOnDevice(
   if (deviceType !== "mac") {
     return true;
   }
-  return !(config.isEmbeddingModel || config.isDatasetAudio === true);
+  return !(config.isEmbeddingModel || hasChatAudioRows(config, deviceType));
+}
+
+/** A Mac Clef (or Clef-head LLM) trainer reads its own audio rows; elsewhere, and for Laya, they train as text. */
+function hasChatAudioRows(
+  config: TrainingConfigState,
+  deviceType?: string,
+): boolean {
+  const trainerReadsRows =
+    deviceType === "mac" &&
+    config.modelType === "decision" &&
+    (config.decisionLayout === "clef" || config.decisionLayout === "llm");
+  return config.isDatasetAudio === true && !trainerReadsRows;
 }
 
 export function hasIncompatibleTrainingModalities(
   config: TrainingConfigState,
+  deviceType?: string,
 ): boolean {
   return (
     (!config.isVisionModel && config.isDatasetImage === true) ||
-    // audioCapabilityUnknown means the repo's tokenizer_config.json was unreadable
-    // (gated, offline, upstream error), not that the model lacks audio. Blocking there
-    // reports a token problem as a capability one; let the run start and fail on the
-    // real download error, which is what a gated text model already does.
+    // Unknown means tokenizer_config.json was unreadable (gated, offline), not that audio is
+    // missing; let the run fail on the real download error.
     (!config.audioCapabilityUnknown &&
       !config.isAudioModel &&
-      config.isDatasetAudio === true)
+      hasChatAudioRows(config, deviceType))
   );
 }
 

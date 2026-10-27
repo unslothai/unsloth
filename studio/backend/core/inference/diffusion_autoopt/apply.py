@@ -316,9 +316,18 @@ def run_speed_layer(
         if hook.pre is not None:
             hook.pre(view, family)
     family_for_apply = family
+    if (
+        plan is not None
+        and plan.compile_declined_by_model
+        and not is_gguf
+        and getattr(target, "backend", None) == "rocm"
+    ):
+        # The primitive probes the card before it looks at the model: pass the decline so a model with nothing to
+        # compile never pays the ROCm probe.
+        family_for_apply = _family_with(family, supports_torch_compile = False)
     if plan is not None and plan.generic:
         try:
-            family_for_apply = _generic_family_view(view, family, plan, logger)
+            family_for_apply = _generic_family_view(view, family_for_apply, plan, logger)
         except Exception as exc:  # noqa: BLE001 - the generic trial is optional; the stock path still runs
             if logger is not None:
                 logger.warning("diffusion.autoopt: generic path unavailable: %s", exc)

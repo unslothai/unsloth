@@ -253,7 +253,14 @@ def test_noise_ranges_and_prompt_untouched():
         assert p.min() >= low and p.max() <= high
         assert not masked[:, :5].any() and torch.equal(noisy == MASK_ID, masked)
         ratio = masked[:, 5:].float().mean().item()
-        assert abs(ratio - (low + high) / 2) < 0.02
+        expected = (low + high) / 2
+        if profile is sdar:
+            # Rejection resamples both p and mask; only ten empty draws force one token.
+            n = int(maskable[0].sum())
+            empty_probability = (1 - low) ** n / (n + 1)
+            expected *= sum(empty_probability**attempt for attempt in range(10))
+            expected += empty_probability**10 / n
+        assert abs(ratio - expected) < 0.02
     _, masked, _ = sdar.sample_noise(clean[:, :6], maskable[:, :6], MASK_ID, SimpleNamespace())
     assert masked.any(dim = 1).all()  # SDAR masks at least one supervised token per row
     _, _, p = llada2.sample_noise(clean, maskable, MASK_ID, SimpleNamespace(diffusion_eps = 0.1))

@@ -653,7 +653,7 @@ def refusal_for(path: str, page: str) -> Optional[str]:
             f"(diffusion_models/, unet/ or checkpoints/) instead."
         )
     if info.role == ROLE_DIT and not info.family:
-        return f"'{name}' is {info.what}, which Studio cannot load."
+        return f"'{name}' is {info.what}, which Unsloth cannot load."
     if info.role == ROLE_DIT and info.family and info.page and info.page != page:
         other = "Video" if info.page == PAGE_VIDEO else "Image"
         return f"'{name}' is {info.what} ({info.family}); load it from the {other} page."

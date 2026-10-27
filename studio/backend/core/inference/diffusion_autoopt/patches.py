@@ -391,6 +391,27 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_eager_patches import uninstall_patches
         uninstall_patches()
 
+    def fp16_rmsnorm(ctx: PatchContext) -> bool:
+        from ..diffusion_eager_patches import (
+            fp16_rmsnorm_wanted,
+            install_fp16_rmsnorm,
+            uninstall_fp16_rmsnorm,
+        )
+
+        denoiser = (
+            ctx.transformer
+            if ctx.transformer is not None
+            else getattr(ctx.pipe, "transformer", None)
+        )
+        if not fp16_rmsnorm_wanted(denoiser, ctx.dtype, ctx.speed_mode):
+            uninstall_fp16_rmsnorm()  # never outlives the load that installed it
+            return False
+        return install_fp16_rmsnorm()
+
+    def fp16_rmsnorm_uninstall() -> None:
+        from ..diffusion_eager_patches import uninstall_fp16_rmsnorm
+        uninstall_fp16_rmsnorm()
+
     def arch_install(ctx: PatchContext) -> int:
         from ..diffusion_arch_patches import install_arch_patches
         return install_arch_patches()
@@ -461,6 +482,16 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_qwenimage21_fused import uninstall
         uninstall()
 
+    def moss_fused(ctx: PatchContext) -> Any:
+        from ..diffusion_moss_fused import install
+        return install(
+            ctx.transformer,
+            ctx.logger,
+            offload_active = ctx.offload_active
+            if ctx.denoiser_offloaded is None
+            else bool(ctx.denoiser_offloaded),
+        )
+
     return [
         # Shared compile-safe fusions (RMSNorm / AdaLN) and the per-arch addcmul fusions: speed tiers only.
         PatchSpec(
@@ -482,6 +513,16 @@ def _builtin_specs() -> list[PatchSpec]:
             backends = ("image",),
             speed_only = True,
             env = "UNSLOTH_DIFFUSION_ARCH_PATCHES",
+        ),
+        # Must follow the shared fusions (an ``off`` load uninstalls them first).
+        PatchSpec(
+            "fp16_eager_rmsnorm",
+            STAGE_LOAD_EAGER,
+            fp16_rmsnorm,
+            fp16_rmsnorm_uninstall,
+            group = GROUP_EAGER,
+            backends = ("image",),
+            env = "UNSLOTH_DIFFUSION_FP16_RMSNORM",
         ),
         # Per-pipe installs that gate themselves on class / dtype / device, on every tier.
         PatchSpec(
@@ -558,5 +599,15 @@ def _builtin_specs() -> list[PatchSpec]:
             classes = ("QwenImage21Transformer2DModel",),
             warn = "qwen-image-2.1 convrot sharing",
             env = "UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED",
+        ),
+        PatchSpec(
+            "moss_fused",
+            STAGE_PRE_COMPILE,
+            moss_fused,
+            None,
+            group = GROUP_FUSED_DIT,
+            classes = ("MOSSImageTransformer",),
+            warn = "moss-image fused projections",
+            env = "UNSLOTH_DIFFUSION_MOSS_FUSED",
         ),
     ]

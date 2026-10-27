@@ -120,6 +120,9 @@ if ($env:MODE -eq 'identical') {
     Remove-Item -LiteralPath $script:SetupSelfPath
     [System.IO.File]::WriteAllBytes($script:SetupSelfPath, $same)
 }
+if ($env:MODE -eq 'pin-only') {
+    [System.IO.File]::WriteAllText((Join-Path $ScriptDir 'node_prebuilt_pins.json'), 'new pin')
+}
 if ($env:FAIL_DEPS -eq '1') { Exit-SetupFailure -Message "Python dependency installation failed (exit code 2)" -Code 2 }
 '@
     $newDeps = @'
@@ -193,6 +196,7 @@ Write-StudioLine "__TAG__: done"
         foreach ($name in @('new.ps1', 'third.ps1')) { Copy-Item -LiteralPath (Join-Path $script:Templates $name) -Destination $dir }
         $setup = Join-Path $dir 'setup.ps1'
         Copy-Item -LiteralPath (Join-Path $script:Templates $Start) -Destination $setup
+        [System.IO.File]::WriteAllText((Join-Path $dir 'node_prebuilt_pins.json'), 'old pin')
 
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $HostPath
@@ -298,7 +302,10 @@ Describe 'elevation prompts across the rerun' {
         function Write-StudioLine { param([string]$Text) }
         function Get-VcBuildCustomizationsDir { param($VsInstallPath, $Generator) $script:VsCustomDir }
     }
-    AfterEach { Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue }
+    AfterEach {
+        Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue
+        Remove-Item Env:UNSLOTH_SKIP_LONG_PATHS -ErrorAction SilentlyContinue
+    }
 
     It 'Long Paths runs at top level before the handoff, so the first pass has already asked' {
         $at = $script:SetupText.IndexOf('$LongPathsEnabled = $false')
@@ -316,6 +323,18 @@ Describe 'elevation prompts across the rerun' {
         $StageRoot = $null
         . ([scriptblock]::Create($script:LongPathsBlock))
         Should -Invoke Start-Process -Times $Expected -Exactly
+    }
+
+    It 'Long Paths: never asks again once the desktop app''s explainer was skipped (<Skip>)' -ForEach @(
+        @{ Skip = ''; Expected = 1 }, @{ Skip = '1'; Expected = 0 }
+    ) {
+        Mock Get-ItemProperty { [pscustomobject]@{ LongPathsEnabled = 0 } }
+        Mock Start-Process { [pscustomobject]@{ ExitCode = 0 } }
+        if ($Skip) { $env:UNSLOTH_SKIP_LONG_PATHS = $Skip }
+        $StageRoot = $null
+        . ([scriptblock]::Create($script:LongPathsBlock))
+        Should -Invoke Start-Process -Times $Expected -Exactly
+        $LongPathsEnabled | Should -Be ($Expected -eq 1)
     }
 
     It 'the VC++ runtime install runs at top level before the handoff' {
@@ -438,6 +457,14 @@ Describe 'finishing with the setup script the update installed (<HostName>)' -Fo
             Get-Count $r 'NEW' | Should -Be 0
             Get-Count $r '[TAURI:ERROR]' | Should -Be 1
             Get-Count $r '[TAURI:ERROR] Python dependency installation failed' | Should -Be 1
+        }
+
+        It 'a pin-only package change reruns the byte-identical setup once' {
+            $r = Invoke-Setup -HostPath $HostPath -Env @{ MODE = 'pin-only' }
+            $r.Rc | Should -Be 0 -Because $r.Text
+            Get-Count $r $script:Handoff | Should -Be 1
+            Get-Count $r ' OLD banner ' | Should -Be 2
+            Get-Count $r 'OLD: done' | Should -Be 1
         }
 
         It 'A4: hands off once even when the new copy is replaced again' {

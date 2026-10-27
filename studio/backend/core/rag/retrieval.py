@@ -10,7 +10,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 
-from . import config, embeddings, store
+from . import config, embeddings, reembed, store
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +58,16 @@ def retrieve_dense(
 ) -> list[Hit]:
     k = k or config.TOP_K_DENSE
     effective = model_name or config.effective_embedding_model()
-    # The identity comes from the encode, so it names the backend that served this query even if a
-    # concurrent ST failure swapped the process meanwhile.
+    # Take identity from the encode, not the process: a concurrent ST failure may have swapped it.
     vectors, identity = embeddings.encode_with_identity(
         [query], model_name = effective, normalize = True
     )
     vec = vectors[0]
     _warn_once_on_untagged(conn)
+    try:
+        reembed.start_after_backend_change(identity)
+    except Exception:  # noqa: BLE001 - re-embedding must never break retrieval
+        logger.warning("could not start re-embedding after an embedder change", exc_info = True)
     return [
         Hit(cid, s, dense_score = s)
         for cid, s in store.search_dense(conn, scope, vec, k, embedding_model = identity)
@@ -128,13 +131,7 @@ def retrieve_hybrid(
     mode: str = "hybrid",
     lexical_query: str | None = None,
 ) -> list[Hit]:
-    """``mode`` picks the backend: lexical-only, dense-only, or RRF of both
-    (default). Pool sizes and the RRF constant come from config.
-
-    ``lexical_query`` replaces the FTS5 expression on the LEXICAL leg only. The dense leg
-    always encodes the natural-language ``query``, because a conjunction of quoted tokens
-    is not a sentence and embedding it would throw away the paraphrase recall that is the
-    dense leg's whole reason for existing. No ranking maths changes here."""
+    """lexical_query changes only the FTS5 leg; the dense leg always encodes the natural-language query."""
     k = k if k is not None else config.TOP_K_HYBRID
     k = int(k)  # tool-call / scope top_k may arrive as a float; LIMIT + slice need int
     if mode == "lexical":

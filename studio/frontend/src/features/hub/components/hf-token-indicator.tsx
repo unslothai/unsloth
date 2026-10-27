@@ -14,18 +14,15 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { hfApiToken, useHfTokenStore } from "../stores/hf-token-store";
 
 interface HfTokenIndicatorProps {
-  /** true: status chip (Train wizard); false: icon-only pill (Hub header). */
   showLabel?: boolean;
   onOpenSettings: () => void;
 }
 
-/** Masked preview so the saved token is identifiable without exposing it. */
 function maskHfToken(token: string): string {
   const trimmed = token.trim();
   return trimmed.length < 8 ? "••••" : `••••${trimmed.slice(-4)}`;
 }
 
-// Compact "set / not set" indicator for the app-wide HF token; click opens Settings -> General.
 export function HfTokenIndicator({
   showLabel = false,
   onOpenSettings,
@@ -50,7 +47,7 @@ export function HfTokenIndicator({
             onClick={onOpenSettings}
             aria-label={ariaLabel}
             className={cn(
-              "hub-menu-trigger field-soft inline-flex h-9 w-full items-center justify-between gap-2 rounded-[12px] py-0 pl-1.5 pr-3 text-ui-12p5 font-medium text-foreground transition-colors",
+              "hub-menu-trigger field-soft inline-flex h-9 w-full items-center justify-between gap-2 rounded-full py-0 pl-1.5 pr-3 text-ui-12p5 font-medium text-foreground transition-colors",
               PICKER_FOCUS_VISIBLE_CLASS,
             )}
           >
@@ -80,7 +77,6 @@ export function HfTokenIndicator({
               >
                 {hasToken ? (
                   <>
-                    {/* Announced, not shown: the mask identifies the token. */}
                     <span className="sr-only">{t("picker.hfToken.saved")}</span>
                     {maskHfToken(hfToken)}
                   </>
@@ -111,18 +107,41 @@ export function HfTokenIndicator({
           aria-label={ariaLabel}
           className={cn(
             // Solid circle reads optically larger than the flat HTTP/Xet box, so keep it 22px.
-            "inline-flex h-[calc(22px*var(--ui-space-scale,1))] w-[calc(22px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "group relative inline-flex h-[calc(22px*var(--ui-space-scale,1))] w-[calc(22px*var(--ui-space-scale,1))] shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             hasToken
-              ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
-              : "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+              ? "text-muted-foreground hover:text-foreground/80"
+              : "text-destructive-foreground",
           )}
         >
-          <HugeiconsIcon
-            icon={AiSecurity03Icon}
-            strokeWidth={1.75}
-            // Shield ink leans right; nudge left to optically centre it.
-            className="block size-[calc(13px*var(--ui-space-scale,1))] shrink-0 -translate-x-[0.5px]"
-          />
+          {/* One SVG: a CSS background and an inline SVG pixel-snap apart, off centre at fractional scales. */}
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 22 22"
+            className="absolute inset-0 block size-full"
+          >
+            <circle
+              cx="11"
+              cy="11"
+              r="11"
+              className={cn(
+                "transition-[fill]",
+                hasToken
+                  ? "fill-transparent group-hover:fill-[color-mix(in_srgb,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:group-hover:fill-accent"
+                  : "fill-destructive group-hover:fill-destructive/90",
+              )}
+            />
+            <g
+              transform={`translate(4.5 4.5) scale(${13 / 24})`}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.75}
+              strokeLinejoin="round"
+            >
+              {AiSecurity03Icon.map(([, attrs]) => (
+                <path key={String(attrs.key)} d={String(attrs.d)} />
+              ))}
+            </g>
+          </svg>
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">

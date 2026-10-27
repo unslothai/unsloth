@@ -64,16 +64,18 @@ def runtime_unavailable_reason() -> str | None:
     try:
         from importlib.util import find_spec
         if find_spec("torch") is None:
-            return "The Decision API needs PyTorch, which this Studio install does not include."
+            return "The Decision API needs PyTorch, which this Unsloth install does not include."
     except Exception:
         pass
     return None
 
 
 def llama_cpp_only(name: Any) -> bool:
-    """A GGUF-only catalog entry: llama.cpp serves it without PyTorch."""
+    """A catalog entry served without PyTorch: a GGUF by llama.cpp, an MLX-only entry by unsloth-zoo's MLX engine."""
     from core.systemone.catalog import CHECKPOINTS
-    return getattr(CHECKPOINTS.get(name), "layout", None) == "gguf"
+
+    entry = CHECKPOINTS.get(name)
+    return getattr(entry, "layout", None) == "gguf" or getattr(entry, "backend", None) == "mlx"
 
 
 def get_enabled() -> bool:
@@ -216,10 +218,7 @@ _LLAMA_GPU_CACHE: list = []  # [(monotonic time, (binary, mtime), answer)]
 
 
 def _llama_cpp_has_gpu() -> bool:
-    """Without torch the detector reports CPU: ask the installed llama-server for its GPUs.
-
-    Cached 60 s per binary path and mtime, so a switched or reinstalled build is probed again.
-    """
+    """Without torch, asks llama-server for its GPUs; cached 60 s per binary path and mtime."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         from core.systemone.native_worker import resolve_binary

@@ -12,7 +12,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Callable
 
@@ -117,9 +119,26 @@ def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
 
 
 # ── Wheels we build ourselves ─────────────────────────────────────────────────
-# Upstream stops at torch 2.11 and the reuse window above stops at 2.12, because torch 2.13 broke the extension ABI again -- it changed c10::impl::cow::materialize_cow_storage and the signature of c10::cuda::c10_cuda_check_implementation, so an upstream wheel raises "undefined symbol" at import -- and 2.14 changed it once more. There is no upstream asset to point at and no older one that loads, so from 2.13 on we build the wheels and resolve to our own release. Built by .github/workflows/prebuilt-cuda-wheels.yml, one per (package, torch minor, interpreter), Sigstore-signed, on the tag below.
+# torch 2.13+ broke the extension ABI again, so we build these wheels ourselves
+# (.github/workflows/prebuilt-cuda-wheels.yml) and resolve to our own release.
 UNSLOTH_PREBUILT_RELEASE_BASE_URL = "https://github.com/unslothai/unsloth/releases/download"
 UNSLOTH_PREBUILT_RELEASE_TAG = "prebuilt-wheels-cu13"
+
+# mamba_ssm with no compiled extension (MAMBA_KEEP_CUDA_BUILD unset), one py3-none-any wheel for every
+# torch, interpreter and platform. Its Triton kernels are all the Mamba-2 mixers call; unsloth_zoo
+# serves their causal conv (prefill, fused training path, decode) on Triton, so with a zoo that has
+# those drop-ins the Mamba-2 hybrids need neither CUDA wheel. Built and signed by
+# prebuilt-cuda-wheels.yml on the same tag.
+MAMBA_SSM_PURE_VERSION = "2.3.2.post1"
+MAMBA_SSM_PURE_WHEEL = f"mamba_ssm-{MAMBA_SSM_PURE_VERSION}-py3-none-any.whl"
+
+
+def mamba_ssm_pure_wheel_url(env: dict[str, str] | None = None) -> str:
+    """The extension-free mamba_ssm wheel (the same file for every environment)."""
+    return (
+        f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{MAMBA_SSM_PURE_WHEEL}"
+    )
+
 
 # Keyed on the torch minor, and exact rather than a floor: a wheel is built against one minor and there is no evidence any future one will load it, which is exactly the assumption that made the upstream wheels stop working here. A new torch minor adds a row only after the workflow has built and smoke-tested it.
 _UNSLOTH_PREBUILT_TORCH_MM = frozenset({"2.13", "2.14"})
@@ -131,12 +150,33 @@ _UNSLOTH_PREBUILT_VERSIONS = {
     "mamba_ssm": "2.3.2.post1",
 }
 
-# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True; Windows publishes cp313 GIL builds only, and so does linux_aarch64 (upstream's aarch64 wheels stop at torch 2.10).
+# platform_tag -> (cxx11abi field, published interpreters or None for any). The Windows cu130 torch also reports cxx11abi True. Only what the release actually carries: torch 2.13 / 2.14 are published for cp313 GIL builds on every platform (the workflow can build cp311 / cp312 cells, but none has been published, and a URL for one is a 404 in front of the fallback).
 _UNSLOTH_PREBUILT_PLATFORMS: dict[str, tuple[str, frozenset[str] | None]] = {
-    "linux_x86_64": ("TRUE", None),
+    "linux_x86_64": ("TRUE", frozenset({"cp313"})),
     "win_amd64": ("TRUE", frozenset({"cp313"})),
     "linux_aarch64": ("TRUE", frozenset({"cp313"})),
-    "win_arm64": ("TRUE", frozenset({"cp311", "cp312", "cp313"})),
+    "win_arm64": ("TRUE", frozenset({"cp313"})),
+}
+
+# (platform, torch minor) cells outside _UNSLOTH_PREBUILT_TORCH_MM, with their interpreters. Upstream's torch2.10 wheels (and their 2.11 / 2.12 reuse above) have no Windows asset, so win_amd64 torch 2.10, 2.11 and 2.12 are ours; an existing install keeps its minor (a fresh one takes 2.13 on cp313), hence three interpreters.
+_UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
+    ("win_amd64", "2.10"): frozenset({"cp311", "cp312", "cp313"}),
+    ("win_amd64", "2.11"): frozenset({"cp311", "cp312", "cp313"}),
+    ("win_amd64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_x86_64", "2.10"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_x86_64", "2.11"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_x86_64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_aarch64", "2.10"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_aarch64", "2.11"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_aarch64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
+}
+
+# Extra cells that carry only some packages. On Linux torch 2.10 to 2.12 ours replace upstream's
+# causal-conv1d / mamba-ssm (205 / 351 MB, every arch and -lineinfo); upstream flash-attn 2.8.1 is
+# already smaller there than ours, so it keeps resolving upstream.
+_UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES: dict[str, frozenset[str]] = {
+    "linux_x86_64": frozenset({"causal_conv1d", "mamba_ssm"}),
+    "linux_aarch64": frozenset({"causal_conv1d", "mamba_ssm"}),
 }
 
 # Windows on ARM has one CUDA torch, NVIDIA's 2.14.0+cu134 (CUDA 13.4, the first with a Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there.
@@ -200,15 +240,22 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     """
     if env is None:
         return None
-    if env.get("torch_mm") not in _UNSLOTH_PREBUILT_TORCH_MM:
+    platform_tag = str(env.get("platform_tag") or "")
+    extra_pythons = _UNSLOTH_PREBUILT_EXTRA_CELLS.get((platform_tag, str(env.get("torch_mm"))))
+    if env.get("torch_mm") not in _UNSLOTH_PREBUILT_TORCH_MM and extra_pythons is None:
         return None
     # cu13 only. The workflow builds against the CUDA 13 toolkit and nothing else.
     if env.get("cuda_major") != "13":
         return None
-    platform_spec = _UNSLOTH_PREBUILT_PLATFORMS.get(str(env.get("platform_tag") or ""))
+    platform_spec = _UNSLOTH_PREBUILT_PLATFORMS.get(platform_tag)
     if platform_spec is None:
         return None
     cxx11abi, published_pythons = platform_spec
+    if extra_pythons is not None:
+        extra_prefixes = _UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES.get(platform_tag)
+        if extra_prefixes is not None and filename_prefix not in extra_prefixes:
+            return None
+        published_pythons = extra_pythons
     if env.get("platform_tag") == "win_arm64" and (
         filename_prefix not in _UNSLOTH_WIN_ARM64_PREFIXES
         or env.get("torch_mm") != _WIN_ARM64_TORCH_MM
@@ -239,6 +286,56 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
+# The cells the pinned upstream releases publish (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1,
+# identical for both): (platform, CUDA major, cxx11abi) -> torch minors, each for cp310-cp313.
+# Read from the two release asset lists; anything else (CUDA 13 before torch 2.9, aarch64 before
+# 2.7, an abiFALSE torch after 2.6, any interpreter outside cp310-cp313) is a URL that 404s in
+# front of the source fallback, so it resolves to nothing instead.
+_UPSTREAM_SSM_PINS = {
+    "causal_conv1d": CAUSAL_CONV1D_PACKAGE_VERSION,
+    "mamba_ssm": MAMBA_SSM_PACKAGE_VERSION,
+}
+_UPSTREAM_SSM_CELLS: dict[tuple[str, str, str], frozenset[str]] = {
+    ("linux_x86_64", "11", "FALSE"): frozenset({"2.6"}),
+    ("linux_x86_64", "11", "TRUE"): frozenset({"2.6", "2.7"}),
+    ("linux_x86_64", "12", "FALSE"): frozenset({"2.6"}),
+    ("linux_x86_64", "12", "TRUE"): frozenset({"2.6", "2.7", "2.8", "2.9", "2.10"}),
+    ("linux_x86_64", "13", "TRUE"): frozenset({"2.9", "2.10"}),
+    ("linux_aarch64", "12", "TRUE"): frozenset({"2.7", "2.8", "2.9", "2.10"}),
+    ("linux_aarch64", "13", "TRUE"): frozenset({"2.9", "2.10"}),
+}
+_UPSTREAM_SSM_PYTHONS = frozenset({"cp310", "cp311", "cp312", "cp313"})
+
+
+def _upstream_ssm_cell_published(filename_prefix: str, package_version: str, env: dict) -> bool:
+    if _UPSTREAM_SSM_PINS.get(filename_prefix) != package_version:
+        return True  # not a pinned release this table describes: unchanged
+    torch_mm = prebuilt_wheel_torch_mm(str(env.get("torch_mm")))
+    cell = (str(env.get("platform_tag")), str(env.get("cuda_major")), str(env.get("cxx11abi")))
+    python_tag = env.get("python_tag")
+    return (
+        torch_mm in _UPSTREAM_SSM_CELLS.get(cell, frozenset())
+        and python_tag in _UPSTREAM_SSM_PYTHONS
+        and (env.get("abi_tag") or python_tag) == python_tag
+    )
+
+
+# The newest torch the pinned causal-conv1d 1.6.1 / mamba-ssm 2.3.1 compile against: torch 2.13
+# raised its headers to C++20 and both build at C++17 (the prebuilt workflow moved to
+# causal-conv1d 1.7.0 and patches mamba-ssm for it, see .github/scripts/patch_mamba_cxx20.py).
+PINNED_SOURCE_BUILD_MAX_TORCH = (2, 12)
+
+
+def pinned_source_build_supported(env: dict[str, str] | None) -> bool:
+    """Whether a source build of the pinned causal-conv1d / mamba-ssm (or their upstream wheels)
+    can work with this torch; from torch 2.13 on only our prebuilt wheels can."""
+    try:
+        major, minor = (int(part) for part in str((env or {}).get("torch_mm") or "").split(".")[:2])
+    except ValueError:
+        return True  # unknown: leave the decision to the build, as before
+    return (major, minor) <= PINNED_SOURCE_BUILD_MAX_TORCH
+
+
 def direct_wheel_url(
     *,
     filename_prefix: str,
@@ -254,8 +351,10 @@ def direct_wheel_url(
     ours = unsloth_prebuilt_wheel_url(filename_prefix = filename_prefix, env = env)
     if ours is not None:
         return ours
-    # No upstream release has a Windows asset.
-    if is_windows_wheel_env(env):
+    # No upstream release has a Windows asset, nor one for torch 2.13 or later (see above).
+    if is_windows_wheel_env(env) or not pinned_source_build_supported(env):
+        return None
+    if not _upstream_ssm_cell_published(filename_prefix, package_version, env):
         return None
 
     filename = (
@@ -267,7 +366,7 @@ def direct_wheel_url(
     return f"{release_base_url}/{release_tag}/{filename}"
 
 
-# xformers/_C is linked against ONE exact (torch, CUDA) pair, and a mismatch its declared torch requirement allows is only a log warning, so the import "succeeds" with memory-efficient attention silently gone. PyPI publishes one win_amd64 flavour whose CUDA family churns across releases, which is why this resolves an exact download.pytorch.org URL instead of pinning a version. Keyed on the `torch` field of cpp_lib.json, not `cuda`, which is the NVCC toolkit version and does not separate flavours. Rows are exact, never interpolated: the extension ABI does not survive a torch minor bump, and an unlisted pair means "install nothing", the safe answer. cu118/cu121/cu124 are absent because they stop before the cp39-abi3 switch at 0.0.31, so one filename template cannot name them. The PyPI win wheel has been cu124 (0.0.29.post2), cu126 (0.0.30), cu128 (0.0.32), cu130 (0.0.33) and cu128 again (0.0.33.post1 onward); download.pytorch.org's cu126 0.0.34 also reports 1208, so only the `torch` field ("2.10.0+cu128") separates flavours. Every row was HEAD-verified live, e.g. cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl reports {"torch": "2.10.0+cu130"}. Keying on the CUDA MINOR is stricter than the ABI needs (cu126 and cu128 both link libcudart.so.12; only a major bump changes it), but it names a real directory, so torch 2.10.0+cu129 on Linux resolves to nothing. torch 2.11+ maps to 0.0.35, compiled against 2.10.0 and compatible with any later version since xFormers moved to the stable API/ABI in 0.0.34. Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in tests/python/test_windows_xformers_wheel_match.py.
+# xformers/_C links one exact (torch, CUDA) pair; a mismatch silently drops attention. Key on cpp_lib.json torch, not cuda; rows never interpolated.
 # ── xFormers ──────────────────────────────────────────────────────────────────
 PYTORCH_WHEEL_INDEX_BASE_URL = "https://download.pytorch.org/whl"
 
@@ -467,6 +566,111 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+_WHEEL_FILENAME_FIELD_RE = re.compile(r"[A-Za-z0-9._+!]+")
+# Each picks the directory uv discovers its project config from; --project would override it.
+_UV_PROJECT_DIR_ENV = ("UV_PROJECT", "UV_WORKING_DIR", "UV_WORKING_DIRECTORY")
+
+
+def _pyproject_has_uv_table(path: str) -> bool:
+    """Whether a pyproject.toml has a [tool.uv] table; True when unreadable, so its config is kept."""
+    try:
+        # novermin -- 3.11; the ImportError fallback below is the guard, which vermin cannot see.
+        import tomllib  # novermin
+    except ImportError:  # Python < 3.11: no parser, stay out of the way
+        return True
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError):
+        return True
+    tool = data.get("tool")
+    return isinstance(tool, dict) and "uv" in tool
+
+
+def _uv_project_config_found() -> bool:
+    """Whether uv would find a project config from the cwd, which --project elsewhere drops."""
+    try:
+        directory = os.getcwd()
+    except OSError:
+        return True
+    while True:
+        if os.path.isfile(os.path.join(directory, "uv.toml")):
+            return True
+        pyproject = os.path.join(directory, "pyproject.toml")
+        if os.path.isfile(pyproject) and _pyproject_has_uv_table(pyproject):
+            return True
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return False
+        directory = parent
+
+
+# uv's boolean environment values; anything else counts as set, which only skips the shortcut.
+_UV_ENV_FALSE = frozenset({"", "0", "false", "f", "no", "n", "off"})
+
+
+def _uv_env_flag_set(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() not in _UV_ENV_FALSE
+
+
+def _uv_static_metadata_config(wheel_url: str, config_dir: str) -> bool:
+    """Write a uv.toml giving uv the wheel's metadata, so a rangeless GitHub asset downloads once
+    (astral-sh/uv#18998); --no-deps makes the empty requires-dist exact. True if written."""
+    if os.environ.get("UV_CONFIG_FILE") or _uv_env_flag_set("UV_NO_CONFIG"):
+        return False
+    if any(os.environ.get(name) for name in _UV_PROJECT_DIR_ENV) or _uv_project_config_found():
+        return False
+    filename = urllib.parse.unquote(urllib.parse.urlsplit(wheel_url).path.rsplit("/", 1)[-1])
+    fields = filename[: -len(".whl")].split("-") if filename.endswith(".whl") else []
+    if len(fields) not in (5, 6) or not all(
+        _WHEEL_FILENAME_FIELD_RE.fullmatch(f) for f in fields[:2]
+    ):
+        return False
+    name, version = fields[0].replace("_", "-").lower(), fields[1].lower()
+    with open(os.path.join(config_dir, "uv.toml"), "w", encoding = "utf-8") as fh:
+        fh.write(
+            "[[dependency-metadata]]\n"
+            f'name = "{name}"\n'
+            f'version = "{version}"\n'
+            "requires-dist = []\n"
+        )
+    return True
+
+
+_UV_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
+_HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def uv_offline() -> bool:
+    """UV_OFFLINE, the operator's no-network switch for installs, in uv's boolish spellings."""
+    return os.environ.get("UV_OFFLINE", "").strip().lower() in _UV_OFFLINE_TRUE_VALUES
+
+
+# Set (to "1") while Studio itself forced HF offline only because the Hugging Face endpoint was
+# unreachable (export's _offline_window_if_unreachable), and restored when that window closes.
+# HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE then say nothing about GitHub or PyPI, so a kernel install
+# may still reach them; only UV_OFFLINE keeps it off the network. Children inherit it.
+HF_OFFLINE_AUTO_ENV = "_UNSLOTH_HF_OFFLINE_AUTO"
+
+
+def hf_offline_auto_set() -> bool:
+    """True while HF offline was set by Studio for an unreachable Hub, not by the operator."""
+    return os.environ.get(HF_OFFLINE_AUTO_ENV, "") == "1"
+
+
+def package_installs_offline_env() -> bool:
+    """The environment half of utils.utils.package_installs_offline, for callers that cannot import
+    the backend (`unsloth install-kernels` runs under --no-deps): HF_HUB_OFFLINE,
+    TRANSFORMERS_OFFLINE or UV_OFFLINE. While HF offline was only auto-set for an unreachable Hub
+    (hf_offline_auto_set), only UV_OFFLINE counts."""
+    if hf_offline_auto_set():
+        return uv_offline()
+    return uv_offline() or any(
+        os.environ.get(name, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+        for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+
+
 def install_wheel(
     wheel_url: str,
     *,
@@ -487,17 +691,32 @@ def install_wheel(
         if reinstall:
             uv_cmd.append("--reinstall")
         uv_cmd.append(wheel_url)
-        result = run(
-            uv_cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = child_env_without_native_path_secret(),
-        )
+        config_dir = None
+        try:
+            config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
+            # --project, not cwd: relative UV_CACHE_DIR etc. still resolve here; uv pip reads only config from it.
+            if _uv_static_metadata_config(wheel_url, config_dir):
+                uv_cmd[1:1] = ["--project", config_dir]
+        except OSError:
+            pass  # Optional: an unwritable temp dir must not stop the plain uv install.
+        try:
+            result = run(
+                uv_cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                env = child_env_without_native_path_secret(),
+            )
+        finally:
+            if config_dir:
+                shutil.rmtree(config_dir, ignore_errors = True)
         attempts.append(("uv", result))
         if result.returncode == 0:
+            return attempts
+        # uv refused the network under UV_OFFLINE; pip has no such switch and would reach it.
+        if uv_offline():
             return attempts
 
     pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps"]

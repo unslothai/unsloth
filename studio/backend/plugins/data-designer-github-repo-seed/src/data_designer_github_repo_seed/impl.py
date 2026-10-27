@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
@@ -16,8 +15,7 @@ from .config import GitHubRepoSeedSource
 from .scraper import ScrapeConfig, materialize_to_jsonl
 
 
-# Memoize seed materialization so a recipe job does not re-scrape GitHub on every call; the key
-# uses a short SHA-256 of the token, so the raw value never hits memory twice.
+# Memoize seed scrapes so a recipe job does not re-hit GitHub; keyed on a short SHA-256 of the token, never the raw value.
 _SCRAPE_CACHE: dict[tuple, str] = {}
 _SCRAPE_CACHE_LOCK = threading.Lock()
 
@@ -58,7 +56,10 @@ class GitHubRepoSeedReader(SeedReader[GitHubRepoSeedSource]):
         return lazy.duckdb.connect()
 
     def get_dataset_uri(self) -> str:
-        out_dir = Path(tempfile.gettempdir()) / "studio-github-repo-seed"
+        from utils.paths.private_tmp import private_tmp_dir
+
+        # Private: a token-backed scrape can hold a private repo's issues and PRs.
+        out_dir = private_tmp_dir("studio-github-repo-seed")
         cfg = ScrapeConfig(
             repos = list(self.source.repos),
             token = self.source.token,

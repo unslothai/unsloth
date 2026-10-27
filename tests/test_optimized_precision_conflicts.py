@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+import __future__
 import ast
+import inspect
 import fnmatch
 import os
 import sys
@@ -26,6 +28,52 @@ def _mistral_format_names(tree):
     return names
 
 
+def _loader_utils_functions(tree, path, method):
+    """Real definitions of the .loader_utils functions loader.py imports and `method` calls."""
+    imported = {
+        alias.asname or alias.name: alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "loader_utils"
+        for alias in node.names
+    }
+    used = {n.id for n in ast.walk(method) if isinstance(n, ast.Name)}
+    source = ast.parse((path.parent / "loader_utils.py").read_text(encoding = "utf-8"))
+    defs = {n.name: n for n in source.body if isinstance(n, ast.FunctionDef)}
+    return [
+        defs[imported[name]] for name in sorted(used & imported.keys()) if imported[name] in defs
+    ]
+
+
+def _module_definitions(tree):
+    """loader.py's own top-level functions and literal constants, by name."""
+    defined = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            defined[node.name] = node
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            try:
+                ast.literal_eval(node.value)
+            except ValueError:
+                continue
+            defined[node.targets[0].id] = node
+    return defined
+
+
+def _closure(roots, defined):
+    """Every definition in `defined` the roots reach by name, transitively, in source order."""
+    wanted, pending = set(), list(roots)
+    while pending:
+        for node in ast.walk(pending.pop()):
+            if isinstance(node, ast.Name) and node.id in defined and node.id not in wanted:
+                wanted.add(node.id)
+                pending.append(defined[node.id])
+    return [node for name, node in defined.items() if name in wanted]
+
+
 @pytest.fixture
 def loader():
     path = Path(__file__).resolve().parents[1] / "unsloth/models/loader.py"
@@ -37,12 +85,6 @@ def loader():
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
     )
     method.decorator_list = []
-    helpers = [
-        n
-        for n in tree.body
-        if isinstance(n, ast.FunctionDef)
-        and n.name in ("_precision_flags_conflict", "_modelscope_snapshot_or_none")
-    ]
     captured = {"config_calls": 0}
 
     def dispatch(**kwargs):
@@ -66,6 +108,7 @@ def loader():
         _requested_float32 = lambda dtype: False,
         hf_login = lambda token: token,
         requested_device_map = lambda device: device,
+        deepspeed_zero3_device_map = lambda device: device,
         is_automatic_device_map = lambda device: isinstance(device, str),
         prepare_device_map = lambda: ("sequential", False),
         ALLOW_BITSANDBYTES = True,
@@ -87,11 +130,22 @@ def loader():
         _raise_if_modeling_ignores_config = lambda *args: None,
         raise_if_fast_inference_under_fsdp2 = lambda fast_inference: None,
     )
-    # Mistral-format checkpoints (#12144) are redirected before the precision check. None of
-    # these fixtures is one, so every helper that decides that answers False and the redirect
-    # is an exception nothing raises. Read off loader.py so a new helper is covered too.
+    # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
+    # Real loader_utils helpers (e.g. the fp8 dequantize check from #14516) where no stub is given.
+    env.setdefault("inspect", inspect)
+    real = [n for n in _loader_utils_functions(tree, path, method) if n.name not in env]
+    flags = __future__.annotations.compiler_flag  # annotations such as Union stay unevaluated
+    source = str(path.parent / "loader_utils.py")
+    exec(compile(ast.Module(body = real, type_ignores = []), source, "exec", flags = flags), env)
+    # Every loader.py helper from_pretrained reaches and no stub above replaces, new ones included
+    # (a fixed list missed _agree_fast_inference_across_ranks from #15390).
+    defined = {name: node for name, node in _module_definitions(tree).items() if name not in env}
+    helpers = _closure([method], defined)
+    for node in helpers:
+        if isinstance(node, ast.FunctionDef):
+            node.decorator_list = []
     exec(compile(ast.Module(body = [*helpers, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
 

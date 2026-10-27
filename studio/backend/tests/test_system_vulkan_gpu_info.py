@@ -12,6 +12,48 @@ def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(main, "_system_gpu_cache", None)
 
 
+def test_system_monitor_ignores_spark_npu_telemetry(monkeypatch):
+    import utils.hardware as hardware
+    from utils.hardware import nvidia
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda *a, **k: SimpleNamespace(
+            returncode = 0,
+            stdout = "0, NVIDIA RTX Spark N1X, 46477\n1, NVIDIA NPU, [N/A]\n",
+        ),
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_backend_visible_gpu_info",
+        lambda: {**nvidia.get_backend_visible_gpu_info([0, 1], None), "backend": "cuda"},
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_visible_gpu_utilization",
+        lambda: {
+            "backend": "cuda",
+            "devices": [
+                {"index": 0, "vram_total_gb": 45.39, "vram_used_gb": 20.5},
+                {"index": 1, "vram_total_gb": None, "vram_used_gb": None},
+            ],
+        },
+    )
+    monkeypatch.setattr(hardware, "get_vulkan_inference_gpu_info", lambda: None)
+    monkeypatch.setattr(hardware, "get_cross_vendor_inference_gpu_info", lambda: None)
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *a: None))
+    # Both monitor views read this inventory and sum its per-device usage.
+    assert len(gpu["devices"]) == 1
+    assert gpu["devices"][0]["index"] == 0
+    assert sum(d["vram_used_gb"] for d in gpu["devices"]) == 20.5
+    assert inference_gpu["devices"] == gpu["devices"]
+
+
 def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     import utils.hardware as hardware
 
@@ -62,7 +104,6 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     # The training inventory must not advertise physical pins for a Vulkan
     # llama.cpp build. Its ordinals live in inference_gpu below.
     assert gpu["gguf_gpu_ids_supported"] is False
-    # Torch's view stays empty; the ggml ordinals stay in inference_gpu.
     assert gpu["devices"] == []
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"] == [vulkan_device]
@@ -167,7 +208,6 @@ def test_system_gpu_info_keeps_forced_vulkan_separate_from_training_metrics(monk
     assert gpu["devices"][0]["vram_used_gb"] == 6.0
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"][0]["vram_used_gb"] == 1.0
-    # Probed devices exist, so the ordinals are known and picks are offered.
     assert inference_gpu["gguf_gpu_ids_supported"] is True
 
 
@@ -213,12 +253,7 @@ def test_system_gpu_info_does_not_merge_metrics_across_backend_index_spaces(monk
 
 
 def test_vulkan_inference_gpu_uses_real_device_names_and_igpu_flag(monkeypatch):
-    """The picker and the GPU labels need ggml's real device description, not a
-    Vulkan<i> placeholder, and an explicit iGPU flag rather than inferring one
-    from a zero total. Memory still comes from _get_gpu_memory so the iGPU host
-    reserve is applied; budgeting off the raw shared total would hand out the
-    whole machine's RAM with no OS headroom.
-    """
+    """Vulkan needs ggml's real device names and an explicit iGPU flag; memory takes the iGPU reserve."""
     from core.inference import llama_cpp
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.hardware.hardware import get_vulkan_inference_gpu_info

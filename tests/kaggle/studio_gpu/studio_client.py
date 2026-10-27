@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A small HTTP client for Unsloth, and the state machines the payload polls.
-
-Split out of ``run_studio_gpu.py`` so the parts that can be wrong in
-interesting ways can be tested without a GPU, a browser or a server. The
-polling predicates in particular are where a green result gets fabricated:
-"the training job finished" and "the training job never started" produce the
-same ``phase`` for the first few seconds, and an export that failed reports
-the same ``is_export_active: false`` as one that succeeded.
-
-Nothing here prints. ``Studio.token`` is set from the bootstrap password and is
-never logged, echoed or written to a report, and neither is ``Studio.password``
--- which IS held for the run, because Unsloth forces a password change on the
-bootstrap account and the repo's Playwright driver needs whatever the current
-password is. Scrubbing it out of anything that leaves the machine is the
-caller's job.
-"""
+"""Studio HTTP client and polling predicates; callers must scrub the token and password from output."""
 
 from __future__ import annotations
 
@@ -28,20 +13,15 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-# Terminal phases of GET /api/train/status.
-# From studio/backend/models/training.py: the field is `phase`, not `status`, and `completed` is the only one of the
-# three that means the adapter exists.
+# The field is `phase`, not `status`; only `completed` means the adapter exists.
 TRAINING_TERMINAL = frozenset({"completed", "error", "stopped"})
 TRAINING_OK = "completed"
 
-# Terminal values of GET /api/export/status last_op_status.
 EXPORT_OK = "success"
 
-# What a saved PEFT adapter directory has to contain before this payload will call a training run complete.
 ADAPTER_CONFIG = "adapter_config.json"
 ADAPTER_WEIGHTS = ("adapter_model.safetensors", "adapter_model.bin")
 
-# A LoRA adapter for the smallest model this payload will ever train is still tens of MiB.
 MIN_ADAPTER_BYTES = 4096
 
 
@@ -61,7 +41,6 @@ class Studio:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.token: str | None = None
-        # The password this session is currently authenticated by. See login().
         self.password: str | None = None
 
     def request(
@@ -124,36 +103,7 @@ class Studio:
         *,
         username: str = "unsloth",
     ) -> None:
-        """Exchange the bootstrap password for a bearer token, retiring it if Unsloth insists.
-
-        A bootstrap account is created with ``must_change_password`` set, and
-        ``get_current_subject`` turns that into
-
-            HTTP 403 {"detail": "Password change required"}
-
-        on every route except the password-change one. Logging in therefore
-        yields a token that authenticates and can do nothing: the first
-        hardware run of this payload reached ``POST /api/inference/load`` and
-        ``POST /api/train/start`` and got 403 from both, so inference, tool
-        calling, training and export were all unmeasured while the login step
-        itself reported success. The token is only useful once the change is
-        done, so it is done here rather than left for each caller to discover.
-
-        The replacement is random per run and is left on ``self.password``,
-        because something DOES need it again: the repo's Playwright chat driver
-        rotates the password itself as its first phase and asserts the old one
-        stops working, so it has to be handed whatever the current password is.
-        The first version of this change dropped the replacement on the floor
-        and the driver failed with "the bootstrap password is gone, so the
-        driver cannot log in" -- three assertions fixed and a fourth broken.
-
-        ``self.password`` is therefore a credential held for the run, unlike
-        every other value here. The caller is responsible for adding it to
-        whatever scrubs the logs.
-
-        The passwords reach this function and Unsloth and go nowhere else. A
-        StudioError from here is raised with the status code only.
-        """
+        """Retires the bootstrap password, else other routes 403; the new one is kept on self.password."""
         status, payload = self.post(
             "/api/auth/login",
             {"username": username, "password": password},
@@ -173,8 +123,7 @@ class Studio:
         """Replace the bootstrap password so the session can reach the real routes."""
         import secrets
 
-        # token_urlsafe never yields whitespace, which change-password rejects,
-        # and never collides with the bootstrap value it has to differ from.
+        # token_urlsafe never yields whitespace, which change-password rejects.
         replacement = secrets.token_urlsafe(24)
         status, payload = self.post(
             "/api/auth/change-password",
@@ -190,15 +139,7 @@ class Studio:
 
 
 def health_is_ready(payload: Any) -> bool:
-    """Is this ``/api/health`` body an Unsloth that is done starting up?
-
-    Two conditions, and the second is the one that matters. ``status ==
-    "healthy"`` is what the repo's own wait-for-health.sh checks, but Unsloth
-    answers healthy while hardware detection is still running, and during that
-    window it reports itself chat-only and refuses to start a training run or
-    an export. A payload that raced that window would fail on the Train and
-    Export gates having proved nothing about them.
-    """
+    """Status healthy is not enough: during hardware detection Unsloth refuses train and export."""
     if not isinstance(payload, dict):
         return False
     if payload.get("status") != "healthy":
@@ -218,13 +159,7 @@ def wait_for(
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[bool, Any, str]:
-    """Poll ``probe`` until ``accept``, the deadline, or the process dies.
-
-    Returns ``(ok, last_value, reason)``. ``alive`` is what turns a ten-minute
-    timeout into a two-second one when the thing being waited on has already
-    exited: without it, every crash at startup costs the full deadline and
-    reports itself as "slow" rather than "dead".
-    """
+    """Poll probe until accept, the deadline, or a dead process, so a crash is not reported as slow."""
     started = now()
     last: Any = None
     while True:
@@ -244,13 +179,7 @@ def wait_for(
 
 
 def training_verdict(status: Any) -> tuple[bool, str]:
-    """Is this ``/api/train/status`` body a finished, successful run?
-
-    Returns ``(terminal, reason)``. A non-terminal phase returns
-    ``(False, "")``; a terminal one that is not ``completed`` returns
-    ``(True, why)`` so the caller stops polling and reports the real cause
-    rather than waiting out its deadline on a job that already failed.
-    """
+    """A run that ends in a non-completed phase is terminal with its reason, so polling stops at once."""
     if not isinstance(status, dict):
         return False, ""
     phase = status.get("phase")
@@ -263,13 +192,7 @@ def training_verdict(status: Any) -> tuple[bool, str]:
 
 
 def export_verdict(status: Any, baseline_seq: int) -> tuple[bool, str]:
-    """Has an export finished, and did it succeed?
-
-    ``baseline_seq`` is ``last_op_seq`` sampled before the export was
-    requested. Checking it is what separates "this export finished" from "a
-    previous operation finished and this one has not started yet" -- the
-    export API has no job id, and ``is_export_active`` is false in both cases.
-    """
+    """Judge the export by last_op_seq moving past baseline_seq; is_export_active alone is ambiguous."""
     if not isinstance(status, dict):
         return False, ""
     seq = status.get("last_op_seq")
@@ -285,12 +208,7 @@ def export_verdict(status: Any, baseline_seq: int) -> tuple[bool, str]:
 
 
 def adapter_verdict(output_dir: str | Path | None) -> tuple[bool, list[str], dict]:
-    """Did the training run leave a real LoRA adapter on disk?
-
-    This is the assertion that separates "the run reported completed" from
-    "the run produced something". Unsloth reports ``completed`` from the
-    worker's own bookkeeping; only the files say whether a save happened.
-    """
+    """Check the LoRA adapter files on disk; a completed status is only the worker's own bookkeeping."""
     detail: dict = {"output_dir": str(output_dir) if output_dir else None}
     if not output_dir:
         return False, ["training reported no output_dir, so nothing can be checked"], detail
@@ -341,19 +259,7 @@ def _is_finite_loss(value: Any) -> bool:
 
 
 def trained_steps(status: Any) -> int:
-    """How many steps the run actually logged a USABLE loss for.
-
-    A run can reach ``completed`` having trained nothing -- a dataset that
-    formatted to zero usable rows is the way it happens -- and the phase alone
-    does not say. The loss history does.
-
-    Non-finite entries do not count. A T4 has no bf16, so training runs in
-    fp16, and an fp16 run that diverges logs ``NaN`` or ``inf`` for every step
-    while still reaching ``completed`` and still saving an adapter. Those
-    entries are not ``None``, so counting mere list occupancy scored a
-    numerically broken run as a full-length one and turned the CUDA training
-    assertion green.
-    """
+    """Count finite logged losses only: a diverged fp16 run logs NaN or inf yet still reaches completed."""
     return len([value for value in _loss_values(status) if _is_finite_loss(value)])
 
 
@@ -365,16 +271,8 @@ def nonfinite_losses(status: Any) -> list:
 
 
 def newest_gguf(root: str | Path) -> Path | None:
-    """The most recently written MODEL ``.gguf`` under ``root``, if any.
-
-    ``mmproj`` sidecars are excluded, and that is not a tidy-up. A vision export
-    writes two files -- ``Qwen3.5-2B.Q8_0.gguf`` and
-    ``Qwen3.5-2B.F16-mmproj.gguf`` -- and the projector is often the newer of
-    the two. Handing it to llama.cpp as a model is not an error: the server
-    starts, reports ``gpu_layers=-1``, offloads nothing and still returns text,
-    so the run reads as a GPU failure in the export assertion. Measured on
-    kernel unsloth-probe-studio-full2-815a0c, where exactly that happened.
-    """
+    """Excludes mmproj sidecars: llama.cpp accepts a projector as a model but offloads nothing to
+    the GPU."""
     root = Path(root)
     if not root.is_dir():
         return None

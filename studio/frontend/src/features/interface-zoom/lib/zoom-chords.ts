@@ -6,10 +6,9 @@ import {
   formatBindingValue,
 } from "../../settings/lib/keyboard-shortcuts.ts";
 
-/** 1 zooms in, -1 out, 0 back to 100%. */
 export type ZoomDirection = 1 | -1 | 0;
 
-/** Chord per direction. A user shortcut bound to one of these wins. */
+/** A user shortcut bound to one of these wins. */
 export const ZOOM_CHORDS: Record<ZoomDirection, string> = {
   1: "Mod+Equal",
   [-1]: "Mod+Minus",
@@ -21,7 +20,6 @@ type ZoomKeyEvent = Pick<
   "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey"
 >;
 
-/** Browser-style zoom keys: Cmd on macOS, Ctrl elsewhere, Shift optional, keypad included. */
 export function zoomDirectionForKey(
   event: ZoomKeyEvent,
   mac: boolean,
@@ -41,9 +39,33 @@ export function zoomDirectionForKey(
   return null;
 }
 
+const ZOOM_CODES = new Set([
+  "Equal",
+  "Minus",
+  "Digit0",
+  "NumpadAdd",
+  "NumpadSubtract",
+  "Numpad0",
+]);
+
+// Digits keep their shortcut: Swiss and Turkish type "+" with Shift on 1 and 4, where Windows and
+// Linux put Ctrl+Shift+1-9 (the workspace chords).
+function keepsShortcut(code: string): boolean {
+  return ZOOM_CODES.has(code) || code.startsWith("Digit");
+}
+
+export function zoomTypedOffZoomKey(
+  event: ZoomKeyEvent,
+  code: string,
+  mac: boolean,
+): boolean {
+  return !keepsShortcut(code) && zoomDirectionForKey(event, mac) !== null;
+}
+
 /**
  * Whether a user shortcut takes this press instead: one bound to the canonical chord, or to the
- * exact keys pressed (Mod+Shift+Equal, a keypad key).
+ * exact keys pressed (Mod+Shift+Equal, a keypad key). Not on punctuation: German and most of Europe
+ * type "-" on the Slash key, and Mod+Slash there is a shortcut, not the zoom the user typed.
  */
 export function zoomChordTaken(
   event: ZoomKeyEvent,
@@ -53,5 +75,9 @@ export function zoomChordTaken(
 ): boolean {
   if (owned(ZOOM_CHORDS[direction])) return true;
   const pressed = bindingFromEvent(event, mac);
-  return pressed !== null && owned(formatBindingValue(pressed));
+  return (
+    pressed !== null &&
+    keepsShortcut(pressed.code) &&
+    owned(formatBindingValue(pressed))
+  );
 }

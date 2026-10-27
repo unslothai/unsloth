@@ -58,6 +58,7 @@ LTX25_DEV_SCHEDULER_OVERRIDES: dict[str, Any] = {
 TWO_STAGE_ENV = "UNSLOTH_LTX25_TWO_STAGE"
 SAMPLER_ENV = "UNSLOTH_LTX25_SAMPLER"
 _OFF = ("0", "false", "no", "off")
+_ON = ("1", "true", "yes", "on")
 
 # Pack components a load never reads: the dev DiT (single-file dev picks bring their own), the prompt enhancer and its
 # processor (Studio never enhances), the diffusion decoder (conv decode is the pipeline default), the temporal
@@ -84,6 +85,22 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
+# int8 ConvRot (ComfyUI's LTX-2.5 encoder) is opt-in: its LPIPS vs bf16 sits above the compile floor. Unset keeps
+# bf16 unless UNSLOTH_LTX25_TE_INT8=1.
+LTX25_TE_QUANT_DEFAULT = "int8"
+LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
+# Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
+LTX25_TE_INT8_GB = 13.1
+# The dense bf16 encoder (the family table's text-encoder term), what quantizing at load materializes first.
+LTX25_TE_BF16_GB = 23.9
+# The hosted build of that same at-load quantization (scripts/build_ltx25_te_int8_convrot.py): the worker loads it
+# instead of reading the 23.9 GB bf16 encoder and quantizing it, and the plan drops the dense text_encoder/ shards. A
+# file that cannot be fetched or loaded falls back to the at-load quantization of the dense encoder.
+LTX25_TE_HOSTED_REPO = "unsloth/LTX-2.5-FP8"
+LTX25_TE_HOSTED_FILE = "LTX-2.5-text_encoder-INT8-ConvRot.safetensors"
+LTX25_TE_HOSTED_FORMAT = "unsloth_ltx25_text_encoder_int8_convrot_v1"
+# The base the hosted encoder was cut from: a custom pack can keep the architecture and carry other weights.
+LTX25_TE_HOSTED_BASE = "Lightricks/LTX-2.5-Diffusers"
 # The pack's latent_upsampler/ (995,743,320 bytes), part of the family table's companions; only two-stage loads hold it.
 LTX25_LATENT_UPSAMPLER_GB = 1.0
 
@@ -374,6 +391,10 @@ def load_ltx25_transformer(
         "cache_dir": cache_dir,
         "local_files_only": local_files_only,
     }
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The load plan's commit for a hub-id config (none for the bundled config dir or an unpinned load).
+    kwargs.update(pinned_revision_kwargs(kwargs["config"]))
     if is_gguf:
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
@@ -392,6 +413,8 @@ def load_ltx25_comfy_transformer(
     local_files_only: bool = False,
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
+    fp8_storage: Optional[bool] = None,
+    fp8_widen_chosen: bool = False,
     family: Optional[str] = None,
     target: Any = None,
     logger: Any = None,
@@ -417,6 +440,8 @@ def load_ltx25_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
+        fp8_widen_chosen = fp8_widen_chosen,
         family = family,
         target = target,
         logger = logger,
@@ -434,6 +459,7 @@ def load_latent_upsampler(
     local_files_only: bool = False,
 ) -> Any:
     from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+
     if is_ltx25_single_file_base(base_repo):
         from safetensors.torch import load_file
 
@@ -443,8 +469,11 @@ def load_latent_upsampler(
         return _build_from_config(
             LTX2LatentUpsamplerModel, LTX25_UPSAMPLER_CONFIG, load_file(path), {}, torch_dtype
         )
+    from .diffusion_families import pinned_revision_kwargs
+
     return LTX2LatentUpsamplerModel.from_pretrained(
         base_repo,
+        **pinned_revision_kwargs(base_repo),
         subfolder = LATENT_UPSAMPLER_SUBFOLDER,
         torch_dtype = torch_dtype,
         token = hf_token,
@@ -456,7 +485,7 @@ def load_latent_upsampler(
 # ── the split single-file layout as its own base ────────────────────────────
 
 
-def is_ltx25_single_file_base(base: Optional[str]) -> bool:
+def is_ltx25_single_file_base(base: Optional[str], *, fold_mirror: bool = True) -> bool:
     """Whether ``base`` is the split single-file release (hub id) or a local folder with its layout (the encoder file
     and the conv VAE beside the DiTs), rather than a Diffusers pack."""
     text = (base or "").strip()
@@ -467,7 +496,13 @@ def is_ltx25_single_file_base(base: Optional[str]) -> bool:
         return (path / LTX25_SINGLE_TEXT_ENCODER).is_file() and (
             path / LTX25_SINGLE_VIDEO_VAE
         ).is_file()
-    return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
+    if not fold_mirror:
+        return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
+    # The fetch sites hand the assembly the repo carrying the release's byte-identical files (unsloth/LTX-2.5-GGUF).
+    # ``fold_mirror=False`` is for a PICK's own repo: a GGUF picked from that repo keeps the Diffusers base.
+    from .diffusion_families import canonical_base
+
+    return canonical_base(text).lower() == LTX25_SINGLE_FILE_REPO.lower()
 
 
 def is_ltx25_single_file_listing(names: Any) -> bool:
@@ -493,7 +528,7 @@ def ltx25_single_file_companions(
 
 def ltx25_default_base(repo_id: Optional[str]) -> Optional[str]:
     """A DiT picked from the single-file release (or a local copy of it) uses that release as its base."""
-    return repo_id if is_ltx25_single_file_base(repo_id) else None
+    return repo_id if is_ltx25_single_file_base(repo_id, fold_mirror = False) else None
 
 
 def ltx25_companion_path(
@@ -513,10 +548,13 @@ def ltx25_companion_path(
         return str(target)
     from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+    from .diffusion_families import pinned_revision_kwargs
+
     return hf_hub_download_with_xet_fallback(
         base,
         filename,
         hf_token,
+        **pinned_revision_kwargs(base),
         reuse_other_cache_root = True,
         local_files_only = local_files_only,
     )
@@ -528,7 +566,9 @@ def ltx25_transformer_config_dir() -> str:
     import json
     import tempfile
 
-    root = Path(tempfile.gettempdir()) / "unsloth_ltx25_config"
+    from utils.paths.private_tmp import private_tmp_dir
+
+    root = private_tmp_dir("unsloth_ltx25_config")
     target = root / "transformer" / "config.json"
     payload = json.dumps(
         {"_class_name": "LTX2VideoTransformer3DModel", **LTX25_TRANSFORMER_CONFIG},
@@ -666,11 +706,86 @@ def encoder_resident_for_plan(plan: Any) -> bool:
     return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_text_encoders", False))
 
 
+def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
+    """``"int8"`` or None (bf16); any other scheme raises ValueError (the worker has only the ConvRot INT8 build)."""
+    from .diffusion_precision import normalize_te_quant, te_quant_is_auto
+
+    if te_quant_is_auto(text_encoder_quant):
+        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in _ON:
+            return LTX25_TE_QUANT_DEFAULT
+        return None
+    scheme = normalize_te_quant(text_encoder_quant)
+    if scheme is None or scheme == LTX25_TE_QUANT_DEFAULT:
+        return scheme
+    raise ValueError(
+        f"LTX-2.5's Gemma 4 text encoder runs int8 (ConvRot, as in ComfyUI's LTX-2.5 workflows) or bf16, not "
+        f"'{scheme}'. Pick int8 for int8, or leave it unset / Off for bf16."
+    )
+
+
+def ltx25_te_prequant_sources(
+    text_encoder_quant: Optional[str], base: Optional[str]
+) -> dict[str, Any]:
+    """``{"text_encoder": source}`` when this load takes the hosted int8 ConvRot encoder, else ``{}``.
+
+    The video backend's pre-cast planner asks this for LTX-2.5, so the hosted file is fetched with the load's progress
+    and cancel, and only a file that resolves drops the dense ``text_encoder/`` shards. Pack loads of the base the file
+    was cut from only: the single-file release reads its text projections out of its own encoder file, and a custom
+    pack may carry other weights. Pure, never raises."""
+    try:
+        if ltx25_te_quant_scheme(text_encoder_quant) != LTX25_TE_QUANT_DEFAULT:
+            return {}
+        if not base or is_ltx25_single_file_base(base):
+            return {}
+        from .diffusion_families import canonical_base
+        from .diffusion_te_prequant import TePrequantSource
+        from .model_ids import hf_cache_repo_id
+
+        # Exact identity (an HF cache snapshot counts as its repo): the worker strict-loads the hosted state dict into
+        # whatever architecture the pack builds, so a same-shaped custom pack that merely shares the folder name
+        # would silently lose its own encoder weights.
+        identity = hf_cache_repo_id(str(base)) or str(base)
+        if canonical_base(identity).lower() != canonical_base(LTX25_TE_HOSTED_BASE).lower():
+            return {}
+        return {
+            "text_encoder": TePrequantSource(
+                kind = "repo", location = LTX25_TE_HOSTED_REPO, filename = LTX25_TE_HOSTED_FILE
+            )
+        }
+    except Exception:  # noqa: BLE001 -- no hosted encoder: the worker quantizes the dense one
+        return {}
+
+
+def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
+    try:
+        scheme = ltx25_te_quant_scheme(text_encoder_quant)
+    except ValueError:
+        return 1.0
+    if scheme == LTX25_TE_QUANT_DEFAULT and bf16_gb > 0:
+        return min(1.0, LTX25_TE_INT8_GB / float(bf16_gb))
+    return 1.0
+
+
+def ltx25_te_outcome(client: Any) -> Any:
+    from .diffusion_precision import TEQuantOutcome
+
+    scheme = (getattr(client, "config", None) or {}).get("te_quant")
+    if scheme:
+        source = (getattr(client, "info", None) or {}).get("te_source")
+        detail = "int8 ConvRot weight-only Gemma 4 encoder (ComfyUI's LTX-2.5 encoder)"
+        if source == "hosted":
+            detail += f", loaded from {LTX25_TE_HOSTED_REPO}"
+        elif source == "quantized_at_load":
+            detail += ", quantized at load"
+        return TEQuantOutcome(scheme, detail)
+    return TEQuantOutcome(None)
+
+
 def sidecar_missing_message(venv_dir: str) -> str:
     return (
         "LTX-2.5's text encoder is a Gemma 4 model (Gemma4UnifiedForConditionalGeneration) that needs transformers "
-        f">= {TEXT_ENCODER_MIN_TRANSFORMERS}. Studio keeps that in its transformers 5.10 sidecar at '{venv_dir}', "
-        "which is missing and could not be installed. Re-run the Studio installer (or check the network so Studio "
+        f">= {TEXT_ENCODER_MIN_TRANSFORMERS}. Unsloth keeps that in its transformers 5.10 sidecar at '{venv_dir}', "
+        "which is missing and could not be installed. Re-run the Unsloth installer (or check the network so Unsloth "
         "can rebuild the sidecar), then load LTX-2.5 again."
     )
 
@@ -730,6 +845,9 @@ class Ltx25TextEncoderClient:
         cancel_event: Optional[threading.Event] = None,
         single_file: Optional[str] = None,
         budget_mib: Optional[int] = None,
+        te_quant: Optional[str] = None,
+        te_prequant: Optional[dict] = None,
+        hub_repo: Optional[str] = None,
     ) -> None:
         self.config = {
             "repo": repo,
@@ -745,6 +863,14 @@ class Ltx25TextEncoderClient:
             "venv_dir": venv_dir,
             # The load's memory budget: a non-resident encoder onloads only into what the server leaves of it.
             "budget_mib": budget_mib,
+            "te_quant": te_quant,
+            # The hosted int8 file ({repo, filename, mirror_path}) for an int8 load, else None; and the Hub id of the
+            # pack, where the dense fallback reads when ``repo`` is a scoped snapshot that skipped its shards.
+            "te_prequant": te_prequant,
+            "hub_repo": hub_repo,
+            # A plan priced at the hosted file's size cannot cover the dense fallback's peak: the worker refuses it
+            # when free memory does not hold the dense encoder.
+            "dense_te_gb": LTX25_TE_BF16_GB if te_prequant else None,
         }
         self.cancel_event = cancel_event
         self._proc: Any = None
@@ -1016,6 +1142,7 @@ def close_encoder(pipe: Any) -> None:
 def start_text_encoder(
     *,
     repo: str,
+    revision: Optional[str] = None,
     hf_token: Optional[str],
     cache_dir: Optional[str],
     local_files_only: bool,
@@ -1023,10 +1150,25 @@ def start_text_encoder(
     dtype: str,
     resident: bool,
     budget_mib: Optional[int] = None,
+    te_quant: Optional[str] = None,
+    base_repo: Optional[str] = None,
 ) -> Ltx25TextEncoderClient:
     """Check the sidecar (a named refusal before any weight is read), then spawn the encoder worker so the Gemma 4
-    load overlaps the DiT load."""
+    load overlaps the DiT load. ``base_repo`` is the upstream pack id (``repo`` may be its local snapshot); an int8
+    load of the pack the hosted encoder was cut from hands the worker that file."""
     venv_dir = ensure_text_encoder_sidecar()
+    te_prequant = None
+    hub_repo = base_repo or repo
+    sources = ltx25_te_prequant_sources(te_quant, hub_repo) if te_quant else {}
+    source = sources.get("text_encoder")
+    if source is not None:
+        from .diffusion_te_prequant import te_prequant_mirror_path
+        te_prequant = {
+            "repo": source.location,
+            "filename": source.filename,
+            "mirror_path": te_prequant_mirror_path(source.location, source.filename),
+            "base": LTX25_TE_HOSTED_BASE,
+        }
     client = Ltx25TextEncoderClient(
         repo = repo,
         hf_token = hf_token,
@@ -1038,7 +1180,19 @@ def start_text_encoder(
         venv_dir = venv_dir,
         single_file = LTX25_SINGLE_TEXT_ENCODER if is_ltx25_single_file_base(repo) else None,
         budget_mib = budget_mib,
+        te_quant = te_quant,
+        te_prequant = te_prequant,
+        hub_repo = hub_repo if hub_repo != repo else None,
     )
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The worker is another process: the plan's commit travels in its config (absent when unpinned).
+    client.config.update({"revision": revision} if revision else pinned_revision_kwargs(repo))
+    from .diffusion_memory import user_budget_reserve_share
+
+    share = user_budget_reserve_share()
+    if share > 0:
+        client.config["vram_reserve_share"] = share
     client.start()
     return client
 

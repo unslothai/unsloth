@@ -20,7 +20,7 @@ import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
 import { outsideThread } from "./outside-thread";
-import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import { callNative as call, localOriginGranted, nativeClearing, onNativeViewsClosed, setLocalViewCloser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
@@ -45,7 +45,9 @@ type NativeEvent =
   | { kind: "url"; tabId: string; url: string }
   | { kind: "history"; tabId: string; canGoBack: boolean; canGoForward: boolean; icon: string | null }
   | { kind: "newTab"; tabId: string; url: string }
+  | { kind: "refused"; tabId: string; url: string }
   | { kind: "external"; tabId: string; url: string }
+  | { kind: "failed"; tabId: string; error: string }
   | {
       kind: "download";
       tabId: string;
@@ -96,6 +98,13 @@ function error(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+function nativeErrorText(message: string): string {
+  if (/public web/i.test(message)) return t("browser.native.blocked");
+  if (/local addresses/i.test(message)) return t("browser.native.blockedLocal");
+  if (/Unsloth's own/i.test(message)) return t("browser.native.studioAddress");
+  return message;
+}
+
 // The view's history closes with it: keep the page it reached as a tab entry, for Back.
 function keepReachedPage(tabId: string): void {
   const store = useBrowserStore.getState();
@@ -104,6 +113,13 @@ function keepReachedPage(tabId: string): void {
   if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
   store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: false });
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
+}
+
+// A view pruned while its tab is still on the granted origin keeps the grant, to reopen.
+function onLocalOrigin(tabId: string): boolean {
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  const entry = tab && currentEntry(tab);
+  return entry?.kind === "web" && localOriginGranted(tabId, entry.url);
 }
 
 function closeView(tabId: string): void {
@@ -118,8 +134,11 @@ function closeView(tabId: string): void {
   loadingPages.delete(tabId);
   recency = recency.filter((id) => id !== tabId);
   if (parkedView === tabId) parkedView = null;
-  void call("browser_view_close", { tabId }).catch(() => undefined);
+  background = background.filter((id) => id !== tabId);
+  void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
 }
+
+setLocalViewCloser(closeView);
 
 let listening = false;
 
@@ -144,6 +163,14 @@ const loadingPages = new Set<string>();
 function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web" }>): void {
   const fresh = pageEntries.get(tabId) !== entry;
   pageEntries.set(tabId, entry);
+  const store = useBrowserStore.getState();
+  const tab = store.tabs.find((candidate) => candidate.id === tabId);
+  if (tab && tab.chat !== store.chat) {
+    // Off-screen chat: a self-navigation keeps the page's own flag, not the shown chat's incognito.
+    const own = entry.temporary === true;
+    temporaryPages.set(tabId, fresh ? own : (temporaryPages.get(tabId) ?? own));
+    return;
+  }
   const kept = fresh ? entry.temporary === true : loadingPages.has(tabId) && temporaryPages.get(tabId) === true;
   temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || kept);
 }
@@ -205,6 +232,13 @@ function onNativeEvent(event: NativeEvent): void {
     return;
   }
   if (!tab) return;
+  if (event.kind === "failed") {
+    // It never reached a page: what `pages` holds is the view it replaced.
+    pages.delete(tab.id);
+    closeView(tab.id);
+    store.updateTab(tab.id, { loading: false, nativeError: event.error });
+    return;
+  }
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
@@ -255,15 +289,15 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+        openPopup(tab, event.url);
       } else {
-        prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
-          label: t("browser.native.open"),
-          onClick: () => store.openUrl(event.url, { newTab: true, from: shownUrl(tab) }),
-        });
+        promptPopup(tab, event.url);
       }
       break;
     }
+    case "refused":
+      promptPopup(tab, event.url);
+      break;
     case "external":
       prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
         label: t("browser.native.open"),
@@ -271,6 +305,23 @@ function onNativeEvent(event: NativeEvent): void {
       });
       break;
   }
+}
+
+// A page at work in a chat off screen opens its popups there, not over this chat's tabs.
+function openPopup(tab: BrowserTab, url: string): void {
+  const store = useBrowserStore.getState();
+  if (tab.chat !== store.chat) {
+    // The opener's temporary flag, not the shown chat's: a temporary page's popups stay out of history.
+    const temporary = pageTemporary(tab.id, currentEntry(tab));
+    store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true, temporary });
+  } else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
+}
+
+function promptPopup(tab: BrowserTab, url: string): void {
+  prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url }), {
+    label: t("browser.native.open"),
+    onClick: () => openPopup(tab, url),
+  });
 }
 
 /** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
@@ -307,8 +358,7 @@ function prompt(message: string, action: { label: string; onClick: () => void })
   toast(message, { id: PROMPT_ID, action });
 }
 
-/** Keyed by the entry the view holds, not the tab's current one, which may not have loaded yet.
- *  Web addresses only: a blob: or data: page goes with the view that made it. */
+/** Keyed by the entry the view holds; blob: and data: pages are not remembered. */
 function remember(tabId: string, url: string): void {
   const entry = views.get(tabId);
   if (entry !== undefined && /^https?:/i.test(url)) resume.set(tabId, { entry, url });
@@ -318,8 +368,6 @@ function shownUrl(tab: BrowserTab): string {
   return tab.displayUrl ?? currentEntryUrl(tab);
 }
 
-/** Once the view moves off the address the tab was opened for, opening that address again
- *  opens it rather than focusing this tab. */
 function leftOpenedPage(tab: BrowserTab, url: string): { openKey?: null } {
   return tab.openKey?.startsWith("url:") && tab.openKey !== `url:${url}` ? { openKey: null } : {};
 }
@@ -408,6 +456,8 @@ function overlays(selector: string, rect: DOMRect | null, skip: string | null = 
   const boxes: DOMRect[] = [];
   for (const element of outsideThread(selector)) {
     if (element.closest("[data-native-page]")) continue;
+    // The dialog the browser opens in over compare, projects and phones holds the page, not covers it.
+    if (element.querySelector("[data-native-page]")) continue;
     if (skip && element.querySelector(skip)) continue;
     const box = element.getBoundingClientRect();
     if (box.width > 0 && box.height > 0 && (!rect || intersects(box, rect))) boxes.push(box);
@@ -690,8 +740,8 @@ function pruneViews(shown: string | null): void {
       resume.delete(tabId);
     }
   }
-  while (views.size > MAX_VIEWS) {
-    const oldest = recency.find((id) => id !== shown && views.has(id));
+  while (views.size - background.length > MAX_VIEWS) {
+    const oldest = recency.find((id) => id !== shown && views.has(id) && !background.includes(id));
     if (!oldest) break;
     closeView(oldest);
   }
@@ -726,6 +776,95 @@ export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<bo
 let snapshot: { tabId: string; element: HTMLElement; url: string } | null = null;
 let shownBounds: Bounds | null = null;
 const viewBounds = new Map<string, Bounds>();
+
+// Pages kept open while their chat is off screen: the agent at work in another chat. Newest last;
+// past the cap the oldest closes (and reopens where it got to, like any pruned view).
+const MAX_BACKGROUND = 3;
+let background: string[] = [];
+const openingInBackground = new Set<string>();
+let watchingBackground = false;
+// A panel is mounted (startNativeViews running), which prunes and closes hidden pages itself.
+let panelUp = false;
+
+/** Keeps `tabId`'s page open, and following its tab, while the panel shows another chat or none. */
+export function keepInBackground(tabId: string): void {
+  background = [...background.filter((id) => id !== tabId), tabId];
+  while (background.length > MAX_BACKGROUND) {
+    const oldest = background.shift();
+    if (oldest && oldest !== shownView && oldest !== parkedView && views.has(oldest)) closeView(oldest);
+  }
+  listenOnce();
+  if (!watchingBackground) {
+    watchingBackground = true;
+    useBrowserStore.subscribe(syncBackground);
+  }
+  syncBackground();
+}
+
+/** The page can close with the panel again; with no panel up, it closes now. */
+export function releaseBackground(tabId: string): void {
+  background = background.filter((id) => id !== tabId);
+  if (!panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
+}
+
+/** Opens or moves each kept page its tab no longer matches; the panel owns the one it shows. */
+function syncBackground(): void {
+  if (background.length === 0) return;
+  const tabs = new Map(useBrowserStore.getState().tabs.map((tab) => [tab.id, tab]));
+  for (const tabId of [...background]) {
+    const tab = tabs.get(tabId);
+    if (!tab) {
+      releaseBackground(tabId);
+      continue;
+    }
+    const entry = currentEntry(tab);
+    if (tabId === shownView || tabId === parkedView || entry.kind !== "web" || openingInBackground.has(tabId)) continue;
+    const key = entryKey(entry);
+    if (views.get(tabId) === key) continue;
+    void openInBackground(tabId, entry.url, key);
+  }
+}
+
+async function openInBackground(tabId: string, url: string, key: number): Promise<void> {
+  openingInBackground.add(tabId);
+  const resumed = resume.get(tabId);
+  try {
+    if (views.has(tabId)) {
+      await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
+    } else {
+      const bounds = viewBounds.get(tabId) ??
+        shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
+      openedTabs.add(tabId);
+      await call("browser_view_open_background", { tabId, url: resumed?.entry === key ? resumed.url : url, bounds });
+      viewBounds.set(tabId, bounds);
+      recency = [...recency.filter((id) => id !== tabId), tabId];
+    }
+    views.set(tabId, key);
+    if (useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.nativeError) {
+      useBrowserStore.getState().updateTab(tabId, { nativeError: null });
+    }
+  } catch (cause) {
+    useBrowserStore.getState().updateTab(tabId, { loading: false, nativeError: error(cause) });
+    // Not retried here: the agent's next action asks again.
+    background = background.filter((id) => id !== tabId);
+  } finally {
+    openingInBackground.delete(tabId);
+  }
+  // Let go (run over, tab closed, cap) while it opened: nothing owns it now.
+  if (!background.includes(tabId) && !panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
+  syncBackground();
+}
+
+/** True once `tabId`'s page is open (a kept page reopening after the cap closed it), false after `timeoutMs`. */
+export async function whenViewOpen(tabId: string, timeoutMs = 5000): Promise<boolean> {
+  const until = Date.now() + timeoutMs;
+  while (!views.has(tabId) || openingInBackground.has(tabId)) {
+    if (Date.now() > until) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
+}
 
 function clearSnapshot(): void {
   if (!snapshot) return;
@@ -864,7 +1003,7 @@ async function applyView(desired: Desired): Promise<void> {
   const started = generation;
   const stale = () => {
     if (started === generation) return false;
-    void call("browser_view_close", { tabId }).catch(() => undefined);
+    void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
     return true;
   };
   try {
@@ -883,6 +1022,7 @@ async function applyView(desired: Desired): Promise<void> {
     // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
       await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
       if (stale()) return;
     }
     views.set(tabId, entry);
@@ -895,14 +1035,13 @@ async function applyView(desired: Desired): Promise<void> {
     if (stale()) return;
     useBrowserStore.getState().updateTab(tabId, {
       loading: false,
-      nativeError: /public web/i.test(error(cause)) ? t("browser.native.blocked") : error(cause),
+      nativeError: nativeErrorText(error(cause)),
     });
   }
   recency = [...recency.filter((id) => id !== tabId), tabId];
 }
 
-// One call in flight, across mounts; meanwhile only the newest state waits, so a drag can't queue
-// a backlog of stale bounds for the native view to replay.
+// One call in flight; only the newest state waits, so a drag cannot queue stale bounds.
 let running = false;
 let pending: { desired: Desired } | null = null;
 
@@ -951,6 +1090,7 @@ let motionUntil = 0;
 
 export function startNativeViews(): () => void {
   listenOnce();
+  panelUp = true;
   let frame = 0;
   let sent = "";
   let resized: HTMLElement | null = null;
@@ -1027,8 +1167,10 @@ export function startNativeViews(): () => void {
     document.removeEventListener("pointerover", reachedPage, true);
     document.removeEventListener("pointerup", schedule, true);
     window.clearInterval(interval);
+    panelUp = false;
     tooltipHold = 0;
-    // close pages because hidden native views keep scripts and media running.
+    // close pages because hidden native views keep scripts and media running; a page at work
+    // in the background is only hidden.
     generation += 1;
     pending = null;
     parkedView = null;
@@ -1037,6 +1179,7 @@ export function startNativeViews(): () => void {
     closeHole();
     sendInput(NO_INPUT);
     insetToasts(null);
-    for (const tabId of [...views.keys()]) closeView(tabId);
+    for (const tabId of [...views.keys()]) if (!background.includes(tabId)) closeView(tabId);
+    if (views.size > 0) void call("browser_view_show", { tabId: null }).catch(() => undefined);
   };
 }

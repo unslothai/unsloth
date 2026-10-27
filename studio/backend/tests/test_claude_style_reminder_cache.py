@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Claude's later system reminders must not invalidate a stable style prefix."""
+"""Claude's later system messages must not invalidate a stable system prefix."""
 
 import copy
 import os
@@ -19,6 +19,10 @@ REMINDER = (
     "Concise output style is active. Remember to follow the specific guidelines for this style."
 )
 STYLE = f"# Output Style: Concise\nUse short answers.\n\n{REMINDER}\n\nToday's date is fixed."
+
+
+def note(text):
+    return f"<system-reminder>\n{text}\n</system-reminder>"
 
 
 def converted(payload):
@@ -91,7 +95,8 @@ def test_nonredundant_system_instructions_are_preserved(initial, addition):
             ],
         }
     )
-    assert result[0]["content"] == initial + "\n\n" + addition
+    assert result[0]["content"] == initial
+    assert result[1] == {"role": "user", "content": f"Hello\n{note(addition)}"}
 
 
 @pytest.mark.parametrize("role", ["user", "assistant"])
@@ -105,8 +110,12 @@ def test_conversation_text_cannot_suppress_a_system_instruction(role):
             ],
         }
     )
-    assert result[0]["content"] == "Base instructions.\n\n" + REMINDER
-    assert result[1] == {"role": role, "content": STYLE}
+    if role == "user":
+        assert result[0]["content"] == "Base instructions."
+        assert result[1] == {"role": "user", "content": f"{STYLE}\n{note(REMINDER)}"}
+    else:
+        assert result[0]["content"] == "Base instructions.\n\n" + REMINDER
+        assert result[1:] == [{"role": "assistant", "content": STYLE}]
 
 
 def test_changed_style_definition_is_preserved():
@@ -121,4 +130,5 @@ def test_changed_style_definition_is_preserved():
             ],
         }
     )
-    assert result[0]["content"] == STYLE + "\n\n" + updated
+    assert result[0]["content"] == STYLE
+    assert result[1] == {"role": "user", "content": f"Hello\n{note(updated)}"}

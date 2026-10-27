@@ -1,19 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""PPOTrainer with an Unsloth policy (#884).
-
-TRL < 1.0 PolicyAndValueWrapper copies is_gradient_checkpointing from the policy without the toggles
-unwrap_model_for_generation calls, and has no generate() for Unsloth's unwrap to wrap. The PPO value
-and reward models are plain transformers models built after Unsloth patched the rotary class, so on
-transformers v5 their inv_freq buffer is uninitialized memory that extend_rope_embedding read.
-The rl.py helpers are lifted out with ``ast`` so those checks run without ``import unsloth``.
-"""
+"""PPO value/reward models built after the rotary patch read uninitialized inv_freq on transformers 5."""
 
 from __future__ import annotations
 
 import ast
 import copy
 import functools
+import importlib.util
 import inspect
 import sys
 from contextlib import contextmanager
@@ -126,6 +120,28 @@ def test_wrapper_found_through_the_trainer_module_and_upstream_toggles_kept():
     assert upstream.PolicyAndValueWrapper.gradient_checkpointing_disable is own
 
 
+def _decode_graphs(calls):
+    """rl.py's _decode_graphs with its real rl_generation scope, loaded by file path (importing
+    unsloth needs an accelerator); entering the scope and releasing for training are recorded."""
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_decode_graphs_ppo", RL_PY.with_name("_decode_graphs.py")
+    )
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+
+    class rl_generation(real.rl_generation):
+        __slots__ = ()
+
+        def __enter__(self):
+            calls.append("rl_generation")
+            return super().__enter__()
+
+    return SimpleNamespace(
+        rl_generation = rl_generation,
+        release_for_training = lambda model: calls.append("release_for_training"),
+    )
+
+
 def _unsloth_unwrap(calls):
     fast = SimpleNamespace(
         for_inference = lambda model: calls.append("for_inference"),
@@ -140,6 +156,7 @@ def _unsloth_unwrap(calls):
         "FastLanguageModel": fast,
         "copy": copy,
         "inspect": inspect,
+        "_decode_graphs": _decode_graphs(calls),
     }
     _lift("_generate_accepts_use_model_defaults", namespace)
     _lift("_caller_sampling_only", namespace)
@@ -161,7 +178,13 @@ def test_unwrap_generates_through_the_ppo_policy():
         out = unwrapped.policy.generate()
     assert not out.is_inference()
     assert "generate" not in vars(wrapper)
-    assert calls == ["for_inference", ("for_training", "unsloth")]
+    # Generation runs inside the RL scope; the decode buffers go before training resumes.
+    assert calls == [
+        "for_inference",
+        "rl_generation",
+        "release_for_training",
+        ("for_training", "unsloth"),
+    ]
 
 
 def test_unwrap_still_wraps_a_model_with_generate():
@@ -170,6 +193,7 @@ def test_unwrap_still_wraps_a_model_with_generate():
     with _unsloth_unwrap(calls)(policy) as unwrapped:
         out = unwrapped.generate()
     assert not out.is_inference()
+    assert calls.index("rl_generation") < calls.index("release_for_training")
 
 
 def _has_real_gpu():

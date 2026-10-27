@@ -41,9 +41,6 @@ test("a tool call is left to the wire shape, not counted as payload up front", (
   const start = adapter.indexOf("function assistantTurnCarriesPayload(");
   const end = adapter.indexOf("function hasReplayContent(");
   assert.ok(start > 0 && end > start);
-  // A call the replay can carry already leaves tool_calls on the wire; one it cannot carry
-  // reaches the provider as nothing; short-circuiting here would keep the empty turn the
-  // backend drops, stranding the pair this prune exists to repair.
   assert.doesNotMatch(adapter.slice(start, end), /part\.type === "tool-call"/);
 });
 
@@ -96,7 +93,6 @@ test("a Stop that beats the durable admission arrives as a Stop", () => {
 });
 
 test("an admission that answered without a run is not replayed as a Stop", () => {
-  // Ungated, a transport failure files as a cancellation: no Retry, and a stop label on the wire.
   assert.match(
     adapter,
     /throw new Error\(\s*"The server accepted the request without starting a generation run",/,
@@ -104,8 +100,6 @@ test("an admission that answered without a run is not replayed as a Stop", () =>
 });
 
 test("assistant-ui still stops a run with an AbortError, not a bare detach marker", () => {
-  // The forwarded reason only reads as a Stop while cancelRun throws this class, not the plain
-  // `{ detach }` our tests stand in with; otherwise it must be normalised before it is thrown.
   const core = new URL(
     "../node_modules/@assistant-ui/core/dist/runtimes/local/local-thread-runtime-core.js",
     import.meta.url,
@@ -124,7 +118,6 @@ test("assistant-ui still stops a run with an AbortError, not a bare detach marke
 });
 
 test("only a deliberate Stop is replayed as one", () => {
-  // Collapsing this back to a constant tells the model a failed turn was stopped.
   assert.match(
     adapter,
     /status\?\.type !== "incomplete" \|\| status\.reason === "cancelled"/,

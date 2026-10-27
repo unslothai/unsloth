@@ -61,7 +61,7 @@ class _Model(nn.Module):
         return None
 
 
-def _patched(raise_on = None):
+def _patched(raise_on = None, collator = None):
     calls = []
 
     class _StubSFTTrainer:
@@ -78,6 +78,13 @@ def _patched(raise_on = None):
                 raise ValueError(raise_on)
             self.model = model
             self.args = args
+            self.data_collator = collator
+
+        def get_eval_dataloader(self, eval_dataset = None):
+            return self.data_collator
+
+        def get_test_dataloader(self, test_dataset):
+            return self.data_collator
 
     module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
@@ -202,6 +209,19 @@ def test_verified_families_are_unblocked(model_type):
     assert not _blocked(model = _Model(_Cfg(model_type = model_type)))
 
 
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+def test_qwen3_5_processor_on_text_is_unblocked_despite_mrope(model_type):
+    """Qwen3.5 text models take 2D position_ids as the text row, so packed text rows stay per document."""
+    cfg = _Cfg(
+        model_type = model_type,
+        text_config = {"rope_parameters": {"mrope_section": [11, 11, 10], "mrope_interleaved": True}},
+    )
+    assert _uses_multimodal_rope(cfg)
+    assert not _blocked(model = _Model(cfg))
+    img = datasets.Dataset.from_dict({"text": ["a"], "images": [[0]]})
+    assert _blocked(model = _Model(cfg), train_dataset = img)
+
+
 @pytest.mark.parametrize("value", ["false", "OFF", "no"])
 def test_kill_switch_spellings(monkeypatch, value):
     monkeypatch.setenv("UNSLOTH_PROCESSOR_TEXT_PACKING", value)
@@ -275,6 +295,26 @@ def test_a_trl_refusal_falls_back_to_the_old_block(message):
     assert len(calls) == 2
     assert calls[-1] == (False, False)
     assert t.args.padding_free is False and t.args.packing is False
+
+
+class _TextCollator:
+    """TRL's DataCollatorForLanguageModeling exposes `padding_free` as a plain field."""
+
+    padding_free = True
+
+
+@pytest.mark.parametrize("packing", [False, True])
+def test_evaluation_keeps_the_text_collator(packing):
+    """Only UnslothVisionDataCollator evaluates from an unpacked copy; a text collator copy
+    would drop the packed_seq_lengths wrapper and eval_loss would cross documents."""
+    collator = _TextCollator()
+    module, _ = _patched(collator = collator)
+    t = module.SFTTrainer(
+        model = _Model(), args = _config(packing), train_dataset = TEXT, processing_class = _Proc()
+    )
+    assert t.args.padding_free is True
+    assert t.get_eval_dataloader() is collator
+    assert t.get_test_dataloader(TEXT) is collator
 
 
 def test_an_unrelated_value_error_still_propagates():

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Browser harness for tests/studio/playwright_mtp_download_visibility.py. It runs
-// the same staging predicate as the chat model picker and renders the real
-// bottom-right download manager without needing a GPU or a multi-gigabyte pull.
+// Browser harness for tests/studio/playwright_mtp_download_visibility.py.
 /* eslint-disable react-refresh/only-export-components -- standalone Playwright harness */
 
 import { TooltipProvider } from "@/components/ui/tooltip";

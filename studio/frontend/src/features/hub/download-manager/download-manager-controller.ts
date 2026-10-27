@@ -16,6 +16,7 @@ import {
   useDownloadManagerStore,
 } from "./download-manager-state";
 import { hydrateDownloadManager, resetHydrationState } from "./hydration";
+import { resetPendingStarts } from "./pending-starts";
 import { cancelJob, probeAndAdopt, setExpected } from "./poll-loop";
 import { runtimeRegistry } from "./runtime-registry";
 import { resetStagedQueues } from "./staged-download-queue";
@@ -51,6 +52,7 @@ function resetDownloadManagerState(): void {
   setState(createDownloadManagerInitialState());
   // A media page stays mounted across a cross-tab session change, so its queue would outlive the jobs.
   resetStagedQueues();
+  resetPendingStarts();
 }
 
 export function __resetDownloadManagerForTests(): void {

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every model a defaults file says it applies to has to actually load it.
-
-A model id reaches its YAML either through MODEL_NAME_MAPPING or through the
-`org/model` -> `org_model.yaml` filename convention, and it has to get there
-whether it arrives bare or as the tail of a local model directory. When it does
-not, the model silently falls back to default.yaml with generic hyperparameters
-instead of its tuned ones.
-"""
+"""Each id a defaults file names must resolve to its YAML, or it silently falls back to default.yaml."""
 
 import re
 from pathlib import Path
@@ -54,11 +47,7 @@ def _primary_name(config_name):
 
 
 def _on_disk(model_id):
-    """The id as an LM Studio or custom scan folder hands it over: <root>/<publisher>/<model>.
-
-    Those rows carry the filesystem path, not a repo id, so this is the form the defaults
-    lookup actually receives for a locally stored model.
-    """
+    """Local scan rows carry a filesystem path, not a repo id, which is what the defaults lookup gets."""
     return f"/home/u/.lmstudio/models/{model_id}"
 
 

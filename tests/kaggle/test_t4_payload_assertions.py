@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""CPU-only tests for what the T4 payloads actually ASSERT.
-
-`test_t4_smoke_harness.py` covers the launcher, the gate and the shape of the
-generated notebook; this covers the other half: given a result dict, does the
-payload call it a pass or a failure? Every case here is one where a run that
-measured nothing, or the wrong thing, used to report green.
-
-Nothing here needs a GPU, which is the point: the pass/fail rule for a leg that
-costs a Kaggle session has to be checkable without one.
-"""
+"""Checks the T4 payloads' pass/fail rules on CPU, so no Kaggle session is needed to test them."""
 
 from __future__ import annotations
 
@@ -60,16 +51,8 @@ NAN = float("nan")
 INF = float("inf")
 
 
-# ------------------------------------------------------- determinism.py
-
-
 def test_a_field_logged_by_only_one_run_is_a_difference():
-    """grad_norm in cycle 0 and not in cycle 1 is nondeterminism, not a skip.
-
-    ``check_reference`` already calls one-sided presence "a change in the SHAPE
-    of what the trainer logged", and the exact comparator has to agree or the
-    strong assertion is weaker than the tolerance band beside it.
-    """
+    """A field logged by only one run is a difference, not a skip, matching check_reference's shape rule."""
     from determinism import compare_metrics
 
     a = [{"step": 1, "loss": 1.0, "grad_norm": 2.0}]
@@ -136,9 +119,6 @@ def test_an_infinity_only_one_run_logged_is_still_a_difference(norm_a, norm_b):
     assert compare_metrics(a, b)["identical"] is False
 
 
-# -------------------------------------------------- run_t4_smoke.py: canary
-
-
 def test_the_canary_must_be_the_whole_answer():
     from run_t4_smoke import CANARY, canary_failures
 
@@ -164,15 +144,8 @@ def test_the_canary_can_be_downgraded_to_a_warning():
     assert canary_failures({"run_index": 1, "generated": "nope"}, require = False) == []
 
 
-# -------------------------------------- run_t4_smoke.py: optimisation checks
-
-
 def test_an_infinite_gradient_norm_is_not_an_applied_update():
-    """fp16 overflow reports the norm as inf as readily as NaN.
-
-    ``inf == inf``, so the NaN-only test counted every skipped step as applied
-    and a run that trained nothing reported green.
-    """
+    """Infinite grad_norm is a skipped step, not an applied update; a NaN-only check counted it applied."""
     from run_t4_smoke import optimisation_failures
 
     metrics = [{"step": s, "loss": 10.0 - s, "grad_norm": INF} for s in (1, 2, 3)]
@@ -188,9 +161,6 @@ def test_one_finite_gradient_norm_is_enough():
         {"step": 3, "loss": 1.0, "grad_norm": 11.2},
     ]
     assert optimisation_failures(metrics) == []
-
-
-# ------------------------------------------- run_t4_smoke.py: saved adapter
 
 
 def _adapter_state(**over) -> dict:
@@ -248,12 +218,7 @@ def test_an_all_zero_adapter_is_a_failure():
 
 
 def test_an_adapter_whose_b_matrices_are_all_zero_is_a_failure():
-    """The A matrices alone keep `nonzero_tensors` up, and prove nothing.
-
-    peft initialises lora_A randomly, so it is nonzero before a single step, and
-    counting every tensor therefore accepted an adapter whose B matrices were
-    all zero, contributing nothing since the update goes through B.
-    """
+    """Count nonzero lora_B matrices, not all tensors: lora_A is random and nonzero before any step."""
     from run_t4_smoke import saved_adapter_failures
 
     failures = saved_adapter_failures(
@@ -273,13 +238,7 @@ def test_an_adapter_with_no_b_matrices_at_all_is_unusable_rather_than_fine():
 
 
 def test_an_adapter_nobody_checked_the_names_of_is_not_a_pass():
-    """No oracle, no verdict.
-
-    The tensor reading cannot see whether PEFT would consume these weights, so
-    a run that could not derive the expected names learned nothing about the
-    save. Recording that as an unchecked field would leave the strongest thing
-    this function asserts silently switched off.
-    """
+    """No derivable expected key names means the save is unchecked, which must fail rather than pass."""
     from run_t4_smoke import saved_adapter_failures
 
     failures = saved_adapter_failures(
@@ -303,17 +262,7 @@ def test_lora_tensors_under_names_peft_does_not_use_are_a_failure():
 
 
 def test_a_non_lora_tensor_beside_the_adapter_is_not_a_failure(tmp_path):
-    """The check is about names PEFT has to MATCH, not about extra tensors.
-
-    ``save_pretrained`` can legitimately write more than the adapter -- an
-    embedding copy when the vocabulary was resized, a modules_to_save entry --
-    and none of that is a LoRA tensor PEFT's loader has to recognise. Failing on
-    it turns a supported save into a red leg, which is why the two are sorted
-    apart rather than failed together as "anything the oracle did not name".
-
-    Through the real reading rather than a hand-built state, or the sorting this
-    asserts is not the code that runs.
-    """
+    """Non-LoRA tensors like an embedding copy are not failures; only names PEFT must match are checked."""
     save_file, saved_adapter_failures, torch, verify_saved_adapter = _shared_setup_1()
 
     lora = "base_model.model.layers.0.self_attn.q_proj.lora_B.weight"
@@ -338,20 +287,7 @@ def test_the_key_oracle_reports_a_failure_rather_than_raising():
 
 
 def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
-    """The whole regression, through the real peft, on the CPU.
-
-    A serialization regression that renames the tensors (dropping the
-    ``base_model.model.`` prefix is what filtering ``model.state_dict()`` by
-    hand instead of calling ``get_peft_model_state_dict`` produces) leaves a
-    file that deserializes perfectly and holds the same nonzero lora_B matrices
-    a trained adapter does. Every reading this payload took off the bytes is
-    identical, PEFT raises nothing on reload, and the adapter contributes
-    nothing -- the exact outcome the tensor counts exist to catch.
-
-    The last assertion is the premise rather than the behaviour: if a future
-    peft starts refusing unmatched keys, this test says so instead of quietly
-    checking nothing.
-    """
+    """An adapter whose tensor names PEFT ignores on reload must fail, though its weights look trained."""
     pytest.importorskip("peft")
     pytest.importorskip("transformers")
     pytest.importorskip("safetensors")
@@ -415,12 +351,7 @@ def test_a_missing_adapter_config_is_a_failure():
 
 
 def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
-    """End to end through the real writer, no GPU and no model.
-
-    The first file is the exact artifact the old count accepted: a random
-    lora_A beside a lora_B that never left zero, one nonzero tensor of two, and
-    an adapter that reloads to the base model.
-    """
+    """The check must reject a real file the old count accepted: random lora_A, lora_B never trained."""
     save_file, saved_adapter_failures, torch, verify_saved_adapter = _shared_setup_1()
 
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 16}))
@@ -439,8 +370,6 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     failures = saved_adapter_failures(state)
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
-    # The same file with a B matrix an optimizer moved, the only difference between an adapter that carries training and
-    # one that does not.
     save_file(
         {
             "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(16, 8),
@@ -460,14 +389,7 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
 
 
 def test_a_syntactically_valid_but_empty_adapter_config_is_not_a_pass(tmp_path):
-    """`{}` is valid JSON and PEFT cannot rebuild an adapter from it.
-
-    The check used to be `json.loads` succeeding, which `{}` and `[]` both do,
-    so a save that wrote no LoRA fields at all read as "config_readable" and
-    the leg passed on a directory nothing can load. PEFT resolves the config
-    class from `peft_type` and raises when it is absent, so the question is
-    asked of PEFT rather than of a field list this file guessed at.
-    """
+    """An empty adapter_config.json is valid JSON but PEFT cannot load it; the check must ask PEFT."""
     pytest.importorskip("peft")
     save_file, saved_adapter_failures, torch, verify_saved_adapter = _shared_setup_1()
 
@@ -485,14 +407,7 @@ def test_a_syntactically_valid_but_empty_adapter_config_is_not_a_pass(tmp_path):
 
 
 def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tmp_path):
-    """A well-formed config that does not describe THIS run.
-
-    Loadable is not enough on its own: a save that dropped `target_modules` or
-    wrote a rank the run never used produces a file PEFT rebuilds happily into
-    the wrong adapter. The expectation is the argument list the payload handed
-    `get_peft_model`, so this compares the save against the request rather than
-    against a copy of it.
-    """
+    """A loadable config still fails if it does not match the get_peft_model arguments the run used."""
     pytest.importorskip("peft")
     save_file, saved_adapter_failures, torch, verify_saved_adapter = _shared_setup_1()
 
@@ -524,9 +439,6 @@ def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tm
     assert saved_adapter_failures(good) == []
 
 
-# ------------------------------------------ run_t4_smoke.py: the reference
-
-
 def _write_reference(
     path: Path,
     *,
@@ -547,15 +459,7 @@ def _write_reference(
 
 
 def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path):
-    """The committed reference records the card it was captured on.
-
-    references/t4_qwen2.5-0.5b.json carries gpu_name "Tesla T4" and
-    gpu_capability "sm_75" because a loss trace belongs to its hardware: no
-    bf16 and xformers attention on sm_75. Nothing compared it, so a run on
-    another GPU was band-checked against a T4 trace and its deviations came
-    back as a code regression. The only hardware check anywhere was the GPU
-    COUNT, on the kernel, which never reads this file.
-    """
+    """Refuse a band check against a reference from another GPU: a loss trace belongs to its hardware."""
     from run_t4_smoke import check_reference, reference_failures
 
     ref = tmp_path / "ref.json"
@@ -582,14 +486,12 @@ def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path)
         environment = {"gpu_name": "Tesla P100-PCIE-16GB", "gpu_capability": "sm_60"},
     )
     assert verdict["status"] == "hardware_mismatch", verdict
-    # Refused BEFORE any number is compared: the metrics here are identical to
-    # the reference, so a pass would look like a healthy run on the wrong card.
+    # Metrics match the reference, so only the card check can refuse.
     assert verdict["deviations"] == []
     failures = reference_failures(verdict, 0.10)
     assert failures and "not for this run" in failures[0]
     assert "Tesla P100-PCIE-16GB" in failures[0]
 
-    # Same reference, the card it was captured on: compared normally.
     same = check_reference(
         observed,
         ref,
@@ -605,12 +507,7 @@ def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path)
 
 
 def test_a_reference_that_records_no_hardware_is_unchecked_not_a_mismatch(tmp_path):
-    """ "It does not say" is not "it differs", the rule the settings follow.
-
-    An older reference captured before the environment block carried a GPU
-    name must keep working rather than fail every run; the skip is recorded so
-    it cannot read as a comparison that passed.
-    """
+    """A reference that does not name its GPU is unchecked, not a mismatch, and the skip is recorded."""
     check_reference, ref, reference_failures = _shared_setup_2(tmp_path)
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(
@@ -638,18 +535,7 @@ def test_a_reference_that_records_no_hardware_is_unchecked_not_a_mismatch(tmp_pa
     ],
 )
 def test_a_run_that_cannot_name_its_card_is_refused_not_waved_through(tmp_path, environment):
-    """The hardware gate must not switch itself off when the probe fails.
-
-    main() records ``environment = {"error": ...}`` for the whole block when
-    environment_fingerprint() raises, and the fingerprint omits every gpu_* key
-    outright when torch.cuda.is_available() is False. Either way the live values
-    are absent while the reference still names Tesla T4 / sm_75, and treating
-    that as "not compared" let the control leg report an ``ok`` reference check
-    without ever establishing the card the trace belongs to -- the gate defeated
-    by exactly the failure it exists to catch. What the REFERENCE does not say
-    stays a skip; what the RUN cannot say about a key the reference does name is
-    a refusal.
-    """
+    """A probe failure must not switch off the GPU check: a run that cannot name its card is refused."""
     from run_t4_smoke import check_reference, reference_failures
 
     ref = tmp_path / "ref.json"
@@ -683,11 +569,7 @@ def test_a_run_that_cannot_name_its_card_is_refused_not_waved_through(tmp_path, 
 
 
 def test_the_committed_reference_names_the_card_the_gate_reads(tmp_path):
-    """The gate is derived from the file, so the file has to carry it.
-
-    A reference recaptured without gpu_name silently turns the check above
-    into a skip, which is the shape of every defect this suite keeps finding.
-    """
+    """A recaptured reference without gpu_name would silently turn the card check into a skip."""
     reference = SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json"
     environment = json.loads(reference.read_text(encoding = "utf-8"))["environment"]
     assert environment["gpu_name"] == "Tesla T4"
@@ -696,8 +578,6 @@ def test_the_committed_reference_names_the_card_the_gate_reads(tmp_path):
 
 REFERENCE_CONFIG = {
     "max_steps": 3,
-    # The rows, not the path: what trained is part of which experiment the trace is a trace of, and the payload records
-    # a digest of them.
     "dataset_digest": "d" * 64,
     "init_loss_scale": 0.0,
     "batch_size": 2,
@@ -766,8 +646,7 @@ def test_a_reference_that_predates_a_setting_does_not_refuse_on_it(tmp_path):
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, config = REFERENCE_CONFIG)
     assert verdict["status"] == "ok"
-    # `model` too: the helper's reference names one and this call observed none, and a pin present on one side only did
-    # not run, so it is recorded rather than skipped in silence.
+    # A pin present on one side only is recorded as unchecked.
     assert verdict["config_unchecked"] == ["gradient_checkpointing", "model"]
 
 
@@ -850,8 +729,7 @@ def test_a_repo_id_that_differs_only_in_case_is_the_same_reference(tmp_path):
     assert recased["status"] == "ok", recased
     assert not reference_failures(recased, 0.10)
 
-    # Case is the only thing forgiven: another checkpoint, or a revision with different
-    # capitals, is still a different experiment.
+    # Only case is forgiven; a different revision is still a different experiment.
     other = check_reference(
         observed,
         ref,
@@ -895,7 +773,7 @@ def test_a_local_checkpoint_path_keeps_its_case(tmp_path):
     assert verdict["status"] == "config_mismatch", verdict
     assert reference_failures(verdict, 0.10)
 
-    # A relative "owner/name" that exists here is a directory too, not a repo id.
+    # A relative "owner/name" that exists locally is a directory, not a repo id.
     rel_upper = tmp_path / "Owner" / "Model"
     rel_lower = tmp_path / "owner" / "model"
     rel_upper.mkdir(parents = True)
@@ -963,11 +841,7 @@ def test_what_the_band_did_not_compare_reaches_the_summary():
 
 
 def test_the_committed_reference_pins_the_model_it_was_captured_on():
-    """The one identity key that is knowable without another T4 session.
-
-    The control leg passes no --model, so the reference belongs to DEFAULT_MODEL
-    and the gate can be live now rather than from the next recapture.
-    """
+    """The committed reference must pin DEFAULT_MODEL, since the control leg passes no --model."""
     from run_t4_smoke import DEFAULT_MODEL
 
     reference = json.loads(
@@ -996,9 +870,6 @@ def _batch_record(**over):
     return base
 
 
-# -------------------------------------------- run_t4_smoke.py: main() paths
-
-
 def _cycle(index: int, losses: list[float]) -> dict:
     return {
         "run_index": index,
@@ -1007,12 +878,7 @@ def _cycle(index: int, losses: list[float]) -> dict:
         ],
         "generated": "__UNSLOTH__!!!",
         "canary_found": True,
-        # A simulated HEALTHY cycle has to look healthy in every respect a real
-        # one is judged on, this record included. Leaving it out made
-        # `--check-batched-generation` (on by default, because a leg that
-        # quietly skips it stops covering #3699/#1066/#1456/#2138) fail every
-        # simulated run with "batched generation was never run" -- which is the
-        # rule working, on a fixture that had not kept up.
+        # A healthy simulated cycle needs this record: batched generation is checked by default.
         "batched_generation": _batch_record(),
         "adapter_files": ["adapter_config.json", "adapter_model.safetensors"],
         "saved_adapter": _adapter_state(),
@@ -1100,9 +966,6 @@ def test_a_failed_cycle_still_reports_its_environment(monkeypatch, tmp_path):
     assert report["label"] == "t4-smoke"
 
 
-# ------------------------------------------------------- run_gptoss_t4.py
-
-
 def _gptoss_args(**over):
     base = {"max_steps": 3, "require_compile": True}
     base.update(over)
@@ -1121,8 +984,6 @@ def _gptoss_result(**over) -> dict:
             "custom_dtype_env": "down_projs;mlp.router",
         },
         "environment": {"bf16_supported": False, "gpu_name": "Tesla T4"},
-        # What the feasibility probe measured: every parameter on the one
-        # visible T4 and no accelerate dispatch at all.
         "placement_after_load": {
             "parameters_by_device": {"cuda:0": 20_900_000_000},
             "hf_device_map_devices": None,
@@ -1192,14 +1053,7 @@ def test_gptoss_measures_compilation_across_training_only():
 
 @pytest.mark.parametrize("value", ["0", "", None, "true"])
 def test_gptoss_requires_the_forcing_to_be_on_rather_than_merely_recorded(value):
-    """`"0"` is what the loader writes on its ordinary branch.
-
-    models/loader.py sets UNSLOTH_FORCE_FLOAT32 to "0" BEFORE deciding whether
-    to force and overwrites it with "1" only when the forcing fires, and every
-    production consumer reads `== "1"`. A truthiness check therefore accepts the
-    one regression this leg uniquely covers: forcing off, fp16 and bf16 still
-    false, leg green.
-    """
+    """UNSLOTH_FORCE_FLOAT32 must be exactly 1; its ordinary-branch value 0 is a truthy string."""
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
@@ -1259,12 +1113,7 @@ def _moved(**over) -> dict:
 
 
 def test_gptoss_does_not_infer_a_verdict_from_an_unlogged_grad_norm():
-    """A trainer that stops logging grad_norm still says nothing either way.
-
-    That has not changed; what changed is that the leg no longer depends on the
-    field, the trained adapter being fingerprinted before and after, so silence
-    from the trainer is answered from the weights rather than guessed at.
-    """
+    """With no logged grad_norm the gpt-oss verdict comes from the adapter weights, not from a guess."""
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
@@ -1275,13 +1124,7 @@ def test_gptoss_does_not_infer_a_verdict_from_an_unlogged_grad_norm():
 
 
 def test_gptoss_fails_when_nothing_at_all_can_say_the_adapter_moved():
-    """No grad_norm logged AND no adapter reading is not a pass.
-
-    Every other number in the report (finite losses, captured graphs, non-empty
-    generation) is produced by the base model and the loader on their own, so
-    with both instruments gone the leg has nothing left to show for the LoRA
-    training it covers.
-    """
+    """With no grad_norm and no adapter reading, gpt-oss fails: other numbers come from the base model."""
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
@@ -1293,11 +1136,7 @@ def test_gptoss_fails_when_nothing_at_all_can_say_the_adapter_moved():
 
 
 def test_gptoss_fails_when_the_adapter_is_the_one_it_started_with():
-    """The grad norms can look healthy and the weights still not move.
-
-    Gradients flowing into weights nobody updated is a run that trained nothing,
-    so the adapter reading decides it rather than the telemetry.
-    """
+    """Healthy grad norms do not count if the adapter weights did not move: the adapter reading decides."""
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
@@ -1367,11 +1206,7 @@ def test_gptoss_fails_when_the_checkpoint_did_not_stay_on_the_gpu(placement, exp
 
 
 def test_gptoss_accepts_the_placement_the_probe_measured():
-    """The floor under the test above: a healthy run is not red for placement.
-
-    Every parameter on the one visible CUDA device and no accelerate dispatch,
-    which is what kernels 8161ceb9 / 7ab727f1 reported.
-    """
+    """A healthy run keeps every parameter on the one visible CUDA device with no accelerate dispatch."""
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
@@ -1385,11 +1220,7 @@ def test_gptoss_accepts_the_placement_the_probe_measured():
 
 
 def test_gptoss_refuses_a_placement_record_it_cannot_read():
-    """An offload flag that is neither True nor False is not a pass.
-
-    Same three-way rule the bf16 reading gets: the check that switches itself
-    off when its instrument breaks is the one that never fires.
-    """
+    """A non-boolean offload flag is a failure, not a pass: a check that can switch off never fires."""
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
@@ -1400,11 +1231,7 @@ def test_gptoss_refuses_a_placement_record_it_cannot_read():
 
 
 def test_grpo_fails_when_nothing_at_all_can_say_the_adapter_moved():
-    """The same hole, and the same reason it is a hole on this leg too.
-
-    Reward, reward_std and the completions all come from generating and scoring,
-    which the base model does without a single optimizer step.
-    """
+    """GRPO fails when nothing shows the adapter moved: reward and completions need no optimizer step."""
     from run_grpo_t4 import failures_for
 
     result = _grpo_result(
@@ -1421,9 +1248,6 @@ def test_grpo_reads_the_adapter_when_the_trainer_logged_no_norms():
         adapter_update = _moved(),
     )
     assert failures_for(result, _grpo_args()) == []
-
-
-# ------------------------------------------------- training_evidence.py
 
 
 class _Tensor:
@@ -1518,7 +1342,6 @@ def test_the_zero_initialised_b_matrices_are_what_make_the_comparison_safe():
 
     before = adapter_fingerprint(_Adapter(0.0))
     assert before == {"ok": True, "tensors": 2, "abs_sum": 4.0, "b_abs_sum": 0.0}
-    # A B matrix that moved while the total happened to come out the same.
     after = adapter_fingerprint(_Adapter(0.0))
     after["b_abs_sum"] = 0.5
     assert adapter_update(before, after)["changed"] is True
@@ -1527,12 +1350,7 @@ def test_the_zero_initialised_b_matrices_are_what_make_the_comparison_safe():
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
 def test_a_non_finite_lora_weight_is_not_read_as_a_successful_update(bad):
-    """The strongest possible pass, produced by the worst possible run.
-
-    `NaN != finite` and `inf != finite` both read as "the adapter changed", so a
-    run whose optimizer corrupted the weights reported `applied` on exactly the
-    no-telemetry path this module decides, while generation still returned text.
-    """
+    """NaN and inf LoRA weights must not count as an applied update; != finite reads them as changed."""
     from training_evidence import adapter_fingerprint, adapter_update, update_verdict
 
     class _Corrupt:
@@ -1557,7 +1375,6 @@ def test_a_non_finite_lora_weight_is_not_read_as_a_successful_update(bad):
     assert update["ok"] is False
     assert update["non_finite"] is True
 
-    # And it beats a healthy grad_norm, which says nothing about weights that went non-finite two steps later.
     healthy = [{"step": s, "loss": 1.0, "grad_norm": 2.0} for s in (1, 2)]
     assert update_verdict(healthy, update)["verdict"] == "non_finite"
     assert update_verdict([], update)["verdict"] == "non_finite"
@@ -1593,11 +1410,7 @@ def test_a_non_finite_adapter_turns_both_legs_red():
 
 
 def test_a_verdict_neither_leg_has_been_taught_about_is_still_a_failure():
-    """`elif != "applied"`, not `elif == "unverifiable"`.
-
-    A verdict added to training_evidence.py and not wired here would otherwise
-    be a silent pass.
-    """
+    """A verdict the legs have not been taught fails: they test for applied, not unverifiable."""
     import run_gptoss_t4
     import run_grpo_t4
 
@@ -1620,9 +1433,6 @@ def test_two_fingerprints_over_different_tensor_counts_are_not_compared():
     verdict = adapter_update(before, after)
     assert verdict["ok"] is False
     assert "not comparable" in verdict["error"]
-
-
-# --------------------------------------------------------- run_grpo_t4.py
 
 
 def _grpo_args(**over):
@@ -1724,9 +1534,6 @@ def test_grpo_still_reports_an_engine_that_never_built(monkeypatch, tmp_path):
     assert report["engine_built"] is False
 
 
-# ------------------------------------------------------- references/README
-
-
 def test_the_recapture_recipe_selects_the_control_report_by_label():
     """`reports[0]` is whichever kernel slug sorted first, not the control."""
     readme = (SMOKE_DIR / "references" / "README.md").read_text(encoding = "utf-8")
@@ -1743,13 +1550,7 @@ def _recapture_recipe() -> str:
 
 
 def test_the_recapture_recipe_records_the_kernel_it_came_from(tmp_path, monkeypatch):
-    """The recipe is EXECUTED here, against a two-kernel evidence tree.
-
-    `source_kernel` is the only field pointing at the hardware run the band was
-    measured on, and is what makes a recapture auditable while the evidence
-    artifact is still around. Writing the leg label into it names something
-    every reference has and no run in particular.
-    """
+    """The recapture recipe records source_kernel, the one field tying a band to its hardware run."""
     evidence = tmp_path / "kaggle_evidence"
     kernels = [
         ("danielhanchen/unsloth-t4-ci-9f0e1a2b", ("control", "canary")),
@@ -1835,17 +1636,7 @@ def test_reports_are_not_ordered_control_first(tmp_path):
     ],
 )
 def test_gptoss_fails_when_the_cards_bf16_support_is_unreadable(environment):
-    """`is False` alone made the float32 assertion optional.
-
-    main() records `environment = {"error": ...}` for the whole probe when it
-    raises (a torch build that changed or failed `is_bf16_supported()` is
-    enough), and the block below was then skipped entirely while training,
-    finite losses, an updated adapter, compilation and generation all passed --
-    green without ever establishing the float32 path this leg uniquely covers.
-
-    Not just the `error` shape: anything that is not a literal True or False is
-    unverifiable, including a plausible-looking string or 0.
-    """
+    """Anything other than a literal True or False for bf16 support is unverifiable, so gpt-oss fails."""
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(environment = environment)
@@ -1872,22 +1663,7 @@ def test_gptoss_still_reads_a_bf16_card_and_a_t4_the_way_it_did():
 
 
 def test_batched_generation_runs_end_to_end_against_a_stub_model():
-    """Every other test in this section feeds `batched_generation_failures` a
-    dict someone typed. That checks the RULE and never once executes the code
-    that produces the dict, which is how kernel unsloth-probe-defaultleg-723c28
-    trained all ten steps on a real T4 and then died on
-
-        NameError: name 'torch' is not defined
-
-    inside `batched_generation` itself. Every torch user in run_t4_smoke.py
-    imports it inside the function; that one did not, and no CPU test noticed
-    because none of them ever called it.
-
-    So drive the real function with a stub tokenizer and model. The stub echoes
-    a deterministic continuation per row, so agreement across batch sizes is
-    guaranteed and this asserts the plumbing rather than the model: shapes,
-    the padded-width slice, and that the function runs at all.
-    """
+    """Runs the real batched_generation on a stub; dict-fed tests never ran it, so a missing import hid."""
     import torch
 
     from run_t4_smoke import batched_generation, batched_generation_failures
@@ -1909,14 +1685,12 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
             padding = False,
         ):
             texts = [text] if isinstance(text, str) else list(text)
-            # One token per character, so a length spread in the prompts is a
-            # length spread in the ids and the padding is real.
+            # One token per character, so prompt length spread is real padding.
             ids = [[ord(c) % 100 + 1 for c in t] for t in texts]
             if return_tensors is None:
                 return {"input_ids": ids[0] if isinstance(text, str) else ids}
             width = max(len(i) for i in ids)
-            # LEFT padding, which is what the function asks for and what the
-            # padded-width slice below depends on.
+            # Left padding, which the padded-width slice depends on.
             padded = [[0] * (width - len(i)) + i for i in ids]
             return _Enc(
                 input_ids = torch.tensor(padded),
@@ -1940,8 +1714,7 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
             max_new_tokens = 8,
             **_kw,
         ):
-            # Append the same continuation to every row, derived from that
-            # row's own unpadded content, so batching cannot change it.
+            # The continuation depends only on the row's unpadded content.
             outs = []
             for row in input_ids:
                 real = [int(v) for v in row if int(v) != 0]
@@ -1949,9 +1722,7 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
                 outs.append([int(v) for v in row] + tail)
             return torch.tensor(outs)
 
-    # Eight, because BATCH_SIZES tops out at 8 and the rule rejects a record
-    # whose largest batch could never have been formed. Lengths 1..8 so every
-    # batch pads and the padded-width slice is exercised rather than skipped.
+    # Eight prompts of lengths 1..8, matching the largest batch size, so every batch pads.
     prompts = ["abcdefgh"[:n] * 1 for n in range(1, 9)]
     record = batched_generation(_Model(), _Tok(), prompts, max_new_tokens = 4)
 
@@ -2055,10 +1826,7 @@ def test_an_empty_row_inside_a_batch_is_a_failure_even_when_the_singles_are_fine
 
 
 def test_batched_generation_records_a_row_that_is_empty_only_inside_the_batch():
-    """The rule above is fed a dict. This drives the real `batched_generation`
-    with a stub whose row 2 comes back empty ONLY when it is generated inside
-    a batch of 8, and asserts the record says so. Reverting the payload change
-    leaves `empty_batched_outputs` absent and this goes red."""
+    """Row 2 is empty only inside a batch of 8; the record must list it under empty_batched_outputs."""
     import torch
 
     from run_t4_smoke import batched_generation, batched_generation_failures
@@ -2141,29 +1909,13 @@ def test_a_missing_batched_record_is_a_failure_not_a_pass():
     assert batched_generation_failures(None) == ["batched generation was never run"]
 
 
-# ------------------------------------------------- run_grpo_t4.py: the reward
-
-
 def _completions(*lengths):
     """GRPO hands reward functions a list of message lists."""
     return [[{"role": "assistant", "content": "x" * n}] for n in lengths]
 
 
 def test_the_length_reward_still_discriminates_at_the_lengths_the_model_emits():
-    """The leg's only instrument, and it was broken in the least visible way.
-
-    `reward_length` was `min(len(t), 200) / 200.0` while its docstring claimed
-    to be "SENSITIVE to a group's diversity". Kernels
-    unsloth-probe-grpo-rep2-b03be8 and -rep3-bc3828 recorded completions of
-    2534 to 3396 characters, so every completion scored exactly 1.0, every
-    group tied, and the leg failed with `reward_std was zero on every step`.
-    Two runs in three died on it.
-
-    A reward that saturates below the range the model actually occupies reads
-    as a broken generation path in the report. So assert discrimination at the
-    OBSERVED lengths, not at convenient small ones: the old function passes any
-    test written with 10- and 20-character completions.
-    """
+    """reward_length saturated at 200 chars, under the 2534-3396 char completions seen; assert at those."""
     sys.path.insert(0, str(SMOKE_DIR))
     from run_grpo_t4 import reward_length
 
@@ -2197,9 +1949,6 @@ def test_two_identical_completions_still_tie_because_that_is_real():
     assert scores[0] == scores[1]
 
 
-# --------------------------------------------------- gguf_export.py
-
-
 def _gguf_record(**over):
     """A healthy export, shaped like the one measured on
     unsloth-probe-gguf-q8-peft-920e3e: the GGUF in the SIBLING directory."""
@@ -2227,10 +1976,7 @@ def test_a_healthy_gguf_export_reports_no_failures():
 
 
 def test_an_export_that_reported_ok_but_wrote_no_gguf_is_a_failure():
-    """The trap this module exists for. save_pretrained_gguf writes the merged
-    safetensors into the directory it was given and the GGUF into a SIBLING, so
-    code that globs the directory it passed finds nothing, raises nothing, and
-    calls it a successful export."""
+    """save_pretrained_gguf writes the GGUF to a sibling dir, so globbing the passed dir finds nothing."""
     from gguf_export import export_failures
 
     failures = export_failures(_gguf_record(ggufs = []), accept_quantizations = ("q8_0",))
@@ -2291,7 +2037,6 @@ def test_a_model_allowed_to_override_the_quantization_still_passes():
         ]
     )
     assert export_failures(record, accept_quantizations = ("mxfp4",)) == []
-    # ... and a leg that does NOT accept it still says so.
     failures = export_failures(record, accept_quantizations = ("q8_0",))
     assert failures and "accepted quantization" in failures[0]
 
@@ -2338,10 +2083,7 @@ def test_a_bundle_with_no_runners_at_all_is_reported_as_that():
 
 
 def test_the_llama_cpp_facts_read_a_tuple_not_a_directory(tmp_path):
-    """install_llama_cpp returns (llama-quantize, convert_hf_to_gguf.py). An
-    earlier probe treated the return value as a bin directory and reported
-    "0 binaries", which was the probe being wrong, not the bundle being
-    empty."""
+    """install_llama_cpp returns (llama-quantize, convert_hf_to_gguf.py), not a bin directory."""
     from gguf_export import llama_cpp_facts
 
     quant = tmp_path / "llama-quantize"
@@ -2370,12 +2112,7 @@ def test_a_source_build_is_visible_even_though_it_succeeds():
     assert "cmake" in facts["source_build_markers"]
 
 
-# ------------------------------- run_t4_smoke.py: parent -> child argv
-
-
-# Options the PARENT alone acts on, so their absence from the child command is
-# correct rather than a leak. Each is here for a stated reason; an entry added
-# without one is how this guard stops working.
+# Options only the parent acts on; each entry needs a stated reason.
 PARENT_ONLY_DESTS = {
     "outdir",  # the parent gives each cycle its own subdirectory
     "cycle",  # set by the parent per child, never forwarded verbatim
@@ -2386,22 +2123,14 @@ PARENT_ONLY_DESTS = {
     "require_canary",  # evaluated by the parent's failure collector
     "check_batched_generation",
     "export_gguf",  # forwarded as a bare flag, asserted separately below
-    # The pin check reads the report the cycles produced, in the parent
-    # (run_t4_smoke.py:1741), so the children have nothing to do with it.
+    # The pin check runs in the parent over the cycles' reports.
     "pins",
-    # The plain-TRL control arm is spawned BY the parent, after the cycles, and
-    # ruled on there. A cycle child neither runs it nor judges it.
+    # Spawned and judged by the parent after the cycles.
     "compare_naive_trl",
     "control_oom_is_ok",
-    # Kernel provenance IS collected in the child (it needs the loaded model),
-    # but the flag reaches it through the bare-flag block rather than the
-    # name/value pairs this check walks; asserted separately in
-    # test_kernel_provenance.py.
+    # Collected in the child, but the flag goes via the bare-flag block; see test_kernel_provenance.py.
     "kernel_provenance",
-    # The vision run is spawned BY the parent, after the cycles and in a
-    # process of its own: it loads a second model, and two 4bit models resident
-    # at once on a 14.56GB T4 is how a leg becomes an OOM blamed on the thing
-    # it was testing.
+    # Spawned by the parent in its own process: two 4bit models on a 14.56GB T4 would OOM.
     "vision_run",
 }
 
@@ -2419,27 +2148,14 @@ def _child_command_block() -> str:
 
 
 def test_every_option_the_child_needs_actually_reaches_the_child():
-    """The class of bug, not one instance of it.
-
-    Cycles run in fresh child processes and the parent rebuilds their argv from
-    an explicit list. A flag added to the parser but not to that list is
-    accepted on the command line, parsed, logged in the driver's exec line, and
-    silently ignored -- which is exactly what happened to --export-gguf on
-    kernel unsloth-probe-default-gguf-637565: the leg failed with "GGUF export
-    was never run" while the driver log showed --export-gguf right there in the
-    command.
-
-    --check-batched-generation escaped this only because it defaults to True, so
-    the child got it without being told. That is luck, not design.
-    """
+    """A flag the parser accepts but the parent's child argv list omits is silently ignored by the child."""
     import argparse
     import importlib
 
     sys.path.insert(0, str(SMOKE_DIR))
     module = importlib.import_module("run_t4_smoke")
 
-    # Build the parser the same way main() does, by calling it with a sentinel
-    # that makes it return rather than run.
+    # Build the parser as main() does, using a sentinel that makes it return.
     parser = argparse.ArgumentParser()
     source = _smoke_source()
     dests = set(re.findall(r'dest\s*=\s*"([a-z_0-9]+)"', source))
@@ -2477,16 +2193,7 @@ def test_the_export_settings_ride_the_value_loop():
 
 
 def test_a_second_cycle_cannot_report_an_already_installed_llama_cpp_as_a_source_build():
-    """Measured on unsloth-probe-visleg-full-b3a317, and it is a trap.
-
-    The prebuilt banner is printed once, by the install that downloads the
-    bundle. A second cycle in the same session finds llama.cpp already there
-    and prints nothing, so the field read `prebuilt: true` on cycle 0 and
-    `prebuilt: false` on cycle 1 for the SAME installation -- and `false` reads
-    as "built from source", which is the one thing this field exists to catch.
-
-    None is the third state: this run did not install it, so it cannot say.
-    """
+    """Prebuilt banner prints only on install; a cycle that did not install reports None, not false."""
     from gguf_export import llama_cpp_facts
 
     quiet = llama_cpp_facts("", ())
@@ -2495,7 +2202,6 @@ def test_a_second_cycle_cannot_report_an_already_installed_llama_cpp_as_a_source
     ), "an install that printed nothing must not claim a source build"
     assert quiet["source_build_markers"] == []
 
-    # And the two real answers are unchanged.
     assert (
         llama_cpp_facts(
             "Unsloth: Installing prebuilt llama.cpp b10472 - skipping compilation.", ()
@@ -2506,21 +2212,7 @@ def test_a_second_cycle_cannot_report_an_already_installed_llama_cpp_as_a_source
 
 
 def test_the_text_leg_gguf_export_does_not_land_in_the_artifact_directory():
-    """`/kaggle/working` is 21.0 GB and is what `kernels output` ships back.
-
-    Measured on unsloth-probe-lcleg-final-a90fbb, which is the run that found
-    this:
-
-        RuntimeError: Unsloth: Not enough disk space to convert to GGUF.
-        The export needs about 16.6GB on the filesystem holding
-        `/kaggle/working/t4_out_Latest_compile/cycle0/gguf_run0`
-
-    Two failures in one. A merge too big for that volume kills the leg, and a
-    merge that DOES fit is downloaded as part of the artifact, which nobody
-    wanted. gpt-oss and the vision run were both moved to a tempdir for exactly
-    this reason and this path was missed -- so a small model kept passing and
-    hid it.
-    """
+    """GGUF export must use a tempdir: the artifact dir ships back, and a big merge fills the disk."""
     src = _smoke_source()
     call = src[src.index("gguf_export_record = export_gguf(") :]
     call = call[: call.index(")")]

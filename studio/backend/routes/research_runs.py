@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from utils.account_context import current_account, run_as
+from utils.account_context import current_account, current_account_id, run_as
 import asyncio
 import json
 import re
@@ -24,7 +24,9 @@ from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
 from core.inference.providers import answers_decisions_only, provider_runs_local_tools
 from models.providers import MAX_JSON_SAFE_INTEGER
+from state import run_subscribers, unattended_runs
 from state.tool_policy import get_tool_policy
+from hub.services.models import account_access
 from storage import mcp_servers_db, providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
@@ -86,6 +88,9 @@ class CreateResearchRun(BaseModel):
     websitePolicy: dict[str, list[str]] | None = None
     instructions: str | None = Field(default = None, max_length = 32_000)
     question: str | None = Field(default = None, max_length = 2000)
+    # The owner's "stop when I close the tab": cancel the run once no tab has followed it for a
+    # while (state/unattended_runs.py). Stored in the config, so a retry and a restart keep it.
+    stopWhenUnattended: bool = False
 
     @field_validator("budgets", mode = "before")
     @classmethod
@@ -142,6 +147,13 @@ def _require_run(run_id: str) -> dict:
     return run
 
 
+def _require_tools_enabled() -> None:
+    """A run searches the web and the knowledge base from the supervisor's task, outside this
+    request, so the caller's server-side tool policy is applied before a run is set going."""
+    if get_tool_policy() is False:
+        raise HTTPException(status_code = 403, detail = "Tools are disabled on this server")
+
+
 def _sync_assistant(run: dict, text: str | None = None) -> None:
     message_id = db.discover_and_bind_assistant_message(run["id"])
     if not message_id:
@@ -195,6 +207,80 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
         expected_research_run_id = run["id"],
         expected_research_attempt = int(run.get("retryCount") or 0),
     )
+
+
+def _attendance_id(run_id: str) -> str:
+    # Prefixed: chat run ids are the client's, so a bare research id could collide with one.
+    return f"research:{run_id}"
+
+
+def _watch_if_unattended_stop(
+    app: Any,
+    run: dict,
+    *,
+    replace: bool = False,
+) -> None:
+    """Cancel ``run`` the way the cancel route does once no tab is following it, if its owner asked.
+
+    ``replace`` for a new attempt under the run's id: a rebind or retry starts its own grace, and a
+    rebound attempt that keeps running drops the watch the previous attempt left behind.
+    """
+    run_id = run["id"]
+    if not (run.get("config") or {}).get("stopWhenUnattended"):
+        if replace:
+            unattended_runs.unwatch(_attendance_id(run_id), current_account_id() or "")
+        return
+    if run["status"] in db.TERMINAL_STATUSES or run["status"] == "cancelling":
+        return
+    account = current_account()
+    # The watch belongs to this attempt only: a retry or rebind reuses the id and bumps retryCount.
+    attempt = int(run.get("retryCount") or 0)
+
+    def settled() -> bool:
+        current = run_as(account, db.get_run, run_id)
+        return (
+            current is None
+            or current["status"] in db.TERMINAL_STATUSES
+            or current["status"] == "cancelling"
+            or int(current.get("retryCount") or 0) != attempt
+        )
+
+    async def cancel() -> None:
+        try:
+            status = await asyncio.to_thread(
+                run_as, account, db.request_cancel, run_id, expected_attempt = attempt
+            )
+        except KeyError:
+            return
+        if status is None:
+            # A newer attempt took the id between this pass's settled() read and now.
+            return
+        supervisor = getattr(app.state, "research_supervisor", None)
+        if supervisor is not None and status == "cancelling":
+            run_as(account, supervisor.cancel, run_id)
+        current = await asyncio.to_thread(run_as, account, db.get_run, run_id)
+        if current is not None:
+            await asyncio.to_thread(run_as, account, _sync_assistant, current)
+
+    unattended_runs.watch(
+        _attendance_id(run_id),
+        current_account_id() or "",
+        settled = settled,
+        cancel = cancel,
+        replace = replace,
+    )
+
+
+def rearm_unattended_research_runs(app: Any) -> None:
+    """Watch every unsettled run that asked to stop with its tab, after a restart emptied the watches.
+
+    The supervisor resumes these runs on its own, so waiting for a follower to reattach would let a
+    run whose tab never comes back finish despite the setting. Its grace starts now.
+    """
+    from core.training.account_jobs import job_accounts
+    for account in job_accounts():
+        for run in run_as(account, db.list_all_active):
+            run_as(account, _watch_if_unattended_stop, app, run)
 
 
 def _is_sensitive_key(key: object) -> bool:
@@ -257,8 +343,7 @@ def _sanitize_config(
         value is not None for value in (provider_type, provider_id, external_model)
     )
     if external_requested:
-        # A saved connection is still mandatory: the run is durable, so an inline key would have to be persisted, and
-        # _is_sensitive_key exists to stop exactly that. Only the provider-type allowlist is widened.
+        # Saved connection required: an inline key would be persisted with the durable run.
         if (
             not provider_runs_local_tools(provider_type)
             or not isinstance(provider_id, str)
@@ -273,6 +358,7 @@ def _sanitize_config(
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
+        account_access.require_connection_model_allowed(provider, external_model)
         # The saved row is the source of truth for routing, so validate against it rather than the type the client
         # sent: a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
         # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path serves.
@@ -288,9 +374,7 @@ def _sanitize_config(
             )
         request["providerType"] = saved_provider_type
 
-    # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is stringified, so
-    # {"auth": "sk-..."} would slip past the sensitive-key scan (inner key unlisted) into the durable config as the
-    # model id.
+    # "model" is stringified, so a nested dict would evade the sensitive-key scan.
     if any(isinstance(value, (dict, list, tuple)) for value in request.values()):
         raise HTTPException(status_code = 400, detail = "Invalid inferenceRequest value")
     model = str(request.get("model") or thread.get("modelId") or "").strip()
@@ -311,8 +395,7 @@ def _sanitize_config(
             if not 1 <= request["maxTokens"] <= 8192:
                 raise ValueError
         if "maxOutputTokens" in request:
-            # Strict like the saved-connection schema: bool is an int subclass, and int()
-            # would truncate a float or raise OverflowError, turning a 400 into a 500.
+            # Strict: bool is an int subclass and int() can truncate or raise OverflowError.
             budget = request["maxOutputTokens"]
             if isinstance(budget, bool) or not isinstance(budget, int):
                 raise ValueError
@@ -422,6 +505,7 @@ def _sanitize_config(
         # stamped once so a run spanning midnight or a settings change keeps its starting date.
         "currentDate": current_date_prompt_line(request = http_request),
         "question": (payload.question or "").strip(),
+        **({"stopWhenUnattended": True} if payload.stopWhenUnattended else {}),
     }
 
 
@@ -431,6 +515,7 @@ def create_research_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    _require_tools_enabled()
     thread = get_chat_thread(payload.threadId)
     if thread is None:
         raise HTTPException(status_code = 404, detail = "Thread not found")
@@ -439,9 +524,7 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    # A handed-off question counts as the text. The worker researches config.question, so a multimodal turn that
-    # reads an image and calls deep_research passes the question it wrote, and refusing on the message's own empty
-    # text ends a complete handoff in a toast.
+    # A handed-off question counts as the text (multimodal turns may have empty text).
     if not message_text_with_pastes(user_message).strip() and not (payload.question or "").strip():
         raise HTTPException(
             status_code = 400,
@@ -450,8 +533,7 @@ def create_research_run(
     config = _sanitize_config(payload, thread, request)
     try:
         if db.has_thread_claim(payload.threadId):
-            # The thread's one run was stopped, so it is re-pointed at this question rather
-            # than refusing every later one in the chat.
+            # A stopped run is re-pointed at this question instead of refusing every later message in the chat.
             run = db.rebind_cancelled(
                 thread_id = payload.threadId,
                 user_message_id = payload.userMessageId,
@@ -475,8 +557,7 @@ def create_research_run(
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except sqlite3.IntegrityError as exc:
-        # The thread can be deleted between the check above and this insert, and the foreign key
-        # then fails. Report it gone rather than as a server fault.
+        # Thread may be deleted after the check, so the FK insert fails; report 404, not a server fault.
         raise HTTPException(status_code = 404, detail = "Thread not found") from exc
     if run is None:
         raise HTTPException(status_code = 404, detail = "Thread not found")
@@ -484,6 +565,8 @@ def create_research_run(
     if supervisor is not None:
         supervisor.note_request_address(request)
         supervisor.wake()
+    # A rebind reuses a stopped run's id, so this attempt replaces whatever watch that one left.
+    _watch_if_unattended_stop(request.app, run, replace = True)
     return run
 
 
@@ -525,6 +608,7 @@ def approve_research_plan(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    _require_tools_enabled()
     _require_run(run_id)
     try:
         db.approve(run_id, payload.planRevision, payload.planHash)
@@ -562,6 +646,7 @@ def retry_research_run(
     current_subject: str = Depends(get_current_subject),
     payload: RetryResearchRun | None = None,
 ):
+    _require_tools_enabled()
     _require_run(run_id)
     model_timeout = None
     website_policy = None
@@ -593,6 +678,8 @@ def retry_research_run(
         supervisor.wake()
     run = _require_run(run_id)
     _sync_assistant(run)
+    # A new attempt under the same id, with a grace of its own.
+    _watch_if_unattended_stop(request.app, run, replace = True)
     return run
 
 
@@ -607,14 +694,23 @@ async def research_events(
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id)
+    opening = _require_run(run_id)
     header_after = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
     cursor = max(after or 0, header_after)
+    # Re-armed by its follower too: idempotent, and a watch can only have been lost with the process.
+    if (opening.get("config") or {}).get("stopWhenUnattended"):
+        _watch_if_unattended_stop(request.app, opening)
+    # One token per stream, so a closing tab clears only its own stamp (state/run_subscribers.py).
+    attendance_id = _attendance_id(run_id)
+    follower = run_subscribers.new_follower_token()
+    follower_account = current_account_id() or ""
 
     async def stream():
         nonlocal cursor
         loop = asyncio.get_running_loop()
         while True:
+            # What state/unattended_runs.py reads to tell a watched run from one whose tab is gone.
+            run_subscribers.mark_subscriber_seen(attendance_id, follower, follower_account)
             # off the default executor: parked followers there starved the run's own db writes.
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
@@ -625,8 +721,7 @@ async def research_events(
                 cursor,
                 15,
             )
-            # Not the wait executor: this read is short, and queueing it behind parked waits
-            # would delay every follower once the pool is full.
+            # Not the wait executor: a short read must not queue behind parked waits.
             snapshot = await asyncio.to_thread(db.get_run, run_id)
             if snapshot is None:
                 return
@@ -647,8 +742,15 @@ async def research_events(
             if not events:
                 yield ": keep-alive\n\n"
 
+    async def stream_while_attended():
+        try:
+            async for frame in stream():
+                yield frame
+        finally:
+            run_subscribers.subscriber_departed(attendance_id, follower, follower_account)
+
     return StreamingResponse(
-        stream(),
+        stream_while_attended(),
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

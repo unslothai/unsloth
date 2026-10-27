@@ -32,8 +32,6 @@ const intent = (
     },
   }) as unknown as Parameters<typeof stagedFromIntent>[0];
 
-// The bug: absent size/mtime both defaulted to 0, so every same-named file
-// collapsed onto one signature and the second was rejected as a duplicate.
 test("two same-named drops without metadata both stage", () => {
   const first = stagedFromIntent(intent("tok-a", "notes.pdf"));
   const second = stagedFromIntent(intent("tok-b", "notes.pdf"));
@@ -57,8 +55,6 @@ test("complete metadata still dedups a genuine repeat", () => {
   assert.deepEqual(duplicates, ["notes.pdf"]);
 });
 
-// The bug: staged native tokens outlive the native layer's TTL, so Create
-// redeemed a pruned token and failed after the project already existed.
 test("a token past its TTL reads as expired", () => {
   const entry = stagedFromIntent(intent("tok-a", "notes.pdf"));
   assert.equal(isExpired(entry, 15 * 60_000 + 1), true);

@@ -68,8 +68,7 @@ async def list_local_models(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Inside the try: an exception raised while evaluating an argument never reaches the
-    # function it was being passed to, so its detail goes out unredacted.
+    # Inside the try: errors while evaluating an argument would skip redaction.
     try:
         payload = await local_inventory.list_local_models_response(models_dir)
     except HTTPException as error:
@@ -78,6 +77,16 @@ async def list_local_models(
             detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
             headers = error.headers,
         ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
+
+
+@router.get("/unsloth-models", response_model = LocalModelListResponse)
+async def list_unsloth_models(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Models fine-tuned or exported in Unsloth, for the Hub's On Device list."""
+    payload = await local_inventory.list_unsloth_models_response()
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
@@ -105,9 +114,7 @@ def add_scan_folder_endpoint(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Redacted even though the caller named this path, so a NORMALISED path (symlinks resolved,
-    # a relative one anchored) cannot answer for the host. Inside the try, since an exception
-    # raised while evaluating an argument never reaches the function it was passed to.
+    # Redacted even for a caller-named path: the normalised path leaks host layout. Keep inside the try so argument errors are redacted.
     try:
         payload = local_inventory.add_scan_folder_response(body.path, body.recursive)
     except HTTPException as error:
@@ -131,8 +138,7 @@ def get_models_folder(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Inside the try, not the redactor's argument list: this route RAISES with the cache path
-    # in the detail.
+    # Inside the try: this route raises with the cache path in the detail.
     try:
         payload = local_inventory.get_models_folder_response()
     except HTTPException as error:
@@ -157,11 +163,7 @@ async def get_gguf_variants(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Both identifiers can come back as handles: an API-key caller is handed `ref:` in place of
-    # every host path, and that reference is the only name it has for a custom local GGUF or a
-    # copy in a secondary root. Unresolved, the lookup misses or is answered out of the ACTIVE
-    # cache, a different file. Redacted on the way out because a local listing copies its input
-    # into `repo_id`, which would hand back the path the inventory took trouble to hide.
+    # API-key callers pass ref: handles; resolve them or the lookup hits the active cache. Redact repo_id: a local listing echoes the input.
     return redact_host_paths(
         await gguf_variants.get_gguf_variants_response(
             resolve_host_path_reference(repo_id) or repo_id,
@@ -203,8 +205,7 @@ async def get_download_status(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # `error` is the worker's own stderr, kept after `scrub_secrets` only, so polling a failed
-    # download reads the host layout from a route with no path field at all.
+    # `error` is raw worker stderr and can contain host paths.
     return redact_host_paths(
         await downloads.get_download_status_response(repo_id, gguf_variant),
         via_api_key = via_api_key,
@@ -321,21 +322,19 @@ async def list_hidden_models(
 async def delete_impact(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
-    # The copy the listing advertised, so the preview describes the delete that will follow.
     cache_path: Optional[str] = Body(None),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Preview a delete: bytes reclaimed, shared assets retained, and anything blocking it.
-
-    POST rather than GET because a repo id is a path-shaped value and this reads no cache of its
-    own; it is a pure query and mutates nothing.
-    """
-    # The preview names the folder it would delete, so it takes the same host-path boundary as
-    # the inventory routes; an API-key caller gets the opaque reference instead.
+    """preview a delete without mutation; POST avoids path-shaped repo IDs."""
+    # use inventory host-path redaction so API-key callers receive only opaque references
     return redact_host_paths(
         await companion_cleanup.delete_impact_response(
-            repo_id, variant, resolve_host_path_reference(cache_path) or cache_path
+            repo_id,
+            variant,
+            resolve_host_path_reference(cache_path) or cache_path,
+            hf_token,
         ),
         via_api_key = via_api_key,
     )
@@ -346,8 +345,7 @@ async def orphan_companions(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Cached companion assets no installed model needs. Listing only; removal goes through
-    the ordinary guarded delete."""
+    """list unused companion assets; removal still uses the guarded delete."""
     return redact_host_paths(
         await companion_cleanup.orphan_companions_response(), via_api_key = via_api_key
     )
@@ -391,8 +389,7 @@ async def delete_cached_model(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    # `cache_ref` is the only identifier an API-key caller HAS for a specific copy; omitting it
-    # silently acts on the active root.
+    # `cache_ref` is an API-key caller's only id for a copy; omitting it hits the active root.
     return await deletion.delete_cached_model_response(
         repo_id,
         variant,

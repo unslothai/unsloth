@@ -10,7 +10,6 @@ import {
   runGgufRepoPick,
 } from "../src/lib/diffusion-gguf-pick.ts";
 
-/** A listing whose completion the test controls. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {
@@ -21,10 +20,8 @@ function deferred<T>() {
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-/** Every side effect a pick may have, so a stale one can be asserted to have had none. */
 function recorder(
   overrides: Partial<Omit<GgufRepoPickHandlers, "load">> & {
-    /** What `load` reports back: false is "the load never started". */
     starts?: boolean | (() => boolean);
   } = {},
 ): { handlers: GgufRepoPickHandlers; log: string[] } {
@@ -71,7 +68,6 @@ test("a load that never starts takes its own label back", async () => {
 });
 
 test("a superseded pick does nothing at all when its listing lands", async () => {
-  // Not even the prompt: it would blame a model the user has already moved on from.
   const listing = deferred<string | null>();
   const { handlers, log } = recorder({
     resolve: () => listing.promise,
@@ -93,11 +89,9 @@ test("a superseded pick does not prompt either", async () => {
 });
 
 test("a stale failure does not revert the newer selection's label", async () => {
-  // quantRevert is one slot, so a late rollback would restore this pick's old label over the one that replaced it.
   let current = true;
   const { handlers, log } = recorder({
     isCurrent: () => current,
-    // The next pick takes the page while this load is in flight, and the load then reports it never started.
     starts: () => {
       current = false;
       return false;
@@ -133,7 +127,6 @@ test("the newest pick owns the page, whatever order the listings land in", async
   await flush();
   const second = run(1);
   await flush();
-  // The newer listing lands first, then the stale one.
   listings[1].resolve("b.gguf");
   await flush();
   listings[0].resolve("a.gguf");
@@ -143,31 +136,26 @@ test("the newest pick owns the page, whatever order the listings land in", async
 });
 
 test("releasing the page invalidates the pick holding it", () => {
-  // A page switch, an unload or an unmount: nobody owns the page afterwards.
   const guard = createPickGuard();
   const token = guard.claim();
   assert.equal(guard.holds(token), true);
   guard.release();
   assert.equal(guard.holds(token), false);
-  // And the token a release lands on is not claimable by an outstanding holder.
   assert.notEqual(guard.claim(), token);
 });
 
 test("an eject ends the pick, so a staged download does not come back", () => {
-  // Release and cancel differ exactly here: leaving the page defers the staged load, ejecting drops it.
   const guard = createPickGuard();
   const staged = guard.claim();
   guard.cancel();
   assert.equal(guard.holds(staged), false);
   assert.equal(guard.isLatest(staged), false);
-  // And the page is claimable again afterwards, with a token of its own.
   const next = guard.claim();
   assert.notEqual(next, staged);
   assert.equal(guard.holds(next), true);
 });
 
 test("a release is not a new pick, so a staged download still lands", () => {
-  // Leaving the page defers the staged load rather than dropping it; only another pick may take it.
   const guard = createPickGuard();
   const staged = guard.claim();
   guard.release();

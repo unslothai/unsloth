@@ -5,6 +5,7 @@ import { getHfEndpoint, useHfEndpoint } from "@/lib/hf-endpoint";
 import { fetchWithTimeout } from "../lib/network";
 import type { HubModelType } from "../types";
 import { listDatasets } from "@huggingface/hub";
+import { datasetModalities, datasetSizeBucket } from "../lib/dataset-filters";
 import { useCallback, useMemo } from "react";
 
 import { useHubPaginatedSearch } from "./use-hub-paginated-search";
@@ -62,6 +63,10 @@ export interface HfDatasetResult {
   sizeCategory?: string;
   taskCategories: string[];
   plainTags: string[];
+  /** The Hub's modality tags (text, image, ...), for the dataset filters. */
+  modalities: string[];
+  /** Index of the Hub's size_categories bucket, smallest first. */
+  sizeBucket?: number;
 }
 
 function mapDataset(raw: unknown): HfDatasetResult {
@@ -109,6 +114,8 @@ function mapDataset(raw: unknown): HfDatasetResult {
     sizeCategory: card?.size_categories?.[0],
     taskCategories,
     plainTags,
+    modalities: datasetModalities(tags),
+    sizeBucket: datasetSizeBucket(tags),
   };
 }
 
@@ -353,7 +360,6 @@ function rankDatasetRelevance(
 ): DatasetRelevance {
   if (isPretrainingDataset(dataset)) return "incompatible";
 
-  // Keep OCR / vision-text corpora out of non-vision defaults.
   if (modelType !== "vision") {
     if (
       dataset.plainTags.some((t) => OCR_PLAIN_TAGS.has(t.toLowerCase())) ||
@@ -387,13 +393,13 @@ function isOcrOrVisionTextDataset(dataset: HfDatasetResult): boolean {
 }
 
 function toCuratedDatasetResult(id: string): HfDatasetResult {
-  // Curated defaults are id-only; this fills the shared result shape without extra HF requests.
   return {
     id,
     downloads: 0,
     likes: 0,
     taskCategories: [],
     plainTags: [],
+    modalities: [],
   };
 }
 

@@ -31,7 +31,7 @@ import {
 import { SANDBOX_SETUP_POLL_MS, sandboxSetupView } from "./sandbox-setup-state";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
-/** Mounted once at the chat-page root so it outlives the menu that opened it. */
+/** Mounted at the chat-page root so it outlives the menu that opened it. */
 export const useSandboxSetupDialogStore = create<{
   open: boolean;
   setOpen: (open: boolean) => void;
@@ -47,29 +47,22 @@ const NOTE_CLASS = "text-xs leading-relaxed";
 export function SandboxSetupDialog({
   open,
   onOpenChange,
-  onLearnMore,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Defaults to opening Settings > Sandbox at Permissions. */
-  onLearnMore?: () => void;
 }) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       {/* Mounted per opening, so every opening starts from a fresh check. */}
-      {open ? (
-        <SandboxSetupContent onOpenChange={onOpenChange} onLearnMore={onLearnMore} />
-      ) : null}
+      {open ? <SandboxSetupContent onOpenChange={onOpenChange} /> : null}
     </AlertDialog>
   );
 }
 
 function SandboxSetupContent({
   onOpenChange,
-  onLearnMore,
 }: {
   onOpenChange: (open: boolean) => void;
-  onLearnMore?: () => void;
 }) {
   const t = useT();
   const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
@@ -81,7 +74,7 @@ function SandboxSetupContent({
   const [stillUnavailable, setStillUnavailable] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const mounted = useRef(true);
-  // Only the newest check applies (a retry can overtake a slow first read).
+  // Only the newest check applies: a retry can overtake a slow first read.
   const checks = useRef(0);
   // A level picked while the setup ran wins over turning High on at the end.
   const levelAtOpen = useRef(useChatRuntimeStore.getState().sandboxLevel);
@@ -276,6 +269,9 @@ function SandboxSetupContent({
         {actionError ? (
           <p className={`${NOTE_CLASS} text-destructive`}>{actionError}</p>
         ) : null}
+        {view.reason ? (
+          <p className={`${NOTE_CLASS} text-muted-foreground`}>{view.reason}</p>
+        ) : null}
         {view.showOwnerOnly ? (
           <p className={`${NOTE_CLASS} text-muted-foreground`}>
             {t("sandboxSetup.ownerOnly")}
@@ -317,15 +313,11 @@ function SandboxSetupContent({
           onClick={() => {
             // Closing does not stop a running setup; its result shows in Settings > Sandbox.
             onOpenChange(false);
-            if (onLearnMore) {
-              onLearnMore();
-            } else {
-              // Deferred past the dialog's focus restore.
-              setTimeout(
-                () => openSettings("sandbox", { scrollTarget: "sandbox-permissions" }),
-                0,
-              );
-            }
+            // Deferred past the dialog's focus restore; inside Settings it only scrolls.
+            setTimeout(
+              () => openSettings("sandbox", { scrollTarget: "sandbox-os" }),
+              0,
+            );
           }}
         >
           {t("settings.sandbox.learnMore")}

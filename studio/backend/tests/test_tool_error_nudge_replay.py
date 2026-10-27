@@ -142,3 +142,20 @@ def test_replayed_retrieval_result_drops_the_source_map_the_model_never_saw():
     # Any other tool keeps text that merely carries the marker.
     other = {**replayed, "name": "terminal"}
     assert restore_replayed_tool_results([other])[0]["content"] == raw
+
+
+def test_a_forced_retrieval_card_replays_as_its_own_exchange():
+    # Local and round-less: the client flushes it as one call/result pair, so a real tool round
+    # carrying a round_id right after it is not merged into the same assistant message.
+    from core.inference.tools import build_synthetic_search_exchange
+
+    built = build_synthetic_search_exchange(
+        tool_name = "search_conversation",
+        call_prefix = "recall_",
+        status_label = "Recalling",
+        query = "the code",
+        text = "It was 5150.",
+        sources = [],
+    )
+    cards = [e for e in built["events"] if e["type"] in ("tool_start", "tool_end")]
+    assert [c["provenance"] for c in cards] == [{"source": "local"}, {"source": "local"}]

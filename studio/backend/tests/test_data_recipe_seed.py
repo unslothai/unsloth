@@ -29,8 +29,8 @@ class _FakeUpload:
         self.filename = filename
         self._content = content
 
-    async def read(self) -> bytes:
-        return self._content
+    async def read(self, size: int = -1) -> bytes:
+        return self._content if size < 0 else self._content[:size]
 
 
 def _load_seed_route(
@@ -52,7 +52,7 @@ def _load_seed_route(
     spec.loader.exec_module(seed_route)
     seed_route.UNSTRUCTURED_UPLOAD_ROOT = tmp_path / "unstructured-uploads"
     if inline_extraction:
-        # Unit cases inject extractor failures in this process. Process isolation has separate tests.
+
         async def extract(file_path, ext):
             return seed_route._extract_text_from_file(file_path, ext)
 
@@ -122,6 +122,42 @@ def test_local_json_seed_preview_keeps_its_values_as_written(monkeypatch, tmp_pa
     rows = seed_route._read_preview_rows_from_local_file(path, 10)
 
     assert rows == records
+
+
+def test_local_parquet_seed_preview_reads_typed_rows(monkeypatch, tmp_path):
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    assert ".parquet" in seed_route.LOCAL_UPLOAD_EXTS
+    path = tmp_path / "seed.parquet"
+    pd.DataFrame(
+        {
+            "question": [f"q{i}" for i in range(5)],
+            "qty": list(range(5)),
+            "tags": [["a"], ["b", "c"], [], ["d"], ["e"]],
+        }
+    ).to_parquet(path, index = False)
+
+    rows = seed_route._read_preview_rows_from_local_file(path, 2)
+
+    assert rows == [
+        {"question": "q0", "qty": 0, "tags": ["a"]},
+        {"question": "q1", "qty": 1, "tags": ["b", "c"]},
+    ]
+
+
+def test_corrupt_parquet_seed_is_a_clear_422(monkeypatch, tmp_path):
+    pytest.importorskip("pyarrow")
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    path = tmp_path / "seed.parquet"
+    path.write_bytes(b"not a parquet file")
+
+    with pytest.raises(HTTPException) as excinfo:
+        seed_route._read_preview_rows_from_local_file(path, 10)
+
+    assert excinfo.value.status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -307,14 +343,33 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
         _run_upload(seed_route, "b.txt", b"123")
     assert exc.value.status_code == 413
 
-    # Another block starts with its own untouched budget.
     other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
     assert other.status == "ok"
 
 
-# A desktop drop names a local file of any size, so the cap has to be enforced
-# on its stat. Reading first let a multi-gigabyte drop into backend memory
-# before the 413 (#9036).
+def test_an_oversized_upload_is_refused_after_reading_one_byte_past_the_cap(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES", 32)
+    upload = _FakeUpload("big.txt", b"x" * 4096)
+    upload.size = 4096
+    sizes: list[int] = []
+    real_read = upload.read
+
+    async def tracking_read(size: int = -1) -> bytes:
+        sizes.append(size)
+        return await real_read(size)
+
+    upload.read = tracking_read
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        asyncio.run(seed_route.upload_unstructured_file(upload, "block"))
+
+    assert sizes == [33]
+    assert exc.value.status_code == 413
+    assert "(4096 bytes)" in exc.value.detail
+    assert _block_files(seed_route) == []
+
+
 def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     huge = tmp_path / "corpus.txt"
@@ -352,8 +407,6 @@ def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_
     assert reads == [], "the file was opened before the size check"
 
 
-# The block's remaining budget bounds the read too, so a file that grew between
-# the stat and the read cannot slip past it.
 def test_a_native_drop_over_the_block_budget_is_refused(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     dropped = tmp_path / "notes.txt"
@@ -450,7 +503,6 @@ def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_p
     source = tmp_path / "notes.txt"
     source.write_text("a\n\n\n\nb", encoding = "utf-8")
 
-    # The plugin is what collapses the run of blank lines.
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
 
 
@@ -469,13 +521,7 @@ def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_pat
 
 
 def test_a_backend_executed_seed_resolves_the_endpoint_on_the_backend(monkeypatch):
-    """The seed is fetched in THIS process, so the endpoint must be ours.
-
-    A remote browser is told the public default for a loopback mirror (it cannot
-    reach the backend's localhost), so letting the client's value through would
-    bypass the mirror on exactly the deployments that need it. A value the user
-    typed into the seed node is still honoured.
-    """
+    """The seed runs here, so it must resolve the local mirror endpoint, not the browser's default."""
     pytest.importorskip("fastapi")
     backend_root = Path(__file__).resolve().parent.parent
     monkeypatch.syspath_prepend(str(backend_root))
@@ -499,7 +545,6 @@ def test_a_backend_executed_seed_resolves_the_endpoint_on_the_backend(monkeypatc
     _resolve_seed_endpoint(explicit)
     assert explicit["seed_config"]["source"]["endpoint"] == "https://hub.internal"
 
-    # Nothing to resolve for the other seed types, and no crash on a malformed recipe.
     other = {"seed_config": {"source": {"seed_type": "local", "paths": []}}}
     _resolve_seed_endpoint(other)
     assert "endpoint" not in other["seed_config"]["source"]
@@ -518,7 +563,6 @@ _GSM8K_FILES = [
 @pytest.mark.parametrize(
     ("files", "split", "subset", "expected"),
     [
-        # No card: the loader reads every train-named file as one split.
         (_GSM8K_FILES, "train", None, "datasets/org/repo/**/train-*.parquet"),
         (_GSM8K_FILES, "test", "main", "datasets/org/repo/main/test-*.parquet"),
         (_GSM8K_FILES, "train", "socratic", "datasets/org/repo/socratic/train-*.parquet"),
@@ -537,8 +581,6 @@ _GSM8K_FILES = [
             None,
             "datasets/org/repo/raw/gsm_train*.jsonl",
         ),
-        # A split named by the file itself can still be sharded, so the pattern has
-        # to reach the siblings instead of pinning the first shard.
         (
             ["train.jsonl", "train_2.jsonl", "test.jsonl"],
             "train",
@@ -575,8 +617,6 @@ def test_seed_preview_file_comes_from_the_chosen_subset(monkeypatch, tmp_path):
     )
 
 
-# fineweb-edu: the config name is not a folder, so a folder-name guess reads a
-# different config entirely.
 _SAMPLE_FILES = [
     "data/CC-MAIN-2013-20/train-00000-of-00014.parquet",
     "sample/10BT/000_00000.parquet",
@@ -632,7 +672,6 @@ def test_seed_hf_path_reads_every_card_data_files_shape(monkeypatch, tmp_path, d
 @pytest.mark.parametrize(
     ("configs", "expected"),
     [
-        # A card with one config uses it whatever it is called.
         (
             [
                 {
@@ -642,7 +681,6 @@ def test_seed_hf_path_reads_every_card_data_files_shape(monkeypatch, tmp_path, d
             ],
             "datasets/org/repo/pt/train-*.parquet",
         ),
-        # Another config can be flagged as the default one.
         (
             [
                 {"config_name": "a", "data_files": [{"split": "train", "path": "a/train-*"}]},
@@ -671,7 +709,6 @@ def test_seed_card_globs_keep_their_character_classes(monkeypatch, tmp_path):
         "data/train-2-of-9.parquet"
     ]
     assert seed_route._files_under_patterns(["data/[!x]*.parquet"], files) == files
-    # An unclosed bracket is a literal, not a syntax error.
     assert seed_route._files_under_patterns(["a[b.parquet"], ["a[b.parquet"]) == ["a[b.parquet"]
 
 
@@ -686,8 +723,6 @@ def test_seed_hf_path_covers_a_split_declared_across_two_folders(monkeypatch, tm
             ],
         }
     ]
-    # One glob cannot name two folders, so cover the folder holding both rather
-    # than dropping one of them, keeping the split in the pattern.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/sets/**/*train*.parquet"
@@ -743,13 +778,11 @@ def test_seed_hf_path_follows_the_split_aliases_datasets_uses(
 @pytest.mark.parametrize(
     ("files", "expected"),
     [
-        # A folder qualified by a separator is the split folder too.
         (["train_a/0.parquet", "test/0.parquet"], "datasets/org/repo/train_a/**/*.parquet"),
         (
             ["data/train/0.parquet", "data/test/0.parquet"],
             "datasets/org/repo/data/train/**/*.parquet",
         ),
-        # "pretrain" is a different word, so train/ still wins.
         (["pretrain/0.parquet", "train/0.parquet"], "datasets/org/repo/train/**/*.parquet"),
     ],
 )
@@ -770,8 +803,6 @@ def test_seed_hf_path_widens_through_an_alias_named_split(monkeypatch, tmp_path)
             ],
         }
     ]
-    # The files say dev, not validation, so the widened form has to say dev too
-    # or it takes the train shard with it.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "validation", None, configs)
         == "datasets/org/repo/sets/**/*dev*.parquet"
@@ -780,7 +811,6 @@ def test_seed_hf_path_widens_through_an_alias_named_split(monkeypatch, tmp_path)
 
 def test_seed_hf_path_counts_a_digit_as_a_label_separator(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    # The loader's own separators include digits, so train1 is train.
     files = ["data/train-0.parquet", "data/train1.parquet", "data/test-0.parquet"]
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train")
@@ -806,8 +836,6 @@ def test_seed_hf_path_keeps_a_split_spread_over_sibling_folders(monkeypatch, tmp
             ],
         }
     ]
-    # Nothing names the split, but the two declared files share a name the test
-    # file does not, so the union stays off sets/c.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/sets/**/part*.parquet"
@@ -826,18 +854,16 @@ def test_seed_hf_path_unions_declared_files_with_unrelated_names(monkeypatch, tm
             ],
         }
     ]
-    # Nothing is shared but the first letters, and a class is the only union the
-    # reader understands: it rejects {a,b} outright.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+        # A character class is the only union the reader accepts: it rejects {a,b}.
         == "datasets/org/repo/sets/**/[cp]*.parquet"
     )
 
 
 def test_seed_format_inference_stops_where_the_loader_stops(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    # 200 csv sort ahead of 201 parquet, and the loader only looks at the first
-    # 200, so it builds csv and the recipe has to agree.
+    # The loader only looks at the first 200 files, which sort as csv here.
     files = [f"data/{i:03d}.csv" for i in range(200)] + [
         f"data/z{i:03d}.parquet" for i in range(201)
     ]
@@ -851,7 +877,6 @@ def test_seed_format_inference_stops_where_the_loader_stops(monkeypatch, tmp_pat
 @pytest.mark.parametrize(
     ("files", "expected"),
     [
-        # Most files wins, so the long csv name does not decide the format.
         (
             ["data/a-very-long-name.csv", "data/z.parquet", "data/y.parquet"],
             "datasets/org/repo/data/*.parquet",
@@ -884,8 +909,6 @@ def test_seed_hf_path_combines_bare_and_explicit_train_entries(monkeypatch, tmp_
         "data/part-b.parquet",
     ]
     files = ["data/part-a.parquet", "data/part-b.parquet", "data/test-0.parquet"]
-    # Neither declared file names the split, but they share a name the test file
-    # does not, so the union stays exact.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/data/part-*.parquet"
@@ -894,8 +917,6 @@ def test_seed_hf_path_combines_bare_and_explicit_train_entries(monkeypatch, tmp_
 
 def test_seed_hf_path_keeps_a_folder_subset_whose_files_are_generic(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    # en/ is the config even though its file says nothing about the split, so
-    # other/train.parquet must not win it.
     files = ["en/data.parquet", "other/train.parquet"]
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", "en")
@@ -915,8 +936,6 @@ def test_seed_hf_path_keeps_a_subset_written_after_the_split(
 ):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train-main.parquet", "test-main.parquet", "train-socratic.parquet"]
-    # train-*.parquet fits the subset slice but takes the other subset with it,
-    # so the candidate has to be judged against the whole listing.
     assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset) == expected
 
 
@@ -957,7 +976,6 @@ def test_seed_format_vote_ignores_folder_metadata(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*"}]}]
     files = ["data/metadata.csv", "data/metadata2.csv", "data/shard.parquet"]
-    # metadata.csv never decides a builder for the loader, so it cannot here.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/data/*.parquet"
@@ -1404,7 +1422,6 @@ def test_seed_hf_path_reads_sibling_folders_as_one_split_without_a_card(monkeypa
         seed_route._resolve_seed_hf_path("org/repo", files, "train")
         == "datasets/org/repo/**/train-*.parquet"
     )
-    # Ask for one of them and only that one is read.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", "socratic")
         == "datasets/org/repo/socratic/train-*.parquet"
@@ -1547,8 +1564,6 @@ def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_p
 
 def test_seed_hf_path_ignores_a_subset_label_that_is_not_the_config(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    # x/main.parquet carries the label but nothing of the split, so it is a name
-    # collision rather than the config.
     files = ["x/main.parquet", "y/train-0.parquet"]
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", "main")
@@ -1563,7 +1578,6 @@ def test_seed_hf_path_keeps_the_split_when_widening_several_declared_globs(monke
         {
             "config_name": "default",
             "data_files": [
-                # Declared twice for the same split, which must not lose the second.
                 {"split": "train", "path": "sets/a/train-*"},
                 {"split": "train", "path": "sets/b/train-*"},
             ],
@@ -1573,7 +1587,6 @@ def test_seed_hf_path_keeps_the_split_when_widening_several_declared_globs(monke
         "sets/a/train-*",
         "sets/b/train-*",
     ]
-    # sets/**/*.parquet would take the test file back; the split-named form does not.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/sets/**/*train*.parquet"
@@ -1614,7 +1627,6 @@ def test_seed_hf_path_widens_through_split_named_folders(monkeypatch, tmp_path):
             ],
         }
     ]
-    # The shard names say nothing, so the split has to come from the folders.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/sets/**/*train*/**/*.parquet"
@@ -1645,23 +1657,18 @@ def test_seed_declared_files_match_the_glob_not_its_prefix(monkeypatch, tmp_path
 @pytest.mark.parametrize(
     ("files", "expected"),
     [
-        # train-part.parquet wins on length, but questions_train.parquet is train
-        # too, so the pattern has to reach both without taking test-part.
         (
             ["data/train-part.parquet", "data/questions_train.parquet", "data/test-part.parquet"],
             "datasets/org/repo/data/*train*.parquet",
         ),
-        # A split named mid-name, the conventional sharded form.
         (
             ["data/questions_train_000.jsonl", "data/questions_test_000.jsonl"],
             "datasets/org/repo/data/*train*.jsonl",
         ),
-        # A dotted split name: only the final extension comes off the stem.
         (
             ["data/questions.train.parquet", "data/questions.test.parquet"],
             "datasets/org/repo/data/*train*.parquet",
         ),
-        # "training" is datasets' own alias for train, so both belong to it.
         (
             ["data/train-0.parquet", "data/training-0.parquet", "data/test-0.parquet"],
             "datasets/org/repo/data/*train*.parquet",
@@ -1702,8 +1709,6 @@ def test_seed_hf_path_gives_a_card_glob_a_readable_extension(
             ["data/test/0.parquet", "data/train/0.parquet"],
             "datasets/org/repo/data/train/**/*.parquet",
         ),
-        # Split folders at the repo root: the shorter "test" path used to win on
-        # length alone, so a train recipe was served the test split.
         (["test/0.parquet", "train/0.parquet"], "datasets/org/repo/train/**/*.parquet"),
     ],
 )
@@ -1776,3 +1781,119 @@ def test_validate_answers_when_the_error_collector_cannot_read_the_seed(monkeypa
 
     assert response.valid is False
     assert "repository not found" in (response.raw_detail or "")
+
+
+def test_every_recipe_document_type_has_an_extractor(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    from core.rag import config
+
+    readable = (
+        config.SUPPORTED_UPLOAD_EXTS | config.DOCUMENT_UPLOAD_EXTS | seed_route._MUPDF_EBOOK_EXTS
+    )
+    assert seed_route.UNSTRUCTURED_ALLOWED_EXTS <= readable
+    assert {".epub", ".mobi", ".doc", ".xlsx", ".pptx", ".odt", ".rtf", ".eml"} <= (
+        seed_route.UNSTRUCTURED_ALLOWED_EXTS
+    )
+
+
+def test_recipe_upload_extracts_office_ebook_and_email_files(monkeypatch, tmp_path):
+    from .test_rag_office_formats import BUILDERS
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    for ext, build in sorted(BUILDERS.items()):
+        assert ext in seed_route.UNSTRUCTURED_ALLOWED_EXTS, ext
+        source = build(tmp_path / f"source{ext}")
+        result = _run_upload(seed_route, f"book{ext}", source.read_bytes(), block_id = ext[1:])
+        assert result.status == "ok", (ext, result.error)
+        extracted = (
+            seed_route.UNSTRUCTURED_UPLOAD_ROOT / ext[1:] / f"{result.file_id}.extracted.txt"
+        )
+        assert "zebramarker" in extracted.read_text(encoding = "utf-8").lower(), ext
+
+
+_FB2 = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    '<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">'
+    "<description><title-info><book-title>Tiny</book-title></title-info></description>"
+    "<body><section><title><p>Chapter One</p></title>"
+    "<p>It was a bright cold day in April, and the clocks were striking thirteen.</p>"
+    "<p>Zebramarker closes the chapter.</p></section></body></FictionBook>"
+).encode()
+
+
+def test_recipe_upload_reads_mupdf_ebooks_in_the_worker_pool(monkeypatch, tmp_path):
+    pytest.importorskip("pymupdf")
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+
+    result = _run_upload(seed_route, "novel.fb2", _FB2)
+
+    assert result.status == "ok", result.error
+    extracted = seed_route.UNSTRUCTURED_UPLOAD_ROOT / "block" / f"{result.file_id}.extracted.txt"
+    assert extracted.read_text(encoding = "utf-8") == (
+        "Chapter One\n\n"
+        "It was a bright cold day in April, and the clocks were striking thirteen.\n\n"
+        "Zebramarker closes the chapter."
+    )
+
+
+def test_recipe_upload_names_pymupdf_when_an_ebook_reader_is_missing(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        seed_route,
+        "_extract_text_from_file",
+        _raise(ModuleNotFoundError("No module named 'pymupdf'", name = "pymupdf")),
+    )
+
+    result = _run_upload(seed_route, "novel.mobi", b"BOOKMOBI")
+
+    assert result.status == "error"
+    assert result.error == "Cannot read .mobi files: the 'pymupdf' package is not installed."
+    assert _block_files(seed_route) == []
+
+
+def test_document_seed_preview_reports_every_chunk_not_just_the_preview(monkeypatch, tmp_path):
+    chunking = pytest.importorskip("data_designer_unstructured_seed.chunking")
+    from models.data_recipe import SeedInspectUploadRequest
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(chunking, "_CACHE_DIR", tmp_path / "chunk-cache")
+    sentence = "A sentence long enough to fill most of a small chunk on its own. "
+    ids, names = [], []
+    for name in ("one.txt", "two.txt"):
+        result = _run_upload(seed_route, name, ("\n\n".join([sentence] * 30)).encode())
+        ids.append(result.file_id)
+        names.append(name)
+
+    response = seed_route.inspect_seed_upload(
+        SeedInspectUploadRequest(
+            block_id = "block",
+            file_ids = ids,
+            file_names = names,
+            preview_size = 3,
+            seed_source_type = "unstructured",
+            unstructured_chunk_size = 100,
+            unstructured_chunk_overlap = 0,
+        )
+    )
+
+    assert len(response.preview_rows) == 3
+    assert response.total_rows == 60
+
+
+def test_document_extraction_threads_are_bounded(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+    seen = []
+
+    async def run_sync(
+        fn,
+        *args,
+        limiter = None,
+        **kwargs,
+    ):
+        seen.append(limiter)
+        return fn(*args)
+
+    monkeypatch.setattr(seed_route.to_thread, "run_sync", run_sync)
+
+    assert _run_upload(seed_route, "notes.txt", b"hello").status == "ok"
+    assert seen == [seed_route._document_extraction_limiter]
+    assert seed_route._document_extraction_limiter.total_tokens == 2

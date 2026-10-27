@@ -13,19 +13,7 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""A packed row holding more than a few thousand documents used to abort a training run with
-`CUDA error: an illegal memory access was encountered`, which poisons the CUDA context so every
-later op in the process fails too.
-
-Root cause: flash-attn 2's varlen BACKWARD allocates
-``dq_accum = zeros(total_q + 128 * n_seqs, n_heads, round_up(head_dim, 32))`` and indexes it
-with int32, so the kernel faults once that element count reaches 2**31. xFormers dispatches a
-BlockDiagonal* bias to the same flash-2 op, which is why the crash showed up on the xformers
-path. Forward-only never allocates the buffer and never faults.
-
-The parametrised bounds below are measurements from a B200 (bf16, one flattened row,
-forward + backward), bisected on document count.
-"""
+"""flash-attn 2 varlen backward indexes dq_accum with int32 and faults at 2**31 elements."""
 
 import pytest
 import torch
@@ -34,7 +22,6 @@ import unsloth  # noqa: F401
 from unsloth.utils import attention_dispatch as ad
 
 
-# (n_heads, head_dim, doc_len, last document count observed to run clean on a B200)
 _MEASURED = [
     (16, 128, 1, 8129),
     (16, 96, 1, 10838),
@@ -51,7 +38,6 @@ def test_guard_matches_the_measured_crash_threshold(n_heads, head_dim, doc_len, 
     def trips(n_docs):
         return ad._varlen_backward_overflows_int32(n_docs, n_docs * doc_len, n_heads, head_dim)
 
-    # Inside the safe region: never give up the fast kernel for nothing.
     assert not trips(last_ok // 2)
     assert not trips(last_ok - 2)
     assert trips(last_ok + 1)
@@ -140,14 +126,10 @@ def test_oversized_partition_falls_back_to_sdpa(monkeypatch, backend):
     assert _run(monkeypatch, backend, n_docs = 20000, requires_grad = True) == ad.SDPA
 
 
-# 8129 documents at 16 heads / head_dim 128 is the last count that ran;
-# 20000 is well past it.
+# 8129 documents at 16 heads / head_dim 128 is the last count that ran.
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_softcapped_model_raises_instead_of_silently_dropping_the_softcap(monkeypatch, backend):
-    """Gemma 2 hands `attn_logit_softcapping` to the fast kernels through
-    `flash_varlen_kwargs` alone (unsloth/models/gemma2.py), and the SDPA branch has no
-    softcap at all. Downgrading a softcapped model would keep the run alive on wrong logits
-    and wrong gradients, which is worse than the fault the guard prevents, so it must stop."""
+    """Softcapped models must raise, not fall back to SDPA, which has no softcap and gives wrong logits."""
     with pytest.raises(RuntimeError) as excinfo:
         _run(monkeypatch, backend, n_docs = 20000, requires_grad = True, softcap = 50.0)
     message = str(excinfo.value)
@@ -169,8 +151,7 @@ def test_softcapped_model_under_the_bound_is_untouched(monkeypatch, backend):
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_padded_tail_segment_counts_toward_the_bound(monkeypatch, backend):
-    # 8127 one-token documents padded to 8192 tokens: the tail is the 8128th segment, which puts
-    # dq_accum at exactly 2**31 elements for 16 heads / head_dim 128.
+    # The tail is the 8128th segment, putting dq_accum at exactly 2**31 elements.
     from unsloth.utils import packing as packing_utils
 
     n_docs, total = 8127, 8192
@@ -253,7 +234,6 @@ def test_gradient_checkpointing_picks_the_same_backend_in_both_passes(monkeypatc
             monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", True)
             ad._VARLEN_INT32_WARNED[0] = False
             q = torch.zeros((1, 16, 4, 128))
-            # The checkpointed hidden state keeps requires_grad = True in both passes.
             ctx = _context(20000, 4, requires_grad = True)
             ad.run_attention(
                 config = ad.AttentionConfig(backend = backend, n_kv_heads = 16, n_groups = 1),
@@ -281,6 +261,5 @@ def test_guard_warns_once_naming_the_cost(capsys):
     assert "illegal memory access" in first
     assert "SDPA" in first
     assert "20000 documents" in first
-    # Once per process: it fires per layer per step.
     ad._warn_varlen_int32_overflow_once(ad.XFORMERS, 20000, 20000, 2**32)
     assert capsys.readouterr().out == ""

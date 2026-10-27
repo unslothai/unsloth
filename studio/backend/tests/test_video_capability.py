@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for video generation capability gating.
-
-Video runs through the diffusers pipelines in core/inference/video.py, so it is supported on
-CUDA and XPU, and on Apple Silicon whenever torch exposes a Metal device -- which is independent
-of MLX, and so of whether the host can train. Everything else gets a reason: macos_unsupported /
-pytorch_not_installed / mps_unavailable / no_accelerator / detection_failed. Mirrors
-test_export_capability.py: the matrix mocks the hardware probes, wiring is checked with ast, so
-it runs on CPU.
-"""
+"""Video support follows torch devices (CUDA, XPU, Metal), not MLX; hardware probes are mocked."""
 
 import ast
 import sys
@@ -45,23 +37,21 @@ def _patch(
     system = None,
     mps = None,
     torch_import_error = None,
+    rosetta = False,
 ):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
+    monkeypatch.setattr(hw, "_running_under_rosetta", lambda: rosetta)
     monkeypatch.setattr(hw, "get_device", lambda: device)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: apple)
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", chat_only_reason)
-    # Pinned rather than left ambient: a real broken-torch host would otherwise leak into every
-    # case here, and the Apple branch reads it to tell "installed but broken" from "absent".
+    # Pinned so a real broken-torch host cannot leak in; the Apple branch reads it.
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", torch_import_error)
     monkeypatch.setattr(hw, "_torch_mps_available", lambda: torch if mps is None else mps)
-    # Pin the OS too. video_capability() asks platform.system() directly so an Intel Mac
-    # is covered, which means the non-Mac cases below would flip to macos_unsupported
-    # when this suite runs on a macOS runner. Default follows `apple` so existing callers
-    # keep the host they were written for.
+    # video_capability() reads platform.system() directly, so pin the OS too.
     monkeypatch.setattr(hw.platform, "system", lambda: system or ("Darwin" if apple else "Linux"))
-
-
-# -- capability matrix --------------------------------------------------------------------------
+    # Developer mode's CPU opt-in reads the env and the settings store; pinned off so neither an
+    # ambient UNSLOTH_VIDEO_ALLOW_CPU nor a real Studio home changes the matrix below.
+    monkeypatch.setattr(hw, "_video_cpu_opt_in", lambda: False)
 
 
 def test_cuda_supports_video(monkeypatch):
@@ -98,10 +88,6 @@ def test_apple_silicon_without_torch_reports_pytorch_missing(monkeypatch):
 @pytest.mark.parametrize(
     "device, chat_only_reason",
     [
-        # Both states detect_hardware() can actually publish for a broken torch on Apple Silicon.
-        # MLX needs no torch, so a healthy stack still reports MLX with no chat-only reason; a
-        # broken one falls back to CPU and records mlx_unavailable. Pairing MLX with
-        # mlx_unavailable would let the production check be narrowed to either and still pass.
         (hw.DeviceType.MLX, None),
         (hw.DeviceType.CPU, "mlx_unavailable"),
     ],
@@ -109,10 +95,7 @@ def test_apple_silicon_without_torch_reports_pytorch_missing(monkeypatch):
 def test_apple_silicon_with_broken_torch_is_not_told_to_install_it(
     monkeypatch, device, chat_only_reason
 ):
-    # A wheel with unresolved native libs raises from torch's own __init__, so _has_torch() reads
-    # False for it exactly as it does for an absent one, and neither reason above routes this host
-    # to the detection_failed branch. Without the explicit check it is told to install the
-    # PyTorch already sitting there broken.
+    # A wheel with broken native libs makes _has_torch() False, same as absent.
     _patch(
         monkeypatch,
         torch = False,
@@ -129,8 +112,7 @@ def test_apple_silicon_with_broken_torch_is_not_told_to_install_it(
 
 
 def test_apple_silicon_without_a_metal_device_is_not_supported(monkeypatch):
-    # Apple Silicon alone does not imply MPS: a torch built without it leaves the pipelines
-    # with nowhere to run, and claiming support would fail at load instead of at the gate.
+    # Apple Silicon does not imply MPS; a torch built without it cannot run the pipelines.
     _patch(monkeypatch, torch = True, device = hw.DeviceType.MLX, apple = True, mps = False)
     cap = hw.video_capability()
     assert cap["video_supported"] is False
@@ -138,8 +120,6 @@ def test_apple_silicon_without_a_metal_device_is_not_supported(monkeypatch):
 
 
 def test_mlx_device_is_apple_even_without_the_apple_probe(monkeypatch):
-    # MLX only exists on Apple, so an is_apple_silicon() that fails to answer must not
-    # reclassify the host as a CPU box missing a GPU. With torch + Metal it is supported.
     _patch(monkeypatch, torch = True, device = hw.DeviceType.MLX, apple = False)
     assert hw.video_capability()["video_supported"] is True
 
@@ -157,7 +137,6 @@ def test_cpu_with_torch_reports_no_accelerator(monkeypatch):
     cap = hw.video_capability()
     assert cap["video_supported"] is False
     assert cap["video_unsupported_reason"] == "no_accelerator"
-    # Must not tell a user who has PyTorch to install PyTorch.
     assert "PyTorch is not installed" not in cap["video_unsupported_message"]
 
 
@@ -177,20 +156,10 @@ def test_a_failed_detection_is_reported_as_such(monkeypatch):
     assert "detection failed" in cap["video_unsupported_message"].lower()
 
 
-# -- endpoint / package wiring (ast) ------------------------------------------------------------
-
-
 def test_main_endpoints_expose_video_capability():
     m = _src("main.py")
-    # Both system endpoints spread video_capability() into their response, as they do for export.
     assert m.count("**video_capability()") >= 2
     assert '"/api/system/hardware"' in m and '"/api/system"' in m
-
-
-# -- the Metal probe itself ---------------------------------------------------------------------
-#
-# The matrix above stubs _torch_mps_available, so nothing there executes it. These drive the real
-# helper against a fake torch: without them, changing its predicate is invisible to the suite.
 
 
 def _fake_torch(monkeypatch, backends):
@@ -211,8 +180,7 @@ def test_mps_probe_reads_availability_not_whether_torch_was_built_with_it(monkey
         def is_built(self):
             return True
 
-    # is_built() is true on any Metal-capable build, including one that cannot reach a device
-    # here, so a probe on that predicate would promise video the host cannot run.
+    # is_built() is true even when no device is reachable, so it must not be the predicate.
     _fake_torch(monkeypatch, types.SimpleNamespace(mps = _Mps(available = False)))
     assert hw._torch_mps_available() is False
     _fake_torch(monkeypatch, types.SimpleNamespace(mps = _Mps(available = True)))
@@ -234,8 +202,6 @@ def test_mps_probe_reports_no_metal_rather_than_raising(monkeypatch):
 
 
 def test_mps_probe_reports_no_metal_when_torch_is_absent(monkeypatch):
-    # Only the answer is asserted, not that the import was skipped: an import of the None below
-    # raises into the same except, so both paths return False and no assertion can tell them apart.
     monkeypatch.setattr(hw, "_has_torch", lambda: False)
     monkeypatch.setitem(sys.modules, "torch", None)
     assert hw._torch_mps_available() is False
@@ -248,12 +214,10 @@ def test_hardware_package_reexports_video_capability():
 
 
 def test_video_capability_separates_apple_silicon_from_intel_macs():
-    cap = _func_src("utils/hardware/hardware.py", "video_capability")
+    cap = _func_src("utils/hardware/hardware.py", "_video_capability_verdict")
     assert "DeviceType.CUDA, DeviceType.XPU" in cap
     assert "_has_torch()" in cap
-    # Strip comments before asserting on the gate. This assertion used to name
-    # is_apple_silicon(), and when the check widened to every Darwin host it kept passing on the
-    # word surviving in a comment, which is not a test of anything.
+    # Strip comments so a word surviving in a comment cannot satisfy the assertion.
     code = "\n".join(
         line.split("#", 1)[0] for line in cap.splitlines() if not line.strip().startswith("#")
     )
@@ -277,10 +241,6 @@ def test_frontend_reads_the_new_fields():
 
 
 def test_intel_mac_is_macos_unsupported_not_a_missing_gpu(monkeypatch):
-    # An Intel Mac detects as plain CPU and is_apple_silicon() is False, so the reason
-    # used to come out as pytorch_not_installed or no_accelerator. Both tell the user to
-    # install PyTorch or add a GPU, and neither enables video on a machine with no Metal
-    # device. Installing torch does not change that, so the answer holds either way.
     for torch_present in (True, False):
         _patch(
             monkeypatch,
@@ -299,9 +259,26 @@ def test_intel_mac_is_macos_unsupported_not_a_missing_gpu(monkeypatch):
         assert "GPU" not in cap["video_unsupported_message"]
 
 
+def test_rosetta_is_told_to_reinstall_native_not_that_it_is_an_intel_mac(monkeypatch):
+    _patch(
+        monkeypatch,
+        torch = True,
+        device = hw.DeviceType.CPU,
+        apple = False,
+        system = "Darwin",
+        mps = False,
+        chat_only_reason = "rosetta",
+        rosetta = True,
+    )
+    cap = hw.video_capability()
+    assert cap["video_supported"] is False
+    assert cap["video_unsupported_reason"] == "rosetta"
+    assert "arm64" in cap["video_unsupported_message"]
+    assert "Intel Mac" not in cap["video_unsupported_message"]
+
+
 def test_a_broken_probe_still_beats_the_macos_branch(monkeypatch):
-    # detection_failed is checked first on purpose: a Mac whose probe fell over should be
-    # told detection failed, not that video is coming soon, because the verdict is unknown.
+    # detection_failed is checked first: an unknown verdict must not read as coming soon.
     _patch(
         monkeypatch,
         torch = True,

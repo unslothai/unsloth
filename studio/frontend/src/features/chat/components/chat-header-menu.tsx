@@ -19,6 +19,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
+import { resumesThought } from "@/features/model-picker";
 import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
@@ -30,7 +31,7 @@ import {
   Archive03Icon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
-  Copy01Icon,
+  CollapseIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -45,14 +46,25 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ForkIcon } from "@/lib/fork-icon";
-import type { ReactNode } from "react";
+import { type ReactNode, useSyncExternalStore } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ActiveChatMenu,
   useActiveChatMenuStore,
 } from "../stores/active-chat-menu-store";
+import { requestThreadCompaction } from "../stores/compact-request-store";
+import {
+  liveThreadBranch,
+  liveThreadRunning,
+  subscribeLiveThreadViews,
+} from "../utils/live-thread-head";
+import {
+  hasPreStreamRunReservation,
+  subscribePreStreamRunReservations,
+} from "../utils/pre-stream-run-reservation";
 import {
   type ConversationExportFormat,
   chatExportOptions,
@@ -60,7 +72,11 @@ import {
   getSidebarItemThreadIds,
   regenerateChatTitleWithToast,
 } from "./chat-row-menu";
-import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
+import {
+  chatFolderSessionId,
+  OpenChatFolderItem,
+  UploadToChatFolderItem,
+} from "./open-chat-folder-item";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -130,7 +146,7 @@ function TemporaryChatButton({
           className={cn(
             "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             temporary
-              ? "bg-primary/10 text-primary hover:bg-primary/15"
+              ? "bg-wash-10 text-foreground hover:bg-wash-15"
               : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
           )}
           aria-label={label}
@@ -152,6 +168,45 @@ function TemporaryChatButton({
 
 function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const t = useT();
+  const preStreamRunActive = useSyncExternalStore(
+    subscribePreStreamRunReservations,
+    () => hasPreStreamRunReservation([menu.item.id]),
+    () => false,
+  );
+  const liveRunActive = useSyncExternalStore(
+    subscribeLiveThreadViews,
+    () => liveThreadRunning(menu.item.id),
+    () => false,
+  );
+  const busy = useChatRuntimeStore((state) =>
+    state.modelLoading || Boolean(state.runningByThreadId[menu.item.id]),
+  ) || preStreamRunActive || liveRunActive;
+  const compact = () => {
+    const runtime = useChatRuntimeStore.getState();
+    if (
+      menu.item.type !== "single" ||
+      runtime.modelLoading ||
+      runtime.runningByThreadId[menu.item.id] ||
+      hasPreStreamRunReservation([menu.item.id]) ||
+      liveThreadRunning(menu.item.id)
+    ) return;
+    if (!liveThreadBranch(menu.item.id)?.length) {
+      toast.info(t("chatMenu.compactEmpty"));
+      return;
+    }
+    if (!runtime.supportsTools || !resumesThought({
+      loadedIsGguf: runtime.loadedIsGguf,
+      loadedIsMlx: runtime.loadedIsMlx,
+      activeGgufVariant: runtime.activeGgufVariant,
+      activeNativePathToken: runtime.activeNativePathToken,
+      checkpoint: runtime.params.checkpoint,
+    })) {
+      toast.info(t("chatMenu.compactUnsupported"));
+      return;
+    }
+    requestThreadCompaction(menu.item.id);
+    toast.info(t("chatMenu.compactQueued"));
+  };
   const favorite = useChatFavoritesStore((state) =>
     state.chatIds.includes(menu.item.id),
   );
@@ -182,6 +237,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.menu.regenerateTitle")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}
         onSelect={menu.togglePin}
@@ -224,6 +280,13 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       </Item>
       <DropdownMenuSeparator className="mx-3" />
       <Item
+        icon={CollapseIcon}
+        onSelect={compact}
+        disabled={menu.item.type !== "single" || busy}
+      >
+        {t("chatMenu.compact")}
+      </Item>
+      <Item
         glyph={<HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />}
         onSelect={menu.fork}
         disabled={!menu.canFork}
@@ -231,6 +294,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.chats.menu.fork")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="gap-2.5">
           <HugeiconsIcon
@@ -339,6 +403,8 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
           ))}
         </DropdownMenuSubContent>
       </DropdownMenuSub>
+      {/* Only with the folder items, or it doubles the next separator. */}
+      {chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null}
       <OpenChatFolderItem item={menu.item} />
       <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
@@ -352,7 +418,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   );
 }
 
-/** A saved chat's "…" menu, or the temporary toggle on a new chat. Turning a saved chat temporary is not offered: it would quietly stop saving a chat the user kept. */
+/** A saved chat's menu, or the temporary toggle on a new chat. Saved chats cannot turn temporary. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,
