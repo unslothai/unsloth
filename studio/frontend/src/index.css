@@ -5185,8 +5185,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	scrollbar-gutter: stable both-edges;
 }
 
-/* thread-gutter.ts: WebKit puts a flex scroller's both-edges left gutter on the right; one gutter plus matching left
-   padding recentres. Padding, not a border: WebKit snaps border widths at fractional zoom, so the column drifts off the composer. */
+/* thread-gutter.ts. Padding, not a border: WebKit snaps borders at fractional zoom and the column drifts off the composer. */
 .aui-thread-viewport[data-gutter-shift] {
 	scrollbar-gutter: stable;
 	padding-left: calc(var(--spacing) * 5 + var(--thread-gutter-shift));

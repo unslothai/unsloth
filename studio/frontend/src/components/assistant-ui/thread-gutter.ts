@@ -4,7 +4,7 @@
 export const THREAD_GUTTER_SHIFT_ATTRIBUTE = "data-gutter-shift";
 export const THREAD_GUTTER_SHIFT_PROPERTY = "--thread-gutter-shift";
 
-/** Fired on the viewport when the shift changes: the column moves without resizing, which no ResizeObserver sees. */
+/** The column moves without resizing, so no ResizeObserver fires. */
 export const THREAD_GUTTER_CHANGE_EVENT = "unsloth:thread-gutter-change";
 
 export function threadGutterShift(
@@ -17,7 +17,7 @@ export function threadGutterShift(
 
 let misplacedCache: boolean | null = null;
 
-/** WebKit puts both-edges' left gutter on the right of a flex scroller (block ones are fine), like the thread viewport. */
+/** WebKit reserves a flex scroller's both-edges left gutter on the right. */
 export function bothEdgesGutterMisplaced(doc: Document = document): boolean {
   if (misplacedCache !== null) {
     return misplacedCache;
@@ -34,7 +34,7 @@ export function bothEdgesGutterMisplaced(doc: Document = document): boolean {
   const leftGap =
     content.getBoundingClientRect().left - probe.getBoundingClientRect().left;
   probe.remove();
-  // Overlay scroll bars reserve nothing, so the engine's behaviour is unknown until one shows.
+  // Unknown until a classic scroll bar shows.
   if (scrollbar > 0) {
     misplacedCache = leftGap < 0.5;
   }
