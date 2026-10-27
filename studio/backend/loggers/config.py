@@ -289,6 +289,10 @@ def _redirect_every_bar_output() -> None:
 
         def _quiet_init(self, *args, **kwargs):
             kwargs.setdefault("file", _NullStream())
+            # Hub uses disable=None for TTY detection. Our quiet stream is not a TTY,
+            # but these bars must keep counting for UI observers. Explicit True stays off.
+            if kwargs.get("disable") is None:
+                kwargs["disable"] = False
             original_init(self, *args, **kwargs)
 
         bar_cls.__init__ = _quiet_init

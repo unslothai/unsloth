@@ -359,8 +359,10 @@ def test_countable_worker_bars_restore_the_hub_default_cached_before_bootstrap(m
     monkeypatch.setattr(hub_bars, "progress_bar_states", {"_global": False})
     log_config.keep_progress_bars_countable()
     assert not hub_bars.are_progress_bars_disabled()
-    with hub_bars.tqdm(total = 10, unit = "B", desc = "training weights") as progress:
+    with hub_bars.tqdm(total = 10, unit = "B", desc = "training weights", disable = None) as progress:
         progress.update(4)
         from core.training.diffusion_download_progress import download_snapshot
         snapshot = download_snapshot([progress])
         assert snapshot["bytes_done"] == 4
+    with hub_bars.tqdm(total = 10, unit = "B", disable = True) as progress:
+        assert progress.disable is True

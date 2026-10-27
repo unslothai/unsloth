@@ -2509,6 +2509,7 @@ def _train_dit(
     if caption_embeds is not None and sample_texts:
         # Warm conditioning skips the VAE and encoders, but previews need the VAE and their own embeddings. RNG-isolated:
         # a run without previews never makes this load, so it must not move the training streams.
+        _emit(on_event, "model_load_started")
         with isolated_sampling(device, False):
             pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
             encoded = _encode_prompts_cached(spec, pipe, sample_texts, device, pcache)
@@ -2582,6 +2583,7 @@ def _train_dit(
     variant_rng = random.Random(cfg.seed + 1)
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
+    _emit(on_event, "model_load_started")
     base_precision = _resolve_base_precision(cfg, spec, device)
     transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
     base_is_bnb = base_precision == "nf4"

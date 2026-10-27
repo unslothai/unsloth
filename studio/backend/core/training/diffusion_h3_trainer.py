@@ -553,6 +553,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             "through one set of linears, so the activation range is not the per-family range "
             "the fp8 filter was measured against. Use nf4, int8 or bf16."
         )
+    _emit(on_event, "model_load_started")
     transformer = _load_transformer(cfg, device, base_precision)
     transformer.requires_grad_(False)
     # DEFAULT_LORA_TARGETS here means "unset", so the family's own regex wins.
