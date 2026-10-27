@@ -295,6 +295,19 @@ def _case_refusals(rank, world, tmp):
     attempt("zb_reentrant_gc", reentrant, schedule = "interleavedzerobubble", n_microbatches = 4)
     attempt("v_schedule", build(LLAMA), schedule = "zbvzerobubble", n_microbatches = 4)
 
+    def apply_lora_qkv(self, x):  # stands in for unsloth.kernels.fast_lora's fused kernel
+        raise AssertionError("not called")
+
+    apply_lora_qkv.__module__ = "unsloth.kernels.fast_lora"
+    fused = build(LLAMA)
+    for layer in ppn._find_parts(fused).layers:
+        layer.self_attn.apply_qkv = apply_lora_qkv
+    attempt("zb_fused_lora", fused, schedule = "interleavedzerobubble", n_microbatches = 4)
+    fused_ok = build(LLAMA)
+    for layer in ppn._find_parts(fused_ok).layers:
+        layer.self_attn.apply_qkv = apply_lora_qkv
+    attempt("interleaved_fused_lora", fused_ok, schedule = "interleaved1f1b", n_microbatches = 4)
+
     fake = types.ModuleType("unsloth_zoo.gradient_checkpointing")  # pre-#2071 zoo: no slot leases
     saved = sys.modules.get("unsloth_zoo.gradient_checkpointing")
     sys.modules["unsloth_zoo.gradient_checkpointing"] = fake
@@ -454,7 +467,7 @@ def test_pp4_interleaved1f1b_x_tp2_matches_one_process():
 def test_multi_stage_refusals_leave_the_model_uncut():
     res = _spawn("refusals", 2)[0]
     for key in [k for k in res if not k.endswith(":uncut")]:
-        if key == "loopedbfs_old_zoo" or (key == "v_schedule" and _v_supported()):
+        if key in ("loopedbfs_old_zoo", "interleaved_fused_lora") or (key == "v_schedule" and _v_supported()):
             continue
         assert res[key + ":uncut"], (key, res[key])
     assert "pipeline schedule must be one of" in res["unknown"]
@@ -470,6 +483,8 @@ def test_multi_stage_refusals_leave_the_model_uncut():
     assert "splits each backward into an input and a weight pass" in res["zb_reentrant_gc"]
     assert "interleaves forwards and backwards" in res["interleaved_old_zoo"]
     assert res["loopedbfs_old_zoo"] is None
+    assert "runs the backward of Unsloth's fused LoRA kernels (apply_lora_qkv) twice" in res["zb_fused_lora"]
+    assert res["interleaved_fused_lora"] is None  # full-backward schedules keep the fused kernels
     if _v_supported():
         assert res["v_schedule"] is None
     else:

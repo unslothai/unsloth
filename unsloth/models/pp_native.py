@@ -61,6 +61,7 @@ from .pp_schedules import (
     SCHEDULE_NAMES,
     allow_split_backward,
     non_reentrant_checkpointing_only,
+    single_backward_kernels,
     resolve_stages_per_rank,
     schedule_spec,
     stage_indices,
@@ -940,6 +941,14 @@ def _check_schedule(model, spec, props):
             "unsloth_zoo's smart gradient checkpointing does not support (offloaded activations of a pending "
             "micro-batch would be overwritten). Use schedule = 'gpipe' (or 'loopedbfs'), or update unsloth_zoo "
             "(host slot leases, unsloth-zoo PR #2071)."
+        )
+    fused = single_backward_kernels(model) if props["split_backward"] else []
+    if fused:
+        raise ValueError(
+            f"Unsloth: the {spec.name} pipeline schedule splits each backward into an input and a weight pass, "
+            f"which runs the backward of Unsloth's fused LoRA kernels ({', '.join(fused)}) twice; they can run it "
+            "once. Use schedule = 'interleaved1f1b' (or 'loopedbfs'), or load the model without the fused LoRA "
+            "path."
         )
     if props["split_backward"] and non_reentrant_checkpointing_only(model) is False:
         raise ValueError(
