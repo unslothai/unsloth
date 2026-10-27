@@ -1901,7 +1901,17 @@ def _reconcile_folder(job_id: str) -> None:
             raise
 
     deleted = 0
-    for rel in sorted(missing - withheld):
+    removable = sorted(missing - withheld)
+    if removable:
+        # Exclusions can lapse during ingestion (.gitignore edited, file shrunk): judge removals on a fresh scan.
+        excluded = set()
+        try:
+            rescanned, _ = _scan(folder["path"], scanned_identity, None, excluded)
+        except RuntimeError as exc:
+            raise _FolderChanged(str(exc)) from exc
+        if not rescanned.keys().isdisjoint(removable):
+            raise _FolderChanged("Linked source reappeared during reconciliation")
+    for rel in removable:
         _check_running()
         _check_root_identity(folder["path"], scanned_identity)
         if _source_reappeared(folder["path"], rel, excluded):

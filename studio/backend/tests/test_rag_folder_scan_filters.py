@@ -350,3 +350,41 @@ def test_a_file_refilled_after_an_empty_scan_keeps_its_index_entry(
     monkeypatch.setattr(folder_sync, "_scan", refill_after_scan)
     assert _run(folder["id"])["status"] == "failed"
     assert _mapped(folder["id"]) == {"notes.md"}
+
+
+def _shrink_back_under_the_limit(source, monkeypatch):
+    monkeypatch.setattr(config, "FOLDER_MAX_TEXT_BYTES", 10)
+    return lambda: monkeypatch.setattr(config, "FOLDER_MAX_TEXT_BYTES", 0)
+
+
+def _drop_the_gitignore_rule(source, monkeypatch):
+    _write(source, ".gitignore", "notes.txt\n")
+    return lambda: (source / ".gitignore").unlink()
+
+
+@requires_sqlite_vec
+@pytest.mark.parametrize("exclude", [_shrink_back_under_the_limit, _drop_the_gitignore_rule])
+def test_a_file_eligible_again_before_removal_keeps_its_index_entry(
+    rag_home, stub_embeddings, monkeypatch, exclude
+):
+    source = rag_home / "source"
+    _write(source, "notes.txt", "durable words")
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(source), name = "Docs"
+    )
+    assert _run(folder["id"])["status"] == "completed"
+
+    restore = exclude(source, monkeypatch)
+    real_scan = folder_sync._scan
+    calls = []
+
+    def restore_after_first_scan(*args, **kwargs):
+        result = real_scan(*args, **kwargs)
+        if not calls:
+            restore()
+        calls.append(1)
+        return result
+
+    monkeypatch.setattr(folder_sync, "_scan", restore_after_first_scan)
+    assert _run(folder["id"])["status"] == "failed"
+    assert _mapped(folder["id"]) == {"notes.txt"}
