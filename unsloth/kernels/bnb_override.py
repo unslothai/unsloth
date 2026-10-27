@@ -64,6 +64,21 @@ class _NF4Linear(torch.autograd.Function):
         return torch.matmul(dY, W.to(dY.dtype)), None, None, None
 
 
+class _NF4LinearOutputUnused(torch.autograd.Function):
+    """_NF4Linear in a checkpoint recompute that never reads the output: no forward GEMM, same backward."""
+
+    @staticmethod
+    def forward(ctx, x, weight, quant_state):
+        ctx.unsloth_nf4 = (weight, quant_state)
+        return x.new_empty((*x.shape[:-1], quant_state.shape[0]))
+
+    @staticmethod
+    def backward(ctx, dY):
+        weight, quant_state = ctx.unsloth_nf4
+        W = _U.fast_dequantize(weight, quant_state, dtype = dY.dtype)
+        return torch.matmul(dY, W.to(dY.dtype)), None, None
+
+
 def _linear(x, weight, quant_state, bias):
     if x.requires_grad and torch.is_grad_enabled():
         return _apply(_NF4Linear, x, weight, quant_state, bias)

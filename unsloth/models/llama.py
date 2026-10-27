@@ -1231,7 +1231,8 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(
             self.post_attention_layernorm, hidden_states, save_output = True, reuse_grad = True
         )
-        hidden_states = self.mlp(hidden_states)
+        with _fast_lora.mlp_output_unused(self):
+            hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
@@ -1240,6 +1241,11 @@ def LlamaDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
+
+
+# Its MLP output only reaches the layer output, so a checkpoint recompute may skip down_proj; the
+# per-block compile enters this around a compiled layer.
+LlamaDecoderLayer_fast_forward._unsloth_mlp_output_unused = _fast_lora.mlp_output_unused
 
 
 # See unslothai/unsloth#404 (comment 2323473452).
