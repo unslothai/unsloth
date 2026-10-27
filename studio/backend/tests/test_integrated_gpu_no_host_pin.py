@@ -540,15 +540,18 @@ def test_every_cuda_group_offload_stream_asks_the_predicate():
 
 def test_the_h3_block_pin_helper_is_reached_only_through_the_gated_deferral():
     # _pin_host_tensor has no gate of its own: its one caller is _H3BlockPinner, built only by the deferral.
-    tree = ast.parse((BACKEND / "core/inference/video_minimax_h3_residency.py").read_text(encoding = "utf-8"))
-    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    tree = ast.parse(
+        (BACKEND / "core/inference/video_minimax_h3_residency.py").read_text(encoding = "utf-8")
+    )
+    funcs = {
+        n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
 
     def users(name):
         return sorted(
             f
             for f, node in funcs.items()
-            if f != name
-            and any(isinstance(x, ast.Name) and x.id == name for x in ast.walk(node))
+            if f != name and any(isinstance(x, ast.Name) and x.id == name for x in ast.walk(node))
         )
 
     assert users("_pin_host_tensor") == ["_h3_block_pinner_cls", "_run"]

@@ -495,7 +495,9 @@ def pin_streamed_block_groups(transformer: Any, logger: Any = None) -> tuple[int
             tensors = _group_tensors(group)
             if any(getattr(t, "device", None) is None or t.device.type != "cpu" for t in tensors):
                 break
-            if not h3_te_pin_allowed(group_payload_bytes(group), getattr(group, "onload_device", None)):
+            if not h3_te_pin_allowed(
+                group_payload_bytes(group), getattr(group, "onload_device", None)
+            ):
                 break
             saved = (group.low_cpu_mem_usage, group.cpu_param_dict)
             try:

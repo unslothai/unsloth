@@ -6294,7 +6294,9 @@ def _encoder_background_pin_wanted(pipe: Any, device: Any = None) -> bool:
 
 
 def _streamed_pin_leftover_mib(
-    transformer_mib: int, pin_transformer: bool, device: Any = None
+    transformer_mib: int,
+    pin_transformer: bool,
+    device: Any = None,
 ) -> int:
     """Pin budget MiB left after the transformer; 0 wherever ``_streamed_pin_plan`` would not pin by budget."""
     if _env_off(PARTIAL_ENCODER_PIN_ENV) or not host_pinning_allowed(device):
