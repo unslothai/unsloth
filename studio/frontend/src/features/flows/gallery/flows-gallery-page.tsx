@@ -462,6 +462,12 @@ export function FlowsGalleryPage(): ReactElement {
               : "Your recipes stay on the Data Recipes page too.",
           },
         );
+      const notices = result.created.flatMap((c) =>
+        (c.notices ?? []).map((notice) => `${c.name}: ${notice}`),
+      );
+      for (const notice of notices.slice(0, 4)) toast.info(notice);
+      if (notices.length > 4)
+        toast.info(`${notices.length - 4} more notes on the brought-in recipes`);
       refresh();
     } catch (error) {
       toast.error(
