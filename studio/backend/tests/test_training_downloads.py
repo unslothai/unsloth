@@ -4,6 +4,7 @@
 import asyncio
 import queue
 import threading
+import time
 
 import pytest
 
@@ -189,3 +190,97 @@ def test_registry_account_is_checked_before_reading_or_cancelling(rig, monkeypat
         with pytest.raises(HTTPException) as error:
             action()
         assert error.value.status_code == 404
+
+
+_GATED = "black-forest-labs/FLUX.1-dev"
+_MIRROR = "unsloth/FLUX.1-dev"
+
+
+def _loading_target(*, event_queue, stop_queue, config):
+    from core.training.diffusion_lora_trainer import _config_from_dict
+    from core.training.diffusion_train_common import _emit, training_fetch_repo
+
+    cfg = _config_from_dict(config).normalized()
+    _emit(event_queue.put, "model_load_started", fetch_repo = training_fetch_repo(cfg))
+    stop_queue.get(timeout = 5.0)
+
+
+class _ThreadProc:
+    def __init__(self, target, kwargs, daemon):
+        self.thread = threading.Thread(target = target, kwargs = kwargs, daemon = daemon)
+        self.pid = None
+
+    def start(self):
+        self.thread.start()
+
+    def is_alive(self):
+        return self.thread.is_alive()
+
+
+class _FakeCtx:
+    Queue = queue.Queue
+    Process = _ThreadProc
+
+
+@pytest.fixture
+def start_rig(monkeypatch, tmp_path, healthy_diffusers):
+    import core.training.diffusion_training_service as dts
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    monkeypatch.setattr(dts, "_runs_dir", lambda: tmp_path)
+    registry = download_registry.DownloadRegistry()
+    monkeypatch.setattr(download_registry, "get_models_registry", lambda: registry)
+    service = DiffusionTrainingService(ctx = _FakeCtx(), target = _loading_target)
+    config = {"base_model": _GATED, "data_dir": "d", "output_dir": str(tmp_path), "train_steps": 2}
+    yield service, registry, config
+    if service._stop_queue is not None:
+        service._stop_queue.put(True)
+    if service._pump is not None:
+        service._pump.join(5)
+
+
+def _hub_snapshot(registry, repo_id):
+    accepted, _ = registry.claim(
+        repo_id, download_registry.TRANSPORT_AUTO, repo_type = "model", repo_id = repo_id
+    )
+    assert accepted
+
+
+def test_tokenless_gated_base_claims_the_mirror_it_fetches(start_rig):
+    from core.training.diffusion_lora_trainer import _config_from_dict
+    from core.training.diffusion_train_common import training_fetch_repo
+
+    service, registry, config = start_rig
+    assert training_fetch_repo(_config_from_dict(config).normalized()) == _MIRROR
+    job_id = service.start(config)
+    key = service._download_key
+    assert registry.get_job_metadata(key).repo_id == _MIRROR
+    assert service.status()["base_model"] == _GATED
+    deadline = time.time() + 3
+    while not service.status().get("in_model_load") and time.time() < deadline:
+        time.sleep(0.01)
+    assert service._download_key == key
+    assert registry.get_job_metadata(key).variant == f"@training-{job_id}"
+
+
+def test_canonical_snapshot_download_does_not_block_a_mirror_fetch(start_rig):
+    service, registry, config = start_rig
+    _hub_snapshot(registry, _GATED)
+    service.start(config)
+    assert registry.get_job_metadata(service._download_key).repo_id == _MIRROR
+
+
+def test_mirror_snapshot_download_blocks_the_start(start_rig):
+    service, registry, config = start_rig
+    _hub_snapshot(registry, _MIRROR)
+    with pytest.raises(RuntimeError, match = "already in use"):
+        service.start(config)
+
+
+def test_model_load_reclaim_uses_the_reported_fetch_repo(start_rig):
+    service, registry, config = start_rig
+    service._state.update(job_id = "b" * 32, base_model = _GATED)
+    _hub_snapshot(registry, _GATED)
+    service._apply_event({"type": "model_load_started", "fetch_repo": _MIRROR})
+    assert service.status()["status"] != "error"
+    assert registry.get_job_metadata(service._download_key).repo_id == _MIRROR

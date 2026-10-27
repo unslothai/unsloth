@@ -535,6 +535,7 @@ class DiffusionTrainingService:
         # Only the first stop reaches the child, so only the first may set the parent's disposition.
         self._stop_signalled = False
         self._download_key: Optional[str] = None
+        self._download_repo: Optional[str] = None
         self._download_phase = None
         # GPU load admissions in flight; same two-sided rule as dataset mutations.
         self._gpu_admissions = 0
@@ -686,9 +687,14 @@ class DiffusionTrainingService:
                 kwargs = child_kwargs,
                 daemon = True,
             )
-            self._download_key = training_downloads.claim(
-                self, job_id, config.get("base_model") or config.get("model_name")
+            from .diffusion_train_common import training_fetch_repo
+
+            self._download_repo = (
+                training_fetch_repo(normalized_cfg)
+                or config.get("base_model")
+                or config.get("model_name")
             )
+            self._download_key = training_downloads.claim(self, job_id, self._download_repo)
             # Keep the lease secret out of the child's env, as other orchestrators do.
             from utils.native_path_leases import native_path_secret_removed_for_child_start
 
@@ -1276,7 +1282,12 @@ class DiffusionTrainingService:
             if etype == "model_load_started":
                 try:
                     self._download_key = training_downloads.claim(
-                        self, s.get("job_id"), s.get("base_model") or self._config.get("base_model")
+                        self,
+                        s.get("job_id"),
+                        ev.get("fetch_repo")
+                        or self._download_repo
+                        or s.get("base_model")
+                        or self._config.get("base_model"),
                     )
                 except RuntimeError as exc:
                     s.update(status = "error", message = str(exc), in_model_load = False)
