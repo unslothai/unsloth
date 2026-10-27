@@ -227,7 +227,7 @@ function SelectedOptionDescription({ name, detail }: { name: string; detail: str
   );
 }
 
-// The glyph fills its box: drop it to the label's cap line.
+// Drops the edge-to-edge glyph to the label's cap line.
 const ROW_ICON_CLASS =
   "me-1.5 mt-[calc(0.1875rem*var(--ui-font-scale,1))] size-[calc(20px*var(--ui-space-scale,1))]";
 
@@ -253,7 +253,7 @@ function PermissionsSection() {
       ref={permissionsRef}
       title={t("settings.general.permissions.sectionTitle")}
     >
-      {/* One switch per mode, exclusive like the menu: switching the active one off is a no-op. */}
+      {/* Exclusive: switching the active one off is a no-op. */}
       {choice.options.map((option) => (
         <SettingsRow
           key={option.value}

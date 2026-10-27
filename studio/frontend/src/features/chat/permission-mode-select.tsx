@@ -57,7 +57,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 
-/** The hand reads larger than the shields beside it; scale keeps its box, so rows stay aligned. */
+/** The hand reads larger than the shields; scale keeps its box. */
 function ApprovalHandIcon({ className, ...props }: LucideProps) {
   return <Hand className={cn("scale-[0.92]", className)} {...props} />;
 }
@@ -388,7 +388,6 @@ export function useActivePermissionMode() {
   return permissionModeOption(useAccountPermissionMode().permissionMode);
 }
 
-/** The menu's rules for a picker outside a menu: Full access is hidden when barred and confirms first. */
 export function usePermissionModeChoice() {
   const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
