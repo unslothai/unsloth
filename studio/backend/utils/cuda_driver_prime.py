@@ -70,9 +70,10 @@ def prime_cuda_driver(torch_module = None) -> bool:
         return False
     if torch_module is None:
         # Never imports torch: a caller still inside `import torch` would deadlock its waiters. Torch not imported
-        # yet is no attempt, so it does not latch: the later call from hardware detection still primes.
+        # yet, or still mid-import on another thread (``torch.cuda`` is bound near the end of ``torch/__init__``), is
+        # no attempt, so it does not latch: the later call from hardware detection still primes.
         torch_module = sys.modules.get("torch")
-        if torch_module is None:
+        if torch_module is None or getattr(torch_module, "cuda", None) is None:
             return False
     with _claim_lock:
         first = not _claimed

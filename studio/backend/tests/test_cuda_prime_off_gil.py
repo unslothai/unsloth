@@ -151,6 +151,19 @@ def test_a_call_before_torch_is_imported_does_not_latch(fake_cdll, monkeypatch):
     assert calls == [("cuInit", 0)]
 
 
+def test_a_call_while_torch_is_still_importing_does_not_latch(fake_cdll, monkeypatch):
+    """Another thread is still inside `import torch` (``torch.cuda`` not bound yet): that is no attempt either, so
+    hardware detection's later call still runs cuInit instead of torch's GIL-holding init."""
+    calls, opened, _gate = fake_cdll
+    half = SimpleNamespace(version = SimpleNamespace(cuda = "12.8", hip = None))
+    monkeypatch.setitem(sys.modules, "torch", half)
+    assert prime.prime_cuda_driver() is False
+    assert opened == [] and not prime._done.is_set()
+    monkeypatch.delitem(sys.modules, "torch")
+    assert prime.prime_cuda_driver(_fake_torch(calls)) is True
+    assert calls == [("cuInit", 0)]
+
+
 def test_prime_never_raises_without_a_driver(monkeypatch):
     import ctypes
 
