@@ -112,6 +112,7 @@ def _message_fitter(
     studio_loop = False,
 ):
     """Auto-compact to the managed engine's window; the exact count refuses tools, so this estimates."""
+    from core.inference.context_window import estimate_messages_tokens_conservative
     from routes import inference as api
 
     if (
@@ -148,8 +149,9 @@ def _message_fitter(
             tools = tools,
             branch = branch,
             tool_loop = tool_loop,
-            # The estimate overprices, so it would cut a latest attachment that fits.
-            fit_attachments = False,
+            # The estimate overprices by up to a quarter: clip attachments only past that, so one that fits stays whole.
+            fit_attachments = estimate_messages_tokens_conservative(messages)
+            > engine.context * 5 // 4,
         )
         line = None
         if truncation and truncation.get("dropped_messages"):

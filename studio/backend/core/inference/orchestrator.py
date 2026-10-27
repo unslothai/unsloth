@@ -2801,6 +2801,7 @@ class InferenceOrchestrator:
         try:
             from core.inference.chat_template_helpers import trailing_assistant_resume_kind
             from core.inference.context_window import (
+                estimate_messages_tokens_conservative,
                 messages_without_unpriced_media,
                 retrieval_budget,
                 truncate_oldest_messages,
@@ -2843,13 +2844,17 @@ class InferenceOrchestrator:
                 "preserve_thinking": preserve_thinking,
             }
             # SGLang 0.5.17's /tokenize returns 500 when model_max_length is the 1e30 sentinel.
-            estimated = False
+            estimated = clip_attachments = False
             if getattr(self, "_managed_engine", None) is not None:
                 try:
                     self.count_chat_tokens(conversation[-1:], "", **count_kwargs)
                 except Exception as exc:
                     logger.info("Fitting the managed engine prompt by estimate: %s", exc)
                     estimated = True
+                    # Past the window by more than the estimate overprices: still excerpt the attachment.
+                    clip_attachments = estimate_messages_tokens_conservative(conversation) > (
+                        context_length * 5 // 4
+                    )
                     context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
 
             def _count(fitted):
@@ -2899,7 +2904,7 @@ class InferenceOrchestrator:
                 sticky_is_checkpoint = sticky_is_checkpoint,
                 sticky_manual = sticky_manual,
                 force_reset = force_reset,
-                fit_attachments = not estimated,
+                fit_attachments = not estimated or clip_attachments,
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             fitted, truncation = _fit_with_instruction_pins(
