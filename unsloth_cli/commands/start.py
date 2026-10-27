@@ -3381,6 +3381,21 @@ def _codex_model_catalog(model: dict, visibility: str = "none") -> dict:
 _CODEX_MCP_TABLE = re.compile(r"[ \t]*\[\s*mcp_servers\s*[\].]")
 
 
+def _toml_parses(text: str) -> Optional[bool]:
+    try:
+        import tomllib  # novermin
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            return None
+    try:
+        tomllib.loads(text)
+    except ValueError:
+        return False
+    return True
+
+
 def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
     source = _codex_source_home()
     if source.resolve(strict = False) == home.resolve(strict = False):
@@ -3402,15 +3417,19 @@ def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
     tables = [c for c in split.split(user) if _CODEX_MCP_TABLE.match(c)]
     # Only replace what came from the user's config; servers added in this home stay.
     carried |= {header(c) for c in tables}
-    text = "".join(
+    out = "".join(
         c for c in split.split(text) if not (_CODEX_MCP_TABLE.match(c) and header(c) in carried)
     )
     if tables:
-        text = text.rstrip("\n") + "\n\n" + "".join(tables).rstrip("\n") + "\n"
+        out = out.rstrip("\n") + "\n\n" + "".join(tables).rstrip("\n") + "\n"
+    # The line split cuts a multi-line string holding a "[" line; Codex then refuses to start.
+    parses = _toml_parses(out)
+    if parses is False or (parses is None and ('"""' in user or "'''" in user)):
+        return text
     names = sorted(header(c) for c in tables)
     if names or manifest.exists():
         manifest.write_text(json.dumps(names) + "\n", encoding = "utf-8")
-    return text
+    return out
 
 
 def write_codex_config(

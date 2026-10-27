@@ -2825,6 +2825,23 @@ def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, 
     assert config["mcp_servers"] == {"local": {"command": "local-server"}}
 
 
+def test_codex_mcp_servers_never_break_the_session_config(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text(
+        '[mcp_servers.notes]\ncommand = "notes"\nargs = ["--banner", """\n[welcome]\nhi"""]\n\n'
+        '[mcp_servers.docs]\nurl = "http://d/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["model_providers"]["unsloth_api"]["base_url"].endswith("/v1")
+
+
 def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     source_home = tmp_path / "user-codex"
