@@ -13,7 +13,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
 
 from core import tool_healing
 from core.inference import llama_cpp, safetensors_agentic
@@ -103,13 +102,27 @@ def test_held_tail_does_not_rewalk_spaceless_text():
     """CJK prose has no spaces, so walking back to the last one per chunk made a reply quadratic."""
     tools = _TOOLS[:3]
 
-    def run(text):
-        for end in range(0, len(text), 50):
-            llama_cpp._held_rehearsal_tail_len(text[:end], tools)
-            safetensors_agentic._held_rehearsal_tail_len(text[:end], tools)
-        return llama_cpp._held_rehearsal_tail_len(text + " web_sea", tools)
+    # Counts characters read by index, not time: the old walk read every one, and the C-level
+    # rfind / regex scans that remain are not reads, so the count is the same on every runner.
+    class CountingStr(str):
+        reads = 0
 
-    assert assert_linear(run, lambda n: "这是没有空格的中文文本" * n, "spaceless", 2_000) == 7
+        def __getitem__(self, key):
+            CountingStr.reads += 1
+            return str.__getitem__(self, key)
+
+    for module in (llama_cpp, safetensors_agentic):
+        reads = []
+        for n in (100, 10_000):
+            CountingStr.reads = 0
+            assert (
+                module._held_rehearsal_tail_len(CountingStr("这是没有空格的中文文本" * n), tools)
+                == 0
+            )
+            reads.append(CountingStr.reads)
+        assert reads[0] == reads[1] < 100, (module.__name__, reads)
+        held = CountingStr("这是没有空格的中文文本" * 10_000 + " web_sea")
+        assert module._held_rehearsal_tail_len(held, tools) == 7
 
 
 def test_balanced_brace_end_matches_the_character_walk():
