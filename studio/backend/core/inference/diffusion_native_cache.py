@@ -179,6 +179,19 @@ def _layer_facts(transformer: Any, spec: dict) -> Optional[dict]:
     return layers or None
 
 
+def _moves_with_offload(tensor: Any) -> bool:
+    """Accelerator storage is what an offload release frees; a host tensor is a stable copy, kept as captured."""
+    return tensor.device.type != "cpu"
+
+
+def _wait_for_transfers(value: Any) -> None:
+    """Group offload onloads on its own stream with non_blocking copies: finish them before the writer reads."""
+    if value.device.type == "cuda":
+        import torch
+
+        torch.cuda.synchronize(value.device)
+
+
 def _live_refs(transformer: Any, state: dict) -> dict:
     """``state`` with every entry that IS a module parameter / buffer swapped for a read of that attribute at write
     time. A held ``state_dict`` keeps resident offload groups' CUDA storage alive after the residency code moves them
@@ -202,6 +215,7 @@ def _live_refs(transformer: Any, state: dict) -> dict:
             value = getattr(owner, attr)
             if value is None or value.dtype != dtype or tuple(value.shape) != shape:
                 raise RuntimeError(f"native cache write: {name} changed during the write")
+            _wait_for_transfers(value)
             return value
 
         return get
@@ -212,6 +226,7 @@ def _live_refs(transformer: Any, state: dict) -> dict:
         try:
             same = (
                 value is not None
+                and _moves_with_offload(tensor)
                 and value.dtype == tensor.dtype
                 and tuple(value.shape) == tuple(tensor.shape)
                 and value.data_ptr() == tensor.data_ptr()

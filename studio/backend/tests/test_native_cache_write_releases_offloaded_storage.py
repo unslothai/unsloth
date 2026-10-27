@@ -133,7 +133,13 @@ def _entry_tensors(path):
     return safetensors_torch.load_file(path)
 
 
+def _as_if_on_the_accelerator(monkeypatch):
+    # CPU stands in for resident accelerator storage here.
+    monkeypatch.setattr(NC, "_moves_with_offload", lambda tensor: True)
+
+
 def test_writer_holds_no_old_storage_after_the_weights_move(monkeypatch, base_dir, cache_root):
+    _as_if_on_the_accelerator(monkeypatch)
     model = _native(base_dir)
     expected = {k: v.detach().clone() for k, v in model.state_dict().items()}
     old_ptrs: set = set()
@@ -160,6 +166,7 @@ def test_writer_holds_no_old_storage_after_the_weights_move(monkeypatch, base_di
 
 
 def test_a_weight_that_changes_shape_mid_write_leaves_no_entry(monkeypatch, base_dir, cache_root):
+    _as_if_on_the_accelerator(monkeypatch)
     model = _native(base_dir)
 
     def reshape(_tensors):
@@ -169,6 +176,24 @@ def test_a_weight_that_changes_shape_mid_write_leaves_no_entry(monkeypatch, base
     assert _paused_save(monkeypatch, model, base_dir, reshape) is None
     leftovers = [f for f in cache_root.rglob("*") if f.is_file() and C.FILE_NAME in f.name]
     assert leftovers == [], leftovers
+
+
+def test_a_host_weight_is_written_as_captured_even_if_it_is_onloaded_mid_write(monkeypatch, base_dir, cache_root):
+    """A host-resident (offloaded) weight keeps its stable captured copy: an onload mid-write swaps ``param.data`` to a
+    tensor whose transfer may still be in flight, which must never reach the entry."""
+    model = _native(base_dir)
+    expected = {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+    def onload(_tensors):
+        for t in _live_tensors(model):
+            if t.is_floating_point():
+                t.data = torch.full_like(t.data, 7)
+
+    path = _paused_save(monkeypatch, model, base_dir, onload)
+    assert path is not None
+    got = _entry_tensors(path)
+    for k, v in expected.items():
+        assert torch.equal(got[k], v), k
 
 
 @pytest.mark.gpu
