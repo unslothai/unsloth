@@ -114,7 +114,6 @@ def fsdp2_st_usage_snippet(model):
 
 
 def _save_creates_model_card(save, model, args, kwargs):
-    """The create_model_card argument of a SentenceTransformer.save call (default True)."""
     try:
         bound = inspect.signature(save).bind_partial(model, *args, **kwargs)
     except (TypeError, ValueError):
@@ -158,7 +157,7 @@ def _install_fsdp2_collective_st_save(SentenceTransformer):
             # The writer inside a gather already made (Trainer.save_model under native FSDP2, which
             # also ran fsdp2_st_usage_snippet on every rank).
             return plainly_named(self, args, kwargs)
-        # create_model_card=False writes no card, so skip its usage snippet (an unshard and a forward).
+        # No card: skip the snippet's unshard + forward.
         snippet = (
             fsdp2_st_usage_snippet(self)
             if _save_creates_model_card(original, self, args, kwargs)

@@ -131,8 +131,7 @@ def run_rank(rank, port, checkpoint, out_dir, queue):
 
 
 def run_rank_save_options(rank, port, checkpoint, out_dir, queue):
-    """Save a sharded model in training mode with create_model_card=False, then with the card: the
-    first must not compute the card's usage snippet, and neither may leave the model in eval mode."""
+    """create_model_card=False must skip the usage snippet; no save may leave eval mode."""
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -195,7 +194,6 @@ def run_rank_save_options(rank, port, checkpoint, out_dir, queue):
             result["no_card_eval_modules"] = sum(not m.training for m in model.modules())
             dist.barrier()
             if rank == 0:
-                # PEFT may still write its adapter README; ST's card names its library.
                 readme = os.path.join(no_card, "README.md")
                 result["no_card_has_st_card"] = os.path.exists(readme) and (
                     "library_name: sentence-transformers" in open(readme, encoding = "utf-8").read()

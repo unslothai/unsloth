@@ -116,8 +116,6 @@ def test_fsdp2_sentence_transformer_save_equals_one_process(tmp_path):
 
 
 def test_fsdp2_sentence_transformer_save_honours_card_option_and_training_mode(tmp_path):
-    """create_model_card=False skips the card's usage snippet (a whole-model unshard plus a forward on
-    every rank), as one process does; and a save, with or without the card, leaves training mode alone."""
     results = _run_two_ranks(worker.run_rank_save_options, tmp_path)
     for rank in (0, 1):
         out = results[rank]
