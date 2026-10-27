@@ -13,6 +13,8 @@ import textwrap
 
 import pytest
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 torch = pytest.importorskip("torch")
 
 _PROBE = textwrap.dedent(
@@ -70,7 +72,7 @@ def _free_port():
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.skipif(
     not (torch.distributed.is_available() and torch.distributed.is_nccl_available()),
     reason = "needs NCCL",

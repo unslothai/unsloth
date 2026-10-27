@@ -16,8 +16,10 @@ from fastapi.responses import JSONResponse
 
 from core.inference.engine_transport import engine_messages, engine_request_timeout
 from core.inference.inference_gate import gated_async_client
+from core.inference.managed_engine import fold_reasoning_into_answer
 from core.inference.http_stream import closing_response_lines
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
+from utils.api_errors import openai_error_body
 
 
 class ManagedToolTransport:
@@ -32,8 +34,10 @@ class ManagedToolTransport:
         *,
         preserve_thinking = None,
         message_fitter = None,
+        continuing = False,
     ):
         self.client, self.engine, self.body = client, engine, body
+        self._continuing = continuing
         self._preserve_thinking = preserve_thinking
         self._message_fitter = message_fitter
         # The tool loop keeps a turn's reasoning_content on the assistant message only when asked.
@@ -55,6 +59,9 @@ class ManagedToolTransport:
         }
         if max_tokens:
             body["max_tokens"] = max_tokens
+        continuing = self._continuing and messages[-1].get("role") == "assistant"
+        if continuing:
+            self.engine.continue_final_message(body)
         if truncation_line:
             yield truncation_line
         if tools:
@@ -80,9 +87,20 @@ class ManagedToolTransport:
                     if cancel_event.is_set():
                         return
                     if line.startswith("data:"):
-                        yield _with_reasoning_content(line)
+                        yield _as_answer(line) if continuing else _with_reasoning_content(line)
             finally:
                 await lines.aclose()
+
+
+def _as_answer(line: str) -> str:
+    try:
+        event = json.loads(line[5:])
+    except ValueError:
+        return line
+    for choice in event.get("choices") or () if isinstance(event, dict) else ():
+        if isinstance(choice, dict) and isinstance(choice.get("delta"), dict):
+            fold_reasoning_into_answer(choice["delta"])
+    return "data: " + json.dumps(event)
 
 
 def _with_reasoning_content(line: str) -> str:
@@ -187,6 +205,10 @@ async def managed_tool_chat(
     ui_events = api._ui_stream_events_enabled(request)
     if tools_on and not api._launcher_tool_default_applies(payload, ui_events):
         tools_on = False
+    if api._response_format_constrains_decoding(
+        payload
+    ) and not api._explicit_studio_tool_loop_requested(payload):
+        tools_on = False
     if payload.tool_choice == "none":
         tools_on = False
     mcp_on = (
@@ -224,6 +246,19 @@ async def managed_tool_chat(
     )
     if tools and api._wants_multiple_choices(payload):
         raise reject("Multiple choices are unavailable when Unsloth executes tools.")
+    if tools and api._response_format_constrains_decoding(payload):
+        # The tool loop never forwards response_format; refuse rather than violate it (as GGUF does).
+        message = (
+            "response_format is not supported with Unsloth tool execution; send the request "
+            "without enable_tools or mcp_enabled to use guided decoding."
+        )
+        api.api_monitor.fail(monitor_id, message)
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                message, status = 400, code = "unsupported_parameter", param = "response_format"
+            ),
+        )
     if tools:
         api._reject_confirm_gate_without_channel(
             payload, ui_events, monitor_id, api._catalog_names(tools)
@@ -287,6 +322,10 @@ async def managed_tool_chat(
         body["tools"] = payload.tools
     if payload.tool_choice is not None and not tools:
         body["tool_choice"] = payload.tool_choice
+    response_format = api._response_format_beside_tools(payload, tools or payload.tools)
+    if response_format is not None:
+        body["response_format"] = response_format
+    continuing = api._continue_final_message(payload)
 
     cancel = api._chat_cancel_event(request)
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:12]
@@ -310,6 +349,7 @@ async def managed_tool_chat(
             message_fitter = _message_fitter(
                 payload, engine, public, tools or payload.tools, studio_loop = bool(tools)
             ),
+            continuing = continuing,
         )
         stripper = api.ServerToolCallStripper()
         stream = None
@@ -326,6 +366,7 @@ async def managed_tool_chat(
                         tool_choice = payload.tool_choice,
                         supports_vision = bool(info.get("is_vision")),
                         promoted_image_parts = promoted_image_parts,
+                        continue_final_message = continuing,
                     ),
                     policy = ToolLoopPolicy(
                         tools = tools,
@@ -358,6 +399,8 @@ async def managed_tool_chat(
                     )
                     if max_tokens:
                         request_body["max_tokens"] = max_tokens
+                if continuing:
+                    engine.continue_final_message(request_body)
                 response = await client.post(
                     engine.base_url + "/v1/chat/completions",
                     headers = engine.headers,
@@ -370,6 +413,8 @@ async def managed_tool_chat(
                     data["model"] = public
                 for choice in data.get("choices") or () if isinstance(data, dict) else ():
                     message = choice.get("message") if isinstance(choice, dict) else None
+                    if continuing and isinstance(message, dict):
+                        fold_reasoning_into_answer(message)
                     if isinstance(message, dict) and "reasoning" in message:
                         reasoning = message.pop("reasoning")
                         if reasoning and not message.get("reasoning_content"):
