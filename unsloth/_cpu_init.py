@@ -196,13 +196,22 @@ del _install_cpu_trainer_module
 
 def _load_dataprep(name: str):
     # By file: dataprep/__init__ also imports synthetic.py, which needs a GPU device type.
+    import sys
     import importlib.util
     from pathlib import Path
 
     path = Path(__file__).resolve().parent / "dataprep" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"unsloth._cpu_{name}", path)
+    module_name = f"{__name__.rsplit('.', 1)[0]}._cpu_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Registered so pickle (spawn workers, datasets num_proc) can import the classes back; a fresh
+    # process resolves the name because importing the package runs this loader again.
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
