@@ -165,6 +165,36 @@ def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     assert "#" not in text and "|" not in text
 
 
+@pytest.mark.parametrize("markdown", [True, False])
+def test_pdf_form_keeps_which_boxes_are_ticked(tmp_path, monkeypatch, markdown):
+    if markdown:
+        pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", markdown)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((40, 60), "Smoker:")
+    for x, answer, ticked in ((120, "Yes", False), (180, "No", True)):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+        widget.field_name = f"smoker_{answer.lower()}"
+        widget.field_label = f"Smoker {answer}"
+        widget.rect = pymupdf.Rect(x, 50, x + 12, 62)
+        widget.field_value = ticked
+        page.add_widget(widget)
+        page.insert_text((x + 16, 60), answer)
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "Smoker No: Yes" in text
+    assert "Smoker Yes" not in text
+
+
 def test_pdf_bytes_use_same_extraction_path(tmp_path, monkeypatch):
     from core.rag import config, parsers
 

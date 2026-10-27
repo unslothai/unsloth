@@ -438,6 +438,34 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     return [str(c.get("text") or "") for c in chunks]
 
 
+def _pdf_form_field_lines(page) -> list[str]:
+    import fitz
+
+    fields = {}
+    for widget in page.widgets():
+        shown = dict(c for c in widget.choice_values or [] if isinstance(c, (list, tuple)))
+        value = widget.field_value
+        value = ", ".join(
+            shown.get(part, part)
+            for part in (value if isinstance(value, list) else [value])
+            if isinstance(part, str)
+        )
+        radio = widget.field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON
+        unchecked = (radio or widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX) and value == "Off"
+        password = (
+            widget.field_type == fitz.PDF_WIDGET_TYPE_TEXT
+            and widget.field_flags & fitz.PDF_TX_FIELD_IS_PASSWORD
+        )
+        hidden = widget.field_display in (1, 3)
+        if not widget.field_name or not value.strip() or unchecked or password or hidden:
+            continue
+        # A radio widget's /TU tooltip names one option, not the group's selected value.
+        tooltip = "" if radio else widget.field_label
+        label = " ".join((tooltip or "").split()) or widget.field_name
+        fields[widget.field_name] = f"{label}: {value}"
+    return list(fields.values())
+
+
 def _pdf(
     source: str | bytes,
     want_images: bool,
@@ -455,6 +483,10 @@ def _pdf(
             raise ValueError("encrypted PDF requires a password")
         total_pages = doc.page_count
         page_numbers = range(total_pages if max_pages is None else min(total_pages, max_pages))
+        # Read before pymupdf4llm, which bakes the widgets into page content.
+        form_fields = (
+            {n: _pdf_form_field_lines(doc[n]) for n in page_numbers} if doc.is_form_pdf else {}
+        )
         if not config.PDF_MARKDOWN:
             md = None
         elif max_pages is None:
@@ -493,6 +525,7 @@ def _pdf(
                     break
             if needs_ocr:
                 text = plain
+            text = "\n".join(filter(None, [text, *form_fields.get(page_number, [])]))
             pages.append(Page(text, page_number + 1, len(text), needs_ocr = needs_ocr))
             if want_images:
                 for img in page.get_images(full = True):
