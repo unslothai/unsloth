@@ -3923,6 +3923,47 @@ def test_mlx_prompt_cache_resume_restores_the_newest_entries_under_the_same_load
     assert [tokens for _, tokens, _, _ in over_budget.resume_entries()] == [list(range(8))]
 
 
+def test_mlx_prompt_cache_resume_keys_on_the_weights_the_load_read(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models.cache import KVCache
+
+    from core.inference.mlx_inference import MLXInferenceBackend, _MLXPromptCacheHistory
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    weights = model_dir / "model.safetensors"
+    weights.write_bytes(b"weights")
+
+    def loaded():
+        backend = MLXInferenceBackend()
+        backend.active_model_name = str(model_dir)
+        backend._resume_files = backend._resume_weight_files()  # what load_model records
+        backend._prompt_cache_history = _MLXPromptCacheHistory(6, 1 << 30)
+        entry = KVCache()
+        rows = mx.zeros((1, 2, 8, 4), dtype = mx.float16)
+        entry.update_and_fetch(rows, rows)
+        backend._prompt_cache_history.insert("k", list(range(8)), [entry])
+        return backend
+
+    def save(backend):
+        out = tmp_path / f"save-{len(list(tmp_path.glob('save-*')))}"
+        out.mkdir()
+        return backend.save_prompt_cache_for_resume(str(out))
+
+    old = loaded()
+    manifest = save(old)
+    assert manifest is not None
+    # Replaced while the old weights are resident: their KV must neither be saved nor restored.
+    weights.write_bytes(b"replaced weights")
+    assert save(old) is None
+    assert loaded().restore_prompt_cache_for_resume(manifest) == 0
+
+    # The same bounds as llama-server's slot save.
+    monkeypatch.setenv("UNSLOTH_SLOT_SAVE_MAX_BYTES", "1")
+    assert save(loaded()) is None
+
+
 def test_mlx_resume_cache_loads_only_mlx_cache_classes(tmp_path):
     import collections
     import pickle

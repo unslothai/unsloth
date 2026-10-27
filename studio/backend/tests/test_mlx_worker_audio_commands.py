@@ -3,7 +3,9 @@
 
 """A dropped audio command costs the caller its full 120s deadline, so the MLX loop must always reply."""
 
+import os
 import queue as _queue
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -151,7 +153,8 @@ def test_a_prompt_cache_save_keeps_its_directory_only_with_a_manifest(monkeypatc
     from core.inference import orchestrator as orch_mod
     from utils.paths import storage_roots
 
-    monkeypatch.setattr(storage_roots, "mlx_prompt_cache_root", lambda: tmp_path)
+    root = tmp_path / "mlx-prompt-cache"
+    monkeypatch.setattr(storage_roots, "mlx_prompt_cache_root", lambda: root)
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
     orch.active_model_name, orch.models = "m", {"m": {"is_mlx": True}}
     orch._managed_engine, orch._unload_pending = None, False
@@ -173,9 +176,15 @@ def test_a_prompt_cache_save_keeps_its_directory_only_with_a_manifest(monkeypatc
     manifest = orch.save_prompt_cache_for_resume()
     assert not orch._gen_lock.locked() and len(sent) == (case != "dispatched")
     if case == "saved":
-        assert [str(path) for path in tmp_path.iterdir()] == [manifest["dir"]]
+        assert [str(path) for path in root.iterdir()] == [manifest["dir"]]
+        if os.name == "posix":
+            # Saved KV encodes chat content, so neither level is readable by other local users.
+            assert {
+                (root.stat().st_mode & 0o777),
+                (Path(manifest["dir"]).stat().st_mode & 0o777),
+            } == {0o700}
     else:
-        assert manifest is None and list(tmp_path.iterdir()) == []
+        assert manifest is None and list(root.iterdir() if root.exists() else ()) == []
 
 
 @pytest.mark.parametrize("cmd_type", ["generate_audio", "generate_video"])

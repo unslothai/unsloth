@@ -3044,8 +3044,13 @@ class InferenceOrchestrator:
                 return None
             from utils.paths.storage_roots import mlx_prompt_cache_root
 
-            directory = mlx_prompt_cache_root() / f"resume-{uuid.uuid4().hex}"
-            directory.mkdir(parents = True)
+            root = mlx_prompt_cache_root()
+            root.mkdir(parents = True, exist_ok = True)
+            # Saved KV encodes chat content; keep it from other local users, as llama-slots does.
+            with contextlib.suppress(OSError):
+                os.chmod(root, 0o700)
+            directory = root / f"resume-{uuid.uuid4().hex}"
+            directory.mkdir(mode = 0o700)
             resp = self._prompt_cache_resume_reply(
                 {"type": "save_prompt_cache", "directory": str(directory)}, timeout, should_abort
             )

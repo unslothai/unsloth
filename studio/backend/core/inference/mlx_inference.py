@@ -10,6 +10,7 @@ import importlib
 import inspect
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -3201,6 +3202,14 @@ class _MLXPromptCacheHistory:
             return []
 
 
+def _resume_save_max_bytes():
+    # The cap llama-server's slot save uses (core.inference.llama_cpp._SLOT_SAVE_MAX_BYTES).
+    try:
+        return int(os.environ.get("UNSLOTH_SLOT_SAVE_MAX_BYTES") or (10 << 30))
+    except ValueError:
+        return 10 << 30
+
+
 _RESUME_CACHE_MODULES = ("mlx.", "mlx_lm.", "mlx_vlm.", "unsloth_zoo.mlx.")
 
 
@@ -4490,6 +4499,7 @@ class MLXInferenceBackend:
         self._kv_context_budget = None
         self._served_context = None
         self._resume_load_args = None
+        self._resume_files = None
         self._template_override = _template_override_status(None, None, None)[1]
 
         self._prompt_cache_history = None
@@ -4531,10 +4541,7 @@ class MLXInferenceBackend:
         self._vlm_snapshot_store_unavailable = False
         self._vlm_is_diffusion_model = None
 
-    def _resume_fingerprint(self):
-        """What a saved prompt cache must match to be restored: the weight files and every load
-        setting that changes the KV layout or its numerics."""
-        import mlx.core as mx
+    def _resume_weight_files(self):
         from pathlib import Path
 
         name = self.active_model_name
@@ -4546,12 +4553,22 @@ class MLXInferenceBackend:
             for path in sorted(weights):
                 st = path.stat()
                 files.append((str(path), st.st_size, st.st_mtime_ns))
+        return tuple(files)
+
+    def _resume_fingerprint(self):
+        """What a saved prompt cache must match to be restored: the weight files as this load read
+        them and every load setting that changes the KV layout or its numerics."""
+        import mlx.core as mx
+
+        files = self._resume_files
+        if files is None:
+            files = self._resume_weight_files()
         versions = [mx.__version__]
         for module in ("mlx_lm", "mlx_vlm"):
             versions.append(getattr(sys.modules.get(module), "__version__", None))
         return (
-            name,
-            tuple(files),
+            self.active_model_name,
+            files,
             tuple(versions),
             self._is_vlm,
             self._kv_quant_bits(),
@@ -4570,14 +4587,29 @@ class MLXInferenceBackend:
         load of this model; the manifest, or None when there is nothing to keep."""
         if not self.active_model_name or self._distributed_world_size > 1:
             return None
+        # The KV was computed from the weights read at load; files replaced since would mislabel it.
+        if self._resume_files is False or (
+            self._resume_files is not None and self._resume_files != self._resume_weight_files()
+        ):
+            return None
         # Never blocks: the worker loop advancing a batch is the thread that would release it.
         if not self._generation_lock.acquire(blocking = False):
             return None
         try:
+            kept = [
+                (store_name, store.resume_entries() if store is not None else ())
+                for store_name, store in self._resume_stores()
+            ]
+            # Same bounds as llama-server's slot save: a cap, and 1 GiB of disk left after it.
+            total = sum(cache_entries_nbytes(item[2]) for _, items in kept for item in items)
+            if total > _resume_save_max_bytes() or shutil.disk_usage(directory).free < total + (
+                1 << 30
+            ):
+                logger.debug("MLX prompt cache: %d bytes do not fit the save budget", total)
+                return None
             slots = []
-            for store_name, store in self._resume_stores():
-                kept = store.resume_entries() if store is not None else ()
-                for index, (key, tokens, entries, replay) in enumerate(kept):
+            for store_name, items in kept:
+                for index, (key, tokens, entries, replay) in enumerate(items):
                     filename = f"{store_name}-{index}.safetensors"
                     save_resume_cache(os.path.join(directory, filename), key, tokens, entries)
                     slots.append({"filename": filename, "store": store_name, "replay": replay})
@@ -5530,6 +5562,10 @@ class MLXInferenceBackend:
             )
 
         self.active_model_name = model_name
+        try:
+            self._resume_files = self._resume_weight_files()
+        except OSError:
+            self._resume_files = False
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
