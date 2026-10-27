@@ -1063,12 +1063,8 @@ class ManagedEngine:
                 preserve_thinking = params.get("preserve_thinking"),
             )[0]
         except Exception:
-            from .context_window import estimate_messages_tokens_conservative
-
-            # SGLang 0.5.17's /tokenize fails on a 1e30 model_max_length; a third over the estimate.
-            if system_prompt:
-                messages = [{"role": "system", "content": system_prompt}, *messages]
-            prompt = estimate_messages_tokens_conservative(messages) * 4 // 3
+            # An estimate would cut a fitting reply short; the engine judges the cap itself.
+            return limit
         return max(1, min(limit, self.context - prompt))
 
     def count_tokens(

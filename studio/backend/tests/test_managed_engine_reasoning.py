@@ -322,11 +322,10 @@ def test_a_reply_cap_is_clamped_to_the_room_the_prompt_leaves(monkeypatch, engin
 
     managed.count_tokens = refuse
     list(
-        managed.generate(
-            messages = [{"role": "user", "content": "word " * 1200}], max_new_tokens = 1024
-        )
+        managed.generate(messages = [{"role": "user", "content": "word " * 1250}], max_new_tokens = 256)
     )
-    assert 1 <= sent[-1]["max_tokens"] < 1024
+    # Without a measured prompt the cap is the engine's to judge; an estimate would cut it to 1.
+    assert sent[-1]["max_tokens"] == 256
 
 
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
