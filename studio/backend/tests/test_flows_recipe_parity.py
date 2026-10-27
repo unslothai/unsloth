@@ -55,8 +55,20 @@ def _with_tools() -> dict:
     recipe["columns"][5]["tool_alias"] = "files"
     payload["ui"] = {
         "nodes": [
-            {"id": "web", "x": 0, "y": 0, "node_type": "tool_config", "tools_by_provider": {"docs": ["search"]}},
-            {"id": "files", "x": 0, "y": 0, "node_type": "tool_config", "tools_by_provider": {"fs": ["read"]}},
+            {
+                "id": "web",
+                "x": 0,
+                "y": 0,
+                "node_type": "tool_config",
+                "tools_by_provider": {"docs": ["search"]},
+            },
+            {
+                "id": "files",
+                "x": 0,
+                "y": 0,
+                "node_type": "tool_config",
+                "tools_by_provider": {"fs": ["read"]},
+            },
             {"id": "sql", "x": 5, "y": 5},
         ]
     }
@@ -131,7 +143,10 @@ def test_an_uploaded_csv_seed_and_its_preview_rows_survive_the_group():
     ui = doc["groups"][0]["ui"]
     assert ui["seed_preview_rows"] == [{"topic": "joins"}] and ui["local_file_name"] == "seed.csv"
     sent = _run(_compiled(doc), mode = "full", rows = 3)
-    assert sent["recipe"]["seed_config"]["source"] == {"seed_type": "local", "path": "/srv/uploads/seed.csv"}
+    assert sent["recipe"]["seed_config"]["source"] == {
+        "seed_type": "local",
+        "path": "/srv/uploads/seed.csv",
+    }
 
 
 # Tool profiles
@@ -171,7 +186,16 @@ def test_an_http_tool_server_runs_and_a_stdio_one_is_refused_before_any_call():
 
 
 def _assert_shared(text: str) -> None:
-    for secret in ("sk-live", "mcp-secret", "Bearer abc", "user:pw", "S3", "npx", "server-fs", "t0"):
+    for secret in (
+        "sk-live",
+        "mcp-secret",
+        "Bearer abc",
+        "user:pw",
+        "S3",
+        "npx",
+        "server-fs",
+        "t0",
+    ):
         assert secret not in text, secret
 
 
@@ -195,7 +219,11 @@ def test_exporting_a_flow_drops_keys_stdio_servers_and_upload_paths():
     assert [p["name"] for p in config["mcp_providers"]] == ["docs"]
     assert [t["tool_alias"] for t in config["tool_configs"]] == ["web"]
     assert out["groups"][0]["ui"]["nodes"][1]["tools_by_provider"] == {}
-    aliases = [n["params"]["column"].get("tool_alias") for n in out["nodes"] if n["type"] == "recipe.column"]
+    aliases = [
+        n["params"]["column"].get("tool_alias")
+        for n in out["nodes"]
+        if n["type"] == "recipe.column"
+    ]
     assert "files" not in aliases and "web" in aliases
     # The source flow on this computer still has everything.
     assert "npx" in json.dumps(doc)
@@ -234,9 +262,13 @@ def test_recipe_json_round_trips_out_of_flows_and_back(client):
     assert set(exported) == {"recipe", "run", "ui"}
     expected = compile_recipe(recipe_graph(doc, "recipe"))["recipe"]
     for provider in expected["model_providers"]:
-        provider.pop("extra_headers", None)  # headers can carry credentials; shared copies drop them
+        provider.pop(
+            "extra_headers", None
+        )  # headers can carry credentials; shared copies drop them
     assert exported["recipe"] == expected
-    back = client.post("/api/flows/import/recipe", json = {"payload": exported, "name": "Back"}).json()
+    back = client.post(
+        "/api/flows/import/recipe", json = {"payload": exported, "name": "Back"}
+    ).json()
     again = compile_recipe(recipe_graph(back["flow"]["doc"], "recipe"))
     assert again["recipe"] == exported["recipe"]
     assert exported["run"]["rows"] == 250 and exported["run"]["preview"] is False
@@ -246,7 +278,9 @@ def test_recipe_json_round_trips_out_of_flows_and_back(client):
 
 def test_recipe_json_export_follows_the_sharing_rule(client):
     doc = _flow(_with_tools())
-    exported = client.post("/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}).json()
+    exported = client.post(
+        "/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}
+    ).json()
     _assert_shared(json.dumps(exported))
     assert [t["tool_alias"] for t in exported["recipe"]["tool_configs"]] == ["web"]
     assert not any(c.get("tool_alias") == "files" for c in exported["recipe"]["columns"])
@@ -289,7 +323,8 @@ def test_run_settings_follow_recipe_studios_run_dialog():
     assert full["run"]["merge_batches"] is True and full["run"]["run_name"] == "nightly sql"
     assert full["run"]["rows"] == 1000 and full["run"]["execution_type"] == "full"
     assert all(
-        m["inference_parameters"]["max_parallel_requests"] == 16 for m in full["recipe"]["model_configs"]
+        m["inference_parameters"]["max_parallel_requests"] == 16
+        for m in full["recipe"]["model_configs"]
     )
     preview = _run(_compiled(doc), mode = "preview", rows = 4)
     assert preview["run"]["run_config"]["buffer_size"] == 4

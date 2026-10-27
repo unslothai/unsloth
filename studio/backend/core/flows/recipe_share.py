@@ -48,7 +48,9 @@ def share_recipe(recipe: dict, ui: dict | None = None) -> tuple[dict, dict]:
     recipe = copy.deepcopy(recipe) if isinstance(recipe, dict) else {}
     ui = copy.deepcopy(ui) if isinstance(ui, dict) else {}
     dropped = set(stdio_names(recipe))
-    providers = [p for p in recipe.get("mcp_providers") or [] if isinstance(p, dict) and not is_stdio(p)]
+    providers = [
+        p for p in recipe.get("mcp_providers") or [] if isinstance(p, dict) and not is_stdio(p)
+    ]
     for provider in providers:
         for key in (*_SECRETS, "env"):
             provider.pop(key, None)
@@ -69,7 +71,11 @@ def share_recipe(recipe: dict, ui: dict | None = None) -> tuple[dict, dict]:
         recipe["tool_configs"] = kept_tools
     aliases = {t.get("tool_alias") for t in kept_tools}
     for column in recipe.get("columns") or []:
-        if isinstance(column, dict) and column.get("tool_alias") and column["tool_alias"] not in aliases:
+        if (
+            isinstance(column, dict)
+            and column.get("tool_alias")
+            and column["tool_alias"] not in aliases
+        ):
             column.pop("tool_alias")
     if isinstance(ui.get("nodes"), list):
         for node in ui["nodes"]:

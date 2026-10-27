@@ -1399,9 +1399,16 @@ def dataset_forge() -> B:
 
 
 PIRATE_RECIPE = {
-    "model_providers": [{"name": "local", "provider_type": "openai", "endpoint": "", "is_local": True}],
+    "model_providers": [
+        {"name": "local", "provider_type": "openai", "endpoint": "", "is_local": True}
+    ],
     "model_configs": [
-        {"alias": "writer", "model": "", "provider": "local", "inference_parameters": {"temperature": 0.9}}
+        {
+            "alias": "writer",
+            "model": "",
+            "provider": "local",
+            "inference_parameters": {"temperature": 0.9},
+        }
     ],
     "columns": [
         {
@@ -1433,14 +1440,23 @@ PIRATE_RECIPE = {
 
 def _pirate_recipe(b: B, row: float) -> None:
     """The Data Recipe way to write the same rows: a Recipe group, off until you enable it."""
-    doc, _ = flow_from_recipe({"recipe": PIRATE_RECIPE, "run": {"rows": 40}}, name = "Pirate science recipe")
+    doc, _ = flow_from_recipe(
+        {"recipe": PIRATE_RECIPE, "run": {"rows": 40}}, name = "Pirate science recipe"
+    )
     _place_recipe(b, doc, 1, row)
     generate = next(n for n in b.doc["nodes"] if n["type"] == "recipe.generate")
     generate["disabled"] = True
     generate["params"]["mode"] = "full"
 
 
-def _place_recipe(b: B, doc: dict, col: float, row: float, *, preview: bool = False) -> None:
+def _place_recipe(
+    b: B,
+    doc: dict,
+    col: float,
+    row: float,
+    *,
+    preview: bool = False,
+) -> None:
     dx, dy = round(col * 320), round(row * 190)
     keep = [n for n in doc["nodes"] if preview or n["type"] != "output.preview"]
     for node in keep:

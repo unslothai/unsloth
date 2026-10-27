@@ -280,8 +280,7 @@ def _recipe_source(record: dict) -> dict:
 
 @router.post("/import/recipe")
 def import_recipe(
-    body: RecipeImportBody,
-    via_api_key: Annotated[bool, Depends(authenticated_via_api_key)] = False,
+    body: RecipeImportBody, via_api_key: Annotated[bool, Depends(authenticated_via_api_key)] = False
 ) -> dict:
     """A saved Data Recipe (by id) or recipe JSON as a new flow; the recipe itself is left alone.
     Asking again for an unchanged saved recipe opens the flow made last time."""
@@ -299,7 +298,11 @@ def import_recipe(
             return {"flow": existing, "report": {"notices": [], "reused": True}}
         payload, name, source = record["payload"], record.get("name"), _recipe_source(record)
     elif body.payload is not None:
-        recipe = body.payload.get("recipe") if isinstance(body.payload.get("recipe"), dict) else body.payload
+        recipe = (
+            body.payload.get("recipe")
+            if isinstance(body.payload.get("recipe"), dict)
+            else body.payload
+        )
         if stdio_names(recipe):
             # Same rule as saving a recipe: only the Unsloth UI may hand this host a command to run.
             require_ui_session_for_local_commands(via_api_key)

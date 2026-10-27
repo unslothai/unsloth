@@ -361,9 +361,7 @@ def compile_flow(doc: dict) -> Plan:
     recipe_groups = {g["id"] for g in doc.get("groups") or [] if g.get("kind") == "recipe"}
     for nid, node in nodes.items():
         if node["type"] == COLUMN_TYPE and node.get("group") not in recipe_groups:
-            errors.append(
-                issue("A recipe column belongs inside a Data Recipe group", node_id = nid)
-            )
+            errors.append(issue("A recipe column belongs inside a Data Recipe group", node_id = nid))
         if nid not in executable or node["type"] != GENERATE_TYPE:
             continue
         try:
