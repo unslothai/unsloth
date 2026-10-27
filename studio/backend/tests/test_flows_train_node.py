@@ -19,7 +19,15 @@ class _Ctx:
         self.params.update(params)
         self.seed, self.caller = 1, object()
 
-    async def call(self, method, path, json = None, params = None, files = None, **_):
+    async def call(
+        self,
+        method,
+        path,
+        json = None,
+        params = None,
+        files = None,
+        **_,
+    ):
         self.calls.append((method, path, params, json, files))
         return self.routes(method, path, params, json)
 
