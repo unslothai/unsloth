@@ -16,7 +16,6 @@ const modeStep: TourStep = {
   ),
 };
 
-/** Train is Images' Train page, so its steps are too. */
 export function buildVideoTourSteps({
   pageMode,
 }: {

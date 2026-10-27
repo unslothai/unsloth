@@ -20,12 +20,10 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ArrowRightIcon } from "lucide-react";
 
-/** The chat header's icon buttons (temporary chat, browser): media headers sit in the same row. */
 export const HEADER_ICON_BUTTON =
   "flex size-[calc(30px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white";
 
-/** Link to another page's workspace, parked past a divider so it reads as leaving. `iconOnly`
- *  drops the divider and label for a header icon button; `iconArrow` keeps the arrow beside it. */
+/** Link to another page, past a divider; `iconOnly` makes it a header icon button. */
 export function MediaPageLink({
   to,
   libraryTab,
@@ -69,7 +67,7 @@ export function MediaPageLink({
             onClick={go}
             className={cn(
               HEADER_ICON_BUTTON,
-              // Inset as in the square button, so the icon keeps its place; label and arrow trail it.
+              // The square button's inset, so the icon stays put.
               iconArrow &&
                 "w-auto gap-1.5 pr-2 pl-[calc((30px*var(--ui-space-scale,1)-var(--icon-size))/2)]",
             )}
@@ -81,7 +79,6 @@ export function MediaPageLink({
             />
             {iconArrow && (
               <>
-                {/* As the old Library link: the label only where the header has room. */}
                 <span className="hidden min-w-0 truncate text-ui-13 font-medium @[50rem]:inline">
                   {label}
                 </span>
@@ -162,7 +159,6 @@ export function LibraryPageLink({
   );
 }
 
-/** Images and Video link to each other past Library, with the sidebar's icons and an arrow. */
 export function SiblingMediaPageLink({ to }: { to: "/images" | "/video" }) {
   const t = useT();
   const label = t(

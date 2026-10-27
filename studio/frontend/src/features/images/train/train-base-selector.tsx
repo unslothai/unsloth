@@ -39,8 +39,7 @@ export function TrainBaseSelector({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
-        {/* Create's model picker in the same header: its padding, type and baseline-aligned names,
-            so switching tabs leaves the name where it was. */}
+        {/* Matches Create's picker, so the name stays put across tabs. */}
         <button
           type="button"
           aria-label="Training base model"

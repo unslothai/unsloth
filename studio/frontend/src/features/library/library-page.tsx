@@ -831,7 +831,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         {t(label)}
       </Button>
     );
-    // Images and videos can be uploaded too: both ways in, Generate on the right.
     if (tab === "images" || tab === "videos") {
       return (
         <div className="flex flex-wrap items-center justify-center gap-2">

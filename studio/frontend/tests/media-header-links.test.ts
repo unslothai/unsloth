@@ -48,7 +48,6 @@ test("Video has Create and Train, Train being Images' trainer", () => {
   assert.match(VIDEO, /\{ value: "train", label: "Train"/);
   assert.match(VIDEO, /\{pageMode === "train" \? \(\s*<DiffusionTrainPanel/);
   assert.match(VIDEO, /\{pageMode === "train" \? \(\s*<TrainBaseSelector/);
-  // Video loads no adapters: Deploy hands the run to Images.
   assert.match(
     VIDEO,
     /useImageWorkflowStore\.getState\(\)\.requestDeploy\(args\);\s*void navigateToImages\(\{ to: "\/images" \}\);/,

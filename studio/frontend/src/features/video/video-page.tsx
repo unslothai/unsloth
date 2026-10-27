@@ -33,7 +33,7 @@ import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
-// Images' Train page as is: it already trains the video families (LTX-2, H3).
+// Images' trainer already covers the video families.
 import { DiffusionTrainPanel } from "@/features/images/train/diffusion-train-panel";
 import {
   TrainBaseSelector,
@@ -3845,7 +3845,7 @@ function VideoGenerator({
               ]}
             />
           </div>
-          {/* Chat header's right inset: its scrollbar gutter plus 0.5rem, window controls included. */}
+          {/* The chat header's right inset. */}
           <div className="pointer-events-none col-start-3 row-start-1 flex min-w-0 items-start justify-end pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))] pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-1">
               <MediaApiButton
@@ -3865,7 +3865,6 @@ function VideoGenerator({
           loadedFamily={null}
           loadedBaseRepo={null}
           onTrainingComplete={() => useImageWorkflowStore.getState().noteTrainingComplete()}
-          // Video loads no adapters: Images deploys it, as its own Train page does.
           onDeploy={(args) => {
             useImageWorkflowStore.getState().requestDeploy(args);
             void navigateToImages({ to: "/images" });

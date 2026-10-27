@@ -4,7 +4,6 @@
 import { create } from "zustand";
 import type { WorkflowId } from "../workflows";
 
-/** A trained adapter for Images to load, as its Train page's Deploy to Create does. */
 export interface AdapterDeployRequest {
   baseRepo: string;
   family: string;
@@ -22,11 +21,10 @@ interface ImageWorkflowState {
   setWorkflow: (id: WorkflowId) => void;
   setPageMode: (mode: "create" | "train") => void;
   setSupported: (ids: WorkflowId[] | null) => void;
-  /** From Video's Train tab, which shares the trainer but loads no adapters. */
+  /** Video's Train tab hands Images its adapters: Video loads none. */
   pendingDeploy: AdapterDeployRequest | null;
   requestDeploy: (request: AdapterDeployRequest) => void;
   takeDeploy: () => AdapterDeployRequest | null;
-  /** Bumped by Video's Train tab so Images refetches its adapter list. */
   trainingCompletions: number;
   noteTrainingComplete: () => void;
 }
