@@ -1011,6 +1011,19 @@ def test_a_block_count_above_llama_cpp_s_layer_cap_abstains(monkeypatch):
     assert hybrid_layer_split("qwen35", LLAMA_MAX_LAYERS, n_kv_head = [8, 0])[2] is True
 
 
+def test_a_negative_nextn_count_cannot_grow_the_layer_count_past_the_cap():
+    """block_count passes the cap, but a negative nextn_predict_layers is subtracted, so the
+    derived count must be checked too before anything is allocated per layer."""
+    fields = _shard_fields(
+        **{
+            "llama.block_count": 1,
+            "llama.nextn_predict_layers": -(1 << 40),
+            "llama.attention.head_count_kv": [8, 0],
+        }
+    )
+    assert not _layout_from_reader(_StubReader(fields, _shard_tensors(range(1)))).complete
+
+
 def test_the_layout_reader_totals_every_tensor_from_a_real_gguf(tmp_path):
     """tensor_bytes includes every tensor while token_embd_bytes is embedding-only."""
     import numpy as np

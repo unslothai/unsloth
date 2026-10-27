@@ -453,6 +453,9 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
     # count must not include them.
     nextn = int(_field(reader, f"{arch}.nextn_predict_layers") or 0)
     n_layers = max(0, blocks_total - nextn)
+    # A negative nextn would grow n_layers past the bound checked above.
+    if n_layers > LLAMA_MAX_LAYERS:
+        return ModelLayout()
 
     n_kv_head = _field(reader, f"{arch}.attention.head_count_kv")
     n_head = _field(reader, f"{arch}.attention.head_count")
