@@ -225,6 +225,30 @@ def test_a_delete_during_the_drains_busy_check_keeps_the_video_from_starting(
     assert client.get(f"/v1/videos/{queued['id']}").status_code == 404
 
 
+def test_a_delete_while_a_refused_start_is_recorded_leaves_no_failed_job(
+    client, backend, monkeypatch
+):
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "refused"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    backend.loaded = False
+    real_fail = video_routes._fail_queued_video
+    deleted = []
+
+    def _fail_with_a_delete(entry, exc):
+        # The client's DELETE lands while the failed job is being written.
+        deleted.append(client.delete(f"/v1/videos/{queued['id']}").status_code)
+        real_fail(entry, exc)
+
+    monkeypatch.setattr(video_routes, "_fail_queued_video", _fail_with_a_delete)
+    _drain()
+    assert deleted == [200]
+    assert video_routes._VIDEO_QUEUE == []
+    assert client.get(f"/v1/videos/{queued['id']}").status_code == 404
+    assert queued["id"] not in [v["id"] for v in client.get("/v1/videos").json()["data"]]
+
+
 def test_creates_arriving_together_cannot_pass_the_cap_together(client, backend, monkeypatch):
     import time
 

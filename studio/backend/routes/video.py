@@ -2600,6 +2600,25 @@ def _drop_queued_video(entry: _QueuedVideo) -> None:
         _VIDEO_QUEUE.remove(entry)
 
 
+async def _settle_failed_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
+    """End a video whose start was refused: record it as failed so polling ends, unless it was deleted.
+    It stays marked starting while the record is written, so a DELETE then only flags it, and the record
+    is removed again once written."""
+    entry.starting = True
+    try:
+        if not entry.cancel_requested:
+            await asyncio.to_thread(_fail_queued_video, entry, exc)
+    except Exception:  # noqa: BLE001 -- the queue must move on even when the record cannot be written
+        logger.exception("Could not record queued video %s as failed", entry.id)
+    finally:
+        _drop_queued_video(entry)
+        entry.starting = False
+    if entry.cancel_requested and not await asyncio.to_thread(
+        run_as, entry.account, _forget_openai_job, entry.id
+    ):
+        logger.warning("openai_videos.queued_forget_failed: %s", entry.id)
+
+
 async def _start_queued_video(entry: _QueuedVideo) -> bool:
     """Start the queue head as its own account; False while the video engine is still busy."""
     async with _video_start_lock():
@@ -2630,21 +2649,17 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
                 ),
             )
         except Exception as exc:  # noqa: BLE001 -- a refused start ends this video, never the queue
-            entry.starting = False
-            if entry.cancel_requested:
-                _drop_queued_video(entry)
-                return True
-            wait = _video_wait(exc)
-            if wait == "busy":
-                return False
+            wait = None if entry.cancel_requested else _video_wait(exc)
             if wait == "conflict":
                 entry.idle_conflicts += 1
-                if entry.idle_conflicts < VIDEO_QUEUE_IDLE_CONFLICTS:
-                    return False
+                if entry.idle_conflicts >= VIDEO_QUEUE_IDLE_CONFLICTS:
+                    wait = None
+            if wait is not None:
+                entry.starting = False
+                return False
             if not isinstance(exc, HTTPException):
                 logger.exception("Could not start queued video %s", entry.id)
-            await asyncio.to_thread(_fail_queued_video, entry, exc)
-            _drop_queued_video(entry)
+            await _settle_failed_queued_video(entry, exc)
             return True
         _drop_queued_video(entry)
     if entry.cancel_requested:
@@ -2664,12 +2679,9 @@ async def _drain_video_queue_once() -> None:
         await _start_queued_video(entry)
     except Exception as exc:  # noqa: BLE001 -- the next video must still start
         logger.exception("Could not settle queued video %s", entry.id)
-        entry.starting = False
-        _drop_queued_video(entry)
-        try:
-            await asyncio.to_thread(_fail_queued_video, entry, exc)
-        except Exception:  # noqa: BLE001
-            logger.exception("Could not record queued video %s as failed", entry.id)
+        # Still queued means it never started; a started video already has its own job record.
+        if entry in _VIDEO_QUEUE:
+            await _settle_failed_queued_video(entry, exc)
 
 
 async def _drain_video_queue() -> None:
