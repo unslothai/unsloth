@@ -49995,6 +49995,11 @@ async def _batched_openai_images(
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
     from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
+    from core.inference.generation_ticket import (
+        GenerationTicket,
+        TicketStopEvent,
+        generation_ticket,
+    )
 
     running = getattr(backend, "generation_running", None)
     if (
@@ -50004,8 +50009,10 @@ async def _batched_openai_images(
     ):
         return None
 
-    # Set by a Stop during a model change, as for a generation queued on the engine's slot.
-    stopped = threading.Event()
+    # Set by a Stop during a model change, as for a generation queued on the engine's slot. It also stops
+    # the ticket the batch's generate() binds its own cancel to, so a Stop after the wait still lands.
+    ticket = GenerationTicket()
+    stopped = TicketStopEvent(ticket)
 
     def busy() -> bool:
         if stopped.is_set():
@@ -50016,19 +50023,20 @@ async def _batched_openai_images(
             return False
 
     async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
-        return await asyncio.to_thread(
-            backend.generate,
-            prompt = prompts[0],
-            negative_prompt = body.negative_prompt,
-            width = width,
-            height = height,
-            steps = steps,
-            guidance = guidance,
-            prompts = prompts,
-            seeds = seeds,
-            batch_size = len(seeds),
-            expected_load = expected_load,
-        )
+        with generation_ticket(ticket):
+            return await asyncio.to_thread(
+                backend.generate,
+                prompt = prompts[0],
+                negative_prompt = body.negative_prompt,
+                width = width,
+                height = height,
+                steps = steps,
+                guidance = guidance,
+                prompts = prompts,
+                seeds = seeds,
+                batch_size = len(seeds),
+                expected_load = expected_load,
+            )
 
     # Group by account, model, and rendering parameters.
     key = (

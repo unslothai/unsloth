@@ -37,6 +37,19 @@ class GenerationTicket:
             event.set()
 
 
+class TicketStopEvent(threading.Event):
+    """An event that also stops ``ticket`` when set, for code that cancels by setting events, so the stop
+    reaches a generation that binds to the ticket later."""
+
+    def __init__(self, ticket: GenerationTicket) -> None:
+        super().__init__()
+        self._ticket = ticket
+
+    def set(self) -> None:
+        super().set()
+        self._ticket.stop()
+
+
 _ticket: contextvars.ContextVar[Optional[GenerationTicket]] = contextvars.ContextVar(
     "generation_ticket", default = None
 )

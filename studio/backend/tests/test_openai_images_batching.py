@@ -31,6 +31,7 @@ class _Backend:
         self.cancel_lists = False
         self.calls: list[dict] = []
         self.waiters: list = []
+        self.before_generate = None
         self.is_loaded = True
 
     def status(self) -> dict:
@@ -72,6 +73,18 @@ class _Backend:
         prompts = None,
         seeds = None,
     ) -> dict:
+        if self.before_generate is not None:
+            self.before_generate()
+        # As the real engine: bind this generation's cancel to the caller's ticket, then refuse if it is set.
+        import threading
+
+        from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+        from core.inference.generation_ticket import bind_generation_cancel
+
+        cancel = threading.Event()
+        bind_generation_cancel(cancel)
+        if cancel.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
         self.calls.append(
             dict(prompt = prompt, prompts = prompts, seeds = seeds, seed = seed, batch_size = batch_size)
         )
@@ -240,6 +253,43 @@ def test_a_stop_while_a_batch_waits_cancels_every_request_in_it(studio):
     assert all(r.status_code >= 400 for r in responses)
     assert responses[0].status_code == responses[1].status_code
     assert backend.waiters == []
+
+
+def test_a_stop_after_the_batch_stops_waiting_still_cancels_its_generation(studio):
+    app, backend, saved = studio
+    # The Stop lands once the batch has stopped waiting, before generate() has bound its own cancel.
+    backend.before_generate = backend.stop_during_a_model_change
+    bodies = [_b64({"prompt": "a fox"}), _b64({"prompt": "a cat"})]
+    responses = _post_while_rendering(app, backend, bodies, waiting = 2)
+    assert backend.calls == [] and saved == []
+    assert all(r.status_code >= 400 for r in responses)
+    assert responses[0].status_code == responses[1].status_code
+
+
+def test_a_stop_during_a_real_model_change_reaches_a_generation_that_starts_after_it():
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.generation_ticket import (
+        GenerationTicket,
+        TicketStopEvent,
+        generation_ticket,
+    )
+
+    engine = DiffusionBackend()
+    ticket = GenerationTicket()
+    stopped = TicketStopEvent(ticket)
+    with engine.generation_waiter(stopped):
+        with engine._model_transition_slot():
+            assert engine.cancel_generate() is True
+        assert stopped.is_set()
+        with generation_ticket(ticket):
+            with pytest.raises(RuntimeError, match = DIFFUSION_CANCELLED_MSG):
+                engine.generate(prompt = "a fox", width = 256, height = 256)
+    # A request no Stop reached reaches the engine's own refusal instead of the cancel.
+    with generation_ticket(GenerationTicket()):
+        with pytest.raises(RuntimeError) as exc:
+            engine.generate(prompt = "a fox", width = 256, height = 256)
+    assert str(exc.value) != DIFFUSION_CANCELLED_MSG
 
 
 def test_a_request_that_finds_the_engine_idle_renders_at_once_alone(studio):
