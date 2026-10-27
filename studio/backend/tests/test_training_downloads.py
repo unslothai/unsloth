@@ -16,8 +16,6 @@ from hub.utils import download_registry
 
 
 class BlockingDownload:
-    """A native transfer which never consumes the trainer's cooperative stop queue."""
-
     def __init__(self):
         self.done = threading.Event()
         self.thread = threading.Thread(target = self.done.wait, daemon = True)
