@@ -143,6 +143,15 @@ def test_importing_strips_tool_servers_and_keys_and_says_so():
     assert len(notices) == 2
     text = json.dumps(doc)
     assert "sk-live" not in text and "stdio" not in text and "fs-tools" not in text
+    payload = copy.deepcopy(SQL)
+    payload["recipe"].update(tool_profiles = [{"name": "tp"}], tools = ["t"], mcp = {"x": 1})
+    payload["recipe"]["columns"][4].update(tool_config = "tc", mcp_tools = ["m"], tools = ["t"])
+    doc, notices = flow_from_recipe(payload, name = "SQL")
+    recipe = doc["groups"][0]["config"]
+    columns = [n["params"]["column"] for n in doc["nodes"] if n["type"] == COLUMN_TYPE]
+    assert not set(recipe) & set(data._REFUSED_KEYS)
+    assert not any(set(c) & {"tool_alias", "tool_config", "mcp_tools", "tools"} for c in columns)
+    assert len(notices) == 1
 
 
 def _routes(job_ids, *, valid = True):
