@@ -1256,7 +1256,6 @@ export function EnvironmentSection({
             t("settings.resources.environment.notInstalled"),
         )}
       />
-      {/* Shown only where installed: a "Not installed" row on every non-MLX host would be noise. */}
       {systemInfo.ml_packages.mlx_lm ? (
         <InfoRow
           label={t("settings.resources.environment.mlxLm")}

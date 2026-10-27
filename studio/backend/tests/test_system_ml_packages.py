@@ -26,5 +26,4 @@ def test_reports_installed_mlx_libraries_and_omits_missing_ones(monkeypatch):
     )
     packages = main.get_system_info(current_subject = "test")["ml_packages"]
 
-    # transformers is missing here, so it is left out rather than reported as None.
     assert packages == installed

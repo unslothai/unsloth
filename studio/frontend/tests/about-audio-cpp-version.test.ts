@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings lists the installed llama.cpp, whisper.cpp, audio.cpp and MLX releases in its Engines section,
-// and the MLX model libraries in Environment.
+// Settings lists llama.cpp, whisper.cpp, audio.cpp and MLX in Engines, and mlx-lm / mlx-vlm in Environment.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";

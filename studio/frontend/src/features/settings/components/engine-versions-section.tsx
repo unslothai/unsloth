@@ -56,15 +56,13 @@ export function EngineVersionsSection() {
       offer: status?.audio ?? null,
     },
     {
-      // A Python package that ships with Unsloth, so the engine updater never offers it.
       key: "mlx",
       labelKey: "settings.about.mlxVersion",
       installed: hw.mlx,
       offer: null,
     },
   ];
-  // whisper.cpp only reports once the backend knows about it, and MLX only where the
-  // package is installed; an empty row would read as missing.
+  // whisper.cpp only reports once the backend knows it, MLX only where installed; an empty row reads as missing.
   const visibleRows = rows.filter(
     (row) =>
       (row.key !== "whisper" || row.offer != null) &&
