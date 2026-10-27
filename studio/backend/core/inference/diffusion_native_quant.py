@@ -549,7 +549,6 @@ def native_linear_class():
                     for part in torch.tensor_split(x2, -(-rows // chunk)):
                         stop = start + part.shape[0]
                         if into is not None:
-                            # Each chunk is stored once, into its own rows: no chunk-sized temporary or copy.
                             into(part.detach(), rot_h, self.weight_q, self.weight_scale, bias, out[start:stop])
                         else:
                             got = fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
