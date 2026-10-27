@@ -3495,11 +3495,24 @@ def _codex_mcp_server(chunk: str) -> Optional[tuple]:
 
 
 def _codex_mcp_manifest(home: Path) -> tuple:
+    """(home it was built from, the user's own home at the end of that chain, inherited servers)."""
     try:
         state = json.loads((home / _CODEX_MCP_MANIFEST).read_text(encoding = "utf-8"))
-        return state.get("source"), {tuple(path)[:2] for path in state["tables"]}
+        inherited = {tuple(path)[:2] for path in state["tables"]}
+        source, origin = state.get("source"), state.get("origin")
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        return None, set()
+        return None, None, set()
+    source = source if isinstance(source, str) else None
+    return source, origin if isinstance(origin, str) else source, inherited
+
+
+def _codex_mcp_followed(home: Path) -> Optional[Path]:
+    # A source that was itself a temporary session home is gone once that session exits.
+    source, origin, _ = _codex_mcp_manifest(home)
+    for candidate in (source, origin):
+        if candidate and Path(candidate).is_dir():
+            return Path(candidate)
+    return None
 
 
 def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
@@ -3509,14 +3522,16 @@ def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
     except OSError:
         return []
     loads = _toml_loads()
+    try:
+        # Parsed, so root dotted keys, inline tables and a bare [mcp_servers] all count.
+        servers = loads(text).get("mcp_servers") if loads else None
+    except ValueError:
+        loads = (
+            None  # TOML 1.1, which Codex reads and tomllib does not: copy the tables as written.
+        )
     if loads is None:
         tables = [c for c in _toml_chunks(text) if _codex_mcp_server(c)]
     else:
-        # Parsed, so root dotted keys, inline tables and a bare [mcp_servers] all count.
-        try:
-            servers = loads(text).get("mcp_servers")
-        except ValueError:
-            servers = None
         tables = [
             f"[mcp_servers.{_toml_key(name)}]\n"
             + "".join(f"{_toml_key(k)} = {_toml_value(v)}\n" for k, v in spec.items())
@@ -3524,9 +3539,12 @@ def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
             for name, spec in (servers.items() if isinstance(servers, dict) else ())
             if isinstance(spec, dict)
         ]
-    origin, inherited = _codex_mcp_manifest(source)
-    if isinstance(origin, str) and str(Path(origin).resolve(strict = False)) not in seen:
-        upstream = _codex_mcp_tables(Path(origin), seen | {str(Path(origin).resolve(strict = False))})
+    _, _, inherited = _codex_mcp_manifest(source)
+    upstream_home = _codex_mcp_followed(source)
+    if upstream_home is not None and str(upstream_home.resolve(strict = False)) not in seen:
+        upstream = _codex_mcp_tables(
+            upstream_home, seen | {str(upstream_home.resolve(strict = False))}
+        )
         # The origin wins a name clash, as it does when that saved home is synced.
         taken = inherited | {_codex_mcp_server(c) for c in upstream}
         tables = [c for c in tables if _codex_mcp_server(c) not in taken] + upstream
@@ -3534,13 +3552,14 @@ def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
 
 
 def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
-    origin, carried = _codex_mcp_manifest(home)
+    _, _, carried = _codex_mcp_manifest(home)
     source = _codex_source_home()
     home_key = home.resolve(strict = False)
     if source.resolve(strict = False) == home_key:
         # The printed recipe exports CODEX_HOME=home: keep reading the home it was built from.
-        if isinstance(origin, str) and Path(origin).resolve(strict = False) != home_key:
-            source = Path(origin)
+        followed = _codex_mcp_followed(home)
+        if followed is not None and followed.resolve(strict = False) != home_key:
+            source = followed
         else:
             source = _codex_source_home(ignore_configured = True)
     source_key = str(source.resolve(strict = False))
@@ -3553,9 +3572,13 @@ def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
         out = out.rstrip("\n") + "\n\n" + "\n\n".join(c.rstrip("\n") for c in tables) + "\n"
     if _toml_parses(out) is False:
         return text
+    _, origin, _ = _codex_mcp_manifest(source)
     # Written even when empty: a recipe shell's CODEX_HOME=home must still find a custom origin.
     (home / _CODEX_MCP_MANIFEST).write_text(
-        json.dumps({"source": source_key, "tables": sorted(servers)}) + "\n",
+        json.dumps(
+            {"source": source_key, "origin": origin or source_key, "tables": sorted(servers)}
+        )
+        + "\n",
         encoding = "utf-8",
     )
     return out

@@ -2949,6 +2949,45 @@ def test_toml_chunks_split_only_at_real_table_headers():
     ]
 
 
+def test_codex_keeps_saved_servers_when_the_source_is_newer_toml(
+    fake_studio, tmp_path, monkeypatch
+):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+
+    # A multi-line inline table is TOML 1.1: Codex reads it, tomllib does not.
+    (source_home / "config.toml").write_text(
+        '[mcp_servers.docs]\nurl = "http://d/mcp"\nenv = {\n  UNITS = "metric",\n}\n'
+    )
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
+
+
+def test_codex_saved_home_outlives_the_session_it_was_made_in(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    session = tmp_path / "session"
+    start.write_codex_config("http://h", {"id": "m"}, session, keep_mcp_servers = True)
+
+    monkeypatch.setenv("CODEX_HOME", str(session))
+    saved = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    shutil.rmtree(session)
+    monkeypatch.setenv("CODEX_HOME", str(saved))
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((saved / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
+
+
 def test_codex_remembers_an_empty_custom_codex_home(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     user_home = tmp_path / "user-home"
