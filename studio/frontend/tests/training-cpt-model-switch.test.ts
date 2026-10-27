@@ -822,7 +822,7 @@ test("a reload inside CPT keeps the pre-CPT LoRA params the session saved", asyn
   assert.equal(state.loraVariant, "dora");
 });
 
-test("leaving CPT after a model switch does not restore the old model's train on completions", async () => {
+test("a new model recipe opt-out does not override the assistant-only default on CPT exit", async () => {
   useTrainingConfigStore.getState().reset();
   const defaultsWith = (id: string, trainOnCompletions: boolean) => () =>
     Promise.resolve(
@@ -850,7 +850,7 @@ test("leaving CPT after a model switch does not restore the old model's train on
   await waitForModelDefaults("new/model");
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 test("leaving CPT after switching to a model whose default is on turns train on completions back on", async () => {
@@ -1262,7 +1262,7 @@ test("a manual toggle on the previous model does not decide the next model's CPT
   await settleStore();
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 test("a config imported while defaults load survives entering and leaving CPT", async () => {
@@ -1342,4 +1342,59 @@ test("image and audio VLM datasets keep assistant-only defaults for arbitrary mo
       assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
     }
   }
+});
+
+
+test("fresh and recommended defaults enable packing and assistant-only training for any chat model", async () => {
+  useTrainingConfigStore.getState().reset();
+  assert.equal(useTrainingConfigStore.getState().packing, true);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+  setAuthFetchHandler(() => Response.json({
+    id: "new-organization/unlisted-chat-architecture",
+    config: { training: { packing: false, train_on_completions: false } },
+    is_vision: false, is_embedding: false, is_audio: false, audio_type_known: true,
+    is_lora: false, model_type: "text", model_size_bytes: null,
+  }));
+  useTrainingConfigStore.getState().selectTrainingModel("new-organization/unlisted-chat-architecture", "text");
+  await waitForModelDefaults("new-organization/unlisted-chat-architecture");
+  assert.equal(useTrainingConfigStore.getState().packing, true);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+  assert.deepEqual(useTrainingConfigStore.getState().trainingToggleChoices, {});
+});
+
+test("user opt-outs survive capability refresh and reset returns to enabled defaults", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler(() => completionModel("example/chat", false));
+  useTrainingConfigStore.getState().selectTrainingModel("example/chat", "text");
+  await waitForModelDefaults("example/chat");
+  useTrainingConfigStore.getState().setPacking(false);
+  useTrainingConfigStore.getState().setTrainOnCompletions(false);
+  useTrainingConfigStore.getState().setSelectedModelCacheReference("example/chat", { modelFormat: null, localPath: "/cache/model" });
+  await settleStore();
+  assert.equal(useTrainingConfigStore.getState().packing, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  useTrainingConfigStore.getState().resetToModelDefaults();
+  await waitForModelDefaults("example/chat");
+  assert.equal(useTrainingConfigStore.getState().packing, true);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+});
+
+test("YAML opt-outs survive a raw-text or streaming round trip", async () => {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.getState().applyConfigPatch({ training: { packing: false, train_on_completions: false } });
+  useTrainingConfigStore.getState().setDatasetFormat("raw");
+  useTrainingConfigStore.getState().setDatasetFormat("chatml");
+  useTrainingConfigStore.getState().setDatasetStreaming(true);
+  useTrainingConfigStore.getState().setDatasetStreaming(false);
+  assert.equal(useTrainingConfigStore.getState().packing, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.deepEqual(useTrainingConfigStore.getState().trainingToggleChoices, { packing: false, trainOnCompletions: false });
+});
+
+test("an unanswered assistant-only default returns when leaving raw text", () => {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.getState().setDatasetFormat("raw");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  useTrainingConfigStore.getState().setDatasetFormat("chatml");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });

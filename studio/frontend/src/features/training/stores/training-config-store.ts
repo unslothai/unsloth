@@ -70,6 +70,8 @@ import {
   hasSeparateStreamingEvalSplit,
   initialTrainingConfigState,
   resolveDeferredTrainOnCompletionsDefault,
+  resolveTrainingToggleDefaults,
+  trainingToggleDefaults,
   streamingCompatiblePatch,
 } from "./training-config-policy";
 import { selectTrainingMethodForHardware } from "./training-method-hardware-policy";
@@ -408,7 +410,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const modelDefaultsPatch = mapBackendModelConfigToTrainingPatch(
               modelDetails.config,
             );
-            const patch = shouldApplyTrainingDefaults ? modelDefaultsPatch : {};
 
             // A model-config LR is authoritative so async auto-select won't overwrite it.
             const modelConfigHasLR =
@@ -423,13 +424,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : LR_DEFAULT_FULL;
             }
 
-            // Chat VLM collators support assistant masking too; only standalone speech
-            // objectives lack assistant turns and keep their existing default.
             const isAudio = !!modelDetails.is_audio;
-            if (isAudio && !modelDetails.is_vision) {
-              modelDefaultsPatch.trainOnCompletions = false;
-            }
-
             const isEmbedding = !!modelDetails.is_embedding;
             const inferredModelType = resolveTrainingModelType({
               modelType: modelDetails.model_type,
@@ -438,6 +433,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isVision: modelDetails.is_vision,
               isAudio: modelDetails.is_audio,
             });
+            const toggleState = {
+              ...get(),
+              isVisionModel: modelDetails.is_vision,
+              isAudioModel: isAudio,
+              isEmbeddingModel: isEmbedding,
+              modelType: inferredModelType,
+            };
+            // Shipped model recipes are recommendations, not an explicit user opting out.
+            Object.assign(modelDefaultsPatch, trainingToggleDefaults({
+              ...toggleState, trainingMethod: "qlora", datasetFormat: "auto", datasetStreaming: false,
+            }));
+            const patch: ModelDefaultsPatch = shouldApplyTrainingDefaults ? {
+              ...modelDefaultsPatch,
+              ...resolveTrainingToggleDefaults(toggleState),
+            } : {};
             const decisionCheckpoints = isDecision
               ? (modelDetails.decision_checkpoints ?? null)
               : null;
@@ -816,6 +826,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 };
               }
             }
+            Object.assign(updates, resolveTrainingToggleDefaults({ ...current, ...updates }));
             set(updates);
             if (streamingDisabled) {
               toast.info(
@@ -1074,6 +1085,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsAppliedFor?: string | null;
           advancedSettingsBaseline?: null;
           trainOnCompletionsDefaultPendingFor?: null;
+          trainingToggleChoices?: TrainingConfigState["trainingToggleChoices"];
+          packing?: boolean;
+          trainOnCompletions?: boolean;
           trainingMethodProvenance?: TrainingConfigState["trainingMethodProvenance"];
         } = {
           selectedModel,
@@ -1088,6 +1102,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           patch.modelType = effectiveModelType;
         }
         if (selectionChanged) {
+          patch.trainingToggleChoices = selectedModel !== previousModel ? {} : currentState.trainingToggleChoices;
           patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
           patch.trustRemoteCode = false;
           patch.approvedRemoteCodeFingerprint = null;
@@ -1106,6 +1121,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             trainOnCompletionsBeforeCpt: null,
           };
         }
+        if (selectionChanged) Object.assign(patch, resolveTrainingToggleDefaults({ ...currentState, ...patch }));
         setUserEdit(patch);
 
         if (!selectedModel) {
@@ -1307,7 +1323,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               datasetFormat,
               trainOnCompletions: isRawTextDatasetFormat(datasetFormat)
                 ? false
-                : state.trainOnCompletions,
+                : resolveTrainingToggleDefaults({ ...state, datasetFormat }).trainOnCompletions,
               ...(isRawTextDatasetFormat(datasetFormat)
                 ? { trainOnCompletionsDefaultPendingFor: null }
                 : {}),
@@ -1440,6 +1456,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
             setUserEdit({
               datasetStreaming: false,
+              ...resolveTrainingToggleDefaults({ ...state, datasetStreaming: false }),
               ...(changed
                 ? {
                     isDatasetImage: null,
@@ -1602,12 +1619,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ drafterDraftSteps }),
         setDrafterCapability: (drafterCapability) =>
           set({ drafterCapability }),
-        setPacking: (packing) => setUserEdit({ packing }),
+        setPacking: (packing) => setUserEdit((state) => ({
+          packing,
+          trainingToggleChoices: { ...state.trainingToggleChoices, packing },
+        })),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
           _trainOnCompletionsExplicitModel = get().selectedModel;
           setUserEdit({
             trainOnCompletions,
+            trainingToggleChoices: { ...get().trainingToggleChoices, trainOnCompletions },
             trainOnCompletionsDefaultPendingFor: null,
             ...(trainOnCompletions ? { datasetStreaming: false } : {}),
           });
@@ -1659,6 +1680,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainOnCompletionsExplicitModel = selections.selectedModel;
           setUserEdit({
             ...hyperparameters,
+            trainingToggleChoices: {
+              ...(typeof config.packing === "boolean" ? { packing: config.packing } : {}),
+              ...(typeof config.train_on_completions === "boolean" ? { trainOnCompletions: config.train_on_completions } : {}),
+            },
             ...selections,
             earlyStoppingPatience: earlyStoppingPatienceFrom(
               config.early_stopping_patience,
@@ -1689,6 +1714,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({
             modelDefaultsAppliedFor: null,
             advancedSettingsBaseline: null,
+            trainingToggleChoices: {},
             visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
           });
           loadAndApplyModelDefaults(selectedModel, {
@@ -1717,6 +1743,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               patch.trainOnCompletions !== undefined;
             return {
               ...patch,
+              trainingToggleChoices: {
+                ...state.trainingToggleChoices,
+                ...(patch.packing !== undefined ? { packing: patch.packing } : {}),
+                ...(patch.trainOnCompletions !== undefined ? { trainOnCompletions: patch.trainOnCompletions } : {}),
+              },
               ...(importsPatience
                 ? {
                     earlyStoppingPatience: earlyStoppingPatienceFrom(

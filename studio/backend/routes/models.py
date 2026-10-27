@@ -2509,6 +2509,15 @@ async def get_model_config(
                 is_decision, layout = True, "llm"
                 config_dict = load_llm_decision_defaults()
 
+            from utils.models.training_defaults import model_training_recommendations
+
+            config_dict = model_training_recommendations(
+                config_dict,
+                is_vision = is_vision,
+                is_audio = audio_type is not None,
+                is_embedding = is_embedding,
+                is_decision = is_decision,
+            )
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )

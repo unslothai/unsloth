@@ -143,6 +143,8 @@ export interface TrainingConfigState {
   drafterCapability: DrafterCapability | null;
   packing: boolean;
   trainOnCompletions: boolean;
+  /** Explicit user/YAML choices, separate from automatic model and dataset defaults. */
+  trainingToggleChoices: { packing?: boolean; trainOnCompletions?: boolean };
   gradientCheckpointing: GradientCheckpointing;
   offloadLayers: OffloadLayers;
   offloadVramGb: number | null;
