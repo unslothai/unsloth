@@ -24,7 +24,9 @@ export function formatBytesGiB(bytes: number): string {
 export function formatKvRate(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 KiB";
   const kib = bytes / 1024;
-  if (kib < 1024) return `${kib < 10 ? kib.toFixed(1) : Math.round(kib)} KiB`;
+  // Decide on the rounded figure, so a rate just under 1 MiB reads "1.0 MiB", not "1024 KiB".
+  const kibText = kib < 10 ? kib.toFixed(1) : String(Math.round(kib));
+  if (Number(kibText) < 1024) return `${kibText} KiB`;
   const mib = kib / 1024;
   return `${mib < 10 ? mib.toFixed(1) : Math.round(mib)} MiB`;
 }
