@@ -80,8 +80,10 @@ export function AudioApiExamples({
   useTunnel,
   keylessScope = "off",
   keylessExposure = null,
+  showHeading = true,
 }: {
   apiKey?: string | null;
+  showHeading?: boolean;
   useTunnel: boolean;
   keylessScope?: KeylessApiAccessScope;
   keylessExposure?: KeylessApiAccessExposure | null;
@@ -128,7 +130,8 @@ export function AudioApiExamples({
   }, [audioApiRequested]);
 
   useEffect(() => {
-    if (scrollTarget !== "api-keys-audio-api") return;
+    // The API page's copy (no heading) must not answer, or the dialog's never scrolls.
+    if (!showHeading || scrollTarget !== "api-keys-audio-api") return;
     const section = sectionRef.current;
     if (!section) return;
     // Consumed only after the user scrolls: clearing it re-runs this effect, whose cleanup stops the pinning.
@@ -151,7 +154,7 @@ export function AudioApiExamples({
       window.clearTimeout(timer);
       for (const name of events) window.removeEventListener(name, release);
     };
-  }, [scrollTarget]);
+  }, [scrollTarget, showHeading]);
 
   useEffect(() => watchAudioModels(listOpenAIAudioModels, setModels), []);
 
@@ -247,10 +250,12 @@ export function AudioApiExamples({
       className="flex min-w-0 max-w-full scroll-mt-6 flex-col gap-4"
     >
       <div className="flex flex-col gap-1">
-        <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-          <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-          {t("settings.apiKeys.audioApi.title")}
-        </h2>
+        {showHeading && (
+          <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+            <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+            {t("settings.apiKeys.audioApi.title")}
+          </h2>
+        )}
         <p className="text-xs leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.audioApi.description")}
         </p>

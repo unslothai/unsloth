@@ -18,22 +18,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-# ``general.architecture`` values no Unsloth runtime can decode (llama.cpp has no CSM decoder).
-# Published CSM GGUFs disagree on spelling, so all four on the Hub are listed. Named once so the
-# chat gate, the listing classifier and the media preflight cannot drift apart.
+# Architectures no Unsloth runtime can decode; all Hub spellings of CSM are listed.
 SPEECH_GGUF_ARCHS = frozenset({"llama-csm", "csm", "csm-tts", "mimi"})
 
-# The Mimi vocoder in ggml-org/sesame-csm-1b-GGUF puts a whole SENTENCE in general.architecture
-# rather than an identifier. Matched on the flag, not the full string, so a reword still lands.
+# The Mimi vocoder GGUF puts a sentence in general.architecture; match the flag.
 _VOCODER_MARKERS = ("--model-vocoder", "cannot be used as llm")
 
 
 def is_speech_gguf_architecture(architecture: Optional[str]) -> bool:
-    """Whether ``general.architecture`` names something only a TTS runtime can decode.
-
-    Case- and space-insensitive, like every other architecture comparison here. ``None`` and the
-    empty string are NOT speech: a GGUF declaring no architecture is unknown, and every caller
-    fails open on unknown."""
+    """None and empty are not speech, but unknown: every caller fails open on an unknown architecture."""
     if not architecture:
         return False
     normalized = architecture.strip().lower()
@@ -53,10 +46,11 @@ DIFFUSION_IMAGE_GGUF_ARCHS = frozenset(
         "z_image",
         "zimage",
         "krea2",
+        "moss_image",
     }
 )
 # Archs that alone name the family. Not "flux" / "qwen_image": several DiTs ship under those (#14474).
-FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2"})
+FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2", "moss_image"})
 # Recognised, but no Studio page can run them.
 UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}

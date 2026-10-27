@@ -43,7 +43,8 @@ ENV_PRECISION = "UNSLOTH_SAM3_PRECISION"
 # int8 loads the ConvRot artifact unless this is 0 (then the plain INT8 one).
 ENV_INT8_CONVROT = "UNSLOTH_SAM3_INT8_CONVROT"
 
-# What ``auto`` may pick on a CUDA card, best first; it also needs that file's GATE_PASSED. Empty: auto stays bf16.
+# What ``auto`` may pick on a CUDA card short of memory, best first (needs GATE_PASSED); empty: always bf16. With room
+# auto runs bf16: at this size the 8-bit files save ~0.5 GB but are ~2x slower per Find (activation quant cost).
 AUTO_ORDER: tuple[str, ...] = (PRECISION_INT8,)
 
 # Minimum compute capability per scheme: fp8 scaled_mm needs Ada / Hopper (sm_89+), int8 _int_mm Ampere (sm_80+).
@@ -471,12 +472,16 @@ def resolve_precision(
     dtype: Any = None,
     *,
     available: tuple[str, ...] = QUANT_PRECISIONS,
+    memory_tight: bool = False,
 ) -> tuple[str, str]:
     """``(precision, why)`` for a run on ``device``. ``available`` is the quantized arms the variant ships (and, at
-    load, has on disk). bf16 when asked for, when nothing quantized can run here, or when auto has no gated arm."""
+    load, has on disk). bf16 when asked for, when nothing quantized can run here, when auto has no gated arm, or for
+    auto on CUDA unless ``memory_tight``. An explicit fp8 / int8 is honoured either way."""
     requested = requested_precision()
     if requested == PRECISION_BF16:
         return PRECISION_BF16, f"{ENV_PRECISION}=bf16"
+    if requested == PRECISION_AUTO and not memory_tight and device.startswith("cuda"):
+        return PRECISION_BF16, "auto: bf16 fits and is faster"
     candidates = AUTO_ORDER if requested == PRECISION_AUTO else (requested,)
     reasons = []
     for precision in candidates:

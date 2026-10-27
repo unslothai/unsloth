@@ -75,8 +75,7 @@ def _load() -> dict:
     try:
         with open(_store_path(), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a dict would
-        # crash lookup/record instead of failing safe.
+        # Validate the shape too: a hand-edited non-dict ``subjects`` must fail safe, not crash.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION
@@ -113,11 +112,7 @@ def _save(data: dict) -> None:
 
 @contextlib.contextmanager
 def _file_lock():
-    """Best-effort cross-process exclusive lock over the store. Inference/export/training
-    record approvals from separate subprocesses, so the in-process RLock is not enough: two
-    processes could each read the same JSON and clobber the other's entry on ``os.replace``.
-    Holding this around the read-modify-write serializes them. Degrades to a no-op if OS
-    locking is unavailable (the consequence is only an occasional extra prompt)."""
+    """Cross-process lock around the read-modify-write, since two processes could clobber an entry written by the other; a no-op when OS locking is unavailable."""
     path = _store_path()
     try:
         storage_roots.ensure_dir(path.parent)
@@ -225,10 +220,7 @@ def clear() -> None:
 
 
 def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[str]:
-    """Current HF commit SHA for *target*, or None (local path / offline / error). Resolved
-    fresh every call: the default branch is mutable, so a cached SHA could mask a moved repo
-    and reuse stale consent. None falls back to the authoritative fingerprint (never fail-open).
-    """
+    """Not cached: a moved branch would reuse stale consent. None means fall back, never fail open."""
     hf_token = account_access.account_hf_token(hf_token)
     from utils.paths import is_local_path
 

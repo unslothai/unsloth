@@ -464,6 +464,25 @@ def test_running_generation_still_cannot_be_explicitly_edited(chat_home):
     assert runs_db.get_run("run-1", "alice")["status"] == "running"
 
 
+def test_refreshed_generation_can_be_edited_when_tab_created_at_differs(chat_home):
+    """#15004: Refresh/Reload lets create_run insert the assistant row with its own
+    created_at. The tab keeps the Date it minted for the bubble, so an edit must still
+    detach the finished run."""
+    _create()
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    assert runs_db.finish_run("run-1", worker_token = token, status = "completed", finish_reason = "stop")
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert stored["createdAt"] != 1
+    edited = {key: value for key, value in stored.items() if key != "metadata"}
+    edited["content"] = [{"type": "text", "text": "edited after refresh"}]
+    edited["createdAt"] = 1
+    edited["metadata"] = {"incomplete": {"reason": "stop"}}
+    saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert saved["content"] == [{"type": "text", "text": "edited after refresh"}]
+    assert runs_db.get_run("run-1", "alice") is None
+
+
 def test_batched_events_have_gapless_cursor_and_terminal_flush(chat_home):
     run, _created = _create()
     worker_token = runs_db.get_worker_token("run-1")

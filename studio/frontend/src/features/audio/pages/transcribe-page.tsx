@@ -18,11 +18,10 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
-  Copy01Icon,
   Download01Icon,
-  SentIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type Ref, useEffect, useState } from "react";
 import type { AudioGalleryClip } from "../api";
@@ -60,6 +59,7 @@ import {
   GenerateActions,
   type GenerateBlocker,
 } from "./tts-workspace";
+import { ArrowUpIcon } from "lucide-react";
 
 // Radix Select cannot hold an empty value, so "detect" travels as this.
 const AUTO = "__auto__";
@@ -204,7 +204,6 @@ export function TranscribeRail({
           label={name === "timestamps" ? "Timestamps" : "Speakers"}
           value={switches[name]}
           disabled={disabled}
-          // One "Use" link when both switches would offer the same model.
           onUseSpeakersModel={
             name === "speakers" && switches.timestamps.suggestSpeakersModel
               ? undefined
@@ -297,7 +296,6 @@ export function TranscribeOutput({
           />
         )}
         {transcript ? (
-          // Focused and announced by the host after a run.
           <section
             id="transcribe-result"
             tabIndex={-1}
@@ -348,7 +346,7 @@ export function TranscribeOutput({
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
                       <Button variant="secondary" size="sm">
-                        <HugeiconsIcon icon={SentIcon} className="mr-2 size-3.5" />
+                        <ArrowUpIcon className="mr-2 size-3.5" />
                         Send to
                       </Button>
                     </DropdownMenuTrigger>
@@ -483,7 +481,7 @@ export function TranscribeFooter({
       ) : null}
       <div className="flex flex-wrap items-center justify-center gap-2">
         <Button
-          className="relative z-10 mx-auto h-10 px-7 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className="relative z-10 mx-auto text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
           variant={running ? "destructive" : "dark"}
