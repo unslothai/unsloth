@@ -214,16 +214,18 @@ def _longest_document(model, trainer) -> Optional[int]:
 
 
 def _packed_row_tokens(model, trainer) -> Optional[int]:
-    """Tokens in one flattened row: the padding-free collator joins a whole device batch."""
+    """Tokens in one flattened row: the padding-free collator joins a whole device batch, the eval
+    batch too when there is an eval dataset (transformers' default eval batch is 8)."""
     longest = _longest_document(model, trainer)
-    batch = getattr(getattr(trainer, "args", None), "per_device_train_batch_size", None)
     if longest is None:
         return None
-    return (
-        longest * batch
-        if isinstance(batch, int) and not isinstance(batch, bool) and batch > 0
-        else longest
-    )
+    args = getattr(trainer, "args", None)
+    names = ["per_device_train_batch_size"]
+    if getattr(trainer, "eval_dataset", None) is not None:
+        names.append("per_device_eval_batch_size")
+    batches = [getattr(args, name, None) for name in names]
+    batches = [b for b in batches if isinstance(b, int) and not isinstance(b, bool) and b > 0]
+    return longest * max(batches, default = 1)
 
 
 def _enable_hf_packed_attention(model = None, trainer = None) -> None:
@@ -236,7 +238,10 @@ def _enable_hf_packed_attention(model = None, trainer = None) -> None:
         outer_compile = bool(getattr(getattr(trainer, "args", None), "torch_compile", False)) or (
             hasattr(model, "_orig_mod")
         )
-        if enable_hf_packed_attention() and model is not None and not outer_compile:
+        # A collator padding the flattened row to a multiple leaves a tail the varlen wrapper declines.
+        pad_multiple = getattr(getattr(trainer, "data_collator", None), "pad_to_multiple_of", None)
+        aligned_tail = isinstance(pad_multiple, int) and pad_multiple > 1
+        if enable_hf_packed_attention() and model is not None and not outer_compile and not aligned_tail:
             from ..models._utils import use_sdpa_for_packed_head_dim_flex
             use_sdpa_for_packed_head_dim_flex(
                 model, _longest_document(model, trainer), _packed_row_tokens(model, trainer)

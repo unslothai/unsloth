@@ -215,6 +215,27 @@ def test_long_flattened_rows_keep_flex(routed, monkeypatch, batch, max_length, s
     assert config._attn_implementation == ("sdpa" if switched else "flex_attention")
 
 
+@pytest.mark.parametrize(
+    "eval_dataset,eval_batch,pad_multiple,switched",
+    [(None, 8, None, True), ([1], 8, None, False), ([1], 1, None, True), (None, 8, 8, False)],
+)
+def test_eval_rows_and_aligned_tails_keep_flex(routed, monkeypatch, eval_dataset, eval_batch, pad_multiple, switched):
+    # Eval batches flatten into one row too; a padded-to-multiple tail is declined by the varlen wrapper.
+    from unsloth.utils import packing
+
+    monkeypatch.setattr(hpa, "enable_hf_packed_attention", lambda: True)
+    config = _gemma()
+    args = types.SimpleNamespace(
+        max_length = 8192, per_device_train_batch_size = 1, per_device_eval_batch_size = eval_batch
+    )
+    collator = types.SimpleNamespace(
+        padding_free = True, torch_call = lambda examples: {}, pad_to_multiple_of = pad_multiple
+    )
+    trainer = types.SimpleNamespace(data_collator = collator, args = args, eval_dataset = eval_dataset)
+    packing.enable_padding_free_metadata(types.SimpleNamespace(config = config), trainer)
+    assert config._attn_implementation == ("sdpa" if switched else "flex_attention")
+
+
 def test_padding_free_metadata_makes_the_switch(routed, monkeypatch):
     from unsloth.utils import packing
 
