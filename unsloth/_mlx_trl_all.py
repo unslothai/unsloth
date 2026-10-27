@@ -35,9 +35,20 @@ def install_lazy_trl_all(trl, filter_exports):
     previous = namespace.get("__getattr__")
     previous = getattr(previous, "_unsloth_previous", previous)
 
+    building = []
+
     def __getattr__(name):
         if name == "__all__":
-            exports = filter_exports(trl, list(vars(trl)[_RAW_ALL]))
+            raw = list(vars(trl)[_RAW_ALL])
+            # A submodule reading trl.__all__ while the filter resolves it sees the raw list,
+            # as it did when the filter ran eagerly before __all__ was replaced.
+            if building:
+                return raw
+            building.append(True)
+            try:
+                exports = filter_exports(trl, raw)
+            finally:
+                building.clear()
             vars(trl)["__all__"] = exports
             return exports
         if previous is not None:

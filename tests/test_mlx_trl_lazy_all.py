@@ -137,3 +137,21 @@ def test_module_without_all(lazy_all):
     trl = types.ModuleType("trl")
     lazy_all.install_lazy_trl_all(trl, _filter)
     assert trl.__all__ == ["SFTConfig", "SFTTrainer"]
+
+
+def test_a_reentrant_all_read_during_filtering_sees_the_raw_names(lazy_all):
+    install_lazy_trl_all = lazy_all.install_lazy_trl_all
+
+    trl = types.ModuleType("fake_trl_reentrant")
+    trl.__all__ = ["A", "B"]
+    seen = []
+
+    def filter_exports(module, names):
+        # An export whose import reads trl.__all__ again mid-filter.
+        seen.append(list(module.__all__))
+        return [n for n in names if n != "B"]
+
+    install_lazy_trl_all(trl, filter_exports)
+    assert trl.__all__ == ["A"]
+    assert seen == [["A", "B"]]
+    assert trl.__all__ == ["A"]
