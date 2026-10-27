@@ -49994,6 +49994,7 @@ async def _batched_openai_images(
     call anyway, so those always render alone."""
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
     from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
 
     running = getattr(backend, "generation_running", None)
@@ -50035,8 +50036,18 @@ async def _batched_openai_images(
         guidance,
         body.negative_prompt or None,
     )
+
+    def cancelled(exc: BaseException) -> bool:
+        return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
+
     return await image_request_batching.generate(
-        key, body.prompt, body.n, body.seed, busy = busy, run_batch = run_batch
+        key,
+        body.prompt,
+        body.n,
+        body.seed,
+        busy = busy,
+        run_batch = run_batch,
+        shared_outcome = cancelled,
     )
 
 

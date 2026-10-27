@@ -2524,7 +2524,9 @@ async def _create_or_queue_openai_video(
     video_id = _new_video_id()
     seed = _video_seed(body)
     # First come, first served: with videos already waiting, a new one joins the back of the queue.
-    if not _VIDEO_QUEUE and not await asyncio.to_thread(_video_engine_busy):
+    # The queue is read after the busy check, so a video queued during that await is not overtaken.
+    engine_busy = await asyncio.to_thread(_video_engine_busy)
+    if not _VIDEO_QUEUE and not engine_busy:
         try:
             return await _start_openai_video(
                 body,
@@ -2540,6 +2542,8 @@ async def _create_or_queue_openai_video(
                 raise
     # A start decodes the audio before rendering; a queued video is checked now, so it fails here instead.
     await asyncio.to_thread(_refuse_unreadable_audio, inputs.reference_audios)
+    model = await asyncio.to_thread(_queued_model_name, body)
+    # No await from here to the append: the limits hold against creates arriving together.
     account = current_account()
     waiting = sum(1 for entry in _VIDEO_QUEUE if entry.account.account_id == account.account_id)
     if waiting >= VIDEO_QUEUE_MAX_PER_ACCOUNT or len(_VIDEO_QUEUE) >= VIDEO_QUEUE_MAX:
@@ -2563,7 +2567,7 @@ async def _create_or_queue_openai_video(
         inputs = inputs,
         seed = seed,
         created_at = int(_time.time()),
-        model = await asyncio.to_thread(_queued_model_name, body),
+        model = model,
     )
     _VIDEO_QUEUE.append(entry)
     _ensure_video_drainer()
@@ -2606,6 +2610,10 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
             return True
         if await asyncio.to_thread(_video_engine_busy):
             return False
+        # A delete can land during that check; marking it starting with no await between keeps it from rendering.
+        if entry not in _VIDEO_QUEUE or entry.cancel_requested:
+            _drop_queued_video(entry)
+            return True
         entry.starting = True
         try:
             await arun_as(

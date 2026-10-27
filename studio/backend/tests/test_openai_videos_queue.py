@@ -202,3 +202,54 @@ def test_the_chat_tool_path_still_refuses_while_a_video_renders(client, backend)
     finally:
         backend.gate.set()
     assert video_routes._VIDEO_QUEUE == []
+
+
+def test_a_delete_during_the_drains_busy_check_keeps_the_video_from_starting(
+    client, backend, monkeypatch
+):
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "gone"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    real_busy = video_routes._video_engine_busy
+
+    def _busy_check_with_a_delete():
+        # The client's DELETE lands while the drain checks whether the engine is free.
+        assert client.delete(f"/v1/videos/{queued['id']}").status_code == 200
+        return real_busy()
+
+    monkeypatch.setattr(video_routes, "_video_engine_busy", _busy_check_with_a_delete)
+    _drain()
+    assert backend.last_generate_kwargs["prompt"] == "first"
+    assert video_routes._VIDEO_QUEUE == []
+    assert client.get(f"/v1/videos/{queued['id']}").status_code == 404
+
+
+def test_creates_arriving_together_cannot_pass_the_cap_together(client, backend, monkeypatch):
+    import time
+
+    import httpx
+
+    monkeypatch.setattr(video_routes, "VIDEO_QUEUE_MAX_PER_ACCOUNT", 1)
+    real_model_name = video_routes._queued_model_name
+
+    def _slow_model_name(body):
+        time.sleep(0.2)
+        return real_model_name(body)
+
+    monkeypatch.setattr(video_routes, "_queued_model_name", _slow_model_name)
+    _render_one(client, backend)
+
+    async def run():
+        transport = httpx.ASGITransport(app = client.app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as studio:
+            return await asyncio.gather(
+                *(studio.post("/v1/videos", json = {"prompt": p}) for p in ("one", "two"))
+            )
+
+    try:
+        statuses = sorted(response.status_code for response in asyncio.run(run()))
+    finally:
+        backend.gate.set()
+    assert statuses == [200, 429]
+    assert len(video_routes._VIDEO_QUEUE) == 1

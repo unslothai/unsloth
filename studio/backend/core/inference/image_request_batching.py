@@ -107,9 +107,11 @@ async def generate(
     *,
     busy: Callable[[], bool],
     run_batch: Callable[[list[str], list[int]], Awaitable[dict[str, Any]]],
+    shared_outcome: Callable[[BaseException], bool] = lambda exc: False,
 ) -> Optional[dict[str, Any]]:
     """This request's result from a shared batch, or None for the caller to render it alone: the engine is
-    idle, the request does not fit, it led a batch nobody joined, or the shared call failed."""
+    idle, the request does not fit, it led a batch nobody joined, or the shared call failed. A failure that
+    ``shared_outcome`` accepts (a cancel) is raised in every request instead, since rendering alone would undo it."""
     cap = batch_max()
     if cap <= 1 or n >= cap:
         return None
@@ -148,6 +150,11 @@ async def generate(
         try:
             parts = _split(await run_batch(prompts, seeds), members)
         except Exception as exc:  # noqa: BLE001 -- each request then runs alone and reports its own outcome
+            if shared_outcome(exc):
+                for member in members[1:]:
+                    if not member.future.done():
+                        member.future.set_exception(type(exc)(*exc.args))
+                raise
             logger.info("openai_images.batch_failed: %s; each request runs alone", exc)
             return None
         for member, part in zip(members[1:], parts[1:]):

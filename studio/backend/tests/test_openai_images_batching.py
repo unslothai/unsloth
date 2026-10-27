@@ -27,6 +27,7 @@ class _Backend:
     def __init__(self) -> None:
         self.rendering = False
         self.fail_lists = False
+        self.cancel_lists = False
         self.calls: list[dict] = []
         self.is_loaded = True
 
@@ -61,6 +62,9 @@ class _Backend:
         )
         if prompts is not None and self.fail_lists:
             raise RuntimeError("CUDA out of memory")
+        if prompts is not None and self.cancel_lists:
+            from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
         if seeds is not None:
             base, image_seeds = seeds[0], list(seeds)
         else:
@@ -186,6 +190,17 @@ def test_a_failed_shared_call_sends_every_request_back_to_render_alone(studio):
     assert sorted(backend.calls[0]["prompts"]) == ["a cat", "a fox"]
     assert [call["prompts"] for call in backend.calls[1:]] == [None, None]
     assert sorted(call["seed"] for call in backend.calls[1:]) == [1, 2]
+
+
+def test_a_cancelled_batch_ends_every_request_without_rendering_again(studio):
+    app, backend, saved = studio
+    backend.cancel_lists = True
+    bodies = [_b64({"prompt": "a fox"}), _b64({"prompt": "a cat"})]
+    responses = _post_while_rendering(app, backend, bodies, waiting = 2)
+    assert len(backend.calls) == 1 and backend.calls[0]["prompts"] is not None
+    assert saved == []
+    assert all(r.status_code >= 400 for r in responses)
+    assert responses[0].status_code == responses[1].status_code
 
 
 def test_a_request_that_finds_the_engine_idle_renders_at_once_alone(studio):
