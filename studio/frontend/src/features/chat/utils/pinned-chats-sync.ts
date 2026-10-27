@@ -285,6 +285,12 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
     operation: PinOperation,
     epoch: number,
   ): Promise<void> {
+    try {
+      // Another tab may have cancelled this intent while an earlier one was in flight.
+      restore();
+    } catch {
+      // An unreadable journal keeps the in-memory queue.
+    }
     if (!pending.some((entry) => entry.operationId === operation.operationId)) {
       return;
     }

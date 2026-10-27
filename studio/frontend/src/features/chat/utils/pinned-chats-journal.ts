@@ -76,14 +76,16 @@ export function createPinnedChatsJournal(storage: Storage, scope: string) {
     for (const operation of operations) {
       validatePinOperation(operation);
       const key = `${prefix}${kind}:${operation.operationId}`;
-      keep.add(key);
       if (storage.getItem(key) === null) {
+        // Seen here and gone now: another tab acknowledged or cancelled it. Never recreate it.
+        if (observed[kind].has(key)) continue;
         lastOrder = Math.max(Date.now(), lastOrder + 1);
         storage.setItem(
           key,
           JSON.stringify({ operation, baseIds, order: lastOrder }),
         );
       }
+      keep.add(key);
     }
     // A fallback seed is needed even before the first offline mutation.
     if (

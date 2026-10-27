@@ -319,3 +319,45 @@ test("a tab holding a pin another tab's unpin cancelled does not replay it", asy
   assert.deepEqual(server, []);
 });
 
+test("a tab finishing an earlier intent does not recreate one another tab cancelled meanwhile", async () => {
+  const storage = new MemoryStorage();
+  let server: string[] = [];
+  let release!: () => void;
+  let holding = false;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  const save = async (expected: string[] | undefined, next: string[]) => {
+    if (JSON.stringify(expected ?? []) !== JSON.stringify(server)) return { applied: false, pinnedIds: server.slice() };
+    server = next.slice();
+    return { applied: true, pinnedIds: server.slice() };
+  };
+  function tab(delayed: boolean) {
+    const disk = createPinnedChatsJournal(storage, "server|session");
+    return createPinnedChatsSync({
+      load: async () => server.slice(),
+      compareAndSet: async (expected, next) => {
+        const result = await save(expected, next);
+        if (delayed && holding) await hold;
+        return result;
+      },
+      readLegacy: () => [],
+      readPending: disk.readPending,
+      writePending: disk.writePending,
+      publish: () => undefined,
+    });
+  }
+  const a = tab(true);
+  await a.refresh();
+  holding = true;
+  const first = a.setPinned(["a"], true);
+  const second = a.setPinned(["x"], true).catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const b = tab(false);
+  await b.setPinned(["x"], false).catch(() => undefined);
+  await b.refresh().catch(() => undefined);
+  release();
+  await first;
+  await second;
+  await a.refresh().catch(() => undefined);
+  assert.deepEqual(server, ["a"]);
+});
+
