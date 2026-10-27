@@ -137,6 +137,11 @@ export const sv = {
     more: "Mer",
     addressPlaceholder: "Sök eller ange en URL",
     local: "Lokal",
+    browserUse: {
+      label: "Webbläsaranvändning",
+      description: "Låt modellen öppna sidor, klicka och skriva i den här webbläsaren medan den svarar.",
+      unavailable: "Läs in en modell som kan anropa verktyg för att låta den använda webbläsaren.",
+    },
     suggested: "Förslag",
     suggestedMenu: {
       open: "Öppna",

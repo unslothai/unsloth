@@ -138,6 +138,11 @@ export const it = {
     more: "Altro",
     addressPlaceholder: "Cerca o inserisci un URL",
     local: "Locale",
+    browserUse: {
+      label: "Uso del browser",
+      description: "Consenti al modello di aprire pagine, fare clic e digitare in questo browser mentre risponde.",
+      unavailable: "Carica un modello in grado di chiamare strumenti per fargli usare il browser.",
+    },
     suggested: "Suggeriti",
     suggestedMenu: {
       open: "Apri",

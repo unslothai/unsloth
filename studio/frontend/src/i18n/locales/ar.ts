@@ -139,6 +139,11 @@ export const ar = {
     more: "المزيد",
     addressPlaceholder: "ابحث أو أدخل عنوان URL",
     local: "محلي",
+    browserUse: {
+      label: "استخدام المتصفح",
+      description: "اسمح للنموذج بفتح الصفحات والنقر والكتابة في هذا المتصفح أثناء الإجابة.",
+      unavailable: "حمّل نموذجًا يمكنه استدعاء الأدوات ليتمكن من استخدام المتصفح.",
+    },
     suggested: "مقترحات",
     suggestedMenu: {
       open: "فتح",

@@ -139,6 +139,11 @@ export const de = {
     more: "Mehr",
     addressPlaceholder: "Suchen oder URL eingeben",
     local: "Lokal",
+    browserUse: {
+      label: "Browsernutzung",
+      description: "Das Modell darf beim Antworten in diesem Browser Seiten öffnen, klicken und tippen.",
+      unavailable: "Lade ein Modell, das Tools aufrufen kann, damit es den Browser nutzen kann.",
+    },
     suggested: "Vorschläge",
     suggestedMenu: {
       open: "Öffnen",

@@ -136,6 +136,11 @@ export const en = {
     more: "More",
     addressPlaceholder: "Search or enter a URL",
     local: "Local",
+    browserUse: {
+      label: "Browser use",
+      description: "Let the model open pages, click and type in this browser while it answers.",
+      unavailable: "Load a model that can call tools to let it use the browser.",
+    },
     suggested: "Suggested",
     suggestedMenu: {
       open: "Open",

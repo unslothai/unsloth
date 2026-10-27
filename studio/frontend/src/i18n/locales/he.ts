@@ -140,6 +140,11 @@ export const he = {
     more: "עוד",
     addressPlaceholder: "חפש או הזן URL",
     local: "מקומי",
+    browserUse: {
+      label: "שימוש בדפדפן",
+      description: "אפשר למודל לפתוח דפים, ללחוץ ולהקליד בדפדפן הזה בזמן שהוא עונה.",
+      unavailable: "טען מודל שיכול לקרוא לכלים כדי שיוכל להשתמש בדפדפן.",
+    },
     suggested: "מוצעים",
     suggestedMenu: {
       open: "פתח",
