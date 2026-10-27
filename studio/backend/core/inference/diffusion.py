@@ -10098,6 +10098,13 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     eager_patched = effective_speed != SPEED_OFF
+                    try:
+                        from .diffusion_eager_patches import fp16_rmsnorm_installed
+
+                        # class-level too: unload must restore it with the eager group
+                        eager_patched = eager_patched or fp16_rmsnorm_installed()
+                    except Exception:  # noqa: BLE001
+                        pass
                     autoopt.install_patches(
                         autoopt.STAGE_LOAD,
                         pipe = pipe,
