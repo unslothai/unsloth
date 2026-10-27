@@ -3860,6 +3860,154 @@ def test_mlx_prompt_cache_covers_hybrid_recurrent_layouts(monkeypatch):
     assert tuple(range(30)) in history._lru.entries["hybrid"]
 
 
+def test_mlx_prompt_cache_resume_restores_the_newest_entries_under_the_same_load(tmp_path):
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models.cache import KVCache
+
+    from core.inference.mlx_inference import (
+        MLXInferenceBackend,
+        VLMPromptSnapshotStore,
+        _MLXPromptCacheHistory,
+    )
+
+    def kv(n, seed):
+        entry = KVCache()
+        rows = mx.random.normal((1, 2, n, 4), key = mx.random.key(seed)).astype(mx.float16)
+        entry.update_and_fetch(rows, rows + 1)
+        return [entry]
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+
+    def backend(window = None):
+        loaded = MLXInferenceBackend()
+        loaded.active_model_name = str(model_dir)
+        loaded._kv_cache_window = window
+        loaded._prompt_cache_history = _MLXPromptCacheHistory(6, 1 << 30)
+        loaded._vlm_snapshot_store = VLMPromptSnapshotStore(1 << 30)
+        return loaded
+
+    saved = backend()
+    saved._prompt_cache_history.insert("k", list(range(8)), kv(8, 0))
+    newest = kv(12, 1)
+    saved._prompt_cache_history.insert("k|other", list(range(12)), newest)
+    saved._vlm_snapshot_store.store("k|img", list(range(6)), kv(6, 2))
+    saved._vlm_snapshot_store.store("k|img", [9] * 5, kv(5, 3), replay = True)
+    out = tmp_path / "save"
+    out.mkdir()
+    manifest = saved.save_prompt_cache_for_resume(str(out))
+    assert [slot["store"] for slot in manifest["slots"]] == ["text", "vlm", "vlm"]
+
+    restored = backend()
+    assert restored.restore_prompt_cache_for_resume(manifest) == 3
+    [(key, tokens, cache, _)] = restored._prompt_cache_history.resume_entries()
+    assert (key, tokens) == ("k|other", list(range(12)))
+    assert mx.array_equal(cache[0].state[0], newest[0].state[0]).item()
+    with pytest.raises(KeyError):
+        restored._prompt_cache_history._lru._trie.get("k", list(range(8)))
+    vlm = restored._vlm_snapshot_store.resume_entries()
+    assert [(key, prefix, replay) for key, prefix, _, replay in vlm] == [
+        ("k|img", list(range(6)), False),
+        ("k|img", [9] * 5, True),
+    ]
+
+    assert backend(window = 64).restore_prompt_cache_for_resume(manifest) == 0
+    (model_dir / "model.safetensors").write_bytes(b"rewritten weights")
+    assert backend().restore_prompt_cache_for_resume(manifest) == 0
+
+    # A turn over the LRU budget is held outside it, and still kept.
+    over_budget = _MLXPromptCacheHistory(6, 1)
+    over_budget.insert("k", list(range(8)), kv(8, 4))
+    assert [tokens for _, tokens, _, _ in over_budget.resume_entries()] == [list(range(8))]
+
+
+def test_mlx_vlm_resume_keeps_the_boundary_an_edited_turn_extends():
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models.cache import KVCache
+
+    from core.inference.mlx_inference import VLMPromptSnapshotStore
+
+    def kv(n):
+        entry = KVCache()
+        rows = mx.zeros((1, 2, n, 4), dtype = mx.float16)
+        entry.update_and_fetch(rows, rows)
+        return [entry]
+
+    store = VLMPromptSnapshotStore(1 << 30)
+    store.store("k", list(range(12)), kv(12))
+    store.store("k", list(range(14)), kv(14), replay = True)
+    # The edit keeps the first 4 tokens; the old, longer boundary is then touched last.
+    edited = [*range(4), 90, 91]
+    store.store("k", list(range(4)), kv(4))
+    store.store("k", edited, kv(6), replay = True)
+    store._touch(("k", tuple(range(12))))
+    assert [(prefix, replay) for _, prefix, _, replay in store.resume_entries()] == [
+        (list(range(4)), False),
+        (edited, True),
+    ]
+
+
+def test_mlx_prompt_cache_resume_keys_on_the_weights_the_load_read(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models.cache import KVCache
+
+    from core.inference.mlx_inference import MLXInferenceBackend, _MLXPromptCacheHistory
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    weights = model_dir / "model.safetensors"
+    weights.write_bytes(b"weights")
+
+    def loaded():
+        backend = MLXInferenceBackend()
+        backend.active_model_name = str(model_dir)
+        backend._resume_files = backend._resume_weight_files()  # what load_model records
+        backend._prompt_cache_history = _MLXPromptCacheHistory(6, 1 << 30)
+        entry = KVCache()
+        rows = mx.zeros((1, 2, 8, 4), dtype = mx.float16)
+        entry.update_and_fetch(rows, rows)
+        backend._prompt_cache_history.insert("k", list(range(8)), [entry])
+        return backend
+
+    def save(backend):
+        out = tmp_path / f"save-{len(list(tmp_path.glob('save-*')))}"
+        out.mkdir()
+        return backend.save_prompt_cache_for_resume(str(out))
+
+    old = loaded()
+    manifest = save(old)
+    assert manifest is not None
+    # Replaced while the old weights are resident: their KV must neither be saved nor restored.
+    weights.write_bytes(b"replaced weights")
+    assert save(old) is None
+    assert loaded().restore_prompt_cache_for_resume(manifest) == 0
+
+    # The same bounds as llama-server's slot save.
+    monkeypatch.setenv("UNSLOTH_SLOT_SAVE_MAX_BYTES", "1")
+    assert save(loaded()) is None
+
+
+def test_mlx_resume_cache_loads_only_mlx_cache_classes(tmp_path):
+    import collections
+    import pickle
+
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mlx_inference import load_resume_cache, save_resume_cache
+
+    from mlx_lm.models.cache import make_prompt_cache
+
+    path = str(tmp_path / "cache.safetensors")
+    # Outside the MLX modules, and inside them but not a class.
+    for refused in (collections.OrderedDict(), make_prompt_cache):
+        save_resume_cache(path, "k", [1], [mx.zeros(2), refused])
+        with pytest.raises(pickle.UnpicklingError):
+            load_resume_cache(path)
+
+
 def _audio_model(module_paths = ("audio_tower",), model_type = "gemma3n"):
     """Model stub shaped like a loaded mlx-vlm tree (families nest differently)."""
     return SimpleNamespace(

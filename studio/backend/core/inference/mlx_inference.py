@@ -10,6 +10,7 @@ import importlib
 import inspect
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -629,6 +630,24 @@ class VLMPromptSnapshotStore:
     def retain_key(self, key):
         for other in [other for other in self._entries if other[0] != key]:
             self.discard(other)
+
+    def resume_entries(self):
+        """The newest turn's longest boundary snapshot, then its replay."""
+        newest = next(reversed(self._entries), None)
+        if newest is None:
+            return []
+        key = newest[0]
+        replay = self._replays.get(key)
+        boundaries = [i for i in self._entries if i[0] == key and not self._is_replay(i)]
+        # _touch keeps the longest last, but after an edit that can be an older base the replay's
+        # turn no longer extends: prefer the longest one it does.
+        fits = [i for i in boundaries if replay is not None and replay[1][: len(i[1])] == i[1]]
+        boundary = max(fits, key = lambda i: len(i[1])) if fits else next(reversed(boundaries), None)
+        return [
+            (item[0], list(item[1]), self._entries[item][0], self._is_replay(item))
+            for item in (boundary, replay)
+            if item is not None
+        ]
 
     def clear(self):
         self._entries.clear()
@@ -3090,6 +3109,7 @@ class _MLXPromptCacheHistory:
         self._max_bytes = max_bytes
         self._lru = lru_cls(max_size = max_entries, max_bytes = max_bytes)
         self._oversized = None
+        self._newest = None
 
     def _take_oversized(self, key, tokens):
         held, self._oversized = self._oversized, None
@@ -3157,6 +3177,7 @@ class _MLXPromptCacheHistory:
         tokens = tokens[:covered]
         if not tokens:
             return
+        self._newest = (key, tokens)
         if nbytes > self._max_bytes:
             # In the LRU it would evict itself and every other conversation.
             logger.debug(
@@ -3167,6 +3188,86 @@ class _MLXPromptCacheHistory:
             self._oversized = (key, tokens, cache, nbytes)
             return
         self._lru.insert_cache(key, tokens, cache)
+
+    def resume_entries(self):
+        if self._newest is None:
+            return []
+        key, tokens = self._newest
+        held = self._oversized
+        if held is not None and held[0] == key and held[1] == tokens:
+            return [(key, tokens, held[2], False)]
+        try:
+            # The trie's own entry: fetch_nearest_cache would deep-copy it.
+            return [(key, tokens, self._lru._trie.get(key, tokens).prompt_cache, False)]
+        except (AttributeError, KeyError):
+            return []
+
+
+def _resume_save_max_bytes():
+    # Mirrors core.inference.llama_cpp._SLOT_SAVE_MAX_BYTES.
+    try:
+        return int(os.environ.get("UNSLOTH_SLOT_SAVE_MAX_BYTES") or (10 << 30))
+    except ValueError:
+        return 10 << 30
+
+
+_RESUME_CACHE_MODULES = ("mlx.", "mlx_lm.", "mlx_vlm.", "unsloth_zoo.mlx.")
+
+
+def save_resume_cache(path, key, tokens, entries):
+    """Arrays as safetensors tensors, the cache layout pickled in metadata: any cache class fits."""
+    import base64
+    import io
+    import pickle
+
+    import mlx.core as mx
+
+    arrays = {}
+
+    class _Pickler(pickle.Pickler):
+        def persistent_id(self, obj):
+            if isinstance(obj, mx.array):
+                name = f"a{len(arrays)}"
+                arrays[name] = obj
+                return name
+            return None
+
+    layout = io.BytesIO()
+    _Pickler(layout, protocol = pickle.HIGHEST_PROTOCOL).dump((key, list(tokens), entries))
+    # Renamed into place, so a reader never sees a partial file and a removed dir fails the write.
+    partial = f"{path}.partial.safetensors"
+    mx.save_safetensors(
+        partial, arrays, {"layout": base64.b64encode(layout.getvalue()).decode("ascii")}
+    )
+    os.replace(partial, path)
+
+
+def load_resume_cache(path):
+    """``(key, tokens, entries)`` from ``save_resume_cache``; refuses any non-MLX class."""
+    import base64
+    import io
+    import pickle
+
+    import mlx.core as mx
+
+    arrays, metadata = mx.load(path, return_metadata = True)
+
+    class _Unpickler(pickle.Unpickler):
+        def persistent_load(self, name):
+            return arrays[name]
+
+        def find_class(self, module, name):
+            found = None
+            if module.startswith(_RESUME_CACHE_MODULES) and "." not in name:
+                found = super().find_class(module, name)
+            if not isinstance(found, type):
+                raise pickle.UnpicklingError(f"{module}.{name} is not a cache class")
+            return found
+
+    key, tokens, entries = _Unpickler(io.BytesIO(base64.b64decode(metadata["layout"]))).load()
+    # Read now: the caller deletes the file once the restore returns.
+    mx.eval(list(arrays.values()))
+    return key, tokens, entries
 
 
 def _mlx_distributed_rank_size(group = None):
@@ -4401,6 +4502,8 @@ class MLXInferenceBackend:
         self._kv_cache_window = None
         self._kv_context_budget = None
         self._served_context = None
+        self._resume_load_args = None
+        self._resume_files = None
         self._template_override = _template_override_status(None, None, None)[1]
 
         self._prompt_cache_history = None
@@ -4441,6 +4544,115 @@ class MLXInferenceBackend:
         self._vlm_snapshot_store = None
         self._vlm_snapshot_store_unavailable = False
         self._vlm_is_diffusion_model = None
+
+    def _resume_weight_files(self):
+        from pathlib import Path
+
+        name = self.active_model_name
+        files = []
+        for root in sorted(
+            {d for d in (_snapshot_dir(self._model, name), _snapshot_dir(None, name)) if d}
+        ):
+            weights = [*Path(root).glob("*.safetensors"), *Path(root).glob("*.json")]
+            for path in sorted(weights):
+                st = path.stat()
+                files.append((str(path), st.st_size, st.st_mtime_ns))
+        return tuple(files)
+
+    def _resume_fingerprint(self):
+        """What a restore must match: the weights this load read and every KV-affecting setting."""
+        import mlx.core as mx
+
+        files = self._resume_files
+        if files is None:
+            files = self._resume_weight_files()
+        versions = [mx.__version__]
+        for module in ("mlx_lm", "mlx_vlm"):
+            versions.append(getattr(sys.modules.get(module), "__version__", None))
+        return (
+            self.active_model_name,
+            files,
+            tuple(versions),
+            self._is_vlm,
+            self._kv_quant_bits(),
+            bool(getattr(self, "_turboquant", False)),
+            self._kv_cache_window,
+            bool(self._int8_prefill.get("active")),
+            self._prefill_step,
+            self._resume_load_args,
+        )
+
+    def _resume_stores(self):
+        return (("text", self._prompt_cache_history), ("vlm", self._vlm_snapshot_store))
+
+    def save_prompt_cache_for_resume(self, directory):
+        """Saves each store's newest turn into ``directory``; the manifest, or None."""
+        if not self.active_model_name or self._distributed_world_size > 1:
+            return None
+        # The KV was computed from the weights read at load; files replaced since would mislabel it.
+        if self._resume_files is False or (
+            self._resume_files is not None and self._resume_files != self._resume_weight_files()
+        ):
+            return None
+        # Never blocks: the worker loop advancing a batch is the thread that would release it.
+        if not self._generation_lock.acquire(blocking = False):
+            return None
+        try:
+            kept = [
+                (store_name, store.resume_entries() if store is not None else ())
+                for store_name, store in self._resume_stores()
+            ]
+            # llama-slots' bounds: a cap, and 1 GiB of disk left after it.
+            total = sum(cache_entries_nbytes(item[2]) for _, items in kept for item in items)
+            if total > _resume_save_max_bytes() or shutil.disk_usage(directory).free < total + (
+                1 << 30
+            ):
+                logger.debug("MLX prompt cache: %d bytes do not fit the save budget", total)
+                return None
+            slots = []
+            for store_name, items in kept:
+                for index, (key, tokens, entries, replay) in enumerate(items):
+                    filename = f"{store_name}-{index}.safetensors"
+                    save_resume_cache(os.path.join(directory, filename), key, tokens, entries)
+                    slots.append({"filename": filename, "store": store_name, "replay": replay})
+            if not slots:
+                return None
+            return {
+                "engine": "mlx",
+                "dir": directory,
+                "fingerprint": self._resume_fingerprint(),
+                "slots": slots,
+            }
+        finally:
+            self._generation_lock.release()
+
+    def restore_prompt_cache_for_resume(self, manifest):
+        """Restores a manifest saved under this exact load; the entry count."""
+        if not self.active_model_name or manifest.get("engine") != "mlx":
+            return 0
+        if manifest.get("fingerprint") != self._resume_fingerprint():
+            logger.info("MLX prompt cache: the saved context belongs to another load; not restored")
+            return 0
+        restored = 0
+        with self._generation_lock:
+            for slot in manifest.get("slots") or ():
+                if slot.get("store") == "text":
+                    store = self._prompt_cache()
+                elif slot.get("store") == "vlm":
+                    store = self._vlm_prompt_cache_store()
+                else:
+                    store = None
+                if store is None:
+                    continue
+                key, tokens, entries = load_resume_cache(
+                    os.path.join(manifest["dir"], slot["filename"])
+                )
+                if slot["store"] == "text":
+                    store.insert(key, tokens, entries)
+                else:
+                    store.store(key, tokens, entries, replay = bool(slot.get("replay")))
+                restored += 1
+        return restored
 
     def _release_vlm_snapshots(self):
         store = getattr(self, "_vlm_snapshot_store", None)
@@ -4975,6 +5187,7 @@ class MLXInferenceBackend:
 
         # Keep the token so the native-template fallback can fetch a gated model's repo template during generation.
         self._hf_token = hf_token
+        self._resume_load_args = (bool(load_in_4bit), repr(dtype), repr(tuple(offload or ())))
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
@@ -5350,6 +5563,10 @@ class MLXInferenceBackend:
             )
 
         self.active_model_name = model_name
+        try:
+            self._resume_files = self._resume_weight_files()
+        except OSError:
+            self._resume_files = False
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
