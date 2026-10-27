@@ -2082,10 +2082,18 @@ def test_the_gap_worker_never_queues_behind_another_embedder_user(conn, monkeypa
         "backend_build": embeddings._backend_lock,
     }[held]
 
+    encoded = threading.Event()
+
+    # Queue behind the other user's lock, then encode outside it. Holding it across real() made
+    # the worker take the same non-reentrant lock again inside encode, so once the gap reopened it
+    # hung for good and stalled the next test on that xdist worker until pytest-timeout fired.
     def locked(texts, **kwargs):
         with lock:
             time.sleep(0.5)
+        try:
             return real(texts, **kwargs)
+        finally:
+            encoded.set()
 
     monkeypatch.setattr(embeddings, "encode_with_identity", locked)
     monkeypatch.setattr(conversation_archive, "_PAUSE_JOIN_S", 30.0)
@@ -2097,6 +2105,7 @@ def test_the_gap_worker_never_queues_behind_another_embedder_user(conn, monkeypa
         with conversation_archive.inference_running():
             waited = time.monotonic() - started
     assert waited < 1.0
+    assert encoded.wait(timeout = 30), "the gap worker never finished the encode it queued"
 
 
 @pytest.mark.parametrize("busy", ["training", "diffusion_training", "media", "unreadable"])

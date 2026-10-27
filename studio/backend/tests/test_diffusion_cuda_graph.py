@@ -141,8 +141,10 @@ def _build_stub_torch():
         graph,
         pool = None,
         stream = None,
+        capture_error_mode = "global",
     ):
         records["graphs"].append((graph, pool))
+        records["capture_mode"] = capture_error_mode
         records["capture_streams"].append(stream)
         yield
 

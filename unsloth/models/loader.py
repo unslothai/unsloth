@@ -35,6 +35,8 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
+from .fsdp2_load import sharded_load_env as fsdp2_sharded_load_env
+from .float8_training import convert_model_to_float8_training, resolve_float8_training
 from .mistral_format import (
     MistralFormatRedirect,
     is_mistral_format_view,
@@ -53,6 +55,7 @@ from .loader_utils import (
     _fp8_load_as_is,
     _fp8_dequantize_quantization_config,
     _drop_fp8_dequantize_conversions,
+    _loaded_quant_method,
     _fp8_needs_offline_quantize,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
@@ -73,6 +76,7 @@ from .loader_utils import (
     raise_if_fast_inference_under_fsdp2,
 )
 import os, contextlib, functools, sys
+from .tp_env import tensor_parallel_env_load, tensor_parallel_env_peft
 
 try:
     from huggingface_hub import get_token
@@ -84,6 +88,7 @@ except:
 import importlib.util
 from ..device_type import (
     xpu_keeps_explicit_bf16,
+    xpu_vllm_refuses_bf16,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -222,6 +227,20 @@ global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry.
 
 
+def _fold_rope_parameters(rope_scaling, kwargs):
+    """transformers v5 and TRL's model_init_kwargs spell the RoPE override `rope_parameters`.
+    Read it as `rope_scaling`, else FastLanguageModel ignores it (and its auto linear scaling
+    replaces a YaRN request) and FastModel passes it to the model constructor, which fails."""
+    rope_parameters = kwargs.pop("rope_parameters", None)
+    if rope_parameters is None:
+        return rope_scaling
+    if rope_scaling is not None and dict(rope_scaling) != dict(rope_parameters):
+        raise ValueError(
+            "Unsloth: `rope_scaling` and `rope_parameters` were both given and differ; pass one."
+        )
+    return rope_parameters
+
+
 def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
     """Remove Unsloth 4bit suffixes without lowercasing (HF cache dirs are case-sensitive)."""
     s = model_name
@@ -347,8 +366,7 @@ def _config_uses_remote_code(config):
             for k in auto_map
         )
 
-    # Sub-configs go beyond text/vision/audio (Qwen-Omni thinker_config, nested llm_config) and nest;
-    # a remote child read as native puts the compiler on untraceable code, so walk every level.
+    # Sub-configs nest: walk every level, since a remote child read as native breaks the compiler
     try:
         from transformers import PretrainedConfig as _config_class
     except Exception:
@@ -474,10 +492,7 @@ def _has_sequence_classification_architecture(config):
     return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
 
 
-# Most to least specific, so a config mapped under several gets its own family's
-# class. Every name must also be in vision.py's _multimodal_auto_classes(), since
-# the class picked here decides processor selection (asserted by
-# test_every_class_the_resolver_can_return_takes_a_processor).
+# Each name must also be in vision.py _multimodal_auto_classes(), since it picks the processor
 _OMNI_AUTO_CLASS_NAMES = (
     "AutoModelForImageTextToText",
     "AutoModelForTextToWaveform",
@@ -750,8 +765,7 @@ def _resolve_omni_auto_model(
                 return auto_class
         except Exception:
             continue
-    # Falling back to the concrete class the checkpoint names is WRONG: it is in no
-    # auto mapping, so it leaves the processor set and downgrades to AutoTokenizer.
+    # Never fall back to the concrete class: no auto mapping holds it, so it downgrades to AutoTokenizer
     return None
 
 
@@ -1181,11 +1195,33 @@ def _drop_vllm_engine_kwargs(kwargs):
         print(f"Unsloth: Ignoring vLLM-only arguments {dropped} since vLLM is not used.")
 
 
+def _agree_fast_inference_across_ranks(requested, fast_inference, kwargs):
+    """Under torchrun keep vLLM only if every rank kept it, so one rank never waits alone in vLLM's collectives.
+
+    The capability gates read each rank's own card: on a mixed host (an A100 and a T4) one rank would build an external_launcher engine while the other loads HF and starts training. Outside torchrun, or with an older unsloth_zoo, the local answer stands."""
+    if not requested:
+        return fast_inference
+    try:
+        from unsloth_zoo.vllm_utils import torchrun_ranks_agree
+    except Exception:
+        return fast_inference
+    # Every rank that asked for vLLM takes part, including the ones that already dropped it.
+    if torchrun_ranks_agree(fast_inference) or not fast_inference:
+        return fast_inference
+    print(
+        "Unsloth: fast_inference (vLLM) is off on another torchrun rank (such as an older GPU) - "
+        "every rank will switch to Unsloth inference!"
+    )
+    _drop_vllm_engine_kwargs(kwargs)
+    return False
+
+
 class FastLanguageModel(FastLlamaModel):
     reap_prune = staticmethod(_reap_prune)
 
     # Text-diffusion models load through FastModel's slow path; these route them there for the PEFT / mode helpers.
     @staticmethod
+    @tensor_parallel_env_peft
     @functools.wraps(FastLlamaModel.get_peft_model)
     def get_peft_model(model, *args, **kwargs):
         raise_if_unsaved_reap(model)
@@ -1217,6 +1253,8 @@ class FastLanguageModel(FastLlamaModel):
         return get_mtp_head(model, *args, **kwargs)
 
     @staticmethod
+    @tensor_parallel_env_load
+    @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
     @_offline_aware_load
     @mistral_format_redirect
@@ -1256,6 +1294,7 @@ class FastLanguageModel(FastLlamaModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -1297,6 +1336,18 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = distributed_device_map
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
+        if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
+            raise ValueError(
+                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
+                "their base weights frozen, so there is no fp8 training step to take."
+            )
+        if kwargs.get("float8_training", None) not in (None, False) and qat_scheme is not None:
+            raise ValueError(
+                "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
+                "layers for fake-quantized ones first, so float8 training would convert nothing. Pick one."
+            )
+        if not full_finetuning:
+            kwargs.pop("float8_training", None)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             delegated, tokenizer = FastModel.from_pretrained(
                 on_model_resolved = on_model_resolved,
@@ -1310,7 +1361,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
-                rope_scaling = rope_scaling,  # [TODO] No effect
+                rope_scaling = rope_scaling,
                 fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
@@ -1345,6 +1396,7 @@ class FastLanguageModel(FastLlamaModel):
             or dtype == torch.float32
         )
 
+        fast_inference_requested = fast_inference
         # Same fallback as FastModel, before requiring vLLM: it cannot run below compute capability 7.
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
@@ -1363,6 +1415,9 @@ class FastLanguageModel(FastLlamaModel):
                         fast_inference = False
                         _drop_vllm_engine_kwargs(kwargs)
                         break
+        fast_inference = _agree_fast_inference_across_ranks(
+            fast_inference_requested, fast_inference, kwargs
+        )
         raise_if_fast_inference_under_fsdp2(fast_inference)
 
         # bitsandbytes unusable (absent, or unstable on some AMD stacks). A capability check, so not gated on use_exact_model_name, which only suppresses repo-name remapping.
@@ -1840,7 +1895,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
-                rope_scaling = rope_scaling,  # [TODO] No effect
+                rope_scaling = rope_scaling,
                 fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
@@ -1968,7 +2023,12 @@ class FastLanguageModel(FastLlamaModel):
                 # load_in_4bit is the requested flag, not the effective one: a non-bnb checkpoint (MXFP4/gptq/awq) had bnb disabled by check_and_disable, so a synthetic bnb config would corrupt its real one.
                 try:
                     from unsloth_zoo.utils import get_quant_type
-                    _stamp_bnb = get_quant_type(model.config) in (None, "bitsandbytes")
+
+                    # get_quant_type skips config objects (kept FineGrainedFP8Config); a dequantized fp8 load is 16bit.
+                    _quant = get_quant_type(model.config) or _loaded_quant_method(model.config)
+                    _stamp_bnb = _quant in (None, "bitsandbytes") and not getattr(
+                        model, "_unsloth_fp8_dequantized", False
+                    )
                 except Exception:
                     _stamp_bnb = True
                 if _stamp_bnb:
@@ -1987,7 +2047,8 @@ class FastLanguageModel(FastLlamaModel):
                         "quant_method": "bitsandbytes",
                     }
                     model.config.update({"quantization_config": quantization_config})
-            else:
+            elif not getattr(model, "_unsloth_fp8_dequantized", False):
+                # Weights are 16bit after fp8 dequantize: restoring the config would save them as fp8.
                 if hasattr(quantization_config, "to_dict"):
                     model.config.update({"quantization_config": quantization_config.to_dict()})
                 elif isinstance(quantization_config, dict):
@@ -2131,6 +2192,7 @@ class FastModel(FastBaseModel):
         return model
 
     @staticmethod
+    @tensor_parallel_env_peft
     def get_peft_model(model, *args, **kwargs):
         raise_if_unsaved_reap(model)
         # Route text-diffusion models (slow path) to the transformers-only PEFT helper.
@@ -2156,6 +2218,8 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @tensor_parallel_env_load
+    @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
     @_restore_load_scoped_env
     @_offline_aware_load
@@ -2173,7 +2237,7 @@ class FastModel(FastBaseModel):
         device_map = DEFAULT_DEVICE_MAP,
         # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
-        rope_scaling = None,  # [TODO] No effect
+        rope_scaling = None,
         fix_tokenizer = True,
         trust_remote_code = False,
         use_gradient_checkpointing = "unsloth",
@@ -2203,7 +2267,19 @@ class FastModel(FastBaseModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         user_config = kwargs.pop("config", None)
+        float8_training = resolve_float8_training(kwargs.pop("float8_training", None))
+        if float8_training is not None and not full_finetuning:
+            raise ValueError(
+                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
+                "their base weights frozen, so there is no fp8 training step to take."
+            )
+        if float8_training is not None and qat_scheme is not None:
+            raise ValueError(
+                "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
+                "layers for fake-quantized ones first, so float8 training would convert nothing. Pick one."
+            )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -2321,6 +2397,7 @@ class FastModel(FastBaseModel):
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.
                 device_map = distributed_device_map
 
+        fast_inference_requested = fast_inference
         # Same fallback as FastLanguageModel, before requiring vLLM: zoo's vLLM loader raises on compute capability < 7.
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
@@ -2481,6 +2558,9 @@ class FastModel(FastBaseModel):
                 **({"config": user_config} if user_config is not None else {}),
                 **kwargs,
             )
+            if float8_training is not None:
+                converted = convert_model_to_float8_training(model, float8_training)
+                print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
@@ -2620,6 +2700,10 @@ class FastModel(FastBaseModel):
             )
             fast_inference = False
             _drop_vllm_engine_kwargs(kwargs)
+        # After the last per-card gate: under torchrun every rank takes the same vLLM-or-HF path.
+        fast_inference = _agree_fast_inference_across_ranks(
+            fast_inference_requested, fast_inference, kwargs
+        )
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         # Remote-code checkpoints can report their backbone's type (Nemotron-Labs-Diffusion says "nemotron"), so also match the raw config.
@@ -2956,6 +3040,24 @@ class FastModel(FastBaseModel):
                 do_forced_float32 = True
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
+        # A bf16 load of this family would otherwise drop to fp16 when vLLM refuses bf16 (forced float32 is caught in FastBaseModel).
+        if (
+            not do_forced_float32
+            and fast_inference
+            and DEVICE_TYPE == "xpu"
+            and (dtype == torch.bfloat16 or (dtype is None and SUPPORTS_BFLOAT16))
+            and any(
+                name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
+                or name.lower() in model_types_all
+                for name in FORCE_FLOAT32
+            )
+            and is_vLLM_available()
+            and xpu_vllm_refuses_bf16()
+        ):
+            raise RuntimeError(
+                "Unsloth: vLLM does not accept bfloat16 on this Intel GPU, and this model cannot "
+                "run in float16. Load it with fast_inference = False."
+            )
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
             use_gradient_checkpointing, max_seq_length, dtype
         )
@@ -3228,8 +3330,7 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModel
                 else:
                     auto_model = AutoModelForVision2Seq
-                    # Only when the image-text class has no mapping, so anything that
-                    # resolves today keeps the class it resolves to now.
+                    # Only when the image-text class has no mapping, so anything that resolves today keeps the class it resolves to now.
                     if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
                         auto_model = (
                             _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
@@ -3281,6 +3382,7 @@ class FastModel(FastBaseModel):
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
+            rope_scaling = rope_scaling,
             dtype = _get_dtype(dtype),
             load_in_4bit = load_in_4bit_kwargs,
             load_in_8bit = load_in_8bit_kwargs,
@@ -3352,7 +3454,12 @@ class FastModel(FastBaseModel):
                 # load_in_4bit is the requested flag, not the effective one: a non-bnb checkpoint had bnb disabled by check_and_disable, so a synthetic bnb config would corrupt its real one.
                 try:
                     from unsloth_zoo.utils import get_quant_type
-                    _stamp_bnb = get_quant_type(model.config) in (None, "bitsandbytes")
+
+                    # get_quant_type skips config objects (kept FineGrainedFP8Config); a dequantized fp8 load is 16bit.
+                    _quant = get_quant_type(model.config) or _loaded_quant_method(model.config)
+                    _stamp_bnb = _quant in (None, "bitsandbytes") and not getattr(
+                        model, "_unsloth_fp8_dequantized", False
+                    )
                 except Exception:
                     _stamp_bnb = True
                 if _stamp_bnb:
@@ -3371,7 +3478,8 @@ class FastModel(FastBaseModel):
                         "quant_method": "bitsandbytes",
                     }
                     model.config.update({"quantization_config": quantization_config})
-            else:
+            elif not getattr(model, "_unsloth_fp8_dequantized", False):
+                # Weights are 16bit after fp8 dequantize: restoring the config would save them as fp8.
                 if hasattr(quantization_config, "to_dict"):
                     model.config.update({"quantization_config": quantization_config.to_dict()})
                 elif isinstance(quantization_config, dict):
@@ -3536,6 +3644,9 @@ class FastModel(FastBaseModel):
         model = _drop_float16_overflowing_attention_dropout(model, dtype)
         # Loaded adapters skip get_peft_model.
         _ignore_block_swap_params_for_ddp(model)
+        if float8_training is not None:
+            converted = convert_model_to_float8_training(model, float8_training)
+            print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
         return _mark_requested_float32(model, user_float32), tokenizer

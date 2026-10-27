@@ -27,6 +27,9 @@ _MIB = 1024 * 1024
 _STREAM_MIN_MIB = 512
 _HOST_RESERVE_MIN_MIB = 3072
 _HOST_RESERVE_FRACTION = 0.10
+# Host RAM the fp8-storage rule (``diffusion_comfy_quant.fp8_storage_wanted``) keeps free when it lets a single file
+# widen. The single-file refusal reserves at most this much, so it never refuses a widened load that rule chose.
+FP8_STORAGE_HOST_RESERVE_MIB = 4096
 # fp16 T5 keeps ``wo`` in fp32 (``_keep_in_fp32_modules``): 9.5 GB stored, 11.0 GB loaded.
 _CONVERT_MARGIN = 1.15
 _INT8_MIN_ELEMENTS = 1 << 22
@@ -184,6 +187,12 @@ def host_commit_mib() -> Optional[int]:
 
 def host_reserve_mib(total_mib: Optional[int]) -> int:
     return max(_HOST_RESERVE_MIN_MIB, int((total_mib or 0) * _HOST_RESERVE_FRACTION))
+
+
+def single_file_host_reserve_mib(total_mib: Optional[int]) -> int:
+    """Reserve of the single-file host RAM refusal: the small-host reserve, capped at the fp8-storage rule's. Hosts
+    up to 40 GB are unchanged; above, 10% would refuse loads the fp8-storage rule widens because they fit."""
+    return min(host_reserve_mib(total_mib), FP8_STORAGE_HOST_RESERVE_MIB)
 
 
 def _dtype_name(dtype: Any) -> str:
@@ -659,6 +668,36 @@ def _group_tensors(group: Any) -> list:
     return out
 
 
+def _prefetch_budget_bytes(device: Any) -> int:
+    """Bytes of encoder groups the prefetcher may hold on ``device`` ahead of compute."""
+    try:
+        import torch
+
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = torch.cuda.mem_get_info(device)
+        reserve = user_budget_reserve_bytes(device, total)
+        free = max(0, int(free) - reserve)
+        if reserve > 0 and free < _PREFETCH_MIN_BYTES:
+            return 0
+        return max(_PREFETCH_MIN_BYTES, min(_PREFETCH_MAX_BYTES, free // 8))
+    except Exception:  # noqa: BLE001
+        return _PREFETCH_MIN_BYTES
+
+
+def _prefetch_budget_lowered(device: Any) -> bool:
+    """True when the user's VRAM Budget keeps a reserve on ``device``."""
+    try:
+        import torch
+
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        _free, total = torch.cuda.mem_get_info(device)
+        return user_budget_reserve_bytes(device, total) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class _EncoderPrefetcher:
     """Copies a memory-mapped encoder's offload groups ahead of its forward, in the previous forward's order, on a
     worker thread through a pinned ring (diffusers pins each group on the calling thread). Off-order groups and worker
@@ -684,6 +723,8 @@ class _EncoderPrefetcher:
         self.ready: dict = {}  # id(group) -> (device tensors, event)
         self.inflight = 0
         self.budget = _PREFETCH_MIN_BYTES
+        self.strict = False  # lowered Budget: an ahead group must fit the window, else it copies synchronously
+        self.skipped: dict = {}  # group id -> times the worker left to a synchronous copy
         self.pos = 0
         self.stop = False
         self.worker = None
@@ -691,6 +732,8 @@ class _EncoderPrefetcher:
         self.stage: list = []
         self.stage_events: list = []
         self.slot = 0
+        # The worker and a synchronous onload copy (a group skipped under a lowered Budget) share the staging ring.
+        self.copy_lock = threading.Lock()
         self.stats = {"prefetched": 0, "sync": 0, "passes": 0}
         self.by_id = {id(g): g for g in groups}
 
@@ -713,6 +756,11 @@ class _EncoderPrefetcher:
 
     def _copy_group(self, group: Any) -> tuple:
         """Device copies of ``group``'s host tensors, issued on the side stream. Returns (tensors, event, bytes)."""
+        # Held across staging write, H2D enqueue and slot event so the other thread cannot reuse a slot in between.
+        with self.copy_lock:
+            return self._copy_group_locked(group)
+
+    def _copy_group_locked(self, group: Any) -> tuple:
         import torch
 
         self._ensure_stage()
@@ -733,8 +781,7 @@ class _EncoderPrefetcher:
                         )
                     continue
                 nbytes += n
-                # Compute-stream pool (a side-stream block stays cached away from the denoise); the copy waits for
-                # work queued there, covering the last user of a freed block.
+                # Copy waits on the compute stream so it covers the last user of a freed block.
                 with torch.cuda.stream(compute):
                     dst = torch.empty(src.shape, dtype = src.dtype, device = self.device)
                     queued = torch.cuda.Event()
@@ -764,6 +811,14 @@ class _EncoderPrefetcher:
             done.record(stream)
         return moved, done, nbytes
 
+    def _group_bytes(self, group: Any) -> int:
+        """Host bytes :meth:`_copy_group` would stage for ``group``."""
+        n = 0
+        for _t, src in _group_tensors(group):
+            if src.device.type == "cpu" and src.is_contiguous() and not src.is_pinned():
+                n += int(src.numel()) * int(src.element_size())
+        return n
+
     def _attach(self, group: Any, moved: list, done: Any) -> None:
         import torch
 
@@ -782,15 +837,25 @@ class _EncoderPrefetcher:
             if self.device.type == "cuda":
                 torch.cuda.set_device(self.device)
             for gid in order:
+                group = self.by_id.get(gid)
+                need = self._group_bytes(group) if self.strict and group is not None else 0
                 with self.cond:
+                    if need > self.budget:
+                        self.skipped[gid] = self.skipped.get(gid, 0) + 1
+                        self.cond.notify_all()
+                        continue
                     # A group the forward onloads twice waits for its first copy to be taken.
                     while not self.stop and (
-                        (self.inflight > 0 and self.inflight >= self.budget) or gid in self.ready
+                        (
+                            self.inflight + need > self.budget
+                            if self.strict
+                            else self.inflight > 0 and self.inflight >= self.budget
+                        )
+                        or gid in self.ready
                     ):
                         self.cond.wait(0.05)
                     if self.stop:
                         return
-                group = self.by_id.get(gid)
                 if group is None:
                     continue
                 moved, done, n = self._copy_group(group)
@@ -814,6 +879,7 @@ class _EncoderPrefetcher:
         self.worker = None
         with self.cond:
             self.ready.clear()
+            self.skipped.clear()
             self.inflight = 0
 
     def begin(self) -> None:
@@ -833,11 +899,10 @@ class _EncoderPrefetcher:
         )
         if not self.order:
             return  # first forward: synchronous copies, and it records the order
-        try:
-            free, _total = torch.cuda.mem_get_info(self.device)
-            self.budget = max(_PREFETCH_MIN_BYTES, min(_PREFETCH_MAX_BYTES, int(free) // 8))
-        except Exception:  # noqa: BLE001
-            self.budget = _PREFETCH_MIN_BYTES
+        self.budget = _prefetch_budget_bytes(self.device)
+        if self.budget <= 0:
+            return  # no budgeted room: every group copies synchronously, as on the first forward
+        self.strict = _prefetch_budget_lowered(self.device)
         self._order_after_compute()
         self.worker = threading.Thread(
             target = self._run, args = (list(self.order),), daemon = True, name = "unsloth-encoder-prefetch"
@@ -867,9 +932,16 @@ class _EncoderPrefetcher:
             if expected == gid:
                 self.pos += 1
                 with self.cond:
-                    while gid not in self.ready and self.error is None and self.worker.is_alive():
+                    while (
+                        gid not in self.ready
+                        and not self.skipped.get(gid)
+                        and self.error is None
+                        and self.worker.is_alive()
+                    ):
                         self.cond.wait(0.05)
                     entry = self.ready.pop(gid, None)
+                    if entry is None and self.skipped.get(gid):
+                        self.skipped[gid] -= 1
                     if entry is not None:
                         self.inflight -= entry[2]
                         self.cond.notify_all()
@@ -903,6 +975,10 @@ def install_encoder_prefetch(
 
         if _env(GROUP_OFFLOAD_PIN_ENV) in ("0", "off", "false", "no"):
             return 0  # the ring is pinned memory: the user's "pin nothing" override wins
+        from .host_pinning import host_pinning_allowed
+
+        if not host_pinning_allowed(device):
+            return 0  # integrated GPU: pinned memory only takes RAM from the GPU
 
         groups = [
             g

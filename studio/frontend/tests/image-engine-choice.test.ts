@@ -346,7 +346,7 @@ test("a reload from status keeps the resident GGUF's base repo, on the load and 
   const source = readSrc("features/images/images-page.tsx");
   assert.equal(source.match(/base_repo: opts\.baseRepo,/g)?.length, 2);
   assert.equal(source.match(/displayRepoId: l\.displayRepoId, baseRepo: l\.baseRepo \}/g)?.length, 2);
-  // Carried into the next Reapply target, dropped by a retired-copy redirect.
-  assert.match(source, /const baseRepo = redirected\.repoId === repoId \? opts\.baseRepo : undefined;/);
+  // Carried into the next Reapply target.
+  assert.match(source, /opts = \{ kind: opts\.kind, filename: opts\.filename, displayRepoId: opts\.displayRepoId, baseRepo: opts\.baseRepo \};/);
   assert.match(source, /displayRepoId: opts\.displayRepoId,\s*baseRepo: opts\.baseRepo,/);
 });

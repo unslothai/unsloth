@@ -1834,7 +1834,9 @@ def test_cfg_off_keys_are_wired_into_the_load_and_guard():
     src = "".join(src.split())  # whitespace-free: the formatter may wrap these lines
     for needle in (
         'pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))',
-        "cfg = guard_cfg,",
+        # the guard's CFG value reaches the pricer through the split-aware wrapper
+        "guard_cfg, extra_mib = split_aware_request_extra(state.pipe, guard_cfg, workflow, lambda cfg:",
+        "cfg = cfg, unpriced_references = guard_unpriced_refs,",
         'plan.estimates.get("measured_learned_cfg_off", False),',
         "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)",
     ):

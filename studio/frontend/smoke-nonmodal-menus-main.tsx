@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_nonmodal_menus.py: the real NonModalDropdownMenu on a real
-// overflowing list, so the behaviour measured is the component's own. No backend, no auth.
+// Harness for tests/studio/playwright_nonmodal_menus.py; no backend.
 
 import {
   DropdownMenu,
@@ -19,7 +18,7 @@ import { type ReactElement, StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
-// Counts document listeners so a leak across opens is measurable. Before React, to see them all.
+// Installed before React so every document listener is counted.
 const listenerCounts: Record<string, number> = {};
 const realAdd = document.addEventListener.bind(document);
 const realRemove = document.removeEventListener.bind(document);
@@ -39,7 +38,6 @@ document.addEventListener("click", () => {
 });
 
 const ROWS = Array.from({ length: 60 }, (_, index) => index);
-// Named once so every list below maps over identities, not over positions.
 const MENU_ITEMS = Array.from({ length: 40 }, (_, index) => `item-${index}`);
 
 function RowMenu({ row }: { row: number }): ReactElement {
@@ -79,7 +77,7 @@ function RowMenu({ row }: { row: number }): ReactElement {
   );
 }
 
-/** The unconverted shape, as a control: whatever this does too is Radix, not the wrapper. */
+/** Unconverted control: anything this also does is Radix, not the wrapper. */
 function ControlRowMenu(): ReactElement {
   return (
     <DropdownMenu>
@@ -96,7 +94,6 @@ function ControlRowMenu(): ReactElement {
   );
 }
 
-/** A menu whose own content overflows, so scrolling its viewport is a real scroll event. */
 function TallMenu(): ReactElement {
   return (
     <NonModalDropdownMenu
@@ -123,7 +120,6 @@ function Harness(): ReactElement {
 
   useEffect(() => {
     const api = {
-      /** Drop a row while its menu is open, to strand the portal if anything can. */
       removeRow(row: number): void {
         setRows((current) => current.filter((value) => value !== row));
       },
@@ -136,7 +132,6 @@ function Harness(): ReactElement {
         documentClicks = 0;
       },
       scrollListeners: (): number => listenerCounts.scroll ?? 0,
-      /** Everything a modal Radix menu writes to the document when it opens. */
       documentState: () => ({
         bodyPointerEvents: document.body.style.pointerEvents,
         scrollLocked: document.body.hasAttribute("data-scroll-locked"),
@@ -212,10 +207,8 @@ function Harness(): ReactElement {
         <button id="outside-button" type="button">
           outside
         </button>
-        {/* Last, so its modal menu drops below the controls instead of over them. */}
         <ControlRowMenu />
       </div>
-      {/* Page-level overflow, so a window scroll is reachable too. */}
       <div style={{ height: 3000, width: 1 }} />
     </div>
   );

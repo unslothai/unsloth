@@ -1387,6 +1387,8 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
         "wan2.1-t2v-14b": {16, 24, 32, 64},
         "hunyuanvideo-1.5": {16, 24, 32},
         "hunyuanvideo-1.5-720p": {16, 24, 32},
+        "cosmos3-nano": {16, 24, 32},
+        "cosmos3-edge": set(),
     }
     assert {f.name for f in _FAMILIES} == set(
         expected_refusals
@@ -3060,4 +3062,6 @@ def test_both_offload_tiers_fall_back_to_the_no_copy_back_top_group():
     for fn in (mem._apply_group_offload, mem._apply_streaming_offload):
         src = ast.unparse(ast.parse(inspect.getsource(fn).lstrip()))
         assert "_skip_top_level_copy_back(module, logger)" in src, fn.__name__
-        assert "not _pin_top_level_group(module, logger, pinned_mib)" in src, fn.__name__
+        assert (
+            "not _pin_top_level_group(module, logger, pinned_mib, device=onload)" in src
+        ), fn.__name__

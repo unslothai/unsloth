@@ -78,12 +78,7 @@ def _matching_fork_tag(upstream_tag: str) -> Optional[str]:
 
 
 def resolve_fork_release(repo: Optional[str], tag: Optional[str]) -> tuple[str, dict]:
-    """(fork release tag, its llama-prebuilt-sha256.json) for a converter revision.
-
-    A fork tag is used as is; a bare tag the fork reports is tried as a release first. Anything
-    else (an old ggml-org marker, nothing) maps to the fork release built on that upstream tag,
-    else the latest.
-    """
+    """A fork tag is used as is; else the fork release built on that upstream tag, else the latest."""
     fork_tag: Optional[str] = None
     checksums = None
     if tag and ("-mix-" in tag or repo == FORK_REPO):

@@ -21,10 +21,11 @@ when it is already downloaded and SAM 3.1 is not. ``UNSLOTH_SAM3_PATH`` points a
 directory instead.
 
 SAM 3.1 also ships pre-quantized detector files (FP8, INT8, INT8-ConvRot; diffusion_segment_quant). On a CUDA card
-``UNSLOTH_SAM3_PRECISION`` (auto / bf16 / fp8 / int8) picks one; auto loads only a file that passed the accuracy gate
-(INT8, the ConvRot build unless ``UNSLOTH_SAM3_INT8_CONVROT=0``). The download fetches that one weights file with the
-configs and tokenizer, and bf16 when the file is not published; the CPU and Apple's MPS run bf16 weights (a quantized
-file that is the only one on disk is dequantized there).
+``UNSLOTH_SAM3_PRECISION`` (auto / bf16 / fp8 / int8) picks one. auto runs bf16, which is faster, while the card has
+room for it, and only when it is short of memory loads a file that passed the accuracy gate (INT8, the ConvRot build
+unless ``UNSLOTH_SAM3_INT8_CONVROT=0``). The download fetches that one weights file with the configs and tokenizer,
+and bf16 when the file is not published; the CPU and Apple's MPS run bf16 weights (a quantized file that is the only
+one on disk is dequantized there).
 
 The model is auxiliary to the image model, like the FLUX.3 prompt upsampler: loaded on the first request, kept for
 a short keep-alive, unloaded right after a call when the accelerator is tight, and dropped whenever the GPU arbiter
@@ -46,7 +47,7 @@ import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from loggers import get_logger
 
@@ -152,6 +153,11 @@ ENV_VARIANT = "UNSLOTH_SAM3_VARIANT"
 
 ENV_PATH_OVERRIDE = "UNSLOTH_SAM3_PATH"
 ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
+# Seconds a host-RAM parked model is kept; 0 never parks.
+ENV_PARK_SECONDS = "UNSLOTH_SAM3_PARK_SECONDS"
+PARK_SECONDS = 600.0
+# "1" pins the parked copy (0.03 s unpark vs ~0.6 s); opt-in since pinning 1.7 GB took minutes on a loaded host.
+ENV_PARK_PIN = "UNSLOTH_SAM3_PARK_PIN"
 
 # ── ComfyUI SAM3_Detect defaults ────────────────────────────────────────────────────────────────────────────────────
 IMAGE_SIZE = 1008
@@ -169,6 +175,9 @@ _GPU_NEED_MIB = 4096
 # never denoises next to it. The prompt upsampler's tight rule.
 _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
+# bf16's measured drop in mem_get_info free after a Find (reserve + workspace, above its allocated peak), so the bf16
+# pick is not read as tight by _after_call and unloaded. auto goes 8-bit only if free minus this reads tight.
+_BF16_RESIDENT_MIB = 2560
 
 
 class SegmenterUnavailableError(RuntimeError):
@@ -638,10 +647,12 @@ def plan_weights(
     *,
     variant: Optional[SegmenterVariant] = None,
     use_cache: bool = True,
+    memory_tight: bool = False,
 ) -> WeightsPlan:
-    """The weights a load on ``device`` uses: the precision UNSLOTH_SAM3_PRECISION asks for (auto: the gated order
-    in diffusion_segment_quant) when its file is on disk and the device runs it, else bf16. bf16 with no bf16 file
-    on disk dequantizes a pre-quantized one the selection may load (never one it rejected)."""
+    """The weights a load on ``device`` uses: the precision UNSLOTH_SAM3_PRECISION asks for (auto: bf16, or the gated
+    order in diffusion_segment_quant when ``memory_tight``) when its file is on disk and the device runs it, else
+    bf16. bf16 with no bf16 file on disk dequantizes a pre-quantized one the selection may load (never one it
+    rejected)."""
     from core.inference.diffusion_segment_quant import PRECISION_BF16, resolve_precision
 
     variant = variant or active_variant()
@@ -650,7 +661,9 @@ def plan_weights(
     for artifact, folder in local:
         if _loadable(variant, artifact):
             usable.setdefault(artifact.precision, (artifact, folder))
-    precision, why = resolve_precision(device, dtype, available = tuple(usable))
+    precision, why = resolve_precision(
+        device, dtype, available = tuple(usable), memory_tight = memory_tight
+    )
     if precision != PRECISION_BF16:
         artifact, folder = usable[precision]
         return WeightsPlan(precision, folder, str(Path(folder) / artifact.filename), artifact, why)
@@ -681,7 +694,12 @@ def _host_device() -> str:
     return "cpu"
 
 
-def download_plan(variant: SegmenterVariant, device: Optional[str] = None) -> dict:
+def download_plan(
+    variant: SegmenterVariant,
+    device: Optional[str] = None,
+    *,
+    memory_tight: Optional[bool] = None,
+) -> dict:
     """What a download of ``variant`` fetches on this host: the spec id, the precision it runs, why, and the bytes.
     A pre-quantized file only when the variant publishes them (a pinned or "main" prequant revision) and the host
     would run it; its spec falls back to bf16 when the file is not on the Hub yet."""
@@ -695,7 +713,10 @@ def download_plan(variant: SegmenterVariant, device: Optional[str] = None) -> di
                 _cached_snapshot(prequant_spec_id(variant, artifact)), artifact
             ):
                 offered.setdefault(artifact.precision, artifact)
-    precision, why = resolve_precision(device or _host_device(), available = tuple(offered))
+    device = device or _host_device()
+    if memory_tight is None:
+        memory_tight = auto_memory_tight(device)
+    precision, why = resolve_precision(device, available = tuple(offered), memory_tight = memory_tight)
     if precision == PRECISION_BF16:
         return {
             "spec": variant.id,
@@ -779,7 +800,14 @@ def _precision_summary(
         elif not supported:
             body.update(precision = None, precision_reason = None, weights_file = None)
         elif path is not None:
-            plan = plan_weights(path, _host_device(), variant = variant, use_cache = not override)
+            device = _host_device()
+            plan = plan_weights(
+                path,
+                device,
+                variant = variant,
+                use_cache = not override,
+                memory_tight = auto_memory_tight(device),
+            )
             body.update(
                 precision = plan.precision,
                 precision_reason = plan.reason,
@@ -815,12 +843,29 @@ def _resident_cuda_ordinal() -> Optional[int]:
 
 
 def _cuda_free_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
+    """(free, total) MiB on CUDA card ``ordinal``: driver free plus this process's reusable allocator cache, the same
+    credit the render's memory check gives (diffusion_memory.cuda_reclaimable_bytes), less the user's VRAM Budget
+    reserve (raw at the default), so the segmenter neither lands on nor stays resident in that reserve. Parking leaves
+    SAM's emptied weights in that cache on purpose, so driver free alone would send the next detection to the CPU on a
+    warm card (ComfyUI's get_free_memory likewise adds reserved minus active bytes)."""
     try:
         import torch
         free, total = torch.cuda.mem_get_info(ordinal)
-        return int(free // (1024 * 1024)), int(total // (1024 * 1024))
     except Exception:  # noqa: BLE001
         return None, None
+    try:
+        from core.inference.diffusion_memory import cuda_reclaimable_bytes
+        reclaimable = cuda_reclaimable_bytes(ordinal) or 0
+    except Exception:  # noqa: BLE001 -- no allocator reading: driver free still stands
+        reclaimable = 0
+    free = min(int(free) + max(0, int(reclaimable)), int(total))
+    try:
+        from core.inference.diffusion_memory import user_budget_reserve_bytes
+        reserve = int(user_budget_reserve_bytes("cuda", total) or 0)
+    except Exception:  # noqa: BLE001 -- no Budget reading: the raw figure stands
+        reserve = 0
+    free = max(0, free - reserve)
+    return int(free // (1024 * 1024)), int(total // (1024 * 1024))
 
 
 def vram_is_tight(free_mib: Optional[int], total_mib: Optional[int]) -> bool:
@@ -830,6 +875,24 @@ def vram_is_tight(free_mib: Optional[int], total_mib: Optional[int]) -> bool:
     if total_mib:
         floor = max(floor, int(total_mib * _TIGHT_FREE_FRACTION))
     return free_mib < floor
+
+
+def auto_memory_tight(device: str) -> bool:
+    """The CUDA card ``device`` would read as tight with the bf16 segmenter on it. False off CUDA, when unreadable, and
+    before this process initialised CUDA (never create a context just to plan)."""
+    if not device.startswith("cuda"):
+        return False
+    try:
+        import torch
+        if not torch.cuda.is_initialized():
+            return False
+        ordinal = int(device.split(":", 1)[1]) if ":" in device else torch.cuda.current_device()
+    except Exception:  # noqa: BLE001
+        return False
+    free_mib, total_mib = _cuda_free_mib(ordinal)
+    if free_mib is None:
+        return False
+    return vram_is_tight(free_mib - _BF16_RESIDENT_MIB, total_mib)
 
 
 def _other_owner_on(ordinal: Optional[int]) -> Optional[str]:
@@ -903,6 +966,8 @@ class SegmentResult:
     device: str = "cpu"
     elapsed_ms: float = 0.0
     precision: Optional[str] = None
+    # Per-instance CPU mask logits (instance_masks only, never in the route body); None for filtered planes.
+    instance_logits: list = field(default_factory = list)
 
     def to_json(self) -> dict:
         return {
@@ -1015,6 +1080,113 @@ def _free_device_cache(device: Optional[str]) -> None:
             torch.mps.empty_cache()
 
 
+class _HostWeights:
+    """Parked weights as one host buffer and one device storage every weight views (via ``Tensor.set_``), so
+    park/unpark is one copy instead of ~1,500 allocations, which on a busy host is slower than rereading the file."""
+
+    _ALIGN = 256
+
+    def __init__(self, pin: bool) -> None:
+        self.pin = pin
+        self.buffer: Any = None
+        self.storage: Any = None
+        self.total = 0
+
+    @staticmethod
+    def _leaves(model: Any) -> list:
+        import torch
+
+        out: list = []
+
+        def _visit(t: Any) -> None:
+            if type(t) not in (torch.Tensor, torch.nn.Parameter):
+                flatten = getattr(t, "__tensor_flatten__", None)
+                if flatten is None:
+                    raise TypeError(f"cannot park a {type(t).__name__} tensor")
+                names, _ctx = flatten()
+                for name in names:
+                    _visit(getattr(t, name))
+                return
+            out.append(t)
+
+        # The registered objects themselves, not ``.data`` aliases: set_ has to re-point the tensor the module uses.
+        for param in model.parameters():
+            _visit(param)
+        for buffer in model.buffers():
+            _visit(buffer)
+        return out
+
+    def _bytes(
+        self,
+        storage: Any,
+        nbytes: int,
+        offset: int = 0,
+    ) -> Any:
+        import torch
+        view = torch.empty(0, dtype = torch.uint8, device = storage.device)
+        return view.set_(storage, offset, (nbytes,), (1,))
+
+    def _repack(self, model: Any) -> None:
+        import torch
+
+        leaves = self._leaves(model)
+        slots: dict = {}
+        offset = 0
+        for leaf in leaves:
+            storage = leaf.untyped_storage()
+            key = storage.data_ptr()
+            if key in slots or storage.nbytes() == 0:
+                continue
+            slots[key] = (storage, offset)
+            offset += -(-storage.nbytes() // self._ALIGN) * self._ALIGN
+        self.total = offset
+        self.buffer = torch.empty(self.total, dtype = torch.uint8, pin_memory = self.pin)
+        storages = [st for st, _off in slots.values()]
+        if storages:
+            torch._foreach_copy_(
+                [self.buffer[off : off + st.nbytes()] for st, off in slots.values()],
+                [self._bytes(st, st.nbytes()) for st in storages],
+                non_blocking = self.pin,
+            )
+            if storages[0].device.type == "cuda":
+                torch.cuda.synchronize(storages[0].device)
+        device = storages[0].device if storages else torch.device("cpu")
+        packed = torch.empty(self.total, dtype = torch.uint8, device = device).untyped_storage()
+        placed = []
+        for leaf in leaves:
+            storage = leaf.untyped_storage()
+            slot = slots.get(storage.data_ptr())
+            if slot is None:
+                continue
+            size, stride, start = leaf.size(), leaf.stride(), leaf.storage_offset()
+            placed.append((leaf, slot[1] // leaf.element_size() + start, size, stride))
+        # Re-pointed only once every offset is known; the old storages go with their last reference.
+        for leaf, start, size, stride in placed:
+            with torch.no_grad():
+                leaf.set_(packed, start, size, stride)
+        del storages, slots, placed
+        self.storage = packed
+
+    def park(self, model: Any) -> None:
+        import torch
+        if self.storage is None:
+            self._repack(model)
+        elif self.total:
+            self.buffer.copy_(self._bytes(self.storage, self.total), non_blocking = self.pin)
+            if self.storage.device.type == "cuda":
+                torch.cuda.synchronize(self.storage.device)
+        self.storage.resize_(0)
+
+    def unpark(self, model: Any, device: str) -> None:
+        import torch
+
+        self.storage.resize_(self.total)
+        if self.total:
+            self._bytes(self.storage, self.total).copy_(self.buffer, non_blocking = self.pin)
+        if device.startswith("cuda"):
+            torch.cuda.synchronize(device)
+
+
 class MaskSegmenter:
     """One lazily loaded Sam3Model + its tokenizer. ``_run_lock`` serialises loads, calls and unloads."""
 
@@ -1039,9 +1211,13 @@ class MaskSegmenter:
         self.weights_file: Optional[str] = None
         # Why the last pre-quantized load fell back to bf16, if one did.
         self.last_prequant_failure: Optional[str] = None
+        # Reused while loaded: a reading taken with the model resident would flip auto's choice and reload it.
+        self._memory_tight: Optional[bool] = None
         # Planning reads the Hub cache only for the active variant's own snapshot, not an explicit folder.
         self._use_cache = True
         self._timer: Optional[threading.Timer] = None
+        # Batch holds (hold()): while one is open a call keeps the model loaded; the holder releases it at the end.
+        self._holds = 0
         self._release_pending = False
         self._release_epoch = 0
         # Bumped by every GPU handover's release: a call that queued before one never runs on the accelerator.
@@ -1051,6 +1227,16 @@ class MaskSegmenter:
         # Set (under _state_lock) once the call in flight has read its release flag: a release that times out after
         # that is not honoured by the call, so it waits out the call's short tail itself.
         self._call_settled = False
+        # A GPU model moved to host RAM by release(park = True), with what _load matches it against; the next call on
+        # the same card, weights and dtype moves it back instead of reading the files again. Never counts as loaded.
+        self._parked: Optional[dict] = None
+        self._park_timer: Optional[threading.Timer] = None
+        # The weights' host copy, kept while the same model is loaded so a later park copies nothing back.
+        self._host: Optional[_HostWeights] = None
+        try:
+            self.park_seconds = max(0.0, float(os.environ.get(ENV_PARK_SECONDS) or PARK_SECONDS))
+        except ValueError:
+            self.park_seconds = PARK_SECONDS
 
     @property
     def loaded(self) -> bool:
@@ -1059,9 +1245,19 @@ class MaskSegmenter:
     def holds_vram(self) -> bool:
         return self._model is not None and bool(self.device) and self.device != "cpu"
 
+    @property
+    def parked(self) -> bool:
+        return self._parked is not None
+
     # -- lifecycle -------------------------------------------------------------------------------------------------
     def _load(self, path: str, device: str, dtype: Any) -> None:
-        plan = plan_weights(path, device, dtype, use_cache = self._use_cache)
+        if self._model is not None and self.device == device and self._memory_tight is not None:
+            memory_tight = self._memory_tight
+        else:
+            memory_tight = auto_memory_tight(device)
+        plan = plan_weights(
+            path, device, dtype, use_cache = self._use_cache, memory_tight = memory_tight
+        )
         key = (plan.model_dir, plan.weights, plan.dequantize)
         if (
             self._model is not None
@@ -1073,6 +1269,8 @@ class MaskSegmenter:
             return
         if self._model is not None:
             self._unload_locked("reload")
+        if self._unpark_locked(path, key, device, dtype):
+            return
         from transformers import AutoTokenizer
 
         started = time.perf_counter()
@@ -1089,6 +1287,7 @@ class MaskSegmenter:
         self._model, self._tokenizer = model, tokenizer
         self._path, self.device, self._dtype = path, device, dtype
         self._weights_key = key
+        self._memory_tight = memory_tight
         self.precision, self.precision_reason = plan.precision, plan.reason
         self.weights_file = (
             os.path.basename(plan.weights) if plan.weights else SEGMENTER_WEIGHTS_FILE
@@ -1185,6 +1384,141 @@ class MaskSegmenter:
         model.eval()
         return model, plan
 
+    def _unpark_locked(self, path: str, key: tuple, device: str, dtype: Any) -> bool:
+        """Unpark when weights, card and dtype match (else drop the parked copy); False when nothing was usable."""
+        parked = self._parked
+        if parked is None:
+            return False
+        if (parked["path"], parked["key"], parked["device"], parked["dtype"]) != (
+            path,
+            key,
+            device,
+            dtype,
+        ):
+            self._drop_parked_locked("another load")
+            return False
+        self._parked = None
+        self._cancel_park_timer()
+        started = time.perf_counter()
+        model = parked["model"]
+        try:
+            parked["host"].unpark(model, device)
+        except BaseException:
+            model = None
+            parked.clear()
+            self._host = None
+            _free_device_cache(device)
+            logger.warning(
+                "images.segment: the parked model did not move back to %s; loading again", device
+            )
+            return False
+        self._model, self._tokenizer = model, parked["tokenizer"]
+        self._host = parked["host"]
+        self._path, self.device, self._dtype, self._weights_key = path, device, dtype, key
+        self.precision, self.precision_reason, self.weights_file = (
+            parked["precision"],
+            parked["precision_reason"],
+            parked["weights_file"],
+        )
+        logger.info(
+            "images.segment: moved back from host RAM to %s in %.2fs",
+            device,
+            time.perf_counter() - started,
+        )
+        return True
+
+    def _park_locked(self, reason: str) -> bool:
+        """Move the GPU model to host RAM and free its VRAM, keeping it for the next call. Falls back to an unload
+        on a CPU / MPS model, with parking off, or when the move fails. True when the weights left the device."""
+        if self._model is None:
+            return False
+        device = self.device
+        if self.park_seconds <= 0 or not (device or "").startswith("cuda"):
+            return self._unload_locked(reason)
+        with self._state_lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+        started = time.perf_counter()
+        model = self._model
+        from .host_pinning import host_pinning_allowed
+
+        host = self._host or _HostWeights(
+            pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1" and host_pinning_allowed(device)
+        )
+        try:
+            host.park(model)
+            copied = time.perf_counter() - started
+        except Exception as exc:  # noqa: BLE001 -- a module that will not move is simply unloaded
+            logger.warning("images.segment: could not park in host RAM (%s); unloading", exc)
+            self._host = None
+            return self._unload_locked(reason)
+        self._drop_parked_locked("replaced")
+        self._host = None
+        self._parked = {
+            "model": model,
+            "host": host,
+            "tokenizer": self._tokenizer,
+            "path": self._path,
+            "key": self._weights_key,
+            "device": device,
+            "dtype": self._dtype,
+            "precision": self.precision,
+            "precision_reason": self.precision_reason,
+            "weights_file": self.weights_file,
+        }
+        self._model = self._tokenizer = None
+        self._path = self._weights_key = self.device = self._dtype = None
+        self.precision = self.precision_reason = self.weights_file = None
+        del model
+        # No empty_cache: the flush took minutes on a busy card; the cache counts as free for the render's check.
+        self._arm_park_timer()
+        logger.info(
+            "images.segment: parked in host RAM from %s in %.2fs (copy %.2fs) (%s)",
+            device,
+            time.perf_counter() - started,
+            copied,
+            reason,
+        )
+        return True
+
+    def _drop_parked_locked(self, reason: str) -> bool:
+        self._cancel_park_timer()
+        if self._parked is None:
+            return False
+        device = self._parked.get("device")
+        self._parked = None
+        self._host = None
+        _free_device_cache(device)
+        logger.info("images.segment: dropped the host RAM copy (%s)", reason)
+        return True
+
+    def _cancel_park_timer(self) -> None:
+        with self._state_lock:
+            if self._park_timer is not None:
+                self._park_timer.cancel()
+                self._park_timer = None
+
+    def _arm_park_timer(self) -> None:
+        with self._state_lock:
+            if self._park_timer is not None:
+                self._park_timer.cancel()
+            timer = threading.Timer(self.park_seconds, self._park_expire)
+            timer.daemon = True
+            self._park_timer = timer
+            timer.start()
+
+    def _park_expire(self) -> None:
+        if not self._run_lock.acquire(blocking = False):
+            # A call is running: it either takes the parked copy or leaves it for a new timer.
+            if self._parked is not None:
+                self._arm_park_timer()
+            return
+        try:
+            self._drop_parked_locked("park expired")
+        finally:
+            self._run_lock.release()
+
     def _unload_locked(self, reason: str) -> bool:
         with self._state_lock:
             if self._timer is not None:
@@ -1195,10 +1529,12 @@ class MaskSegmenter:
         device = self.device
         self._model = None
         self._tokenizer = None
+        self._host = None
         self._path = None
         self._weights_key = None
         self.device = None
         self._dtype = None
+        self._memory_tight = None
         self.precision = self.precision_reason = self.weights_file = None
         _free_device_cache(device)
         logger.info("images.segment: unloaded from %s (%s)", device, reason)
@@ -1216,10 +1552,13 @@ class MaskSegmenter:
         wait: bool = False,
         timeout: float = 30.0,
         handover: bool = False,
+        park: bool = False,
     ) -> bool:
         """Unload now if idle. A call in flight unloads when it ends (``wait`` waits up to ``timeout`` for it
         instead). True when the weights left now. ``handover`` (the GPU is changing hands) raises
-        SegmenterReleaseTimeoutError when the wait ran out on a call still on the accelerator."""
+        SegmenterReleaseTimeoutError when the wait ran out on a call still on the accelerator. ``park`` (an image
+        render takes the GPU back) moves a GPU model to host RAM for the next call instead of dropping it; without
+        it any parked copy is dropped too."""
         with self._state_lock:
             self._release_epoch += 1
             if handover:
@@ -1248,9 +1587,22 @@ class MaskSegmenter:
         try:
             with self._state_lock:
                 self._release_pending = False
-            return self._unload_locked(reason)
+            if park:
+                return self._park_locked(reason)
+            dropped = self._drop_parked_locked(reason)
+            return self._unload_locked(reason) or dropped
         finally:
             self._run_lock.release()
+
+    @contextmanager
+    def hold(self) -> Iterator[None]:
+        with self._state_lock:
+            self._holds += 1
+        try:
+            yield
+        finally:
+            with self._state_lock:
+                self._holds -= 1
 
     def _arm_keep_alive(self) -> None:
         with self._state_lock:
@@ -1282,6 +1634,10 @@ class MaskSegmenter:
         if pending:
             self._unload_locked("released during a call")
             return
+        with self._state_lock:
+            held = self._holds > 0
+        if held:
+            return  # a batch pass: its holder parks or unloads once, after the last image
         if self.device and self.device.startswith("cuda"):
             free_mib, total_mib = _cuda_free_mib(int(self.device.split(":", 1)[1]))
             if vram_is_tight(free_mib, total_mib):
@@ -1301,7 +1657,11 @@ class MaskSegmenter:
         threshold: float = DEFAULT_THRESHOLD,
         allow_gpu: bool = True,
         path: Optional[str] = None,
+        instance_masks: bool = False,
+        plane_filter: Optional[Callable[[tuple[float, float, float, float]], bool]] = None,
+        max_planes: Optional[int] = None,
     ) -> SegmentResult:
+        """With ``plane_filter`` / ``max_planes``, only those planes leave the device and no union mask is built."""
         concepts = parse_prompt(prompt)
         if not concepts:
             raise ValueError("Describe what to mask, for example: sofa, red lamp, pillow:2")
@@ -1327,20 +1687,40 @@ class MaskSegmenter:
             with self._state_lock:
                 self._call_device, self._call_settled = "", False
             try:
-                return self._segment_locked(image, concepts, threshold, path, allow_gpu)
+                return self._segment_locked(
+                    image,
+                    concepts,
+                    threshold,
+                    path,
+                    allow_gpu,
+                    instance_masks,
+                    plane_filter,
+                    max_planes,
+                )
             finally:
                 with self._state_lock:
                     self._call_device, self._call_settled = None, False
 
     def _segment_locked(
-        self, image: Any, concepts: list[Concept], threshold: float, path: str, allow_gpu: bool
+        self,
+        image: Any,
+        concepts: list[Concept],
+        threshold: float,
+        path: str,
+        allow_gpu: bool,
+        instance_masks: bool = False,
+        plane_filter: Optional[Callable[[tuple[float, float, float, float]], bool]] = None,
+        max_planes: Optional[int] = None,
     ) -> SegmentResult:
         started = time.perf_counter()
         device, dtype = choose_device(allow_gpu)
         self._call_device = device
+        extra: dict = {"instance_masks": True} if instance_masks else {}
+        if instance_masks and (plane_filter is not None or max_planes is not None):
+            extra.update(plane_filter = plane_filter, max_planes = max_planes)
         oom = False
         try:
-            result = self._segment_on(image, concepts, threshold, path, device, dtype)
+            result = self._segment_on(image, concepts, threshold, path, device, dtype, **extra)
         except Exception as exc:
             if not _is_oom(exc) or device == "cpu":
                 self._after_call()
@@ -1357,7 +1737,7 @@ class MaskSegmenter:
             device, dtype = "cpu", torch.float32
             self._call_device = device
             try:
-                result = self._segment_on(image, concepts, threshold, path, device, dtype)
+                result = self._segment_on(image, concepts, threshold, path, device, dtype, **extra)
             except Exception:
                 # The CPU copy and any release asked for mid-call are settled here too, not left resident.
                 self._after_call()
@@ -1374,6 +1754,9 @@ class MaskSegmenter:
         path: str,
         device: str,
         dtype: Any,
+        instance_masks: bool = False,
+        plane_filter: Optional[Callable[[tuple[float, float, float, float]], bool]] = None,
+        max_planes: Optional[int] = None,
     ) -> SegmentResult:
         import torch
 
@@ -1381,8 +1764,11 @@ class MaskSegmenter:
         model, tokenizer = self._model, self._tokenizer
         width, height = image.size
         scale = torch.tensor([width, height, width, height], dtype = torch.float32)
-        union = torch.zeros(height, width, dtype = torch.bool, device = device)
+        budgeted = instance_masks and (plane_filter is not None or max_planes is not None)
+        slots = 0
+        union = None if budgeted else torch.zeros(height, width, dtype = torch.bool, device = device)
         instances: list[Instance] = []
+        logits_out: list = []
         summary: list[dict] = []
         with torch.inference_mode():
             pixels = preprocess(image, device, dtype, model_image_size(model))
@@ -1403,7 +1789,7 @@ class MaskSegmenter:
                 caps[concept.text] = max(caps.get(concept.text, 0), concept.max_detections)
             # Per text only its kept scores and boxes outlive the forward: the union of a text's best-``cap`` masks
             # covers every occurrence's best-``k`` (k <= cap), so the masks are OR-ed in at once and dropped.
-            kept: dict[str, tuple[Any, Any]] = {}
+            kept: dict[str, tuple[Any, Any, list]] = {}
             for concept in concepts:
                 if concept.text not in kept:
                     index = texts.index(concept.text)
@@ -1422,25 +1808,38 @@ class MaskSegmenter:
                         presence_logit = None if presence is None else presence[0],
                     )
                     del out, presence
-                    union |= union_mask(masks, height, width)
-                    del masks
-                    kept[concept.text] = (scores, boxes)
-                scores, boxes = (t[: concept.max_detections] for t in kept[concept.text])
+                    if budgeted:
+                        kept[concept.text] = (scores, boxes, (masks, {}))
+                    else:
+                        union |= union_mask(masks, height, width)
+                        planes = [m.float().cpu() for m in masks] if instance_masks else []
+                        del masks
+                        kept[concept.text] = (scores, boxes, planes)
+                scores, boxes, planes = kept[concept.text]
+                scores, boxes = scores[: concept.max_detections], boxes[: concept.max_detections]
+                if not budgeted:
+                    logits_out.extend(planes[: concept.max_detections])
                 boxes_px = (boxes.float().cpu() * scale).tolist()
-                for score, box in zip(scores.tolist(), boxes_px):
+                for j, (score, box) in enumerate(zip(scores.tolist(), boxes_px)):
                     x1, y1, x2, y2 = (float(v) for v in box)
-                    instances.append(
-                        Instance(
-                            concept.text,
-                            float(score),
-                            (
-                                max(0.0, x1),
-                                max(0.0, y1),
-                                min(float(width), x2),
-                                min(float(height), y2),
-                            ),
-                        )
+                    clipped = (
+                        max(0.0, x1),
+                        max(0.0, y1),
+                        min(float(width), x2),
+                        min(float(height), y2),
                     )
+                    instances.append(Instance(concept.text, float(score), clipped))
+                    if budgeted:
+                        device_masks, moved = planes
+                        plane = None
+                        if (max_planes is None or slots < max_planes) and (
+                            plane_filter is None or plane_filter(clipped)
+                        ):
+                            slots += 1
+                            if j not in moved:
+                                moved[j] = device_masks[j].float().cpu()
+                            plane = moved[j]
+                        logits_out.append(plane)
                 summary.append(
                     {
                         "text": concept.text,
@@ -1450,13 +1849,14 @@ class MaskSegmenter:
                 )
             del kept, vision, pixels
         return SegmentResult(
-            mask_png = mask_to_png(union),
+            mask_png = b"" if union is None else mask_to_png(union),
             width = width,
             height = height,
             instances = instances,
             concepts = summary,
             device = device,
             precision = self.precision,
+            instance_logits = logits_out,
         )
 
 
@@ -1496,11 +1896,16 @@ def release_segmenter(
     *,
     wait: bool = False,
     handover: bool = False,
+    park: bool = False,
 ) -> bool:
-    """Drop the weights if they were ever loaded. Never creates the segmenter. ``handover``: see
+    """Drop the weights if they were ever loaded. Never creates the segmenter. ``handover`` / ``park``: see
     MaskSegmenter.release."""
     segmenter = _segmenter
-    return segmenter is not None and segmenter.release(reason, wait = wait, handover = handover)
+    if segmenter is None:
+        return False
+    if park:
+        return segmenter.release(reason, wait = wait, handover = handover, park = True)
+    return segmenter.release(reason, wait = wait, handover = handover)
 
 
 _renders_pending = 0

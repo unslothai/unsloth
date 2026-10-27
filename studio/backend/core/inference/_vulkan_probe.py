@@ -29,19 +29,7 @@ _SEM_FAILCRITICALERRORS = 0x0001
 
 
 def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str], list[bool]]:
-    """Per-device integrated-GPU flags, descriptions, and whether the type was READ.
-
-    The Vulkan reg enumerates devices in the same order as
-    ``ggml_backend_vk_get_device_memory`` (each context uses ``ctx->device =
-    i``), so reg index == device ordinal. Returns all-False / empty-name on any
-    failure so the reader never over-caps a discrete card and the memory
-    readings still get through.
-
-    The third list says whether each flag is an ANSWER. Without it "not integrated"
-    and "could not tell" are the same value, which is safe for a caller that only
-    skips a page-lock and wrong for one choosing a loader: a DirectIO decision taken
-    on an unread type buffers an iGPU's host-backed weights.
-    """
+    """Per-device iGPU flags, names, and whether each was read; an unread type makes DirectIO buffer iGPU weights. All-False on failure; reg index = ordinal"""
     flags = [False] * count
     names = [""] * count
     known = [False] * count
@@ -59,13 +47,10 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str],
             return flags, names, known
         dev_count = base.ggml_backend_reg_dev_count(reg)
     except Exception:
-        # Best-effort: any failure degrades to "discrete"/"unnamed" so the memory readings still get through instead of
-        # crashing the probe.
+        # Best-effort: any failure degrades to "discrete"/"unnamed" so memory readings still get through
         return flags, names, known
 
-    # Bound outside the type-detection try above: a ggml-base without the description symbol (older/custom build) must
-    # degrade to unnamed devices, not abort before the iGPU flags are read (which would count an iGPU's shared RAM as
-    # VRAM).
+    # Bound outside the type-detection try so a ggml-base lacking the description symbol still reads iGPU flags, else iGPU shared RAM counts as VRAM
     name_functions = []
     for symbol in ("ggml_backend_dev_description", "ggml_backend_dev_name"):
         try:
@@ -106,15 +91,13 @@ def main() -> int:
         return 0
     bindir = sys.argv[1]
 
-    # Device names can be non-ASCII (localized drivers); the platform-default stdout encoding (e.g. cp1252) would raise
-    # on them and lose the whole inventory. The reader decodes UTF-8 with the same error mode.
+    # Localized device names would raise under cp1252 stdout and lose the inventory; the reader decodes UTF-8 with the same error mode
     try:
         sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
     except Exception:
         pass
 
-    # Hold add_dll_directory's handle for the rest of main() (the documented idiom) so bindir stays on the search path
-    # while the sibling ggml DLLs resolve below.
+    # Hold add_dll_directory's handle so bindir stays on the search path.
     _dll_dir = None
     if sys.platform == "win32":
         base_name, vk_name = "ggml-base.dll", "ggml-vulkan.dll"
@@ -141,8 +124,7 @@ def main() -> int:
                 return os.path.join(directory, entry)
         return None
 
-    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. getattr falls back to 0 where the flag doesn't
-    # exist (Windows CDLL ignores mode).
+    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX.
     _rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
     base_path = _find_lib(bindir, base_name)
     vk_path = _find_lib(bindir, vk_name)

@@ -152,11 +152,52 @@ def test_guidance_off_and_unarmed_calls_are_untouched():
     assert zs.zimage_cfg_split_status(pipe)["split"] == 0
 
 
-@pytest.mark.parametrize("policy", ["group", "streaming", "sequential"])
+@pytest.mark.parametrize("policy", ["streaming", "sequential"])
 def test_streamed_denoiser_is_not_armed(policy):
     pipe = types.SimpleNamespace(transformer = _model())
     assert "streamed" in zs.install_zimage_cfg_split(pipe, offload_policy = policy)
     assert zs.zimage_cfg_split_status(pipe)["armed"] is False
+
+
+def test_group_offload_with_every_group_resident_splits():
+    """12 GiB Z-Image-Turbo int8 / fp8 = group offload, all 37 groups resident; declining it cost 3 recompiles."""
+    torch._dynamo.reset()
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "group") is None
+    assert zs.zimage_cfg_split_status(pipe)["armed"] is True
+    model._unsloth_stream_state = {
+        "streamed": 0
+    }  # what _keep_groups_resident records when every group is pinned
+    _compile_blocks(model)
+    t = torch.tensor([0.4])
+    with zs.render(pipe, 1):
+        _run(model, [_latent(0)], t, [_caption(9, 0)])
+        _run(model, [_latent(1)], t, [_caption(45, 1)])
+        warm = _graphs()
+        _run(model, *_guided_args(_latent(2), t, 45, 9, 2))
+        _run(model, *_guided_args(_latent(3), t, 7, 9, 3))
+    assert _graphs() == warm
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 2
+
+
+@pytest.mark.parametrize("state", [None, {"streamed": 3}, {"streamed": "?"}])
+def test_group_offload_while_groups_stream_keeps_the_batched_call(state, monkeypatch):
+    """Streaming groups (partial, released, or hooked with no record) keep the batched call."""
+    monkeypatch.setattr(zs, "_has_offload_groups", lambda module: True)
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "group") is None
+    if state is not None:
+        model._unsloth_stream_state = state
+    t = torch.tensor([0.4])
+    with zs.render(pipe, 1):
+        out = _run(model, *_guided_args(_latent(2), t, 45, 9, 2))
+    stats = zs.zimage_cfg_split_status(pipe)
+    assert stats["split"] == 0 and stats["batched"] == 1
+    zs.uninstall_zimage_cfg_split(pipe)
+    stock = _run(model, *_guided_args(_latent(2), t, 45, 9, 2))  # the unpatched, batched call
+    assert all(torch.equal(a, b) for a, b in zip(out, stock))
 
 
 def test_step_cache_and_step_skip_keep_the_batched_call():
@@ -457,6 +498,108 @@ def test_compiled_only_eager_oom_retries_split_for_the_render(monkeypatch):
         _run(model, *args)
 
 
+def test_group_offload_resident_transformer_tier_splits():
+    """stream_transformer=False: only the text encoders stream, the transformer has no groups and no residency record."""
+    torch._dynamo.reset()
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "group") is None
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is True
+    _compile_blocks(model)
+    t = torch.tensor([0.4])
+    with zs.render(pipe, 1):
+        _run(model, [_latent(0)], t, [_caption(9, 0)])
+        _run(model, [_latent(1)], t, [_caption(45, 1)])
+        warm = _graphs()
+        _run(model, *_guided_args(_latent(2), t, 45, 9, 2))
+    assert _graphs() == warm
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_request_guard_reprices_doubled_when_the_split_would_be_declined():
+    """Releasing groups or an AUTO FBCache engaging after the guard declines the split: the doubled call is priced."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none")
+
+    def price(extra_split, extra_cfg):
+        def _price(cfg):
+            return extra_split if cfg is False else extra_cfg
+
+        return _price
+
+    for workflow in ("txt2img", "img2img", "inpaint", "upscale"):
+        assert zs.split_aware_request_extra(pipe, True, workflow, price(0, 900)) == (False, 0)
+    assert zs.split_aware_request_extra(pipe, None, "upscale", price(-5, 900)) == (False, -5)
+    # Fits only after a release: the release can demote denoiser groups, so the batched call is priced.
+    assert zs.split_aware_request_extra(pipe, True, "txt2img", price(100, 900)) == (True, 900)
+    assert zs.split_aware_request_extra(pipe, None, "txt2img", price(100, 900)) == (None, 900)
+    assert zs.split_aware_request_extra(pipe, True, "txt2img", price(0, 900), step_cache = True) == (
+        True,
+        900,
+    )
+    assert zs.split_aware_request_extra(pipe, True, "controlnet", price(0, 900)) == (True, 900)
+    assert zs.split_aware_request_extra(pipe, False, "txt2img", price(0, 900)) == (False, 0)
+    model._unsloth_step_cache = object()
+    assert zs.split_aware_request_extra(pipe, True, "txt2img", price(0, 900)) == (True, 900)
+
+
+def test_studio_guard_passes_the_auto_step_cache_prediction():
+    import ast
+    import pathlib
+
+    source = pathlib.Path(zs.__file__).with_name("diffusion.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "split_aware_request_extra"
+    ]
+    assert len(calls) == 1
+    assert {k.arg for k in calls[0].keywords} == {"step_cache"}
+    assert "guided_runs_at_guidance_off_batch(" not in source
+    predict = source.index("auto_step_cache_on = auto_step_cache_mode(cache_steps)")
+    assert predict < source.index("guard_cfg, extra_mib = split_aware_request_extra(")
+    assert predict < source.index("toggled = maybe_toggle_step_cache(")
+
+
+def test_request_guard_sizes_a_split_guided_render_as_guidance_off(monkeypatch):
+    """Pricing a split render doubled released 5 GiB of resident groups, declining the split; it needs no extra memory."""
+    monkeypatch.setattr(zs, "_has_offload_groups", lambda module: True)
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False  # not armed
+    zs.install_zimage_cfg_split(pipe, offload_policy = "group")
+    assert (
+        zs.guided_runs_at_guidance_off_batch(pipe) is False
+    )  # hooked, no residency record: groups stream
+    model._unsloth_stream_state = {"streamed": 0}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is True
+    model._unsloth_stream_state = {"streamed": 2}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+    model._unsloth_stream_state = {"streamed": 0}
+    model._unsloth_step_cache = object()
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False  # FBCache keeps the batched call
+    del model._unsloth_step_cache
+    resident = types.SimpleNamespace(transformer = _model())
+    zs.install_zimage_cfg_split(resident, offload_policy = "none")
+    assert zs.guided_runs_at_guidance_off_batch(resident) is True
+
+
+def test_request_guard_prices_an_eager_compiled_only_load_as_doubled():
+    """compiled_only: eager keeps the doubled price, compiled gets the guidance-off one."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "group", compiled_only = True) is None
+    model._unsloth_stream_state = {"streamed": 0}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+    model._unsloth_regional_compile_kwargs = {"dynamic": True}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is True
+    model._unsloth_stream_state = {"streamed": 1}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+
+
 def test_eager_oom_split_keeps_static_skip_branch_keys(monkeypatch):
     """A batched eager call that runs out of memory consumed a static-skip ordinal; the two halves still key cond as
     ``#0`` and uncond as ``#1``, so a later skipped step reuses each branch's own prediction."""
@@ -546,7 +689,7 @@ def test_compiled_only_ignores_a_poisoned_graph_handle():
 
 
 def test_compiled_only_honours_the_background_compile_eager_gate():
-    """A render recording for a pending background compile bypasses compiled calls and graphs: it runs batched."""
+    """Eager-forced with nothing recording (compile already running): the guided call runs batched."""
     from core.inference import diffusion_bg_compile as bg
 
     model = _model()
@@ -557,6 +700,103 @@ def test_compiled_only_honours_the_background_compile_eager_gate():
     with bg.force_eager(), zs.render(pipe, 1):
         _run(model, *args)
     assert zs.zimage_cfg_split_status(pipe)["split"] == 0
+    rec = bg.BackgroundCompile(model)
+    assert rec.install()
+    rec.state = "compiling"
+    with bg.force_eager():
+        assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+        with zs.render(pipe, 1):
+            _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 0 and rec.samples == []
     with zs.render(pipe, 1):
         _run(model, *args)
     assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_background_compile_recording_render_splits_and_records_the_compiled_shape():
+    """The recording render splits, so the compiled render after the background replay compiles nothing new."""
+    from core.inference import diffusion_bg_compile as bg
+    from core.inference.diffusion_cuda_graph import _rebuild
+
+    torch._dynamo.reset()
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True) is None
+    rec = bg.BackgroundCompile(model)
+    assert rec.install()
+    args = _guided_args(_latent(17), torch.tensor([0.4]), 9, 12, 17)
+    with torch.no_grad():
+        batched = model(*args, return_dict = False)[0]
+        alone = (
+            model(*[a[:1] for a in args], return_dict = False)[0]
+            + model(*[a[1:] for a in args], return_dict = False)[0]
+        )
+    with bg.force_eager():
+        priced_off = zs.guided_runs_at_guidance_off_batch(pipe)
+        with zs.render(pipe, 1):
+            recorded = [_run(model, *args) for _ in range(3)]
+    shapes = sorted(tuple(c[0].shape) for _, c, *_ in rec.samples)
+    stats = dict(zs.zimage_cfg_split_status(pipe))
+    # What kick() runs: regional compile, then the recorded inputs.
+    _compile_blocks(model)
+    with torch.no_grad():
+        for spec, clones, *_ in rec.samples:
+            a, k = _rebuild(spec, clones)
+            model(*a, **k)
+    warm = _graphs()
+    assert warm > 0
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert _graphs() - warm == 0
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 4
+    assert stats == {"armed": True, "split": 3, "batched": 0}
+    assert shapes == [(16, 1, 8, 8)] * 2
+    assert priced_off is True
+    for out in recorded:
+        for s, a, b in zip(out, alone, batched):
+            assert torch.equal(s, a)
+            torch.testing.assert_close(s, b, atol = 1e-5, rtol = 1e-4)
+    assert bg.recording(model) is False
+
+
+def test_eager_render_behind_an_active_router_is_priced_and_run_split():
+    """Eager compiled_only behind an active router: priced guidance-off and keeps splitting if the router gives up."""
+    from core.inference import diffusion_bg_compile as bg
+    from core.inference.diffusion_multigpu import CfgParallelRouter
+
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+    router = CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    model.__dict__["forward"] = router
+    model.__dict__["_unsloth_cfg_router"] = router
+    args = _guided_args(_latent(17), torch.tensor([0.4]), 9, 12, 17)
+    try:
+        assert zs.guided_runs_at_guidance_off_batch(pipe) is True
+        with bg.force_eager():
+            assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+        with zs.render(pipe, 1):
+            _run(model, *args)
+            router.disabled_reason = "replica failed"
+            _run(model, *args)
+        assert zs.zimage_cfg_split_status(pipe)["split"] == 2
+        assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+    finally:
+        model.__dict__.pop("forward", None)
+        model.__dict__.pop("_unsloth_cfg_router", None)
+
+
+def test_studio_guard_disengages_a_pending_auto_cache_before_pricing():
+    """A cache the AUTO toggle will turn off is disengaged before the guard, so the split is not priced as declined."""
+    source = _diffusion_source()
+    predict = source.index("auto_step_cache_on = auto_step_cache_mode(cache_steps)")
+    guard = source.index("guard_cfg, extra_mib = split_aware_request_extra(")
+    early = source.index("maybe_toggle_step_cache(", predict)
+    assert predict < early < guard
+    assert "if not auto_step_cache_on:" in source[predict:early]
+
+
+def _diffusion_source():
+    import pathlib
+    return pathlib.Path(zs.__file__).with_name("diffusion.py").read_text(encoding = "utf-8")
