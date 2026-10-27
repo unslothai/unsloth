@@ -632,17 +632,20 @@ class VLMPromptSnapshotStore:
             self.discard(other)
 
     def resume_entries(self):
-        """Newest turn's longest boundary snapshot (``_touch`` keeps it last), then its replay."""
+        """The newest turn's longest boundary snapshot, then its replay."""
         newest = next(reversed(self._entries), None)
         if newest is None:
             return []
         key = newest[0]
-        boundary = next(
-            (i for i in reversed(self._entries) if i[0] == key and not self._is_replay(i)), None
-        )
+        replay = self._replays.get(key)
+        boundaries = [i for i in self._entries if i[0] == key and not self._is_replay(i)]
+        # _touch keeps the longest last, but after an edit that can be an older base the replay's
+        # turn no longer extends: prefer the longest one it does.
+        fits = [i for i in boundaries if replay is not None and replay[1][: len(i[1])] == i[1]]
+        boundary = max(fits, key = lambda i: len(i[1])) if fits else next(reversed(boundaries), None)
         return [
             (item[0], list(item[1]), self._entries[item][0], self._is_replay(item))
-            for item in (boundary, self._replays.get(key))
+            for item in (boundary, replay)
             if item is not None
         ]
 

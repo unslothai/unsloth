@@ -3923,6 +3923,33 @@ def test_mlx_prompt_cache_resume_restores_the_newest_entries_under_the_same_load
     assert [tokens for _, tokens, _, _ in over_budget.resume_entries()] == [list(range(8))]
 
 
+def test_mlx_vlm_resume_keeps_the_boundary_an_edited_turn_extends():
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models.cache import KVCache
+
+    from core.inference.mlx_inference import VLMPromptSnapshotStore
+
+    def kv(n):
+        entry = KVCache()
+        rows = mx.zeros((1, 2, n, 4), dtype = mx.float16)
+        entry.update_and_fetch(rows, rows)
+        return [entry]
+
+    store = VLMPromptSnapshotStore(1 << 30)
+    store.store("k", list(range(12)), kv(12))
+    store.store("k", list(range(14)), kv(14), replay = True)
+    # The edit keeps the first 4 tokens; the old, longer boundary is then touched last.
+    edited = [*range(4), 90, 91]
+    store.store("k", list(range(4)), kv(4))
+    store.store("k", edited, kv(6), replay = True)
+    store._touch(("k", tuple(range(12))))
+    assert [(prefix, replay) for _, prefix, _, replay in store.resume_entries()] == [
+        (list(range(4)), False),
+        (edited, True),
+    ]
+
+
 def test_mlx_prompt_cache_resume_keys_on_the_weights_the_load_read(tmp_path, monkeypatch):
     mx = pytest.importorskip("mlx.core")
     pytest.importorskip("mlx_lm")
