@@ -4,7 +4,7 @@
 /** Classic scrollbars take layout space, so their gutter stays unset. */
 
 export const OVERLAY_SCROLLBAR_GUTTER_VAR = "--overlay-scrollbar-gutter";
-/** A classic scrollbar's width, so a scroller can reserve it out of its padding. Unset for overlay ones. */
+/** For a padding-reserved gutter; unset for overlay scrollbars. */
 export const CLASSIC_SCROLLBAR_WIDTH_VAR = "--classic-scrollbar-width";
 
 const MAX_GUTTER_PX = 48;
