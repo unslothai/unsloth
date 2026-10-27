@@ -24779,6 +24779,8 @@ class LlamaCppBackend:
                 _auto_cache_ram_mib: Optional[int] = None
                 _spec_dropped_by_planner = False
                 _mtp_slots_asked: Optional[int] = None
+                # The slot count a plan's rung 1 lowered, so the commit can mark the cut.
+                _spill_slots_asked: Optional[int] = None
                 _mtp_slots_target_ctx: Optional[int] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
@@ -28128,9 +28130,11 @@ class LlamaCppBackend:
                     _spill_ctx = _spill_ctx_request or effective_ctx
                     _spill_n_gpus = max(1, len(gpus or ()))
                     _spill_min_parallel = int(n_parallel or 1)
+                    # Only a defaulted count is the planner's to lower, as for the Auto drafter.
                     if (
                         _planner_owns_fit
                         and _spill_min_parallel > 1
+                        and intent.n_parallel_from_default
                         and _extra_args_n_parallel(extra_args, os.environ) is None
                         and not self.is_embedding_gguf
                     ):
@@ -29530,6 +29534,7 @@ class LlamaCppBackend:
                             cmd[_np_at + 1] = str(_spill.n_parallel)
                             if _spill.n_parallel <= 1 and planned_kv_unified:
                                 self._spill_plan_append = ["--kv-unified"]
+                            _spill_slots_asked = n_parallel
                             n_parallel = _spill.n_parallel  # allow-slot-clamp: planner rung 1
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
                             # llama.cpp derives the micro-batch from the emitted batch, so follow the reduced slots.
@@ -31057,7 +31062,7 @@ class LlamaCppBackend:
                     rearm_page_lock = True,
                 ):
                     """``_drop_tensor_spill``, plus the locals the plan rewrote."""
-                    nonlocal n_parallel, _spill_keeps_every_layer_on_gpu
+                    nonlocal n_parallel, _spill_keeps_every_layer_on_gpu, _spill_slots_asked
                     nonlocal effective_ctx, max_available_ctx
                     nonlocal kv_cache_unified, _auto_ctx_checkpoints, _auto_ckpt_emitted
                     nonlocal _mem_host_resident
@@ -31141,6 +31146,7 @@ class LlamaCppBackend:
                     if _restored is not None:
                         try:
                             n_parallel = max(1, int(_restored))
+                            _spill_slots_asked = None
                         except (TypeError, ValueError):
                             pass
                         reverted = self._without_flag_pairs(
@@ -33881,9 +33887,10 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
+                # Either cut (the Auto drafter's or a plan's rung 1) is one an explicit count must not dedupe.
                 self._slots_cut_for_drafter = (
                     _mtp_slots_asked is not None and n_parallel < _mtp_slots_asked
-                )
+                ) or (_spill_slots_asked is not None and n_parallel < _spill_slots_asked)
                 # Commit with the rest of the known-good state: only a launch that got
                 # this far replaced the runtime, so a rejected preflight leaves the old
                 # marker intact, and the diffusion runner returns well before it without

@@ -49,7 +49,9 @@ def _launch_with(
     speculative_type = "off",
     **load_kwargs,
 ):
-    """Launch a load the planner is consulted on, returning (cmd, backend, seen inputs)."""
+    """Launch a load the planner is consulted on, returning (cmd, backend, seen inputs). The slot
+    count is the default unless a test says it was chosen."""
+    load_kwargs.setdefault("n_parallel_from_default", True)
     if owns:
         monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
     else:
@@ -120,6 +122,39 @@ def test_a_plan_that_lowers_the_slots_rewrites_parallel_in_place_and_records_the
         Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,)),
     )
     assert "--kv-unified" in four
+
+
+def test_a_chosen_slot_count_is_never_lowered_and_a_planned_cut_blocks_the_dedupe(
+    tmp_path, monkeypatch
+):
+    """Only a defaulted --parallel is the planner's to lower, as for the Auto drafter. When rung 1
+    does cut a defaulted count, the same count asked for explicitly must reload, not dedupe."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    _cmd, _b, seen = _launch_with(
+        tmp_path, monkeypatch, Plan(reason = "declined"), n_parallel_from_default = False
+    )
+    assert seen["inputs"]["min_parallel"] == 4
+    assert sorted(seen["inputs"]["kv_bytes_floor_by_parallel"]) == [4]
+
+    cmd, backend, _ = _launch_with(
+        tmp_path, monkeypatch, Plan(changed = True, n_ctx = 8192, n_parallel = 1)
+    )
+    assert _flag(cmd, "--parallel") == "1"
+    assert backend._slots_cut_for_drafter is True
+    chosen = GgufLoadIntent(
+        gguf_path = backend._gguf_path,
+        model_identifier = "test",
+        n_ctx = backend._requested_n_ctx,
+        n_parallel = 4,
+    )
+    assert backend._runtime_matches_intent(chosen, None) is False
+    _kept, backend, _ = _launch_with(
+        tmp_path,
+        monkeypatch,
+        Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,)),
+    )
+    assert backend._slots_cut_for_drafter is False
 
 
 def test_a_plan_that_keeps_the_slots_records_nothing(tmp_path, monkeypatch):
