@@ -197,8 +197,7 @@ def import_recipe(payload: Any, *, group_id: str = "recipe") -> dict:
 
 
 # Flows never carry tool servers or credentials (see `nodes/data.declarative_recipe`).
-_TOOL_KEYS = ("mcp_providers", "tool_configs", "tool_profiles", "tools", "mcp")
-_COLUMN_TOOL_KEYS = ("tool_alias", "tool_config", "mcp_tools", "tools")
+_TOOL_KEYS = ("mcp_providers", "tool_configs")
 _SECRET_KEYS = ("api_key", "extra_headers")
 
 
@@ -215,8 +214,7 @@ def flow_from_recipe(
     recipe = copy.deepcopy(recipe)
     notices: list[str] = []
     if any(recipe.get(key) for key in _TOOL_KEYS) or any(
-        isinstance(c, dict) and any(c.get(key) for key in _COLUMN_TOOL_KEYS)
-        for c in recipe["columns"]
+        isinstance(c, dict) and c.get("tool_alias") for c in recipe["columns"]
     ):
         notices.append(
             "Tool servers stay on the Data Recipes page; columns that used them run without tools."
@@ -225,8 +223,7 @@ def flow_from_recipe(
         recipe.pop(key, None)
     for column in recipe["columns"]:
         if isinstance(column, dict):
-            for key in _COLUMN_TOOL_KEYS:
-                column.pop(key, None)
+            column.pop("tool_alias", None)
     for provider in recipe.get("model_providers") or []:
         if isinstance(provider, dict) and any(provider.get(k) for k in _SECRET_KEYS):
             notices.append(
