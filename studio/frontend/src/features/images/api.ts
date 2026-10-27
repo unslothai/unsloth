@@ -689,6 +689,7 @@ export interface DiffusionTrainingStatus {
   num_images: number | null;
   in_model_load: boolean;
   preparation?: { stage?: string | null; done?: number | null; total?: number | null } | null;
+  download_progress?: { bytes_done: number; bytes_total: number; label?: string; scope?: "active_files" } | null;
   output_dir: string | null;
   lora_path: string | null;
   ema_path?: string | null;
