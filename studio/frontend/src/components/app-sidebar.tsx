@@ -1019,7 +1019,8 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge && <Badge variant="accent">{badge}</Badge>}
+      {/* -my-0.5: the 20px badge would stretch the row past the 35px rows around it. */}
+      {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
       {newAction && (
         <button
@@ -1094,7 +1095,7 @@ function MediaMoreSubmenu<Id extends string>({
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <Badge variant="accent">{badge}</Badge>}
+        {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}

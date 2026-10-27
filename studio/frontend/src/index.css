@@ -2943,6 +2943,14 @@ html[data-chat-font] .aui-root {
 	.sidebar-more-menu :is([data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-sub-trigger"]) {
 		border-radius: 9999px;
 	}
+	/* Side gutter inside the scroll viewport: rows that fill its clip exactly lose a pixel of the pill's
+	   round end when the w-max width's fraction snaps. */
+	.sidebar-more-menu[data-slot] {
+		padding-inline: 0 !important;
+	}
+	.sidebar-more-menu > [data-slot="dropdown-menu-viewport"] {
+		padding-inline: var(--spacing);
+	}
 
 	/* On <html> so --accent can be reassigned without a cycle. */
 	.dark {
